@@ -43,6 +43,10 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
+      // #2577: someone asked one of your agents and it is held for you.
+      "request",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),
@@ -66,6 +70,8 @@ export const InboxItemSchema = z
       })
       .optional(),
     text: z.string(),
+    /** A mention, reply or comment: the comment's plain text, at most 120 characters. In-app only, never in a push. */
+    excerpt: z.string().max(120).optional(),
     href: SameOriginPath,
     createdAt: Iso,
     readAt: Iso.nullable(),
@@ -104,14 +110,32 @@ export const InboxReadBodySchema = z.object({
 });
 export type InboxReadBody = z.infer<typeof InboxReadBodySchema>;
 
+/** An IANA zone name the runtime knows ("Europe/Paris"). */
+const validZone = (z: string): boolean => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: z });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const InboxLaterBodySchema = z.object({
   until: z.enum(["hour", "morning"]),
+  /** The person's zone (the browser's): "morning" is 08:00 there. Absent: the saved zone, then UTC. */
+  timeZone: z
+    .string()
+    .min(1)
+    .max(64)
+    .refine(validZone, "Unknown time zone")
+    .optional(),
 });
 export type InboxLaterBody = z.infer<typeof InboxLaterBodySchema>;
 
 export const NotificationPrefsSchema = z.object({
   needsYou: z.object({ inApp: z.literal(true), browser: z.boolean() }),
-  updates: z.object({ inApp: z.literal(true), browser: z.literal(false) }),
+  /** `browser` on both: the default a new browser starts with (each browser has its own switches, PushSubscriptions). */
+  updates: z.object({ inApp: z.literal(true), browser: z.boolean() }),
   browserAllAsks: z.boolean(),
   quietHours: z.object({ start: Hhmm, end: Hhmm }).nullable(),
   timeZone: z.string().min(1).max(64),
@@ -145,10 +169,27 @@ export const PushSubscriptionsSchema = z.object({
       label: z.string().nullable(),
       createdAt: Iso,
       lastSentAt: Iso.nullable(),
+      /** This browser's own switches: Needs-you and Updates notifications on it. */
+      needsYou: z.boolean(),
+      updates: z.boolean(),
     }),
   ),
 });
 export type PushSubscriptions = z.infer<typeof PushSubscriptionsSchema>;
+
+/** PATCH R.mePushSubscription(id): this browser's switches; at least one. */
+export const PushSubscriptionPatchBodySchema = z
+  .strictObject({
+    needsYou: z.boolean().optional(),
+    updates: z.boolean().optional(),
+  })
+  .refine(
+    (b) => b.needsYou !== undefined || b.updates !== undefined,
+    "send needsYou or updates",
+  );
+export type PushSubscriptionPatchBody = z.infer<
+  typeof PushSubscriptionPatchBodySchema
+>;
 
 export const PushPayloadSchema = z.object({
   v: z.literal(1),

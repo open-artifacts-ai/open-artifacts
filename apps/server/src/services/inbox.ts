@@ -1,15 +1,37 @@
 import type { CommentAuthor, Inbox, InboxItem } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { type Caller, capOfCaller, listFilterSql } from "../auth/authz.js";
 import { capsReads, isGuestRole } from "../auth/policy.js";
 import { getDb } from "../db/client.js";
-import { artifactAsks, artifacts } from "../db/schema.js";
+import { artifactAsks, artifacts, inboxItems } from "../db/schema.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
-import { agentsWaitingOn } from "./bus.js";
-import { askerFaces, type CommentViewer, repairAsks } from "./comments.js";
+import { runtimeStub } from "../runtime/do.js";
+import { receiverCanOpen } from "./agent-requests.js";
+import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
+import { notifyAskLater } from "./comment-agents.js";
+import {
+  askerFaces,
+  askingAddress,
+  type CommentViewer,
+  repairAsks,
+} from "./comments.js";
+import { awayItem } from "./inbox-away.js";
+import {
+  type ItemRow,
+  mentionsOfMe,
+  unreadUpdateCount,
+  updatesPage,
+} from "./inbox-items.js";
+import {
+  laterRows,
+  laterUntil,
+  laterWhen,
+  recordLater,
+} from "./inbox-later.js";
 import { getSettings } from "./members.js";
 import { setUpNoticeKey } from "./onboarding.js";
 import { getUser } from "./users.js";
@@ -36,13 +58,45 @@ const forMe = (caller: Me) =>
 
 /** How many open asks wait for the caller (the /me badge): one indexed query. */
 export async function needsYouCount(env: Env, caller: Me): Promise<number> {
+  const now = Date.now();
+  // #2762: an item put off and not yet back is not counted (the bell leaves it out).
   const r = await getDb(env)
     .select({ n: sql<number>`count(distinct ${artifactAsks.commentId})` })
     .from(artifactAsks)
     .innerJoin(artifacts, eq(artifacts.id, artifactAsks.artifactId))
-    .where(forMe(caller));
-  return Math.min(r[0]?.n ?? 0, NEEDS_YOU_MAX);
+    .where(
+      and(
+        forMe(caller),
+        sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'ask:' || ${artifactAsks.commentId} and l.until > ${now})`,
+      ),
+    );
+  const held = await heldRequestRows(env, caller).catch(() => []);
+  const away = await laterRows(env, caller.user.id).catch(
+    () => new Map<string, number>(),
+  );
+  const shown = held.filter((h) => (away.get(`request:${h.id}`) ?? 0) <= now);
+  // #2770: people who @mentioned me, unread and not put off.
+  const m = await getDb(env)
+    .select({ n: sql<number>`count(*)` })
+    .from(inboxItems)
+    .innerJoin(artifacts, eq(artifacts.id, inboxItems.artifactId))
+    .where(
+      and(
+        listFilterSql(caller, "all"),
+        eq(inboxItems.userId, caller.user.id),
+        eq(inboxItems.level, "needs_you"),
+        isNull(inboxItems.readAt),
+        sql`${artifacts.deletedAt} is null`,
+        sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'mention:' || ${inboxItems.id} and l.until > ${now})`,
+      ),
+    );
+  return Math.min(
+    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0),
+    NEEDS_YOU_MAX,
+  );
 }
+
+export { unreadUpdateCount };
 
 type Row = {
   artifactId: string;
@@ -142,17 +196,13 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
   const actors = ready.map((r) => JSON.parse(r.asker) as StoredActor);
   const faces = await askerFaces(env, viewer, actors);
   // Only my own agents can wait on me: their status is in my hub.
-  const mine = new Set<string>();
-  for (const a of actors)
-    if (a.ref === caller.user.id && a.agent?.identity)
-      mine.add(a.agent.identity.identityId);
-  const waiting = await agentsWaitingOn(env, caller.user.id, [...mine]);
+  const waiting = await waitingAgents(env, caller.user.id, actors);
   const items = ready.map((r, i): InboxItem & { rank: number } => {
     const actor = actors[i] as StoredActor;
     const face = faces[i] as CommentAuthor;
     const idn = actor.agent?.identity?.identityId;
-    const since =
-      idn && actor.ref === caller.user.id ? waiting.get(idn) : undefined;
+    const own = ownAgentId(actor, caller.user.id);
+    const since = waitingSince(own ? waiting.get(own) : undefined, r.askedAt);
     const urgency =
       since !== undefined ? "waiting" : r.confirm === 1 ? "approval" : "plain";
     return {
@@ -191,6 +241,64 @@ export async function needsYou(env: Env, caller: Me): Promise<InboxItem[]> {
     if (out.length >= NEEDS_YOU_MAX) break;
   }
   return out;
+}
+
+/** The text of a stored item, written here and never taken from a client. */
+const textOf = (r: ItemRow, name: string): string => {
+  switch (r.kind) {
+    case "mention":
+      // #2770: no agent named: the person themself was mentioned.
+      return r.agentName === null
+        ? `${name} mentioned you on ${r.title}`
+        : `${name} mentioned ${r.agentName} on ${r.title}`;
+    case "reply":
+      return `${name} replied: ${r.excerpt}`;
+    case "comment":
+      return `${name} commented: ${r.excerpt}`;
+    case "share":
+      return `${name} shared "${r.excerpt}" with you`;
+    default:
+      return `${name} decided: ${r.excerpt}`;
+  }
+};
+
+/** Stored rows as inbox items, the actor shown as the comments API shows them to the caller. */
+async function itemsOf(
+  env: Env,
+  caller: Me,
+  rows: ItemRow[],
+): Promise<InboxItem[]> {
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r) => JSON.parse(r.actor) as StoredActor),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: r.id,
+      level: "update",
+      kind: r.kind,
+      artifact: { id: r.artifactId, title: r.title },
+      actor: face,
+      text: textOf(r, face.name),
+      ...(r.kind === "mention" || r.kind === "reply" || r.kind === "comment"
+        ? { excerpt: r.excerpt }
+        : {}),
+      href: r.threadId
+        ? `${viewerPath(r.artifactId)}?thread=${encodeURIComponent(r.threadId)}`
+        : viewerPath(r.artifactId),
+      createdAt: new Date(r.createdAt).toISOString(),
+      readAt: r.readAt === null ? null : new Date(r.readAt).toISOString(),
+    };
+  });
 }
 
 /** How long a "member is set up" line stays (there is no read state for it yet). */
@@ -239,18 +347,251 @@ export async function memberSetUpUpdates(
   return out;
 }
 
-/** The whole inbox response. Later and the cursor are the next slices. */
-export async function inboxOf(env: Env, caller: Me): Promise<Inbox> {
-  const list = await needsYou(env, caller);
-  const updates = await memberSetUpUpdates(env, caller).catch((e) => {
-    logWarn("inbox_member_set_up_failed", e);
-    return [];
+/** Requests to the caller's agents that wait for them, not quieted by "Not now": one row each. */
+const heldRequestRows = async (env: Env, caller: Me, now = Date.now()) => {
+  const rows = (
+    await env.DB.prepare(
+      `select r.id, r.sender_id, r.artifact_id, r.created_at, a.title as title
+         from held_requests r join artifacts a on a.id = r.artifact_id and a.deleted_at is null
+        where r.receiver_id = ?1 and (r.quiet_until is null or r.quiet_until <= ?2)
+          and exists (select 1 from held_request_items i where i.request_id = r.id and i.state = 'held' and i.expires_at > ?2)
+        order by r.last_at limit ?3`,
+    )
+      .bind(caller.user.id, now, NEEDS_YOU_MAX)
+      .all<{
+        id: string;
+        sender_id: string;
+        artifact_id: string;
+        created_at: number;
+        title: string;
+      }>()
+  ).results;
+  // A page the caller can no longer open is not theirs to answer.
+  const open: typeof rows = [];
+  for (const r of rows)
+    if (await receiverCanOpen(env, caller, r.artifact_id)) open.push(r);
+  return open;
+};
+
+/**
+ * #2577: someone asked one of the caller's agents; the request is held for them. One item per
+ * (sender, page), however many requests: the words are read when it opens, never here.
+ */
+export async function heldRequestItems(
+  env: Env,
+  caller: Me,
+): Promise<InboxItem[]> {
+  const rows = await heldRequestRows(env, caller);
+  if (rows.length === 0) return [];
+  const viewer: CommentViewer = {
+    userId: caller.user.id,
+    short: null,
+    guest: isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+  };
+  const faces = await askerFaces(
+    env,
+    viewer,
+    rows.map((r): StoredActor => ({ kind: "user", ref: r.sender_id })),
+  );
+  return rows.map((r, i): InboxItem => {
+    const face = faces[i] as CommentAuthor;
+    return {
+      id: `request:${r.id}`,
+      level: "needs_you",
+      kind: "request",
+      urgency: "approval",
+      waitingSince: iso(new Date(r.created_at).toISOString()),
+      artifact: { id: r.artifact_id, title: r.title },
+      actor: face,
+      text: `${face.name} wants to ask your agent`,
+      href: viewerPath(r.artifact_id),
+      createdAt: new Date(r.created_at).toISOString(),
+      readAt: null,
+    };
   });
+}
+
+/** The key an item sits under in inbox_later: an ask's and a request's id are theirs; a stored mention's is "mention:" and its id. */
+const laterKey = (i: Pick<InboxItem, "id" | "kind">): string =>
+  i.kind === "mention" ? `mention:${i.id}` : i.id;
+
+/** The whole inbox response: Needs you (asks and held requests) and one page of Updates. */
+export async function inboxOf(
+  env: Env,
+  caller: Me,
+  cursor?: string,
+): Promise<Inbox> {
+  const [asks, requests, mentionRows, page, unread, setUp, awayRow] =
+    await Promise.all([
+      needsYou(env, caller),
+      heldRequestItems(env, caller).catch((e) => {
+        logWarn("inbox_held_requests_failed", e);
+        return [] as InboxItem[];
+      }),
+      // #2770: people who @mentioned me, still waiting.
+      mentionsOfMe(env, caller).catch((e) => {
+        logWarn("inbox_mentions_failed", e);
+        return [] as ItemRow[];
+      }),
+      updatesPage(env, caller, cursor),
+      unreadUpdateCount(env, caller),
+      // #2632: synthesized lines (no stored row), on the first page only.
+      cursor
+        ? Promise.resolve([] as InboxItem[])
+        : memberSetUpUpdates(env, caller).catch((e) => {
+            logWarn("inbox_member_set_up_failed", e);
+            return [] as InboxItem[];
+          }),
+      // "While you were away": the quiet-hours summary, on the first page only.
+      cursor
+        ? Promise.resolve(null)
+        : awayItem(env, caller).catch((e) => {
+            logWarn("inbox_away_failed", e);
+            return null;
+          }),
+    ]);
+  // Waiting agents first, then what needs an approval (asks and requests, oldest first), then the rest.
+  const byAge = (a: InboxItem, b: InboxItem) =>
+    a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0;
+  const mentions = (await itemsOf(env, caller, mentionRows)).map(
+    (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
+  );
+  const ordered = [
+    ...asks.filter((i) => i.urgency === "waiting"),
+    ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
+      byAge,
+    ),
+    ...[
+      ...asks.filter(
+        (i) => i.urgency !== "waiting" && i.urgency !== "approval",
+      ),
+      ...mentions,
+    ].sort(byAge),
+  ];
+  // #2762: put-off items sit in Later until their time, then return on top,
+  // once, marked backFromLater (they cannot be put off again).
+  const away = await laterRows(env, caller.user.id).catch((e) => {
+    logWarn("inbox_later_failed", e);
+    return new Map<string, number>();
+  });
+  const now = Date.now();
+  const laterList: InboxItem[] = [];
+  const back: InboxItem[] = [];
+  const rest: InboxItem[] = [];
+  for (const i of ordered) {
+    const until = away.get(laterKey(i));
+    if (until === undefined) rest.push(i);
+    else if (until > now)
+      laterList.push({
+        ...i,
+        later: { until: new Date(until).toISOString(), used: true },
+      });
+    else
+      back.push({
+        ...i,
+        later: { until: new Date(until).toISOString(), used: true },
+        backFromLater: true,
+      });
+  }
+  laterList.sort((a, b) =>
+    (a.later?.until ?? "") < (b.later?.until ?? "") ? -1 : 1,
+  );
+  const list = [...back, ...rest].slice(0, NEEDS_YOU_MAX);
+  const updates = [...(await itemsOf(env, caller, page.rows)), ...setUp].sort(
+    (x, y) => y.createdAt.localeCompare(x.createdAt),
+  );
+  // The summary leads the Updates; the rows it sums up stay listed below it,
+  // so it adds nothing to the unread count.
+  if (awayRow) updates.unshift(awayRow);
   return {
     needsYou: list,
-    later: [],
+    later: laterList,
     updates,
-    cursor: null,
-    counts: { needsYou: list.length, unreadUpdates: updates.length },
+    cursor: page.next,
+    counts: { needsYou: list.length, unreadUpdates: unread + setUp.length },
   };
+}
+
+/**
+ * #2762 POST /me/inbox/:id/later: puts one Needs-you item off, once. 404: not
+ * one of theirs (an update, someone else's, gone). 409 later_used: put off
+ * before (a return from Later cannot be put off again). The asking agent, if
+ * the item is its ask, is told by name when they will look at it. Time:
+ * "hour" is one hour on; "morning" the next 08:00 in `timeZone` (the
+ * browser's), else UTC (their saved zone, S4's prefs, is not stored yet).
+ */
+export async function deferItem(
+  env: Env,
+  caller: Me,
+  id: string,
+  which: "hour" | "morning",
+  /** The person's IANA zone (the browser's); absent: UTC until their saved zone is stored. */
+  timeZone?: string,
+  now = Date.now(),
+): Promise<InboxItem> {
+  const away = await laterRows(env, caller.user.id);
+  const [asks, requests, mentionRows] = await Promise.all([
+    needsYou(env, caller),
+    heldRequestItems(env, caller).catch(() => [] as InboxItem[]),
+    mentionsOfMe(env, caller).catch(() => [] as ItemRow[]),
+  ]);
+  const mentions = (await itemsOf(env, caller, mentionRows)).map(
+    (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
+  );
+  const item = [...asks, ...requests, ...mentions].find((i) => i.id === id);
+  if (!item) throw new ApiError("not_found", "Not found");
+  const key = laterKey(item);
+  if (away.has(key))
+    throw new ApiError("later_used", "You already put this off once.");
+  const zone = timeZone ?? "UTC";
+  const until = laterUntil(which, now, zone);
+  if (!(await recordLater(env, caller.user.id, key, until, now)))
+    throw new ApiError("later_used", "You already put this off once.");
+  if (item.kind === "ask")
+    await tellAsker(env, caller, id, {
+      until,
+      when: laterWhen(until, now, zone),
+    });
+  return {
+    ...item,
+    later: { until: new Date(until).toISOString(), used: true },
+  };
+}
+
+/** The asking agent hears, in fixed words, that its ask was put off and when it will be looked at. Never throws. */
+async function tellAsker(
+  env: Env,
+  caller: Me,
+  itemId: string,
+  at: { until: number; when: string },
+): Promise<void> {
+  try {
+    const commentId = itemId.slice("ask:".length);
+    const row = await env.DB.prepare(
+      `select a.artifact_id, a.thread_id, x.current_version as version
+         from artifact_asks a join artifacts x on x.id = a.artifact_id
+        where a.comment_id = ? and a.addressee = ? limit 1`,
+    )
+      .bind(commentId, caller.user.id)
+      .first<{ artifact_id: string; thread_id: string; version: number }>();
+    if (!row) return;
+    const t = await runtimeStub(env, row.artifact_id).commentsGet(
+      row.thread_id,
+    );
+    const c = t.comments.find((x) => x.id === commentId);
+    if (!c || c.author.kind !== "user" || !c.author.agent) return;
+    await notifyAskLater(
+      env,
+      row.artifact_id,
+      Math.max(1, row.version),
+      row.thread_id,
+      commentId,
+      c.author.ref,
+      await askingAddress(env, row.artifact_id, row.thread_id, c.author),
+      { userId: caller.user.id, until: at.until, when: at.when },
+    );
+  } catch (e) {
+    logWarn("inbox_later_notice_failed", e);
+  }
 }

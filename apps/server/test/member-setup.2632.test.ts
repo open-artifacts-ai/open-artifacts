@@ -5,6 +5,7 @@ import { type Inbox, MeSchema, newId, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { seedWelcome } from "../src/services/onboarding.js";
@@ -29,7 +30,7 @@ const set = (key: string) =>
     .run();
 type Row = {
   id: string;
-  setup?: { state: string; done: number; stalled?: string };
+  setup?: { state: string; done: number; total?: number; stalled?: string };
 };
 const list = async (cookie: string, status?: string) =>
   (await (
@@ -57,6 +58,7 @@ describe("GET R.members setup", () => {
     expect(by(m.userId)?.setup).toEqual({
       state: "partial",
       done: 1,
+      total: 5,
       stalled: "agent",
     });
     expect((await api(app, R.members, m.cookie)).status).toBe(404);
@@ -466,5 +468,181 @@ describe("the checklist write is refused to a capped caller (#2632)", () => {
         .first(),
     ).toBeNull();
     expect((await api(app, R.onboarding, g.cookie)).status).toBe(403);
+  });
+});
+
+describe("the Welcome is there for a read that beats the background seed (#2632)", () => {
+  it("a login with no sign-in row gets no Welcome from a read", async () => {
+    const m = await login(`hook-${tag()}@example.com`, "member");
+    const got = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    expect(got.welcomeId).toBeNull();
+    expect(await seededRows(m.userId)).toBe(0);
+  });
+
+  const mkMember = async () => {
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    return m;
+  };
+
+  it("a read racing the background seed gets a welcomeId, and one Welcome exists", async () => {
+    const m = await mkMember();
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    const bg = seedWelcome(env, u);
+    const got = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    await bg;
+    expect(got.welcomeId).not.toBeNull();
+    expect(await seededRows(m.userId)).toBe(1);
+  });
+
+  it("a read before any background seed seeds it itself, once", async () => {
+    const m = await mkMember();
+    const first = (await (await api(app, R.onboarding, m.cookie)).json()) as {
+      welcomeId: string | null;
+    };
+    expect(first.welcomeId).not.toBeNull();
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    await seedWelcome(env, u);
+    expect(await seededRows(m.userId)).toBe(1);
+  });
+
+  it("a read that finds the claim in flight waits for the page", async () => {
+    const m = await mkMember();
+    await env.DB.prepare("insert into settings (key, value) values (?1, ?2)")
+      .bind(
+        `onboarding:welcome:${m.userId}`,
+        JSON.stringify({ userId: m.userId, artifactId: "" }),
+      )
+      .run();
+    const read = api(app, R.onboarding, m.cookie);
+    const u = await getUser(env, m.userId);
+    if (!u) throw new Error("no user");
+    const page = await publish(
+      env as unknown as Env,
+      u,
+      { title: "Welcome", format: "html", content: "<p>hi</p>" },
+      null,
+      undefined,
+      "create",
+      { noCreator: true },
+    );
+    await env.DB.prepare("update settings set value = ?2 where key = ?1")
+      .bind(
+        `onboarding:welcome:${m.userId}`,
+        JSON.stringify({ userId: m.userId, artifactId: page.id }),
+      )
+      .run();
+    const got = (await (await read).json()) as { welcomeId: string | null };
+    expect(got.welcomeId).toBe(page.id);
+  });
+});
+
+describe("a capped caller's read publishes nothing (#2632)", () => {
+  it("a restricted member's first GET seeds no Welcome", async () => {
+    const m = await login(`cap-${tag()}@example.com`, "member");
+    await signins(m.userId, 1);
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?1")
+      .bind(m.userId)
+      .run();
+    const r = await api(app, R.onboarding, m.cookie);
+    expect(r.status).toBe(200);
+    expect(
+      ((await r.json()) as { welcomeId: string | null }).welcomeId,
+    ).toBeNull();
+    expect(await seededRows(m.userId)).toBe(0);
+  });
+});
+
+describe("GET R.members setup, chat-only members (#2890)", () => {
+  const addMachine = (userId: string) =>
+    env.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(newId(), userId, newId(), Date.now(), Date.now())
+      .run();
+
+  it("a member who never connected the bus counts of 3 and is never stalled on named or mention; the bus brings five back", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await set(askAnsweredKey(m.userId));
+    let s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(3);
+    expect(s?.stalled).not.toBe("named");
+    expect(s?.stalled).not.toBe("mention");
+    await addMachine(m.userId);
+    s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(5);
+  });
+
+  const setupOf = async (ownerCookie: string, id: string) =>
+    (await list(ownerCookie)).find((r) => r.id === id)?.setup;
+  const connectAgent = async (userId: string) => {
+    const { id } = await createPat(env, userId, "agent");
+    await env.DB.prepare("update tokens set last_used_at = ?2 where id = ?1")
+      .bind(id, Date.now())
+      .run();
+  };
+
+  it("connect an agent with no bus: stalled on artifact, never named or mention", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await connectAgent(m.userId);
+    expect(await setupOf(o.cookie, m.userId)).toEqual({
+      state: "partial",
+      done: 1,
+      total: 3,
+      stalled: "artifact",
+    });
+  });
+
+  it("a recorded name or reply proves the bus without a machine row: five steps", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    for (const [key, stalled] of [
+      [namedKey, "artifact"],
+      [mentionRepliedKey, "named"],
+    ] as const) {
+      const m = await login(`mem-${tag()}@example.com`, "member");
+      await seen(m.userId);
+      await connectAgent(m.userId);
+      await set(key(m.userId));
+      const s = await setupOf(o.cookie, m.userId);
+      expect(s?.total).toBe(5);
+      expect(s?.stalled).toBe(stalled);
+    }
+  });
+
+  it("a chat-only member at 3 of 3 reads Set up, with nothing saved as completed", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await connectAgent(m.userId);
+    await publish(
+      env as unknown as Env,
+      (await getUser(env, m.userId)) as NonNullable<
+        Awaited<ReturnType<typeof getUser>>
+      >,
+      { title: "mine", format: "html", content: "<p>x</p>" },
+      null,
+    );
+    await set(askAnsweredKey(m.userId));
+    expect(await setupOf(o.cookie, m.userId)).toEqual({
+      state: "set",
+      done: 3,
+      total: 3,
+    });
+    expect(
+      await one(
+        "select value from settings where key = ?1",
+        `onboarding:completed:${m.userId}`,
+      ),
+    ).toBeNull();
   });
 });

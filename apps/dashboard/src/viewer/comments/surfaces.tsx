@@ -78,7 +78,7 @@ export function SelectionBar() {
         // home indicator (Design's final: plain bar, no quote line).
         <div
           data-oa-keep-selection=""
-          className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!"
+          className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card pr-[max(0.75rem,env(safe-area-inset-right))] pl-[max(0.75rem,env(safe-area-inset-left))] pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!"
         >
           <button
             type="button"
@@ -162,7 +162,7 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={height}
         data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-clip rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-clip rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:right-[env(safe-area-inset-right)] max-[600px]:left-[env(safe-area-inset-left)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-[max(1rem,env(safe-area-inset-right))] min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;

@@ -11,6 +11,7 @@ import {
   BusHub,
   OFFLINE_REAP_MS,
   PROOF_AWAY_GRACE_MS,
+  PROOFS_PER_SESSION,
 } from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
@@ -37,6 +38,12 @@ const setClock = async (userId: string, ms: number | null) =>
 async function lookup(userId: string, hash: string) {
   return runInDurableObject(await hubOf(userId), (i: BusHub) =>
     i.agentByProof(hash),
+  );
+}
+
+async function missReason(userId: string, hash: string) {
+  return runInDurableObject(await hubOf(userId), (i: BusHub) =>
+    i.proofMissReason(hash),
   );
 }
 
@@ -200,18 +207,35 @@ describe("link_bind (#1822)", () => {
     expect(fresh?.name).toBe(first?.name);
   });
 
-  it("a fifth bind evicts the oldest proof (#1984)", async () => {
+  it("past PROOFS_PER_SESSION a bind evicts the least recently used proof (#1984)", async () => {
     const s = await scene();
     await reg(s.d, "r1", "Lead", s.ns);
-    for (const c of ["1", "2", "3", "4", "5"]) await bind(s.d, "r1", hashOf(c));
-    expect(await lookup(s.m.userId, hashOf("1"))).toBeNull();
-    for (const c of ["2", "3", "4", "5"])
-      expect(await lookup(s.m.userId, hashOf(c))).not.toBeNull();
-    // Re-binding a held proof refreshes it, so it outlives a newer one.
-    await bind(s.d, "r1", hashOf("2"));
-    await bind(s.d, "r1", hashOf("6"));
-    expect(await lookup(s.m.userId, hashOf("3"))).toBeNull();
-    expect(await lookup(s.m.userId, hashOf("2"))).not.toBeNull();
+    const hs = Array.from({ length: PROOFS_PER_SESSION + 1 }, (_, i) =>
+      i.toString(16).padStart(2, "0").repeat(32),
+    );
+    for (const h of hs) await bind(s.d, "r1", h);
+    expect(await lookup(s.m.userId, hs[0] as string)).toBeNull();
+    for (const h of hs.slice(1))
+      expect(await lookup(s.m.userId, h)).not.toBeNull();
+  });
+
+  it("the proof in use survives newer binds and a replay (laptop not-linked)", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    const inUse = hashOf("a");
+    await bind(s.d, "r1", inUse);
+    const others = Array.from({ length: PROOFS_PER_SESSION }, (_, i) =>
+      (i + 16).toString(16).padStart(2, "0").repeat(32),
+    );
+    // The session keeps sending its first proof while the helper runs again.
+    for (const h of others) {
+      await bind(s.d, "r1", h);
+      expect(await lookup(s.m.userId, inUse)).not.toBeNull();
+    }
+    // A daemon replay re-binds hashes it holds: their places do not move.
+    for (const h of others.slice(-4)) await bind(s.d, "r1", h);
+    expect(await lookup(s.m.userId, inUse)).not.toBeNull();
+    expect(await lookup(s.m.userId, others[0] as string)).toBeNull();
   });
 
   it("another session's proof never matches this session (#1984)", async () => {
@@ -634,6 +658,9 @@ describe("the away grace (#2110)", () => {
     expect(await lookup(s.m.userId, hashOf("e"))).toEqual(live);
     await setClock(s.m.userId, t0 + PROOF_AWAY_GRACE_MS);
     expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    // The log says why: its session went away past the grace.
+    expect(await missReason(s.m.userId, hashOf("e"))).toBe("closed");
+    expect(await missReason(s.m.userId, hashOf("9"))).toBe("unbound");
     await setClock(s.m.userId, null);
   });
 

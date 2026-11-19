@@ -1,10 +1,9 @@
 import { MCP_PATH } from "@oa/shared";
 import { APP, expect, test, uniq } from "./fixtures";
 
-test("a token created in Settings works with /mcp tools/list", async ({
-  page,
-  member: _,
-}) => {
+test("a token created in Settings works with /mcp tools/list", {
+  tag: "@smoke",
+}, async ({ page, member: _ }) => {
   const label = `ci-${uniq()}`;
   await page.goto("/settings/connections");
   await page.getByRole("button", { name: "Create token" }).click();

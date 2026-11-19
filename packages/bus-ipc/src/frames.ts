@@ -8,6 +8,7 @@ import {
   LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
+  NoticeMetaSchema,
   REACH_PROPOSAL_MAX,
   ReceiptReasonSchema,
   RefusalReasonSchema,
@@ -298,6 +299,15 @@ export const LinkProofRequest = z.object({
   type: z.literal("link_proof"),
   pid: z.number().int().positive(),
   hash: LinkProofHashSchema,
+  /**
+   * #2793 S4: the instance this proof is for (a local name). Absent means
+   * main, so an older helper's frame is unchanged. The daemon binds it only on
+   * that instance's hub, and only for a session homed there.
+   */
+  instance: z
+    .string()
+    .regex(/^[a-z0-9-]{1,32}$/)
+    .optional(),
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 
@@ -375,6 +385,8 @@ export const AgentInfo = z.object({
   status_at: IsoTimeSchema.optional(),
   /** `self` with `row` only: config files refused or noted. Older adapters ignore it. */
   config_files: z.array(ConfigFile).optional(),
+  /** `self` only (#2759): when the owner's quiet hours end, ISO UTC, while they last. */
+  owner_away_until: z.string().max(40).optional(),
 });
 
 export const Welcome = z.object({
@@ -475,6 +487,8 @@ export const Deliver = z
     namespace: z.string(),
     body: z.string().optional(),
     notice: z.object({ size: z.number(), msg_id: z.string() }).optional(),
+    /** #2768: a server notice's structured fields, as data beside the body. */
+    meta: z.object(NoticeMetaSchema.shape).optional(),
   })
   .refine((d) => (d.body === undefined) !== (d.notice === undefined), {
     message: "deliver needs exactly one of body or notice",
@@ -510,6 +524,8 @@ export const StatusReply = z.object({
   hub_since: z.number().optional(),
   /** The hub's `server_version` from its last `hello_ok`. Absent before one, and from older daemons. */
   hub_version: z.string().optional(),
+  /** The owner's quiet hours end (ISO UTC), only while they last (#2759). Older daemons omit it. */
+  owner_away_until: z.string().max(40).optional(),
   /** This daemon takes `link_proof` (#1822). Older daemons omit it. */
   link: z.boolean().optional(),
   /** The namespace `cwd` resolves to, when the request named one. */
@@ -536,6 +552,52 @@ export const StatusReply = z.object({
   ),
   /** Config files refused or noted (#1527). Absent from older daemons, and when there are none. */
   config_files: z.array(ConfigFile).optional(),
+  /**
+   * #2793: one row per instance link, only while the daemon runs more than
+   * one. `agents` counts the live sessions registered on that hub.
+   */
+  instances: z
+    .array(
+      z.object({
+        name: z.string().max(64),
+        link: z.enum(["connected", "not_connected"]),
+        revoked: z.boolean(),
+        agents: z.number().int().min(0),
+        /** #2793 S3b: guest sessions on this instance (their names there); absent from an older daemon. */
+        guests: z
+          .array(z.object({ name: z.string().max(256) }))
+          .max(64)
+          .optional(),
+      }),
+    )
+    .max(64)
+    .optional(),
+  /**
+   * #2688: each live Claude session and whether its `mcp-proof` helper linked it.
+   * Names, folders and cause codes only; never a proof, a hash or a header.
+   * Absent from older daemons.
+   */
+  claude_sessions: z
+    .array(
+      z.object({
+        name: z.string(),
+        cwd: z.string(),
+        /** `linked`, `unlinked`, or `starting` (seen only moments ago, so its helper may not have run yet). Strings, so a newer daemon's new value still parses. */
+        state: z.string(),
+        /** Why an `unlinked` session is: the helper never called, or its proof expired or was refused. */
+        cause: z.string().optional(),
+      }),
+    )
+    .optional(),
+  /** #2688: the daemon's recent `mcp-proof` calls that could not bind a session, newest last (a few). */
+  unbound_proofs: z
+    .array(
+      z.object({
+        at: z.number(),
+        cause: z.string(),
+      }),
+    )
+    .optional(),
   /** Messages sent from this machine the hub delivered after the 5 s window, within the last hour. */
   late: z
     .array(

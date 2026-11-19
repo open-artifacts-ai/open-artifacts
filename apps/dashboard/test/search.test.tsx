@@ -64,6 +64,18 @@ describe("Search", () => {
     expect(await screen.findByText(/No results for/)).toBeInTheDocument();
   });
 
+  it("counts one result in the singular", async () => {
+    mount("/search?q=notes");
+    expect(await screen.findByText("1 result for “notes”")).toBeInTheDocument();
+  });
+
+  it("counts several results in the plural", async () => {
+    mount("/search?q=e");
+    expect(
+      await screen.findByText(/^\d+\+? results for “e”$/),
+    ).toBeInTheDocument();
+  });
+
   it("whitespace-only ?q= shows the prompt and makes no request", async () => {
     mount("/search?q=%20%20");
     expect(

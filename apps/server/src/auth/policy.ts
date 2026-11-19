@@ -86,6 +86,8 @@ export type OrgAction =
   | "directory.disconnect"
   /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
   | "broker.check"
+  /** Name (or clear) the version the instance's bus machines run (R.busRunVersion, #2552): the org owner, in a cookie session. */
+  | "bus.run_version"
   /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
   | "signin.problems"
   /** See and dismiss the install-wide guest summary (Me.notices.guestSummary): the org owner. */
@@ -94,6 +96,8 @@ export type OrgAction =
   | "notices.own"
   /** Read and change one's own first-run checklist state (R.onboarding, #2632): any non-guest member. */
   | "onboarding.own"
+  /** Read the team list for the person picker (R.meTeammates, #2577): owners, admins and members, uncapped. */
+  | "teammates.read"
   /** Change the login domains and joining rule (R.loginSettings PUT, #2520): the uncapped org owner. */
   | "login.manage"
   /** Turn outside sharing on or off (Settings.outsideSharing, #2590): the uncapped org owner. */
@@ -549,11 +553,15 @@ export function orgCan(
     // session), but write it only uncapped. A guest never has one.
     case "onboarding.own":
       return TEAM_ROLES.includes(m.role) && (opts.read === true || !capped);
+    case "teammates.read":
+      return TEAM_ROLES.includes(m.role) && !capped;
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":
     // The broker check: owner only (it spends broker rate limit).
     case "broker.check":
+    // The version the instance tells its machines to run (#2552).
+    case "bus.run_version":
     // Sign-in config problems: the owner, who can fix them (review item 35).
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).

@@ -36,6 +36,7 @@ export class PiTransport {
       from_name: mail.from_name,
       namespace: mail.namespace,
       ...(mail.notice ? { notice: mail.notice } : { body: mail.body }),
+      ...(mail.meta ? { meta: mail.meta } : {}),
     });
     if (!pushed) return { ok: false, reason: "closed" };
     this.#forget(mail.msg_id);

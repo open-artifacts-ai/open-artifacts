@@ -32,6 +32,7 @@ import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import type { HostedMockOptions } from "../src/hostedParam";
 import { loginAbsentHandlers } from "../src/mockLogin";
+import { mentionPeopleAbsentHandlers } from "../src/mockMentionPeople";
 import { createAppRouter } from "../src/router";
 
 const ORIGIN = "http://localhost";
@@ -119,6 +120,8 @@ export const installHarness = () => {
       ...events.handlers,
       // #2520's PROVISIONAL routes: absent unless a test serves them.
       ...loginAbsentHandlers(),
+      // No people to mention unless a test serves them.
+      ...mentionPeopleAbsentHandlers(),
     );
     vi.stubGlobal(
       "IntersectionObserver",

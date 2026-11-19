@@ -458,7 +458,7 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
   it("says so when the hub is newer, as the transcript shows", async () => {
     const out = await run("0.47.0");
     const at = out.indexOf(draft[0] as string);
-    expect(out.slice(at, at + 3)).toEqual(draft);
+    expect(out.slice(at, at + draft.length)).toEqual(draft);
     expect(await run("1.0.0", "0.46.3-rc.1")).toContain(
       "[[warning]]![[/warning]]  Update available: 1.0.0 (this machine runs 0.46.3-rc.1)",
     );

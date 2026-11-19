@@ -20,12 +20,14 @@ export const NOTICE_SENDER = "open-artifacts";
 /** `comment` (#1535): an ask or mention on a comment. */
 /** `commented` (#682): a comment was added to an artifact the agent follows. */
 /** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
+/** `ask_later` (#2762): the person put the agent's ask off; when they will look at it. */
 export type NoticeKind =
   | "shared"
   | "changed"
   | "comment"
   | "commented"
-  | "ask_answered";
+  | "ask_answered"
+  | "ask_later";
 
 /**
  * One notice for one address in one member's bus: the shape the server
@@ -59,6 +61,13 @@ export type BusNotice = {
   /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
   threadId?: string;
   commentId?: string;
+  /**
+   * `ask_later` notices (#2762): who put the ask off (their user id, which
+   * the agent can resolve) and when they will look (ISO 8601 UTC), as data,
+   * never as words. #2768: both reach the daemon in the deliver frame's `meta`.
+   */
+  userId?: string;
+  until?: string;
   /**
    * `comment` notices (#1752): the comment target (with `artifactId` and
    * `commentId`) whose delivery state the hub updates when the daemon acks
@@ -148,6 +157,18 @@ export const BusLinksSchema = z.strictObject({
   live: z.boolean(),
 });
 export type BusLinks = z.infer<typeof BusLinksSchema>;
+
+/** PUT R.busRunVersion: the version machines are told to run, or null for none. */
+export const BusRunVersionPutSchema = z.strictObject({
+  version: z
+    .string()
+    .max(32)
+    .regex(/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/)
+    .nullable(),
+  /** Needed to name a version lower than the one already named (a return to an older one). */
+  stepBack: z.boolean().optional(),
+});
+export type BusRunVersionPut = z.infer<typeof BusRunVersionPutSchema>;
 
 /** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
 export const BusLinkPutSchema = z.strictObject({

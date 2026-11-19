@@ -28,6 +28,12 @@ const noTokens = http.get("*/api/v1/tokens", () => HttpResponse.json([]));
 const noAgents = http.get("*/api/v1/oauth-clients", () =>
   HttpResponse.json([]),
 );
+const noListens = http.get("*/api/v1/me/agent-listens", () =>
+  HttpResponse.json({ entries: [] }),
+);
+const noHeld = http.get("*/api/v1/me/agent-asks/held", () =>
+  HttpResponse.json({ requests: [] }),
+);
 const tab = (name: string) =>
   within(
     screen.getByRole("navigation", { name: "Settings sections" }),
@@ -73,12 +79,42 @@ describe("capped caller on Settings › Connections", () => {
     ["a restricted member, from Members", capped(), "/settings/members"],
     ["a capped owner", capped("owner", "guest"), "/settings/connections"],
   ])("both empty: no tab, and Profile (%s)", async (_who, me, from) => {
-    const router = mountHosted(from, true, me, [noTokens, noAgents]);
+    const router = mountHosted(from, true, me, [
+      noTokens,
+      noAgents,
+      noListens,
+      noHeld,
+    ]);
     await waitFor(() =>
       expect(router.state.location.pathname).toBe("/settings/profile"),
     );
     await waitFor(() => expect(tab("Connections")).toBeNull());
     expect(tab("Profile")).not.toBeNull();
+  });
+
+  it("both empty but people are listened to: the tab stays (#2577)", async () => {
+    mountHosted("/settings/connections", true, capped(), [
+      noTokens,
+      noAgents,
+      http.get("*/api/v1/me/agent-listens", () =>
+        HttpResponse.json({
+          entries: [
+            {
+              id: "l1",
+              member: { id: "u1", name: "Maya Chen" },
+              scope: "all",
+              artifact: null,
+              space: null,
+              until: Date.now() + 86_400_000,
+              createdAt: Date.now(),
+            },
+          ],
+        }),
+      ),
+      noHeld,
+    ]);
+    expect(await screen.findByText("Maya Chen")).toBeTruthy();
+    expect(tab("Connections")).not.toBeNull();
   });
 
   it("a card that failed to load stays, so its error shows", async () => {
@@ -99,6 +135,8 @@ describe("capped caller on Settings › Connections", () => {
     const list = [...fixtures.tokens];
     const router = mountHosted("/settings/connections", true, capped(), [
       noAgents,
+      noListens,
+      noHeld,
       http.get("*/api/v1/tokens", () => HttpResponse.json(list)),
       http.delete("*/api/v1/tokens/:id", () => {
         list.pop();

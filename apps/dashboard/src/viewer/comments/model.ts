@@ -43,6 +43,8 @@ export function frameThreads(
   versionHash?: string | null,
   /** #2019: what a pin's bubble shows; image and pdf pins only. */
   badgeOf?: (t: CommentThread) => PinBadge | undefined,
+  /** #2426: true for an unanswered ask addressed to the viewer (the frame marks it amber). */
+  askOf?: (t: CommentThread) => boolean,
 ): Extract<ShellToArtifact, { type: "comments.set" }>["threads"] {
   const n = numbering(threads);
   const pins = pinNumbering(threads);
@@ -56,6 +58,7 @@ export function frameThreads(
       n: (t.anchor.kind === "pin" ? pins : n).get(t.id),
       ...(t.id === active ? { active: true } : {}),
       ...(t.status === "resolved" ? { resolved: true } : {}),
+      ...(askOf?.(t) ? { ask: true } : {}),
       // #1657: the page moved under this pin: the frame marks the pin itself,
       // as the card says it in words.
       ...(t.anchor.kind === "pin" &&

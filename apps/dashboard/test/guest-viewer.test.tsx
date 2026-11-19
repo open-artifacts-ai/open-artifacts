@@ -122,7 +122,7 @@ describe("a member keeps them", () => {
       within(c).getByRole("textbox", { name: "Comment on the whole page" }),
     ).toHaveAttribute(
       "placeholder",
-      "Add a comment. Type @ to mention an agent.",
+      "Add a comment. Type @ to mention an agent or a person.",
     );
     expect(
       within(c).getByRole("tab", { name: /Decisions/ }),

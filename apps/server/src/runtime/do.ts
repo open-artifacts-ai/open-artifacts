@@ -48,6 +48,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  addHeld,
   addParticipants,
   addPick,
   askAuthors,
@@ -58,8 +59,12 @@ import {
   claimEmail,
   clearDecider,
   deleteExtras,
+  finishHeld,
   getComment,
   getThread,
+  type HeldAgent,
+  heldCanon,
+  heldOf,
   heldTargets,
   insertComment,
   insertExtras,
@@ -77,6 +82,8 @@ import {
   refundEmail,
   refundThreadReply,
   refundThreadReplyCount,
+  releaseHeld,
+  releaseHeldTargets,
   replyCount,
   rootId,
   type StoredActor,
@@ -2149,7 +2156,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
-  private checkBody(body: string): void {
+  private checkBody(body: string, allowEmpty = false): void {
+    // #2508: a comment with pictures may have no text.
+    if (allowEmpty && typeof body === "string" && body.trim() === "") return;
     if (!bodyOk(body))
       fail(
         "invalid_body",
@@ -2189,12 +2198,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredThread {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
@@ -2212,11 +2223,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     actor: StoredActor;
     rate: string;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredComment {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");
@@ -2268,8 +2281,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
-    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
-    needsPasskey?: boolean;
     /** #2381: the caller may edit the page (a decider must still). */
     canDecide: boolean;
     /** #2381: the caller is a guest-role member (marked on a weigh-in). */
@@ -2299,8 +2310,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
-      const risky =
-        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      const risky = r.ask.options.some((o) => o.action);
       if (risky && !isDecider)
         fail(
           "forbidden",
@@ -2311,13 +2321,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "not_decider",
           "You can no longer decide this: you cannot edit the page",
         );
-      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
-      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
-        if (a.verified !== "passkey")
-          fail("passkey_required", "This pick needs your passkey");
-        if (r.ask.answer?.optionId === a.optionId)
-          fail("already_answered", "This ask is answered with that option");
-      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const mine = [...(r.ask.history ?? [])]
         .reverse()
@@ -2333,11 +2336,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
             r.ask.answer.by.typed === true) === typedNow &&
           (r.ask.answer.verified ?? null) === (a.verified ?? null)
         : mine?.optionId === a.optionId;
+      // #2886: on an action ask an untyped pick (a token, an agent) by the
+      // decider is data in `picks`; it never replaces a typed decision.
+      const keepTyped =
+        isDecider &&
+        risky &&
+        !typedNow &&
+        r.ask.answer?.by.kind === "user" &&
+        r.ask.answer.by.typed === true;
       const now = this.iso();
-      // The cap is for weigh-ins: a decision is never refused by it.
+      // The cap is for weigh-ins and for untyped picks kept beside a typed decision: a decision is never refused by it.
       if (
         !unchanged &&
-        !isDecider &&
+        (!isDecider || keepTyped) &&
         a.by.kind === "user" &&
         pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
       )
@@ -2355,9 +2366,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
           at: now,
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
           ...(a.guest ? { guest: true } : {}),
-          ...(isDecider ? { decision: true as const } : {}),
+          ...(isDecider && !keepTyped ? { decision: true as const } : {}),
         });
-        if (isDecider)
+        if (isDecider && !keepTyped)
           setAnswer(this.sql, a.commentId, {
             optionId: a.optionId,
             by: a.by,
@@ -2371,7 +2382,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
         unchanged,
-        decided: isDecider,
+        decided: isDecider && !keepTyped,
       };
     });
     this.broadcastComments();
@@ -2549,9 +2560,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     at: string;
     exclude: string[];
     skipPage?: boolean;
+    /** #2733: hold every other person's participant for this comment in the same step (fail closed). */
+    hold?: { commentId: string; author: string };
   }): StoredParticipant[] {
     this.ensureSchema();
-    return this.ctx.storage.transactionSync(() =>
+    const out = this.ctx.storage.transactionSync(() =>
       takeThreadReply(
         this.sql,
         a.threadId,
@@ -2559,8 +2572,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.at,
         THREAD_REPLY_NOTICES_MAX,
         a.skipPage === true,
+        a.hold,
       ),
     );
+    if (a.hold && out.some((p) => p.owner !== a.hold?.author))
+      this.broadcastComments();
+    return out;
+  }
+
+  /** #2733: lets go of the holds a reply took up front, for the agents the service may deliver to. */
+  commentsUnhold(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      releaseHeldTargets(this.sql, a.commentId, a.keys),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: the participant agents of `threadIds`, removed ones included (the service decides what shows). */
@@ -2612,6 +2638,70 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.ensureSchema();
     this.ctx.storage.transactionSync(() =>
       withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
+  }
+
+  /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */
+  commentsHeldCanon(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+  }): {
+    canon: string;
+    held: ReturnType<typeof heldOf>;
+  } | null {
+    this.ensureSchema();
+    const canon = heldCanon(this.sql, a.threadId, a.commentId);
+    if (canon === null) return null;
+    return { canon, held: heldOf(this.sql, a.commentId, a.owner) };
+  }
+
+  /**
+   * #2577: an allow. The held targets of `owner` on the comment move to
+   * "releasing" only if the words are still exactly `expect` (one transaction:
+   * an edit in the gap is never delivered). Returns what to send, including
+   * targets a crashed earlier allow left "releasing" (resumable).
+   */
+  commentsRelease(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+    expect: string;
+  }): {
+    ok: boolean;
+    keys: ReturnType<typeof heldOf>;
+    comment: StoredComment | null;
+  } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      const ok = releaseHeld(
+        this.sql,
+        a.threadId,
+        a.commentId,
+        a.owner,
+        a.expect,
+      );
+      const keys = ok
+        ? heldOf(this.sql, a.commentId, a.owner).filter(
+            (h) => h.state === "releasing",
+          )
+        : [];
+      return {
+        ok,
+        keys,
+        comment: ok ? getComment(this.sql, a.threadId, a.commentId) : null,
+      };
+    });
+    if (out.ok) this.broadcastComments();
+    return out;
+  }
+
+  /** #2577: the notices went out; the held rows of these keys are gone. */
+  commentsFinishHeld(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      finishHeld(this.sql, a.commentId, a.keys),
     );
     this.broadcastComments();
   }
@@ -2720,10 +2810,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "already_answered",
           "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
         );
-      if (
-        ask &&
-        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
-      )
+      if (ask?.ask.options.some((o) => o.action))
         fail(
           "conflict",
           "A card that approves an action can't be edited. Withdraw it and post a new card.",
@@ -2737,6 +2824,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
           a.commentId,
         );
       }
+      // #2577: an edit after an allow is new words, not what was allowed: the
+      // request goes back to held (masked, and delivered only on a new allow).
+      const before = this.sql
+        .exec<{ body: string }>(
+          "select body from comments where id = ?",
+          a.commentId,
+        )
+        .toArray()[0]?.body;
+      if (before !== a.body.trim())
+        this.sql.exec(
+          "update comment_targets set state = 'held' where comment_id = ? and kind = 'held' and state = 'allowed'",
+          a.commentId,
+        );
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),
@@ -2864,6 +2964,10 @@ type RpcMethods =
   | "commentsAskAuthors"
   | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
+  | "commentsUnhold"
+  | "commentsHeldCanon"
+  | "commentsRelease"
+  | "commentsFinishHeld"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

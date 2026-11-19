@@ -91,6 +91,21 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
   },
+  // #2632 "Don't remind me" in the setup reminder: same shape, one flag.
+  "GET /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out (RFC 8058 one-click); signed token",
+  },
+  // #2590 "Don't email me again" in outside share emails: a signed token (one
+  // address, one purpose) is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/shares": {
+    public: "share email opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/shares": {
+    public: "share email opt-out (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
@@ -103,7 +118,24 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me": { user: "the caller" },
   // #2512: the caller's own For you inbox (their open asks).
   "GET /api/v1/me/inbox": { user: "the caller" },
+  "POST /api/v1/me/inbox/read": { user: "the caller" },
+  "POST /api/v1/me/inbox/read-all": { user: "the caller" },
+  // #2762: put one of the caller's own Needs-you items off (browser sessions only, handler).
+  "POST /api/v1/me/inbox/:id/later": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
+  // #2512 S4: the caller's own notification choices; PUT browser sessions only (handler).
+  "GET /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S4: the caller's own mutes (push only); changes take a browser session (handler).
+  "GET /api/v1/me/inbox/mutes": { user: "the caller" },
+  "POST /api/v1/me/inbox/mutes": { user: "the caller" },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": { user: "the caller" },
+  "PUT /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S5: the caller's own browsers; 404 push_unavailable with no VAPID key; changes need a browser session (handler).
+  "GET /api/v1/me/push/key": { user: "the caller" },
+  "GET /api/v1/me/push/subscriptions": { user: "the caller" },
+  "POST /api/v1/me/push/subscriptions": { user: "the caller" },
+  "PATCH /api/v1/me/push/subscriptions/:id": { user: "the caller" },
+  "DELETE /api/v1/me/push/subscriptions/:id": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
   "PUT /api/v1/bus/share-notices": { org: "mcp.connect" },
@@ -201,6 +233,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The first-run checklist's install-wide state: the uncapped org owner.
   "GET /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/onboarding": { org: "onboarding.own" },
+  // #2577: the team picker and the "listens to" asked flag: members, uncapped; the flag also a browser session.
+  "GET /api/v1/me/teammates": { org: "teammates.read" },
+  "POST /api/v1/me/onboarding/listens-asked": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -239,6 +274,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/shares`]: art("share", signedIn),
   [`PUT ${ARTS}/shares`]: art("share", signedIn),
   [`DELETE ${ARTS}/shares/:email`]: art("unshare", signedIn),
+  // #2508 comment pictures: reserve like writing a comment (the handler adds
+  // signed-in and never a guest); the PUT is signed; the GET reads like the
+  // page's comments, on every request.
+  [`POST ${ARTS}/pictures`]: art("comments.write"),
+  [`PUT ${ARTS}/pictures/:pictureId`]: {
+    signed: "picture reservation signature",
+  },
+  [`GET ${ARTS}/pictures/:pictureId`]: art("comments.read"),
   "POST /api/v1/uploads": { user: "authorizes the target artifact itself" },
   "PUT /api/v1/uploads/:uploadId": { signed: "upload URL signature" },
   "GET /api/v1/search": { user: "search, filtered by listFilterSql" },
@@ -302,6 +345,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     { anon401: COMMENT },
   ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
+  // #2770: the people an owner or editor may @mention; everyone else gets none (handler).
+  [`POST ${ARTS}/mention-candidates`]: art("comments.write"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only
   // the agent's person and the owner.
@@ -325,6 +370,29 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
   "POST /api/v1/passkeys/settings/challenge": {
     user: "the caller's passkey settings",
+  },
+  // #2577: the receiver's side of asking someone else's agent; the handlers refuse anything but a browser session.
+  "GET /api/v1/me/agent-asks/held": { user: "the caller's held requests" },
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    user: "the caller's held requests",
+  },
+  // #2577 S2: the switch and the "listens to" list; the handlers refuse anything but a browser session (the switch can be read by any signed-in person).
+  "GET /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "PUT /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "GET /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "POST /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "GET /api/v1/me/agent-asks/history": { user: "the caller's request history" },
+  "PATCH /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
+  },
+  "DELETE /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
   },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
@@ -384,6 +452,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
+  // #2552 the version the instance names: owner only, cookie session only (handler).
+  "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  // #2552 "Install now" for the caller's own machine: browser session only (handler).
+  "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   // #1299: the hosted canary's probe of the reserved ping hub; a read, so a

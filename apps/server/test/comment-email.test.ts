@@ -376,6 +376,9 @@ describe("the unsubscribe token", () => {
     const t = encodeURIComponent(await signUnsubToken(E, u.userId));
     const g = await hit("GET", `${COMMENT_UNSUB_PATH}?t=${t}`);
     expect(g.status).toBe(200);
+    const csp = g.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
     const gt = await g.text();
     expect(gt).toContain("Turn off comment emails");
     expect(gt).toContain("Stop comment emails from ");

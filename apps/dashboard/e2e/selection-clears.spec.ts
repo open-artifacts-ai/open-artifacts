@@ -5,10 +5,10 @@ import { mkdirSync } from "node:fs";
 import { expect, type Page, test } from "@playwright/test";
 
 const OUT = process.env.SEL_SHOTS_DIR;
-const ARTIFACTS = [
-  { kind: "html", id: "Cd5fGhJkLm6nPqRs" },
-  { kind: "markdown", id: "De6gHjKmNp7qRsTu" },
-];
+// One artifact, one size: the rest of the unsent-selection rules (shell click,
+// closing the list, reopening, a new selection, a click in the card) are in
+// test/comments.test.tsx › "clicking away from an unsent selection".
+const ARTIFACTS = [{ kind: "html", id: "Cd5fGhJkLm6nPqRs" }];
 const QUOTE = "a quote the reader selected";
 
 async function shot(page: Page, name: string) {
@@ -44,7 +44,7 @@ const clickShell = (page: Page) =>
     ),
   );
 
-for (const w of [1280, 390]) {
+for (const w of [1280]) {
   for (const { kind, id } of ARTIFACTS) {
     test.describe(`${kind} at ${w}`, () => {
       test.beforeEach(async ({ page }) => {
@@ -64,19 +64,6 @@ for (const w of [1280, 390]) {
         await shot(page, `${kind}-${w}-2-after-frame-click`);
       });
 
-      test("a click in the shell drops the empty draft", async ({ page }) => {
-        await clickShell(page);
-        await expect(card(page)).toHaveCount(0);
-        await shot(page, `${kind}-${w}-3-after-shell-click`);
-      });
-
-      test("closing the list drops the empty draft", async ({ page }) => {
-        if (w < 600) await page.keyboard.press("Escape");
-        else await page.getByRole("button", { name: /^Comments/ }).click();
-        await expect(card(page)).toHaveCount(0);
-        await shot(page, `${kind}-${w}-4-after-close`);
-      });
-
       test("a typed draft survives a click away", async ({ page }) => {
         await box(page).fill("half a thought");
         await fromFrame(page, "comment.away");
@@ -84,48 +71,6 @@ for (const w of [1280, 390]) {
         await expect(card(page)).toBeVisible();
         await expect(box(page)).toHaveValue("half a thought");
         await shot(page, `${kind}-${w}-5-typed-kept`);
-      });
-
-      test("closing and reopening the list keeps the typed text", async ({
-        page,
-      }) => {
-        await box(page).fill("words I must keep");
-        if (w < 600)
-          await page.getByRole("button", { name: "Close comments" }).click();
-        else await page.getByRole("button", { name: /^Comments/ }).click();
-        await expect(box(page)).toHaveCount(0);
-        await page.getByRole("button", { name: /^Comments/ }).click();
-        await expect(box(page)).toHaveValue("words I must keep");
-        await expect(card(page)).toBeVisible();
-        await shot(page, `${kind}-${w}-6-reopened-text-kept`);
-      });
-
-      test("a new selection with the list closed keeps the typed draft", async ({
-        page,
-      }) => {
-        await box(page).fill("words I must keep");
-        if (w < 600)
-          await page.getByRole("button", { name: "Close comments" }).click();
-        else await page.getByRole("button", { name: /^Comments/ }).click();
-        await expect(box(page)).toHaveCount(0);
-        await fromFrame(page, "comment.select", {
-          anchor: {
-            kind: "text",
-            exact: "another quote",
-            prefix: "",
-            suffix: "",
-          },
-        });
-        await expect(box(page)).toHaveValue("words I must keep");
-        await expect(card(page)).toBeVisible();
-        await expect(page.getByText("another quote")).toHaveCount(0);
-      });
-
-      test("a click inside the card keeps the draft", async ({ page }) => {
-        await box(page).click();
-        await card(page).click();
-        await expect(card(page)).toBeVisible();
-        await expect(box(page)).toBeVisible();
       });
     });
   }

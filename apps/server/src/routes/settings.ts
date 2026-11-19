@@ -23,6 +23,7 @@ import {
   markFirstInviteSeen,
   soloPlan,
 } from "../services/login.js";
+import { applyLoginChange } from "../services/login-apply.js";
 import { patchSettings, settingsView } from "../services/members.js";
 import { spacesOn } from "../services/spaces.js";
 import type { AppType } from "./index.js";
@@ -111,6 +112,15 @@ export function mountSettings(app: AppType): void {
         "apply_pending",
         "This instance can't apply a login change yet; try again later.",
       );
+    // Hosted with the platform's gate: it applies the change (a redeploy in
+    // about a minute). Fails closed: a refusal is its reason, no answer is
+    // login_unavailable, and nothing changes here either way.
+    await applyLoginChange(c.env, {
+      ownerUserId: user.id,
+      hd: (c.var.sessionHd ?? "").toLowerCase(),
+      domains: body.domains,
+      autoJoin: body.autoJoin,
+    });
     return c.json(
       await loginSettings(c.env, user.id, c.var.sessionHd, planOfMember(user)),
     );

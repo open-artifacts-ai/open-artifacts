@@ -396,6 +396,13 @@ export const ArtifactSummarySchema = z.object({
   commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
+  /** #2512: open asks on this page waiting on the caller (their own agent, blocked now): how many and the oldest wait (ISO). Absent when none. */
+  waiting: z
+    .object({
+      count: z.number().int().min(1),
+      oldestSince: z.string(),
+    })
+    .optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -552,6 +559,8 @@ export const ShareSchema = z.object({
   guest: z.boolean().optional(),
   /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
   viewOnly: z.boolean().optional(),
+  /** #2577: the user id when the address belongs to an existing team member (never an outsider or guest); null otherwise. Absent from older servers. */
+  memberId: z.string().nullable().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -608,9 +617,24 @@ export const ShareResultSchema = ShareSchema.extend({
    * Why no email went out when a limit refused it (the share is saved
    * either way, #2590): member_limit (this member's outside addresses for
    * the day), instance_limit (the instance's daily outside emails, lower in
-   * a trial), limit (the existing per-recipient, per-share or sending cap).
+   * a trial), limit (the existing per-recipient, per-share or sending cap),
+   * skipped (no email to an outside address, for any reason that isn't a cap:
+   * the recipient opted out, a failed or timed-out send, or an outage; the
+   * sharer is not told which, so an opt-out can't be told from the rest, and
+   * the page says to copy the link; the real reason is logged), sender_paused (this member's outside share emails are paused
+   * after bounces or a complaint: see pausedUntil; never which recipient).
    */
-  notEmailed: z.enum(["member_limit", "instance_limit", "limit"]).optional(),
+  notEmailed: z
+    .enum([
+      "member_limit",
+      "instance_limit",
+      "limit",
+      "skipped",
+      "sender_paused",
+    ])
+    .optional(),
+  /** With notEmailed sender_paused: when the pause ends (ISO). */
+  pausedUntil: z.string().optional(),
   /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
   limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
@@ -646,8 +670,10 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 export const MemberSetupSchema = z.object({
   /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
   state: z.enum(["set", "partial", "invited"]),
-  /** Of 5. */
+  /** Of `total`. */
   done: z.number().int().min(0).max(5),
+  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
+  total: z.number().int().min(3).max(5).optional(),
   /** The first step not done. */
   stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
   /** When the one reminder went out (ISO). */
@@ -1183,8 +1209,12 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),
+  /** #2577: the caller was asked about "listens to" (POST R.meOnboardingListensAsked). Absent on older servers: read as false. */
+  listensAsked: z.boolean().optional(),
   /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
   invitedBy: z
     .strictObject({ name: z.string().nullable() })
@@ -1192,6 +1222,18 @@ export const OnboardingSchema = z.strictObject({
     .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** GET R.meTeammates (#2577): the other team members. Never an email. */
+export const TeammatesSchema = z.strictObject({
+  members: z.array(
+    z.strictObject({
+      id: z.string(),
+      name: z.string(),
+      initials: z.string(),
+    }),
+  ),
+});
+export type Teammates = z.infer<typeof TeammatesSchema>;
 
 /** PUT R.onboarding: a flag only turns on (true), never off. */
 export const OnboardingPatchSchema = z.strictObject({

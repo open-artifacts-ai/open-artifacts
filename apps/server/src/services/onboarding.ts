@@ -24,7 +24,7 @@ import {
 } from "../onboarding/untouched.js";
 import { WELCOME_TITLE, welcomeHtml } from "../onboarding/welcome.js";
 import { publish, purgeNow } from "./artifacts.js";
-import { busView } from "./bus.js";
+import { busView, hasConnectedMachine } from "./bus.js";
 import {
   askAnsweredKey,
   MENTION_STALLED_MS,
@@ -65,8 +65,12 @@ export const setUpNoticeKey = (recipientId: string, memberId: string) =>
  */
 export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'markdown')`;
 /** A seeded Welcome (anyone's, the owner's legacy row included) is not the person's work either. */
-const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
+export const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
     where key = '${WELCOME_KEY}' or substr(key, 1, ${WELCOME_KEY.length + 1}) = '${WELCOME_KEY}:')`;
+
+/** #2577: recorded once, when the person was asked about "listens to". */
+export const listensAskedKey = (userId: string) =>
+  `onboarding:listens-asked:${userId}`;
 
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>
@@ -91,7 +95,7 @@ export async function getOnboarding(
   const [flags, own, agent, first, commented, firsts] = await env.DB.batch([
     stmt(
       env.DB,
-      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
     ).bind(
       dismissedKey(userId),
       completedKey(userId),
@@ -103,6 +107,7 @@ export async function getOnboarding(
       legacy ? COMPLETED_KEY : "",
       WELCOME_KEY,
       legacy ? WELCOME_OPENED_KEY : "",
+      listensAskedKey(userId),
     ),
     stmt(
       env.DB,
@@ -170,6 +175,10 @@ export async function getOnboarding(
   const mentionReplied = at.has(mentionRepliedKey(userId));
   const mentionedAt = at.get(mentionedKey(userId));
   const inviter = val(invitedByKey(userId));
+  // #2890: someone who only uses OA from a chat (OAuth MCP) never ticks the bus-only
+  // steps. A recorded name or reply proves the bus too (a machine may be gone since).
+  const busConnected =
+    agentNamed || mentionReplied || (await hasConnectedMachine(env, userId));
   return {
     dismissed: keys.has(dismissedKey(userId)) || keys.has(DISMISSED_KEY),
     completed,
@@ -189,7 +198,9 @@ export async function getOnboarding(
       mentionedAt !== undefined &&
       Date.now() - mentionedAt >= MENTION_STALLED_MS,
     askAnswered: at.has(askAnsweredKey(userId)),
+    busConnected,
     teamStep: keys.has(teamStepKey(userId)),
+    listensAsked: keys.has(listensAskedKey(userId)),
     invitedBy: inviter ? { name: await realName(env, inviter) } : null,
   };
 }
@@ -369,6 +380,60 @@ export async function seedWelcome(env: Env, user: Member): Promise<void> {
   }
 }
 
+const signInCount = async (env: Env, userId: string): Promise<number> =>
+  (
+    await stmt(
+      env.DB,
+      "select count(*) as n from audit_events where action = 'auth.signin' and target_id = ?1",
+    )
+      .bind(userId)
+      .first<{ n: number }>()
+  )?.n ?? 0;
+
+const WELCOME_WAIT_STEP_MS = 100;
+const WELCOME_WAIT_MAX = 30;
+
+/**
+ * #2632: the Welcome is seeded after sign-in answers, so a read that gets
+ * there first must still find it. When no claim exists for the person yet,
+ * seed here through the same claim-then-publish path (a no-op unless this is
+ * their first sign-in); when the background run holds the claim and is still
+ * publishing, wait for it (about 3 s at most). The claim is atomic, so the
+ * Welcome is never seeded twice. Never throws.
+ */
+export async function ensureWelcome(
+  env: Env,
+  user: Member,
+  capped = false,
+): Promise<void> {
+  if (isGuestRole(user.role)) return;
+  try {
+    const read = () =>
+      stmt(env.DB, "select value from settings where key = ?1")
+        .bind(welcomeKey(user.id))
+        .first<{ value: string }>();
+    let row = await read();
+    // A GET is readable under a cap, and a capped caller must not publish: it never starts a seed.
+    // And only after a real first sign-in (exactly one on record): a login with no
+    // sign-in row (a test hook, a token) is never seeded by a read.
+    if (!row && !capped && (await signInCount(env, user.id)) === 1) {
+      await seedWelcome(env, user);
+      row = await read();
+    }
+    for (let i = 0; i < WELCOME_WAIT_MAX; i++) {
+      const w = parseWelcome(row?.value);
+      // In flight: claimed for this person, the page not recorded yet.
+      if (!w || w.userId !== user.id || w.artifactId !== "") return;
+      await new Promise((r) => setTimeout(r, WELCOME_WAIT_STEP_MS));
+      row = await read();
+    }
+  } catch (e) {
+    logWarn("welcome_ensure_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+}
+
 /**
  * Turns on the flags in `patch`, for `user` only. When their `completed` is
  * written for the first time, whoever added them (else the owner) gets one
@@ -493,7 +558,7 @@ export async function memberSetups(
   const out = new Map<string, MemberSetup>();
   const people = members.filter((m) => !isGuestRole(m.role));
   if (!people.length) return out;
-  const [settings, agents, owners] = await env.DB.batch([
+  const [settings, agents, owners, buses] = await env.DB.batch([
     stmt(
       env.DB,
       `select key, value from settings where substr(key, 1, 11) = 'onboarding:'`,
@@ -508,18 +573,32 @@ export async function memberSetups(
       `select distinct owner_id as id from artifacts where deleted_at is null and not ${SELF_TEST}
        and ${NOT_A_WELCOME}`,
     ),
+    // #2890: who ever connected the bus (the same fact as hasConnectedMachine).
+    stmt(
+      env.DB,
+      "select distinct user_id as id from bus_machines where last_used_at is not null",
+    ),
   ]);
-  const keys = new Set(
-    (settings.results as { key: string }[]).map((r) => r.key),
+  const values = new Map(
+    (settings.results as { key: string; value: string }[]).map((r) => [
+      r.key,
+      r.value,
+    ]),
   );
+  const keys = new Set(values.keys());
   const connected = new Set(
     (agents.results as { id: string }[]).map((r) => r.id),
   );
   const published = new Set(
     (owners.results as { id: string }[]).map((r) => r.id),
   );
+  const onBus = new Set((buses.results as { id: string }[]).map((r) => r.id));
   for (const m of people) {
     const p = setupSteps({
+      busConnected:
+        onBus.has(m.id) ||
+        keys.has(namedKey(m.id)) ||
+        keys.has(mentionRepliedKey(m.id)),
       agentConnected: connected.has(m.id),
       agentNamed: keys.has(namedKey(m.id)),
       firstArtifact: published.has(m.id) ? true : null,
@@ -529,11 +608,15 @@ export async function memberSetups(
     const set =
       keys.has(completedKey(m.id)) ||
       (isInstanceOwner(m) && keys.has(COMPLETED_KEY)) ||
-      p.done === 5;
+      p.done === p.total;
+    // When the one reminder went (setup-reminder.ts writes the time).
+    const reminded = Number(values.get(`onboarding:reminded:${m.id}`));
     out.set(m.id, {
       state: set ? "set" : m.lastSeenAt === null ? "invited" : "partial",
       done: p.done,
+      total: p.total,
       ...(!set && p.stalled ? { stalled: p.stalled } : {}),
+      ...(reminded > 0 ? { remindedAt: new Date(reminded).toISOString() } : {}),
     });
   }
   return out;
@@ -565,4 +648,14 @@ export async function markWelcomeTouched(
       code: e instanceof Error ? e.name : "error",
     });
   }
+}
+
+/** #2577: the person was asked about "listens to". The first time is kept; a repeat changes nothing. */
+export async function markListensAsked(
+  env: Env,
+  userId: string,
+): Promise<void> {
+  await stmt(env.DB, SET)
+    .bind(listensAskedKey(userId), String(Date.now()))
+    .run();
 }

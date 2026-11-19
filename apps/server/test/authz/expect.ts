@@ -414,6 +414,8 @@ function guardExpected(
     // Cookie sessions only: the handler refuses a PAT or grant (tested in
     // directory.disconnect.test.ts; the matrix probes writes by cookie).
     case "directory.disconnect":
+    // #2552: the version machines run: the uncapped owner, cookie session only.
+    case "bus.run_version":
       return yes(t.role === "owner" && !t.capped);
     // Any /api/v1 credential (session or PAT), the uncapped owner's only.
     case "broker.check":
@@ -432,6 +434,8 @@ function guardExpected(
     // #1292 share-notice picks: who may connect agents. PUT also needs a
     // cookie session (follows.test.ts; the matrix probes writes by cookie).
     case "mcp.connect":
+    // #2577: the team picker's list, members uncapped.
+    case "teammates.read":
       return yes(t.team && !t.capped);
     case "artifact.create":
       return yes(!t.capped);

@@ -49,7 +49,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
 import { docsNeedPaid, docsUnavailable } from "../services/doc-format.js";
-import { DOC_SWITCH } from "../services/doc-switch.js";
+import { docCreationOpen } from "../services/doc-switch.js";
 import { docsAvailable } from "../services/docs-available.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
@@ -629,7 +629,7 @@ export function mountRuntime(app: AppType): void {
         'This artifact is not a doc. Use GET /api/v1/artifacts/:id/events for live versions, or create a doc with format "doc".',
       );
     if (!docsAvailable(c.env))
-      throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+      throw docCreationOpen(c.env) ? docsNeedPaid() : docsUnavailable();
     const rooms = c.env.DOC_ROOM;
     if (!rooms)
       throw new HTTPException(503, { message: "doc rooms unavailable" });
