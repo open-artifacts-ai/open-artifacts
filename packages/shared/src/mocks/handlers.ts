@@ -777,7 +777,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
   const landingId = artifacts.find((a) => a.title === "Landing page")?.id ?? "";
   const agentAsksMock = opts.agentAsks
-    ? createAgentAsksMock({ landingId, err })
+    ? createAgentAsksMock({
+        landingId,
+        err,
+        memberName: (id) => members.find((m) => m.id === id)?.name ?? undefined,
+      })
     : undefined;
   const forYouMock = createForYouMock({
     variant: opts.forYou,

@@ -22,6 +22,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
+import { useAddListens } from "../../api/agentAsks";
 import { useAuthProviders } from "../../api/auth";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
@@ -43,6 +44,7 @@ import {
   useSignInDomains,
 } from "../../auth/reach";
 import { useMe } from "../../auth/useMe";
+import { endDate, firstName } from "../../foryou/held";
 import { ConflictNote, isConflict } from "../../layout/ConflictNote";
 import { CopyLink } from "../../layout/CopyLink";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
@@ -53,6 +55,7 @@ import { toast } from "../../layout/toast";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
+import { useTeammates } from "../../settings/useTeammates";
 import {
   type NotEmailed,
   notEmailedLine,
@@ -296,6 +299,21 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     outsideAddress(email, domainList, listMembers ? known : null) === true;
   const outsideNote = typedOutside ? outsideLine(email.trim(), methods) : null;
   const pick = typedOutside ? outsiderRole : role;
+  // #2577: sharing for editing with a teammate can also let them ask the caller's agents here.
+  const addListens = useAddListens();
+  const team = useTeammates();
+  const [askTick, setAskTick] = useState(false);
+  const mate = team.full
+    ? team.people.find(
+        (p) => p.email?.toLowerCase() === email.trim().toLowerCase(),
+      )
+    : undefined;
+  const showTick =
+    people &&
+    pick === "editor" &&
+    !typedOutside &&
+    !!mate &&
+    artifact.visibility !== "public";
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -325,6 +343,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     const e = parseEmail(email);
     setInvalid(!e);
     if (!e) return;
+    // Only what is ticked on screen for this person.
+    const listen = showTick && askTick && mate ? mate : null;
     inviteOnce((done) =>
       put.mutate(
         { email: e, role: pick },
@@ -332,6 +352,24 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
+            setAskTick(false);
+            if (listen)
+              addListens.mutate(
+                {
+                  memberId: listen.id,
+                  scope: "page",
+                  artifactId: id,
+                  until: 30,
+                  via: "share_tick",
+                },
+                {
+                  onError: (x) =>
+                    toast({
+                      title: `Shared, but ${listen.name} isn't on your agents' list yet: ${errorCopy(x, "Couldn't add them.")}`,
+                      tone: "danger",
+                    }),
+                },
+              );
             // #2590: the server may store another role than the one picked
             // (an outsider's Editor becomes commenter): the row shows the
             // stored one at once, before the list refetches.
@@ -532,6 +570,25 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
             >
               Enter a valid email address.
             </p>
+          )}
+          {showTick && mate && (
+            <div
+              data-ask-tick=""
+              className="mt-[var(--oa-space-3)] flex flex-col gap-[var(--oa-space-1)]"
+            >
+              <LabelledCheckbox
+                id="oa-ask-tick"
+                describedBy="oa-ask-tick-hint"
+                label={`${mate.name} can ask my agents about this page`}
+                checked={askTick}
+                onCheckedChange={setAskTick}
+              />
+              <small id="oa-ask-tick-hint" className="oa-muted">
+                {askTick
+                  ? `Until ${endDate(Date.now() + 30 * 24 * 3600_000)}. Change or remove it in Settings, Connections.`
+                  : `Without asking me each time, for 30 days. They treat ${firstName(mate.name)}'s words as a teammate's, not mine.`}
+              </small>
+            </div>
           )}
           {outsideNote && (
             <p className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}>

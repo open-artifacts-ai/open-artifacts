@@ -8,8 +8,11 @@ import {
   AgentRequestsSwitchSchema,
   AllowBodySchema,
   type AllowResult,
+  type AskHistory,
   type HeldList,
   type HeldRequest,
+  ListenAddBodySchema,
+  type ListenAddResult,
   type ListenEntry,
   ListenShortenBodySchema,
   type ListensList,
@@ -22,6 +25,8 @@ export const MOCK_HELD_ID = "held_dev1";
 
 type Deps = {
   landingId: string;
+  /** A member's name by id, for the entries an add returns. */
+  memberName?: (id: string) => string | undefined;
   err: (code: ErrorCode, message: string) => Response;
   now?: () => number;
 };
@@ -152,6 +157,57 @@ export function createAgentAsksMock(d: Deps): {
           return d.err("not_found", "Not found");
         held = held.filter((x) => x.id !== params.id);
         return done();
+      }),
+      http.get(`*${R.agentAskHistory}`, () =>
+        HttpResponse.json({
+          rows: [
+            {
+              agent: { key: "agent:sam-bot", name: "Web" },
+              asker: person("u_maya", "Maya Chen"),
+              artifact: { id: d.landingId, title: "Launch status" },
+              at: now() - DAY,
+              outcome: "on_list",
+            },
+            {
+              agent: { key: "agent:sam-bot", name: "Web" },
+              asker: person("u_dev", "Dev Patel"),
+              artifact: { id: d.landingId, title: "Launch status" },
+              at: now() - 2 * MIN,
+              outcome: "allowed_once",
+            },
+          ],
+        } satisfies AskHistory),
+      ),
+      // The add: members only, not yourself; a page open to the link is refused.
+      http.post(`*${R.agentListens}`, async ({ request }) => {
+        const p = ListenAddBodySchema.safeParse(await request.json());
+        if (!p.success) return d.err("bad_request", "Invalid body");
+        const ids = p.data.memberIds ?? [p.data.memberId ?? ""];
+        const entries: ListenEntry[] = [];
+        for (const id of ids) {
+          const name = d.memberName?.(id);
+          if (!name) return d.err("bad_request", "Not a teammate you can add");
+          const days =
+            p.data.until <= 365 ? p.data.until * DAY : p.data.until - now();
+          const e: ListenEntry = {
+            id: `l_new${nextId++}`,
+            member: person(id, name),
+            scope: p.data.scope,
+            artifact:
+              p.data.scope === "page" && p.data.artifactId
+                ? { id: p.data.artifactId, title: "Launch status" }
+                : null,
+            space:
+              p.data.scope === "space" && p.data.spaceId
+                ? { id: p.data.spaceId, name: "Launch" }
+                : null,
+            until: now() + days,
+            createdAt: now(),
+          };
+          entries.push(e);
+        }
+        listens = [...listens, ...entries];
+        return HttpResponse.json({ entries } satisfies ListenAddResult);
       }),
       http.get(`*${R.agentRequests}`, () => HttpResponse.json({ on })),
       http.put(`*${R.agentRequests}`, async ({ request }) => {
