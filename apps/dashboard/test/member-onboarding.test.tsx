@@ -238,6 +238,84 @@ describe("a member's Library card", () => {
     expect(c.textContent).not.toContain("Also try");
   });
 
+  const LINE =
+    "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.";
+  const titles = (c: HTMLElement) =>
+    [...c.querySelectorAll("ol > li")].map((li) => li.textContent ?? "");
+
+  it("a member who never connected the bus sees three steps, '1 of 3', and Product's bus line (#2890)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ busConnected: false }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 3");
+    expect(c.textContent).not.toContain("Name your agent");
+    expect(c.textContent).not.toContain("Mention your agent");
+    const t = titles(c);
+    expect(t).toHaveLength(3);
+    expect(t[0]).toContain("Connect your agent");
+    expect(t[1]).toContain("Publish");
+    expect(t[2]).toContain("Answer");
+    // Renumbered 1, 2, 3.
+    expect(t[1]).toMatch(/^2/);
+    expect(t[2]).toMatch(/^3/);
+    expect(c.querySelector("[data-bus-line]")?.textContent).toBe(LINE);
+  });
+
+  it("with the bus connected, or no flag, five steps and no bus line", async () => {
+    for (const over of [{ busConnected: true }, {}]) {
+      cleanup();
+      mountHosted("/", true, as("member"), [onboarding(over), empty()]);
+      await waitFor(() => expect(card()).not.toBeNull());
+      const c = card() as HTMLElement;
+      expect(c.textContent).toContain("1 of 5");
+      expect(c.textContent).toContain("Name your agent");
+      expect(c.textContent).toContain("Mention your agent");
+      expect(c.querySelector("[data-bus-line]")).toBeNull();
+      expect(c.textContent).not.toContain("Want your agent to hear");
+    }
+  });
+
+  it("3 of 3 with no bus is not saved as completed (#2890): the card goes, nothing persists", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: false,
+        firstArtifact: { id: "a", title: "A" },
+        askAnswered: true,
+      }),
+      put(),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).toBeNull());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(puts.some((c) => JSON.stringify(c.body).includes("completed"))).toBe(
+      false,
+    );
+  });
+
+  it("5 of 5 with the bus connected is saved as completed", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: true,
+        firstArtifact: { id: "a", title: "A" },
+        agentNamed: true,
+        mentionReplied: true,
+        askAnswered: true,
+      }),
+      put(),
+      empty(),
+    ]);
+    await waitFor(() =>
+      expect(
+        puts.some((c) => JSON.stringify(c.body).includes("completed")),
+      ).toBe(true),
+    );
+  });
+
   it("Hide hides it (dismissed), and nothing marks it done", async () => {
     const puts = calls("PUT");
     mountHosted("/", true, as("member"), [onboarding(), put(), empty()]);

@@ -13,6 +13,9 @@ import {
   type CommentList,
   type CommentPicture,
   type CommentPictureRef,
+  type CompactAnswer,
+  type CompactCommentList,
+  type CompactMention,
   isId,
   type KeyRef,
   MENTIONS_MAX,
@@ -1152,22 +1155,142 @@ async function commentView(
 
 // -------------------------------------------------------------------- reads
 
+/** #2688: the catch-up read's filters. Times are ISO strings, compared as instants. */
+export type CommentsSince = {
+  answeredSince?: string;
+  mentionedSince?: string;
+  compact?: boolean;
+};
+
+const EXCERPT_MAX = 200;
+const after = (at: string, since: string): boolean =>
+  Date.parse(at) > Date.parse(since);
+
+/** #2688: the viewer wrote this ask (as themselves, or as this agent). A person reads every ask of their own. */
+const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (c.author.kind !== "user") return false;
+  if (viewer.userId === null || c.author.ref !== viewer.userId) return false;
+  const mine = c.author.agent;
+  const a = viewer.agent;
+  // An ask posted while the agent was unlinked has no identity: the same name
+  // on the same connection, whether the caller is linked now or not. Its
+  // `answer.yes` is then not true for the linked caller (the safe side: yes
+  // needs the identity match, so a pick on it is data, never the person's yes).
+  if (a && mine && !mine.identity)
+    return mine.name === a.name && mine.via === (a.via ? viaKey(a.via) : null);
+  return askedByViewer(c, viewer);
+};
+
+/** #2688: this comment @mentions the viewer: their agent (same identity; the same name when either has none), or them. */
+const mentionsCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+  if (viewer.userId === null) return false;
+  const a = viewer.agent;
+  if (!a) return c.people?.includes(viewer.userId) === true;
+  return (c.mentions ?? []).some((m) => {
+    if (m.owner !== viewer.userId) return false;
+    if (m.identity && a.identity)
+      return m.identity.identityId === a.identity.identityId;
+    // A mention stored before its agent was linked has no identity: same owner and name.
+    return m.name === a.name;
+  });
+};
+
+const answeredHit = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  since: string,
+): boolean =>
+  c.ask?.answer !== undefined &&
+  after(c.ask.answer.at, since) &&
+  askedByCaller(c, viewer);
+
+const mentionHit = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  since: string,
+): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
+
 /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
 export async function listComments(
   env: Env,
   artifactId: string,
   status: CommentStatus | "all",
   viewer: CommentViewer,
-): Promise<CommentList> {
+): Promise<CommentList>;
+/** #2688: with `compact`, a small list of the answers and mentions since. Without it, the threads that hold one. */
+export async function listComments(
+  env: Env,
+  artifactId: string,
+  status: CommentStatus | "all",
+  viewer: CommentViewer,
+  since: CommentsSince,
+): Promise<CommentList | CompactCommentList>;
+export async function listComments(
+  env: Env,
+  artifactId: string,
+  status: CommentStatus | "all",
+  viewer: CommentViewer,
+  since?: CommentsSince,
+): Promise<CommentList | CompactCommentList> {
   // A full read repairs the asks index (#1623); never fails the read. The rows
   // are read first, so the threads are never older than the rows they are
   // compared with.
   const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
   if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
+  const a = since?.answeredSince;
+  const m = since?.mentionedSince;
+  if (a === undefined && m === undefined)
+    return {
+      threads: await threadViews(env, artifactId, r.threads, viewer),
+      open: r.open,
+      truncated: r.truncated,
+    };
+  const hit = (c: StoredComment): boolean =>
+    (a !== undefined && answeredHit(c, viewer, a)) ||
+    (m !== undefined && mentionHit(c, viewer, m));
+  const threads = r.threads.filter((t) => t.comments.some(hit));
+  const views = await threadViews(env, artifactId, threads, viewer);
+  if (!since?.compact)
+    return { threads: views, open: r.open, truncated: r.truncated };
+  const answers: CompactAnswer[] = [];
+  const mentions: CompactMention[] = [];
+  // Every field comes from the view `v`, which is already masked for this
+  // viewer (maskBody, #1822; maskHeld, #2577). A comment held for the viewer's
+  // person is left out whole: it carries nothing the viewer may read yet.
+  threads.forEach((t, ti) => {
+    t.comments.forEach((c, ci) => {
+      const v = views[ti]?.comments[ci];
+      if (!v || maskedFor(c, viewer)) return;
+      const ans = v.ask?.answer;
+      if (a !== undefined && v.ask && ans && answeredHit(c, viewer, a))
+        answers.push({
+          threadId: t.id,
+          commentId: c.id,
+          question: v.ask.question,
+          optionId: ans.optionId,
+          label:
+            v.ask.options.find((o) => o.id === ans.optionId)?.label ??
+            ans.optionId,
+          at: ans.at,
+          by: ans.by.name,
+          yes: ans.yes === true,
+        });
+      if (m !== undefined && mentionHit(c, viewer, m))
+        mentions.push({
+          threadId: t.id,
+          commentId: c.id,
+          at: c.createdAt,
+          by: v.author.name,
+          excerpt: v.body.slice(0, EXCERPT_MAX),
+        });
+    });
+  });
+  const byAt = (x: { at: string }, y: { at: string }) =>
+    Date.parse(x.at) - Date.parse(y.at);
   return {
-    threads: await threadViews(env, artifactId, r.threads, viewer),
-    open: r.open,
+    ...(a !== undefined ? { answers: answers.sort(byAt) } : {}),
+    ...(m !== undefined ? { mentions: mentions.sort(byAt) } : {}),
     truncated: r.truncated,
   };
 }

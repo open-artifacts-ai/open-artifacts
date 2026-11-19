@@ -131,7 +131,13 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return mcp(cmd.harness, ctx);
     case "mcp-proof":
       // The daemon socket is found from OA_BUS_HOME, as the adapter servers do.
-      return mcpProof({ tokenFile: cmd.tokenFile }, ctx);
+      return mcpProof(
+        {
+          ...(cmd.tokenFile ? { tokenFile: cmd.tokenFile } : {}),
+          ...(cmd.instance !== undefined ? { instance: cmd.instance } : {}),
+        },
+        ctx,
+      );
     case "mcp-proxy": {
       // #1856: OpenCode's or Codex's stand-in for the instance's /mcp; stdio, no listener.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;

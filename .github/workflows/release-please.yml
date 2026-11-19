@@ -169,6 +169,7 @@ jobs:
       PROD_AUTH_PROVIDERS: ${{ vars.PROD_AUTH_PROVIDERS }}
       PROD_AUTH_DOMAINS: ${{ vars.PROD_AUTH_DOMAINS }}
       PROD_AUTH_DOMAIN_JOIN: ${{ vars.PROD_AUTH_DOMAIN_JOIN }}
+      PROD_PUSH_KEYS: ${{ vars.PROD_PUSH_KEYS }}
       PROD_GOOGLE_CLIENT_ID: ${{ vars.PROD_GOOGLE_CLIENT_ID }}
       TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
     steps:

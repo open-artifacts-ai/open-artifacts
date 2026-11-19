@@ -21,6 +21,7 @@ const NONE = {
   mentionReplied: false,
   mentionStalled: false,
   askAnswered: false,
+  busConnected: false,
   teamStep: false,
   invitedBy: null,
 };
@@ -182,6 +183,25 @@ describe("R.onboarding", () => {
       (await api(app, R.artifact(id), o.cookie, { method: "DELETE" })).status,
     ).toBeLessThan(300);
     expect((await get(o.cookie)).body?.hasArtifacts).toBe(false);
+  });
+
+  it("says whether the caller ever connected the bus (#2890)", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    expect((await get(o.cookie)).body?.busConnected).toBe(false);
+    // A machine that never connected is not a connected bus.
+    const add = (userId: string, used: number | null) =>
+      env.DB.prepare(
+        "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+      )
+        .bind(newId(), userId, newId(), Date.now(), used)
+        .run();
+    await add(o.userId, null);
+    expect((await get(o.cookie)).body?.busConnected).toBe(false);
+    await add(o.userId, Date.now());
+    expect((await get(o.cookie)).body?.busConnected).toBe(true);
+    // Per person.
+    expect((await get(m.cookie)).body?.busConnected).toBe(false);
   });
 
   it("rejects a flag turned off or unknown fields", async () => {
