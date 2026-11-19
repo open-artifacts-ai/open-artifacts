@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.235.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.234.0...v0.235.0) (2026-11-19)
+
+
+### Features
+
+* **dashboard:** the owner can pause bus updates ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2819](https://github.com/open-artifacts-ai/open-artifacts/issues/2819)) ([3870f19](https://github.com/open-artifacts-ai/open-artifacts/commit/3870f19518730d3de144729885d9b1a6844f4728))
+
 ## [0.234.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.233.0...v0.234.0) (2026-11-19)
 
 
