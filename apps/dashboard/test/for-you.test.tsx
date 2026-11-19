@@ -627,20 +627,28 @@ describe("an ask opened in the panel", () => {
     ).toBeNull();
   });
 
-  it("a pick that turns out to need a passkey asks to pick again", async () => {
-    const { card } = await openAsk("Ship the changelog?");
+  it("a pick an old server refuses with passkey_required is a plain error, with no passkey flow (#2864)", async () => {
+    const { card, ids } = await openAsk("Ship the changelog?");
+    // The shared mock no longer refuses (#2885): stand in for an old server.
+    server.use(
+      http.post(`*${R.commentAnswer(LANDING, ids.thread, ids.comment)}`, () =>
+        HttpResponse.json(
+          { error: { code: "passkey_required", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
     fireEvent.click(within(card).getByRole("button", { name: /Ship it/ }));
-    expect(
-      await within(card).findByText("This now needs your passkey. Pick again."),
-    ).toBeInTheDocument();
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "Couldn't send your answer. Reload the page and try again.",
+    );
+    expect(card).not.toHaveTextContent(/Pick again|passkey|terminal/i);
   });
 
-  it("a risky ask says it needs a passkey", async () => {
+  it("a risky ask shows no passkey line or prompt (#2864)", async () => {
     const { card } = await openAsk("Merge the release PR?");
-    expect(card).toHaveTextContent("Approving this needs your passkey.");
-    // A risky ask is its asker's own user's call: no who-line, no weigh-ins.
-    expect(card.querySelector("[data-ask-decider]")).toBeNull();
-    expect(card).not.toHaveTextContent(/decides|weighed in/);
+    expect(card).not.toHaveTextContent(/passkey/i);
+    expect(card.querySelector("[data-passkey-hint]")).toBeNull();
   });
 
   it("a closed ask shows its decision", async () => {

@@ -481,6 +481,9 @@ export function createBridge(opts: BridgeOptions) {
           mentionReplied: o.mentionReplied === true,
           mentionStalled: o.mentionStalled === true,
           askAnswered: o.askAnswered === true,
+          ...(o.busConnected === undefined
+            ? {}
+            : { busConnected: o.busConnected }),
         };
       }
       case "viewer.anonId":

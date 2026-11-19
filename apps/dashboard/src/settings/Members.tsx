@@ -381,7 +381,7 @@ function SetupCell({ m }: { m: Member }) {
         <span className="text-muted-foreground">{SETUP.invited}</span>
       ) : (
         <>
-          <span className="font-medium">{SETUP.of(s.done)}</span>
+          <span className="font-medium">{SETUP.of(s.done, s.total)}</span>
           {s.stalled && (
             <small className="text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]">
               {SETUP.stalled[s.stalled]}

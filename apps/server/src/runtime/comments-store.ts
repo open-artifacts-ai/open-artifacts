@@ -453,7 +453,6 @@ const askOf = (r: AskRow): StoredAsk => ({
       }
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
-  ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
   ...(r.withdrawn

@@ -44,7 +44,7 @@ import {
 import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
-import { noteInstanceFirst } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
@@ -726,7 +726,7 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
     const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
     if (first.meta.changes !== 1) return unauthorized();
     // #2479: a machine's first connect (no-op unless analytics is on).
-    await noteInstanceFirst(env, "agent_connected", c.executionCtx);
+    await noteMemberFirst(env, m.userId, "agent_connected", c.executionCtx);
   } else if (m.lastUsedAt <= now - LAST_USED_MS)
     c.executionCtx.waitUntil(
       stmt(env.DB, TOUCH_MACHINE)
