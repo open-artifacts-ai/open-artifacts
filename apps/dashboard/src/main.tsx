@@ -880,7 +880,7 @@ async function startMocks() {
     mainHandlers,
     params,
   );
-  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
+  // Person @mentions (mock only), in front of the picture handlers.
   extra.push(
     ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
       ...pics,

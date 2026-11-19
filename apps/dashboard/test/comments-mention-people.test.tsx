@@ -1,4 +1,4 @@
-// PROVISIONAL (#2780): person @mentions in the comment composer.
+// Person @mentions in the comment composer.
 import { type ArtifactAgent, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
@@ -22,7 +22,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { artifactMentionCandidates } from "../src/viewer/comments/people";
 import { calls, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -56,7 +55,7 @@ afterAll(() => configure({ asyncUtilTimeout: defaultAsyncTimeout }));
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
 ).id;
-const CAND = `*${artifactMentionCandidates(OWNED)}`;
+const CAND = `*${R.artifactMentionCandidates(OWNED)}`;
 
 const DANA = {
   kind: "user",
