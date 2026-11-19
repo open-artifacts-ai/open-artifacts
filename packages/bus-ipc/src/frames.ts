@@ -299,6 +299,15 @@ export const LinkProofRequest = z.object({
   type: z.literal("link_proof"),
   pid: z.number().int().positive(),
   hash: LinkProofHashSchema,
+  /**
+   * #2793 S4: the instance this proof is for (a local name). Absent means
+   * main, so an older helper's frame is unchanged. The daemon binds it only on
+   * that instance's hub, and only for a session homed there.
+   */
+  instance: z
+    .string()
+    .regex(/^[a-z0-9-]{1,32}$/)
+    .optional(),
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 
@@ -543,6 +552,21 @@ export const StatusReply = z.object({
   ),
   /** Config files refused or noted (#1527). Absent from older daemons, and when there are none. */
   config_files: z.array(ConfigFile).optional(),
+  /**
+   * #2793: one row per instance link, only while the daemon runs more than
+   * one. `agents` counts the live sessions registered on that hub.
+   */
+  instances: z
+    .array(
+      z.object({
+        name: z.string().max(64),
+        link: z.enum(["connected", "not_connected"]),
+        revoked: z.boolean(),
+        agents: z.number().int().min(0),
+      }),
+    )
+    .max(64)
+    .optional(),
   /**
    * #2688: each live Claude session and whether its `mcp-proof` helper linked it.
    * Names, folders and cause codes only; never a proof, a hash or a header.

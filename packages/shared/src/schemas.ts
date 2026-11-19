@@ -668,8 +668,10 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 export const MemberSetupSchema = z.object({
   /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
   state: z.enum(["set", "partial", "invited"]),
-  /** Of 5. */
+  /** Of `total`. */
   done: z.number().int().min(0).max(5),
+  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
+  total: z.number().int().min(3).max(5).optional(),
   /** The first step not done. */
   stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
   /** When the one reminder went out (ISO). */
@@ -1205,6 +1207,8 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),
   /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */

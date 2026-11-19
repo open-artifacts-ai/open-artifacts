@@ -20,7 +20,7 @@ export type Command = (
   | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
-  | { cmd: "mcp-proof"; tokenFile?: string }
+  | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -44,6 +44,7 @@ export type Command = (
   | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "auto-update"; sub: "off" | "on" | "status" }
   | { cmd: "update" }
+  | { cmd: "upgrade"; version?: string; allowFailed: boolean }
   | { cmd: "version" }
   | { cmd: "help" }
 ) & {
@@ -73,6 +74,7 @@ const COMMANDS = new Set([
   "leads",
   "auto-update",
   "update",
+  "upgrade",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
@@ -103,9 +105,10 @@ const FLAGS: Record<string, string[]> = {
   skill: ["instance", "check", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
-  "mcp-proof": ["token-file"],
+  "mcp-proof": ["token-file", "instance"],
   "mcp-proxy": ["instance", "token-file", "token-env", "for"],
   namespace: ["yes"],
+  upgrade: ["allow-failed"],
 };
 
 export { main } from "./main.ts";
@@ -139,6 +142,7 @@ export function parse(argv: string[]): Command {
       "show-habits": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
+      "allow-failed": { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
       "no-color": { type: "boolean", default: false },
@@ -186,6 +190,15 @@ export function parse(argv: string[]): Command {
     if (rest[1] !== undefined)
       throw new Error(`unexpected argument: ${rest[1]}`);
   }
+  if (cmd === "upgrade") {
+    if (rest[1] !== undefined)
+      throw new Error(`unexpected argument: ${rest[1]}`);
+    if (
+      rest[0] !== undefined &&
+      !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(rest[0])
+    )
+      throw new Error(`usage: ${BUS_CMD} upgrade [x.y.z]`);
+  }
   if (cmd === "link" || cmd === "unlink") {
     const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
     if (rest.length < n) throw new Error(LINK_USAGE);
@@ -197,6 +210,7 @@ export function parse(argv: string[]): Command {
     cmd === "link" ||
     cmd === "unlink" ||
     cmd === "leads" ||
+    cmd === "upgrade" ||
     cmd === "auto-update"
       ? undefined
       : rest[takes];
@@ -229,7 +243,13 @@ export function parse(argv: string[]): Command {
   }
   const parsed =
     cmd === "mcp-proof"
-      ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
+      ? {
+          cmd,
+          ...(tokenFile ? { tokenFile } : {}),
+          ...(values.instance !== undefined
+            ? { instance: values.instance }
+            : {}),
+        }
       : cmd === "mcp-proxy"
         ? {
             cmd,
@@ -258,6 +278,7 @@ type Values = {
   "show-habits": boolean;
   json: boolean;
   purge: boolean;
+  "allow-failed": boolean;
 };
 
 function route(cmd: string, values: Values, positionals: string[]) {
@@ -314,6 +335,12 @@ function route(cmd: string, values: Values, positionals: string[]) {
     }
     case "auto-update":
       return { cmd, sub: positionals[0] as "off" | "on" | "status" };
+    case "upgrade":
+      return {
+        cmd,
+        allowFailed: values["allow-failed"],
+        ...(positionals[0] ? { version: positionals[0] } : {}),
+      };
     case "link":
     case "unlink": {
       if (cmd === "link" && positionals[0] === "list")

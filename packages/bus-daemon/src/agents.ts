@@ -9,6 +9,11 @@ export type AgentRecord = {
   /** Where the namespace came from (#1570): shown by status, doctor and self. */
   namespaceSource?: "config" | "git" | "dir" | "cwd";
   global: boolean;
+  /**
+   * #2793: the instance (by local name) this agent is registered on: its
+   * folder's home. Unset: registered on no hub.
+   */
+  instance?: string;
   pid: number;
   cwd: string;
   live: boolean;
@@ -46,12 +51,24 @@ export type AgentRecord = {
 /** #1984: most proof hashes a session keeps; the hub holds the same number. */
 export const LINK_HASHES_MAX = 16;
 
-/** `list` with `hash` newest, a repeat moved to the end, at most LINK_HASHES_MAX. */
+/**
+ * `list` with `hash` newest, a repeat moved to the end, at most LINK_HASHES_MAX.
+ * #2861: the FIRST hash is never dropped. Claude keeps sending the first proof
+ * its helper minted, so the oldest is the one in use; the cap trims the middle.
+ */
 export const withLinkHash = (
   list: readonly string[] | undefined,
   hash: string,
-): string[] =>
-  [...(list ?? []).filter((h) => h !== hash), hash].slice(-LINK_HASHES_MAX);
+): string[] => {
+  const cur = list ?? [];
+  if (cur.length === 0) return [hash];
+  const [first, ...rest] = cur;
+  if (hash === first) return [...cur];
+  return [
+    first as string,
+    ...[...rest.filter((h) => h !== hash), hash].slice(-(LINK_HASHES_MAX - 1)),
+  ];
+};
 
 export class AgentTable {
   #byRef = new Map<string, AgentRecord>();

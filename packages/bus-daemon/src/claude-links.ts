@@ -16,6 +16,11 @@ const EntrySchema = z.strictObject({
   pid: z.number().int().positive(),
   procStart: z.string().min(1).max(100),
   hashes: z.array(z.string().regex(/^[0-9a-f]{64}$/)).min(1),
+  /** #2793 S4: the instance the hashes are for; absent means main. */
+  instance: z
+    .string()
+    .regex(/^[a-z0-9-]{1,32}$/)
+    .optional(),
 });
 export type ClaudeLink = z.infer<typeof EntrySchema>;
 

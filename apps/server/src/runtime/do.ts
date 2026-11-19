@@ -2281,8 +2281,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
-    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
-    needsPasskey?: boolean;
     /** #2381: the caller may edit the page (a decider must still). */
     canDecide: boolean;
     /** #2381: the caller is a guest-role member (marked on a weigh-in). */
@@ -2312,8 +2310,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
-      const risky =
-        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      const risky = r.ask.options.some((o) => o.action);
       if (risky && !isDecider)
         fail(
           "forbidden",
@@ -2324,13 +2321,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "not_decider",
           "You can no longer decide this: you cannot edit the page",
         );
-      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
-      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
-        if (a.verified !== "passkey")
-          fail("passkey_required", "This pick needs your passkey");
-        if (r.ask.answer?.optionId === a.optionId)
-          fail("already_answered", "This ask is answered with that option");
-      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const mine = [...(r.ask.history ?? [])]
         .reverse()
@@ -2812,10 +2802,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "already_answered",
           "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
         );
-      if (
-        ask &&
-        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
-      )
+      if (ask?.ask.options.some((o) => o.action))
         fail(
           "conflict",
           "A card that approves an action can't be edited. Withdraw it and post a new card.",
