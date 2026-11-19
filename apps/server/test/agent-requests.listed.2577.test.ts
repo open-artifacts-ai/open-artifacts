@@ -269,4 +269,61 @@ describe("listed deliveries", () => {
       "c-new",
     ]);
   });
+
+  it("the sweep deletes allowed items older than 30 days and the empty request, and keeps recent ones (#2899)", async () => {
+    const s = await setup();
+    const old = Date.now() - 31 * DAY;
+    const mk = async (state: string, created: number, tag: string) => {
+      const rid = `hr-${tag}-${s.id}`;
+      await E.DB.prepare(
+        "insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at) values (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(rid, owner.userId, editor.userId, s.id, created, created)
+        .run()
+        .catch(() => undefined);
+      return E.DB.prepare(
+        "insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at) select ?, id, 't', ?, 'k', 'mention', ?, ?, ? from held_requests where receiver_id = ? and sender_id = ? and artifact_id = ?",
+      )
+        .bind(
+          `it-${tag}-${s.id}`,
+          `c-${tag}-${s.id}`,
+          state,
+          created,
+          created + 7 * DAY,
+          owner.userId,
+          editor.userId,
+          s.id,
+        )
+        .run();
+    };
+    await mk("allowed", old, "old");
+    await lapseHeld(E);
+    const items = await E.DB.prepare(
+      "select count(*) as n from held_request_items where id = ?",
+    )
+      .bind(`it-old-${s.id}`)
+      .first<{ n: number }>();
+    expect(items?.n).toBe(0);
+    const reqs = await E.DB.prepare(
+      "select count(*) as n from held_requests where artifact_id = ?",
+    )
+      .bind(s.id)
+      .first<{ n: number }>();
+    expect(reqs?.n).toBe(0);
+    // A recent allowed item stays.
+    await E.DB.prepare("delete from held_requests where artifact_id = ?")
+      .bind(s.id)
+      .run();
+    await mk("allowed", Date.now() - DAY, "new");
+    await lapseHeld(E);
+    expect(
+      (
+        await E.DB.prepare(
+          "select count(*) as n from held_request_items where id = ?",
+        )
+          .bind(`it-new-${s.id}`)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(1);
+  });
 });

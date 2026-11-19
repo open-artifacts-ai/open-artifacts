@@ -14,7 +14,7 @@ export const R = {
   me: "/api/v1/me",
   /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
   meInbox: "/api/v1/me/inbox",
-  /** POST InboxReadBody (`{ ids }`, at most 50) -> 204. Marks those items read. */
+  /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */
   meInboxRead: "/api/v1/me/inbox/read",
   /** POST -> 204. Marks every update read. */
   meInboxReadAll: "/api/v1/me/inbox/read-all",

@@ -453,6 +453,38 @@ describe("allow", () => {
     expect(await decide(E, editor.userId, owner.userId, s.id)).toBe("hold");
   });
 
+  it("all pages and a space are refused on a page that is open to anyone with the link (#2905)", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "x", mention(s.claude));
+    const [r] = await held(s.id);
+    const items = (r?.items ?? []).map((i) => ({
+      commentId: i.commentId,
+      wordsHash: i.wordsHash,
+    }));
+    await E.DB.prepare(
+      "update artifacts set visibility = 'public' where id = ?",
+    )
+      .bind(s.id)
+      .run();
+    const listed = () =>
+      E.DB.prepare(
+        "select count(*) as n from agent_listens where owner_id = ? and member_id = ? and (scope = 'all' or artifact_id = ?)",
+      )
+        .bind(owner.userId, editor.userId, s.id)
+        .first<{ n: number }>()
+        .then((x) => x?.n);
+    const before = await listed();
+    for (const level of ["all", "page"] as const)
+      await expect(
+        allow(E, owner.userId, r?.id as string, {
+          level,
+          items,
+          until: Date.now() + 30 * 86_400_000,
+        }),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    expect(await listed()).toBe(before);
+  });
+
   it("all pages needs no passkey, but an end date within a year (#2864)", async () => {
     const s = await setup();
     await post(s.id, typed(editor), editor, "x", mention(s.claude));
