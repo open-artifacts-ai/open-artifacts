@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.234.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.233.0...v0.234.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** with no version named, machines follow the instance (pause, 24 h soak, forward only) ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2814](https://github.com/open-artifacts-ai/open-artifacts/issues/2814)) ([ea1a317](https://github.com/open-artifacts-ai/open-artifacts/commit/ea1a31706aab29d89ea4f765af6dd541b16fa4f2))
+
+
+### Bug Fixes
+
+* **agents:** a held request whose record failed to write is repaired nightly ([#2851](https://github.com/open-artifacts-ai/open-artifacts/issues/2851)) ([#2934](https://github.com/open-artifacts-ai/open-artifacts/issues/2934)) ([8fdac99](https://github.com/open-artifacts-ai/open-artifacts/commit/8fdac99f7580b09cdaeb0a50b3bae091bec1e415))
+
 ## [0.233.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.232.1...v0.233.0) (2026-11-19)
 
 
