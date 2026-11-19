@@ -34,6 +34,8 @@ export type UpgradeDeps = {
   verifyRelease: (r: FetchedRelease) => VerifiedRelease;
   /** Runs the verified copy's installer; its exit code. */
   runInstaller: (entry: string, args: string[]) => number;
+  /** Tests only: runs between the unpack and the installer, as a prune would. */
+  beforeInstall?: (dest: string) => void;
 };
 
 export const realUpgradeDeps = (ctx: Ctx): UpgradeDeps => ({
@@ -203,6 +205,7 @@ export async function upgrade(
   } catch {
     // best effort; the check below still catches a missing copy
   }
+  deps.beforeInstall?.(dest);
   const entry = join(dest, "dist", "index.js");
   if (!existsSync(entry)) {
     sayErr(ctx, c.upgradeStaleStage(target));

@@ -7,13 +7,16 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import {
+  installVersion,
   markFailed,
   readPolicy,
   setOff,
+  startSelfCheck,
   verifyRelease,
   writeState,
 } from "@oa/bus-daemon";
@@ -420,5 +423,67 @@ describe("oa-bus upgrade: the same gates as update (#2543 review)", () => {
     expect(await upgrade(c, {}, d)).toBe(1);
     expect(ran).toEqual([]);
     expect(text(c)).toContain("bad_tar");
+  });
+
+  it("the unpacked copy pruned before the installer: refuses clearly, no installer, no pending", async () => {
+    const c = world(GOLDEN_VERSION);
+    const { d, ran } = deps({
+      beforeInstall: (dest) =>
+        rmSync(join(dest, "dist"), { recursive: true, force: true }),
+    });
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("went missing before it could install");
+    expect(readPolicy(c.home).pending).toBeUndefined();
+  });
+
+  it("a bad hand upgrade steps back: the daemon's self-check acts on the pending record", async () => {
+    const c = world(GOLDEN_VERSION, "0.185.0");
+    // 0.185.0 is installed and running from versions/.
+    installVersion(c.home, "0.185.0", (dir) => {
+      mkdirSync(join(dir, "dist"), { recursive: true });
+      writeFileSync(join(dir, "dist", "index.js"), "// old");
+    });
+    const { d } = deps({
+      // What the new copy's installer does: swap to itself, record previous.
+      runInstaller: (entry) => {
+        installVersion(c.home, GOLDEN_VERSION, (dir) => {
+          mkdirSync(join(dir, "dist"), { recursive: true });
+          writeFileSync(join(dir, "dist", "index.js"), "// new");
+        });
+        expect(entry).toContain(GOLDEN_VERSION);
+        return 0;
+      },
+    });
+    expect(await upgrade(c, {}, d)).toBe(0);
+    expect(readPolicy(c.home).pending).toMatchObject({
+      from: "0.185.0",
+      to: GOLDEN_VERSION,
+    });
+    // The new daemon starts, and is not whole: its check steps back.
+    let t = 0;
+    const exits: number[] = [];
+    let tick: () => void = () => {};
+    startSelfCheck({
+      home: c.home,
+      running: GOLDEN_VERSION,
+      now: () => t,
+      hub: () => false,
+      local: () => false,
+      exit: (code) => exits.push(code),
+      log: () => {},
+      deadlineMs: 1000,
+      every: (fn) => {
+        tick = fn;
+        return () => {};
+      },
+    });
+    t = 2000;
+    tick();
+    expect(exits).toEqual([1]);
+    const p = readPolicy(c.home);
+    expect(p.current).toBe("0.185.0");
+    expect(p.failed).toContain(GOLDEN_VERSION);
+    expect(p.pending).toBeUndefined();
   });
 });
