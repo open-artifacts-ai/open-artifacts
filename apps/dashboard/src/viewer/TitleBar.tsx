@@ -601,10 +601,10 @@ export function TitleBar({
             className={`${BARP} ${phone && version !== artifact.currentVersion ? OLD : ""}`}
             aria-label={
               phone
-                ? // The name must hold the visible "v15" (axe label-in-name).
+                ? // The name starts with the visible "v15" (axe label-in-name).
                   version === artifact.currentVersion
-                  ? `Version v${version}`
-                  : `Version v${version}, not the latest`
+                  ? `v${version}, the latest version`
+                  : `v${version}, not the latest version`
                 : `Version: ${label}`
             }
             aria-expanded={versionsOpen}

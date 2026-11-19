@@ -117,6 +117,59 @@ async function startMocks() {
     );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
+  // #2622 (with ?mock=asks): the widest phone page bar. A long title, a Manager
+  // (member) or a "Can comment" guest, the page at v115 of 200, and 12 asks
+  // waiting, so the bar's second row is as full as it gets.
+  if (params.get("widest") === "1") {
+    extra.push(
+      http.get("*/api/v1/artifacts/:id", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as object;
+        return HttpResponse.json({
+          ...body,
+          title:
+            "Quarterly planning notes: calibration study, harness results and the follow-ups nobody owns yet",
+          currentVersion: 200,
+          ...(role === "guest"
+            ? {
+                access: "viewer",
+                can: {
+                  edit: false,
+                  share: false,
+                  setVisibility: false,
+                  delete: false,
+                  transfer: false,
+                  move: false,
+                  dataWrite: false,
+                  comment: true,
+                },
+                sharedBy: { name: "Ada Lovelace" },
+              }
+            : { access: "manager" }),
+        });
+      }),
+      http.get("*/api/v1/artifacts/:id/comments", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as {
+          threads: { id: string; comments: { id: string; ask?: unknown }[] }[];
+        };
+        const base = body.threads.find((t) => t.comments.some((c) => c.ask));
+        if (!base) return HttpResponse.json(body);
+        const asks = Array.from({ length: 12 }, (_, i) => ({
+          ...base,
+          id: `${base.id}-w${i}`,
+          comments: base.comments.map((c) => ({ ...c, id: `${c.id}-w${i}` })),
+        }));
+        return HttpResponse.json({
+          ...body,
+          threads: asks,
+          open: asks.length,
+        });
+      }),
+    );
+  }
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
   // &sharedBy=none answers null. #2702: as the server does, the guest's own
   // share decides can.comment (&share=viewer: View only; else Can comment).

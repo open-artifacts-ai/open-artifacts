@@ -56,3 +56,54 @@ test("asks waiting: the Comments button is gold and counts the asks", async ({
   await expect(b).toHaveText(/^\d+ asks?\s*$/);
   await expect(page.getByText("No asks for you")).toHaveCount(0);
 });
+
+// The widest case: a long title, 12 asks waiting, v115 of 200, a Manager's
+// access label (a guest: "Can comment"), Share, the menu and the bell. Nothing
+// may clip: every button's right edge stays inside the viewport.
+for (const [name, role] of [
+  ["member (Manager, Share, bell)", "member"],
+  ["guest (Can comment)", "guest"],
+] as const) {
+  test(`widest case, ${name}: two rows, nothing clipped at 360px`, async ({
+    page,
+  }) => {
+    await page.goto(`/a/${ID}/v/115?mock=asks&widest=1&role=${role}`);
+    const b = page.getByRole("button", { name: "12 asks for you" });
+    await expect(b).toBeVisible();
+    await expect(b).toHaveText(/^12 asks\s*$/);
+    await expect(
+      page.getByRole("button", { name: /^v115, not the latest version$/ }),
+    ).toBeVisible();
+    const bar = page.locator(".oa-vt").first();
+    const m = await bar.evaluate((el) => {
+      const rows = new Set<number>();
+      let maxRight = 0;
+      let minLeft = 9999;
+      for (const x of el.querySelectorAll("button, a")) {
+        const t = x.getBoundingClientRect();
+        if (t.width === 0 || t.height === 0) continue;
+        rows.add(Math.round(t.top / 10));
+        maxRight = Math.max(maxRight, t.right);
+        minLeft = Math.min(minLeft, t.left);
+      }
+      return {
+        height: el.getBoundingClientRect().height,
+        rows: rows.size,
+        maxRight,
+        minLeft,
+        vw: window.innerWidth,
+        scroll: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    });
+    expect(m.height).toBeLessThan(100);
+    expect(m.rows).toBeLessThanOrEqual(2);
+    expect(m.maxRight).toBeLessThanOrEqual(m.vw);
+    expect(m.minLeft).toBeGreaterThanOrEqual(0);
+    expect(m.scroll).toBeLessThanOrEqual(0);
+    // The title row's own buttons (the back arrow) are inside too.
+    for (const btn of await bar.getByRole("button").all()) {
+      const box = await btn.boundingBox();
+      if (box) expect(box.x + box.width).toBeLessThanOrEqual(m.vw);
+    }
+  });
+}

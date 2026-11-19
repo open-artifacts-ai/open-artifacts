@@ -96,7 +96,7 @@ test("detail: title bar buttons are 32px at 1280 and 390, with a More menu at 39
   await expect(page.getByRole("link", { name: "Full screen" })).toBeVisible();
   // The version chip is the only versions control (#471).
   await expect(
-    page.getByRole("button", { name: /^Version[: ]/ }),
+    page.getByRole("button", { name: /^(Version: |v\d+, )/ }),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Versions" })).toHaveCount(0);
 
@@ -104,11 +104,11 @@ test("detail: title bar buttons are 32px at 1280 and 390, with a More menu at 39
   expect((await share.boundingBox())?.height).toBe(32);
   await expect(page.getByRole("link", { name: "Full screen" })).toBeHidden();
   await expect(
-    page.getByRole("button", { name: /^Version[: ]/ }),
+    page.getByRole("button", { name: /^(Version: |v\d+, )/ }),
   ).toBeVisible();
   // One row: the version picker, Share and More share a line.
   const ys = await Promise.all(
-    [/^Version[: ]/, /^Share$/, /^More actions$/].map(async (name) =>
+    [/^(Version: |v\d+, )/, /^Share$/, /^More actions$/].map(async (name) =>
       Math.round(
         (await page.getByRole("button", { name }).boundingBox())?.y ?? -1,
       ),

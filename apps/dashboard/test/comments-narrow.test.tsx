@@ -556,10 +556,10 @@ describe("the phone page bar (#2622)", () => {
     );
   });
 
-  it("an older version reads 'v1' and is named 'Version v1, not the latest' (the name holds the visible text)", async () => {
+  it("an older version reads 'v1' and is named 'v1, not the latest version' (the name starts with the visible text)", async () => {
     mount(`${viewerPath(OWNED)}/v/1`);
     const chip = await screen.findByRole("button", {
-      name: /^Version v\d+, not the latest$/,
+      name: /^v\d+, not the latest version$/,
     });
     expect(chip).toHaveTextContent(/^v1/);
   });
@@ -572,5 +572,16 @@ describe("wide bars keep the pill and drop only the idle line (#2622)", () => {
     await waitFor(() => expect(topPill()).toBeTruthy());
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
     expect(screen.queryByText("No asks for you")).toBeNull();
+  });
+});
+
+describe("the phone version pill on the latest version (#2622)", () => {
+  beforeEach(() => viewport(360));
+  it("reads 'vN' and is named 'vN, the latest version'", async () => {
+    mount(viewerPath(OWNED));
+    const chip = await screen.findByRole("button", {
+      name: /^v\d+, the latest version$/,
+    });
+    expect(chip).toHaveTextContent(/^v\d+/);
   });
 });
