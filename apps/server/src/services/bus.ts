@@ -38,7 +38,11 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
-import { RUN_VERSION_KEY, readRunVersion } from "../bus/updates.js";
+import {
+  RUN_VERSION_KEY,
+  readRunVersion,
+  UPDATES_PAUSED_KEY,
+} from "../bus/updates.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
@@ -1835,6 +1839,40 @@ export async function setBusRunVersion(
   ]);
   // The owner's hub first (even with no machine), then the first page of
   // members; a cursor carries the rest to the recovery cron (#2719).
+  await pushRunVersion(env, [ownerId]);
+  await fanOutRunVersion(env, null, ownerId, page);
+}
+
+/**
+ * #2552: the owner pauses or resumes every instance-driven update. Audited
+ * bus.updates_paused.set. While paused no machine swaps (every hub pushes
+ * the cleared target, the update_ack veto refuses); resuming pushes each
+ * machine its target again. Same fan-out as the named version, with the
+ * same paging and recovery cron.
+ */
+export async function setBusUpdatesPaused(
+  env: Env,
+  ownerId: string,
+  paused: boolean,
+  page = RUN_VERSION_FANOUT_PAGE,
+): Promise<void> {
+  await env.DB.batch([
+    paused
+      ? stmt(
+          env.DB,
+          "insert into settings (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
+        ).bind(UPDATES_PAUSED_KEY, "1")
+      : stmt(env.DB, "delete from settings where key = ?").bind(
+          UPDATES_PAUSED_KEY,
+        ),
+    audit(
+      env,
+      "bus.updates_paused.set",
+      { type: "settings", id: UPDATES_PAUSED_KEY },
+      userActor(ownerId),
+      { detail: { paused } },
+    ),
+  ]);
   await pushRunVersion(env, [ownerId]);
   await fanOutRunVersion(env, null, ownerId, page);
 }

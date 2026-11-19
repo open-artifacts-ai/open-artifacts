@@ -2434,6 +2434,15 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #2552: the owner's pause switch. Refusal mode sends an invalid body (400
+  // after the owner check); real mode sets it off (204), the default.
+  "PUT /api/v1/bus/updates-paused": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { paused: false } }),
+      allow: ok(204),
+    },
+  },
   // #2552 "Install now": only the caller's own machine answers past the
   // rules: real only. 409 machine_offline is the answer while it is not connected.
   "POST /api/v1/bus/machines/:id/install-now": {
@@ -2732,6 +2741,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/run-version", org("bus.run_version")],
+  ["PUT /api/v1/bus/updates-paused", org("bus.updates_paused")],
   ["POST /api/v1/bus/machines/:id/install-now", org("mcp.connect")],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],

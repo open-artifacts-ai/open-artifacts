@@ -170,6 +170,12 @@ export const BusRunVersionPutSchema = z.strictObject({
 });
 export type BusRunVersionPut = z.infer<typeof BusRunVersionPutSchema>;
 
+/** PUT R.busUpdatesPaused: stop (true) or resume (false) every instance-driven machine update. */
+export const BusUpdatesPausedPutSchema = z.strictObject({
+  paused: z.boolean(),
+});
+export type BusUpdatesPausedPut = z.infer<typeof BusUpdatesPausedPutSchema>;
+
 /** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
 export const BusLinkPutSchema = z.strictObject({
   a: BusAddressSchema.shape.namespace,

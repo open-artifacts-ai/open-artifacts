@@ -266,6 +266,7 @@ describe("one daemon, two hubs (#2793 S3)", () => {
         update: {
           entryFile: join(dir, "bin/dist/index.js"),
           exit: vi.fn(),
+          defaultHome: true,
           every: () => () => {},
         },
       });
@@ -403,6 +404,48 @@ describe("review fixes (#2793 S3)", () => {
     expect(
       logs.some((l) => l.includes("dropped a install_now frame from b")),
     ).toBe(true);
+  });
+
+  it("a run_version, a null one and an install_now from B are dropped and touch no updater (#2552)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "oa-2552-lane-"));
+    const prevHome = process.env.OA_BUS_HOME;
+    process.env.OA_BUS_HOME = dir;
+    try {
+      const { h, hubB, logs } = await setup({
+        update: {
+          entryFile: join(dir, "bin/dist/index.js"),
+          exit: vi.fn(),
+          defaultHome: true,
+          every: () => () => {},
+        },
+      });
+      const u = h.daemon.updater as never as {
+        instructFromInstance: () => Promise<unknown>;
+        installNowFromInstance: () => Promise<unknown>;
+        clearNamed: () => void;
+      };
+      const instruct = vi
+        .spyOn(u, "instructFromInstance")
+        .mockResolvedValue({ kind: "disabled" });
+      const installNow = vi
+        .spyOn(u, "installNowFromInstance")
+        .mockResolvedValue({ kind: "disabled" });
+      const clear = vi.spyOn(u, "clearNamed").mockImplementation(() => {});
+      hubB.send(helloOk({ caps: ["run_version"], run_version: null }));
+      hubB.send({ id: "r1", type: "run_version", run_version: "9.9.9" });
+      hubB.send({ id: "r2", type: "run_version", run_version: null });
+      hubB.send({ id: "r3", type: "install_now" });
+      await settled(hubB);
+      expect(instruct).not.toHaveBeenCalled();
+      expect(installNow).not.toHaveBeenCalled();
+      expect(clear).not.toHaveBeenCalled();
+      // The drop is logged once per lane and type.
+      expect(
+        logs.some((l) => l.includes("dropped a run_version frame from b")),
+      ).toBe(true);
+    } finally {
+      process.env.OA_BUS_HOME = prevHome;
+    }
   });
 
   it("a receipt_update from B for a message of main is ignored", async () => {

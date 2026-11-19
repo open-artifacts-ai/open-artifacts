@@ -454,6 +454,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // #2552 the version the instance names: owner only, cookie session only (handler).
   "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  "PUT /api/v1/bus/updates-paused": { org: "bus.updates_paused" },
   // #2552 "Install now" for the caller's own machine: browser session only (handler).
   "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.

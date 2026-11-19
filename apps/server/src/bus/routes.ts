@@ -23,6 +23,7 @@ import {
   BusReachPutSchema,
   BusRolePutSchema,
   BusRunVersionPutSchema,
+  BusUpdatesPausedPutSchema,
   type Member,
   R,
 } from "@oa/shared";
@@ -66,6 +67,7 @@ import {
   putBusRole,
   revokeBusMachine,
   setBusRunVersion,
+  setBusUpdatesPaused,
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
@@ -783,6 +785,17 @@ export function mountBus(app: AppType): void {
       body.version,
       body.stepBack === true,
     );
+    return c.body(null, 204);
+  });
+  // #2552: the owner pauses or resumes every instance-driven update. Same
+  // gate as run-version: owner, interactive cookie session only.
+  app.put(R.busUpdatesPaused, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw notFound();
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const body = await jsonBody(c, BusUpdatesPausedPutSchema);
+    await setBusUpdatesPaused(c.env, user.id, body.paused);
     return c.body(null, 204);
   });
   // #2552 "Install now": the machine's own member, in a browser session.

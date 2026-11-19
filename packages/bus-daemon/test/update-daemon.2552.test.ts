@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   currentVersion,
   installVersion,
+  markFailed,
   QUIET_MS,
   readPolicy,
   readReports,
@@ -46,7 +47,13 @@ describe("the daemon's self-check after a switch (#2552)", () => {
     const w = switched();
     const exit = vi.fn();
     const h = await daemonHarness({
-      update: { entryFile: w.entry, exit, every, deadlineMs: 5000 },
+      update: {
+        defaultHome: true,
+        entryFile: w.entry,
+        exit,
+        every,
+        deadlineMs: 5000,
+      },
     });
     expect(readPolicy(w.home).pending).toBeDefined();
     h.toDaemon({
@@ -67,7 +74,13 @@ describe("the daemon's self-check after a switch (#2552)", () => {
     const w = switched();
     const exit = vi.fn();
     await daemonHarness({
-      update: { entryFile: w.entry, exit, every, deadlineMs: 150 },
+      update: {
+        defaultHome: true,
+        entryFile: w.entry,
+        exit,
+        every,
+        deadlineMs: 150,
+      },
     });
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
     expect(currentVersion(w.home)).toBe("1.0.0");
@@ -129,7 +142,7 @@ describe("the loop on, end to end (#2552)", () => {
     ...(run === undefined ? {} : { run_version: run }),
   });
   /** A daemon running 1.0.0 whose ticks the test drives by hand. */
-  async function rig(opts: { armed?: boolean } = {}) {
+  async function rig(opts: { armed?: boolean; defaultHome?: boolean } = {}) {
     const home = mkdtempSync(join(tmpdir(), "oa-ue-"));
     process.env.OA_BUS_HOME = home;
     installVersion(home, "1.0.0", fill("1.0.0"));
@@ -143,6 +156,7 @@ describe("the loop on, end to end (#2552)", () => {
     };
     const h = await daemonHarness({
       update: {
+        defaultHome: opts.defaultHome ?? true,
         entryFile: join(home, "bin/dist/index.js"),
         exit,
         every: () => () => {},
@@ -198,6 +212,7 @@ describe("the loop on, end to end (#2552)", () => {
     // The service restarts the daemon from the new folder: it checks itself and reports.
     const h2 = await daemonHarness({
       update: {
+        defaultHome: true,
         entryFile: join(w.home, "bin/dist/index.js"),
         exit: vi.fn(),
         every: (fn, ms) => {
@@ -277,5 +292,36 @@ describe("the loop on, end to end (#2552)", () => {
     await w.u.tick();
     expect(w.fetched).toEqual([]);
     expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("a second bus home ignores what the instance names (hello_ok and push)", async () => {
+    const w = await rig({ defaultHome: false });
+    await w.h.next("hello");
+    w.h.toDaemon(hello("2.0.0"));
+    w.h.toDaemon({ type: "run_version", id: "p", run_version: "2.0.0" });
+    w.h.toDaemon({ type: "install_now", id: "i" });
+    await w.u.tick();
+    w.advance(10 * QUIET_MS);
+    await w.u.tick();
+    expect(w.named()).toBeUndefined();
+    expect(w.fetched).toEqual([]);
+    expect(readPolicy(w.home).staged).toBeUndefined();
+    expect(switching(w.h)).toHaveLength(0);
+    expect(w.exit).not.toHaveBeenCalled();
+  });
+
+  it("a version that failed on this machine is not retried when the instance defaults to it", async () => {
+    const w = await rig();
+    markFailed(w.home, "2.0.0");
+    await w.h.next("hello");
+    // The default reaches the machine as run_version, exactly like a named one.
+    w.h.toDaemon(hello("2.0.0"));
+    await w.u.tick();
+    w.advance(10 * QUIET_MS);
+    await w.u.tick();
+    expect(w.fetched).toEqual([]);
+    expect(readPolicy(w.home).staged).toBeUndefined();
+    expect(switching(w.h)).toHaveLength(0);
+    expect(currentVersion(w.home)).toBe("1.0.0");
   });
 });

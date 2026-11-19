@@ -29,6 +29,7 @@ export const home = () => busHome();
  * #2806: whether `h` is the default home (~/.oa-bus). Only that daemon may
  * adopt Claude sessions it finds in the machine-wide ~/.claude/sessions; a
  * second home (--alongside) admits a session only on its own adapter's hello.
+ * #2552: only the default home takes instance-driven updates.
  */
 export const isDefaultHome = (h: string = home()): boolean => h === busHome({});
 
