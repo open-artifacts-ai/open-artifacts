@@ -5800,6 +5800,12 @@ export class BusHub extends DurableObject<Env> {
         return;
       }
       case "agent_up": {
+        // #2793 S3b: "guest" is what a guest shows where it acted; no real
+        // agent may hold it, so no lookup by namespace can reach the wrong one.
+        if (f.namespace === GUEST_NAMESPACE) {
+          sendError(ws, f.id, "bad_frame", "Reserved namespace");
+          return;
+        }
         const cap = capRefusal(sql, machineId, f.agent_ref);
         if (cap !== null) {
           logEvent("cap_refused", { kind: cap, machineId });

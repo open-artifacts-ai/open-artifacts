@@ -85,7 +85,7 @@ async function mcpWithPatUnguarded(
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
-  const link = await linkOrUnlinked(env, user.id, capped);
+  const link = await linkOrUnlinked(env, user.id, capped, ctx);
   const agent: AgentAttr = {
     name: pat.label,
     version: null,

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   createReadStream,
   existsSync,
@@ -26,6 +27,11 @@ const EntrySchema = z.strictObject({
   pid: z.number().int().positive(),
   procStart: z.string().min(1).max(100),
   instance: z.string().regex(/^[a-z0-9-]{1,32}$/),
+  /** The opaque ref this guest has on that instance only; random, never derived from the session. */
+  ref: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{16,64}$/)
+    .optional(),
 });
 export type ClaudeGuest = z.infer<typeof EntrySchema>;
 
@@ -78,6 +84,10 @@ export function writeClaudeGuests(file: string, guests: ClaudeGuest[]): void {
     throw e;
   }
 }
+
+/** A fresh opaque ref for one guest on one instance: unrelated to the session and to its refs elsewhere. */
+export const newGuestRef = (): string =>
+  `g-${randomBytes(16).toString("base64url")}`;
 
 /** At most `max` admissions per rolling `windowMs` per key; the rest are counted, never queued. */
 export class GuestRate {
@@ -202,6 +212,10 @@ export function findTranscript(
   return undefined;
 }
 
+/** A tool of the entry itself: the rest after the prefix holds no `__`, so an entry `<name>__x` is not `<name>`. */
+export const isToolOf = (tool: string, prefix: string): boolean =>
+  tool.startsWith(prefix) && !tool.slice(prefix.length).includes("__");
+
 /** A line longer than this is skipped, never parsed. */
 const LINE_MAX = 4 * 1024 * 1024;
 
@@ -242,7 +256,7 @@ export async function usedToolOf(
             isRecord(part) &&
             part.type === "tool_use" &&
             typeof part.name === "string" &&
-            prefixes.some((p) => (part.name as string).startsWith(p))
+            prefixes.some((p) => isToolOf(part.name as string, p))
           )
             return true;
       }

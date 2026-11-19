@@ -642,6 +642,7 @@ async function lookupProof(
   proof: unknown,
   /** #2793 S3b: whether the request is a tools/call (read lazily, only on a miss). */
   isToolsCall: () => boolean = () => false,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
@@ -699,10 +700,12 @@ async function lookupProof(
         // #2793 S3b: a tools/call (and only that) whose proof names no session
         // here may be a guest's: this member's own hub tells this member's
         // daemons, who decide. Nothing waits on it; the call is answered unlinked.
-        if (isToolsCall())
-          void Promise.resolve()
+        if (isToolsCall()) {
+          const p = Promise.resolve()
             .then(() => hub.proofSeen(hash))
             .catch((e) => logError("bus_proof_seen_failed", e));
+          ctx?.waitUntil(p);
+        }
         let why: string;
         try {
           why = await hub.proofMissReason(hash);
@@ -809,6 +812,7 @@ export async function linkRequest(
   env: Env,
   userId: string,
   req: Request,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
@@ -855,8 +859,12 @@ export async function linkRequest(
   // No proof at all: nothing was looked up, so nothing is logged; the note says so.
   if (proof === undefined)
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
-  const r = await lookupProof(env, userId, proof, () =>
-    bodyHasToolsCall(bodyText),
+  const r = await lookupProof(
+    env,
+    userId,
+    proof,
+    () => bodyHasToolsCall(bodyText),
+    ctx,
   );
   return { req: out, ...r };
 }

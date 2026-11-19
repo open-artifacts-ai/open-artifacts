@@ -11,7 +11,7 @@ import {
   LINK_PROOF_HEADER,
 } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BusHub } from "../../src/bus/hub.js";
 import { linkRequest } from "../../src/services/bus.js";
 import { sha256Hex } from "../../src/util/crypto.js";
@@ -156,6 +156,23 @@ describe("proof_seen (#2793 S3b)", () => {
     expect(seen(d)).toEqual([]);
   });
 
+  it("is handed to ctx.waitUntil, only for a tools/call", async () => {
+    const { m, d } = await scene();
+    const waitUntil = vi.fn();
+    await linkRequest(e as never, m.userId, call("tools/list", proofOf()), {
+      waitUntil,
+    });
+    expect(waitUntil).not.toHaveBeenCalled();
+    await linkRequest(e as never, m.userId, call("tools/call", proofOf()), {
+      waitUntil,
+    });
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+    const p = waitUntil.mock.calls[0]?.[0];
+    expect(p).toBeInstanceOf(Promise);
+    await p;
+    await waitFor(d, "proof_seen");
+  });
+
   it("is not sent for a proof a session holds", async () => {
     const { m, d } = await scene();
     const proof = proofOf();
@@ -233,6 +250,36 @@ describe("a guest on the hub (#2793 S3b)", () => {
       kind: "claude-code",
       namespace: "guest",
     });
+  });
+
+  it("is absent from the snapshot (page presence, the @ picker) and every lookup by address or identity", async () => {
+    const { m, d } = await scene();
+    d.send(up(id("u"), "lead", "Lead", ns("pick")));
+    await waitFor(d, "agent_ok");
+    await guestUp(d, "s1", "Visitor");
+    await bindGuest(d, "s1", proofOf());
+    const identity = (await rows(m.userId, "select identity_id from guests"))[0]
+      ?.identity_id as string;
+    const hub = await hubOf(m.userId);
+    const snap = await runInDurableObject(hub, (i: BusHub) => i.snapshot());
+    expect(snap.agents.map((a) => a.name)).toEqual(["Lead"]);
+    expect(JSON.stringify(snap)).not.toContain("Visitor");
+    expect(
+      await runInDurableObject(hub, (i: BusHub) =>
+        i.identityOf("guest", "Visitor"),
+      ),
+    ).toBeNull();
+    expect(
+      await runInDurableObject(hub, (i: BusHub) => i.namesOf([identity])),
+    ).toEqual([]);
+  });
+
+  it("refuses a real agent in the reserved namespace guest", async () => {
+    const { m, d } = await scene();
+    d.send(up("res1", "r1", "Impostor", "guest"));
+    const err = await waitFor(d, "error");
+    expect(err).toMatchObject({ id: "res1", code: "bad_frame" });
+    expect(await rows(m.userId, "select id from agents")).toEqual([]);
   });
 
   it("guest_up, guest_down and a guest's link_bind are as unknown as to an old hub without the cap", async () => {
