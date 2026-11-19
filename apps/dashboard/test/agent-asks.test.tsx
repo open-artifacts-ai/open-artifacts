@@ -195,14 +195,18 @@ describe("the held-request notice", () => {
     expect(
       await within(panel).findByText("Allow Dev on all pages?"),
     ).toBeInTheDocument();
-    expect(panel).toHaveTextContent("Allows Dev's 3 waiting requests now, and later ones on every page until the date you pick.");
+    expect(panel).toHaveTextContent(
+      "Allows Dev's 3 waiting requests now, and later ones on every page until the date you pick.",
+    );
     hash = "f".repeat(64);
     act(() => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
     expect(
-      await within(panel).findByText("The words changed. Read them again before you allow."),
+      await within(panel).findByText(
+        "The words changed. Read them again before you allow.",
+      ),
     ).toBeInTheDocument();
     expect(
       within(panel).getByRole("button", { name: "Allow once" }),
@@ -457,7 +461,9 @@ describe("Settings: who can ask my agents", () => {
   it("the switch hint shows on and off, and the fine print sits under the list", async () => {
     await settings();
     expect(
-      await screen.findByText(/^On: anyone not on your list waits until you allow them/),
+      await screen.findByText(
+        /^On: anyone not on your list waits until you allow them/,
+      ),
     ).toBeInTheDocument();
     expect(
       await screen.findByText(
