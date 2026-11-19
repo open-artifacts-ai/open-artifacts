@@ -2336,6 +2336,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
             r.ask.answer.by.typed === true) === typedNow &&
           (r.ask.answer.verified ?? null) === (a.verified ?? null)
         : mine?.optionId === a.optionId;
+      // #2886: on an action ask an untyped pick (a token, an agent) by the
+      // decider is data in `picks`; it never replaces a typed decision.
+      const keepTyped =
+        isDecider &&
+        risky &&
+        !typedNow &&
+        r.ask.answer?.by.kind === "user" &&
+        r.ask.answer.by.typed === true;
       const now = this.iso();
       // The cap is for weigh-ins: a decision is never refused by it.
       if (
@@ -2358,9 +2366,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
           at: now,
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
           ...(a.guest ? { guest: true } : {}),
-          ...(isDecider ? { decision: true as const } : {}),
+          ...(isDecider && !keepTyped ? { decision: true as const } : {}),
         });
-        if (isDecider)
+        if (isDecider && !keepTyped)
           setAnswer(this.sql, a.commentId, {
             optionId: a.optionId,
             by: a.by,
@@ -2374,7 +2382,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
         unchanged,
-        decided: isDecider,
+        decided: isDecider && !keepTyped,
       };
     });
     this.broadcastComments();

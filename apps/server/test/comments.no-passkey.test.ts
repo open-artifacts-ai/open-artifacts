@@ -250,4 +250,55 @@ describe("no ask carries or needs a passkey (#2864)", () => {
       expect(c.ask?.answer?.yes).not.toBe(true);
     } else expect((await errOf(r)).code).not.toBe("passkey_required");
   });
+
+  describe("an untyped pick never replaces a typed decision (#2886)", () => {
+    it("typed pick, then a token pick of the same or another option: the answer and yes stay", async () => {
+      for (const optionId of ["merge", "wait"]) {
+        const k = await ask(alice);
+        expect(
+          (await answer(k, alice.cookie, { optionId: "merge" })).status,
+        ).toBe(200);
+        const r = await answer(k, alice.pat, { optionId });
+        expect(r.status).toBe(200);
+        const c = await read(k);
+        expect(c.ask?.answer?.optionId).toBe("merge");
+        expect(c.ask?.answer?.yes).toBe(true);
+        expect(c.ask?.answer?.typed).toBe(true);
+        const mine = c.ask?.picks?.filter((p) => p.optionId === optionId);
+        expect(mine?.length).toBeGreaterThan(0);
+        // A typed pick still replaces it.
+        expect(
+          (await answer(k, alice.cookie, { optionId: "wait" })).status,
+        ).toBe(200);
+        expect((await read(k)).ask?.answer?.optionId).toBe("wait");
+      }
+    });
+
+    it("a token pick with no typed answer sets the answer as before (not a yes)", async () => {
+      const k = await ask(alice);
+      expect((await answer(k, alice.pat, { optionId: "merge" })).status).toBe(
+        200,
+      );
+      const c = await read(k);
+      expect(c.ask?.answer?.optionId).toBe("merge");
+      expect(c.ask?.answer?.yes).not.toBe(true);
+      // A typed pick then replaces the untyped answer.
+      expect(
+        (await answer(k, alice.cookie, { optionId: "merge" })).status,
+      ).toBe(200);
+      expect((await read(k)).ask?.answer?.yes).toBe(true);
+    });
+
+    it("a plain ask (no action) is unchanged: the token pick replaces", async () => {
+      const k = await ask(alice, [
+        { id: "a", label: "A" },
+        { id: "b", label: "B" },
+      ]);
+      expect((await answer(k, alice.cookie, { optionId: "a" })).status).toBe(
+        200,
+      );
+      expect((await answer(k, alice.pat, { optionId: "b" })).status).toBe(200);
+      expect((await read(k)).ask?.answer?.optionId).toBe("b");
+    });
+  });
 });
