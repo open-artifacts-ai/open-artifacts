@@ -888,6 +888,13 @@ async function startMocks() {
     ]),
     ...pics,
   );
+  // PROVISIONAL (#2577 s2): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
+  if (agentAsksOn(params))
+    extra.unshift(
+      ...(await import("./mockTeammates")).teammatesHandlers(mainHandlers, {
+        asked: params.get("asked") === "1",
+      }),
+    );
   // #1910: &waiting=1 carries the waiting fields.
   extra.unshift(
     ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),

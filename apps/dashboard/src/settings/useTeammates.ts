@@ -1,32 +1,37 @@
 /**
- * #2577: the teammates the caller can name for "listens to". Owners and admins
- * read the member list. Anyone else has no list route (R.members is managers
- * only), so they get the people already known to them here: who asked their
- * agents lately, and who is on their list.
+ * #2577: the teammates the caller can name for "listens to". The team's members
+ * from GET /me/teammates (PROVISIONAL (#2577 s2)) for anyone. An older server
+ * answers 404; then owners and admins read the member list, and everyone else
+ * gets the people already known to them (recent askers, their list).
  */
 import { useMemo } from "react";
 import { useAskHistory, useListens } from "../api/agentAsks";
 import { useMembers } from "../api/queries";
+import { useMyTeammates } from "../api/teammates";
 import { useMe } from "../auth/useMe";
 import { personName } from "../layout/person";
 import { isOrgAdmin } from "./spaces/access";
 
-export type Teammate = { id: string; name: string; email?: string };
+export type Teammate = { id: string; name: string; initials?: string };
 
 export function useTeammates(): {
   people: Teammate[];
-  /** The whole team (a manager), not only people already known. */
+  /** The whole team, not only people already known. */
   full: boolean;
   loading: boolean;
 } {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const members = useMembers(undefined, admin);
-  // Managers read the member list; everyone else falls back to who is already known.
-  const history = useAskHistory(!admin);
-  const listens = useListens(!admin);
+  const mine = useMyTeammates();
+  const fallback = mine.isError;
+  const members = useMembers(undefined, fallback && admin);
+  const history = useAskHistory(fallback && !admin);
+  const listens = useListens(fallback && !admin);
   return useMemo(() => {
+    if (mine.data)
+      return { people: mine.data.members, full: true, loading: false };
+    if (!fallback) return { people: [], full: false, loading: true };
     if (admin) {
       const people = (members.data ?? [])
         .filter(
@@ -35,7 +40,7 @@ export function useTeammates(): {
             (m.status ?? "active") === "active" &&
             m.id !== me?.user.id,
         )
-        .map((m) => ({ id: m.id, name: personName(m), email: m.email }));
+        .map((m) => ({ id: m.id, name: personName(m) }));
       return { people, full: true, loading: members.isPending };
     }
     const seen = new Map<string, Teammate>();
@@ -50,6 +55,8 @@ export function useTeammates(): {
       loading: history.isPending || listens.isPending,
     };
   }, [
+    mine.data,
+    fallback,
     admin,
     members.data,
     members.isPending,

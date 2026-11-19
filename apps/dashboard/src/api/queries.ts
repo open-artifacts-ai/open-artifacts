@@ -80,6 +80,11 @@ import {
   errorLink,
 } from "./errorCopy";
 import { keepLocal } from "./myOnboarding";
+import {
+  OnboardingWithListens,
+  ShareResultWithMember,
+  ShareRowWithMember,
+} from "./teammates";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -201,7 +206,7 @@ export const useShares = (id: string, enabled = true) =>
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
       // PROVISIONAL (#2590): the wide role, until packages/shared has it.
-      api.get(R.shares(id), z.array(ShareSchema), signal),
+      api.get(R.shares(id), z.array(ShareRowWithMember), signal),
     enabled,
   });
 export const useSearch = (q: SearchQuery) =>
@@ -230,7 +235,8 @@ export const useOnboarding = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.onboarding,
-    queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
+    queryFn: ({ signal }) =>
+      api.get(R.onboarding, OnboardingWithListens, signal),
   });
 /**
  * PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer.
@@ -241,7 +247,7 @@ export const useSetOnboarding = (member?: { userId: string }) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: OnboardingPatch) =>
-      api.send("PUT", R.onboarding, patch, OnboardingSchema),
+      api.send("PUT", R.onboarding, patch, OnboardingWithListens),
     onMutate: (patch) => {
       if (member) keepLocal(member.userId, patch);
       const before = qc.getQueryData<Onboarding>(qk.onboarding);
@@ -547,7 +553,7 @@ export const useDeleteArtifact = (id: string) =>
 export const usePutShare = (id: string) =>
   useInvalidating(
     (input: ShareInput) =>
-      api.send("PUT", R.shares(id), input, ShareResultSchema),
+      api.send("PUT", R.shares(id), input, ShareResultWithMember),
     () => [qk.shares(id)],
   );
 export const useDeleteShare = (id: string) =>
