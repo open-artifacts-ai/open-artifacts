@@ -19,6 +19,7 @@ import {
   SEAT_ROUTES,
   SEAT_ROUTES_EXEMPT,
   SEATS_DAILY_MS,
+  SEATS_JUMP_ACK_KEY,
   SEATS_SENT_KEY,
 } from "../src/billing/seats.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
@@ -438,6 +439,99 @@ describe("a big jump billed at once emails the owner (#2588)", () => {
     await run(e, t + 4 * SEATS_DAILY_MS + 4_000);
     await run(e, t + 5 * SEATS_DAILY_MS + 5_000);
     expect(lastSeats()).toMatchObject({ jumpAck: t + 7_000 });
+  });
+
+  it("the ack stops riding reports once a report that carried it was accepted", async () => {
+    const e = HE();
+    const t = Date.now();
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t + 1_000);
+    // Billing cleared the jump on the ack: it no longer carries it.
+    fake.seatsJump = undefined;
+    await run(e, t + SEATS_DAILY_MS + 2_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    await run(e, t + 2 * SEATS_DAILY_MS + 3_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    expect(
+      await env.DB.prepare("select 1 as x from settings where key = ?1")
+        .bind(SEATS_JUMP_ACK_KEY)
+        .first(),
+    ).toBeNull();
+  });
+
+  it("billing from before the ack answers 400 bad_body to jumpAck: resent once without it, not 'no /seats', and the ack is dropped", async () => {
+    const e = HE();
+    const t = Date.now();
+    await env.DB.prepare(
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
+    )
+      .bind(SEATS_JUMP_ACK_KEY, String(t - 5_000))
+      .run();
+    fake.rejectAck = true;
+    try {
+      await run(e, t);
+      const calls = seatCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.body).toMatchObject({ jumpAck: t - 5_000 });
+      expect(calls[1]?.body).not.toHaveProperty("jumpAck");
+      // Accepted: the report was recorded as accepted (not the unsupported path).
+      const sent = JSON.parse(
+        (
+          (await env.DB.prepare("select value from settings where key = ?1")
+            .bind(SEATS_SENT_KEY)
+            .first<{ value: string }>()) as { value: string }
+        ).value,
+      );
+      expect(sent).toMatchObject({ ok: true });
+      expect(
+        await env.DB.prepare("select 1 as x from settings where key = ?1")
+          .bind(SEATS_JUMP_ACK_KEY)
+          .first(),
+      ).toBeNull();
+      // Later reports are not stuck: a count change is sent, with no jumpAck.
+      await person("late", "member");
+      await run(e, t + SEATS_DAILY_MS + 1_000);
+      expect(seatCalls().length).toBe(3);
+      expect(lastSeats()).not.toHaveProperty("jumpAck");
+    } finally {
+      fake.rejectAck = false;
+    }
+  });
+
+  it("a concurrent report does not acknowledge a claim whose email has not gone out; it does once it has", async () => {
+    const e = HE();
+    const t = Date.now();
+    const at = t - 5_000;
+    const claim = (sent: boolean) =>
+      env.DB.prepare(
+        "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
+      )
+        .bind(
+          `billing.seats.jump:${at}`,
+          JSON.stringify({ from: 3, to: 14, at: t, sent }),
+        )
+        .run();
+    // A holds the claim (its send in flight, then failing).
+    await claim(false);
+    fake.seatsJump = { from: 3, to: 14, at };
+    await run(e, t);
+    expect(sends).toHaveLength(0);
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    // A's send failed and released the claim: the next report sends, and acks.
+    await env.DB.prepare("delete from settings where key = ?1")
+      .bind(`billing.seats.jump:${at}`)
+      .run();
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(sends).toHaveLength(1);
+    // A claim that says sent is acknowledged by a report that finds it.
+    await env.DB.prepare("delete from settings where key = ?1")
+      .bind(SEATS_JUMP_ACK_KEY)
+      .run();
+    await run(e, t + 3 * SEATS_DAILY_MS + 3_000);
+    await run(e, t + 4 * SEATS_DAILY_MS + 4_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: at });
+    expect(sends).toHaveLength(1);
   });
 
   it("a jump whose email could not be sent is not acknowledged", async () => {

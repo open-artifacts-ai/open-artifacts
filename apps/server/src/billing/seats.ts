@@ -43,37 +43,69 @@ export const SEATS_DAILY_MS = 23 * 3_600_000;
 export async function sendSeats(env: Env, now: number): Promise<number> {
   const members = await memberCount(env);
   const ack = await lastJumpAck(env);
-  let raw: unknown;
-  try {
-    raw = await billingCall(
+  const post = (withAck: boolean) =>
+    billingCall(
       env,
       SEATS_PATH,
       BillingSeatsRequestSchema.parse({
         members,
-        ...(ack === null ? {} : { jumpAck: ack }),
+        ...(withAck && ack !== null ? { jumpAck: ack } : {}),
       }),
       now,
     );
-  } catch (e) {
-    // Billing from before #2580 has no /seats (404) or refuses it (400
-    // bad_body): settled, never retried soon; logged once a day at most.
-    if (
-      !(e instanceof BillingUnavailableError) ||
-      !(e.why === "http_404" || (e.why === "http_400" && e.code === "bad_body"))
-    )
-      throw e;
+  // Billing from before #2580 has no /seats (404) or refuses it (400
+  // bad_body): settled, never retried soon; logged once a day at most.
+  const unsupported = (e: unknown) =>
+    e instanceof BillingUnavailableError &&
+    (e.why === "http_404" || (e.why === "http_400" && e.code === "bad_body"));
+  const settle = async (e: unknown): Promise<number> => {
+    if (!unsupported(e)) throw e;
     const prev = await lastSent(env);
     if (!prev || now - prev.at >= SEATS_DAILY_MS)
-      logWarn("billing_seats_unsupported", undefined, { why: e.why });
+      logWarn("billing_seats_unsupported", undefined, {
+        why: (e as BillingUnavailableError).why,
+      });
     await saveSent(env, members, now, true);
     return members;
+  };
+  let raw: unknown;
+  try {
+    raw = await post(true);
+  } catch (e) {
+    // A billing older than the ack answers 400 bad_body to the `jumpAck` key (a
+    // rollback): that is not "billing has no /seats". Resend once without it.
+    if (
+      ack !== null &&
+      e instanceof BillingUnavailableError &&
+      e.why === "http_400" &&
+      e.code === "bad_body"
+    ) {
+      try {
+        raw = await post(false);
+      } catch (e2) {
+        return await settle(e2);
+      }
+      // The old billing keeps no jump: the stale ack is no use any more.
+      await dropJumpAck(env, ack);
+    } else return await settle(e);
   }
   const r = BillingSeatsSchema.safeParse(raw);
   if (!r.success) throw new BillingUnavailableError("bad_answer");
+  // A report that carried the ack was accepted: billing has cleared that jump,
+  // so the ack stops riding every report (only while it is still the same one).
+  if (ack !== null) await dropJumpAck(env, ack);
   await saveSent(env, members, now, r.data.retry !== true);
   logInfo("billing_seats", { members, applied: r.data.applied });
   if (r.data.jump) await notifyJump(env, r.data.jump, now);
   return members;
+}
+
+/** Compare-and-delete: the ack key goes only while it still holds `at`. */
+async function dropJumpAck(env: Env, at: number): Promise<void> {
+  await env.DB.prepare("delete from settings where key = ?1 and value = ?2")
+    .bind(SEATS_JUMP_ACK_KEY, String(at))
+    .run()
+    .catch(() => undefined);
 }
 
 /**
@@ -99,11 +131,23 @@ async function notifyJump(
     const claim = await env.DB.prepare(
       "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
     )
-      .bind(key, JSON.stringify({ from: jump.from, to: jump.to, at: now }))
+      .bind(
+        key,
+        JSON.stringify({ from: jump.from, to: jump.to, at: now, sent: false }),
+      )
       .run();
     if ((claim.meta.changes ?? 0) === 0) {
-      // Handled before: say so again, in case the first acknowledgement was lost.
-      if (jump.at !== undefined) await saveJumpAck(env, jump.at);
+      // Someone else holds the claim. Acknowledge only when its email really
+      // went out (sent): a claim still in flight, or about to be released
+      // after a failed send, must not get the jump cleared on billing's side.
+      if (jump.at !== undefined) {
+        const held = await env.DB.prepare(
+          "select json_extract(value, '$.sent') as sent from settings where key = ?1",
+        )
+          .bind(key)
+          .first<{ sent: number | null }>();
+        if (held?.sent === 1) await saveJumpAck(env, jump.at);
+      }
       return;
     }
     claimed = true;
@@ -133,9 +177,15 @@ async function notifyJump(
         .bind(key)
         .run();
       claimed = false;
-    } else if (jump.at !== undefined) {
-      // Handled: billing may stop carrying it once the next report says so.
-      await saveJumpAck(env, jump.at);
+    } else {
+      // Mark the claim sent (what a concurrent report reads), then, when billing
+      // named the jump, acknowledge it on the next report.
+      await env.DB.prepare(
+        "update settings set value = json_set(value, '$.sent', json('true')) where key = ?1",
+      )
+        .bind(key)
+        .run();
+      if (jump.at !== undefined) await saveJumpAck(env, jump.at);
     }
   } catch (e) {
     logWarn("billing_seat_jump_email_failed", e);
