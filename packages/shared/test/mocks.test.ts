@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   ApiErrorSchema,
   ArtifactSummarySchema,
+  BUS_MACHINES_PAUSED_HEADER,
   BusAgentsSchema,
   type BusMachine,
   BusMachinesSchema,
@@ -335,9 +336,17 @@ describe("bus option (#1293)", () => {
     expect(me.busOn).toBeUndefined();
     expect(me.canConnect).toBeUndefined();
     expect(await json(await call("GET", R.busMachines))).toEqual({
-      updatesPaused: false,
       machines: [],
     });
+    // #2552: only a client that asks gets the owner's pause state.
+    expect(
+      await json(
+        await call("GET", R.busMachines, undefined, {
+          ...H,
+          [BUS_MACHINES_PAUSED_HEADER]: "1",
+        }),
+      ),
+    ).toEqual({ machines: [], updatesPaused: false });
     expect(await json(await call("GET", R.busAgents))).toEqual({
       agents: [],
       live: false,

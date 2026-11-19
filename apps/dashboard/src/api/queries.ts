@@ -1,6 +1,7 @@
 import {
   type ArtifactPatch,
   ArtifactSummarySchema,
+  BUS_MACHINES_PAUSED_HEADER,
   type BusAddress,
   BusAgentsSchema,
   type BusLinkPut,
@@ -302,7 +303,12 @@ export const useBusMachines = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.busMachines,
-    queryFn: ({ signal }) => api.get(R.busMachines, BusMachinesSchema, signal),
+    // #2552: ask for the owner's pause state; a build without this header gets
+    // the plain `{ machines }` answer it can parse.
+    queryFn: ({ signal }) =>
+      api.get(R.busMachines, BusMachinesSchema, signal, {
+        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+      }),
     refetchInterval: BUS_POLL_MS,
   });
 /**

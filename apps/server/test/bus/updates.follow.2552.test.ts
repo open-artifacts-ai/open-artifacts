@@ -4,7 +4,7 @@
 // owner has paused updates. A named version keeps its old meaning.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
-import { R } from "@oa/shared";
+import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
@@ -289,24 +289,35 @@ describe("pause (#2552)", () => {
     expect(rows[0]?.actor_id).toBe(owner.userId);
   });
 
-  it("GET R.busMachines tells the owner the pause state, and no one else", async () => {
+  it("GET R.busMachines tells the owner the pause state when asked, and no one else", async () => {
     const owner = await member("owner");
-    const read = async (auth: string | null) =>
-      (await (await api(app, R.busMachines, auth)).json()) as {
-        updatesPaused?: boolean;
-      };
-    expect((await read(owner.cookie)).updatesPaused).toBe(false);
+    const read = async (auth: string | null | undefined, ask: boolean) =>
+      (await (
+        await api(
+          app,
+          R.busMachines,
+          auth ?? null,
+          ask ? { headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" } } : {},
+        )
+      ).json()) as { machines: unknown[]; updatesPaused?: boolean };
+    // A build from before #2552 parses this with a strict schema: no field.
+    const legacy = await read(owner.cookie, false);
+    expect(Object.keys(legacy)).toEqual(["machines"]);
+    const asked = await read(owner.cookie, true);
+    expect(Object.keys(asked).sort()).toEqual(["machines", "updatesPaused"]);
+    expect(asked.updatesPaused).toBe(false);
     await api(app, R.busUpdatesPaused, owner.cookie, {
       method: "PUT",
       body: { paused: true },
     });
-    expect((await read(owner.cookie)).updatesPaused).toBe(true);
+    expect((await read(owner.cookie, true)).updatesPaused).toBe(true);
+    expect(Object.keys(await read(owner.cookie, false))).toEqual(["machines"]);
     await api(app, R.busUpdatesPaused, owner.cookie, {
       method: "PUT",
       body: { paused: false },
     });
-    expect((await read(owner.cookie)).updatesPaused).toBe(false);
+    expect((await read(owner.cookie, true)).updatesPaused).toBe(false);
     const other = await member("member");
-    expect("updatesPaused" in (await read(other.cookie))).toBe(false);
+    expect("updatesPaused" in (await read(other.cookie, true))).toBe(false);
   });
 });

@@ -53,7 +53,7 @@ import {
   usageLimit,
   VERSIONS_PAGE_SIZE,
 } from "../limits.js";
-import { R, viewerPath } from "../routes.js";
+import { BUS_MACHINES_PAUSED_HEADER, R, viewerPath } from "../routes.js";
 import {
   AgentViaSchema,
   ArtifactPatchSchema,
@@ -835,10 +835,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json({ agents: shareNoticeAgents });
     }),
     // #1291/#1293: the caller's bus machines; active newest first, then revoked.
-    http.get(`*${R.busMachines}`, () =>
+    http.get(`*${R.busMachines}`, ({ request }) =>
       HttpResponse.json({
-        // #2552: the mock caller is the owner, who is told the pause state.
-        updatesPaused: busUpdatesPaused,
+        // #2552: the mock caller is the owner, who is told the pause state when
+        // the client asks for it (as the server's route does).
+        ...(request.headers.get(BUS_MACHINES_PAUSED_HEADER) === "1"
+          ? { updatesPaused: busUpdatesPaused }
+          : {}),
         machines: [...busMachines].sort(
           (a, b) =>
             Number(a.revokedAt !== null) - Number(b.revokedAt !== null) ||

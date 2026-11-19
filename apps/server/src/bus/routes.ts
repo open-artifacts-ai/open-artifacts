@@ -17,6 +17,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  BUS_MACHINES_PAUSED_HEADER,
   BusLinkProposeSchema,
   BusLinkPutSchema,
   BusReachProposeSchema,
@@ -770,8 +771,11 @@ export function mountBus(app: AppType): void {
     const user = requireUser(c);
     const machines = await listBusMachines(c.env, user.id);
     // #2552: the pause switch's state, for whoever may set it (the owner, in a
-    // cookie session); no one else is told.
+    // cookie session), and only when the client asks for it: a dashboard build
+    // from before #2552 parses this read with a strict schema, so the field
+    // stays out of its answer (or its whole Machines list fails to load).
     if (
+      c.req.header(BUS_MACHINES_PAUSED_HEADER) === "1" &&
       interactiveSession(c) &&
       orgCan(user, "bus.updates_paused", { cap: capOfCaller(caller(c)) })
     )

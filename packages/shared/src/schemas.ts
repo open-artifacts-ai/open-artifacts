@@ -1101,8 +1101,9 @@ export const BusMachinesSchema = z.strictObject({
   machines: z.array(BusMachineSchema).max(100),
   /**
    * #2552: whether the owner paused every instance-driven machine update.
-   * Present only for the owner in a cookie session (who can change it);
-   * absent for everyone else.
+   * Sent only when the request asks for it (BUS_MACHINES_PAUSED_HEADER) and
+   * the caller may change it (the owner, in a cookie session); absent
+   * otherwise, so a client from before #2552 still parses this read.
    */
   updatesPaused: z.boolean().optional(),
 });
