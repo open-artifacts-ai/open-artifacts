@@ -14,6 +14,7 @@ import { AuthorFace } from "./AuthorFace";
 import { type Decision, weighIns } from "./decisionsModel";
 import { FaceStack } from "./FaceStack";
 import { scrollWithin } from "./keepScroll";
+import { OWN_ID, textOf } from "./ownWords";
 import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
@@ -152,6 +153,8 @@ function Row({
     ? ask.options.find((o) => o.id === answer.was?.optionId)
     : undefined;
   const w = weighIns(d);
+  // PROVISIONAL (#2895): an answer in the person's own words leads with the words.
+  const words = answer.optionId === OWN_ID ? textOf(answer) : undefined;
   const replacedBy = ask.replacedBy
     ? all.find((x) => x.id === ask.replacedBy)
     : undefined;
@@ -196,6 +199,14 @@ function Row({
         </span>
       ),
     },
+    ...(words
+      ? [
+          {
+            key: "own",
+            el: <Pill data-chip="own-words">Own words</Pill>,
+          },
+        ]
+      : []),
     ...(w.n > 0
       ? [
           {
@@ -262,9 +273,9 @@ function Row({
       >
         <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
         <span
-          className={`min-w-0 break-words ${replaced ? "line-through" : ""}`}
+          className={`min-w-0 whitespace-pre-wrap break-words ${replaced ? "line-through" : ""}`}
         >
-          {opt?.label ?? answer.optionId}
+          {words ?? opt?.label ?? answer.optionId}
         </span>
       </button>
       <p

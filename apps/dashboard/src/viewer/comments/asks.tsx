@@ -27,6 +27,14 @@ import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
+import {
+  OWN_ID,
+  OWN_PLACEHOLDER,
+  OWN_WORDS_COUNT_FROM,
+  OWN_WORDS_MAX,
+  optionsWithOwn,
+  textOf,
+} from "./ownWords";
 import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
@@ -621,6 +629,11 @@ function OptionViews({
             />
             {p.by.me ? "You" : p.by.name}
             {p.guest ? " (guest)" : ""} weighed in
+            {textOf(p) && (
+              <q data-own-words-text="" className="whitespace-pre-wrap">
+                {textOf(p)}
+              </q>
+            )}
           </span>
         ))
       )}
@@ -682,6 +695,9 @@ export function AskBlock({
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
+  // PROVISIONAL (#2895): the own-words box under "Something else".
+  const [ownOpen, setOwnOpen] = useState(false);
+  const [ownText, setOwnText] = useState("");
   const qid = useId();
   // #2381: what the viewer's own controls show: their weigh-in, or the decision.
   const myPick = ask ? myPickOf(ask) : undefined;
@@ -778,13 +794,15 @@ export function AskBlock({
     (a) => a.kind === "agent" && a.linked !== undefined,
   );
   const canAnswer = mine && !ask.closed;
-  const pickedIdx = ask.options.findIndex((o) => o.id === picked);
-  const pickedOpt = ask.options[pickedIdx];
+  // PROVISIONAL (#2895): "Something else", always drawn last; an agent's own "Other" stays a normal option.
+  const ownId = OWN_ID;
+  const options = optionsWithOwn(ask);
+  const pickedIdx = options.findIndex((o) => o.id === picked);
+  const pickedOpt = options[pickedIdx];
   // The decision itself (the decider's pick), for the closed line and the tick.
-  const decisionIdx = ask.options.findIndex(
-    (o) => o.id === ask.answer?.optionId,
-  );
-  const decisionOpt = ask.options[decisionIdx];
+  const decisionIdx = options.findIndex((o) => o.id === ask.answer?.optionId);
+  const decisionOpt = options[decisionIdx];
+  const answerWords = textOf(ask.answer);
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
   // A risky ask (an action option or a passkey) shows no one else: no who-line,
@@ -818,10 +836,21 @@ export function AskBlock({
     views.length,
   );
   const bars = people >= 4;
-  const recIdx = ask.options.findIndex(
-    (o) => o.id === ask.recommended?.optionId,
-  );
+  const recIdx = options.findIndex((o) => o.id === ask.recommended?.optionId);
   const letters = showLetters(ask.options);
+  const sendOwn = () => {
+    if (holdPicks) return;
+    const words = ownText.trim();
+    if (!words) return;
+    setErr(null);
+    answer.mutate(
+      { thread: thread.id, comment: c.id, ownWords: { text: words } },
+      {
+        onError: (e) => setErr(e),
+        onSuccess: () => setOwnOpen(false),
+      },
+    );
+  };
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   // Amber while it waits for this reader, as asksForMe counts it: a weigh-in
@@ -841,8 +870,10 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(decisionIdx)}, ` : ""}
-          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {answerWords
+            ? `"${answerWords}"`
+            : `${letters && decisionIdx < ask.options.length ? `${letter(decisionIdx)}, ` : ""}${decisionOpt.label}`}{" "}
+          · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -958,7 +989,8 @@ export function AskBlock({
             data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
-            {ask.options.map((o, i) => {
+            {options.map((o, i) => {
+              const isOwn = o.id === ownId;
               const rec = ask.recommended?.optionId === o.id;
               const sel = picked === o.id;
               // The decision keeps full strength in green; only unpicked options fade.
@@ -984,9 +1016,16 @@ export function AskBlock({
                       (locked && !sel)
                     }
                     aria-pressed={sel}
+                    aria-expanded={isOwn ? ownOpen : undefined}
                     data-option={o.id}
+                    data-own-words={isOwn ? "" : undefined}
                     onClick={() => {
                       if (holdPicks) return;
+                      // "Something else" opens its box; Send records it.
+                      if (isOwn) {
+                        setOwnOpen((v) => !v);
+                        return;
+                      }
                       setErr(null);
                       const v = {
                         thread: thread.id,
@@ -1001,7 +1040,7 @@ export function AskBlock({
                       answer.mutate(v, { onError: failed });
                     }}
                   >
-                    {letters && (
+                    {letters && !isOwn && i < ask.options.length && (
                       <span
                         data-option-key=""
                         className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
@@ -1027,18 +1066,70 @@ export function AskBlock({
                       )}
                     </span>
                   </Button>
-                  <OptionViews
-                    views={views.filter((p) => p.optionId === o.id)}
-                    total={views.length}
-                    bars={bars}
-                    decided={
-                      !risky &&
-                      ask.answer?.optionId === o.id &&
-                      !isSendingAnswer(ask.answer)
-                        ? actor(ask.answer.by, "You")
-                        : null
-                    }
-                  />
+                  {isOwn && ownOpen && canAnswer && !sel && (
+                    <form
+                      data-own-words-box=""
+                      className="mt-1 flex flex-col gap-1 px-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        sendOwn();
+                      }}
+                    >
+                      <textarea
+                        // biome-ignore lint/a11y/noAutofocus: the box opens on the person's own click
+                        autoFocus
+                        aria-label={OWN_PLACEHOLDER}
+                        placeholder={OWN_PLACEHOLDER}
+                        maxLength={OWN_WORDS_MAX}
+                        rows={3}
+                        value={ownText}
+                        disabled={answer.isPending}
+                        onChange={(e) => setOwnText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setOwnOpen(false);
+                            setRefocus(o.id);
+                          }
+                        }}
+                        className={`w-full resize-y rounded-md border border-border bg-background px-2 py-1 ${TXT}`}
+                      />
+                      <span className="flex items-center gap-2">
+                        <Button
+                          type="submit"
+                          size="xs"
+                          disabled={!ownText.trim() || answer.isPending}
+                        >
+                          Send
+                        </Button>
+                        {ownText.length >= OWN_WORDS_COUNT_FROM && (
+                          <span
+                            data-own-words-count=""
+                            className={`${TXT} ${MUTED}`}
+                          >
+                            {ownText.length} / {OWN_WORDS_MAX}
+                          </span>
+                        )}
+                      </span>
+                    </form>
+                  )}
+                  {(!isOwn ||
+                    views.some((p) => p.optionId === o.id) ||
+                    ask.answer?.optionId === o.id) && (
+                    <OptionViews
+                      views={views.filter((p) => p.optionId === o.id)}
+                      total={views.length}
+                      bars={bars}
+                      decided={
+                        !risky &&
+                        ask.answer?.optionId === o.id &&
+                        !isSendingAnswer(ask.answer)
+                          ? actor(ask.answer.by, "You")
+                          : null
+                      }
+                    />
+                  )}
                 </li>
               );
             })}
@@ -1075,10 +1166,12 @@ export function AskBlock({
             !answer.isPending && (
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
-                  {actor(ask.answer.by, "You")}{" "}
-                  {ask.decider && !risky ? "decided" : "picked"}{" "}
-                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-                  {versionDate(ask.answer.at)}
+                  {answerWords && ask.answer.optionId === ownId
+                    ? ask.answer.by.me
+                      ? "You answered in your own words"
+                      : `${actor(ask.answer.by, "You")} answered in their own words`
+                    : `${actor(ask.answer.by, "You")} ${ask.decider && !risky ? "decided" : "picked"} ${letters && pickedIdx < ask.options.length ? letter(pickedIdx) : pickedOpt.label}`}{" "}
+                  · {versionDate(ask.answer.at)}
                   {ask.closed ? " · closed" : ""}
                   {canAnswer && locked && (
                     <>
@@ -1095,6 +1188,14 @@ export function AskBlock({
                     </>
                   )}
                 </p>
+                {answerWords && ask.answer.optionId === ownId && (
+                  <q
+                    data-own-words-text=""
+                    className={`block w-fit max-w-full whitespace-pre-wrap break-words ${TXT}`}
+                  >
+                    {answerWords}
+                  </q>
+                )}
                 {ask.answer.verified === "passkey" && (
                   <span
                     data-ask-verified=""

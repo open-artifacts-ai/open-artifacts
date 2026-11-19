@@ -18,6 +18,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { z } from "zod";
 import { api } from "../../api/client";
+import { withOwnWords } from "./ownWords";
 
 /** The longest `q` a candidates search takes. */
 export const MENTION_CANDIDATES_Q_MAX = 40;
@@ -34,6 +35,8 @@ export const MentionCandidatesSchema = z.object({
 
 export const CommentSchema = SharedComment.extend({
   people: z.array(CommentAuthorSchema).optional(),
+  // PROVISIONAL (#2895): own-words answers.
+  ask: withOwnWords(SharedComment.shape.ask.unwrap()).optional(),
 });
 export const CommentThreadSchema = SharedThread.extend({
   comments: z.array(CommentSchema),

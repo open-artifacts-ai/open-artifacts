@@ -3011,3 +3011,250 @@ describe("Ask a question (#1794)", () => {
     ).not.toBeInTheDocument();
   });
 });
+
+describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", () => {
+  const OWN = {};
+  const open = async () => {
+    mount(viewerPath(OWNED));
+    return col();
+  };
+  const something = (c: HTMLElement) =>
+    within(c).findByRole("button", { name: /Something else/ });
+  const typeOwn = async (c: HTMLElement, text: string) => {
+    fireEvent.click(await something(c));
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    fireEvent.change(box, { target: { value: text } });
+    return box;
+  };
+
+  it("draws Something else last, after the agent's options", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    await something(c);
+    const labels = within(c)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("data-option"))
+      .filter(Boolean);
+    expect(labels).toEqual(["a", "b", "__own"]);
+  });
+
+  it("an agent's own Other stays a normal option, and ours still shows last", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "a", label: "List only" },
+            { id: "o", label: "Other" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    const other = await within(c).findByRole("button", { name: /Other/ });
+    await something(c);
+    // No box on the agent's option: one click is a plain pick.
+    fireEvent.click(other);
+    await waitFor(() => expect(sent).toEqual({ optionId: "o" }));
+    expect(
+      within(c).queryByPlaceholderText("Say what you'd like instead"),
+    ).toBeNull();
+    const ids = within(c)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("data-option"))
+      .filter(Boolean);
+    expect(ids).toEqual(["a", "o", "__own"]);
+  });
+
+  it("sends { ownWords: { text } } with no optionId, the words trimmed; Send waits for words", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [askThread({}, OWN)]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    fireEvent.click(await something(c));
+    expect(
+      await within(c).findByRole("button", { name: "Send" }),
+    ).toBeDisabled();
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    fireEvent.change(box, { target: { value: "   " } });
+    expect(within(c).getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.change(box, { target: { value: "  1 + 3 + 5  " } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ ownWords: { text: "1 + 3 + 5" } }),
+    );
+  });
+
+  it("caps at 1000 characters and counts near the limit", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    const box = await typeOwn(c, "x");
+    expect(box).toHaveAttribute("maxlength", "1000");
+    expect(within(c).queryByText(/\/ 1000/)).toBeNull();
+    fireEvent.change(box, { target: { value: "y".repeat(950) } });
+    expect(await within(c).findByText("950 / 1000")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["empty", "Write your answer first."],
+    ["too_long", "That is over 1,000 characters. Shorten it."],
+  ])(
+    "says %s in plain words and keeps the box and the words",
+    async (reason, copy) => {
+      serveThreads(() => [askThread({}, OWN)]);
+      server.use(
+        http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+          HttpResponse.json(
+            {
+              error: {
+                code: "bad_request",
+                message: "x",
+                details: { path: "ownWords.text", reason },
+              },
+            },
+            { status: 400 },
+          ),
+        ),
+      );
+      const c = await open();
+      const box = await typeOwn(c, "my words");
+      fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+      expect(await within(c).findByRole("alert")).toHaveTextContent(copy);
+      expect(box).toHaveValue("my words");
+    },
+  );
+
+  it("Escape closes the box and focus returns to the option", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    const box = await typeOwn(c, "");
+    fireEvent.keyDown(box, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        within(c).queryByPlaceholderText("Say what you'd like instead"),
+      ).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(c).getByRole("button", { name: /Something else/ }),
+      ),
+    );
+  });
+
+  it("after sending: 'You answered in your own words' and the text", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Ideas 1 + 3 + 5" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(
+      await within(c).findByText(/You answered in your own words/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("Ideas 1 + 3 + 5")).toBeInTheDocument();
+  });
+
+  it("others see it with the person's name", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          answer: {
+            by: { kind: "user", id: "sam", name: "Sam", me: false },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Something custom" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(
+      await within(c).findByText(/Sam answered in their own words/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("Something custom")).toBeInTheDocument();
+  });
+
+  it("the Decisions row leads with the words and says Own words", async () => {
+    serveThreads(() => [
+      askThread(
+        { id: "t-d" },
+        {
+          ...OWN,
+          question: "Which team case first?",
+          closed: true,
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Ideas 1 + 3 + 5" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    fireEvent.click(await within(c).findByRole("tab", { name: /Decisions/ }));
+    const row = await waitFor(() => {
+      const r = c.querySelector("[data-decision]");
+      expect(r).not.toBeNull();
+      return r as HTMLElement;
+    });
+    expect(row).toHaveTextContent("Ideas 1 + 3 + 5");
+    expect(row.querySelector('[data-chip="own-words"]')).toHaveTextContent(
+      "Own words",
+    );
+  });
+
+  it("an ask whose option names an action still offers it", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          options: [
+            { id: "a", label: "Merge it", action: "merge" },
+            { id: "b", label: "Wait" },
+          ],
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(await something(c)).toBeInTheDocument();
+  });
+});

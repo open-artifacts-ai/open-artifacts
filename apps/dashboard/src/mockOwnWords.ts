@@ -1,0 +1,95 @@
+// PROVISIONAL (#2895): mock-only "Something else" with a typed answer, over the
+// shared mocks (which do not know `ownWords` yet). Delete with
+// src/viewer/comments/ownWords.ts once the shared mocks serve it.
+// ?mock=own-words: a pick with { ownWords: { text } } (trimmed, 1 to 1000, no
+// optionId) is recorded, and the list then shows the answer with its words.
+import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
+
+const bad = (reason: string) =>
+  HttpResponse.json(
+    {
+      error: {
+        code: "bad_request",
+        message: "Invalid text",
+        details: { path: "ownWords.text", reason },
+      },
+    },
+    { status: 400 },
+  );
+
+/** `next` is every handler after these. */
+export function ownWordsHandlers(next: HttpHandler[]): HttpHandler[] {
+  const own = new Map<string, string>();
+  const A = "*/api/v1/artifacts/:id/comments";
+  type Ask = {
+    options: { id: string }[];
+    answer?: Record<string, unknown>;
+  };
+  type Thread = { comments: { id: string; ask?: Ask }[] };
+  const mark = (list: { threads: Thread[] }) => {
+    for (const t of list.threads)
+      for (const c of t.comments) {
+        if (!c.ask) continue;
+        const text = own.get(c.id);
+        if (text && c.ask.answer) {
+          const { optionId: _o, ...rest } = c.ask.answer;
+          c.ask.answer = { ...rest, ownWords: { text } };
+        }
+      }
+  };
+  return [
+    http.get(A, async ({ request }) => {
+      const res = await getResponse(next, request);
+      if (!res?.ok) return res;
+      const list = (await res.json()) as { threads: Thread[] };
+      mark(list);
+      return HttpResponse.json(list);
+    }),
+    http.post(
+      `${A}/:thread/comments/:comment/answer`,
+      async ({ request, params }) => {
+        const body = (await request.clone().json()) as {
+          optionId?: string;
+          ownWords?: { text?: string };
+        };
+        if (body.ownWords === undefined) return getResponse(next, request);
+        if (body.optionId !== undefined)
+          return HttpResponse.json(
+            { error: { code: "bad_request", message: "One or the other" } },
+            { status: 400 },
+          );
+        const text = (body.ownWords.text ?? "").trim();
+        if (text === "") return bad("empty");
+        if (text.length > 1000) return bad("too_long");
+        // The shared mock knows no "other": record the first option, then show the words.
+        const list = (await (
+          await getResponse(
+            next,
+            new Request(
+              new URL(`/api/v1/artifacts/${params.id}/comments`, request.url),
+            ),
+          )
+        )?.json()) as { threads: Thread[] };
+        const first = list.threads
+          .flatMap((t) => t.comments)
+          .find((c) => c.id === params.comment)?.ask?.options[0]?.id;
+        const res = await getResponse(
+          next,
+          new Request(request.url, {
+            method: "POST",
+            headers: request.headers,
+            body: JSON.stringify({ optionId: first }),
+          }),
+        );
+        if (!res?.ok) return res;
+        own.set(String(params.comment), text);
+        const c = (await res.json()) as { ask?: Ask };
+        if (c.ask?.answer) {
+          const { optionId: _o, ...rest } = c.ask.answer;
+          c.ask.answer = { ...rest, ownWords: { text } };
+        }
+        return HttpResponse.json(c);
+      },
+    ),
+  ];
+}
