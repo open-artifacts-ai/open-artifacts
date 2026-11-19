@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.235.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.0...v0.235.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **bus:** revalidate Codex calls after a resumed thread rotates its transcript ([#2958](https://github.com/open-artifacts-ai/open-artifacts/issues/2958)) ([1a50a6b](https://github.com/open-artifacts-ai/open-artifacts/commit/1a50a6b460c5e6b5079c4905a6a1d2326ecaaaec))
+
 ## [0.235.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.234.0...v0.235.0) (2026-11-19)
 
 
