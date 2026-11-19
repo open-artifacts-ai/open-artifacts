@@ -125,6 +125,12 @@ export async function add(
     throw e;
   }
   say(ctx, `Added ${name}.`);
+  say(
+    ctx,
+    `The running bus connects to ${name} the next time it restarts (after an update, or when you restart the service). Until then, folders you map to it stay off every hub.`,
+    "",
+    `Heads up: after that restart, which can be an automatic update, every folder that is not mapped stops going to your main instance and sits on none. To keep your current folders on main, run ${ctx.busCmd} use main in a parent folder such as ~ (it covers everything below it).`,
+  );
   claudeEntries(name, parsed.hub, ctx);
   return 0;
 }

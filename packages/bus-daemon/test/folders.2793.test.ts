@@ -115,7 +115,7 @@ describe("folderHomeLookup (#2793 S2)", () => {
     const b = scratch();
     writeFolders({ map: { [b]: "work" }, no: {}, seen: {} }, h);
     expect(unmappedFolderNote(a, h)).toBe(
-      "This folder isn't tied to an instance yet. Run npx @open-artifacts/bus use here.",
+      "This folder isn't tied to an instance yet. Run npx @open-artifacts/bus use in this folder.",
     );
     expect(unmappedFolderNote(a, h)).toBeUndefined();
     expect(unmappedFolderNote(b, h)).toBeUndefined();
