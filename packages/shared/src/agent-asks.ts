@@ -152,12 +152,12 @@ export const ListenShortenBodySchema = z.strictObject({
 export type ListenShortenBody = z.infer<typeof ListenShortenBodySchema>;
 
 /** The most colleagues one batch add may name. */
-export const LISTEN_ADD_BATCH_MAX = 200;
+export const LISTEN_ADD_BATCH_MAX = 50;
 
 /**
  * POST R.agentListens: add teammates to the caller's "listens to" list directly
  * (Settings, the share tick, first setup). Exactly one of `memberId` and
- * `memberIds` (at most 200; all-or-nothing). `until` is 30, 90 or 365 (days from
+ * `memberIds` (at most 50; all-or-nothing). `until` is 30, 90 or 365 (days from
  * now), or an end time in ms, clamped to a year from now.
  */
 export const ListenAddBodySchema = z
