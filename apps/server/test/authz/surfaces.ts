@@ -2289,6 +2289,21 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // A matrix caller names nobody who is a teammate: the add is refused (400) before anything is written; a denied caller is refused before that.
+  "POST /api/v1/me/agent-listens": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens",
+        body: {
+          memberId: "probe",
+          scope: "all",
+          until: 30,
+          via: "settings",
+        },
+      }),
+      allow: code("bad_request"),
+    },
+  },
   "PATCH /api/v1/me/agent-listens/:id": {
     real: {
       req: () => ({
@@ -2653,6 +2668,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me/agent-requests", U, [200]],
   ["PUT /api/v1/me/agent-requests", U],
   ["GET /api/v1/me/agent-listens", U, [200]],
+  ["POST /api/v1/me/agent-listens", U],
+  ["GET /api/v1/me/agent-asks/history", U, [200]],
   ["PATCH /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/passkeys/:id", U],

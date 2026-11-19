@@ -383,6 +383,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me/agent-requests": { user: "the caller's own switch" },
   "PUT /api/v1/me/agent-requests": { user: "the caller's own switch" },
   "GET /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "POST /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "GET /api/v1/me/agent-asks/history": { user: "the caller's request history" },
   "PATCH /api/v1/me/agent-listens/:id": {
     user: "the caller's listens-to list",
   },

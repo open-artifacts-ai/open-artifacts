@@ -14,7 +14,7 @@ export const R = {
   me: "/api/v1/me",
   /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
   meInbox: "/api/v1/me/inbox",
-  /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */
+  /** POST InboxReadBody (`{ ids }`, at most 50) -> 204. Marks those items read. */
   meInboxRead: "/api/v1/me/inbox/read",
   /** POST -> 204. Marks every update read. */
   meInboxReadAll: "/api/v1/me/inbox/read-all",
@@ -151,6 +151,9 @@ export const R = {
   agentRequests: "/api/v1/me/agent-requests",
   /** #2577 S2: GET -> ListensList: the caller's live "listens to" entries (people whose requests their agents take without holding). Browser session only. */
   agentListens: "/api/v1/me/agent-listens",
+  /** #2577: POST ListenAddBody -> ListenAddResult on R.agentListens: adds teammates to the list directly ({ memberId } or { memberIds }, at most 50, all-or-nothing). A live entry is extended, not duplicated. Browser session only, no passkey. 400 for an outsider, a non-member, yourself, a page open to guests or the link, a space you are not in. */
+  /** #2577: GET -> AskHistory: "Who asked what", the last 30 days, newest first, for the caller as receiver. No words. Browser session only. */
+  agentAskHistory: "/api/v1/me/agent-asks/history",
   /** PATCH ListenShortenBody { until } -> ListenEntry: ends the entry sooner (never later: a longer one is a new allow). DELETE -> 204: removes it. Both affect future requests only; what was delivered or is held stays. Own entries only (else 404); browser session only. */
   agentListen: (id: string) => `/api/v1/me/agent-listens/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
