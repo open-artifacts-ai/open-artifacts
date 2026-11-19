@@ -1274,8 +1274,13 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   else if (q.format)
     conds.push(eq(artifacts.format, q.format), eq(artifacts.doc, 0));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
+  // #2610: an outsider sees no agent names, so the filter is no yes/no oracle on one: nothing matches, real name or not.
   if (q.agent !== undefined)
-    conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
+    conds.push(
+      ...(hidesAgents(caller)
+        ? [sql`0`]
+        : [eq(artifacts.lastAgentName, q.agent), agentShownSql(caller)]),
+    );
   if (q.agentVia !== undefined) conds.push(agentViaSql(caller, q.agentVia));
   // owner "me" (any case) is the caller; anything else is an email.
   if (q.owner !== undefined && q.owner.trim().toLowerCase() === "me") {

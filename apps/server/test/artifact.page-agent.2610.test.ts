@@ -13,12 +13,17 @@ import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import type { AgentAttr } from "../src/services/agent-usage.js";
-import { publish } from "../src/services/artifacts.js";
+import { list, publish } from "../src/services/artifacts.js";
 import {
   installDelivery,
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
-import { addThread, type CommentWho } from "../src/services/comments.js";
+import {
+  addThread,
+  artifactAgents,
+  type CommentWho,
+} from "../src/services/comments.js";
+import { follow } from "../src/services/follows.js";
 import { putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { listenEachOther } from "./held-listens.js";
@@ -248,6 +253,36 @@ describe("GET artifact: pageAgent", () => {
   });
 });
 
+describe("the ?agent= filter is no oracle for outsiders (#2610)", () => {
+  it("a guest, a restricted member and an anonymous caller get nothing for a real or a fake agent name; the publisher gets the hit", async () => {
+    const id = await page({ visibility: "public" });
+    const r = await mk("pa-oracle-restricted");
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(r.userId)
+      .run();
+    const callers = [
+      { kind: "user" as const, user: guest.member },
+      { kind: "user" as const, user: r.member, cap: "restricted" as const },
+      { kind: "anonymous" as const },
+    ];
+    const q = (agent: string) => ({ scope: "all", agent, limit: 50 }) as never;
+    for (const c of callers) {
+      const real = await list(E, c as never, q("Design")).catch(() => null);
+      const fake = await list(E, c as never, q("No Such Agent")).catch(
+        () => null,
+      );
+      expect(JSON.stringify(real)).toEqual(JSON.stringify(fake));
+      expect(JSON.stringify(real)).not.toContain(id);
+    }
+    const member = await list(
+      E,
+      { kind: "user", user: owner.member } as never,
+      q("Design"),
+    );
+    expect(JSON.stringify(member)).toContain(id);
+  });
+});
+
 describe("a new thread notifies the page's agent by default", () => {
   const typed = (u: U): CommentWho => ({
     kind: "user",
@@ -305,11 +340,20 @@ describe("a new thread notifies the page's agent by default", () => {
 
   it("an @mention of another agent still works with the chip removed", async () => {
     const id = await page();
+    await follow(E, owner.userId, { namespace: "ns-o", name: "Pi" }, id);
+    const pi = (await artifactAgents(E, id, owner.userId)).find((x) =>
+      x.name.startsWith("Pi"),
+    )?.key as string;
     const t = await post(id, typed(owner), owner, ANCHORS.note, {
       notifyPageAgent: false,
+      mentions: [{ key: pi }],
     });
     expect(t.comments[0]?.body).toBe("look");
-    expect(toAgent(id)).toHaveLength(0);
+    const got = bus.sent
+      .filter((x) => x.notice.artifactId === id)
+      .map((x) => x.notice.to.name);
+    // Pi is told; the page's agent (Design) is not.
+    expect(got).toEqual(["Pi"]);
   });
 
   it("an agent's or a token's comment never wakes another person's page agent; a person's own note does", async () => {
