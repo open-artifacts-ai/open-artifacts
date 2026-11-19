@@ -251,7 +251,7 @@ if [ "$noglob" = 0 ]; then set +f; fi
 for d in ${usual.join(" ")}; do
   if ok "$d/node"; then exec "$d/node" "$@"; fi
 done
-echo "oa-bus: Node.js ${MIN_NODE} or newer not found. Install it, then run: ${BUS_CMD} install" >&2
+echo "oa-bus: Node.js ${MIN_NODE} or newer not found. Install it, then run: $here/node $here/dist/index.js install" >&2
 exit 127
 `;
 }

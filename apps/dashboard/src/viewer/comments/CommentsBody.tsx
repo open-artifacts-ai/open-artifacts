@@ -84,6 +84,13 @@ import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
 import {
+  isPersonKey,
+  mentionsWithPeople,
+  peopleIds,
+  personAsAgent,
+  useMentionCandidates,
+} from "./people";
+import {
   AttachButton,
   AttachedThumbs,
   filesOf,
@@ -593,13 +600,49 @@ function Composer({
     )
       void agentsQ.refetch();
   };
-  const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
-  const found =
-    query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
+  // PROVISIONAL (#2780): people join the agents in one list. The server
+  // answers only for the owner and editors (everyone else gets none).
+  const peopleOn = mentionable && api.canMention && api.canComment;
+  const [picked, setPicked] = useState<CommentAuthor[]>([]);
+  const query =
+    agents?.length || peopleOn ? mentionQuery(text.slice(0, caret)) : null;
+  const candidates = useMentionCandidates(
+    api.artifactId,
+    peopleOn && !menuOff ? query : null,
+    peopleOn,
+  );
+  // The agents and the picked people: what the @names in the text can mean.
+  const pool = useMemo(
+    () => [...(agents ?? []), ...picked.map(personAsAgent)],
+    [agents, picked],
+  );
+  const mentionedNow = mentionedKeys(text, pool);
+  const atCap = mentionedNow.length >= MENTIONS_MAX;
+  const found = (() => {
+    if (query === null || menuOff) return null;
+    // A finished mention ("@OA Design ") closes the list.
+    if (matchAgents(pool, query) === null) return null;
+    const list = [
+      ...(matchAgents(agents ?? [], query) ?? []),
+      ...candidates
+        .map(personAsAgent)
+        .filter((p) => !mentionedNow.includes(p.key)),
+    ];
+    return list.length > 0 || agents?.length ? list : null;
+  })();
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
   const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
+    // Over the cap nothing more is added (the note under the list says so).
+    if (atCap) return;
+    if (isPersonKey(a.key)) {
+      const who = candidates.find((p) => personAsAgent(p).key === a.key);
+      if (who)
+        setPicked((cur) =>
+          cur.some((p) => personAsAgent(p).key === a.key) ? cur : [...cur, who],
+        );
+    }
     const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
     setText(`${before}@${a.name} ${text.slice(caret)}`);
     const at = before.length + a.name.length + 2;
@@ -660,14 +703,9 @@ function Composer({
   // #2508: a picture-only comment is fine unless it mentions an agent: then
   // it needs words, because a picture alone isn't a request.
   const withPictures = attach && pics.items.length > 0;
-  const words = (agents ?? []).reduce(
-    (t, a) => removeMention(t, a.name, agents ?? []),
-    body,
-  );
+  const words = pool.reduce((t, a) => removeMention(t, a.name, pool), body);
   const needWords =
-    withPictures &&
-    mentionedKeys(body, agents ?? []).length > 0 &&
-    words.trim() === "";
+    withPictures && mentionedKeys(body, pool).length > 0 && words.trim() === "";
   const canSend = withPictures
     ? (body !== "" || pics.refs.length > 0) && pics.ready && !needWords
     : body !== "";
@@ -686,9 +724,13 @@ function Composer({
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
-      const keys = mentionedKeys(body, agents ?? []);
+      const keys = mentionedKeys(body, pool);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
-      const mentions = keys.map((key) => ({ key }));
+      const mentions = keys
+        .filter((k) => !isPersonKey(k))
+        .map((key) => ({ key }));
+      // PROVISIONAL (#2780): people go by id, apart from agents.
+      const people = peopleIds(keys);
       const pictureRefs = withPictures ? pics.refs : [];
       if (instant) {
         // Clear now; the empty box is what stops a double submit, so the next
@@ -702,6 +744,7 @@ function Composer({
         try {
           await onSubmit(body, {
             mentions,
+            ...(people.length ? { people } : {}),
             ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
           });
         } catch (e) {
@@ -717,6 +760,7 @@ function Composer({
       setBusy(true);
       await onSubmit(body, {
         mentions,
+        ...(people.length ? { people } : {}),
         ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
       });
       setText("");
@@ -855,15 +899,14 @@ function Composer({
               !e.metaKey &&
               !e.ctrlKey &&
               !e.altKey &&
-              agents &&
-              agents.length > 0
+              pool.length > 0
             ) {
               const t = e.currentTarget;
               const cut = atomicBackspace(
                 t.value,
                 t.selectionStart,
                 t.selectionEnd,
-                agents,
+                pool,
               );
               // Select the name and let the native delete remove it: the
               // edit stays in the browser's undo stack.
@@ -916,8 +959,8 @@ function Composer({
             }
           }}
         />
-        {agents && agents.length > 0 && (
-          <MentionMirror field={ref} text={text} agents={agents} />
+        {pool.length > 0 && (
+          <MentionMirror field={ref} text={text} agents={pool} />
         )}
         {dragging && (
           <div
@@ -949,11 +992,17 @@ function Composer({
           onPick={pick}
         />
       )}
-      {agents && agents.length > 0 && (
+      {found && atCap && (
+        <p role="status" className={`${TXT} text-muted-foreground`}>
+          You can mention up to {MENTIONS_MAX} agents or people in one comment.
+          Remove one to add another.
+        </p>
+      )}
+      {pool.length > 0 && (
         <MentionChips
           text={text}
-          agents={agents}
-          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
+          agents={pool}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, pool))}
         />
       )}
       {error != null && (
@@ -1309,7 +1358,7 @@ function CommentRow({
                 >
                   <MentionedText
                     body={c.body}
-                    mentions={c.mentions}
+                    mentions={mentionsWithPeople(c)}
                     guest={api.guest}
                     marks={marks}
                     createdAt={c.createdAt}
@@ -1324,7 +1373,7 @@ function CommentRow({
               <div className={`break-words ${CTXT}`} {...roving}>
                 <MentionedText
                   body={c.body}
-                  mentions={c.mentions}
+                  mentions={mentionsWithPeople(c)}
                   guest={api.guest}
                   marks={marks}
                   createdAt={c.createdAt}
@@ -1719,7 +1768,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               label="Reply"
               actions={ACTIONS_PLAIN}
               placeholder="Reply"
-              mentionPlaceholder="Reply. Type @ to mention an agent."
+              mentionPlaceholder="Reply. Type @ to mention an agent or a person."
               submit="Reply"
               mentionable
               pictures
@@ -1982,7 +2031,7 @@ function NewThread({
       <Composer
         label="Add a comment"
         placeholder="Add a comment"
-        mentionPlaceholder="Add a comment. Type @ to mention an agent."
+        mentionPlaceholder="Add a comment. Type @ to mention an agent or a person."
         submit="Comment"
         autoFocus
         buttonsRight
@@ -2082,7 +2131,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
       <Composer
         label="Comment on the whole page"
         placeholder="Comment on the whole page"
-        mentionPlaceholder="Add a comment. Type @ to mention an agent."
+        mentionPlaceholder="Add a comment. Type @ to mention an agent or a person."
         submit="Comment"
         buttonsRight
         card

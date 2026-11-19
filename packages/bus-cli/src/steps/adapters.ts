@@ -36,6 +36,7 @@ import {
   CODEX_PROXY_ENTRY_FILE,
   codexBinFile,
   codexBinPin,
+  listInstances,
 } from "@oa/bus-daemon";
 import {
   claudeConfigFile,
@@ -485,6 +486,21 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
   }
 }
 
+/** The `--instance` helper for the Claude entries of each added instance; notes only. */
+function instanceProofs(deps: AdapterDeps): string[] {
+  const notes: string[] = [];
+  const bus = deps.busHome ?? join(deps.home, ".oa-bus");
+  for (const i of listInstances(bus)) {
+    if (i.main || i.hub === "") continue;
+    notes.push(
+      ...installProof(proofIo(deps), i.hub, deps.busBin, movedHome(deps), {
+        instance: { name: i.name, hub: i.hub },
+      }).notes,
+    );
+  }
+  return notes;
+}
+
 /** The proof helper of the instance's Claude entry (#1822); never stops the install. */
 function claudeProof(deps: AdapterDeps, notes: string[]) {
   if (deps.hub === undefined) return;
@@ -493,6 +509,9 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
       ...installProof(proofIo(deps), deps.hub, deps.busBin, movedHome(deps))
         .notes,
     );
+    // #2793 S4: each added instance's entries get their own helper form. A
+    // home with only main lists none, so nothing else is read or written.
+    notes.push(...instanceProofs(deps));
   } catch (e) {
     notes.push(
       `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
@@ -637,7 +656,7 @@ function ompOrigin(deps: AdapterDeps, notes: string[]) {
   }
 }
 
-const proofIo = (
+export const proofIo = (
   deps: Pick<AdapterDeps, "home" | "busHome" | "env">,
 ): ProofIo => ({
   file: paths(deps as AdapterDeps).claude,

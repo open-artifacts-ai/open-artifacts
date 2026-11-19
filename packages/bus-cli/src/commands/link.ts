@@ -2,7 +2,9 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   canonicalPath,
+  credentialsFor,
   globalFile,
+  MAIN_INSTANCE,
   remotesFile,
   resolveNamespace,
   shq,
@@ -10,9 +12,9 @@ import {
 import { BUS_ROUTES } from "@oa/bus-protocol";
 import { type Ctx, plain, say, sayErr } from "../context.ts";
 import { readMachine } from "../machine.ts";
-import { approvalsFileFor } from "./namespace.ts";
+import { approvalsFileFor, approvalsInstance } from "./namespace.ts";
 
-type Side = { dir: string; namespace: string };
+type Side = { dir: string; namespace: string; instance: string | undefined };
 
 /** The folder's real path and the namespace its agents get (the daemon's own rules, #1525), or undefined when it is no directory. */
 function side(ctx: Ctx, dir: string): Side | undefined {
@@ -26,7 +28,11 @@ function side(ctx: Ctx, dir: string): Side | undefined {
       remotesFile: remotesFile(ctx.home),
       recordRemote: false,
     });
-    return { dir: real, namespace: ns.namespace };
+    return {
+      dir: real,
+      namespace: ns.namespace,
+      instance: approvalsInstance(ctx, real),
+    };
   } catch {
     return undefined;
   }
@@ -68,11 +74,43 @@ export async function link(
     sayErr(ctx, c.linkSame(shq(a.dir), shq(b.dir), plain(a.namespace)));
     return 1;
   }
+  // #2793: a link is made on one instance's hub, with that instance's key. Both
+  // folders must be tied to the same instance; the namespaces of one are never
+  // sent to another's hub, and nothing is guessed for an unmapped folder.
+  if (a.instance === undefined || b.instance === undefined) {
+    sayErr(
+      ctx,
+      `Nothing changed: a folder isn't tied to an instance yet. Run ${ctx.busCmd} use there first.`,
+    );
+    return 1;
+  }
+  if (a.instance !== b.instance) {
+    sayErr(
+      ctx,
+      `Nothing changed: these folders use different instances (${plain(a.instance)} and ${plain(b.instance)}). A link is made on one instance; put both folders on the same one with ${ctx.busCmd} use.`,
+    );
+    return 1;
+  }
+  let hubUrl = m.hub;
+  let token = m.token;
+  if (a.instance !== MAIN_INSTANCE) {
+    try {
+      const cred = credentialsFor(a.instance, ctx.home);
+      hubUrl = cred.hub;
+      token = cred.machine_token;
+    } catch {
+      sayErr(
+        ctx,
+        `Nothing changed: the instance ${plain(a.instance)} can't be used (its key is missing or was revoked). Run ${ctx.busCmd} add again.`,
+      );
+      return 1;
+    }
+  }
   const action = opts.sub === "add" ? "link" : "unlink";
-  const res = await ctx.fetch(new URL(BUS_ROUTES.linkProposals, m.hub), {
+  const res = await ctx.fetch(new URL(BUS_ROUTES.linkProposals, hubUrl), {
     method: "POST",
     headers: {
-      authorization: `Bearer ${m.token}`,
+      authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
     body: JSON.stringify({ action, a: a.namespace, b: b.namespace }),
@@ -97,7 +135,7 @@ export async function link(
     if (typeof j.confirmUrl === "string") {
       const u = new URL(j.confirmUrl);
       if (
-        u.origin === new URL(m.hub).origin &&
+        u.origin === new URL(hubUrl).origin &&
         u.pathname === "/bus/links/confirm" &&
         !u.search &&
         /^#[A-Za-z0-9_-]{43}$/.test(u.hash)

@@ -44,7 +44,7 @@ import {
   isOutsideMember,
   takeReceiverSlot,
 } from "./mention-guards.js";
-import { hasPasskey, listenChallenge, verifyListen } from "./passkeys.js";
+import { listenChallenge } from "./passkeys.js";
 import { getUser, personName } from "./users.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
@@ -869,22 +869,8 @@ export async function allow(
     if (until <= now || until > now + LISTEN_MAX_MS)
       throw new ApiError("bad_request", "`until` is at most a year from now");
   }
-  // Once and this page need no passkey. All pages and a whole space do, and a
-  // member without a usable passkey cannot make them at all (409 no_passkey).
-  if (grant === "all" || grant === "space") {
-    if (!(await hasPasskey(env, receiverId, now)))
-      throw new ApiError("no_passkey", "Add a passkey in your settings first");
-    if (!body.assertion)
-      throw new ApiError("passkey_required", "This needs your passkey");
-    await verifyListen(
-      env,
-      receiverId,
-      req.sender_id,
-      listenBinding(grant, until, space?.id),
-      body.assertion,
-      now,
-    );
-  }
+  // #2864: no scope needs a passkey now; the interactive session the route
+  // requires is the yes. An `assertion` an old client sends is ignored.
   const wanted = new Map(body.items.map((i) => [i.commentId, i.wordsHash]));
   const { results: rows } = await stmt(
     env.DB,

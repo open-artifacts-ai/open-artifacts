@@ -143,9 +143,16 @@ export async function use(
     return 1;
   }
   say(ctx, `Which instance should ${clean(key)} use?`, "");
+  // A suggestion that changed after the folder was settled is marked too, so
+  // the person sees which line the repo now points at; it is still only a mark.
+  const marked =
+    added ??
+    (suggestion !== undefined && f.no[key] !== suggestion
+      ? instanceAt(suggestion, list)
+      : undefined);
   list.forEach((i, n) => {
     const mark =
-      added && i.name === added.name ? "  (suggested by this repo)" : "";
+      marked && i.name === marked.name ? "  (suggested by this repo)" : "";
     say(ctx, `  ${n + 1}. ${i.name}  ${shown[n]}${mark}`);
   });
   say(ctx, "");
