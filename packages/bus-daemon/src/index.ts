@@ -1862,6 +1862,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         return false;
     }
   };
+  const guestRows = (instance: string) => {
+    const guests = [...guestSet.values()]
+      .filter((g) => g.instance === instance && g.name !== undefined)
+      .map((g) => ({ name: stripTerminalControls(g.name as string) }));
+    return guests.length > 0 ? { guests } : {};
+  };
   /** A link dropped: its guests are announced again on the next one. */
   const guestsLinkDown = (lane: Lane) => {
     for (const g of guestSet.values())
@@ -2772,12 +2778,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   : ("not_connected" as const),
                 revoked: l.revoked,
                 agents: live.filter((a) => a.instance === l.name).length,
-                // #2793 S3b: sessions homed elsewhere that used this instance's tools. Names only.
-                guests: [...guestSet.values()]
-                  .filter((g) => g.instance === l.name && g.name !== undefined)
-                  .map((g) => ({
-                    name: stripTerminalControls(g.name as string),
-                  })),
+                // #2793 S3b: sessions homed elsewhere that used this instance's tools. Names only; absent when none.
+                ...guestRows(l.name),
               })),
             }
           : {}),

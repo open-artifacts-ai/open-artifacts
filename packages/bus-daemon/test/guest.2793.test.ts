@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { daemonLinkProof } from "@oa/bus-ipc";
+import { daemonLinkProof, daemonStatus } from "@oa/bus-ipc";
 import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
@@ -319,6 +319,37 @@ describe("a guest joins only after using the instance's tools (#2793 S3b)", () =
       v: 1,
       guests: [{ pid: 4242, procStart: "t0", instance: "b" }],
     });
+  });
+
+  it("oa-bus status lists the guest sessions per instance, by the name B gave", async () => {
+    const s = await setup();
+    await holdAndUse(s);
+    seenB(s);
+    await vi.waitFor(() => expect(s.hubB.of("guest_up")).toHaveLength(1));
+    const up = s.hubB.of("guest_up")[0] as unknown as { id: string };
+    const rows = async () =>
+      (await daemonStatus({ path: s.h.socketPath, timeoutMs: 3000 })).instances;
+    // Not told its name yet: not listed.
+    expect(await rows()).toEqual([
+      expect.not.objectContaining({ guests: expect.anything() }),
+      expect.not.objectContaining({ guests: expect.anything() }),
+    ]);
+    s.hubB.send({
+      id: up.id,
+      type: "agent_ok",
+      agent_ref: "guest:sa",
+      bus_name: "Visitor",
+    });
+    await vi.waitFor(
+      async () => {
+        const guests = (await rows())?.find((r) => r.name === "b")?.guests;
+        expect(guests).toEqual([{ name: "Visitor" }]);
+      },
+      { timeout: 5000 },
+    );
+    expect(
+      (await rows())?.find((r) => r.name === "main")?.guests,
+    ).toBeUndefined();
   });
 
   it("a session that never used B is unknown to B: proof_seen at connect, before any tool_use, makes no guest", async () => {
