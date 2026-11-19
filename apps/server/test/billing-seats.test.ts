@@ -399,6 +399,24 @@ describe("a big jump billed at once emails the owner (#2588)", () => {
     expect(await jumpKeys()).toHaveLength(1);
   });
 
+  it("with billing's `at`, a redelivery on another day is still one email, and a new jump is another", async () => {
+    const e = HE();
+    const t = Date.now();
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t);
+    // The next day's daily report gets the same jump again: no second email.
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(seatCalls().length).toBe(2);
+    expect(sends).toHaveLength(1);
+    expect((await jumpKeys()).map((k) => k.key)).toEqual([
+      `billing.seats.jump:${t - 5_000}`,
+    ]);
+    // A different jump (another `at`), even to the same count, is its own email.
+    fake.seatsJump = { from: 3, to: 14, at: t + 1 };
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(sends).toHaveLength(2);
+  });
+
   it("no jump, no email", async () => {
     await run(HE(), Date.now());
     expect(sends).toHaveLength(0);

@@ -74,10 +74,15 @@ export async function sendSeats(env: Env, now: number): Promise<number> {
  */
 async function notifyJump(
   env: Env,
-  jump: { from: number; to: number },
+  jump: { from: number; to: number; at?: number },
   now: number,
 ): Promise<void> {
-  const key = `billing.seats.jump:${jump.to}:${new Date(now).toISOString().slice(0, 10)}`;
+  // Billing's own time names the jump, so a redelivery is never a second email
+  // (#2940); an older billing sends none: the new count and the UTC day.
+  const key =
+    jump.at !== undefined
+      ? `billing.seats.jump:${jump.at}`
+      : `billing.seats.jump:${jump.to}:${new Date(now).toISOString().slice(0, 10)}`;
   let claimed = false;
   try {
     const claim = await env.DB.prepare(

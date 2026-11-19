@@ -244,6 +244,8 @@ export const BillingSeatsSchema = z.object({
     .object({
       from: z.number().int().nonnegative(),
       to: z.number().int().positive(),
+      /** When billing billed the jump (ms). Names the jump: the instance keys its email on it. Absent from older billing. */
+      at: z.number().int().positive().optional(),
     })
     .optional(),
 });

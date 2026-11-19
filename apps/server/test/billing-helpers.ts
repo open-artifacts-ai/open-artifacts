@@ -50,7 +50,9 @@ export function fakeBilling(install = INSTALL) {
     down: false,
     seatsApplied: "applied",
     seatsRetry: undefined as boolean | undefined,
-    seatsJump: undefined as { from: number; to: number } | undefined,
+    seatsJump: undefined as
+      | { from: number; to: number; at?: number }
+      | undefined,
     /** Billing from before #2580: no /seats, and an unknown body key is 400 bad_body. */
     legacy: false,
   };
