@@ -56,6 +56,10 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
   BUS_CAPS.ackConfirm,
+  BUS_CAPS.runVersion,
+  BUS_CAPS.noticeMeta,
+  BUS_CAPS.ownerAway,
+  BUS_CAPS.guest,
 ] as const;
 
 export class HubConnection {

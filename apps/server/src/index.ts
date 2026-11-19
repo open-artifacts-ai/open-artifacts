@@ -21,6 +21,7 @@ import {
 import type { AgentAttr } from "./services/agent-usage.js";
 import { hubNoticeDelivery } from "./services/bus.js";
 import { installDelivery } from "./services/bus-delivery.js";
+import { emailEventsConsumer } from "./services/email-events.js";
 import { getUserWithEpoch } from "./services/users.js";
 
 export { BusHub } from "./bus/hub.js";
@@ -84,12 +85,13 @@ async function mcpWithPatUnguarded(
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
-  const link = await linkOrUnlinked(env, user.id, capped);
+  const link = await linkOrUnlinked(env, user.id, capped, ctx);
   const agent: AgentAttr = {
     name: pat.label,
     version: null,
     via: { kind: "token", id: pat.tokenId },
     ...(link.identity ? { identity: link.identity } : {}),
+    ...(!link.identity && link.why ? { unlinked: link.why } : {}),
   };
   // Audit rows from these tools name the PAT (by id, never its text).
   return withCred({ kind: "pat", id: pat.tokenId }, () =>
@@ -114,6 +116,12 @@ export default {
     return withReadBudget(() =>
       withBrokerProps(ctx, () => withPlanScope(e, () => serve(req, e, ctx))),
     );
+  },
+  // #2650: Cloudflare Email Service events (bounces, complaints), when the
+  // platform bound this Worker as the queue's consumer; otherwise ignored.
+  queue(batch, env) {
+    const e = withRetries(env);
+    return withReadBudget(() => emailEventsConsumer(batch, e));
   },
   scheduled(event, env, ctx) {
     const e = withRetries(env);

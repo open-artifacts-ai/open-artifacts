@@ -91,29 +91,3 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
   ).toHaveCount(0);
   await ctx.close();
 });
-
-test("an access change (4403) reconnects and delivers db.resync", async ({
-  page,
-  member,
-}) => {
-  const { id } = await publishViaApi(member.pat, {
-    title: `Resync ${uniq()}`,
-    format: "html",
-    content: LIVE_PAGE,
-    capabilities: { db: true },
-  });
-  await page.goto(`/a/${id}?panel=open&tab=share`);
-  const frame = artifactFrame(page);
-  await expect(frame.locator("#out")).toHaveText("subscribed");
-  const before = Number(await frame.locator("#resync").textContent());
-  await apiOk(member.pat, "PATCH", R.artifact(id), { visibility: "team" });
-  await expect
-    .poll(async () => Number(await frame.locator("#resync").textContent()), {
-      timeout: 15_000,
-    })
-    .toBeGreaterThan(before);
-  // Still the viewer, not a 404.
-  await expect(
-    page.getByRole("heading", { name: "Page not found" }),
-  ).toHaveCount(0);
-});

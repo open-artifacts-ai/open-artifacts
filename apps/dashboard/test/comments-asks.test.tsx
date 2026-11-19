@@ -88,11 +88,6 @@ vi.mock("../src/viewer/bridge", async () => {
   };
 });
 
-vi.mock("../src/auth/webauthn", async (orig) => ({
-  ...(await orig<typeof import("../src/auth/webauthn")>()),
-  getAssertion: vi.fn(async () => ({ id: "cred" })),
-}));
-
 installHarness();
 
 // Most waits here follow a write: the PATCH or POST, then the list refetch it
@@ -969,21 +964,46 @@ describe("#2381 deciders on the card", () => {
   });
 });
 
-describe("#2381 a pick that needs the decider's own passkey", () => {
-  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
-    const posts: { optionId?: string; assertion?: unknown }[] = [];
+/** The browser's passkey prompt, watched: an ask pick must never reach it. */
+const watchPasskeyPrompt = () => {
+  const get = vi.fn(async () => null);
+  Object.defineProperty(navigator, "credentials", {
+    value: { get },
+    configurable: true,
+  });
+  return get;
+};
+
+describe("#2864 no passkey on asks", () => {
+  const meP = { kind: "user" as const, id: "me", name: "Me", me: true };
+  const verifiedAnswer = {
+    optionId: "a",
+    by: meP,
+    at: "2026-11-05T11:00:00Z",
+    typed: false,
+    yes: false,
+    verified: "passkey",
+  };
+  const passkeyAsk = (answer?: object) =>
+    askThread(
+      {},
+      {
+        confirm: "passkey",
+        to: [meP],
+        decider: meP,
+        role: "decide",
+        picks: [],
+        ...(answer ? { answer } : {}),
+      },
+    );
+  const opt = (c: HTMLElement, id: string) =>
+    c.querySelector(`[data-option=${id}]`) as HTMLButtonElement;
+
+  it("an ask an old server marks confirm: passkey is answered in one click, with no challenge and no WebAuthn call", async () => {
+    const getCredential = watchPasskeyPrompt();
+    const posts: unknown[] = [];
     let challenged = 0;
-    serveThreads(() => [
-      askThread(
-        {},
-        {
-          to: [{ kind: "user", id: "me", name: "Me", me: true }],
-          decider: { kind: "user", id: "me", name: "Me", me: true },
-          role: "decide",
-          picks: [],
-        },
-      ),
-    ]);
+    serveThreads(() => [passkeyAsk()]);
     server.use(
       http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
         challenged++;
@@ -995,39 +1015,69 @@ describe("#2381 a pick that needs the decider's own passkey", () => {
       http.post(
         `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
         async ({ request }) => {
-          const b = (await request.json()) as {
-            optionId?: string;
-            assertion?: unknown;
-          };
-          posts.push(b);
-          if (!b.assertion)
-            return HttpResponse.json(
-              { error: { code: "passkey_required", message: "x" } },
-              { status: 403 },
-            );
+          posts.push(await request.json());
           return HttpResponse.json(askThread().comments[0]);
         },
       ),
     );
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: /Side by side/ }),
-    );
-    // No prompt from the failed pick: it needs a click of its own.
-    expect(
-      await within(c).findByText("This now needs your passkey. Pick again."),
-    ).toBeInTheDocument();
-    expect(posts).toEqual([{ optionId: "b" }]);
+    await within(c).findByRole("button", { name: /Side by side/ });
+    expect(c.querySelector("[data-passkey-hint]")).toBeNull();
+    expect(c.textContent).not.toMatch(/passkey/i);
+    fireEvent.click(opt(c, "b"));
+    await waitFor(() => expect(posts).toEqual([{ optionId: "b" }]));
     expect(challenged).toBe(0);
-    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
-    await waitFor(() => expect(posts).toHaveLength(2));
-    expect(posts[1]).toMatchObject({
-      optionId: "b",
-      assertion: { id: "cred" },
-    });
-    expect(challenged).toBe(1);
-    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
+    expect(getCredential).not.toHaveBeenCalled();
+  });
+
+  it("a passkey_required answer from an old server is a plain error: no passkey flow, no prompt", async () => {
+    const getCredential = watchPasskeyPrompt();
+    let challenged = 0;
+    serveThreads(() => [passkeyAsk()]);
+    server.use(
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({}, { status: 500 });
+      }),
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+        HttpResponse.json(
+          { error: { code: "passkey_required", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByRole("button", { name: /Side by side/ });
+    fireEvent.click(opt(c, "b"));
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      "Couldn't send your answer. Reload the page and try again.",
+    );
+    expect(c.textContent).not.toMatch(/Pick again|Add a passkey|terminal/);
+    expect(challenged).toBe(0);
+    expect(getCredential).not.toHaveBeenCalled();
+    expect(opt(c, "b")).toBeEnabled();
+  });
+
+  it("an answer the server marks passkey-verified keeps its historical pill", async () => {
+    serveThreads(() => [passkeyAsk(verifiedAnswer)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText(/You (picked|decided)/);
+    expect(c.querySelector("[data-ask-verified]")?.textContent).toMatch(
+      /Verified with passkey/,
+    );
+  });
+
+  it("an unmarked answer shows no pill", async () => {
+    serveThreads(() => [
+      passkeyAsk({ ...verifiedAnswer, verified: undefined }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText(/You (picked|decided)/);
+    expect(c.querySelector("[data-ask-verified]")).toBeNull();
   });
 });
 
@@ -2096,7 +2146,7 @@ describe("@ picker details", () => {
     });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     expect(await within(c).findByRole("alert")).toHaveTextContent(
-      "Mention at most 10 agents in one comment.",
+      "Mention at most 10 agents or people in one comment.",
     );
     expect(posts).toHaveLength(0);
   });
@@ -2311,12 +2361,15 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     expect(await wholePage(c)).toHaveAttribute(
       "placeholder",
-      "Add a comment. Type @ to mention an agent.",
+      "Add a comment. Type @ to mention an agent or a person.",
     );
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     expect(
       await within(c).findByRole("textbox", { name: "Reply" }),
-    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+    ).toHaveAttribute(
+      "placeholder",
+      "Reply. Type @ to mention an agent or a person.",
+    );
   });
 
   it("keeps the plain placeholder for a viewer", async () => {
@@ -2959,5 +3012,340 @@ describe("Ask a question (#1794)", () => {
     expect(
       within(c).queryByRole("button", { name: "Ask a question" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", () => {
+  const OWN = {};
+  const open = async () => {
+    mount(viewerPath(OWNED));
+    return col();
+  };
+  const something = (c: HTMLElement) =>
+    within(c).findByRole("button", { name: /Something else/ });
+  const typeOwn = async (c: HTMLElement, text: string) => {
+    fireEvent.click(await something(c));
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    fireEvent.change(box, { target: { value: text } });
+    return box;
+  };
+
+  it("draws Something else last, after the agent's options", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    await something(c);
+    const labels = within(c)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("data-option"))
+      .filter(Boolean);
+    expect(labels).toEqual(["a", "b", "__own"]);
+  });
+
+  it("an agent's own Other stays a normal option, and ours still shows last", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "a", label: "List only" },
+            { id: "o", label: "Other" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    const other = await within(c).findByRole("button", { name: /Other/ });
+    await something(c);
+    // No box on the agent's option: one click is a plain pick.
+    fireEvent.click(other);
+    await waitFor(() => expect(sent).toEqual({ optionId: "o" }));
+    expect(
+      within(c).queryByPlaceholderText("Say what you'd like instead"),
+    ).toBeNull();
+    const ids = within(c)
+      .getAllByRole("button")
+      .map((b) => b.getAttribute("data-option"))
+      .filter(Boolean);
+    expect(ids).toEqual(["a", "o", "__own"]);
+  });
+
+  it("sends { ownWords: { text } } with no optionId, the words trimmed; Send waits for words", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [askThread({}, OWN)]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    fireEvent.click(await something(c));
+    expect(
+      await within(c).findByRole("button", { name: "Send" }),
+    ).toBeDisabled();
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    fireEvent.change(box, { target: { value: "   " } });
+    expect(within(c).getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.change(box, { target: { value: "  1 + 3 + 5  " } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ ownWords: { text: "1 + 3 + 5" } }),
+    );
+  });
+
+  it("caps at 1000 characters and counts near the limit", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    const box = await typeOwn(c, "x");
+    expect(box).toHaveAttribute("maxlength", "1000");
+    expect(within(c).queryByText(/\/ 1000/)).toBeNull();
+    fireEvent.change(box, { target: { value: "y".repeat(950) } });
+    expect(await within(c).findByText("950 / 1000")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["empty", "Write your answer first."],
+    ["too_long", "That's over 1,000 characters. Shorten it."],
+  ])(
+    "says %s in plain words and keeps the box and the words",
+    async (reason, copy) => {
+      serveThreads(() => [askThread({}, OWN)]);
+      server.use(
+        http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+          HttpResponse.json(
+            {
+              error: {
+                code: "bad_request",
+                message: "x",
+                details: { path: "ownWords.text", reason },
+              },
+            },
+            { status: 400 },
+          ),
+        ),
+      );
+      const c = await open();
+      const box = await typeOwn(c, "my words");
+      fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+      expect(await within(c).findByRole("alert")).toHaveTextContent(copy);
+      expect(box).toHaveValue("my words");
+    },
+  );
+
+  it("Escape closes the box and focus returns to the option", async () => {
+    serveThreads(() => [askThread({}, OWN)]);
+    const c = await open();
+    const box = await typeOwn(c, "");
+    fireEvent.keyDown(box, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        within(c).queryByPlaceholderText("Say what you'd like instead"),
+      ).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        within(c).getByRole("button", { name: /Something else/ }),
+      ),
+    );
+  });
+
+  it("after sending: 'You answered in your own words' and the text", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Ideas 1 + 3 + 5" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(
+      await within(c).findByText(/You answered in your own words/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("Ideas 1 + 3 + 5")).toBeInTheDocument();
+  });
+
+  it("Change reopens the box with the earlier words, and sending again posts the new ones", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "first words" },
+          },
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    await within(c).findByText(/You answered in your own words/);
+    expect(
+      within(c).getByRole("button", { name: /Something else/ }),
+    ).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    fireEvent.click(within(c).getByRole("button", { name: /Something else/ }));
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    expect(box).toHaveValue("first words");
+    fireEvent.change(box, { target: { value: "second words" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ ownWords: { text: "second words" } }),
+    );
+  });
+
+  it("the decided card: the words, who decided, 'own words, not one of the options', options folded", async () => {
+    const answer = (me: boolean) => ({
+      by: { kind: "user", id: me ? "me" : "sam", name: me ? "Me" : "Sam", me },
+      at: "2026-11-05T10:05:00Z",
+      typed: true,
+      yes: false,
+      ownWords: { text: "Ideas 1 + 3 + 5" },
+    });
+    serveThreads(() => [askThread({}, { answer: answer(true) })]);
+    const c = await open();
+    const card = await waitFor(() => {
+      const el = c.querySelector("[data-own-decided]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(card).toHaveTextContent("Ideas 1 + 3 + 5");
+    expect(card).toHaveTextContent("✓ You decided");
+    expect(card).toHaveTextContent("Your own words, not one of the options.");
+    expect(c.querySelector("[data-unpicked] summary")).toHaveTextContent(
+      "2 options not picked",
+    );
+    expect(
+      within(c).getByRole("button", { name: "Change" }),
+    ).toBeInTheDocument();
+    cleanup();
+    serveThreads(() => [askThread({}, { answer: answer(false) })]);
+    const d = await open();
+    await waitFor(() =>
+      expect(d.querySelector("[data-own-decided]")).toHaveTextContent(
+        "Sam's own words, not one of the options.",
+      ),
+    );
+  });
+
+  it("others see it with the person's name", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          answer: {
+            by: { kind: "user", id: "sam", name: "Sam", me: false },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Something custom" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(
+      await within(c).findByText(/Sam answered in their own words/),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("Something custom")).toBeInTheDocument();
+  });
+
+  it("the Decisions row leads with the words and says Own words", async () => {
+    serveThreads(() => [
+      askThread(
+        { id: "t-d" },
+        {
+          ...OWN,
+          question: "Which team case first?",
+          closed: true,
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "Ideas 1 + 3 + 5" },
+          },
+        },
+      ),
+    ]);
+    const c = await open();
+    fireEvent.click(await within(c).findByRole("tab", { name: /Decisions/ }));
+    const row = await waitFor(() => {
+      const r = c.querySelector("[data-decision]");
+      expect(r).not.toBeNull();
+      return r as HTMLElement;
+    });
+    expect(row).toHaveTextContent("Ideas 1 + 3 + 5");
+    // The question above the words; then who decided, Own words, then the time.
+    const text = row.textContent ?? "";
+    expect(text.indexOf("Which team case first?")).toBeLessThan(
+      text.indexOf("Ideas 1 + 3 + 5"),
+    );
+    expect(
+      (row.querySelector("[data-decision-meta]")?.textContent ?? "").replace(
+        /\s+/g,
+        " ",
+      ),
+    ).toMatch(/You decided · Own words · /);
+    expect(row.querySelector('[data-chip="own-words"]')).toHaveTextContent(
+      "Own words",
+    );
+  });
+
+  it("an ask whose option names an action still offers it", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          ...OWN,
+          options: [
+            { id: "a", label: "Merge it", action: "merge" },
+            { id: "b", label: "Wait" },
+          ],
+        },
+      ),
+    ]);
+    const c = await open();
+    expect(await something(c)).toBeInTheDocument();
   });
 });

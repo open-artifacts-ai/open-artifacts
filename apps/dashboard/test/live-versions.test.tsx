@@ -5,6 +5,7 @@ import { type ArtifactSummary, R, viewerPath } from "@oa/shared";
 import {
   act,
   fireEvent,
+  render,
   screen,
   waitFor,
   within,
@@ -12,6 +13,7 @@ import {
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setEmbedForTests } from "../src/embed";
+import { FullGone } from "../src/viewer/LiveChip";
 import { fullPath } from "../src/viewer/paths";
 import {
   arts,
@@ -592,6 +594,12 @@ describe("live versions: embed", () => {
       `${location.origin}${viewerPath(POLL)}`,
     );
     expect(document.body.textContent).not.toContain("Secret Agent");
+  });
+
+  it("gone: a pill that is not a link", () => {
+    render(<FullGone id={POLL} embed />);
+    expect(screen.getByText("No longer available").tagName).toBe("SPAN");
+    expect(screen.queryByRole("link")).toBeNull();
   });
 });
 

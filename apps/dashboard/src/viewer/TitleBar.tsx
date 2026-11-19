@@ -33,8 +33,9 @@ import {
   usePatchArtifact,
   useVersionInfo,
 } from "../api/queries";
-import { accessLabel, useCan } from "../auth/permissions";
+import { ownAccessLabel, useCan } from "../auth/permissions";
 import { ForYouBell } from "../foryou/ForYou";
+import { useMuteToggle } from "../foryou/muteToggle";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { useNarrow } from "./comments/surfaces";
@@ -87,6 +88,8 @@ export const BAR_STAGES = 3;
 const shortfall = (el: HTMLElement) => {
   const over = el.scrollWidth - el.clientWidth;
   const h1 = el.querySelector("h1");
+  // #2756: a doc's title is in the doc; this h1 takes no room to be cut.
+  if (h1?.hasAttribute("data-in-doc")) return Math.max(0, over);
   const text = (h1?.querySelector("button") ?? h1) as HTMLElement | null;
   const node = text?.firstChild;
   let cut = 0;
@@ -252,6 +255,7 @@ export function TitleBar({
   live,
   newer = false,
   gone = false,
+  titleInDoc = false,
   comments,
   asks,
   org = "",
@@ -292,6 +296,8 @@ export function TitleBar({
   newer?: boolean;
   /** Deleted or no access: Full screen, Versions and Share are disabled. */
   gone?: boolean;
+  /** #2756: the doc editor shows the title itself, so the bar does not repeat it. */
+  titleInDoc?: boolean;
 }) {
   const narrow = useNarrow();
   const navigate = useNavigate();
@@ -391,6 +397,11 @@ export function TitleBar({
         ? versionDate(info.createdAt)
         : "";
   const label = `v${version}${suffix ? ` · ${suffix}` : ""}`;
+  // #2860: mute where the noise is. A signed-in person's page menu, on a server with For you.
+  const pageMute = useMuteToggle(
+    authed && !outsider ? { kind: "page", id: artifact.id } : null,
+    artifact.title,
+  );
   const items: (
     | "separator"
     | { label: string; danger?: boolean; onSelect: () => void }
@@ -426,6 +437,14 @@ export function TitleBar({
           },
         ]
       : []),
+    ...(pageMute.available && pageMute.loaded
+      ? [
+          {
+            label: pageMute.muted ? "Muted \u00b7 Unmute" : "Mute",
+            onSelect: pageMute.toggle,
+          },
+        ]
+      : []),
     ...(canDelete
       ? [
           "separator" as const,
@@ -446,7 +465,13 @@ export function TitleBar({
         className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]"
       >
         {iconFormat && <FormatIcon format={iconFormat} />}
-        {canEdit ? (
+        {titleInDoc ? (
+          // #2756: the doc shows (and edits) its title in the page; the bar
+          // keeps the h1 for screen readers and the page's name.
+          <h1 className="sr-only" data-in-doc="">
+            {artifact.title}
+          </h1>
+        ) : canEdit ? (
           <EditableTitle artifact={artifact} />
         ) : opensSheet ? (
           <h1 className={H1}>
@@ -482,6 +507,45 @@ export function TitleBar({
             org={org}
           />
         )}
+        {/* #2932: one access label. A signed-in person sees their access named
+            (Viewer, Can comment, Editor…), in a space or on a page shared with
+            them; the owner off a space sees none. "View only" is only for a
+            visitor with no role to name (a link visitor) who can't write data.
+            The data note rides on the label as a tooltip. */}
+        {(() => {
+          const named =
+            authed && (!!artifact.space || artifact.access !== "owner");
+          if (!named && !viewOnly) return null;
+          const label = named
+            ? ownAccessLabel(artifact, outsider)
+            : "View only";
+          return viewOnly ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    tabIndex={0}
+                    data-access-label=""
+                    className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]"
+                  >
+                    {label}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" collisionPadding={8}>
+                  You can view this, but you can't change its data.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span
+              data-access-label=""
+              className="text-[length:var(--oa-text-sm)] text-muted-foreground"
+            >
+              {label}
+            </span>
+          );
+        })()}
         {publisher && (
           <PublisherLine
             p={publisher}
@@ -496,29 +560,6 @@ export function TitleBar({
               if (!versionsOpen) onVersions();
             }}
           />
-        )}
-        {viewOnly && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge
-                  variant="secondary"
-                  tabIndex={0}
-                  className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]"
-                >
-                  View only
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" collisionPadding={8}>
-                You can view this, but you can't change its data.
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
-        {artifact.space && (
-          <span className="text-[length:var(--oa-text-sm)] text-muted-foreground">
-            {accessLabel(artifact.access)}
-          </span>
         )}
       </div>
       <div

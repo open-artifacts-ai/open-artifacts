@@ -14,6 +14,15 @@ type Progress = {
   mentionReplied?: boolean;
   mentionStalled?: boolean;
   askAnswered?: boolean;
+  busConnected?: boolean;
+  who?: {
+    member: true;
+    firstName: string | null;
+    org: string;
+    inviter: string | null;
+    teammateCommented: boolean;
+    done?: number;
+  };
 };
 let progress: Progress;
 let get: ReturnType<typeof vi.fn>;
@@ -233,6 +242,119 @@ describe("Welcome page", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(writeText.mock.calls[0]?.[0]).toContain("claude mcp add");
     expect(writeText.mock.calls[0]?.[0]).toContain(`${HOST}/mcp`);
+  });
+});
+
+// #2632 (Axe): a name is text. "$&" or "$1" in it is never a replace pattern.
+describe("a member's Welcome", () => {
+  it("puts names in as they are, $& and $1 included", async () => {
+    progress = {
+      agentConnected: false,
+      firstArtifact: null,
+      commented: false,
+      agentNamed: true,
+      agentName: "R$1D2",
+      who: {
+        member: true,
+        firstName: "A$&B",
+        org: "O$'rg",
+        inviter: "I$`nv",
+        teammateCommented: false,
+      },
+    };
+    await load();
+    expect(document.getElementById("title")?.textContent).toBe("Welcome, A$&B");
+    expect(document.getElementById("lead")?.textContent).toBe(
+      "I$`nv added you to O$'rg. Five steps and your agent is working here with you.",
+    );
+    expect(document.getElementById("also-hint")?.textContent).toBe(
+      "See what O$'rg is working on and leave a comment.",
+    );
+    expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
+  });
+
+  it("shows the shell's shared count when it sends one", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: null,
+      commented: false,
+      who: {
+        member: true,
+        firstName: "Ada",
+        org: "Acme",
+        inviter: null,
+        teammateCommented: false,
+        done: 1,
+      },
+    };
+    await load();
+    expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
+  });
+
+  it("a person who never connected the bus sees three steps and the done line at three (#2890)", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "Q" },
+      commented: false,
+      askAnswered: true,
+      busConnected: false,
+    };
+    await load();
+    expect(step("name").hidden).toBe(true);
+    expect(step("mention").hidden).toBe(true);
+    for (const k of ["connect", "publish", "ask"]) {
+      expect(step(k).hidden).toBe(false);
+      expect(step(k).dataset.done).toBe("true");
+    }
+    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
+      false,
+    );
+  });
+
+  it("with the bus connected, or no flag from an older shell, all five show", async () => {
+    progress = { agentConnected: false, firstArtifact: null, commented: false };
+    await load();
+    for (const k of ["connect", "name", "publish", "mention", "ask"])
+      expect(step(k).hidden).toBe(false);
+    progress = { ...progress, busConnected: true };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("name").hidden).toBe(false);
+    expect(step("mention").hidden).toBe(false);
+  });
+
+  it("a member who never connected the bus gets 'n of 3 done' and 'Three steps'", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: null,
+      commented: false,
+      busConnected: false,
+      who: {
+        member: true,
+        firstName: "Ada",
+        org: "Acme",
+        inviter: "Sam",
+        teammateCommented: false,
+        done: 1,
+      },
+    };
+    await load();
+    expect(document.getElementById("count")?.textContent).toBe("1 of 3 done");
+    expect(document.getElementById("lead")?.textContent).toBe(
+      "Sam added you to Acme. Three steps and your agent is working here with you.",
+    );
+  });
+
+  it("the owner's page puts the agent's name in as it is", async () => {
+    progress = {
+      agentConnected: false,
+      firstArtifact: null,
+      commented: false,
+      agentNamed: true,
+      agentName: "A$&B",
+    };
+    await load();
+    expect(step("mention").textContent).toContain("pick A$&B.");
+    expect(step("ask").textContent).toContain("question from A$&B.");
   });
 });
 

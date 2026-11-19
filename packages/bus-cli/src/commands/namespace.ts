@@ -4,8 +4,10 @@ import {
   type Approval,
   approveCommand,
   canonicalPath,
+  folderHomeLookup,
   isApproved,
   logApproval,
+  MAIN_INSTANCE,
   namespacesFile,
   readApprovals,
   readOwnFile,
@@ -29,6 +31,21 @@ function shown(ctx: Ctx, path: string): string {
 }
 
 /**
+ * The instance whose approvals apply to a folder (#2793): its mapped
+ * instance, main when only main is set up. Unmapped with several instances:
+ * undefined, and nothing may be approved or revoked by guess.
+ */
+export function approvalsInstance(ctx: Ctx, dir: string): string | undefined {
+  const r = folderHomeLookup(ctx.home)(resolve(ctx.cwd, dir));
+  return "instance" in r ? r.instance : undefined;
+}
+
+/** The file a folder's approvals live in: main's for main, and for an unmapped folder (read-only callers). */
+export function approvalsFileFor(ctx: Ctx, dir: string): string {
+  return namespacesFile(ctx.home, approvalsInstance(ctx, dir) ?? MAIN_INSTANCE);
+}
+
+/**
  * The user's namespace approvals (#1525): a `.oa-bus.json` namespace that
  * differs from the derived one takes effect only for a directory approved
  * here. A session reads it when it registers, so one already running changes
@@ -44,7 +61,18 @@ export async function namespace(
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
   // An unusable file approves nothing, and is never overwritten unread.
-  const file = namespacesFile(ctx.home);
+  const target = opts.sub === "list" ? "." : opts.dir;
+  const instance = approvalsInstance(ctx, target);
+  if (instance === undefined) {
+    sayErr(
+      ctx,
+      `Nothing changed: this folder isn't tied to an instance yet. Run ${ctx.busCmd} use here first.`,
+    );
+    return 1;
+  }
+  // Main keeps its output as it was; another instance is named.
+  const at = instance === MAIN_INSTANCE ? "" : ` on ${plain(instance)}`;
+  const file = namespacesFile(ctx.home, instance);
   const { entries, error } = readApprovals(file);
   if (error) {
     sayErr(ctx, c.nsUnusable(tilde(ctx, file), error));
@@ -75,13 +103,13 @@ export async function namespace(
       say(ctx, c.nsNotListed(shown(ctx, real ?? given)));
       return 0;
     }
-    writeApprovals(keep, ctx.home);
+    writeApprovals(keep, ctx.home, instance);
     for (const e of entries.filter((x) => !keep.includes(x)))
       logApproval(
         { action: "revoke", ...e, tty: Boolean(ctx.stdinIsTTY) },
         ctx.home,
       );
-    say(ctx, c.nsRevoked(shown(ctx, real ?? given)));
+    say(ctx, c.nsRevoked(shown(ctx, real ?? given) + at));
     return 0;
   }
 
@@ -126,7 +154,7 @@ export async function namespace(
     return 1;
   }
   if (isApproved(real, ns, entries)) {
-    say(ctx, c.nsAlready(shown(ctx, real), plain(ns)));
+    say(ctx, c.nsAlready(shown(ctx, real), plain(ns) + at));
     return 0;
   }
   if (!opts.yes) {
@@ -138,7 +166,7 @@ export async function namespace(
       ctx,
       remote
         ? c.nsAskRemote(shown(ctx, real), plain(ns), plain(remote.recorded))
-        : c.nsAsk(shown(ctx, real), plain(ns)),
+        : c.nsAsk(shown(ctx, real), plain(ns) + at),
     );
     const answer = (await ctx.readLine(c.nsPrompt())).trim().toLowerCase();
     if (answer !== "y" && answer !== "yes") {
@@ -151,7 +179,7 @@ export async function namespace(
     ...entries.filter((e) => !sameDir(e.dir, real)),
     { dir: real, namespace: ns },
   ];
-  writeApprovals(next, ctx.home);
+  writeApprovals(next, ctx.home, instance);
   logApproval(
     {
       action: "approve",
@@ -161,6 +189,6 @@ export async function namespace(
     },
     ctx.home,
   );
-  say(ctx, c.nsApproved(shown(ctx, real), plain(ns)));
+  say(ctx, c.nsApproved(shown(ctx, real), plain(ns) + at));
   return 0;
 }

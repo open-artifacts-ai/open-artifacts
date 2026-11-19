@@ -2,12 +2,14 @@
 // Only a live Claude record the daemon attested for that pid takes it; the hub
 // gets link_bind only when its hello_ok listed `link`, and again after a
 // reconnect. Waits are signals (a frame arriving), never sleeps.
+
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonLinkProof } from "@oa/bus-ipc";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { LINK_HASHES_MAX } from "../src/agents.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(async () => {
@@ -138,25 +140,30 @@ describe("link_proof to link_bind (#1822)", () => {
     ]);
   });
 
-  it("keeps at most four hashes, the newest (#1984)", async () => {
+  it("keeps at most LINK_HASHES_MAX hashes: the first and the newest (#1984, #2861)", async () => {
     const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
-    const hs = ["1", "2", "3", "4", "5"].map((c) => c.repeat(64));
+    const n = LINK_HASHES_MAX + 1;
+    const hs = Array.from({ length: n }, (_, i) =>
+      i.toString(16).padStart(2, "0").repeat(32),
+    );
     for (const x of hs) await proof(h, 4242, x);
     // One frame per proof, never a replay of the held ones.
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(5));
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(n));
     expect(h.of("link_bind").map((f) => f.hash)).toEqual(hs);
-    // A reconnect replays the last four, oldest first.
+    // A reconnect replays the first plus the newest LINK_HASHES_MAX - 1.
     h.hubSock()?.close();
     await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
     helloOk();
     agentOk(h.of("agent_up").length);
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(9));
+    await vi.waitFor(() =>
+      expect(h.of("link_bind")).toHaveLength(n + LINK_HASHES_MAX),
+    );
     expect(
       h
         .of("link_bind")
-        .slice(5)
+        .slice(n)
         .map((f) => f.hash),
-    ).toEqual(hs.slice(1));
+    ).toEqual([hs[0], ...hs.slice(2)]);
   });
 
   describe("a proof before the record", () => {

@@ -26,10 +26,12 @@ import {
 } from "./ui";
 import { VersionCard } from "./VersionCard";
 
-const VISIBILITY = [
-  { value: "private", label: "Private" },
-  { value: "team", label: "Team" },
-] as const;
+/** #2509: people read "Restricted" and "Anyone at {instance}"; the values stay private and team. */
+const visibilityOptions = (instance: string) =>
+  [
+    { value: "private", label: "Restricted" },
+    { value: "team", label: `Anyone at ${instance}` },
+  ] as const;
 const NAME_MAX = 80;
 const HELP = {
   private: "Only the creator and the people they share with.",
@@ -163,8 +165,8 @@ function InstanceSettings() {
                   Default visibility
                 </span>
                 <p className={muted}>
-                  For new artifacts from agents and uploads. Public is always
-                  chosen per artifact.
+                  For new artifacts from agents and uploads. "Anyone with the
+                  link" is always chosen per artifact.
                 </p>
               </div>
               <div className="grid min-w-0 justify-items-start gap-[var(--oa-space-1)]">
@@ -184,15 +186,17 @@ function InstanceSettings() {
                     })
                   }
                 >
-                  {VISIBILITY.map((o) => (
-                    <ToggleGroupItem
-                      key={o.value}
-                      value={o.value}
-                      className="h-[30px] px-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
-                    >
-                      {o.label}
-                    </ToggleGroupItem>
-                  ))}
+                  {visibilityOptions(server.name || "this instance").map(
+                    (o) => (
+                      <ToggleGroupItem
+                        key={o.value}
+                        value={o.value}
+                        className="h-[30px] px-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
+                      >
+                        {o.label}
+                      </ToggleGroupItem>
+                    ),
+                  )}
                 </ToggleGroup>
                 <p className={muted}>{HELP[visibility]}</p>
               </div>

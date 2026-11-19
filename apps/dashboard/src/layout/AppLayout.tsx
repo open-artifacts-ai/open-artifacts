@@ -39,7 +39,7 @@ import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
 import { canUseBus } from "../bus/access";
 import { isEmbed, isFullPath } from "../embed";
-import { ForYouBell } from "../foryou/ForYou";
+import { ForYouBell, NotificationOpen } from "../foryou/ForYou";
 import { SearchBox } from "../library/SearchBox";
 import { EdgePanel } from "../pages/Edge";
 import { NotPublic } from "../pages/NotPublic";
@@ -112,6 +112,8 @@ export function AppLayout() {
     <>
       <Layout />
       <Toaster />
+      {/* #2512 slice 3: a notification clicked while the app is open opens its page here. */}
+      <NotificationOpen />
     </>
   );
 }

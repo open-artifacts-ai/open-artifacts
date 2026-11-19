@@ -185,13 +185,15 @@ test("#794: a member who views editors-only live data sees View only", async ({
   await expect(
     page.getByRole("heading", { level: 1, name: title }),
   ).toBeVisible();
-  await expect(page.getByText("View only", { exact: true })).toBeVisible();
+  // #2932: one access label; a read-only one is the focusable chip that
+  // carries "you can't change its data" (it reads "View only" off a space).
+  await expect(page.locator('[data-access-label][tabindex="0"]')).toBeVisible();
   // The owner can write, so no chip for them.
   await owner.page.goto(`/a/${id}`);
   await expect(owner.page.getByText(title).first()).toBeVisible();
-  await expect(owner.page.getByText("View only", { exact: true })).toHaveCount(
-    0,
-  );
+  await expect(
+    owner.page.locator('[data-access-label][tabindex="0"]'),
+  ).toHaveCount(0);
 });
 
 // #2520 replaced the "may not be able to log in" warning: the invite dialog

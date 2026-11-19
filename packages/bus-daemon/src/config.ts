@@ -25,6 +25,34 @@ export type Config = {
 };
 
 export const home = () => busHome();
+/**
+ * #2806: whether `h` is the default home (~/.oa-bus). Only that daemon may
+ * adopt Claude sessions it finds in the machine-wide ~/.claude/sessions; a
+ * second home (--alongside) admits a session only on its own adapter's hello.
+ * #2552: only the default home takes instance-driven updates.
+ */
+export const isDefaultHome = (h: string = home()): boolean => h === busHome({});
+
+/**
+ * #2806: the bus home a process was started for, from its OA_BUS_HOME:
+ * undefined when it has none (the default home), null when its environment
+ * cannot be read. Linux only (/proc); elsewhere always null. Best effort until
+ * one daemon serves every instance (#2793).
+ */
+export function procBusHome(pid: number): string | null | undefined {
+  if (process.platform !== "linux") return null;
+  let env: string;
+  try {
+    env = readFileSync(`/proc/${pid}/environ`, "utf8");
+  } catch {
+    return null;
+  }
+  const v = env
+    .split("\0")
+    .find((e) => e.startsWith("OA_BUS_HOME="))
+    ?.slice("OA_BUS_HOME=".length);
+  return v ? busHome({ OA_BUS_HOME: v }) : undefined;
+}
 export const socketPath = () => daemonSocketPath(home());
 
 /** Claude's return sockets (`<8 hex>.sock`): under the home, or the short folder when they would not fit. */
@@ -98,7 +126,7 @@ export class StartError extends Error {
 const notLoggedIn = () => new StartError("NOT_LOGGED_IN", NOT_LOGGED_IN);
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-function checkHub(hub: string): void {
+export function checkHub(hub: string): void {
   let u: URL;
   try {
     u = new URL(hub);
@@ -130,7 +158,7 @@ function originOf(url: string): string | undefined {
 }
 
 // An old or hand-edited label must not make the hub reject every hello.
-const cleanLabel = (raw: unknown): string =>
+export const cleanLabel = (raw: unknown): string =>
   typeof raw === "string" ? newMachineLabel(raw) : "machine";
 
 /** How the revoked marker names a token: its sha256, never the token. */
@@ -147,7 +175,11 @@ export const revokedMarker = (token: string, at = new Date()): string =>
  * older daemon's) or cannot be read still holds.
  */
 export function revokedFor(token: string, h = home()): boolean {
-  const file = join(h, "revoked");
+  return markerHolds(join(h, "revoked"), token);
+}
+
+/** Whether the revoked marker at `file` holds for `token` (same rules as `revokedFor`). */
+export function markerHolds(file: string, token: string): boolean {
   if (!existsSync(file)) return false;
   try {
     const m = JSON.parse(readFileSync(file, "utf8")) as {
@@ -171,8 +203,8 @@ export function savedToken(h = home()): string | undefined {
   }
 }
 
-export function readConfig(): Config {
-  const file = join(home(), "machine.json");
+export function readConfig(h: string = home()): Config {
+  const file = join(h, "machine.json");
   let text: string;
   try {
     if (process.platform !== "win32" && statSync(file).mode & 0o077) {
@@ -208,7 +240,7 @@ export function readConfig(): Config {
   if (typeof r.hub !== "string" || !r.hub || r.machine_token === undefined)
     throw notLoggedIn();
   // The hub refused this token; `npx @open-artifacts/bus install` approves it again and clears the marker.
-  if (revokedFor(String(r.machine_token)))
+  if (revokedFor(String(r.machine_token), h))
     throw new StartError(
       "REVOKED",
       `this machine was revoked; run \`${BUS_CMD} install\``,

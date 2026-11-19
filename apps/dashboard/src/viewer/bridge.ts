@@ -8,8 +8,10 @@ import {
   type ErrorCode,
   LIMITS,
   METHOD_CAPABILITY,
+  type OnboardingProgress,
   OnboardingSchema,
   PageSchema,
+  PROTOCOL_ASK_MARK,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
@@ -27,6 +29,7 @@ import {
   StorageEntrySchema,
   StorageKeySchema,
   type StorageSetBody,
+  setupSteps,
 } from "@oa/shared";
 import type { z } from "zod";
 import { ApiClientError, api, type RequestExtra } from "../api/client";
@@ -41,6 +44,9 @@ import {
 } from "./anonId";
 import { frameLoad, loadArtifactFrame } from "./frame";
 import { clampRetryHint } from "./liveEvents";
+
+/** #2632: what the shell knows of a member, for their Welcome's greeting. */
+export type WelcomeGreet = { firstName: string | null; org: string };
 
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
@@ -60,7 +66,15 @@ export interface BridgeOptions {
    * the bridge reads R.onboarding itself and checks its `welcomeId` against
    * this artifact's id, so no state from elsewhere has to be loaded first.
    */
-  onboarding?: () => { owner: boolean };
+  onboarding?: () => {
+    owner: boolean;
+    /**
+     * #2632: a member (not a guest) gets their own Welcome too: R.onboarding
+     * is per caller, so its welcomeId is theirs. The answer says who it greets.
+     */
+    member?: boolean;
+    greet?: WelcomeGreet;
+  };
   theme: Theme;
   onPdfText: (text: string) => void;
   onThumb: (blob: Blob) => void;
@@ -93,7 +107,11 @@ export interface BridgeOptions {
     >["positions"],
     ghost?: { x: number; y: number },
   ) => void;
-  onCommentOpen?: (id: string) => void;
+  onCommentOpen?: (
+    id: string,
+    /** #2426: the clicked mark's box in frame-viewport pixels. */
+    rect?: { x: number; y: number; width: number; height: number },
+  ) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
@@ -442,10 +460,23 @@ export function createBridge(opts: BridgeOptions) {
       case "viewer.get":
         return viewer();
       case "onboarding.get": {
-        if (embed || !opts.onboarding?.().owner) throw forbidden();
+        const g = opts.onboarding?.();
+        if (embed || !(g?.owner || g?.member)) throw forbidden();
         const o = await http.get(R.onboarding, OnboardingSchema);
         if (!o.welcomeId || o.welcomeId !== id) throw forbidden();
+        const who: OnboardingProgress["who"] =
+          g?.member && !g.owner && g.greet
+            ? {
+                member: true,
+                firstName: g.greet.firstName,
+                org: g.greet.org,
+                inviter: o.invitedBy?.name ?? null,
+                teammateCommented: o.teamStep === true,
+                done: setupSteps(o).done,
+              }
+            : undefined;
         return {
+          ...(who ? { who } : {}),
           agentConnected: o.agentConnected === true,
           firstArtifact: o.firstArtifact ?? null,
           commented: o.commented === true,
@@ -454,6 +485,9 @@ export function createBridge(opts: BridgeOptions) {
           mentionReplied: o.mentionReplied === true,
           mentionStalled: o.mentionStalled === true,
           askAnswered: o.askAnswered === true,
+          ...(o.busConnected === undefined
+            ? {}
+            : { busConnected: o.busConnected }),
         };
       }
       case "viewer.anonId":
@@ -602,7 +636,8 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
-        opts.onCommentOpen?.(m.id);
+        if (m.rect) opts.onCommentOpen?.(m.id, m.rect);
+        else opts.onCommentOpen?.(m.id);
         break;
       case "comment.escape":
         opts.onCommentEscape?.();
@@ -694,6 +729,11 @@ export function createBridge(opts: BridgeOptions) {
           .map((t) => {
             if (frameProtocol >= PROTOCOL_PIN_BADGE) return t;
             const { badge: _b, ...rest } = t;
+            return rest;
+          })
+          .map((t) => {
+            if (frameProtocol >= PROTOCOL_ASK_MARK) return t;
+            const { ask: _a, ...rest } = t;
             return rest;
           })
           .map((t) => {

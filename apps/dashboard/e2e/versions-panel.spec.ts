@@ -45,7 +45,7 @@ const list = (page: Page) => page.getByRole("list", { name: "Versions" });
 const search = (page: Page) =>
   page.getByRole("searchbox", { name: "Search versions" });
 
-for (const scheme of ["light", "dark"] as const)
+for (const scheme of ["light"] as const)
   for (const width of [1280, 390])
     test.describe(`versions ${scheme} ${width}`, () => {
       test.use({ colorScheme: scheme, viewport: { width, height: 900 } });

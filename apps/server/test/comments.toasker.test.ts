@@ -11,6 +11,7 @@ import {
 } from "@oa/shared";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
@@ -29,6 +30,7 @@ import {
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { connectedMachine, FakeHubs } from "./comment-hub.js";
+import { listenEachOther } from "./held-listens.js";
 import { api as baseApi, errOf, login } from "./helpers.js";
 
 const api = (
@@ -90,6 +92,7 @@ beforeAll(async () => {
   owner = await mk("t-owner");
   editor = await mk("t-editor");
   viewer = await mk("t-viewer");
+  await listenEachOther(E, [owner.userId, editor.userId, viewer.userId]);
   for (const u of [owner, editor]) await connectedMachine(real.DB, u.userId);
 });
 
@@ -129,7 +132,7 @@ async function setup(extra: Record<string, unknown> = {}) {
   });
   for (const [u, role] of [
     [editor, "editor"],
-    [viewer, "viewer"],
+    [viewer, "editor"],
   ] as const)
     await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
@@ -577,12 +580,18 @@ describe("toAsker and picks by guests (#2592)", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(bus.sent).toEqual([]);
     expect(toAsker()).toEqual([]);
-    const ok = await replyBy(s.id, t.id, asPerson(viewer), view(viewer));
+    // A typed reply (#2559): a person's own words in the web app.
+    const ok = await replyBy(
+      s.id,
+      t.id,
+      { kind: "user", id: viewer.userId, typed: true },
+      view(viewer),
+    );
     expect(ok.mentions?.[0]?.delivery).toBe("delivered");
     expect(toAsker()).toHaveLength(1);
   });
 
-  it("a guest cap refuses toAsker too; a restricted member's reply still delivers", async () => {
+  it("a guest cap refuses toAsker too; a restricted member's typed reply is held (not on the list, not asked, #2577)", async () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
@@ -604,11 +613,11 @@ describe("toAsker and picks by guests (#2592)", () => {
     const ok = await replyBy(
       s.id,
       t.id,
-      { kind: "user", id: r },
+      { kind: "user", id: r, typed: true },
       { userId: r, short: null, capped: true },
     );
     expect(ok.body).toBe("Use the wide one");
-    expect(toAsker()).toHaveLength(1);
+    expect(toAsker()).toHaveLength(0);
     const g = await capped("guest");
     await expect(
       replyBy(
@@ -656,5 +665,121 @@ describe("toAsker and picks by guests (#2592)", () => {
       { canDecide: false, guest: true },
     );
     expect(out.ask?.picks?.map((x) => x.optionId)).toEqual(["wide"]);
+  });
+});
+
+describe("reply toAsker and the list (#2577)", () => {
+  /** The owner stops listening to these people (restored by `relist`). */
+  const unlist = (...ids: string[]) =>
+    E.DB.prepare(
+      `delete from agent_listens where owner_id = ?1 and member_id in (select value from json_each(?2))`,
+    )
+      .bind(owner.userId, JSON.stringify(ids))
+      .run();
+  const relist = async (...ids: string[]) => {
+    for (const m of ids)
+      await E.DB.prepare(
+        `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, until, created_via, created_at)
+         values (?1, ?2, ?3, 'all', null, ?4, 'settings', ?5)`,
+      )
+        .bind(
+          newId(),
+          owner.userId,
+          m,
+          Date.now() + 300 * 86_400_000,
+          Date.now(),
+        )
+        .run();
+  };
+  const heldFor = (artifactId: string) =>
+    E.DB.prepare(
+      "select count(*) as n from held_requests where receiver_id = ? and sender_id = ? and artifact_id = ?",
+    );
+
+  it("a person not on the list and not asked is held, not delivered", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    await unlist(editor.userId);
+    try {
+      bus.clear();
+      const res = await reply(s.id, t.id, editor, { toAsker: true });
+      expect(res.status).toBe(201);
+      expect(toAsker()).toHaveLength(0);
+      expect(
+        (
+          await heldFor(s.id)
+            .bind(owner.userId, editor.userId, s.id)
+            .first<{ n: number }>()
+        )?.n,
+      ).toBe(1);
+    } finally {
+      await relist(editor.userId);
+    }
+  });
+
+  it("a person the ask was put to is delivered without the list", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner); // to: viewer
+    await unlist(viewer.userId);
+    try {
+      bus.clear();
+      const res = await reply(s.id, t.id, viewer, { toAsker: true });
+      expect(res.status).toBe(201);
+      expect(toAsker().map((x) => x.userId)).toEqual([owner.userId]);
+      expect(
+        (
+          await heldFor(s.id)
+            .bind(owner.userId, viewer.userId, s.id)
+            .first<{ n: number }>()
+        )?.n,
+      ).toBe(0);
+    } finally {
+      await relist(viewer.userId);
+    }
+  });
+
+  it("a token's toAsker reply wakes nobody else's agent and holds nothing, listed, asked or not", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner); // to: viewer
+    await unlist(editor.userId, viewer.userId);
+    try {
+      for (const [who, why] of [
+        [editor, "not listed, not asked"],
+        [viewer, "asked"],
+      ] as const) {
+        bus.clear();
+        const pat = (await createPat(E, who.userId, `${why} token`)).token;
+        const res = await api(app, R.commentReplies(s.id, t.id), pat, {
+          method: "POST",
+          body: { body: `token reply, ${why}`, toAsker: true },
+        });
+        expect(res.status, why).toBe(201);
+        expect(toAsker(), why).toHaveLength(0);
+        expect(
+          bus.sent.filter((x) => x.userId === owner.userId),
+          why,
+        ).toEqual([]);
+        expect(
+          (
+            await heldFor(s.id)
+              .bind(owner.userId, who.userId, s.id)
+              .first<{ n: number }>()
+          )?.n,
+          why,
+        ).toBe(0);
+      }
+    } finally {
+      await relist(editor.userId, viewer.userId);
+    }
+  });
+
+  it("a person on the list is delivered", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    expect((await reply(s.id, t.id, editor, { toAsker: true })).status).toBe(
+      201,
+    );
+    expect(toAsker().map((x) => x.userId)).toEqual([owner.userId]);
   });
 });

@@ -2,6 +2,7 @@
 // provisioning's mock is not re-exported here: import it from
 // @oa/provisioning-contract/mocks (test/mocks-entry-boundary.test.ts).
 
+export { MOCK_HELD_ID } from "./agent-asks.js";
 export { FOR_YOU_ASK } from "./comments.js";
 export * from "./events.js";
 export * from "./fixtures.js";

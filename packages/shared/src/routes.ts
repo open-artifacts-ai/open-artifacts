@@ -20,18 +20,22 @@ export const R = {
   meInboxReadAll: "/api/v1/me/inbox/read-all",
   /** POST InboxLaterBody (`{ until: "hour" | "morning" }`) -> 200 InboxItem (the deferred item). Defers a needs-you item once; a second time is 409 later_used. */
   meInboxLater: (id: string) => `/api/v1/me/inbox/${seg(id)}/later`,
-  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204. A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
+  /** GET -> InboxMutes; POST InboxMuteBody (`{ kind: "agent" | "page", id }`) -> 204 (404 for an id the caller can't see: a page they can't read, or an agent on none of their items; 409 mutes_full past 200; a person in a browser, a token gets 404). A mute stops push only: a muted agent's or page's items (asks and updates) stay in the inbox list. */
   meInboxMutes: "/api/v1/me/inbox/mutes",
   /** DELETE -> 204. Unmutes one agent or page. */
   meInboxMute: (kind: "agent" | "page", id: string) =>
     `/api/v1/me/inbox/mutes/${seg(kind)}/${seg(id)}`,
   /** GET -> NotificationPrefs; PUT NotificationPrefs -> NotificationPrefs. */
   meNotificationPrefs: "/api/v1/me/notification-prefs",
+  /** GET -> Teammates (#2577): the other team members, id, name and initials only (never an email). Members only; a guest gets 403. */
+  meTeammates: "/api/v1/me/teammates",
+  /** POST -> Onboarding (#2577): the caller was asked about "listens to" (once; idempotent). A person in a browser only. */
+  meOnboardingListensAsked: "/api/v1/me/onboarding/listens-asked",
   /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */
   mePushKey: "/api/v1/me/push/key",
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
   mePushSubscriptions: "/api/v1/me/push/subscriptions",
-  /** DELETE -> 204. The caller's own subscription only. */
+  /** PATCH PushSubscriptionPatchBody (`{ needsYou?, updates? }`) -> 200 { needsYou, updates }: this browser's switches. DELETE -> 204: removes it. The caller's own subscription only (404 otherwise); a person in a browser (a token gets 404). */
   mePushSubscription: (id: string) =>
     `/api/v1/me/push/subscriptions/${seg(id)}`,
   /** GET -> ShareNoticeAgents; PUT ShareNoticeAgents -> ShareNoticeAgents (replaces the list; 400 bad_request on an invalid address, details { path: "agents[i].name", reason: "invalid" | "reserved" }, or more than SHARE_NOTICE_MAX, details { path: "agents", reason: "too_many" }). The bus addresses that get "shared with you" notices; empty (the default) drops them. Callers who may connect agents (mcp.connect), their own list only; PUT takes an interactive cookie session (a PAT or OAuth grant gets 404) (#1292). */
@@ -136,6 +140,26 @@ export const R = {
   passkeySettings: "/api/v1/passkeys/settings",
   /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
   passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
+  /** #2577: GET -> HeldList: the requests to the caller's agents that wait for them, with the current words. Browser session only. */
+  agentAskHeld: "/api/v1/me/agent-asks/held",
+  /** POST AllowBody -> AllowResult: passes exactly the listed held comments (at the words shown) to the caller's agents; "page" and "all" also add a "listens to" entry ("all" needs a passkey). 409 `changed` is never sent: edited comments stay held and count in `changed`. */
+  agentAskHeldAllow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow`,
+  /** POST AllowChallengeBody -> PasskeyChallenge: the passkey prompt for an "all pages" entry ending at `until`. */
+  agentAskHeldAllowChallenge: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/allow/challenge`,
+  /** POST -> 204: quiet this sender's requests for a day; they stay held, and the asker sees nothing different. */
+  agentAskHeldNotNow: (id: string) =>
+    `/api/v1/me/agent-asks/held/${seg(id)}/not-now`,
+  /** #2577 S2: GET -> AgentRequestsSwitch; PUT AgentRequestsSwitch -> AgentRequestsSwitch. Off: the caller's agents hear nobody outside (nothing is held; a mention or ask of them is refused at post with "Only answers <name>"). Reading is any signed-in person's; saving is a browser session only. Default on. */
+  agentRequests: "/api/v1/me/agent-requests",
+  /** #2577 S2: GET -> ListensList: the caller's live "listens to" entries (people whose requests their agents take without holding). Browser session only. */
+  agentListens: "/api/v1/me/agent-listens",
+  /** #2577: POST ListenAddBody -> ListenAddResult on R.agentListens: adds teammates to the list directly ({ memberId } or { memberIds }, at most 50, all-or-nothing). A live entry is extended, not duplicated. Browser session only, no passkey. 400 for an outsider, a non-member, yourself, a page open to guests or the link, a space you are not in. */
+  /** #2577: GET -> AskHistory: "Who asked what", the last 30 days, newest first, for the caller as receiver. No words. Browser session only. */
+  agentAskHistory: "/api/v1/me/agent-asks/history",
+  /** PATCH ListenShortenBody { until } -> ListenEntry: ends the entry sooner (never later: a longer one is a new allow). DELETE -> 204: removes it. Both affect future requests only; what was delivered or is held stays. Own entries only (else 404); browser session only. */
+  agentListen: (id: string) => `/api/v1/me/agent-listens/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",
   /** PATCH TokenPatch -> Token; DELETE -> 204. Own tokens only (else 404). */
@@ -147,6 +171,33 @@ export const R = {
   /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
   busMachines: "/api/v1/bus/machines",
   busPing: "/api/v1/bus/ping",
+  /**
+   * PUT { version: "x.y.z" | null } -> 204 (#2552): the version the instance
+   * tells its machines to run; null names none (the default). Owner only, in
+   * an interactive cookie session (a PAT, OAuth grant or machine token gets
+   * 404); audited bus.run_version.set (with `stepBack`). Only a strict x.y.z
+   * is accepted. 409 conflict with details `{ reason }`: `older_version` (lower
+   * than the one named, without `stepBack: true`) or `ahead_of_server` (newer
+   * than this server).
+   */
+  busRunVersion: "/api/v1/bus/run-version",
+  /**
+   * PUT { paused: boolean } -> 204 (#2552): pause (or resume) every
+   * instance-driven machine update, the named version and the default alike.
+   * Owner only, in an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404); audited bus.updates_paused.set. A person's own
+   * `oa-bus update` is not affected.
+   */
+  busUpdatesPaused: "/api/v1/bus/updates-paused",
+  /**
+   * POST -> 204 (#2552): "Install now" for one of the caller's own machines.
+   * No body: it names no version. The machine installs only the version it
+   * already staged and the instance names. An interactive cookie session of
+   * the machine's own member (else 404); 409 `machine_offline` when no socket
+   * took it; audited bus.install_now.
+   */
+  busMachineInstallNow: (id: string) =>
+    `/api/v1/bus/machines/${seg(id)}/install-now`,
   /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
   busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
   /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
@@ -209,7 +260,7 @@ export const R = {
   busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
-  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending). #2520 */
+  /** GET -> LoginSettings (owner or admin); PUT LoginSettingsPut -> LoginSettings with applying: true (owner only, needs a fresh login; 403 domain_unproven, 409 apply_pending when nothing can apply it or an earlier change is still applying; hosted with the platform gate: the platform applies it and redeploys in about a minute; 403 forbidden { reason: plan_required | google_required | email_codes_on | install_not_serving }, 400 bad_request { reason }, 429 rate_limited, 503 login_unavailable: the change may still take effect, check back before trying again; only a request that never left says nothing changed). #2520 */
   loginSettings: "/api/v1/settings/login",
   /** POST -> 204: marks the first-invite question answered for the caller. #2520 */
   loginFirstInviteSeen: "/api/v1/settings/login/first-invite-seen",
@@ -280,6 +331,11 @@ export const R = {
   docOps: (id: string) => `${A}/${seg(id)}/doc/ops`,
   /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
   comments: (id: string) => `${A}/${seg(id)}/comments`,
+  /** POST CommentPictureReserve -> 201 CommentPictureReserved (#2508): reserves one comment picture. Comment rights on the page, signed in, never a guest (403). */
+  commentPictures: (id: string) => `${A}/${seg(id)}/pictures`,
+  /** GET -> the picture's bytes (access as reading the page's comments, on every request; 404 for an unknown or foreign one). PUT raw bytes (signed: ?exp=&sig=, from CommentPictureReserved.url) -> 200 CommentPicture. */
+  commentPicture: (id: string, pictureId: string) =>
+    `${A}/${seg(id)}/pictures/${seg(pictureId)}`,
   /** PATCH { status } -> CommentThread. */
   commentThread: (id: string, thread: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}`,
@@ -292,7 +348,7 @@ export const R = {
   /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
   comment: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
-  /** POST AnswerBody { optionId, assertion? } -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
+  /** POST AnswerBody { optionId } or { ownWords: { text } } (#2895: 1 to 1,000 characters after trimming; both -> 400 bad_request with details { path: "ownWords.text", reason: "empty" | "too_long" }; stored as answer.ownWords with no optionId, never a yes), assertion? -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
   commentAnswer: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
   /**
@@ -313,6 +369,13 @@ export const R = {
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/withdraw`,
   /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
   artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
+  /**
+   * POST MentionCandidatesBody (`{ q }`) -> MentionCandidates (#2770; a POST so a typed address stays out of URLs and logs): the people who can read this artifact and can be @mentioned,
+   * for the owner and editors (everyone else gets none). `q` (1 to 40 characters) matches the start of
+   * the start of a name or of any word in it (an email only when typed in full and exactly); at most 8, a face only, never an email. Rate limited (429).
+   */
+  artifactMentionCandidates: (id: string) =>
+    `${A}/${seg(id)}/mention-candidates`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,

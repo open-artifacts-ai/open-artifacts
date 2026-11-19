@@ -13,6 +13,8 @@ provides_tools:
   - oabus_following
 provides_hooks:
   - pre_llm_call
+  - on_session_open
+  - on_session_start
   - on_session_end
   - on_session_finalize
   - subagent_start

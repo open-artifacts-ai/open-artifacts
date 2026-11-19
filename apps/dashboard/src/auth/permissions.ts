@@ -114,6 +114,21 @@ const LABEL = {
 export const accessLabel = (level: AccessLevel) => LABEL[level];
 
 /**
+ * #2932: what the signed-in visitor's own access reads as in the title bar. An
+ * outsider (a guest) reads it as the Share panel says it: the server returns a
+ * Can comment share as access "viewer" with can.comment. Members keep their role.
+ */
+export const ownAccessLabel = (
+  a: { access: AccessLevel; can?: { comment?: boolean } | null },
+  outsider: boolean,
+) =>
+  outsider && a.access === "viewer"
+    ? a.can?.comment === true
+      ? "Can comment"
+      : "Can view"
+    : LABEL[a.access];
+
+/**
  * The plan locked the instance for this caller (cap "plan", readOnly): every
  * write control is off, reads stay. The org owner is never frozen.
  */
