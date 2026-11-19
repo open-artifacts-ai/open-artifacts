@@ -24,8 +24,12 @@ export function usePageAgentChip(api: CommentsApi) {
     remove: () => setOn(false),
     /** After a post: the next thread starts with the chip again. */
     reset: () => setOn(true),
-    /** What the new thread's body adds. */
-    body: agent ? optOut(on) : {},
+    /**
+     * What the new thread's body adds. With an agent @mentioned the server adds
+     * no page agent, so nothing is sent; else the opt-out, when the chip was removed.
+     */
+    bodyFor: (x?: { mentions: readonly unknown[] }) =>
+      agent && !(x && x.mentions.length > 0) ? optOut(on) : {},
   };
 }
 

@@ -497,8 +497,13 @@ function Composer({
   float?: boolean;
   /** The new-comment layout: Cancel and the accent submit at the right. */
   buttonsRight?: boolean;
-  /** Shown at the left of the button row (a guest's Sign in link). */
-  lead?: React.ReactNode;
+  /**
+   * Shown at the left of the button row (a guest's Sign in link). A function
+   * is told whether an agent is @mentioned in the box (people don't count).
+   */
+  lead?:
+    | React.ReactNode
+    | ((s: { agentMentioned: boolean }) => React.ReactNode);
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
@@ -1042,7 +1047,11 @@ function Composer({
             >
               <div className="flex flex-wrap items-center gap-2">
                 {attach && <AttachButton d={pics} />}
-                {lead}
+                {typeof lead === "function"
+                  ? lead({
+                      agentMentioned: mentionedNow.some((k) => !isPersonKey(k)),
+                    })
+                  : lead}
                 {attach && <UploadStatus d={pics} />}
                 {card && !(attach && pics.uploading > 0) && (
                   <SendHint id={hintId} />
@@ -2061,10 +2070,11 @@ function NewThread({
             <QuoteBar>{draft.anchor.exact}</QuoteBar>
           )
         }
-        lead={
+        // The server adds the page agent only when no other agent is named.
+        lead={({ agentMentioned }) =>
           api.guest ? (
             <SignInLink />
-          ) : notify.shown ? (
+          ) : notify.shown && !agentMentioned ? (
             <NotifyChip agent={notify.shown} onRemove={notify.remove} />
           ) : undefined
         }
@@ -2090,7 +2100,7 @@ function NewThread({
             body,
             ...extrasBody(x),
             ...guest,
-            ...notify.body,
+            ...notify.bodyFor(x),
             contentHash: api.contentHash,
           });
           // The thread shows at once, so the draft closes now. Keep the quote
@@ -2112,7 +2122,7 @@ function NewThread({
                       anchor: { kind: "note" },
                       body: last.current || api.draftSeed?.text || "",
                       ...guest,
-                      ...notify.body,
+                      ...notify.bodyFor(),
                     })
                     .then(
                       () => api.cancelDraft(true),
@@ -2163,10 +2173,11 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         keepOnEsc
         pictures
         actions={ACTIONS_PLAIN}
-        lead={
+        // The server adds the page agent only when no other agent is named.
+        lead={({ agentMentioned }) =>
           api.guest ? (
             <SignInLink />
-          ) : notify.shown ? (
+          ) : notify.shown && !agentMentioned ? (
             <NotifyChip agent={notify.shown} onRemove={notify.remove} />
           ) : undefined
         }
@@ -2177,7 +2188,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
-          const optOut = notify.body;
+          const optOut = notify.bodyFor(x);
           // The next thread starts with the chip again.
           notify.reset();
           return create.mutateAsync({

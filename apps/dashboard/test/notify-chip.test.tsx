@@ -90,6 +90,104 @@ const posts = () => {
 const noteBox = (c: HTMLElement) =>
   within(c).getByRole("textbox", { name: "Comment on the whole page" });
 
+const AGENTS = [
+  { key: "agent:docs", name: "OA Docs", online: true, state: "online" },
+  { key: "agent:design", name: "OA Design", online: true, state: "online" },
+];
+const withAgents = () =>
+  http.get(`*${R.artifactAgents(OWNED)}`, () => HttpResponse.json(AGENTS));
+describe("an @mentioned agent replaces the page agent (#2610)", () => {
+  it("hides the chip while an agent is mentioned, and sends no opt-out", async () => {
+    server.use(
+      withAgents(),
+      withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }),
+    );
+    const p = posts();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await waitFor(() => expect(chip()).not.toBeNull());
+    const b = noteBox(c);
+    fireEvent.focus(b);
+    await waitFor(() => {
+      fireEvent.change(b, {
+        target: { value: "@OA Docs please look", selectionStart: 20 },
+      });
+      expect(chip()).toBeNull();
+    });
+    // The mention goes, the chip comes back.
+    fireEvent.change(b, {
+      target: { value: "please look", selectionStart: 11 },
+    });
+    await waitFor(() => expect(chip()).not.toBeNull());
+    fireEvent.change(b, {
+      target: { value: "@OA Docs please look", selectionStart: 20 },
+    });
+    await waitFor(() => expect(chip()).toBeNull());
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(p.list.length).toBeGreaterThan(0));
+    expect(p.list[0]?.body).toMatchObject({ body: "@OA Docs please look" });
+    expect(p.list[0]?.body).not.toHaveProperty("notifyPageAgent");
+  });
+
+  it("a removed chip plus an agent mention still sends no opt-out", async () => {
+    server.use(
+      withAgents(),
+      withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }),
+    );
+    const p = posts();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await waitFor(() => expect(chip()).not.toBeNull());
+    fireEvent.click(
+      within(chip() as HTMLElement).getByRole("button", {
+        name: "Stop notifying OA Design",
+      }),
+    );
+    const b = noteBox(c);
+    fireEvent.focus(b);
+    await waitFor(() => {
+      fireEvent.change(b, {
+        target: { value: "@OA Docs hi", selectionStart: 11 },
+      });
+      expect(
+        within(c).queryByRole("button", { name: "Comment" }),
+      ).not.toBeNull();
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(p.list.length).toBeGreaterThan(0));
+    expect(p.list[0]?.body).not.toHaveProperty("notifyPageAgent");
+  });
+
+  it("a person mention does not hide the chip", async () => {
+    server.use(
+      withAgents(),
+      withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }),
+      http.post(`*${R.artifactMentionCandidates(OWNED)}`, () =>
+        HttpResponse.json({
+          items: [
+            { kind: "user", id: "usr_dana", name: "Dana Whitfield", me: false },
+          ],
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await waitFor(() => expect(chip()).not.toBeNull());
+    const b = noteBox(c);
+    fireEvent.focus(b);
+    await waitFor(() => {
+      fireEvent.change(b, { target: { value: "@da", selectionStart: 3 } });
+      expect(within(c).queryByText("Dana Whitfield")).not.toBeNull();
+    });
+    fireEvent.mouseDown(within(c).getByText("Dana Whitfield"));
+    await waitFor(() =>
+      expect((b as HTMLTextAreaElement).value).toBe("@Dana Whitfield "),
+    );
+    expect(chip()).not.toBeNull();
+  });
+});
+
 describe("the chip on a new thread (#2610)", () => {
   it("a plain note: Notifying {agent}, sent by default", async () => {
     server.use(withPageAgent({ ...AGENT, for: "Ada Lovelace", me: true }));
