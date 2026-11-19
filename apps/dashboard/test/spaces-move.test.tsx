@@ -201,7 +201,7 @@ it("a public artifact into a public-off space asks first, then becomes Team", as
     within(c).getByRole("heading", { name: 'Move "Meeting notes" to Ops?' }),
   ).toBeVisible();
   expect(c).toHaveTextContent(
-    "Public links are off in Ops, so this link stops working and the artifact becomes visible to everyone at Acme Artifacts.",
+    "Sharing by link is off in Ops, so this link stops working and the artifact becomes visible to anyone at Acme Artifacts.",
   );
   expect(seen.some((x) => x.path === R.moveArtifact(NOTES))).toBe(false);
   server.use(
