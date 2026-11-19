@@ -559,6 +559,8 @@ export const ShareSchema = z.object({
   guest: z.boolean().optional(),
   /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
   viewOnly: z.boolean().optional(),
+  /** #2577: the user id when the address belongs to an existing team member (never an outsider or guest); null otherwise. Absent from older servers. */
+  memberId: z.string().nullable().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -1211,6 +1213,8 @@ export const OnboardingSchema = z.strictObject({
   busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),
+  /** #2577: the caller was asked about "listens to" (POST R.meOnboardingListensAsked). Absent on older servers: read as false. */
+  listensAsked: z.boolean().optional(),
   /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
   invitedBy: z
     .strictObject({ name: z.string().nullable() })
@@ -1218,6 +1222,18 @@ export const OnboardingSchema = z.strictObject({
     .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** GET R.meTeammates (#2577): the other team members. Never an email. */
+export const TeammatesSchema = z.strictObject({
+  members: z.array(
+    z.strictObject({
+      id: z.string(),
+      name: z.string(),
+      initials: z.string(),
+    }),
+  ),
+});
+export type Teammates = z.infer<typeof TeammatesSchema>;
 
 /** PUT R.onboarding: a flag only turns on (true), never off. */
 export const OnboardingPatchSchema = z.strictObject({

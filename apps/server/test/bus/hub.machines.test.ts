@@ -99,6 +99,7 @@ const RPC_ALLOWLIST = [
   "pendingProposalSources",
   "ping",
   "proofMissReason",
+  "proofSeen",
   "proposeLink",
   "proposeReach",
   "proposeRole",

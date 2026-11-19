@@ -2,6 +2,9 @@ import {
   ALLOW_ITEMS_MAX,
   type AllowBody,
   type AllowResult,
+  type AskHistory,
+  type AskHistoryRow,
+  type AskOutcome,
   HELD_LAPSE_MS,
   HELD_QUIET_MS,
   type HeldItem,
@@ -10,6 +13,8 @@ import {
   type HeldWay,
   LISTEN_MAX_MS,
   LISTEN_PAGE_MS,
+  type ListenAddBody,
+  type ListenAddResult,
   type ListenEntry,
   type ListensList,
   newId,
@@ -18,8 +23,10 @@ import {
   accessLevel,
   type Caller,
   callerOf,
+  capOfCaller,
   meetsLevel,
 } from "../auth/authz.js";
+import { isGuestRole } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -31,14 +38,15 @@ import { publicName } from "./agent-display.js";
 import { askInfo } from "./asks.js";
 import { audit, userActor } from "./audit.js";
 import { type CommentNoticeKind, notifyAgent } from "./comment-agents.js";
-import { itemExcerpt } from "./inbox-items.js";
+import { HELD_EXCERPT, itemExcerpt } from "./inbox-items.js";
 import {
   giveBackReceiverSlot,
   isOutsideMember,
   takeReceiverSlot,
 } from "./mention-guards.js";
 import { listenChallenge } from "./passkeys.js";
-import { getUser } from "./users.js";
+import { HELD_PUSH_PREFIX, queuePush } from "./push.js";
+import { getUser, personName } from "./users.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
 // receiver's agents is held until the receiver allows it (or the sender is on
@@ -222,6 +230,43 @@ export async function agentRequestsOn(
   return !r || r.off !== 1;
 }
 
+/** Whether a request held for the member also sends a browser push. Default off. */
+export async function phonePushOn(env: Env, userId: string): Promise<boolean> {
+  const r = await stmt(
+    env.DB,
+    "select phone_push as p from notification_prefs where user_id = ?1",
+  )
+    .bind(userId)
+    .first<{ p: number }>();
+  return r?.p === 1;
+}
+
+/** Saves the push choice; an unchanged save writes nothing. Audited as agent_requests.switch with `phonePush`. */
+export async function setPhonePush(
+  env: Env,
+  userId: string,
+  on: boolean,
+  now = Date.now(),
+): Promise<boolean> {
+  if ((await phonePushOn(env, userId)) === on) return on;
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      `insert into notification_prefs (user_id, phone_push, updated_at)
+       values (?1, ?2, ?3)
+       on conflict (user_id) do update set phone_push = excluded.phone_push, updated_at = excluded.updated_at`,
+    ).bind(userId, on ? 1 : 0, now),
+    audit(
+      env,
+      "agent_requests.switch",
+      { type: "user", id: userId },
+      userActor(userId),
+      { detail: { phonePush: on } },
+    ),
+  ]);
+  return on;
+}
+
 /**
  * The member's switch. Turning it off leaves what is held, and what was
  * allowed, as it is; the gate just stops holding and refuses new mentions.
@@ -281,10 +326,15 @@ export async function listListens(
     // The held list's form: the name, else the email's local part, else "Someone".
     const m = await stmt(
       env.DB,
-      "select id, name, email from users where id = ?1",
+      "select id, name, display_name as displayName, email from users where id = ?1",
     )
       .bind(r.member_id)
-      .first<{ id: string; name: string | null; email: string }>();
+      .first<{
+        id: string;
+        name: string | null;
+        displayName: string | null;
+        email: string;
+      }>();
     if (!m) continue;
     const art = r.artifact_id
       ? await stmt(env.DB, "select id, title from artifacts where id = ?1")
@@ -300,7 +350,7 @@ export async function listListens(
       id: r.id,
       member: {
         id: m.id,
-        name: m.name ?? m.email.split("@")[0] ?? "Someone",
+        name: personName(m),
       },
       scope: r.scope,
       artifact: art ?? null,
@@ -544,7 +594,7 @@ async function recordHoldsOnce(
         .first<{ id: string }>();
       if (!req) continue;
       // A new request (one per receiver, sender and page) is audited once.
-      if (!known)
+      if (!known) {
         await audit(
           env,
           "agent_ask.held",
@@ -552,6 +602,24 @@ async function recordHoldsOnce(
           userActor(senderId),
           { detail: { artifactId } },
         ).run();
+        // Browser push only for a member who turned it on; otherwise the inbox alone. Never the words.
+        if (await phonePushOn(env, owner)) {
+          await queuePush(
+            env,
+            [owner],
+            {
+              key: `${HELD_PUSH_PREFIX}${req.id}`,
+              kind: "ask",
+              artifactId,
+              threadId: "",
+              // No name: a held request's push carries neither the words nor the sender.
+              askerName: "Someone",
+              excerpt: HELD_EXCERPT,
+            },
+            now,
+          );
+        }
+      }
       for (const h of held.filter((x) => x.agent.owner === owner))
         await stmt(
           env.DB,
@@ -650,7 +718,7 @@ export async function listHeld(
   const { results: reqs } = await stmt(
     env.DB,
     `select r.id, r.sender_id, r.artifact_id, r.created_at, r.last_at, r.quiet_until,
-            a.title as title, u.name as sender_name, u.email as sender_email
+            a.title as title, u.name as sender_name, u.display_name as sender_display, u.email as sender_email
        from held_requests r
        join artifacts a on a.id = r.artifact_id and a.deleted_at is null
        join users u on u.id = r.sender_id
@@ -668,6 +736,7 @@ export async function listHeld(
       quiet_until: number | null;
       title: string;
       sender_name: string | null;
+      sender_display: string | null;
       sender_email: string;
     }>();
   const out: HeldRequest[] = [];
@@ -705,7 +774,11 @@ export async function listHeld(
       id: r.id,
       sender: {
         id: r.sender_id,
-        name: r.sender_name ?? r.sender_email.split("@")[0] ?? "Someone",
+        name: personName({
+          name: r.sender_name,
+          displayName: r.sender_display,
+          email: r.sender_email,
+        }),
       },
       artifact: { id: r.artifact_id, title: r.title },
       items,
@@ -1089,7 +1162,383 @@ export async function lapseHeld(env: Env, now = Date.now()): Promise<void> {
       env.DB,
       "delete from held_requests where not exists (select 1 from held_request_items i where i.request_id = held_requests.id) and last_at < ?1",
     ).bind(now - 30 * 24 * 60 * 60 * 1000),
+    stmt(env.DB, "delete from listed_deliveries where created_at < ?1").bind(
+      now - 30 * 24 * 60 * 60 * 1000,
+    ),
   ]);
 }
 
 export { ALLOW_ITEMS_MAX };
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** `until` of an add: 30, 90 or 365 are days from now; anything else is an end time in ms. At most a year out, and after now. */
+function addUntil(raw: number, now: number): number {
+  const until = [30, 90, 365].includes(raw) ? now + raw * DAY_MS : raw;
+  if (until <= now)
+    throw new ApiError("bad_request", "Pick a time after now", {
+      path: "until",
+      reason: "range",
+    });
+  return Math.min(until, now + LISTEN_MAX_MS);
+}
+
+const refuse = (message: string, path = "memberId") =>
+  new ApiError("bad_request", message, { path, reason: "refused" });
+
+/**
+ * #2577: adds teammates to the caller's list directly (Settings, the share
+ * tick, first setup), or a batch of them. Every rule is checked for every
+ * person before anything is written; one refusal refuses all. A live entry for
+ * the same person and place is extended (never duplicated). No passkey.
+ * Audited as agent_listens.add, one row per person.
+ */
+export async function addListens(
+  env: Env,
+  ownerId: string,
+  body: ListenAddBody,
+  now = Date.now(),
+): Promise<ListenAddResult> {
+  const owner = await getUser(env, ownerId);
+  if (!owner || isGuestRole(owner.role) || capOfCaller(callerOf(owner)))
+    throw new ApiError("forbidden", "Not available to this account");
+  const ids = [...new Set(body.memberIds ?? [body.memberId ?? ""])];
+  const until = addUntil(body.until, now);
+
+  let artifactId: string | null = null;
+  let spaceId: string | null = null;
+  let spaceName = "";
+  let pageTitle = "";
+  if (body.scope === "page") {
+    if (!body.artifactId || body.spaceId)
+      throw refuse("A page needs artifactId", "artifactId");
+    artifactId = body.artifactId;
+    if (!(await accessLevel(env, callerOf(owner), artifactId)))
+      throw refuse("No such page", "artifactId");
+    pageTitle =
+      (
+        await stmt(env.DB, "select title from artifacts where id = ?1")
+          .bind(artifactId)
+          .first<{ title: string }>()
+      )?.title ?? "";
+    if (await pageIsOpen(env, artifactId))
+      throw refuse(
+        "A page open to guests or the link takes no list",
+        "artifactId",
+      );
+  } else if (body.scope === "space") {
+    if (!body.spaceId || body.artifactId)
+      throw refuse("A space needs spaceId", "spaceId");
+    spaceId = body.spaceId;
+    const sp = await stmt(
+      env.DB,
+      `select s.name as name from spaces s join space_members m on m.space_id = s.id
+        where s.id = ?1 and m.user_id = ?2 and s.kind = 'shared' and s.deleted_at is null limit 1`,
+    )
+      .bind(spaceId, ownerId)
+      .first<{ name: string }>();
+    if (!sp) throw refuse("No such space", "spaceId");
+    spaceName = sp.name;
+  } else if (body.artifactId || body.spaceId)
+    throw refuse("All pages takes no page or space", "scope");
+
+  const names = new Map<string, string>();
+  for (const id of ids) {
+    const m = id && id !== ownerId ? await getUser(env, id) : null;
+    if (!m || (await isOutsideMember(env, id)))
+      throw refuse("Not a teammate you can add");
+    // The app's name for them (never the email), from the raw columns.
+    const raw = await stmt(
+      env.DB,
+      "select name, display_name as displayName, email from users where id = ?1",
+    )
+      .bind(id)
+      .first<{
+        name: string | null;
+        displayName: string | null;
+        email: string;
+      }>();
+    names.set(id, raw ? personName(raw) : "Someone");
+    if (artifactId) {
+      const acc = await accessLevel(env, callerOf(m), artifactId);
+      if (!acc || !meetsLevel(acc.level, "editor"))
+        throw refuse("That person cannot edit this page");
+    }
+  }
+
+  const stmts: D1PreparedStatement[] = [];
+  const written: ListenEntry[] = [];
+  for (const id of ids) {
+    const live = await stmt(
+      env.DB,
+      `select id, until, created_at from agent_listens
+        where owner_id = ?1 and member_id = ?2 and scope = ?3 and removed_at is null and until > ?4
+          and artifact_id is ?5 and space_id is ?6 limit 1`,
+    )
+      .bind(ownerId, id, body.scope, now, artifactId, spaceId)
+      .first<{ id: string; until: number; created_at: number }>();
+    let entryId: string;
+    if (live) {
+      entryId = live.id;
+      if (until > live.until)
+        stmts.push(
+          stmt(
+            env.DB,
+            "update agent_listens set until = ?1 where id = ?2 and owner_id = ?3",
+          ).bind(until, live.id, ownerId),
+        );
+    } else {
+      entryId = newId();
+      stmts.push(
+        stmt(
+          env.DB,
+          `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, space_id, until, created_via, created_at)
+           values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+        ).bind(
+          entryId,
+          ownerId,
+          id,
+          body.scope,
+          artifactId,
+          spaceId,
+          until,
+          body.via,
+          now,
+        ),
+      );
+    }
+    written.push({
+      id: entryId,
+      member: { id, name: names.get(id) ?? "Someone" },
+      scope: body.scope,
+      artifact: artifactId ? { id: artifactId, title: pageTitle } : null,
+      space: spaceId ? { id: spaceId, name: spaceName } : null,
+      until: Math.max(until, live?.until ?? 0),
+      createdAt: live?.created_at ?? now,
+    });
+    stmts.push(
+      audit(
+        env,
+        "agent_listens.add",
+        { type: "user", id },
+        userActor(ownerId),
+        {
+          detail: {
+            level: body.scope,
+            until,
+            via: body.via,
+            ...(live ? { extended: true } : {}),
+            ...(artifactId ? { artifactId } : {}),
+            ...(spaceId ? { spaceId } : {}),
+          },
+        },
+      ),
+    );
+  }
+  await env.DB.batch(stmts);
+  // Built from what was just written: no second read that could fail after the commit.
+  return { entries: written };
+}
+
+/** One delivery that went straight to a listed sender's receiver (ids and a time, no words). */
+export type ListedDelivery = {
+  agentKey: string;
+  senderId: string;
+  artifactId: string;
+  commentId: string;
+  at: number;
+};
+
+/** The receiver's listed deliveries since `since` (ms), newest first, at most `limit`. */
+export async function listedDeliveries(
+  env: Env,
+  receiverId: string,
+  since: number,
+  limit = 500,
+): Promise<ListedDelivery[]> {
+  const { results } = await stmt(
+    env.DB,
+    `select agent_key, sender_id, artifact_id, comment_id, created_at from listed_deliveries
+      where receiver_id = ?1 and created_at >= ?2 order by created_at desc, id limit ?3`,
+  )
+    .bind(receiverId, since, limit)
+    .all<{
+      agent_key: string;
+      sender_id: string;
+      artifact_id: string;
+      comment_id: string;
+      created_at: number;
+    }>();
+  return results.map((r) => ({
+    agentKey: r.agent_key,
+    senderId: r.sender_id,
+    artifactId: r.artifact_id,
+    commentId: r.comment_id,
+    at: r.created_at,
+  }));
+}
+
+/** The window "Who asked what" covers. */
+export const ASK_HISTORY_MS = 30 * DAY_MS;
+
+/**
+ * "Who asked what" for the receiver: the last 30 days of requests that were
+ * held for them, newest first, as ids, names, titles and times (never words).
+ * Held ones come from held_request_items, listed ones (sent straight to the
+ * agent) from listed_deliveries.
+ */
+export async function askHistory(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<AskHistory> {
+  const { results } = await stmt(
+    env.DB,
+    `select i.agent_key, i.state, i.created_at, i.expires_at, r.artifact_id, r.sender_id, r.quiet_until,
+            u.name as sender_name, u.display_name as sender_display, u.email as sender_email,
+            a.title as title, a.deleted_at as deleted_at
+       from held_request_items i
+       join held_requests r on r.id = i.request_id
+       join users u on u.id = r.sender_id
+       left join artifacts a on a.id = r.artifact_id
+      where r.receiver_id = ?1 and i.created_at >= ?2 and i.state != 'withdrawn'
+      order by i.created_at desc, i.id limit 500`,
+  )
+    .bind(receiverId, now - ASK_HISTORY_MS)
+    .all<{
+      agent_key: string;
+      state: string;
+      created_at: number;
+      expires_at: number;
+      artifact_id: string;
+      sender_id: string;
+      quiet_until: number | null;
+      sender_name: string | null;
+      sender_display: string | null;
+      sender_email: string;
+      title: string | null;
+      deleted_at: number | null;
+    }>();
+  // Dynamic: comments.ts imports this file.
+  const { artifactAgents } = await import("./comments.js");
+  const { results: listed } = await stmt(
+    env.DB,
+    `select d.agent_key, d.created_at, d.artifact_id, d.sender_id,
+            u.name as sender_name, u.display_name as sender_display, u.email as sender_email,
+            a.title as title, a.deleted_at as deleted_at
+       from listed_deliveries d
+       join users u on u.id = d.sender_id
+       left join artifacts a on a.id = d.artifact_id
+      where d.receiver_id = ?1 and d.created_at >= ?2
+      order by d.created_at desc, d.id limit 500`,
+  )
+    .bind(receiverId, now - ASK_HISTORY_MS)
+    .all<{
+      agent_key: string;
+      created_at: number;
+      artifact_id: string;
+      sender_id: string;
+      sender_name: string | null;
+      sender_display: string | null;
+      sender_email: string;
+      title: string | null;
+      deleted_at: number | null;
+    }>();
+  const all = [
+    ...results.map((r) => ({ ...r, listed: false })),
+    ...listed.map((r) => ({
+      ...r,
+      state: "listed",
+      expires_at: 0,
+      quiet_until: null as number | null,
+      listed: true,
+    })),
+  ]
+    .sort((x, y) => y.created_at - x.created_at)
+    .slice(0, 500);
+  const me = await getUser(env, receiverId);
+  const open = new Map<string, boolean>();
+  const names = new Map<string, Map<string, string>>();
+  const rows: AskHistoryRow[] = [];
+  for (const r of all) {
+    if (!open.has(r.artifact_id))
+      open.set(
+        r.artifact_id,
+        !!me &&
+          r.title !== null &&
+          r.deleted_at === null &&
+          (await receiverCanOpen(env, callerOf(me), r.artifact_id)),
+      );
+    if (!names.has(r.artifact_id))
+      names.set(
+        r.artifact_id,
+        new Map(
+          (
+            await artifactAgents(env, r.artifact_id, receiverId).catch(() => [])
+          ).map((a) => [a.key, a.name]),
+        ),
+      );
+    let outcome: AskOutcome;
+    if (r.listed) outcome = "on_list";
+    else if (r.state === "allowed") outcome = "allowed_once";
+    else if (r.state === "lapsed" || r.expires_at <= now) outcome = "lapsed";
+    else if (
+      r.quiet_until !== null &&
+      r.quiet_until - HELD_QUIET_MS >= r.created_at
+    )
+      outcome = "not_now";
+    else outcome = "held";
+    rows.push({
+      agent: {
+        key: r.agent_key,
+        name: names.get(r.artifact_id)?.get(r.agent_key) ?? "An agent",
+      },
+      asker: {
+        id: r.sender_id,
+        name: personName({
+          name: r.sender_name,
+          displayName: r.sender_display,
+          email: r.sender_email,
+        }),
+      },
+      artifact: open.get(r.artifact_id)
+        ? { id: r.artifact_id, title: r.title ?? "" }
+        : null,
+      at: r.created_at,
+      outcome,
+    });
+  }
+  return { rows };
+}
+
+/**
+ * #2577: a request from a person on the receiver's list is going straight to
+ * the receiver's agent: remember that it happened (ids and a time, never
+ * words) so "Who asked what" can show it. Only when the sender is on the list
+ * for this page right now (a reply from the person an ask was put to, or the
+ * receiver's own comment, is not a listed delivery). Best effort: never
+ * throws and never waits on anything but its own two statements.
+ */
+export async function recordListed(
+  env: Env,
+  artifactId: string,
+  commentId: string,
+  agentKey: string,
+  receiverId: string,
+  senderId: string,
+  now = Date.now(),
+): Promise<void> {
+  try {
+    if (receiverId === senderId) return;
+    if (!(await listensTo(env, receiverId, senderId, artifactId, now))) return;
+    await stmt(
+      env.DB,
+      `insert or ignore into listed_deliveries (id, receiver_id, sender_id, artifact_id, comment_id, agent_key, created_at)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7)`,
+    )
+      .bind(newId(), receiverId, senderId, artifactId, commentId, agentKey, now)
+      .run();
+  } catch (e) {
+    logWarn("listed_delivery_write_failed", e);
+  }
+}

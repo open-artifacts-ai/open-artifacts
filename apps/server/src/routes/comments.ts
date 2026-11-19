@@ -6,6 +6,7 @@ import {
   isId,
   MentionCandidatesBodySchema,
   NewThreadBodySchema,
+  OWN_WORDS_MAX,
   ReplyBodySchema,
   TakeBackBodySchema,
   WithdrawBodySchema,
@@ -211,6 +212,40 @@ const ChallengeBodySchema = z.strictObject({
   optionId: z.string().regex(COMMENT_KEY_RE),
 });
 
+/**
+ * #2895: the pick in an answer body: an option, or the person's own words
+ * (trimmed, 1 to 1,000 characters). Both, or neither, is a 400; so is
+ * `ownWords.text` empty or too long, with the path and the reason in details.
+ */
+function pickOf(b: {
+  optionId?: string;
+  ownWords?: { text: string };
+}): string | { ownWords: string } {
+  if (b.ownWords === undefined) {
+    if (b.optionId === undefined)
+      throw new ApiError(
+        "bad_request",
+        "Pick an option or answer in your own words",
+      );
+    return b.optionId;
+  }
+  if (b.optionId !== undefined)
+    throw new ApiError("bad_request", "Send optionId or ownWords, not both");
+  const text = b.ownWords.text.trim();
+  if (text.length === 0)
+    throw new ApiError("bad_request", "Say what you'd like instead", {
+      path: "ownWords.text",
+      reason: "empty",
+    });
+  if (text.length > OWN_WORDS_MAX)
+    throw new ApiError(
+      "bad_request",
+      `Your own words are at most ${OWN_WORDS_MAX} characters`,
+      { path: "ownWords.text", reason: "too_long" },
+    );
+  return { ownWords: text };
+}
+
 /** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
 const bad = (issues: { path: PropertyKey[] }[]): never => {
   const first = issues[0]?.path[0];
@@ -401,6 +436,7 @@ export function mountComments(app: AppType): void {
     const commentId = idParam(c, "commentId");
     const raw = AnswerBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
+    const pick = pickOf(raw.data);
     // Never minted: a guest has no key, so is never one of the people asked
     // (the DO answers 403 after 404, as for a signed-in stranger).
     const { who: signed, viewer } = await identity(
@@ -421,7 +457,7 @@ export function mountComments(app: AppType): void {
       commentId,
       who,
       viewer,
-      raw.data.optionId,
+      pick,
       { version: artifact.currentVersion, ctx: execCtx(c) },
       // #2263: only a browser session can carry a passkey assertion.
       { interactive: interactiveSession(c), assertion: raw.data.assertion },

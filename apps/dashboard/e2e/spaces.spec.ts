@@ -49,7 +49,7 @@ test("list: axe, no sideways scroll", async ({ page }) => {
   await noOverflow(page);
 });
 
-test("dialogs pass axe: New space, Add me, public links off", async ({
+test("dialogs pass axe: New space, Add me, sharing by link off", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -75,9 +75,9 @@ test("dialogs pass axe: New space, Add me, public links off", async ({
   v = await axeRun(page);
   expect(v, v.join("\n")).toEqual([]);
   await page.keyboard.press("Escape");
-  await page.getByRole("switch", { name: "Public links" }).click();
+  await page.getByRole("switch", { name: "Sharing by link" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
-    "Public links already here keep working.",
+    "Links already shared keep working.",
   );
   await settle(page);
   v = await axeRun(page);

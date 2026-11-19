@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { makeQueryClient } from "./api/queryClient";
 import { isEmbed, lockToPath } from "./embed";
 import { parseHostedParam } from "./hostedParam";
+import { agentAsksOn, forYouVariant } from "./mockForYou";
 import { router } from "./router";
 import "./styles.css";
 import "./shadcn.css";
@@ -786,12 +787,9 @@ async function startMocks() {
     bus: params.get("mock") === "bus",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
     // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
-    forYou:
-      params.get("mock") === "foryou"
-        ? ((["calm", "empty", "back", "error"] as const).find(
-            (v) => v === params.get("foryou"),
-          ) ?? "mixed")
-        : undefined,
+    forYou: forYouVariant(params),
+    // ?mock=foryou&foryou=held or ?mock=agent-asks (#2577): a held request, the switch and the "listens to" list.
+    agentAsks: agentAsksOn(params),
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -840,7 +838,7 @@ async function startMocks() {
       ),
     );
   }
-  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // &share=workspace-only (#2590): every share answers that the
   // address can open it only if it's a Google account.
   if (params.get("share") === "workspace-only")
     extra.push(
@@ -854,7 +852,7 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // &notEmailed=member_limit|instance_limit|limit|skipped (#2620, #2649): every share is
   // saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)
@@ -885,7 +883,7 @@ async function startMocks() {
     mainHandlers,
     params,
   );
-  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
+  // Person @mentions (mock only), in front of the picture handlers.
   extra.push(
     ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
       ...pics,
@@ -900,6 +898,13 @@ async function startMocks() {
         ...pics,
         ...mainHandlers,
       ]),
+    );
+  // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
+  if (agentAsksOn(params))
+    extra.unshift(
+      ...(await import("./mockTeammates")).teammatesHandlers(mainHandlers, {
+        asked: params.get("asked") === "1",
+      }),
     );
   // #1910: &waiting=1 carries the waiting fields.
   extra.unshift(

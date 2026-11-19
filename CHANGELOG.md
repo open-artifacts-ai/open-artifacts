@@ -1,5 +1,81 @@
 # Changelog
 
+## [0.232.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.1...v0.232.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** "Send held requests to my phone" in Settings ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2923](https://github.com/open-artifacts-ai/open-artifacts/issues/2923)) ([3668eba](https://github.com/open-artifacts-ai/open-artifacts/commit/3668ebae654163bcddb94c817cc0b64f29e1f869))
+* **asks:** answer any ask in your own words, never a yes ([#2895](https://github.com/open-artifacts-ai/open-artifacts/issues/2895)) ([#2925](https://github.com/open-artifacts-ai/open-artifacts/issues/2925)) ([cb06d2a](https://github.com/open-artifacts-ai/open-artifacts/commit/cb06d2a5370e84dacbad2bd36ad4b6a09988aca2))
+
+## [0.231.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.0...v0.231.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **wording:** people read "sharing by link" in spaces and settings, not "public" ([#2509](https://github.com/open-artifacts-ai/open-artifacts/issues/2509) slice 2) ([#2910](https://github.com/open-artifacts-ai/open-artifacts/issues/2910)) ([edff3d8](https://github.com/open-artifacts-ai/open-artifacts/commit/edff3d8166ec8f4c9aa0e5b6881f1ce45244b675))
+
+## [0.231.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.230.0...v0.231.0) (2026-11-19)
+
+
+### Features
+
+* **notifications:** Mute in the page menu and on a For you ask, and the quiet-hours away line ([#2860](https://github.com/open-artifacts-ai/open-artifacts/issues/2860)) ([#2920](https://github.com/open-artifacts-ai/open-artifacts/issues/2920)) ([d374f86](https://github.com/open-artifacts-ai/open-artifacts/commit/d374f86bb0708b41ded92ce496c8b169d8192efe))
+* **share:** a share that wasn't emailed for a private reason says so neutrally ([#2649](https://github.com/open-artifacts-ai/open-artifacts/issues/2649)) ([#2654](https://github.com/open-artifacts-ai/open-artifacts/issues/2654)) ([1e3b1f4](https://github.com/open-artifacts-ai/open-artifacts/commit/1e3b1f41f5675477c5935295f7a847f3b58dcd72))
+
+
+### Bug Fixes
+
+* **members:** an invite row on a codes-only instance says how they log in ([#2608](https://github.com/open-artifacts-ai/open-artifacts/issues/2608)) ([4e70e3d](https://github.com/open-artifacts-ai/open-artifacts/commit/4e70e3d97d87ab1fd6f3c50af03f278236c07efc))
+
+## [0.230.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.229.0...v0.230.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** Add a teammate, Who asked what and the share tick box ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) UI slice 2) ([#2912](https://github.com/open-artifacts-ai/open-artifacts/issues/2912)) ([abbf6d6](https://github.com/open-artifacts-ai/open-artifacts/commit/abbf6d6a4e4e54143c8d6b248c51b671e58bcdd5))
+
+## [0.229.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.228.0...v0.229.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** teammates list, memberId on shares, first-setup flag ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2917](https://github.com/open-artifacts-ai/open-artifacts/issues/2917)) ([7f9bf99](https://github.com/open-artifacts-ai/open-artifacts/commit/7f9bf99b0913ad1bb1fbc5b7bb70f57ea6c99418))
+
+## [0.228.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.227.0...v0.228.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** risky steps described in general words ([#2893](https://github.com/open-artifacts-ai/open-artifacts/issues/2893)) ([#2916](https://github.com/open-artifacts-ai/open-artifacts/issues/2916)) ([ed8562a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8562a034d4ef551ab43286f6651cb915bc521c))
+
+## [0.227.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.226.0...v0.227.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** held requests to my phone, and on-your-list history ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577), migration 0051) ([#2884](https://github.com/open-artifacts-ai/open-artifacts/issues/2884)) ([00ebcdf](https://github.com/open-artifacts-ai/open-artifacts/commit/00ebcdfc0015fd6aed433f6176447f53f012597a))
+
+## [0.226.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.225.0...v0.226.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** a Claude session joins another instance as a guest, only after using its tools ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S3b) ([#2892](https://github.com/open-artifacts-ai/open-artifacts/issues/2892)) ([88dc188](https://github.com/open-artifacts-ai/open-artifacts/commit/88dc188a02805dd0b8e4d5eff40c2c0368ec5a6c))
+
+## [0.225.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.224.0...v0.225.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** add a teammate to the listens-to list, and who asked what ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2878](https://github.com/open-artifacts-ai/open-artifacts/issues/2878)) ([8d19872](https://github.com/open-artifacts-ai/open-artifacts/commit/8d19872823a63c9181368f0dbd7ecad364d2ff57))
+* **agents:** held requests, the listens-to list and the @ list states ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) UI slice 1) ([#2871](https://github.com/open-artifacts-ai/open-artifacts/issues/2871)) ([def1519](https://github.com/open-artifacts-ai/open-artifacts/commit/def15196e73db33458df2ca6ce2a89d62cf31895))
+
+
+### Bug Fixes
+
+* **agents:** held requests lapse: run lapseHeld in the daily cron ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2898](https://github.com/open-artifacts-ai/open-artifacts/issues/2898)) ([fff58f3](https://github.com/open-artifacts-ai/open-artifacts/commit/fff58f3027c064a03773c0f985cf269c78167135))
+
 ## [0.224.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.223.0...v0.224.0) (2026-11-19)
 
 

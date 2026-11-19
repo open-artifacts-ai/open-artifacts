@@ -637,6 +637,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           (select a.decider from comment_asks a where a.comment_id = comment_ask_picks.comment_id),
           (select json_extract(c.author, '$.ref') from comments c where c.id = comment_ask_picks.comment_id))`);
       }
+      // #2895: comment_ask_picks.own_words, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_ask_picks')",
+          )
+          .toArray()
+          .some((c) => c.name === "own_words")
+      )
+        sql.exec("alter table comment_ask_picks add column own_words text");
       // #2323: comment_asks.replaces, for DOs created before it.
       if (
         !sql
@@ -2277,7 +2287,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     commentId: string;
     by: StoredActor;
+    /** The option picked; "" with `ownWords` (#2895). */
     optionId: string;
+    /** #2895: "Something else": the person's own words, trimmed, 1 to 1,000 characters (the service checked). */
+    ownWords?: string;
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
@@ -2307,7 +2320,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         fail("replaced", "A newer ask replaced this one: pick on that");
       // #2511: a withdrawn ask takes no picks.
       if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
-      if (!r.ask.options.some((o) => o.id === a.optionId))
+      if (
+        a.ownWords === undefined &&
+        !r.ask.options.some((o) => o.id === a.optionId)
+      )
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
       const risky = r.ask.options.some((o) => o.action);
@@ -2331,11 +2347,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // nor the decision (same option, same typed and verified): else both are written.
       const unchanged = isDecider
         ? mine?.optionId === a.optionId &&
+          mine?.ownWords === a.ownWords &&
           r.ask.answer?.optionId === a.optionId &&
+          r.ask.answer?.ownWords === a.ownWords &&
           (r.ask.answer.by.kind === "user" &&
             r.ask.answer.by.typed === true) === typedNow &&
           (r.ask.answer.verified ?? null) === (a.verified ?? null)
-        : mine?.optionId === a.optionId;
+        : mine?.optionId === a.optionId && mine?.ownWords === a.ownWords;
       // #2886: on an action ask an untyped pick (a token, an agent) by the
       // decider is data in `picks`; it never replaces a typed decision.
       const keepTyped =
@@ -2362,6 +2380,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           addPick(this.sql, a.commentId, r.ask.history[0]);
         addPick(this.sql, a.commentId, {
           optionId: a.optionId,
+          ...(a.ownWords !== undefined ? { ownWords: a.ownWords } : {}),
           by: a.by,
           at: now,
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
@@ -2371,6 +2390,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         if (isDecider && !keepTyped)
           setAnswer(this.sql, a.commentId, {
             optionId: a.optionId,
+            ...(a.ownWords !== undefined ? { ownWords: a.ownWords } : {}),
             by: a.by,
             at: now,
             ...(a.verified === "passkey"

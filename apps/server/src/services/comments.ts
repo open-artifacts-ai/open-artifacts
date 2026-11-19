@@ -69,6 +69,7 @@ import {
   heldAfterEdit,
   onlyAnswers,
   recordHolds,
+  recordListed,
 } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import { noteMemberFirst } from "./analytics.js";
@@ -877,7 +878,7 @@ const wasOf = (ask: StoredAsk): { was?: { optionId: string; at: string } } => {
   const who = ask.answer.by.ref;
   // Only picks made as the decider: a weigh-in before they decided is not a "was".
   const mine = (ask.history ?? []).filter(
-    (p) => p.by.ref === who && p.decision === true,
+    (p) => p.by.ref === who && p.decision === true && p.ownWords === undefined,
   );
   for (let i = mine.length - 1; i >= 0; i--) {
     const p = mine[i] as StoredPick;
@@ -893,6 +894,7 @@ const deciderFields = (
   ask: StoredAsk,
   viewer: CommentViewer,
   users: Ctx,
+  pairs: [string, string][],
 ) => {
   const who = ask.decider ?? c.author.ref;
   const role = roleOf(c, ask, viewer);
@@ -910,7 +912,9 @@ const deciderFields = (
       : {}),
     picks: latestPicks(ask.history ?? []).map((p) => ({
       by: authorView(p.by, viewer, users),
-      optionId: p.optionId,
+      ...(p.ownWords !== undefined
+        ? { ownWords: { text: maskBody(p.ownWords, pairs) } }
+        : { optionId: p.optionId }),
       at: p.at,
       typed: isTyped(p.by),
       ...(p.verified && !outsider(viewer) ? { verified: p.verified } : {}),
@@ -1042,11 +1046,17 @@ const commentOfRaw = (
                   },
                 }
               : {}),
-            ...deciderFields(c, c.ask, viewer, users),
+            ...deciderFields(c, c.ask, viewer, users, pairs),
             ...(c.ask.answer
               ? {
                   answer: {
-                    optionId: c.ask.answer.optionId,
+                    ...(c.ask.answer.ownWords !== undefined
+                      ? {
+                          ownWords: {
+                            text: maskBody(c.ask.answer.ownWords, pairs),
+                          },
+                        }
+                      : { optionId: c.ask.answer.optionId }),
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
@@ -1055,7 +1065,9 @@ const commentOfRaw = (
                       ? { verified: c.ask.answer.verified }
                       : {}),
                     // A replaced ask is never a yes: the newer ask is the question now (#2323).
+                    // #2895: own words are never a yes, on any ask.
                     yes:
+                      c.ask.answer.ownWords === undefined &&
                       !c.ask.replacedBy &&
                       !c.ask.withdrawn &&
                       viewer.userId !== null &&
@@ -1268,10 +1280,16 @@ export async function listComments(
           threadId: t.id,
           commentId: c.id,
           question: v.ask.question,
-          optionId: ans.optionId,
-          label:
-            v.ask.options.find((o) => o.id === ans.optionId)?.label ??
-            ans.optionId,
+          ...(ans.ownWords !== undefined
+            ? { ownWords: ans.ownWords.text }
+            : ans.optionId !== undefined
+              ? {
+                  optionId: ans.optionId,
+                  label:
+                    v.ask.options.find((o) => o.id === ans.optionId)?.label ??
+                    ans.optionId,
+                }
+              : {}),
           at: ans.at,
           by: ans.by.name,
           yes: ans.yes === true,
@@ -1852,6 +1870,17 @@ async function followMentioned(
   }
 }
 
+/** #2577: a person's typed comment going to another person's agent from their list is remembered for "Who asked what". Best effort. */
+const listedFrom = (
+  env: Env,
+  artifactId: string,
+  c: StoredComment,
+  agent: { key: string; userId: string },
+): Promise<void> =>
+  isTyped(c.author) && c.author.kind === "user"
+    ? recordListed(env, artifactId, c.id, agent.key, agent.userId, c.author.ref)
+    : Promise.resolve();
+
 /**
  * Sends the notices of a written comment and records how each mention went. Returns the comment as then stored.
  */
@@ -1881,20 +1910,23 @@ async function deliver(
     const [outs] = await Promise.all([
       Promise.all(
         r.agents.map(({ agent, kind }) =>
-          Promise.race([
-            notifyAgent(
-              env,
-              a.id,
-              version,
-              threadId,
-              c.id,
-              kind,
-              agent,
-              // Only a comment a person typed, to an agent of that same person.
-              isTyped(c.author) && c.author.ref === agent.userId,
-            ),
-            late,
-          ]),
+          Promise.all([
+            Promise.race([
+              notifyAgent(
+                env,
+                a.id,
+                version,
+                threadId,
+                c.id,
+                kind,
+                agent,
+                // Only a comment a person typed, to an agent of that same person.
+                isTyped(c.author) && c.author.ref === agent.userId,
+              ),
+              late,
+            ]),
+            listedFrom(env, a.id, c, agent),
+          ]).then(([o]) => o),
         ),
       ),
       Promise.all(follows),
@@ -2420,19 +2452,22 @@ async function threadReply(
     try {
       outs = await Promise.all(
         reached.map((agent) =>
-          Promise.race([
-            notifyAgent(
-              env,
-              a.id,
-              version,
-              threadId,
-              c.id,
-              "thread_reply",
-              agent,
-              isTyped(c.author) && c.author.ref === agent.userId,
-            ),
-            late,
-          ]),
+          Promise.all([
+            Promise.race([
+              notifyAgent(
+                env,
+                a.id,
+                version,
+                threadId,
+                c.id,
+                "thread_reply",
+                agent,
+                isTyped(c.author) && c.author.ref === agent.userId,
+              ),
+              late,
+            ]),
+            listedFrom(env, a.id, c, agent),
+          ]).then(([o]) => o),
         ),
       );
     } finally {
@@ -2688,13 +2723,16 @@ export async function answerAsk(
   commentId: string,
   who: CommentWho,
   viewer: CommentViewer,
-  optionId: string,
+  /** An option id, or `{ ownWords }` (#2895: "Something else", already trimmed and length-checked). */
+  pick: string | { ownWords: string },
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
   after: Announce | undefined,
   _pick: PickAuth,
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
   caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
+  const ownWords = typeof pick === "string" ? undefined : pick.ownWords;
+  const optionId = typeof pick === "string" ? pick : "";
   // A guest (role or guest cap) picks nothing; a restricted or capped member still can.
   if (viewer.guest === true || (await guestWho(env, who)))
     throw new ApiError("forbidden", "Only the people asked can answer");
@@ -2731,6 +2769,7 @@ export async function answerAsk(
       commentId,
       by: actorOf(who),
       optionId,
+      ...(ownWords !== undefined ? { ownWords } : {}),
       rate: rateKeyOf(who),
       canDecide: caps.canDecide,
       guest: caps.guest,
@@ -2745,6 +2784,7 @@ export async function answerAsk(
   const picked = ask.options.find((o) => o.id === optionId);
   if (
     decided &&
+    ownWords === undefined &&
     stored?.optionId === optionId &&
     who.kind === "user" &&
     ask.options.some((o) => o.action)
@@ -2767,6 +2807,26 @@ export async function answerAsk(
       await row.run().catch(() => row.run());
     } catch (e) {
       logError("ask_approve_audit_failed", e, { artifactId, commentId });
+    }
+  // #2895: the words also stand in the thread as the person's own reply, so
+  // the record reads naturally. The same path as a typed reply (length, rate,
+  // no mentions); the answer is already stored, so a refusal here is logged only.
+  if (ownWords !== undefined && !unchanged)
+    try {
+      await addReply(
+        env,
+        artifactId,
+        threadId,
+        who,
+        viewer,
+        ownWords,
+        {},
+        {
+          moderator: viewer.moderator === true,
+        },
+      );
+    } catch (e) {
+      logWarn("own_words_reply_failed", e, { artifactId, commentId });
     }
   // Only the decision is "answered"; a weigh-in is input (#2381).
   // #2512 S2: those who weighed in hear of the decision, before it closes their rows' siblings.
@@ -2813,6 +2873,15 @@ export async function answerAsk(
           c.ask?.answer !== undefined &&
           isTyped(c.ask.answer.by) &&
           c.ask.answer.by.ref === c.author.ref,
+        undefined,
+        // #2895: their own words ride along, only when they are their own user's.
+        decided &&
+          ownWords !== undefined &&
+          c.ask?.answer !== undefined &&
+          isTyped(c.ask.answer.by) &&
+          c.ask.answer.by.ref === c.author.ref
+          ? ownWords
+          : undefined,
       ),
     );
   return commentView(env, c, viewer);

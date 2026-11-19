@@ -131,7 +131,12 @@ describe("For you settings", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.queryByText(/away until/)).toBeNull();
+    // Quiet hours are on: agents are told, with the real end time.
+    expect(
+      screen.getByText(
+        /Your own agents see "away until 07:30" and can plan around it\./,
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toHaveTextContent("Waiting asks and approvals");
@@ -158,6 +163,23 @@ describe("For you settings", () => {
     ])
       expect(screen.getByRole("combobox", { name })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  });
+
+  it("the away line follows the end time, and is gone with quiet hours off", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    await page();
+    fireEvent.keyDown(
+      screen.getByRole("combobox", { name: "Quiet hours end" }),
+      {
+        key: "Enter",
+      },
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "06:00" }));
+    expect(
+      await screen.findByText(/"away until 06:00" and can plan around it/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
+    await waitFor(() => expect(screen.queryByText(/away until/)).toBeNull());
   });
 
   it("a change saves the whole prefs with the browser's zone", async () => {

@@ -17,6 +17,7 @@ import {
 } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { capOf, isCommenterRole } from "../auth/policy.js";
+import { isTeammateRow } from "../auth/teammates.js";
 import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
@@ -58,6 +59,7 @@ import { recordShareItem } from "./inbox-items.js";
 import { getSettings } from "./members.js";
 import { outsideAddress, outsideSharingOn } from "./outside.js";
 import { guestRecipients, shareReach } from "./reach.js";
+import { memberIdOfEmail } from "./teammates.js";
 
 export const MAX_SHARES = 200;
 
@@ -102,6 +104,8 @@ export async function listShares(
       role: shareRoleSql(),
       createdAt: shares.createdAt,
       orgRole: users.role,
+      uid: users.id,
+      ustatus: users.status,
       rm: users.restrictedManual,
       rs: users.restrictedSync,
     })
@@ -130,6 +134,17 @@ export async function listShares(
       ...toShare(r),
       ...((await isGuest(r.email, r.orgRole)) ? { guest: true } : {}),
       ...(viewOnly(r) && !isCommenterRole(r.role) ? { viewOnly: true } : {}),
+      // #2577: the id of an existing team member; none for an outsider or a guest.
+      memberId:
+        r.uid !== null &&
+        r.orgRole !== null &&
+        isTeammateRow(env, {
+          role: r.orgRole,
+          status: r.ustatus ?? "",
+          email: r.email,
+        })
+          ? r.uid
+          : null,
     })),
   );
 }
@@ -299,6 +314,7 @@ export async function putShare(
   // non-member on an invite-only install can't); the share stands either way.
   return {
     ...toShare(row),
+    memberId: await memberIdOfEmail(env, row.email),
     ...(guest ? { guest: true } : {}),
     ...(await emailed(created, () =>
       emailShare(env, user, artifact, email, role, reach),

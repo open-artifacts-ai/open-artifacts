@@ -14,6 +14,7 @@ import { logError, logInfo, logWarn } from "./log.js";
 import { sweepOAuthStore } from "./mcp/oauth-store.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
 import { socketIndexStub } from "./runtime/presence.js";
+import { lapseHeld } from "./services/agent-requests.js";
 import { backfillActivation } from "./services/analytics.js";
 import {
   purgeDeleted,
@@ -352,6 +353,8 @@ function daily(
       sendSetupReminders(env, now),
       // #2879: once, the members' stored first times to PostHog (a no-op unless analytics is on).
       backfillActivation(env),
+      // #2577: held requests past their 7 days lapse; old lapsed ones go.
+      lapseHeld(env, now),
       // DirectorySync keeps its own 2 min alarm; the daily kick restarts a
       // lost one.
       directoryMode(env) === "off" ? null : kickSync(env, "cron"),
