@@ -6,7 +6,6 @@ import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen } from "@testing-library/react";
 import { getResponse, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import { ShareResultLocalSchema } from "../src/api/queries";
 import {
   instanceLimitLine,
   LIMIT_LINE,
@@ -88,9 +87,9 @@ describe("the lines (OA Product, #2620)", () => {
     );
     expect(notEmailedLine("skipped", "Acme", 20)).toBe(LIMIT_LINE);
   });
-  it("#2649 skipped parses (PROVISIONAL, locally until @oa/shared has it)", () => {
+  it("#2649 skipped parses with the shared schema", () => {
     expect(
-      ShareResultLocalSchema.safeParse({
+      ShareResultSchema.safeParse({
         email: "a@b.co",
         role: "viewer",
         createdAt: "x",

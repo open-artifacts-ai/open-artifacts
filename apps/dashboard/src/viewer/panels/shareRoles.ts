@@ -1,11 +1,10 @@
 // #2590: per-share roles, with "commenter" (Can comment) for people outside
 // the instance. The role is @oa/shared's ShareRole (#2600); this file holds
 // the Share panel's choices, labels, outside-address rules and notes.
-import type { ShareRole } from "@oa/shared";
-import type { ShareResultLocal } from "../../api/queries";
+import type { ShareResult, ShareRole } from "@oa/shared";
 
 /** Why a saved share sent no email (ShareResult.notEmailed, with #2649's "skipped"). */
-export type NotEmailed = NonNullable<ShareResultLocal["notEmailed"]>;
+export type NotEmailed = NonNullable<ShareResult["notEmailed"]>;
 
 /** OA Product (#2620): over today's limits for new outside addresses; the link to copy stays. */
 /** The member limit when the server doesn't say (#2620's figure). */

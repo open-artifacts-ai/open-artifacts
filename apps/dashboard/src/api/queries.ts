@@ -544,20 +544,10 @@ export const useDeleteArtifact = (id: string) =>
     () => api.send("DELETE", R.artifact(id), undefined),
     () => [["artifacts"]],
   );
-/**
- * PROVISIONAL (#2649): OA Backend adds notEmailed "skipped" (no email for a
- * reason we never show). Parsed here until @oa/shared has it.
- */
-export const ShareResultLocalSchema = ShareResultSchema.extend({
-  notEmailed: z
-    .enum(["member_limit", "instance_limit", "limit", "skipped"])
-    .optional(),
-});
-export type ShareResultLocal = z.infer<typeof ShareResultLocalSchema>;
 export const usePutShare = (id: string) =>
   useInvalidating(
     (input: ShareInput) =>
-      api.send("PUT", R.shares(id), input, ShareResultLocalSchema),
+      api.send("PUT", R.shares(id), input, ShareResultSchema),
     () => [qk.shares(id)],
   );
 export const useDeleteShare = (id: string) =>
