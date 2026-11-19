@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.222.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.221.0...v0.222.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** one sign-in proof per instance ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S4) ([#2842](https://github.com/open-artifacts-ai/open-artifacts/issues/2842)) ([a639804](https://github.com/open-artifacts-ai/open-artifacts/commit/a6398046689d2c9f08f115463f80d92a5775ab5b))
+* **comments:** catch up on answers and mentions since a time ([#2688](https://github.com/open-artifacts-ai/open-artifacts/issues/2688)) ([#2870](https://github.com/open-artifacts-ai/open-artifacts/issues/2870)) ([3323505](https://github.com/open-artifacts-ai/open-artifacts/commit/3323505bf754b750eedc5d954f50b08bedb1a756))
+
+
+### Bug Fixes
+
+* **bus:** habits ask before anything hard to undo or that reaches people; read own-words answers ([#2893](https://github.com/open-artifacts-ai/open-artifacts/issues/2893), [#2895](https://github.com/open-artifacts-ai/open-artifacts/issues/2895)) ([#2904](https://github.com/open-artifacts-ai/open-artifacts/issues/2904)) ([deec326](https://github.com/open-artifacts-ai/open-artifacts/commit/deec3262b71b2c6d2927bf296d3783b15755fa18))
+
 ## [0.221.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.220.0...v0.221.0) (2026-11-19)
 
 
