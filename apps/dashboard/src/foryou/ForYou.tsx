@@ -996,7 +996,9 @@ function AskView({
           >
             {agentMute.muted
               ? "Muted \u00b7 Unmute"
-              : `Mute ${item.actor?.name ?? "agent"}`}
+              : item.actor?.name
+                ? `Mute ${item.actor.name}`
+                : "Mute this agent"}
           </button>
         )}
         {href && (
