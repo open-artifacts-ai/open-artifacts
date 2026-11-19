@@ -17,6 +17,7 @@ import {
   REVOKE_ONLY_LINE,
   revokeFailedLine,
   revokePartialLine,
+  UPDATES_COPY,
 } from "../src/bus/Machines";
 import {
   buildRail,
@@ -425,6 +426,90 @@ describe("Settings › Machines", () => {
     expect(
       screen.getByRole("link", { name: "Connect a machine" }),
     ).toHaveAttribute("href", "/bus/approve");
+  });
+
+  // #2552: the owner's Updates card. The read carries `updatesPaused` for the
+  // owner only, so a read without it is a member's.
+  describe("Updates (#2552)", () => {
+    const sw = () => screen.findByRole("switch", { name: "Pause updates" });
+
+    it("owner: sees the card and the OFF help; a member's read has no card", async () => {
+      withBus();
+      mount("/settings/machines");
+      const s = await sw();
+      expect(s).toHaveAttribute("aria-checked", "false");
+      expect(
+        screen.getByRole("heading", { name: UPDATES_COPY.title }),
+      ).toBeInTheDocument();
+      expect(screen.getByText(UPDATES_COPY.off)).toBeInTheDocument();
+    });
+
+    it("non-owner: no card", async () => {
+      withBus();
+      server.use(
+        http.get(`*${R.busMachines}`, () =>
+          HttpResponse.json({ machines: fixtures.busMachines }),
+        ),
+      );
+      mount("/settings/machines");
+      await table();
+      expect(
+        screen.queryByRole("switch", { name: "Pause updates" }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("heading", { name: UPDATES_COPY.title }),
+      ).toBeNull();
+    });
+
+    it("toggling sends {paused:true} then {paused:false}, and shows each help", async () => {
+      withBus();
+      const sent = calls("PUT");
+      mount("/settings/machines");
+      const s = await sw();
+      fireEvent.click(s);
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "true"));
+      expect(screen.getByText(UPDATES_COPY.on)).toBeInTheDocument();
+      await waitFor(() => expect(s).toBeEnabled());
+      fireEvent.click(s);
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "false"));
+      await waitFor(() =>
+        expect(
+          sent.filter((c) => c.path === R.busUpdatesPaused).map((c) => c.body),
+        ).toEqual([{ paused: true }, { paused: false }]),
+      );
+      expect(screen.getByText(UPDATES_COPY.off)).toBeInTheDocument();
+    });
+
+    it("is disabled while saving, and a failed PUT rolls back with the error toast", async () => {
+      withBus();
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      server.use(
+        http.put(`*${R.busUpdatesPaused}`, async () => {
+          await gate;
+          return HttpResponse.json(
+            {
+              error: {
+                code: "forbidden",
+                message: "Only the owner can do that.",
+              },
+            },
+            { status: 403 },
+          );
+        }),
+      );
+      mount("/settings/machines");
+      const s = await sw();
+      fireEvent.click(s);
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "true"));
+      expect(s).toBeDisabled();
+      release();
+      await findVisibleToast("Only the owner can do that.");
+      await waitFor(() => expect(s).toHaveAttribute("aria-checked", "false"));
+      await waitFor(() => expect(s).toBeEnabled());
+    });
   });
 
   it("polls every BUS_POLL_MS", async () => {
