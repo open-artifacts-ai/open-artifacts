@@ -141,7 +141,6 @@ import {
   noteMentionReplied,
   pendingFirst,
 } from "./onboarding-firsts.js";
-import { confirmFor, pickChallenge, verifyPick } from "./passkeys.js";
 import { getUser, shownEffectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -768,7 +767,7 @@ const roleOf = (
 ): "decide" | "weigh" | undefined => {
   if (viewer.userId === null || viewer.agent !== undefined) return undefined;
   if ((ask.decider ?? c.author.ref) === viewer.userId) return "decide";
-  const risky = ask.confirm === "passkey" || ask.options.some((o) => o.action);
+  const risky = ask.options.some((o) => o.action);
   const asked = ask.to.some(
     (p) => (p.kind === "user" ? p.key : p.owner) === viewer.userId,
   );
@@ -1057,8 +1056,6 @@ const commentOfRaw = (
                       !c.ask.replacedBy &&
                       !c.ask.withdrawn &&
                       viewer.userId !== null &&
-                      (c.ask.confirm !== "passkey" ||
-                        c.ask.answer.verified === "passkey") &&
                       isTyped(c.ask.answer.by) &&
                       c.ask.answer.by.ref === viewer.userId &&
                       c.author.kind === "user" &&
@@ -1599,22 +1596,12 @@ async function resolveExtras(
         "bad_request",
         "An ask that names an action goes to you only: drop the other people",
       );
-    // #2263: the server decides, from the actions the options name and the
-    // switches of the people it reaches and of its decider (#2381: the decider
-    // picks, so their settings count even when they are not in `to`). Whatever
-    // a client sent as `confirm` was stripped by the schema; an edit never
-    // touches the stored mark.
-    const confirm = await confirmFor(
-      env,
-      [...new Set([...addressees(to), decider ?? askerId])].filter(Boolean),
-      askIn.options,
-    );
+    // #2864: no ask needs a passkey for now, so the server sets no `confirm`.
     ask = {
       question: askIn.question,
       options: askIn.options,
       ...(askIn.recommended ? { recommended: askIn.recommended } : {}),
       to,
-      ...(confirm ? { confirm } : {}),
       ...(decider ? { decider } : {}),
       ...(typeof askIn.replaces === "string"
         ? { replaces: askIn.replaces }
@@ -2540,78 +2527,24 @@ const isAsked = (
   (ask.to.some((p) => addresseeOf(p) === who.id) ||
     (ask.decider ?? author) === who.id);
 
-/**
- * #2381: the pick needs this person's passkey though the ask carries no
- * `confirm`: they are its decider and their switches cover it now (an ask from
- * before deciders, or a switch turned on after the ask was posted).
- */
-const needsOwnPasskey = async (
-  env: Env,
-  ask: { decider?: string; options: { action?: AskOption["action"] }[] },
-  who: CommentWho,
-  author: string,
-): Promise<boolean> =>
-  who.kind === "user" &&
-  deciderOf(ask, author) === who.id &&
-  (await confirmFor(env, [who.id], ask.options)) === "passkey";
-
 /** #2381: the ask's decider: the person the asker named, else the asker's own user. */
 const deciderOf = (ask: { decider?: string }, author: string): string =>
   ask.decider ?? author;
 
 /**
- * #2263: a WebAuthn challenge for picking `optionId` on a confirm ask:
- * 403 passkey_required for anything but a browser session (a token or MCP
- * grant can never carry a passkey), 403 forbidden unless asked, 404 without an
- * ask, 400 for an ask that needs no passkey or an unknown option, 409
- * conflict once closed, 409 already_answered (that option is the answer already; another option is a change and needs a fresh assertion), then the passkey rules
- * (no_passkey, passkey_cooling) and the challenge budget (429).
+ * #2864: no ask needs a passkey, so there is no pick challenge to issue. The
+ * route stays so an old client gets a plain 400 instead of a missing route.
  */
 export async function answerChallenge(
-  env: Env,
-  artifactId: string,
-  threadId: string,
-  commentId: string,
-  who: CommentWho,
-  optionId: string,
-  interactive: boolean,
-) {
-  if (await guestWho(env, who))
-    throw new ApiError("forbidden", "Only the people asked can answer");
-  const { ask, status, author } = await storedAsk(
-    env,
-    artifactId,
-    threadId,
-    commentId,
-  );
-  if (!interactive || who.kind !== "user")
-    throw new ApiError(
-      "passkey_required",
-      "Only the web app can use a passkey",
-    );
-  if (!isAsked(ask, who, author))
-    throw new ApiError("forbidden", "Only the people asked can answer");
-  if (
-    ask.confirm !== "passkey" &&
-    !(await needsOwnPasskey(env, ask, who, author))
-  )
-    throw new ApiError("bad_request", "This ask does not need a passkey");
-  if (status === "resolved")
-    throw new ApiError("conflict", "This ask is closed");
-  if (ask.replacedBy)
-    throw new ApiError(
-      "replaced",
-      "A newer ask replaced this one: pick on that",
-    );
-  if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
-  if (!ask.options.some((o) => o.id === optionId))
-    throw new ApiError("bad_request", "Unknown option");
-  if (ask.answer?.optionId === optionId)
-    throw new ApiError(
-      "already_answered",
-      "This ask is answered with that option",
-    );
-  return pickChallenge(env, who.id, artifactId, commentId, optionId);
+  _env: Env,
+  _artifactId: string,
+  _threadId: string,
+  _commentId: string,
+  _who: CommentWho,
+  _optionId: string,
+  _interactive: boolean,
+): Promise<never> {
+  throw new ApiError("bad_request", "This ask does not need a passkey");
 }
 
 /**
@@ -2620,11 +2553,7 @@ export async function answerChallenge(
  * answer may change until then. `who` is the caller as an author (a guest is
  * never asked).
  *
- * #2263: on an ask marked `confirm: "passkey"` the pick is one answer and
- * needs a verified passkey assertion for a challenge issued for this exact
- * (artifact, comment, option, member): 403 passkey_required without one, and
- * always for a token or MCP grant; 409 already_answered; then the challenge
- * rules of verifyPick (410 challenge_expired, 400 passkey_failed).
+ * #2864: no passkey is ever asked for; a typed pick is the answer.
  */
 const guestWho = async (env: Env, who: CommentWho): Promise<boolean> =>
   who.kind === "guest" || (await isGuestMember(env, who.id));
@@ -2639,7 +2568,7 @@ export async function answerAsk(
   optionId: string,
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
   after: Announce | undefined,
-  pick: PickAuth,
+  _pick: PickAuth,
   /** #2381: the caller may edit the page (the decider must), and is a guest-role member. */
   caps: { canDecide: boolean; guest: boolean },
 ): Promise<Comment> {
@@ -2669,41 +2598,6 @@ export async function answerAsk(
       "A newer ask replaced this one: pick on that",
     );
   if (ask.withdrawn) throw new ApiError("withdrawn", "This ask was withdrawn");
-  let verified: "passkey" | undefined;
-  const needsPasskey =
-    ask.confirm === "passkey" || (await needsOwnPasskey(env, ask, who, author));
-  // Strangers, closed asks and unknown options fall through to the DO's own
-  // refusals (forbidden, conflict, bad_request) without touching a challenge.
-  if (
-    needsPasskey &&
-    isAsked(ask, who, author) &&
-    who.kind === "user" &&
-    deciderOf(ask, author) === who.id &&
-    status !== "resolved" &&
-    ask.options.some((o) => o.id === optionId)
-  ) {
-    if (!pick.interactive || who.kind !== "user")
-      throw new ApiError(
-        "passkey_required",
-        "This pick needs your passkey, in the web app",
-      );
-    if (ask.answer?.optionId === optionId)
-      throw new ApiError(
-        "already_answered",
-        "This ask is answered with that option",
-      );
-    if (pick.assertion === undefined || pick.assertion === null)
-      throw new ApiError("passkey_required", "This pick needs your passkey");
-    await verifyPick(
-      env,
-      who.id,
-      artifactId,
-      commentId,
-      optionId,
-      pick.assertion,
-    );
-    verified = "passkey";
-  }
   const {
     comment: c,
     unchanged,
@@ -2715,10 +2609,8 @@ export async function answerAsk(
       by: actorOf(who),
       optionId,
       rate: rateKeyOf(who),
-      ...(verified ? { verified } : {}),
       canDecide: caps.canDecide,
       guest: caps.guest,
-      ...(needsPasskey ? { needsPasskey: true } : {}),
     }),
   );
   // #2458: a risky decision (a passkey ask, or any option names an action, so
@@ -2732,7 +2624,7 @@ export async function answerAsk(
     decided &&
     stored?.optionId === optionId &&
     who.kind === "user" &&
-    (needsPasskey || ask.options.some((o) => o.action))
+    ask.options.some((o) => o.action)
   )
     try {
       const askerAgent = c.author.kind === "user" ? c.author.agent : undefined;
