@@ -60,7 +60,7 @@ Payments are processed by Stripe. You type your card, billing email and address 
 
 ### Setup events
 
-To see whether new accounts get set up, we record the first time each of these happens on a hosted instance: you sign up, an agent connects, you name it, a first page is published, an agent replies to a mention, and you answer an ask. Our servers send each event to PostHog with the instance's id, its plan and the time. We don't send what you publish, what you write in comments, your name or your email address. No tracking script runs in your browser.
+To see whether new accounts get set up, we record the first time each of these happens on a hosted instance: you sign up, an agent connects, you name it, a first page is published, an agent replies to a mention, and you answer an ask. Our servers send each event to PostHog with an anonymous id for your account, the instance's id, its plan and the time. The anonymous id is a one-way code: PostHog can't turn it back into your name, your email address or your account. We don't send what you publish, what you write in comments, your name or your email address. No tracking script runs in your browser.
 
 ### Cookies and browser storage
 

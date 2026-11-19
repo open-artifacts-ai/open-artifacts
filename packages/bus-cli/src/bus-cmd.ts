@@ -3,6 +3,8 @@
 // Never used for text that outlives the run (instruction files, unit files,
 // skills): those keep BUS_CMD, because a later shell may not have the shim.
 
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, tilde } from "./context.ts";
 import { copy } from "./copy.ts";
@@ -20,10 +22,24 @@ export type BusCmdOpts = {
 
 export function busCmd(o: BusCmdOpts): string {
   try {
-    return shimState(o)?.kind === "ours" ? "oa-bus" : BUS_CMD;
+    if (shimState(o)?.kind === "ours") return "oa-bus";
   } catch {
-    return BUS_CMD;
+    // fall through
   }
+  return installedForm(o.busHome) ?? BUS_CMD;
+}
+
+/**
+ * Without an `oa-bus` shim on PATH, an installed bus is run by its own files,
+ * never by npx (#2543): `<home>/bin/node <home>/bin/dist/index.js`, absolute.
+ * undefined when no bus is installed under `home` (a first run, via npx).
+ */
+export function installedForm(home: string): string | undefined {
+  const node = join(home, "bin", "node");
+  const entry = join(home, "bin", "dist", "index.js");
+  if (!existsSync(node) || !existsSync(entry)) return undefined;
+  const q = (p: string) => (/[\s"'$`\\]/.test(p) ? JSON.stringify(p) : p);
+  return `${q(node)} ${q(entry)}`;
 }
 
 /** Whether this bus is the one the harness configs name: the main bus, or a moved home wired by install (#1443). */

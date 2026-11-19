@@ -654,6 +654,7 @@ describe("RPC surface", () => {
       "pendingProposalSources",
       "ping",
       "proofMissReason",
+      "proofSeen",
       "proposeLink",
       "proposeReach",
       "proposeRole",

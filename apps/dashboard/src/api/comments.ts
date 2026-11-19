@@ -1,12 +1,14 @@
 import {
   ANON_ID_HEADER,
-  AnswerChallengeSchema,
   type ArtifactAgent,
   ArtifactAgentSchema,
   COMMENT_BODY_MAX,
   type Comment,
   type CommentList,
+  CommentListSchema,
+  CommentSchema,
   type CommentThread,
+  CommentThreadSchema,
   MENTIONS_MAX,
   type Me,
   type NewThreadBody,
@@ -21,18 +23,12 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 import { z } from "zod";
-import { getAssertion } from "../auth/webauthn";
 import {
   isAnonToken,
   loadAnonToken,
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
-import {
-  CommentListSchema,
-  CommentSchema,
-  CommentThreadSchema,
-} from "../viewer/comments/people"; // PROVISIONAL (#2780): the shared schemas, plus `people`
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -360,8 +356,6 @@ const knownIds = (list: CommentList | undefined) => {
 };
 
 type NewThreadVars = NewThreadBody & {
-  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
-  people?: string[];
   /** The shown version's hash, for a pin's temp anchor. Not sent. */
   contentHash?: string | null;
 };
@@ -455,7 +449,6 @@ export const useReply = (id: string, guest = false) =>
           body: v.body,
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
-          // PROVISIONAL (#2780)
           ...(v.people?.length ? { people: v.people } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
           ...(v.pictures?.length ? { pictures: v.pictures } : {}),
@@ -524,9 +517,7 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
  * record on the refetch. The card only marks the picked option as sending
  * until then (never "You picked"). A refusal, a 409 included, rolls it back to
  * unanswered, and the settle refetch then shows whoever answered first.
- * Never for an ask with `confirm` (the passkey asks of #2263): a yes that needs
- * the server's verification must not appear before it. The optimistic answer is
- * never a person's yes (`yes: false`), whatever the server later says.
+ * The optimistic answer is never a person's yes (`yes: false`), whatever the server later says.
  */
 export const useAnswerAsk = (id: string) =>
   useRefetching(
@@ -551,8 +542,7 @@ export const useAnswerAsk = (id: string) =>
             !c.ask ||
             c.ask.closed ||
             // #2381: a weigh-in is not the decision; it shows when the server confirms.
-            c.ask.role === "weigh" ||
-            (c.ask as { confirm?: unknown }).confirm
+            c.ask.role === "weigh"
               ? c
               : {
                   ...c,
@@ -599,39 +589,6 @@ export const useTakeBackAsk = (id: string) =>
       undefined,
       x,
     ),
-  );
-
-/**
- * #2263: pick an option on a `confirm: "passkey"` ask. Challenge, then the passkey
- * prompt, then the answer; nothing is answered until the server verifies it.
- */
-export const usePasskeyAnswer = (id: string) =>
-  useRefetching(
-    id,
-    false,
-    false,
-    async (v: { thread: string; comment: string; optionId: string }, x) => {
-      const ch = await api.send(
-        "POST",
-        R.commentAnswerChallenge(id, v.thread, v.comment),
-        { optionId: v.optionId },
-        AnswerChallengeSchema,
-        undefined,
-        x,
-      );
-      const assertion = await getAssertion(ch.options);
-      return api.send(
-        "POST",
-        R.commentAnswer(id, v.thread, v.comment),
-        {
-          optionId: v.optionId,
-          assertion,
-        },
-        CommentSchema,
-        undefined,
-        x,
-      );
-    },
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>
@@ -836,6 +793,9 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
     return planOutsider(ctx)
       ? cappedCopy("answer")
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
+  // #2864: no ask needs a passkey. An old server's passkey_required is a plain error.
+  if (e instanceof ApiClientError && e.code === "passkey_required")
+    return "Couldn't send your answer. Reload the page and try again.";
   const status = e instanceof ApiClientError ? e.status : 0;
   if (e instanceof ApiClientError && e.code === "not_decider")
     return "You can't decide this any more: you can't edit this page. The person who asked can take it back.";

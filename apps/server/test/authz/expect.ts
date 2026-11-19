@@ -435,6 +435,8 @@ function guardExpected(
     // #1292 share-notice picks: who may connect agents. PUT also needs a
     // cookie session (follows.test.ts; the matrix probes writes by cookie).
     case "mcp.connect":
+    // #2577: the team picker's list, members uncapped.
+    case "teammates.read":
       return yes(t.team && !t.capped);
     case "artifact.create":
       return yes(!t.capped);

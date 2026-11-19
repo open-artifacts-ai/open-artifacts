@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { writeFolders } from "../src/folders.ts";
 import { credentialsFor } from "../src/instances.ts";
+import { writeApprovals } from "../src/namespaces.ts";
 import { daemonHarness, deliverFrame, stopAll, wsServer } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -604,5 +605,69 @@ describe("review fixes (#2793 S3)", () => {
     });
     await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
     expect(h.of("link_bind")).toEqual([]);
+  });
+});
+
+describe("a reopened session keeps its instance and its approvals (#2793 S6)", () => {
+  it("an approval on b is none for a session that stays on main after the folder is remapped", async () => {
+    const hubB = await fakeHub();
+    const home = mkdtempSync(join(tmpdir(), "ob-2793-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: hubB.origin,
+        machine_id: "",
+        label: "laptop",
+        machine_token: TOKEN_B,
+      }),
+      { mode: 0o600 },
+    );
+    const sessions = mkdtempSync(join(tmpdir(), "ob-cs-2793-"));
+    const repo = mkdtempSync(join(tmpdir(), "ob-repo-2793-"));
+    writeFileSync(join(repo, ".oa-bus.json"), '{"namespace":"team"}', {
+      mode: 0o600,
+    });
+    writeFileSync(
+      join(sessions, "4242.json"),
+      JSON.stringify({
+        pid: 4242,
+        sessionId: "s4242",
+        procStart: "t0",
+        name: "npm-test",
+        messagingSocketPath: "/tmp/cc-socks/4242.sock",
+        cwd: repo,
+      }),
+    );
+    let answer: { instance: string } = { instance: "main" };
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      instancesHome: home,
+      homeLookup: () => answer,
+      resolveNamespace: undefined,
+      claude: {
+        sessionsDir: sessions,
+        socketsDir: join(sessions, "sinks"),
+        syncMs: 20,
+        procStart: (pid: number) => (running.has(pid) ? "t0" : null),
+        isRunning: (pid: number) => running.has(pid),
+      },
+    });
+    await h.next("agent_up");
+    const first = h.daemon.agents.byRef("s4242");
+    expect(first?.instance).toBe("main");
+    expect(first?.namespace).not.toBe("team");
+    // The folder is remapped to b and b approves "team"; main never did.
+    answer = { instance: "b" };
+    writeApprovals([{ dir: repo, namespace: "team" }], home, "b");
+    const rec = first;
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "liveness";
+    await h.next("agent_up", 2);
+    const again = h.daemon.agents.byRef("s4242");
+    expect(again).toMatchObject({ live: true, instance: "main" });
+    expect(again?.namespace).not.toBe("team");
   });
 });

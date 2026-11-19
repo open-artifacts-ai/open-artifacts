@@ -238,7 +238,7 @@ describe("a guest wakes no agent, with no AUTH_DOMAINS", () => {
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
       answerChallenge(E, s.id, t.id, c, who(guest), "a", true),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({ code: "bad_request" });
   });
 
   it("a guest's @ list is empty; a member's is not", async () => {

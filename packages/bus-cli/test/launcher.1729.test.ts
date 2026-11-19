@@ -106,9 +106,11 @@ describe("the node launcher (#1729)", () => {
     });
     expect(r.code).toBe(127);
     expect(r.out).toBe("");
-    expect(r.err).toBe(
-      "oa-bus: Node.js 22 or newer not found. Install it, then run: npx @open-artifacts/bus install",
+    // The launcher names its own files, never npx (#2543).
+    expect(r.err).toMatch(
+      /^oa-bus: Node\.js 22 or newer not found\. Install it, then run: \S+\/node \S+\/dist\/index\.js install$/,
     );
+    expect(r.err).not.toContain("npx");
   });
 
   it("its own folder on PATH, even through a symlink, does not loop", () => {

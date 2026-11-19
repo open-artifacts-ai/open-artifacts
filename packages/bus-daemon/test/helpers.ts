@@ -116,6 +116,20 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         mkdtempSync(join(tmpdir(), "ob-cl-")),
         "claude-links.json",
       ),
+      // #2793 S3b: never the real guests file, transcripts or Claude settings.
+      guestsFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cg-")),
+        "claude-guests.json",
+      ),
+      stashFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cs2-")),
+        "claude-stash.json",
+      ),
+      projectsDir: mkdtempSync(join(tmpdir(), "ob-cp-")),
+      mcpConfigFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cm-")),
+        ".claude.json",
+      ),
       ...over.claude,
     },
     // Never a real `opencode` or the real presence files.

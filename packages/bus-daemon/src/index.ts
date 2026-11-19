@@ -7,7 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
-import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
+import {
+  claudeSessionsDir,
+  readSessionFile,
+} from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
@@ -15,6 +18,7 @@ import {
 } from "@oa/bus-adapter-opencode/version";
 import {
   ADAPTER_CAPS,
+  type ConfigFile,
   correctedDeliveredText,
   type DaemonFrame,
   excerptOf,
@@ -35,7 +39,10 @@ import {
   BUS_ROUTES,
   type ClientFrame,
   ClientFrameSchema,
+  type DeliverFrame,
   frameId,
+  GUEST_DELIVERY_KINDS,
+  INSTANCE_SENDER_NAME,
   MAX_WAITING_QUERY,
   type SendFrame,
   type ServerFrame,
@@ -56,6 +63,21 @@ import {
   commOf,
   procStartOf,
 } from "./attest.ts";
+import {
+  CLAUDE_GUESTS_MAX,
+  CLAUDE_STASH_MAX,
+  type ClaudeGuest,
+  claudeConfigFile,
+  claudeProjectsDir,
+  findTranscript,
+  GuestRate,
+  mcpEntryNames,
+  newGuestRef,
+  readClaudeGuests,
+  toolPrefixOf,
+  usedToolOf,
+  writeClaudeGuests,
+} from "./claude-guests.ts";
 import {
   CLAUDE_LINKS_MAX,
   type ClaudeLink,
@@ -107,7 +129,12 @@ import {
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
-import { folderHomeLookup } from "./folders.ts";
+import {
+  changedSuggestionNote,
+  folderHomeLookup,
+  folderKey,
+  unmappedFolderNote,
+} from "./folders.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
@@ -131,7 +158,7 @@ import {
   type Namespace,
   resolveNamespace,
 } from "./namespace.ts";
-import { remotesFile } from "./namespaces.ts";
+import { namespacesFile, remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   type AttachDeps,
@@ -214,13 +241,17 @@ export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
+export { ReleaseError, type ReleaseErrorCode } from "./update/errors.ts";
+export { type FetchedRelease, fetchRelease } from "./update/fetch.ts";
 export * from "./update/layout.ts";
 export * from "./update/login-flag.ts";
 export * from "./update/policy.ts";
 export * from "./update/reports.ts";
 export * from "./update/selfcheck.ts";
 export * from "./update/state.ts";
+export { unpackTo } from "./update/tar.ts";
 export * from "./update/updater.ts";
+export { type VerifiedRelease, verifyRelease } from "./update/verify.ts";
 
 const NOTICE_RETRY_MS = 30_000;
 /** How long a `switching` report waits for the hub's answer before the switch is held. */
@@ -366,6 +397,16 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2793 S3b: hashes held for another instance than the session's home; default ~/.oa-bus/claude-stash.json. */
+    stashFile?: string;
+    /** #2793 S3b: the guests kept across a restart; default ~/.oa-bus/claude-guests.json. */
+    guestsFile?: string;
+    /** #2793 S3b: Claude's transcripts (`<project>/<session id>.jsonl`); default under the Claude config dir. */
+    projectsDir?: string;
+    /** #2793 S3b: Claude's settings file, where the instance's MCP entry is found by address; default ~/.claude.json. */
+    mcpConfigFile?: string;
+    /** #2793 S3b: the most proof_seen frames one link may have acted on a minute; default 10. */
+    guestRatePerMin?: number;
     /** #2806: adopt sessions found only in the sessions dir; default: this is the default home. */
     discover?: boolean;
     /** #2806: the bus home a session's process was started for (procBusHome). */
@@ -520,14 +561,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
-  // Main for every folder only when main is the only instance on this machine.
-  const onlyMain =
-    instHome === undefined || listInstances(instHome).every((i) => i.main);
+  // Without a bus home (tests that bring a config) main serves every folder.
+  // Otherwise the folder map decides, read fresh at each session start: an
+  // `oa-bus add` while sessions are live moves none of them (live records keep
+  // their instance); only sessions that start afterward use the new map.
   const lookup: HomeLookup =
     deps.homeLookup ??
-    (instHome !== undefined
-      ? folderHomeLookup(instHome)
-      : () => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
+    (instHome === undefined
+      ? () => ({ instance: MAIN_INSTANCE })
+      : folderHomeLookup(instHome));
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -717,6 +759,56 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const configIssues = new ConfigIssues();
+  /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
+  const folderNotes = new Map<string, ConfigFile>();
+  /**
+   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
+   * Bounded; a repo moved under a live daemon is picked up at its next start.
+   */
+  const keyCache = new BoundedMap<string, string>(1000);
+  const keyOf = (cwd: string): string => {
+    let k = keyCache.get(cwd);
+    if (k === undefined) {
+      k = folderKey(cwd);
+      keyCache.set(cwd, k);
+    }
+    return k;
+  };
+  const noteFolder = (cwd: string) => {
+    if (instHome === undefined || deps.homeLookup) return;
+    // One instance: no folder note, so no git call per request.
+    if (listInstances(instHome).length < 2) return;
+    const key = keyOf(cwd);
+    const unmapped = unmappedFolderNote(cwd, instHome, key);
+    const changed = unmapped
+      ? undefined
+      : changedSuggestionNote(cwd, instHome, key);
+    const text = unmapped ?? changed;
+    if (text !== undefined && (folderNotes.size < 1000 || folderNotes.has(key)))
+      folderNotes.set(key, {
+        file: key,
+        state: "noted",
+        reason: text,
+        fix: unmapped ? `${BUS_CMD} use` : `optional: run ${BUS_CMD} use`,
+      });
+  };
+  /**
+   * The note for a session's folder. An unmapped folder's note stays until
+   * the folder is mapped; a changed suggestion is handed out once.
+   */
+  const notesFor = (cwd: string): ConfigFile[] => {
+    if (folderNotes.size === 0) return [];
+    const key = keyOf(cwd);
+    const n = folderNotes.get(key);
+    if (!n) return [];
+    if (n.fix === `${BUS_CMD} use`) {
+      if ("unmapped" in lookup(cwd)) return [n];
+      folderNotes.delete(key);
+      return [];
+    }
+    folderNotes.delete(key);
+    return [n];
+  };
   /** Config files refused or noted (#1527): `.oa-bus.json` files seen, and the allowlist. */
   const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
@@ -735,14 +827,31 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (rr) within.add(join(rr, ".git"));
     }
     return [
+      ...(cwd !== undefined ? notesFor(cwd) : []),
       ...configIssues.list(within, { pending }),
       ...(a ? [a] : []),
       ...(rm ? [rm] : []),
       ...(g ? [g] : []),
     ];
   };
-  const resolveNs = (cwd: string, allowMissing: boolean) =>
-    (
+  const resolveNs = (
+    cwd: string,
+    allowMissing: boolean,
+    /** The instance the session is on, when already decided; else the folder's map says. */
+    on?: { instance: string | undefined },
+  ) => {
+    // A namespace approval counts on the instance the session is on only.
+    let name: string | undefined;
+    if (on !== undefined) name = on.instance;
+    else {
+      const r = lookup(cwd);
+      name = "instance" in r ? r.instance : undefined;
+    }
+    const approvals =
+      instHome !== undefined && name !== undefined && name !== MAIN_INSTANCE
+        ? namespacesFile(instHome, name)
+        : undefined;
+    return (
       deps.resolveNamespace ??
       ((dir) =>
         resolveNamespace(dir, {
@@ -750,8 +859,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           allowMissing,
           issues: configIssues,
           remotesFile: remotesFile(),
+          ...(approvals !== undefined ? { namespacesFile: approvals } : {}),
         }))
     )(cwd);
+  };
 
   const cl = deps.claude ?? {};
   const listenPath = deps.socketPath ?? socketPath();
@@ -780,6 +891,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (e) => sameProc(e.pid, e.procStart),
   );
   let linksWritten: string | undefined = JSON.stringify(saved);
+  /**
+   * #2793 S3b: proofs a session holds for ANOTHER instance than its home, kept
+   * only to match a later proof_seen. Their own file (claude-stash.json) and
+   * cap, so claude-links.json stays exactly what an older daemon reads and a
+   * stash can never push out an unmapped session's hold. Same entry shape;
+   * the instance is always named. A stash for an instance this daemon no longer
+   * has (removed) is not kept.
+   */
+  const stashFile = cl.stashFile ?? join(home(), "claude-stash.json");
+  const stashLoaded = readClaudeLinks(stashFile, undefined, log).filter((e) =>
+    sameProc(e.pid, e.procStart),
+  );
+  let stashed: ClaudeLink[] = stashLoaded.filter(
+    (e) => e.instance !== undefined && lanes.get(e.instance) !== undefined,
+  );
+  let stashWritten: string | undefined = JSON.stringify(stashLoaded);
+  const persistStash = () => {
+    stashed = stashed.filter((e) => sameProc(e.pid, e.procStart));
+    const text = JSON.stringify(stashed);
+    if (text === stashWritten) return;
+    try {
+      writeClaudeLinks(stashFile, stashed);
+      stashWritten = text;
+    } catch (e) {
+      log(`could not save ${stashFile}: ${e instanceof Error ? e.message : e}`);
+    }
+  };
   /**
    * Merges the saved hashes of this pid + procStart under the record's own
    * (#2861: also when the record already has some, or learned its procStart
@@ -1346,9 +1484,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * so dropping it would lose it for good. No frame goes out now. Kept in
    * claude-links.json with the instance, so a restart keeps it too.
    */
-  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
-    const { pid, procStart } = rec;
-    if (pid === undefined || procStart === undefined) return;
+  const stashHold = (
+    want: string,
+    pid: number,
+    procStart: string,
+    hash: string,
+  ) => {
     const same = (e: ClaudeLink) =>
       e.pid === pid &&
       e.procStart === procStart &&
@@ -1363,11 +1504,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       },
       ...saved.filter((e) => !same(e)),
     ].slice(0, CLAUDE_LINKS_MAX);
+    persistLinks();
+  };
+  /** A proof for another instance than the session's home: its own file and cap. */
+  const stashProof = (
+    want: string,
+    pid: number,
+    procStart: string,
+    hash: string,
+  ) => {
+    const same = (e: ClaudeLink) =>
+      e.pid === pid && e.procStart === procStart && e.instance === want;
+    const hit = stashed.find(same);
+    stashed = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        instance: want,
+      },
+      ...stashed.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_STASH_MAX);
+    persistStash();
+  };
+  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
+    const { pid, procStart } = rec;
+    if (pid === undefined || procStart === undefined) return;
+    stashHold(want, pid, procStart, hash);
     log(
       `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
     );
     noteUnbound("unmapped_folder", pid);
-    persistLinks();
   };
   /** Binds the proofs held for a session once it is homed on their instance. */
   const claimHeld = (rec: AgentRecord) => {
@@ -1387,12 +1554,26 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     persistLinks();
     for (const h of hit.hashes) sendLink(rec, h);
   };
-  /** A proof for another instance than the session's is dropped here, never offered to any hub. */
-  const dropProof = (want: string, rec: AgentRecord) => {
+  /**
+   * A proof for another instance than the session's is never offered to any
+   * hub. #2793 S3b: for a Claude session and a link that exists, it is KEPT
+   * (in claude-links.json, for that instance only) and sent nothing: it is how
+   * a later proof_seen from that instance is matched to a session that has
+   * used its tools. It binds nothing and makes no guest by itself.
+   */
+  const dropProof = (want: string, rec: AgentRecord, hash?: string) => {
     log(
       `dropped a proof for the instance ${want}: session ${rec.ref} is homed on ${homedOf(rec) ?? "no instance"}`,
     );
     noteUnbound("wrong_instance", rec.pid);
+    if (
+      hash !== undefined &&
+      rec.kind === "claude-code" &&
+      rec.pid !== undefined &&
+      rec.procStart !== undefined &&
+      lanes.get(want) !== undefined
+    )
+      stashProof(want, rec.pid, rec.procStart, hash);
   };
   /** The hashes a replacing record keeps: only those of a record homed on the same instance. */
   const carryLinks = (
@@ -1464,7 +1645,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           continue;
         }
         if (p.instance !== homedOf(rec)) {
-          dropProof(p.instance, rec);
+          // One log line; every hash is stashed for that instance (#2793 S3b).
+          dropProof(p.instance, rec, p.hashes[0]);
+          if (
+            rec.procStart !== undefined &&
+            lanes.get(p.instance) !== undefined
+          )
+            for (const h of p.hashes.slice(1))
+              stashProof(p.instance, pid, rec.procStart, h);
           continue;
         }
         proofIssues.delete(pid);
@@ -1475,6 +1663,326 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         persistLinks();
       }
     }
+  };
+  // ---------------------------------------------------------------- #2793 S3b
+  // Guests. A Claude Code session homed on one instance joins another as a
+  // GUEST only after it used that instance's tools. The other hub says it saw
+  // a proof it does not know (proof_seen); the daemon matches the hash against
+  // what it holds for THAT instance, checks the session's own transcript for a
+  // tool_use of that instance's MCP entry, and only then registers the guest
+  // (a name and a kind) and binds the hash. Nothing else makes a guest.
+  const guestsFile = cl.guestsFile ?? join(home(), "claude-guests.json");
+  const projectsDir = cl.projectsDir ?? claudeProjectsDir();
+  const mcpConfigFile = cl.mcpConfigFile ?? claudeConfigFile();
+  const GUEST_BODY_MAX = 1024;
+  const guestRate = new GuestRate(cl.guestRatePerMin ?? 10);
+  /** A guest and the ref it is announced under on its instance (`guest:<session ref>`), once announced. */
+  type Guest = ClaudeGuest & { ref: string; sent?: string; name?: string };
+  const guestKey = (g: ClaudeGuest) => `${g.pid}:${g.procStart}:${g.instance}`;
+  const guestSet = new Map<string, Guest>();
+  /** guest_up ids awaiting the hub's answer, to their guest. */
+  const guestReq = new Map<string, string>();
+  /** Deliveries to a guest the daemon refused, per link. */
+  const guestRefused = new Map<string, number>();
+  const guestSeen = new BoundedMap<string, true>(2_000);
+  let guestsWritten: string | undefined;
+  const persistGuests = () => {
+    const rows: ClaudeGuest[] = [...guestSet.values()].map((g) => ({
+      pid: g.pid,
+      procStart: g.procStart,
+      instance: g.instance,
+      ref: g.ref,
+    }));
+    const text = JSON.stringify(rows);
+    if (text === guestsWritten) return;
+    try {
+      writeClaudeGuests(guestsFile, rows);
+      guestsWritten = text;
+    } catch (e) {
+      log(`could not save ${guestsFile}: ${errText(e)}`);
+    }
+  };
+  // A restart restores exactly the persisted set: a guest whose session still
+  // runs on an instance still connected. Held proofs create none.
+  {
+    const kept = readClaudeGuests(guestsFile, undefined, log).filter(
+      (g) =>
+        sameProc(g.pid, g.procStart) && lanes.get(g.instance) !== undefined,
+    );
+    for (const g of kept)
+      guestSet.set(guestKey(g), { ...g, ref: g.ref ?? newGuestRef() });
+    guestsWritten = JSON.stringify(kept);
+  }
+  const guestRecOf = (g: ClaudeGuest): AgentRecord | undefined =>
+    agents
+      .all()
+      .find(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.live &&
+          a.pid === g.pid &&
+          a.procStart === g.procStart,
+      );
+  /** Tells the guest's instance its name and kind; again after a /clear moved the ref. Only a ready link. */
+  const announceGuest = (g: Guest) => {
+    const lane = lanes.get(g.instance);
+    const rec = guestRecOf(g);
+    if (!lane || !rec || !lane.guest || !lane.helloed || lane.revoked) return;
+    // The ref is this guest's own on this instance, random and kept: no other instance sees it.
+    const ref = g.ref;
+    if (g.sent === ref) return;
+    if (g.sent !== undefined)
+      sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "guest_down",
+        agent_ref: g.sent,
+      });
+    const id = frameId();
+    const sent = sendOn(lane, {
+      v: 1,
+      id,
+      type: "guest_up",
+      agent_ref: ref,
+      kind: "claude-code",
+      proposed_name: fitName(rec.sessionName ?? rec.proposedName, 64),
+    });
+    if (!sent) return;
+    g.sent = ref;
+    guestReq.set(id, guestKey(g));
+    while (guestReq.size > 256)
+      guestReq.delete(guestReq.keys().next().value as string);
+  };
+  const bindGuest = (g: Guest, hash: string) => {
+    const lane = lanes.get(g.instance);
+    if (!lane || g.sent === undefined || !lane.link) return;
+    sendOn(lane, {
+      v: 1,
+      id: frameId(),
+      type: "link_bind",
+      agent_ref: g.sent,
+      hash,
+    });
+  };
+  /** The guest ends: its instance is told (when the link is up) and it is forgotten. */
+  const endGuest = (g: Guest, why: string) => {
+    const lane = lanes.get(g.instance);
+    if (g.sent !== undefined && lane?.helloed && lane.guest)
+      sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "guest_down",
+        agent_ref: g.sent,
+      });
+    guestSet.delete(guestKey(g));
+    log(`a guest session on ${g.instance} ended: ${why}`);
+    ev("guest_end", { instance: g.instance });
+    persistGuests();
+  };
+  /** A guest ends with its session, and with its instance's link (revoked or removed). */
+  const sweepGuests = () => {
+    for (const g of [...guestSet.values()]) {
+      const lane = lanes.get(g.instance);
+      if (!lane || lane.revoked) endGuest(g, "its instance is gone");
+      else if (!sameProc(g.pid, g.procStart)) endGuest(g, "its session ended");
+      else announceGuest(g);
+    }
+  };
+  /** The link of `lane` is revoked or dropped for good: its guests go, nothing at home. */
+  const dropGuestsOf = (name: string) => {
+    // Its stashed hashes go too: nothing of a revoked or removed instance is kept.
+    stashed = stashed.filter((e) => e.instance !== name);
+    persistStash();
+    for (const g of [...guestSet.values()])
+      if (g.instance === name) {
+        guestSet.delete(guestKey(g));
+        ev("guest_end", { instance: name });
+      }
+    persistGuests();
+  };
+  const guestOnLink = (lane: Lane, ref: string): Guest | undefined => {
+    for (const g of guestSet.values())
+      if (g.instance === lane.name && g.sent === ref) return g;
+    return undefined;
+  };
+  const onProofSeen = async (lane: Lane, hash: string): Promise<void> => {
+    // Never the hash or any text in a log line.
+    const ignore = (why: string) =>
+      log(`ignored a proof_seen from ${lane.name}: ${why}`);
+    if (!lane.guest) return ignore("the link did not list guests");
+    if (!guestRate.admit(lane.name)) {
+      ev("guest_rate_capped", { instance: lane.name });
+      return ignore(
+        `over the rate cap (${guestRate.dropped(lane.name)} dropped)`,
+      );
+    }
+    // Only hashes held for THIS instance, never home's or another's.
+    const held = stashed.find(
+      (e) =>
+        (e.instance ?? MAIN_INSTANCE) === lane.name && e.hashes.includes(hash),
+    );
+    if (!held) return ignore("no session holds it for this instance");
+    const rec = agents
+      .all()
+      .find(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.live &&
+          a.pid === held.pid &&
+          a.procStart === held.procStart,
+      );
+    if (!rec) return ignore("its session is not running");
+    const home = homedOf(rec);
+    if (home === undefined || home === lane.name)
+      return ignore("the session is not homed on another instance");
+    const g: ClaudeGuest = {
+      pid: held.pid,
+      procStart: held.procStart,
+      instance: lane.name,
+    };
+    const known = guestSet.get(guestKey(g));
+    if (known) {
+      // Already a guest here: one registration, so only the proof is bound again.
+      announceGuest(known);
+      bindGuest(known, hash);
+      return;
+    }
+    if (guestSet.size >= CLAUDE_GUESTS_MAX)
+      return ignore("too many guest sessions");
+    // The session itself must have called this instance's tools.
+    const sess = readSessionFile(claudeSessions.dir, rec.pid);
+    const file =
+      sess.state === "ok"
+        ? findTranscript(projectsDir, sess.rec.sessionId, rec.cwd)
+        : undefined;
+    const prefixes = mcpEntryNames(mcpConfigFile, lane.cfg.hub, rec.cwd).map(
+      toolPrefixOf,
+    );
+    const used =
+      file !== undefined && prefixes.length > 0
+        ? await usedToolOf(file, prefixes)
+        : false;
+    if (!used)
+      return ignore("the session's transcript shows no call of its tools");
+    // Settled while the transcript was read: still the same running session, and still no guest.
+    if (!guestRecOf(g) || guestSet.has(guestKey(g)) || lane.revoked) return;
+    const made: Guest = { ...g, ref: newGuestRef() };
+    guestSet.set(guestKey(made), made);
+    persistGuests();
+    log(`session ${rec.ref} joined ${lane.name} as a guest`);
+    ev("guest_join", { instance: lane.name });
+    announceGuest(made);
+    bindGuest(made, hash);
+  };
+  /**
+   * What a guest gets from its instance: only a reply, an @mention or the
+   * answer to its own ask, told by the frame's structured `meta.guest`, from
+   * the instance's reserved sender. Anything else, or an unknown kind, is
+   * dropped. Shown as "from <this machine's own name for the instance>".
+   */
+  const guestDeliver = async (
+    lane: Lane,
+    g: Guest,
+    frame: DeliverFrame,
+  ): Promise<void> => {
+    if (!claimMsg(lane, frame.msg_id)) return;
+    const kind = frame.meta?.guest;
+    if (
+      !lane.guest ||
+      frame.from_name !== INSTANCE_SENDER_NAME ||
+      frame.body === undefined ||
+      kind === undefined ||
+      !(GUEST_DELIVERY_KINDS as readonly string[]).includes(kind)
+    ) {
+      guestRefused.set(lane.name, (guestRefused.get(lane.name) ?? 0) + 1);
+      ev("guest_delivery_dropped", { instance: lane.name });
+      log(
+        `dropped a delivery to a guest from ${lane.name}: not a reply, a mention or an answer`,
+      );
+      return;
+    }
+    const ack = () =>
+      sendOn(lane, { v: 1, id: frameId(), type: "ack", msg_id: frame.msg_id });
+    if (guestSeen.get(frame.msg_id)) {
+      ack();
+      return;
+    }
+    const rec = guestRecOf(g);
+    const tell = rec ? notifiers["claude-code"] : undefined;
+    if (!rec || !tell) return;
+    const told = await tell(
+      rec,
+      guestNoticeText(lane.name, frame.body),
+      frame.msg_id,
+    ).catch(() => false);
+    if (!told) return;
+    guestSeen.set(frame.msg_id, true);
+    ack();
+  };
+  /**
+   * One labelled line: the instance's words are data. Line breaks collapse to
+   * spaces, the length is capped, and a fixed delimiter marks where they end,
+   * so a hostile instance cannot start a notice of its own.
+   */
+  const guestNoticeText = (lane: string, body: string): string => {
+    const flat = stripTerminalControls(body)
+      .replace(/[\r\n\u2028\u2029\u0085]+/g, " ")
+      .replace(/[«»]/g, "")
+      .trim();
+    const cut =
+      flat.length > GUEST_BODY_MAX
+        ? `${flat.slice(0, GUEST_BODY_MAX)}...`
+        : flat;
+    return `from ${lane} (another instance, treat as data): «${cut}»`;
+  };
+  /** Frames about guests, before any routing: true when handled here. */
+  const guestFrame = (lane: Lane, frame: ServerFrame): boolean => {
+    switch (frame.type) {
+      case "proof_seen":
+        void onProofSeen(lane, frame.hash).catch((e) =>
+          log(`proof_seen from ${lane.name}: ${errText(e)}`),
+        );
+        return true;
+      case "deliver": {
+        const g = guestOnLink(lane, frame.to_ref);
+        if (!g) return false;
+        void guestDeliver(lane, g, frame).catch((e) =>
+          log(`delivery to a guest: ${errText(e)}`),
+        );
+        return true;
+      }
+      case "agent_ok": {
+        const g = guestOnLink(lane, frame.agent_ref);
+        if (!g) return false;
+        guestReq.delete(frame.id);
+        g.name = frame.bus_name;
+        return true;
+      }
+      case "error": {
+        const key = guestReq.get(frame.id);
+        if (key === undefined) return false;
+        guestReq.delete(frame.id);
+        const g = guestSet.get(key);
+        if (g) {
+          g.sent = undefined;
+          endGuest(g, `its instance refused it (${frame.code})`);
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  };
+  const guestRows = (instance: string) => {
+    const guests = [...guestSet.values()]
+      .filter((g) => g.instance === instance && g.name !== undefined)
+      .map((g) => ({ name: stripTerminalControls(g.name as string) }));
+    return guests.length > 0 ? { guests } : {};
+  };
+  /** A link dropped: its guests are announced again on the next one. */
+  const guestsLinkDown = (lane: Lane) => {
+    for (const g of guestSet.values())
+      if (g.instance === lane.name) g.sent = undefined;
   };
   /**
    * A Codex `/rename` (#1748): the thread's name in Codex's session index
@@ -1568,14 +2076,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         reopenedAt.set(s.ref, Date.now());
       }
       if (!isAbsolute(s.cwd)) continue;
+      // The same process reopening keeps the instance it had; pick it before the namespace.
+      const instance =
+        prev && prev.pid === s.pid && prev.procStart === s.procStart
+          ? (prev.instance ?? homeInstance(s.cwd))
+          : homeInstance(s.cwd);
       let ns: Namespace;
       try {
-        ns = resolveNs(s.cwd, true);
+        ns = resolveNs(s.cwd, true, { instance });
       } catch {
         continue;
       }
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
-      const instance = homeInstance(s.cwd);
+      noteFolder(s.cwd);
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.
       seenAt.set(s.ref, ++seenSeq);
@@ -1616,6 +2129,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       tellOwed(s.ref);
     }
     claimProofs();
+    sweepGuests();
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
@@ -1784,6 +2298,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       log: lane.main ? log : (m) => log(`${lane.name}: ${m}`),
       ...deps.hub,
       onFrame: (frame) => {
+        if (guestFrame(lane, frame)) return;
         if (!routable(lane, frame)) return;
         switch (frame.type) {
           case "deliver":
@@ -1949,6 +2464,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           case "hello_ok":
             // The machine id and label are already in machine.json.
             lane.applyHello(frame.caps, frame.server_version);
+            // #2793 S3b: this link's guests are announced again (the hub kept them; a restart may have found them first).
+            for (const g of guestSet.values())
+              if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
             if (lane.main && lane.runCap) {
@@ -2016,6 +2534,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           log(
             `the instance ${lane.name} revoked this machine; its link is closed`,
           );
+          // Its guests go with its link; every session at home is untouched.
+          dropGuestsOf(lane.name);
           linkDown(lane);
           lane.hub.stop();
           try {
@@ -2105,6 +2625,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ev("hub_disconnect", laneFields(lane));
     // The next link's hello_ok says again which hub this is.
     lane.resetLink();
+    guestsLinkDown(lane);
     if (lane.main) {
       codexAckIds.clear();
       for (const [id, done] of [...switchAcks]) {
@@ -2287,7 +2808,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return { bound: true };
         }
         if (want !== homedOf(rec)) {
-          dropProof(want, rec);
+          dropProof(want, rec, req.hash);
           return { bound: false };
         }
         proofIssues.delete(req.pid);
@@ -2410,6 +2931,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         version,
         label: cfg.label,
         ...(config_files.length > 0 ? { config_files } : {}),
+        ...(lanes.multi
+          ? {
+              instances: lanes.all().map((l) => ({
+                name: l.name,
+                link: l.hub.open
+                  ? ("connected" as const)
+                  : ("not_connected" as const),
+                revoked: l.revoked,
+                agents: live.filter((a) => a.instance === l.name).length,
+                // #2793 S3b: sessions homed elsewhere that used this instance's tools. Names only; absent when none.
+                ...guestRows(l.name),
+              })),
+            }
+          : {}),
         hub: hub.open ? "connected" : "connecting",
         ...(hub.open || !hub.lastError ? {} : { hub_error: hub.lastError }),
         hub_ever: main.ever,
@@ -2615,10 +3150,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // Claude's session file names its cwd; other kinds state one.
         const cwd = check.cwd ?? hello.cwd;
         if (!cwd || !isAbsolute(cwd)) return { error: "cwd must be absolute" };
+        // The instance's approvals apply: pick it before the namespace.
+        const instance = homeInstance(cwd);
         let ns: Namespace;
         try {
           // A live Claude session may have outlived its start directory.
-          ns = resolveNs(cwd, check.cwd !== undefined);
+          ns = resolveNs(cwd, check.cwd !== undefined, { instance });
         } catch {
           return { error: `cwd does not resolve: ${cwd}` };
         }
@@ -2627,7 +3164,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
-        const instance = homeInstance(cwd);
+        noteFolder(cwd);
         // A Codex thread the user named registers under that name (#1748).
         const codexName =
           hello.kind === "codex"
@@ -2966,9 +3503,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         const proven = res;
         // Scope comes from the proven cwd and today's config, as at a hello.
+        const instance = homeInstance(proven.cwd);
         let ns: Namespace;
         try {
-          ns = resolveNs(proven.cwd, true);
+          ns = resolveNs(proven.cwd, true, { instance });
         } catch {
           drop("no_namespace");
           continue;
@@ -2977,7 +3515,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           drop("no_namespace");
           continue;
         }
-        const instance = homeInstance(proven.cwd);
+        noteFolder(proven.cwd);
         agents.up({
           ref: r.ref,
           kind: "codex",

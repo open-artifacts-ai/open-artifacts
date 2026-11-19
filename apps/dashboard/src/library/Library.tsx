@@ -31,6 +31,7 @@ import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
+import { FirstSetupAsk } from "./FirstSetupAsk";
 import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
 import { GuestPublishNote, MemberGetStarted } from "./MemberGetStarted";
@@ -316,6 +317,8 @@ export function Library({ scope }: { scope: Scope }) {
           />
           {/* #2632: a member's own card (the owner's is GetStarted). */}
           <MemberGetStarted />
+          {/* #2577: asked once, after the first agent is connected. */}
+          <FirstSetupAsk />
         </>
       )}
       <Filters
