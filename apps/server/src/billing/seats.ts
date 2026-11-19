@@ -1,4 +1,4 @@
-import { BillingSeatsSchema } from "@oa/shared";
+import { BillingSeatsRequestSchema, BillingSeatsSchema } from "@oa/shared";
 import { sendEmail } from "../email/send.js";
 import { seatJumpEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
@@ -31,6 +31,8 @@ export async function memberCount(env: Pick<Env, "DB">): Promise<number> {
 
 /** settings key: the last count billing accepted and when ({ members, at }). */
 export const SEATS_SENT_KEY = "billing.seats.sent";
+/** settings key: the `at` of the last big jump this instance handled (#2940), echoed to billing as jumpAck. */
+export const SEATS_JUMP_ACK_KEY = "billing.seats.jump.ack";
 /** The daily reconcile resends when the last accepted report is this old. */
 export const SEATS_DAILY_MS = 23 * 3_600_000;
 
@@ -40,9 +42,18 @@ export const SEATS_DAILY_MS = 23 * 3_600_000;
  */
 export async function sendSeats(env: Env, now: number): Promise<number> {
   const members = await memberCount(env);
+  const ack = await lastJumpAck(env);
   let raw: unknown;
   try {
-    raw = await billingCall(env, SEATS_PATH, { members }, now);
+    raw = await billingCall(
+      env,
+      SEATS_PATH,
+      BillingSeatsRequestSchema.parse({
+        members,
+        ...(ack === null ? {} : { jumpAck: ack }),
+      }),
+      now,
+    );
   } catch (e) {
     // Billing from before #2580 has no /seats (404) or refuses it (400
     // bad_body): settled, never retried soon; logged once a day at most.
@@ -90,7 +101,11 @@ async function notifyJump(
     )
       .bind(key, JSON.stringify({ from: jump.from, to: jump.to, at: now }))
       .run();
-    if ((claim.meta.changes ?? 0) === 0) return;
+    if ((claim.meta.changes ?? 0) === 0) {
+      // Handled before: say so again, in case the first acknowledgement was lost.
+      if (jump.at !== undefined) await saveJumpAck(env, jump.at);
+      return;
+    }
     claimed = true;
     const { results } = await env.DB.prepare(
       "select id, email from users where role = 'owner' and status = 'active' order by created_at, id limit 5",
@@ -118,6 +133,9 @@ async function notifyJump(
         .bind(key)
         .run();
       claimed = false;
+    } else if (jump.at !== undefined) {
+      // Handled: billing may stop carrying it once the next report says so.
+      await saveJumpAck(env, jump.at);
     }
   } catch (e) {
     logWarn("billing_seat_jump_email_failed", e);
@@ -127,6 +145,25 @@ async function notifyJump(
         .run()
         .catch(() => undefined);
   }
+}
+
+async function lastJumpAck(env: Env): Promise<number | null> {
+  const row = await env.DB.prepare("select value from settings where key = ?1")
+    .bind(SEATS_JUMP_ACK_KEY)
+    .first<{ value: string }>()
+    .catch(() => null);
+  const n = Number(row?.value);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/** Records that the jump with this `at` was handled (the newest wins). */
+async function saveJumpAck(env: Env, at: number): Promise<void> {
+  await env.DB.prepare(
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = cast(max(cast(settings.value as integer), cast(excluded.value as integer)) as text)`,
+  )
+    .bind(SEATS_JUMP_ACK_KEY, String(at))
+    .run();
 }
 
 async function saveSent(

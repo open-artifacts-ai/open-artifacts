@@ -417,6 +417,39 @@ describe("a big jump billed at once emails the owner (#2588)", () => {
     expect(sends).toHaveLength(2);
   });
 
+  it("a handled jump is acknowledged in the next report (jumpAck = its `at`), and never before one", async () => {
+    const e = HE();
+    const t = Date.now();
+    await run(e, t);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(sends).toHaveLength(1);
+    // The report that carried the jump did not ack it; the next one does.
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    // The same jump delivered again is acknowledged again, with no second email.
+    await run(e, t + 3 * SEATS_DAILY_MS + 3_000);
+    expect(sends).toHaveLength(1);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    // A newer jump moves the ack on (the newest wins).
+    fake.seatsJump = { from: 3, to: 40, at: t + 7_000 };
+    await run(e, t + 4 * SEATS_DAILY_MS + 4_000);
+    await run(e, t + 5 * SEATS_DAILY_MS + 5_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t + 7_000 });
+  });
+
+  it("a jump whose email could not be sent is not acknowledged", async () => {
+    const e = HE();
+    const t = Date.now();
+    failSend = true;
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t);
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+  });
+
   it("no jump, no email", async () => {
     await run(HE(), Date.now());
     expect(sends).toHaveLength(0);

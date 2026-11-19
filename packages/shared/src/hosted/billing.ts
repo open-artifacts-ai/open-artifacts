@@ -232,6 +232,13 @@ export const BillingUsageSchema = z.object({
 });
 export type BillingUsage = z.infer<typeof BillingUsageSchema>;
 
+/** POST /seats body (#2580): the member count, and (#2940) the `at` of the last jump this instance handled, so billing can stop carrying it. Sent only once a jump with an `at` was handled, so billing from before it never sees the key. */
+export const BillingSeatsRequestSchema = z.object({
+  members: z.number().int().nonnegative(),
+  jumpAck: z.number().int().positive().optional(),
+});
+export type BillingSeatsRequest = z.infer<typeof BillingSeatsRequestSchema>;
+
 /** POST /seats answer (#2580): the member count billing stored, and what it did with it. */
 export const BillingSeatsSchema = z.object({
   members: z.number().int().nonnegative(),
