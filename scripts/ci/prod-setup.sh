@@ -66,6 +66,16 @@ case "$mode" in
     ;;
 esac
 
+# Browser push keys: setup generates the VAPID pair by default, but CI leaves
+# them alone until the owner turns push on with the repository variable
+# PROD_PUSH_KEYS=on (prod only; the demo never gets keys).
+case "$mode" in
+  install | preflight | upgrade)
+    if [[ "${PROD_PUSH_KEYS:-}" == "on" ]]; then unset OA_SETUP_PUSH_KEYS; else export OA_SETUP_PUSH_KEYS=off; fi
+    ;;
+  *) export OA_SETUP_PUSH_KEYS=off ;;
+esac
+
 run_setup() {
   if pnpm --reporter=silent oa:setup "${mode_args[@]}" --name "$PROD_NAME" --app-host "$PROD_APP_HOST" \
     --content-host "$PROD_CONTENT_HOST" --owner-email "$PROD_OWNER_EMAIL" 2>&1; then
