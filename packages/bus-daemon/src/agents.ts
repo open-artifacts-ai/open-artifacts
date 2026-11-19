@@ -9,6 +9,11 @@ export type AgentRecord = {
   /** Where the namespace came from (#1570): shown by status, doctor and self. */
   namespaceSource?: "config" | "git" | "dir" | "cwd";
   global: boolean;
+  /**
+   * #2793: the instance (by local name) this agent is registered on: its
+   * folder's home. Unset: registered on no hub.
+   */
+  instance?: string;
   pid: number;
   cwd: string;
   live: boolean;

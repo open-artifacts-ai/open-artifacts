@@ -1,5 +1,11 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  realpathSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
@@ -25,7 +31,6 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
-  BUS_CAPS,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -33,6 +38,7 @@ import {
   frameId,
   MAX_WAITING_QUERY,
   type SendFrame,
+  type ServerFrame,
   UPDATE_REASONS,
   type UpdateReason,
   WireNamespaceSchema,
@@ -101,7 +107,16 @@ import {
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
+import { folderHomeLookup } from "./folders.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
+import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
+import {
+  credentialsFor,
+  type HomeLookup,
+  instancesDir,
+  listInstances,
+  MAIN_INSTANCE,
+} from "./instances.ts";
 import {
   cachedProcStart,
   claudeTarget,
@@ -129,8 +144,7 @@ import {
   openSessions,
   openState,
 } from "./presence/opencode.ts";
-import { proposeReach } from "./reach.ts";
-import { Resends } from "./resend.ts";
+import { proposeReach, REACH_COPY } from "./reach.ts";
 import { type AgentCap, capOf, Pending, routeLocal } from "./routes.ts";
 import {
   DELIVERED_WAIT_MS,
@@ -302,6 +316,13 @@ export type DaemonDeps = {
   restoreRetryMs?: number;
   /** Retry delay for a rate-limited agent_up; default 5 min. */
   limitedRetryMs?: number;
+  /**
+   * #2793: where a folder's sessions connect, by instance name. Default: main
+   * for every folder when it is the only instance (slice S2 brings the map).
+   */
+  homeLookup?: HomeLookup;
+  /** Where the added instances are read from; default the bus home, none when `config` is given. */
+  instancesHome?: string;
   /** Test seams. */
   config?: Config;
   socketPath?: string;
@@ -407,7 +428,10 @@ export type Daemon = {
   stop: () => Promise<void>;
   /** The updater, when `deps.update` was given (#2552); PR 5 feeds it the instance's instruction. */
   updater?: Updater | undefined;
+  /** The main instance's link. */
   hub: HubConnection;
+  /** Every instance's link, by local name (main first). */
+  hubs: Map<string, HubConnection>;
   agents: AgentTable;
   /** Test seam (#1956): the ref bindings held, and one sweep run now. */
   bindings: { count: () => number; sweep: () => void };
@@ -432,6 +456,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
+  // #2793: one link per instance, each built from its own credentials only.
+  const lanes = new Lanes();
+  const main = new Lane(MAIN_INSTANCE, cfg);
+  lanes.add(main);
+  const instHome = deps.instancesHome ?? (deps.config ? undefined : home());
+  if (instHome !== undefined)
+    for (const i of listInstances(instHome)) {
+      if (i.main) continue;
+      try {
+        lanes.add(new Lane(i.name, credentialsFor(i.name, instHome)));
+      } catch (e) {
+        log(`instance ${i.name} is not connected: ${errText(e)}`);
+      }
+    }
   /** Best effort: the event log never throws into the daemon. */
   const ev = (event: string, fields?: EventFields): void => {
     try {
@@ -439,6 +477,74 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     } catch {}
   };
   const agents = new AgentTable();
+  /** The link an agent is registered on; with one link, always main. */
+  const laneOfRef = (ref: string): Lane | undefined =>
+    lanes.get(agents.byRef(ref)?.instance);
+  /** Which link carried a request or a delivery, while more than one link runs. */
+  const idLane = new BoundedMap<string, Lane>(20_000);
+  const msgLane = new BoundedMap<string, Lane>(20_000);
+  /**
+   * A hub-chosen msg_id belongs to the first link that names it. Another link
+   * naming it is dropped, so it can never re-point an ack, refusal or receipt.
+   */
+  const claimMsg = (lane: Lane, msgId: string): boolean => {
+    const owner = msgLane.get(msgId);
+    if (owner === undefined || owner === lane) {
+      msgLane.set(msgId, lane);
+      return true;
+    }
+    ev("frame_dropped", { instance: lane.name, type: "msg_id_taken" });
+    log(`dropped a frame from ${lane.name}: its msg_id is another instance's`);
+    return false;
+  };
+  const laneOfFrame = (f: ClientFrame): Lane | undefined => {
+    const ref = refOf(f);
+    if (ref !== undefined) return laneOfRef(ref);
+    if (f.type === "ack" || f.type === "refuse")
+      return lanes.multi ? msgLane.get(f.msg_id) : main;
+    return f.type === "update_report" ? main : undefined;
+  };
+  const sendOn = (lane: Lane, f: ClientFrame, onUnsent?: () => void) => {
+    if (lanes.multi) idLane.set(f.id, lane);
+    return lane.hub.send(f, onUnsent);
+  };
+  /** A frame goes only to its agent's own link; an agent on none sends nothing. */
+  const hubSend = (f: ClientFrame, onUnsent?: () => void): boolean => {
+    const lane = laneOfFrame(f);
+    return lane ? sendOn(lane, f, onUnsent) : false;
+  };
+  const cancelOn = (id: string): boolean => {
+    let any = false;
+    for (const l of lanes.all()) any = l.hub.cancel(id) || any;
+    return any;
+  };
+  // Main for every folder only when main is the only instance on this machine.
+  const onlyMain =
+    instHome === undefined || listInstances(instHome).every((i) => i.main);
+  const lookup: HomeLookup =
+    deps.homeLookup ??
+    (instHome !== undefined
+      ? folderHomeLookup(instHome)
+      : () => (onlyMain ? { instance: MAIN_INSTANCE } : { unmapped: true }));
+  const unmappedNoted = new Set<string>();
+  /**
+   * The instance a folder's sessions register on, or undefined: none is
+   * mapped, or its link is not up. A folder is noted once.
+   */
+  const homeInstance = (cwd: string): string | undefined => {
+    const r = lookup(cwd);
+    const name = "instance" in r ? r.instance : undefined;
+    if (name !== undefined && lanes.get(name)) return name;
+    if (!unmappedNoted.has(cwd) && unmappedNoted.size < 1000) {
+      unmappedNoted.add(cwd);
+      log(
+        name === undefined
+          ? `no instance is mapped to ${cwd}: its sessions stay off every hub`
+          : `the instance ${name} for ${cwd} is not connected: its sessions stay off every hub`,
+      );
+    }
+    return undefined;
+  };
   // A timed-out request still queued is dropped: an adapter's retry must not send twice.
   const pending = new Pending(
     deps.pendingTimeoutMs,
@@ -449,7 +555,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // `held`: the msg_id is the frame id; adapters never show or fetch it.
       if (resends.held(id))
         return { type: "receipt", msg_id: id, state: "pending", held: true };
-      if (!hub.cancel(id)) return undefined;
+      if (!cancelOn(id)) return undefined;
       receipts.forget(id);
       resends.untrack(id);
       return undefined;
@@ -506,25 +612,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const held = (ref: string): boolean => {
     const rec = agents.byRef(ref);
-    return rec?.replaces !== undefined && !hubHelloed;
+    return rec?.replaces !== undefined && !laneOfRef(ref)?.helloed;
   };
   /** Whom a new session replaces: B's own predecessor while B is still unannounced. */
   const handoverOf = (old: AgentRecord): string =>
-    old.replaces !== undefined && !hubHelloed ? old.replaces : old.ref;
-  const sessions = () => ({
-    open: agents.openRefs().filter((r) => !held(r)),
-    closed: agents.closedRefs(),
-  });
+    old.replaces !== undefined && !laneOfRef(old.ref)?.helloed
+      ? old.replaces
+      : old.ref;
+  /** The sessions registered on one link: an agent is on its folder's instance only. */
+  const sessions = (lane: Lane) => {
+    const mine = (r: string) => laneOfRef(r) === lane;
+    return {
+      open: agents.openRefs().filter((r) => mine(r) && !held(r)),
+      closed: agents.closedRefs().filter(mine),
+    };
+  };
   const announceSessions = () => {
     // Every close goes through here: a closed agent's rate limit mark goes with it.
     for (const ref of limited.keys())
       if (!agents.byRef(ref)?.live) clearLimited(ref);
     for (const m of [renameFrames, renameHeldUntil])
       for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
-    return hub.send({ v: 1, id: frameId(), type: "sessions", ...sessions() });
+    for (const lane of lanes.all())
+      sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "sessions",
+        ...sessions(lane),
+      });
   };
-  /** agent_up ids awaiting the hub's answer, to their agent_ref and the kind sent; cleared with the link. */
-  const upIds = new Map<string, { ref: string; kind: string }>();
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
   const limited = new Map<string, NodeJS.Timeout>();
   /** The cap each refused agent hit. */
@@ -533,11 +649,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A /clear handover waits for hello_ok: only then is it known whether the
     // hub takes `replaces`, and an agent_up sent without it is the
     // handover lost for good (#1582). hello_ok announces it.
-    if (rec.replaces !== undefined && !hubHelloed) return false;
+    const lane = laneOfRef(rec.ref);
+    if (!lane) return false;
+    if (rec.replaces !== undefined && !lane.helloed) return false;
     const id = frameId();
     const kind = rec.kind;
-    upIds.set(id, { ref: rec.ref, kind });
-    const sent = hub.send({
+    lane.upIds.set(id, { ref: rec.ref, kind });
+    const sent = sendOn(lane, {
       v: 1,
       id,
       type: "agent_up",
@@ -546,11 +664,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
-      ...(rec.nameChosen && hubNameChosen
+      ...(rec.nameChosen && lane.nameChosen
         ? { name_chosen: true as const }
         : {}),
       // A /clear: the new ref takes over the old address and its mail (#1295).
-      ...(rec.replaces !== undefined && hubMailbox
+      ...(rec.replaces !== undefined && lane.mailbox
         ? { replaces: rec.replaces }
         : {}),
     });
@@ -563,11 +681,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * a failure (`not_registered`, a dropped link) is left to the next of those.
    */
   const sendLink = (rec: AgentRecord, only?: string) => {
-    if (!hubLink || !rec.live) return;
+    // A proof goes only to its own session's link (#2793).
+    const lane = laneOfRef(rec.ref);
+    if (!lane?.link || !rec.live) return;
     // A new proof sends itself; a (re)register replays all, oldest first, so
     // the newest ends as the hub's newest (#1984).
     for (const hash of only === undefined ? (rec.linkHashes ?? []) : [only])
-      hub.send({
+      sendOn(lane, {
         v: 1,
         id: frameId(),
         type: "link_bind",
@@ -583,7 +703,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     clearTimeout(limited.get(ref));
     const timer = setTimeout(() => {
       const rec = agents.byRef(ref);
-      if (rec?.live && hub.open) announceUp(rec);
+      if (rec?.live && laneOfRef(ref)?.hub.open) announceUp(rec);
     }, deps.limitedRetryMs ?? LIMITED_RETRY_MS);
     timer.unref();
     limited.set(ref, timer);
@@ -789,7 +909,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const sendCodexAck = (id: string, unsent?: () => void): boolean =>
     delivery.delivered(id, unsent, (fid) => {
       // Only a hub that negotiated the cap ever answers.
-      if (hubAckConfirm) codexAckIds.track(fid, id);
+      if ((msgLane.get(id) ?? main).ackConfirm) codexAckIds.track(fid, id);
     });
   /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
   const codexTaken = new TakenWatch({
@@ -829,7 +949,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Sends the hub has not answered; one whose link drops goes again, same id. */
   /** A send given up on after its link dropped: the hub may have taken it, so never "not sent". */
   const lose = (f: SendFrame) => {
-    hub.cancel(f.id);
+    cancelOn(f.id);
     const text = stripTerminalControls(
       unconfirmedText(f.to_name, excerptOf(f.body)),
     );
@@ -844,23 +964,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     if (answered) receipts.forget(f.id);
     else tell(receipts.lost(f.id));
   };
-  const resends = new Resends({
-    send: (f, unsent) => hub.send(f, unsent),
-    expire: lose,
-    windowMs: deps.resendWindowMs,
-    // An overdue resend gets as long as a tool call would wait for it.
-    graceMs: deps.pendingTimeoutMs,
-    after: deps.resendTimer,
-    now: deps.resendNow,
-    log,
-  });
+  // One per link: a link that drops only touches the sends that went out on it.
+  const resends = new ResendSet(
+    (lane) => ({
+      send: (f, unsent) => sendOn(lane, f, unsent),
+      expire: lose,
+      windowMs: deps.resendWindowMs,
+      // An overdue resend gets as long as a tool call would wait for it.
+      graceMs: deps.pendingTimeoutMs,
+      after: deps.resendTimer,
+      now: deps.resendNow,
+      log,
+    }),
+    lanes.all(),
+  );
   /** Every send is remembered, so its sender hears if it later expires or is refused. */
   const sendToHub = (
     f: ClientFrame,
     native = false,
     onUnsent?: () => void,
   ): boolean => {
-    if (f.type !== "send") return hub.send(f, onUnsent);
+    if (f.type !== "send") return hubSend(f, onUnsent);
     // Its sender is not announced yet (#1582): kept, in order, until hello_ok.
     if (held(f.from_ref)) {
       outbox.push({ frame: f, native });
@@ -872,15 +996,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // counts as absent at the hub (B14), so dedupe is unaffected.
     if (f.to_namespace === undefined && from && !from.global)
       f = { ...f, to_namespace: from.namespace };
+    const lane = laneOfFrame(f);
+    if (!lane) return false;
     receipts.sending(
       f,
       f.to_namespace ?? from?.namespace,
       native,
       from?.busName,
     );
-    resends.track(f, native);
+    resends.track(lane, f, native);
     // Never written: its keeper (the Outbox) sends it again, so no resend.
-    const ok = hub.send(
+    const ok = sendOn(
+      lane,
       f,
       onUnsent &&
         (() => {
@@ -960,16 +1087,23 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     unnamed?: boolean;
   };
   const withTo = (r: QueuedReply): SendFrame =>
-    hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
+    laneOfRef(r.frame.from_ref)?.ids && r.peerId
+      ? { ...r.frame, to_id: r.peerId }
+      : r.frame;
   // A Claude reply must not be lost to a hub reconnect. It waits for the
   // link's hello_ok, so it knows whether the hub takes to_id.
   const outbox = new Outbox<QueuedReply>({
     send: (r, unsent) => {
-      if (!hub.open || hubVersion === undefined || held(r.frame.from_ref))
+      const lane = laneOfRef(r.frame.from_ref);
+      if (
+        !lane?.hub.open ||
+        lane.version === undefined ||
+        held(r.frame.from_ref)
+      )
         return false;
       // Revived without its writer's id, to a hub that names writers: the name
       // may now belong to another agent, so refuse and tell the session.
-      if (r.unnamed && hubIds) {
+      if (r.unnamed && lane.ids) {
         const agent = agents.byRef(r.frame.from_ref);
         if (agent) void claude.notify(agent, replyGoneText(r.frame.to_name));
         return true;
@@ -1073,8 +1207,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const UNKNOWN_GRACE_MS = cl.unknownGraceMs ?? 600_000;
   let seenSeq = 0;
 
-  /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
-  const renameIds = new Map<string, { ref: string; prevSent?: string }>();
   /** When each ref's recent `rename` frames went (a sliding window). */
   const renameFrames = new Map<string, number[]>();
   /** After the hub's rate_limited on a rename: no rename for that ref until this time. */
@@ -1134,12 +1266,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       !rec.live ||
       rec.sentName === undefined ||
       rec.sentName === rec.proposedName ||
-      !hub.open ||
-      !hubHelloed ||
+      !laneOfRef(rec.ref)?.hub.open ||
+      !laneOfRef(rec.ref)?.helloed ||
       rec.replaces !== undefined ||
       limited.has(rec.ref)
     )
       return;
+    const lane = laneOfRef(rec.ref) as Lane;
     // The hub's hourly cap answered: nothing more for this ref until the hour is out.
     if (Date.now() < (renameHeldUntil.get(rec.ref) ?? 0)) return;
     // At most 3 frames per ref per minute: past that the latest name waits
@@ -1151,9 +1284,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     renameFrames.set(rec.ref, recent);
     if (recent.length >= RENAME_WINDOW_MAX) return;
     const id = frameId();
-    renameIds.set(id, { ref: rec.ref, prevSent: rec.sentName });
+    lane.renameIds.set(id, { ref: rec.ref, prevSent: rec.sentName });
     if (
-      hub.send({
+      sendOn(lane, {
         v: 1,
         id,
         type: "rename",
@@ -1161,14 +1294,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
         // #2311: a re-derived Claude title is a rename, not a user's choice.
-        ...(hubNameChosen && rec.kind === "claude-code"
+        ...(lane.nameChosen && rec.kind === "claude-code"
           ? { name_chosen: rec.nameChosen === true }
           : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
       recent.push(now);
-    } else renameIds.delete(id);
+    } else lane.renameIds.delete(id);
   };
   /**
    * #1822: a proof can arrive before the daemon has a record for its pid (the
@@ -1330,6 +1463,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         continue;
       }
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
+      const instance = homeInstance(s.cwd);
       // /clear: the same process, a new session id. The new ref keeps the
       // old one's address (#1295); the old one is closed below.
       seenAt.set(s.ref, ++seenSeq);
@@ -1339,7 +1473,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
       if (old) takenOver.add(old.ref);
       const rec = agents.up({
-        ...(old ? { replaces: handoverOf(old) } : {}),
+        ...(old && old.instance === instance
+          ? { replaces: handoverOf(old) }
+          : {}),
         ref: s.ref,
         kind: "claude-code",
         proposedName: old?.busName ?? s.name,
@@ -1347,6 +1483,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         namespace: ns.namespace,
         namespaceSource: ns.source,
         global: ns.global,
+        ...(instance !== undefined ? { instance } : {}),
         pid: s.pid,
         procStart: s.procStart,
         // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
@@ -1451,7 +1588,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const delivery = createDeliver({
     agents,
     ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
-    hub: { send: (f, unsent) => hub.send(f, unsent) },
+    hub: { send: (f, unsent) => hubSend(f, unsent) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
       opencode: (agent, mail) => opencode.deliver(agent, mail),
@@ -1473,27 +1610,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log,
   });
 
-  let hubEver = false;
-  let hubDroppedAt: number | undefined;
-  /** The hub's last hello_ok listed BUS_CAPS.ids: a reply may carry to_id. */
-  let hubIds = false;
-  /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
-  let hubMailbox = false;
-  let hubNameChosen = false;
-  /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
-  let hubFollow = false;
-  /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
-  let hubLink = false;
-  /** The hub's last hello_ok listed BUS_CAPS.linkArg: its /mcp strips the proof argument (#1856). */
-  let hubLinkArg = false;
-  /** This link has had its hello_ok (reset when the link drops). */
-  let hubHelloed = false;
-  /** The hub's last hello_ok listed BUS_CAPS.ackConfirm: it answers a mail ack with `acked` (#2198). */
-  let hubAckConfirm = false;
-  /** Which link's hello_ok started the current Codex ack replay (#2198). */
-  let codexReplayLink = 0;
-  /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
-  let hubVersion: string | undefined;
+  /** Which link's hello_ok started each lane's current Codex ack replay (#2198). */
+  const codexReplayLink = new Map<string, number>();
   /**
    * When the owner's quiet hours end (#2759): the last `hello_ok.owner_away_until`
    * or `owner_away` frame. A hello_ok without the field replaces it with unknown.
@@ -1505,20 +1623,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ownerAwayUntil !== undefined && Date.parse(ownerAwayUntil) > Date.now()
       ? ownerAwayUntil
       : undefined;
-  /** The hub's last hello_ok listed BUS_CAPS.runVersion: the update frames may go (#2552). */
-  let hubRunCap = false;
   /** `switching` reports waiting for the hub's update_ack, by frame id. */
   const switchAcks = new Map<string, (ok: boolean) => void>();
   /** Set below, once the updater exists (a hello_ok cannot come before it). */
   let updaterRef: Updater | undefined;
   /** Sends the queued update reports (BUS_CAPS.runVersion hubs only); removes the ones that went. */
   function flushUpdateReports(): void {
-    if (!hubRunCap || !hubHelloed || !hub.open || !deps.update) return;
+    if (!main.runCap || !main.helloed || !main.hub.open || !deps.update) return;
     const queued = readReports(home());
     const went: Report[] = [];
     const rescue = readRescueVersion(home());
     for (const r of queued) {
-      const ok = hub.send({
+      const ok = sendOn(main, {
         v: 1,
         id: frameId(),
         type: "update_report",
@@ -1537,320 +1653,429 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     removeReports(home(), went);
   }
-  /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
-  let hubWaiting = false;
-  /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
-  let hubWaitingQuery = false;
   /** In-flight waiting_query frames by id. */
   const waitingAsks = new Map<
     string,
     (counts: Record<string, number> | undefined) => void
   >();
-  const hub = new HubConnection({
-    url: `${cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
-    token: cfg.machine_token,
-    label: cfg.label,
-    version: deps.version ?? process.env.OA_BUS_VERSION ?? "0.0.0",
-    sessions,
-    log,
-    ...deps.hub,
-    onFrame: (frame) => {
-      switch (frame.type) {
-        case "deliver":
-          void delivery.deliver(frame);
-          return;
-        case "agent_ok": {
-          upIds.delete(frame.id);
-          clearLimited(frame.agent_ref);
-          const agent = agents.byRef(frame.agent_ref);
-          if (agent) {
-            agent.busName = frame.bus_name;
-            // Answered: the hub knows the new ref, the handover is done.
-            delete agent.replaces;
-            flushRename(agent);
-            // The hub forgot the hash with the last link: say it again.
-            sendLink(agent);
+  /** One link to one instance's hub, built from that instance's credentials alone. */
+  const buildHub = (lane: Lane) =>
+    new HubConnection({
+      url: `${lane.cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
+      token: lane.cfg.machine_token,
+      label: lane.cfg.label,
+      version: deps.version ?? process.env.OA_BUS_VERSION ?? "0.0.0",
+      sessions: () => sessions(lane),
+      log: lane.main ? log : (m) => log(`${lane.name}: ${m}`),
+      ...deps.hub,
+      onFrame: (frame) => {
+        if (!routable(lane, frame)) return;
+        switch (frame.type) {
+          case "deliver":
+            if (!claimMsg(lane, frame.msg_id)) return;
+            void delivery.deliver(frame);
+            return;
+          case "agent_ok": {
+            lane.upIds.delete(frame.id);
+            clearLimited(frame.agent_ref);
+            const agent = agents.byRef(frame.agent_ref);
+            if (agent) {
+              agent.busName = frame.bus_name;
+              // Answered: the hub knows the new ref, the handover is done.
+              delete agent.replaces;
+              flushRename(agent);
+              // The hub forgot the hash with the last link: say it again.
+              sendLink(agent);
+            }
+            // Registered on this link: its sends lost to the last one go again.
+            resends.up(lane, frame.agent_ref);
+            return;
           }
-          // Registered on this link: its sends lost to the last one go again.
-          resends.up(frame.agent_ref);
-          return;
-        }
-        case "renamed": {
-          renameIds.delete(frame.id);
-          const agent = agents.byRef(frame.agent_ref);
-          if (agent) agent.busName = frame.bus_name;
-          return;
-        }
-        case "receipt": {
-          resends.untrack(frame.id);
-          // A tool call's queued send waits a moment for delivered (or a refusal or expiry).
-          // No call waits: a held send whose call was answered Queued.
-          const ended = !pending.has(frame.id);
-          const answer =
-            frame.state === "pending" ? pending.hold(frame.id) : undefined;
-          tell(receipts.receipt(frame, answer !== undefined, ended));
-          if (!answer) {
+          case "renamed": {
+            lane.renameIds.delete(frame.id);
+            const agent = agents.byRef(frame.agent_ref);
+            if (agent) agent.busName = frame.bus_name;
+            return;
+          }
+          case "receipt": {
+            if (!claimMsg(lane, frame.msg_id)) return;
+            resends.untrack(frame.id);
+            // A tool call's queued send waits a moment for delivered (or a refusal or expiry).
+            // No call waits: a held send whose call was answered Queued.
+            const ended = !pending.has(frame.id);
+            const answer =
+              frame.state === "pending" ? pending.hold(frame.id) : undefined;
+            tell(receipts.receipt(frame, answer !== undefined, ended));
+            if (!answer) {
+              pending.settle(frame);
+              return;
+            }
+            void receipts
+              .final(frame.msg_id, deps.deliveredWaitMs ?? DELIVERED_WAIT_MS)
+              .then((f) => {
+                const written = answer(
+                  f
+                    ? {
+                        v: 1,
+                        id: frame.id,
+                        type: "receipt",
+                        msg_id: f.msg_id,
+                        state: f.state,
+                        ...(f.reason ? { reason: f.reason } : {}),
+                      }
+                    : frame,
+                );
+                if (f?.state !== "refused" && f?.state !== "expired") return;
+                // The tool call went away (cancelled, disconnected): a notice tells it instead.
+                if (written) receipts.told(f.msg_id);
+                else tell(receipts.notice(f.msg_id));
+              });
+            return;
+          }
+          case "receipt_update":
+            tell(receipts.update(frame, telling.has(frame.msg_id)));
+            return;
+          case "error": {
+            if (relays.get(lane)?.answer(frame)) return;
+            if (waitingAsks.has(frame.id)) {
+              waitingAsks.get(frame.id)?.(undefined);
+              return;
+            }
+            const renamed = lane.renameIds.get(frame.id);
+            if (renamed !== undefined) {
+              const renamedRef = renamed.ref;
+              lane.renameIds.delete(frame.id);
+              if (frame.code === "rate_limited") {
+                renameHeldUntil.set(renamedRef, Date.now() + RENAME_HOLD_MS);
+                // Refused, not told: the same name goes once the hold is out.
+                const a = agents.byRef(renamedRef);
+                if (a) a.sentName = renamed.prevSent;
+              }
+              log(
+                `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
+              );
+              return;
+            }
+            const up = lane.upIds.get(frame.id);
+            lane.upIds.delete(frame.id);
+            if (up !== undefined) {
+              const upRef = up.ref;
+              if (frame.code === "rate_limited")
+                markLimited(upRef, frame.message);
+              else log(`the hub refused to register ${upRef}: ${frame.code}`);
+              return;
+            }
+            // A resend the hub is too busy for goes again within its window.
+            if (frame.code === "rate_limited" && resends.limited(frame.id))
+              return;
+            // Never sent changed under its id; a hub that says so is wrong, and the send is lost.
+            const resent = resends.held(frame.id) && resends.frame(frame.id);
+            if (frame.code === "bad_frame" && resent) {
+              log(`the hub refused a resend (${frame.id}): ${frame.message}`);
+              resends.untrack(frame.id);
+              lose(resent);
+              return;
+            }
+            resends.untrack(frame.id);
+            // An error answers one request by id; an unmatched one is dropped.
+            receipts.forget(frame.id);
             pending.settle(frame);
             return;
           }
-          void receipts
-            .final(frame.msg_id, deps.deliveredWaitMs ?? DELIVERED_WAIT_MS)
-            .then((f) => {
-              const written = answer(
-                f
-                  ? {
-                      v: 1,
-                      id: frame.id,
-                      type: "receipt",
-                      msg_id: f.msg_id,
-                      state: f.state,
-                      ...(f.reason ? { reason: f.reason } : {}),
-                    }
-                  : frame,
-              );
-              if (f?.state !== "refused" && f?.state !== "expired") return;
-              // The tool call went away (cancelled, disconnected): a notice tells it instead.
-              if (written) receipts.told(f.msg_id);
-              else tell(receipts.notice(f.msg_id));
-            });
-          return;
-        }
-        case "receipt_update":
-          tell(receipts.update(frame, telling.has(frame.msg_id)));
-          return;
-        case "error": {
-          if (statusRelay.answer(frame)) return;
-          if (waitingAsks.has(frame.id)) {
-            waitingAsks.get(frame.id)?.(undefined);
+          case "roster":
+          case "followed":
+          case "unfollowed":
+          case "follows":
+            pending.settle(frame);
             return;
-          }
-          const renamed = renameIds.get(frame.id);
-          if (renamed !== undefined) {
-            const renamedRef = renamed.ref;
-            renameIds.delete(frame.id);
-            if (frame.code === "rate_limited") {
-              renameHeldUntil.set(renamedRef, Date.now() + RENAME_HOLD_MS);
-              // Refused, not told: the same name goes once the hold is out.
-              const a = agents.byRef(renamedRef);
-              if (a) a.sentName = renamed.prevSent;
+          case "link_bound":
+            return;
+          // #2552: only from a hub that listed the cap; anything else is ignored.
+          case "run_version":
+            if (lane.runCap) {
+              if (frame.run_version === null) updaterRef?.clearNamed();
+              else
+                void updaterRef
+                  ?.instructFromInstance(frame.run_version)
+                  .catch((e) => log(`update: ${errText(e)}`));
             }
-            log(
-              `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
-            );
             return;
-          }
-          const up = upIds.get(frame.id);
-          upIds.delete(frame.id);
-          if (up !== undefined) {
-            const upRef = up.ref;
-            if (frame.code === "rate_limited")
-              markLimited(upRef, frame.message);
-            else log(`the hub refused to register ${upRef}: ${frame.code}`);
+          case "owner_away":
+            ownerAwayUntil = frame.until ?? undefined;
             return;
-          }
-          // A resend the hub is too busy for goes again within its window.
-          if (frame.code === "rate_limited" && resends.limited(frame.id))
-            return;
-          // Never sent changed under its id; a hub that says so is wrong, and the send is lost.
-          const resent = resends.held(frame.id) && resends.frame(frame.id);
-          if (frame.code === "bad_frame" && resent) {
-            log(`the hub refused a resend (${frame.id}): ${frame.message}`);
-            resends.untrack(frame.id);
-            lose(resent);
-            return;
-          }
-          resends.untrack(frame.id);
-          // An error answers one request by id; an unmatched one is dropped.
-          receipts.forget(frame.id);
-          pending.settle(frame);
-          return;
-        }
-        case "roster":
-        case "followed":
-        case "unfollowed":
-        case "follows":
-          pending.settle(frame);
-          return;
-        case "link_bound":
-          return;
-        // #2552: only from a hub that listed the cap; anything else is ignored.
-        case "run_version":
-          if (hubRunCap) {
-            if (frame.run_version === null) updaterRef?.clearNamed();
-            else
+          case "install_now":
+            if (lane.runCap)
               void updaterRef
-                ?.instructFromInstance(frame.run_version)
+                ?.installNowFromInstance()
                 .catch((e) => log(`update: ${errText(e)}`));
+            return;
+          case "update_ack":
+            switchAcks.get(frame.id)?.(frame.ok);
+            return;
+          case "acked": {
+            // Only the answer to an ack sent on this link, from a hub that
+            // negotiated the cap; anything else is ignored.
+            if (!lane.ackConfirm) return;
+            const sent = codexAckIds.take(frame.id);
+            if (sent !== undefined && sent === frame.msg_id)
+              codexTaken.confirm(sent);
+            return;
           }
-          return;
-        case "owner_away":
-          ownerAwayUntil = frame.until ?? undefined;
-          return;
-        case "install_now":
-          if (hubRunCap)
-            void updaterRef
-              ?.installNowFromInstance()
-              .catch((e) => log(`update: ${errText(e)}`));
-          return;
-        case "update_ack":
-          switchAcks.get(frame.id)?.(frame.ok);
-          return;
-        case "acked": {
-          // Only the answer to an ack sent on this link, from a hub that
-          // negotiated the cap; anything else is ignored.
-          if (!hubAckConfirm) return;
-          const sent = codexAckIds.take(frame.id);
-          if (sent !== undefined && sent === frame.msg_id)
-            codexTaken.confirm(sent);
-          return;
-        }
-        case "waiting_counts":
-          waitingAsks.get(frame.id)?.(frame.counts);
-          return;
-        case "body":
-          // A fetched body is a peer's text, like a delivered one.
-          pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
-          return;
-        case "hello_ok":
-          // The machine id and label are already in machine.json.
-          hubVersion = frame.server_version;
-          // A reply names its agent (to_id) only to a hub that said it can.
-          hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
-          hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
-          hubNameChosen = frame.caps?.includes(BUS_CAPS.nameChosen) ?? false;
-          hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
-          hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
-          hubWaitingQuery =
-            frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
-          hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
-          hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
-          hubAckConfirm = frame.caps?.includes(BUS_CAPS.ackConfirm) ?? false;
-          hubRunCap = frame.caps?.includes(BUS_CAPS.runVersion) ?? false;
-          ownerAwayUntil = frame.owner_away_until ?? undefined;
-          hubHelloed = true;
-          if (hubRunCap) {
-            if (frame.run_version === null) updaterRef?.clearNamed();
-            else if (frame.run_version !== undefined)
-              void updaterRef
-                ?.instructFromInstance(frame.run_version)
-                .catch((e) => log(`update: ${errText(e)}`));
-            flushUpdateReports();
-          }
-          // Handovers that waited for this: announce them now (#1582).
-          for (const rec of agents.all())
-            if (rec.live && rec.replaces !== undefined) announceUp(rec);
-          // #2311: agent_up went out in onOpen, before this hello_ok said the
-          // hub takes name_chosen: say it again for a session the user named.
-          if (hubNameChosen)
+          case "waiting_counts":
+            waitingAsks.get(frame.id)?.(frame.counts);
+            return;
+          case "body":
+            // A fetched body is a peer's text, like a delivered one.
+            pending.settle({
+              ...frame,
+              body: stripTerminalControls(frame.body),
+            });
+            return;
+          case "hello_ok":
+            // The machine id and label are already in machine.json.
+            lane.applyHello(frame.caps, frame.server_version);
+            // The instance's owner hours and update instruction are main's alone.
+            if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
+            if (lane.main && lane.runCap) {
+              if (frame.run_version === null) updaterRef?.clearNamed();
+              else if (frame.run_version !== undefined)
+                void updaterRef
+                  ?.instructFromInstance(frame.run_version)
+                  .catch((e) => log(`update: ${errText(e)}`));
+              flushUpdateReports();
+            }
+            // Handovers that waited for this: announce them now (#1582).
             for (const rec of agents.all())
-              if (rec.live && rec.nameChosen && rec.replaces === undefined)
+              if (
+                rec.live &&
+                rec.replaces !== undefined &&
+                laneOfRef(rec.ref) === lane
+              )
                 announceUp(rec);
-          for (const rec of agents.all()) flushRename(rec);
-          // Queued replies go now that the link says what it supports.
-          outbox.flush();
-          // A hub that confirms acks gets every Codex ack it has not
-          // confirmed again, paced into the queue's spare half (#2198).
-          // Without the cap there is no replay: an ack queued is done.
-          if (hubAckConfirm) {
-            const link = ++codexReplayLink;
-            replayAcks(
-              codexTaken.unconfirmedIds(),
-              (id) => void sendCodexAck(id),
-              () => hubHelloed && link === codexReplayLink,
-              () => hub.headroom,
+            // #2311: agent_up went out in onOpen, before this hello_ok said the
+            // hub takes name_chosen: say it again for a session the user named.
+            if (lane.nameChosen)
+              for (const rec of agents.all())
+                if (
+                  rec.live &&
+                  rec.nameChosen &&
+                  rec.replaces === undefined &&
+                  laneOfRef(rec.ref) === lane
+                )
+                  announceUp(rec);
+            for (const rec of agents.all()) flushRename(rec);
+            // Queued replies go now that the link says what it supports.
+            outbox.flush();
+            // A hub that confirms acks gets every Codex ack it has not
+            // confirmed again, paced into the queue's spare half (#2198).
+            // Without the cap there is no replay: an ack queued is done.
+            if (lane.ackConfirm) {
+              const link = (codexReplayLink.get(lane.name) ?? 0) + 1;
+              codexReplayLink.set(lane.name, link);
+              replayAcks(
+                // Only this link's own mail: another hub's ids replay on its link.
+                codexTaken
+                  .unconfirmedIds()
+                  .filter((id) => (msgLane.get(id) ?? main) === lane),
+                (id) => void sendCodexAck(id),
+                () => lane.helloed && link === codexReplayLink.get(lane.name),
+                () => lane.hub.headroom,
+              );
+            }
+            return;
+          // roster_changed has no local consumer yet (C6).
+        }
+      },
+      onBadFrame: (id, error) => {
+        if (lanes.multi && idLane.get(id) !== lane) return;
+        resends.untrack(id);
+        receipts.forget(id);
+        pending.fail(id, error, "the hub sent a frame this daemon cannot read");
+      },
+      onRevoked: () => {
+        if (!lane.main) {
+          // Only this instance's link closes; every other hub stays connected.
+          lane.revoked = true;
+          log(
+            `the instance ${lane.name} revoked this machine; its link is closed`,
+          );
+          linkDown(lane);
+          lane.hub.stop();
+          try {
+            writeFileSync(
+              revokedMarkerFile(lane),
+              revokedMarker(lane.cfg.machine_token),
+              { mode: 0o600 },
+            );
+          } catch (e) {
+            log(
+              `could not write the revoked marker for ${lane.name}: ${errText(e)}`,
             );
           }
           return;
-        // roster_changed has no local consumer yet (C6).
-      }
-    },
-    onBadFrame: (id, error) => {
-      resends.untrack(id);
-      receipts.forget(id);
-      pending.fail(id, error, "the hub sent a frame this daemon cannot read");
-    },
-    onRevoked: () => {
-      // `login` saved a newer token since this daemon started: only the old one was revoked.
-      const saved = savedToken();
-      if (saved !== undefined && saved !== cfg.machine_token) {
-        log(
-          "the hub refused the token this daemon started with; machine.json holds a newer one: restarting",
-        );
+        }
+        // `login` saved a newer token since this daemon started: only the old one was revoked.
+        const saved = savedToken();
+        if (saved !== undefined && saved !== cfg.machine_token) {
+          log(
+            "the hub refused the token this daemon started with; machine.json holds a newer one: restarting",
+          );
+          process.exitCode = 1;
+          deps.onRevoked?.(true);
+          return;
+        }
+        log(`this machine was revoked; run \`${BUS_CMD} install\``);
         process.exitCode = 1;
-        deps.onRevoked?.(true);
-        return;
-      }
-      log(`this machine was revoked; run \`${BUS_CMD} install\``);
-      process.exitCode = 1;
-      try {
-        writeFileSync(
-          deps.revokedFile ?? join(home(), "revoked"),
-          revokedMarker(cfg.machine_token),
-          { mode: 0o600 },
-        );
-      } catch (e) {
-        log(
-          `could not write the revoked marker: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-      deps.onRevoked?.();
-    },
-    // The hub forgets agents with the link; sessions went out with hello.
-    onOpen: () => {
-      hubEver = true;
-      hubDroppedAt = undefined;
-      ev("hub_connect");
-      for (const rec of agents.all()) if (rec.live) announceUp(rec);
-      // Queued replies wait for hello_ok (to_id depends on it).
-    },
-    onClose: () => {
-      // Failed retries close too: keep the first drop of this outage.
-      if (hubEver) hubDroppedAt ??= Date.now();
-      ev("hub_disconnect");
-      upIds.clear();
-      renameIds.clear();
-      // The next link's hello_ok says again which hub this is.
-      hubVersion = undefined;
-      hubIds = false;
-      // A replay before the next hello_ok must not carry `replaces`.
-      hubMailbox = false;
-      hubNameChosen = false;
-      hubFollow = false;
-      hubLink = false;
-      hubLinkArg = false;
-      hubAckConfirm = false;
+        try {
+          writeFileSync(
+            deps.revokedFile ?? join(home(), "revoked"),
+            revokedMarker(cfg.machine_token),
+            { mode: 0o600 },
+          );
+        } catch (e) {
+          log(
+            `could not write the revoked marker: ${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        deps.onRevoked?.();
+      },
+      // The hub forgets agents with the link; sessions went out with hello.
+      onOpen: () => {
+        lane.ever = true;
+        lane.droppedAt = undefined;
+        ev("hub_connect", laneFields(lane));
+        if (!lane.main) {
+          // A link that opens again is no longer revoked.
+          try {
+            unlinkSync(revokedMarkerFile(lane));
+          } catch {}
+        }
+        for (const rec of agents.all())
+          if (rec.live && laneOfRef(rec.ref) === lane) announceUp(rec);
+        // Queued replies wait for hello_ok (to_id depends on it).
+      },
+      onClose: () => linkDown(lane),
+      onDropped: (f) => {
+        lane.upIds.delete(f.id);
+        resends.untrack(f.id);
+        receipts.forget(f.id);
+        pending.fail(f.id, "hub_unavailable", "the hub link is backed up");
+      },
+    });
+
+  const version = deps.version ?? process.env.OA_BUS_VERSION ?? "0.0.0";
+  /** `set_status` per link: a status goes to its agent's hub only. */
+  const relays = new Map<Lane, AgentStatusRelay>();
+  for (const lane of lanes.all())
+    relays.set(
+      lane,
+      new AgentStatusRelay({
+        send: (f, onUnsent) => sendOn(lane, f, onUnsent),
+        open: () => lane.hub.open,
+        log,
+        after: deps.status?.timer,
+        statusEveryMs: deps.status?.statusEveryMs,
+      }),
+    );
+  const laneFields = (lane: Lane): EventFields | undefined =>
+    lane.main ? undefined : { instance: lane.name };
+  const revokedMarkerFile = (lane: Lane) =>
+    join(instancesDir(deps.instancesHome ?? home()), `${lane.name}.revoked`);
+  /** The link dropped: what was in flight on it ends; no other link is touched. */
+  const linkDown = (lane: Lane) => {
+    // Failed retries close too: keep the first drop of this outage.
+    if (lane.ever) lane.droppedAt ??= Date.now();
+    ev("hub_disconnect", laneFields(lane));
+    // The next link's hello_ok says again which hub this is.
+    lane.resetLink();
+    if (lane.main) {
       codexAckIds.clear();
-      hubWaitingQuery = false;
-      hubHelloed = false;
-      hubRunCap = false;
       for (const [id, done] of [...switchAcks]) {
         switchAcks.delete(id);
         done(false);
       }
-      statusRelay.dropped();
-      receipts.release();
-      // A send not yet answered waits for the next link; anything else fails now.
-      resends.dropped();
-      pending.failAll("hub_unavailable", "the hub connection dropped", (id) =>
-        resends.held(id),
-      );
-    },
-    onDropped: (f) => {
-      upIds.delete(f.id);
-      resends.untrack(f.id);
-      receipts.forget(f.id);
-      pending.fail(f.id, "hub_unavailable", "the hub link is backed up");
-    },
-  });
-
-  const version = deps.version ?? process.env.OA_BUS_VERSION ?? "0.0.0";
-  const statusRelay = new AgentStatusRelay({
-    send: (f, onUnsent) => hub.send(f, onUnsent),
-    open: () => hub.open,
-    log,
-    after: deps.status?.timer,
-    statusEveryMs: deps.status?.statusEveryMs,
-  });
+    }
+    relays.get(lane)?.dropped();
+    receipts.release(
+      lanes.multi ? (msgId) => msgLane.get(msgId) === lane : undefined,
+    );
+    // A send not yet answered waits for the next link; anything else fails now.
+    resends.dropped(lane);
+    pending.failAll(
+      "hub_unavailable",
+      "the hub connection dropped",
+      (id) => resends.held(id) || (lanes.multi && idLane.get(id) !== lane),
+    );
+  };
+  const dropNoted = new Set<string>();
+  /**
+   * #2793: a frame is acted on only on the link its agent or request belongs
+   * to, and a daemon-wide command only from main. Anything else is dropped.
+   */
+  const routable = (lane: Lane, frame: ServerFrame): boolean => {
+    let ok = true;
+    let why = "names an agent or a request of another instance";
+    if (
+      !lane.main &&
+      (frame.type === "run_version" ||
+        frame.type === "install_now" ||
+        frame.type === "update_ack" ||
+        frame.type === "owner_away")
+    ) {
+      ok = false;
+      why = "is a daemon-wide command, honoured from main only";
+    } else {
+      switch (frame.type) {
+        case "deliver":
+          // A ref nobody registered (forgotten) passes, as with one link: the
+          // answer is a refusal on this link, not silence.
+          ok =
+            agents.byRef(frame.to_ref) === undefined ||
+            ownsRef(frame.to_ref, lane);
+          break;
+        case "agent_ok":
+        case "renamed":
+          ok = ownsRef(frame.agent_ref, lane);
+          break;
+        case "receipt_update": {
+          if (!lanes.multi) break;
+          const from = sent.get(frame.msg_id)?.from_ref;
+          ok =
+            (msgLane.get(frame.msg_id) ??
+              (from === undefined ? undefined : laneOfRef(from))) === lane;
+          break;
+        }
+        case "hello_ok":
+        case "roster_changed":
+        case "run_version":
+        case "install_now":
+        case "update_ack":
+        case "owner_away":
+          break;
+        default:
+          if (lanes.multi) ok = idLane.get(frame.id) === lane;
+      }
+    }
+    if (!ok) {
+      ev("frame_dropped", { instance: lane.name, type: frame.type });
+      const key = `${lane.name}:${frame.type}`;
+      if (!dropNoted.has(key)) {
+        dropNoted.add(key);
+        log(`dropped a ${frame.type} frame from ${lane.name}: it ${why}`);
+      }
+    }
+    return ok;
+  };
+  /**
+   * The ref is on this lane. With one link, a ref nobody registered still goes
+   * through, as before: the answer to it is a refusal, not silence.
+   */
+  function ownsRef(ref: string, lane: Lane): boolean {
+    if (!lanes.multi && agents.byRef(ref) === undefined) return true;
+    return laneOfRef(ref) === lane;
+  }
+  for (const lane of lanes.all()) lane.hub = buildHub(lane);
+  const hub = main.hub;
   /** The namespace roster as `ref` sees it, or undefined if the hub does not answer in time. */
   const hubRoster = (ref: string) =>
     new Promise<Extract<DaemonFrame, { type: "roster" }>["agents"] | undefined>(
@@ -1860,11 +2085,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         );
         const timer = setTimeout(() => {
           pending.cancel(id);
-          hub.cancel(id);
+          cancelOn(id);
           resolve(undefined);
         }, deps.statusRosterMs ?? 1500);
         timer.unref();
-        if (!hub.send({ v: 1, id, type: "list", from_ref: ref })) {
+        if (!hubSend({ v: 1, id, type: "list", from_ref: ref })) {
           clearTimeout(timer);
           pending.cancel(id);
           resolve(undefined);
@@ -1881,12 +2106,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         resolve(c);
       };
       const timer = setTimeout(() => {
-        hub.cancel(id);
+        main.hub.cancel(id);
         done(undefined);
       }, deps.statusRosterMs ?? 1500);
       timer.unref();
       waitingAsks.set(id, done);
-      if (!hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
+      if (!sendOn(main, { v: 1, id, type: "waiting_query", agent_refs: refs }))
         done(undefined);
     });
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
@@ -1987,12 +2212,30 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : live.map((a) => a.namespace),
         ),
       ];
+      // With several instances a namespace is read once per instance, from its own hub.
+      const groups = names.flatMap((namespace) => {
+        if (!lanes.multi) return [{ namespace, inst: undefined }];
+        const insts = new Set(
+          live.filter((a) => a.namespace === namespace).map((a) => a.instance),
+        );
+        return [...(insts.size ? insts : [undefined])].map((inst) => ({
+          namespace,
+          inst,
+        }));
+      });
       const namespaces = await Promise.all(
-        names.map(async (namespace) => {
-          const local = live.filter((a) => a.namespace === namespace);
+        groups.map(async ({ namespace, inst }) => {
+          const local = live.filter(
+            (a) =>
+              a.namespace === namespace &&
+              (!lanes.multi || a.instance === inst),
+          );
+          const label = lanes.get(inst)?.cfg.label ?? cfg.label;
           const mine = new Map(local.map((a) => [a.busName, a.kind]));
           const roster =
-            local[0] && hub.open ? await hubRoster(local[0].ref) : undefined;
+            local[0] && laneOfRef(local[0].ref)?.hub.open
+              ? await hubRoster(local[0].ref)
+              : undefined;
           // #1295: away agents are closed; status lists only open ones.
           const rows = roster
             ? roster
@@ -2002,7 +2245,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   kind: a.kind,
                   machine:
                     a.machine_label ??
-                    (mine.get(a.name) === a.kind ? cfg.label : ""),
+                    (mine.get(a.name) === a.kind ? label : ""),
                   state:
                     a.state === "away"
                       ? ("queued" as const)
@@ -2018,7 +2261,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : local.map((a) => ({
                 name: a.busName,
                 kind: a.kind,
-                machine: cfg.label,
+                machine: label,
                 state: "live" as const,
               }));
           const source = local[0]?.namespaceSource;
@@ -2040,10 +2283,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ...(config_files.length > 0 ? { config_files } : {}),
         hub: hub.open ? "connected" : "connecting",
         ...(hub.open || !hub.lastError ? {} : { hub_error: hub.lastError }),
-        hub_ever: hubEver,
-        ...(hub.open || !hubEver || hubDroppedAt === undefined
+        hub_ever: main.ever,
+        ...(hub.open || !main.ever || main.droppedAt === undefined
           ? {}
-          : { hub_since: hubDroppedAt }),
+          : { hub_since: main.droppedAt }),
         link: true,
         claude_sessions: live
           .filter((a) => a.kind === "claude-code")
@@ -2069,7 +2312,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             };
           }),
         unbound_proofs: unboundProofs.map((u) => ({ ...u })),
-        ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
+        ...(main.version === undefined ? {} : { hub_version: main.version }),
         ...(awayUntil() === undefined ? {} : { owner_away_until: awayUntil() }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
@@ -2255,6 +2498,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
+        const instance = homeInstance(cwd);
         // A Codex thread the user named registers under that name (#1748).
         const codexName =
           hello.kind === "codex"
@@ -2285,7 +2529,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
-          ...(old ? { replaces: handoverOf(old) } : {}),
+          ...(old && old.instance === instance
+            ? { replaces: handoverOf(old) }
+            : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
           proposedName: old?.busName ?? proposedName,
@@ -2293,6 +2539,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: ns.namespace,
           namespaceSource: ns.source,
           global: ns.global,
+          ...(instance !== undefined ? { instance } : {}),
           pid,
           // #2861: a lookup that misses keeps the start time the record had.
           ...(mine
@@ -2377,22 +2624,38 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
-        proposeReach: (ref, namespaces) =>
-          proposeReach({
-            hub: cfg.hub,
-            token: cfg.machine_token,
+        proposeReach: (ref, namespaces) => {
+          // The agent's own instance: a key goes only to its own address.
+          const lane = laneOfRef(ref);
+          if (!lane)
+            return Promise.resolve({
+              ok: false as const,
+              code: "hub_unavailable",
+              message: REACH_COPY.down,
+            });
+          return proposeReach({
+            hub: lane.cfg.hub,
+            token: lane.cfg.machine_token,
             nativeRef: ref,
             namespaces,
             fetch: deps.fetch,
             timeoutMs: deps.reachTimeoutMs,
             log,
-          }),
-        followSupport: () =>
-          !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
+          });
+        },
+        followSupport: (ref) => {
+          const lane = laneOfRef(ref);
+          return !lane?.hub.open || !lane.helloed
+            ? "down"
+            : lane.follow
+              ? "ok"
+              : "old_hub";
+        },
         linked: (ref, hash) => {
           // The adapter then adds the argument to its calls: only for a hub
           // whose /mcp strips it (an older one fails a strict tool schema).
-          if (!hubLink || !hubLinkArg) return false;
+          const lane = laneOfRef(ref);
+          if (!lane?.link || !lane.linkArg) return false;
           const rec = agents.byRef(ref);
           if (!rec?.live) return false;
           rec.linkHashes = withLinkHash(rec.linkHashes, hash);
@@ -2408,7 +2671,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);
-          if (!me || !hub.open || hubVersion === undefined) return undefined;
+          const lane = laneOfRef(ref);
+          if (!me || !lane?.hub.open || lane.version === undefined)
+            return undefined;
           return hubRoster(ref).then((rows) =>
             rows?.find(
               (a) => a.name === me.busName && a.namespace === me.namespace,
@@ -2417,13 +2682,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         },
         setStatus: (f, ref, reply) => {
           // Open but no hello_ok yet: the link is not ready.
-          if (!hub.open || hubVersion === undefined)
+          const lane = laneOfRef(ref);
+          if (!lane?.hub.open || lane.version === undefined)
             return {
               type: "error",
               code: "hub_unavailable",
               message: STATUS_COPY.hub_unavailable,
             };
-          statusRelay.status(ref, f.state, f.label, reply);
+          relays.get(lane)?.status(ref, f.state, f.label, reply);
           return undefined;
         },
         // A Pi delivery waits on this same confirmation, from its own session.
@@ -2582,6 +2848,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           drop("no_namespace");
           continue;
         }
+        const instance = homeInstance(proven.cwd);
         agents.up({
           ref: r.ref,
           kind: "codex",
@@ -2590,6 +2857,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: ns.namespace,
           namespaceSource: ns.source,
           global: ns.global,
+          ...(instance !== undefined ? { instance } : {}),
           pid: r.pid,
           procStart: r.procStart,
           cwd: proven.cwd,
@@ -2601,7 +2869,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // A retry that lands after the hub opened is announced here; at start,
         // the hub's onOpen announces every live record.
         const rec = agents.byRef(r.ref);
-        if (tries > 0 && rec?.live && hub.open) {
+        if (tries > 0 && rec?.live && laneOfRef(r.ref)?.hub.open) {
           announceUp(rec);
           tellOwed(r.ref);
         }
@@ -2695,6 +2963,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * text per app-server start. The thread proves itself with its own call.
    */
   const wakeAway = async () => {
+    // #2793: a held thread has no known instance yet; with several hubs a wake
+    // would ask the wrong one, so it waits until the thread's home is kept.
+    if (lanes.multi) return;
     if (waking) return;
     waking = true;
     try {
@@ -2736,7 +3007,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       };
       // #2079: one frame for every held row, no live agent needed.
       let counts: Record<string, number> | undefined;
-      if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
+      if (main.waitingQuery && main.hub.open && main.version !== undefined) {
         // Unloaded rows too (#2343): their count says whether the skip is worth a log line.
         // Held rows first: should the rows ever outnumber the cap (AWAY_MAX equals it today), wakes win.
         const refs = [
@@ -2779,7 +3050,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             continue;
         }
         let waitingN: number | undefined;
-        if (hubWaitingQuery) {
+        if (main.waitingQuery) {
           if (!counts) continue;
           waitingN = counts[r.ref];
         } else {
@@ -2789,11 +3060,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             live.find((a) => a.namespace === r.namespace) ??
             live.find((a) => a.global) ??
             live[0];
-          if (!asker || !hub.open || hubVersion === undefined) {
+          if (!asker || !main.hub.open || main.version === undefined) {
             once(key, `${who} skipped: no live agent to ask the hub`);
             continue;
           }
-          if (!hubWaiting) {
+          if (!main.waiting) {
             once(key, `${who} skipped: the hub does not report waiting mail`);
             continue;
           }
@@ -2972,7 +3243,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log(
       `OpenCode ${ocVersion ?? "(version unknown)"} is below ${MIN_PROMPT_ID_VERSION}: a timed-out prompt is never retried`,
     );
-  hub.start();
+  for (const lane of lanes.all()) lane.hub.start();
   ev("daemon_start", { version: deps.version, pid: process.pid });
   // #2552: the self-check after a switch, and the loop (on for a version the instance names).
   const upd = deps.update;
@@ -2983,9 +3254,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ? startSelfCheck({
         home: home(),
         running: runVersion,
-        hub: () => hub.open && hubHelloed,
+        hub: () => hub.open && main.helloed,
         // Socket bound, and every live session announced and answered.
-        local: () => existsSync(listenPath) && upIds.size === 0,
+        local: () => existsSync(listenPath) && main.upIds.size === 0,
         exit: upd.exit,
         log,
         ...(upd.every ? { every: upd.every } : {}),
@@ -3002,9 +3273,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           codexQueue: codexTaken.size(),
         }),
         loginActive: () => loginActive(home()),
-        hubReady: () => hub.open && hubHelloed,
+        hubReady: () => hub.open && main.helloed,
         announceSwitch: async (from, to, reason = "ok") => {
-          if (!hubRunCap || !hub.open) return false;
+          if (!main.runCap || !hub.open) return false;
           const id = frameId();
           const answer = new Promise<boolean>((res) => {
             const t = setTimeout(() => {
@@ -3018,7 +3289,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               res(ok);
             });
           });
-          const sentOk = hub.send({
+          const sentOk = sendOn(main, {
             v: 1,
             id,
             type: "update_report",
@@ -3034,7 +3305,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           }
           return answer;
         },
-        serverVersion: () => hubVersion,
+        serverVersion: () => main.version,
         exit: upd.exit,
         log,
         ...(upd.enabled !== undefined ? { enabled: upd.enabled } : {}),
@@ -3054,6 +3325,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   reportTimer?.unref?.();
   return {
     hub,
+    hubs: new Map(lanes.all().map((l) => [l.name, l.hub])),
     agents,
     updater,
     bindings: { count: () => bindings.size, sweep: sweepBindings },
@@ -3070,7 +3342,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);
       for (const t of restoreTimers) clearTimeout(t);
-      hub.stop();
+      for (const l of lanes.all()) l.hub.stop();
       codexTaken.flush();
       // A send waiting for delivered is queued at the hub: it answers so, not as an error.
       receipts.release();
