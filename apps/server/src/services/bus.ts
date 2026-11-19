@@ -127,6 +127,8 @@ export type BusHubRpc = {
   }>;
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
+  /** #2793 S3b: tell this member's own daemons a tools/call carried a proof no session holds here (hub.ts). */
+  proofSeen(hash: string): Promise<number>;
   /** Why a proof resolved to no session, for the log only (hub.ts). */
   proofMissReason(
     hash: string,
@@ -638,6 +640,9 @@ async function lookupProof(
   env: Env,
   userId: string,
   proof: unknown,
+  /** #2793 S3b: whether the request is a tools/call (read lazily, only on a miss). */
+  isToolsCall: () => boolean = () => false,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
@@ -692,6 +697,15 @@ async function lookupProof(
         const id = await hub.agentByProof(hash);
         // A miss is rare: one more read says why, for the log only.
         if (id) return { id };
+        // #2793 S3b: a tools/call (and only that) whose proof names no session
+        // here may be a guest's: this member's own hub tells this member's
+        // daemons, who decide. Nothing waits on it; the call is answered unlinked.
+        if (isToolsCall()) {
+          const p = Promise.resolve()
+            .then(() => hub.proofSeen(hash))
+            .catch((e) => logError("bus_proof_seen_failed", e));
+          ctx?.waitUntil(p);
+        }
         let why: string;
         try {
           why = await hub.proofMissReason(hash);
@@ -768,6 +782,22 @@ function takeProofArg(text: string): {
   }
 }
 
+/** #2793 S3b: whether a JSON-RPC body (one message or a batch) holds a `tools/call`. Never throws. */
+function bodyHasToolsCall(text: string | undefined): boolean {
+  if (text === undefined) return false;
+  try {
+    const msg: unknown = JSON.parse(text);
+    return (Array.isArray(msg) ? msg : [msg]).some(
+      (m) =>
+        m !== null &&
+        typeof m === "object" &&
+        (m as { method?: unknown }).method === "tools/call",
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Not JSON: the handler answers it with its usual parse error. */
 const UNPARSEABLE = "{";
 
@@ -782,11 +812,13 @@ export async function linkRequest(
   env: Env,
   userId: string,
   req: Request,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;
   let poisoned = false;
+  let bodyText: string | undefined;
   try {
     if (header !== null) {
       const headers = new Headers(req.headers);
@@ -795,6 +827,7 @@ export async function linkRequest(
     }
     if (req.method === "POST" && req.body) {
       const text = await out.clone().text();
+      bodyText = text;
       const taken = takeProofArg(text);
       poisoned = taken.poisoned === true;
       argProof = taken.proof;
@@ -826,7 +859,13 @@ export async function linkRequest(
   // No proof at all: nothing was looked up, so nothing is logged; the note says so.
   if (proof === undefined)
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
-  const r = await lookupProof(env, userId, proof);
+  const r = await lookupProof(
+    env,
+    userId,
+    proof,
+    () => bodyHasToolsCall(bodyText),
+    ctx,
+  );
   return { req: out, ...r };
 }
 

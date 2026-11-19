@@ -92,6 +92,34 @@ describe("status: instances (#2793 S6)", () => {
     expect(out).toContain("  /code/work -> work");
   });
 
+  it("lists the guest sessions under their instance (#2793 S3b), with terminal controls removed", async () => {
+    const ctx = ctxWith(
+      {
+        instances: [
+          { name: "main", link: "connected", revoked: false, agents: 2 },
+          {
+            name: "work",
+            link: "connected",
+            revoked: false,
+            agents: 0,
+            guests: [{ name: "Visitor" }, { name: "Ev\u001b[31mil" }],
+          },
+        ],
+      },
+      true,
+    );
+    await statusCmd(ctx);
+    const out = ctx.all();
+    const at = out.indexOf("Instances");
+    expect(out.slice(at, at + 5)).toEqual([
+      "Instances",
+      "  main (main)  https://bus.example.com  connected  2 agents",
+      "  work  https://work.example.com  connected  0 agents",
+      "    guest session: Visitor",
+      "    guest session: Evil",
+    ]);
+  });
+
   it("an instance the daemon does not list reads not connected", async () => {
     const ctx = ctxWith({}, true);
     await statusCmd(ctx);

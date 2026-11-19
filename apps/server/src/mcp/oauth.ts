@@ -163,7 +163,7 @@ async function apiFetch(
       return mcpUnauthorized(env, "Only members can connect agents");
     const capped0 = await capMcpBody(req, env);
     if (capped0 instanceof Response) return capped0;
-    const link = await linkOrUnlinked(env, user.id, capped0);
+    const link = await linkOrUnlinked(env, user.id, capped0, ctx);
     const capped = link.req;
     const grantId = grantIdOf(
       (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,

@@ -563,6 +563,11 @@ export const StatusReply = z.object({
         link: z.enum(["connected", "not_connected"]),
         revoked: z.boolean(),
         agents: z.number().int().min(0),
+        /** #2793 S3b: guest sessions on this instance (their names there); absent from an older daemon. */
+        guests: z
+          .array(z.object({ name: z.string().max(256) }))
+          .max(64)
+          .optional(),
       }),
     )
     .max(64)

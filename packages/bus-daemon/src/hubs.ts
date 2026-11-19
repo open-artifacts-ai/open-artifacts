@@ -25,6 +25,8 @@ export class Lane {
   waiting = false;
   waitingQuery = false;
   runCap = false;
+  /** #2793 S3b: this hub listed the guest cap: proof_seen and guest deliveries come, guest_up goes. */
+  guest = false;
   ever = false;
   droppedAt?: number;
   /** The hub refused this instance's token; its link stays closed. */
@@ -57,6 +59,7 @@ export class Lane {
     this.linkArg = has(BUS_CAPS.linkArg);
     this.ackConfirm = has(BUS_CAPS.ackConfirm);
     this.runCap = has(BUS_CAPS.runVersion);
+    this.guest = has(BUS_CAPS.guest);
     this.helloed = true;
   }
 
@@ -76,6 +79,7 @@ export class Lane {
     this.waitingQuery = false;
     this.helloed = false;
     this.runCap = false;
+    this.guest = false;
   }
 }
 
