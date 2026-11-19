@@ -803,14 +803,19 @@ export function heldCanon(
   return JSON.stringify([c.body, c.anchor, ask ?? null, names]);
 }
 
+/** #2851: where a held-target scan left off. */
+export type HeldScanCursor = { at: string; commentId: string; key: string };
+
 /**
- * #2851: the targets still held in this page's comments, newest comment first,
+ * #2851: the targets still held in this page's comments, oldest comment first,
  * with who wrote the comment and when. For the sweep that finds a held target
  * whose D1 request row never got written. Ids, keys and times only.
  */
 export function heldScan(
   sql: SqlStorage,
   limit: number,
+  /** The last target of the previous page: the next page starts after it (oldest comment first, then comment id, then key: a stable order). */
+  after?: HeldScanCursor | null,
 ): {
   commentId: string;
   threadId: string;
@@ -836,7 +841,9 @@ export function heldScan(
       `select t.comment_id, t.thread_id, t.key, t.name as way, t.owner, t.identity, c.created_at as at, c.author
          from comment_targets t join comments c on c.id = t.comment_id
         where t.kind = 'held' and t.state = 'held' and t.owner is not null
-        order by c.created_at desc, t.comment_id, t.key limit ?`,
+          ${after ? "and (c.created_at, t.comment_id, t.key) > (?, ?, ?)" : ""}
+        order by c.created_at, t.comment_id, t.key limit ?`,
+      ...(after ? [after.at, after.commentId, after.key] : []),
       limit,
     )
     .toArray()

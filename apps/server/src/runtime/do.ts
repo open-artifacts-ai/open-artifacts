@@ -64,6 +64,7 @@ import {
   getComment,
   getThread,
   type HeldAgent,
+  type HeldScanCursor,
   heldCanon,
   heldOf,
   heldScan,
@@ -456,7 +457,8 @@ create table if not exists index_job (
 );
 create table if not exists held_retry (
   id integer primary key check (id = 1), since integer not null,
-  attempts integer not null, due integer not null
+  attempts integer not null, due integer not null,
+  cursor text, failed integer not null default 0
 );
 create table if not exists thumb_job (
   id integer primary key check (id = 1), artifact_id text not null,
@@ -2698,55 +2700,90 @@ export class ArtifactRuntime extends DurableObject<Env> {
     since: number;
     attempts: number;
     due: number;
+    cursor: HeldScanCursor | null;
+    failed: boolean;
   } | null {
     const r = this.sql
-      .exec<{ since: number; attempts: number; due: number }>(
-        "select since, attempts, due from held_retry where id = 1",
+      .exec<{
+        since: number;
+        attempts: number;
+        due: number;
+        cursor: string | null;
+        failed: number;
+      }>(
+        "select since, attempts, due, cursor, failed from held_retry where id = 1",
       )
       .toArray()[0];
-    return r ?? null;
+    return r
+      ? {
+          since: r.since,
+          attempts: r.attempts,
+          due: r.due,
+          cursor: r.cursor ? (JSON.parse(r.cursor) as HeldScanCursor) : null,
+          failed: r.failed === 1,
+        }
+      : null;
   }
 
-  /** #2851: one alarm run of the hold retry: done (job gone) when every held target has its row, or after the 7-day lapse window; else backoff. */
+  /**
+   * #2851: one alarm run of the hold retry reads ONE page of held targets
+   * (oldest first, after the cursor) and writes their missing rows. A full
+   * page moves the cursor and runs again in a minute; a pass that reaches the
+   * end with every target recorded deletes the job; one that saw any failure
+   * starts over from the beginning after a backoff. After the 7-day window it
+   * gives up.
+   */
   private async runHeldRetry(
-    j: { since: number; attempts: number },
+    j: NonNullable<ReturnType<ArtifactRuntime["pendingHeldRetry"]>>,
     now: number,
   ): Promise<void> {
-    let done = false;
-    let more = false;
+    if (now - j.since >= HELD_LAPSE_MS) {
+      this.sql.exec("delete from held_retry where id = 1");
+      return;
+    }
+    let page: ReturnType<typeof heldScan> = [];
+    let complete = false;
     try {
-      if (now - j.since >= HELD_LAPSE_MS) done = true;
-      else {
-        const targets = heldScan(this.sql, HELD_RETRY_TARGETS);
-        const r = await this.heldReconciler(
-          this.env,
-          this.artifactId(),
-          targets,
-          now,
-        );
-        more = r.complete && targets.length >= HELD_RETRY_TARGETS;
-        done = r.complete && !more;
-      }
+      page = heldScan(this.sql, HELD_RETRY_TARGETS, j.cursor);
+      complete = (
+        await this.heldReconciler(this.env, this.artifactId(), page, now)
+      ).complete;
     } catch (e) {
       logWarn("held_retry_failed", {
         code: e instanceof Error ? e.name : "error",
       });
     }
-    if (done) this.sql.exec("delete from held_retry where id = 1");
-    else if (more)
-      this.sql.exec("update held_retry set due = ? where id = 1", now + 60_000);
+    const failed = j.failed || !complete;
+    const last = page[page.length - 1];
+    if (page.length >= HELD_RETRY_TARGETS && last && complete)
+      // More to read: the next page in a minute.
+      this.sql.exec(
+        "update held_retry set cursor = ?, failed = ?, due = ? where id = 1",
+        JSON.stringify({
+          at: last.at,
+          commentId: last.commentId,
+          key: last.key,
+        }),
+        failed ? 1 : 0,
+        now + 60_000,
+      );
+    else if (!failed) this.sql.exec("delete from held_retry where id = 1");
+    // The end of a pass that saw a failure (or a failed page): back off, and read from the start again.
     else
       this.sql.exec(
-        "update held_retry set attempts = ?, due = ? where id = 1",
+        "update held_retry set attempts = ?, due = ?, cursor = null, failed = 0 where id = 1",
         j.attempts + 1,
         now + heldRetryBackoffMs(j.attempts + 1),
       );
   }
 
   /** #2851: the targets still held on this page (newest comments first), for the reconcile sweep. */
-  commentsHeldScan(a: { limit: number }): ReturnType<typeof heldScan> {
+  commentsHeldScan(a: {
+    limit: number;
+    after?: HeldScanCursor | null;
+  }): ReturnType<typeof heldScan> {
     this.ensureSchema();
-    return heldScan(this.sql, a.limit);
+    return heldScan(this.sql, a.limit, a.after);
   }
 
   /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */

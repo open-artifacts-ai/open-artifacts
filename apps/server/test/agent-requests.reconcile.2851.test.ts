@@ -405,3 +405,105 @@ describe("the DO's own hold retry (#2851)", () => {
     expect(await inDo(p.id, (i) => i.pendingHeldRetry())).toBeNull();
   });
 });
+
+describe("paging past 200 held targets (#2851)", () => {
+  // 201 held targets in one page's DO and no D1 rows. The caps (50 per sender
+  // and receiver, 200 per receiver) never bite: 3 receivers x 3 senders.
+  const TOTAL = 201;
+  let people: { owners: U[]; senders: U[] } | undefined;
+  async function seed() {
+    people ??= {
+      owners: [owner, await mk("rc-o2"), await mk("rc-o3")],
+      senders: [editor, await mk("rc-s2"), await mk("rc-s3")],
+    };
+    const { owners, senders } = people;
+    // Earlier tests' held requests would count against the per-person caps.
+    await E.DB.prepare("delete from held_requests").run();
+    const a = await publish(
+      E,
+      owner.member,
+      { title: "big", format: "html", content: "<p>x</p>" } as never,
+      null,
+      undefined,
+      "create",
+    );
+    const base = Date.now() - TOTAL * 1000;
+    await inDo(a.id, (i) => {
+      const sql = (i as unknown as { sql: SqlStorage }).sql;
+      for (let n = 0; n < TOTAL; n++) {
+        const o = owners[n % 3] as U;
+        const sd = senders[Math.floor(n / 3) % 3] as U;
+        const id = `cm${String(n).padStart(4, "0")}`;
+        sql.exec(
+          "insert into comments (id, thread_id, body, author, created_at) values (?, 't1', 'x', ?, ?)",
+          id,
+          JSON.stringify({ kind: "user", ref: sd.userId }),
+          new Date(base + n * 1000).toISOString(),
+        );
+        sql.exec(
+          `insert into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+           values (?, 't1', 'held', ?, 'mention', 'held', ?, ?)`,
+          id,
+          `agent:k${n}`,
+          o.userId,
+          JSON.stringify({ namespace: "ns", name: "Claude" }),
+        );
+      }
+    });
+    return a.id;
+  }
+  const items = async (id: string) =>
+    (
+      await E.DB.prepare(
+        `select count(*) as n from held_request_items i join held_requests r on r.id = i.request_id where r.artifact_id = ?1`,
+      )
+        .bind(id)
+        .first<{ n: number }>()
+    )?.n;
+
+  it("the alarm: two runs write all 201 rows, then the job is deleted", async () => {
+    const id = await seed();
+    await inDo(id, (i) => i.commentsHeldRetryArm());
+    await fire(id, 4 * MIN);
+    expect(await items(id)).toBe(200);
+    const mid = await inDo(id, (i) => i.pendingHeldRetry());
+    expect(mid?.cursor).not.toBeNull();
+    expect(mid?.failed).toBe(false);
+    await fire(id, 6 * MIN);
+    expect(await items(id)).toBe(201);
+    expect(await inDo(id, (i) => i.pendingHeldRetry())).toBeNull();
+  });
+
+  it("the nightly sweep: two runs write all 201 rows, then the note is gone", async () => {
+    const id = await seed();
+    // Notes left by earlier tests would share the run's 10 pages.
+    await E.DB.prepare(
+      `delete from settings where key like '${RECONCILE_PREFIX}%'`,
+    ).run();
+    await note(id);
+    expect(await reconcileHeld(E)).toBe(200);
+    expect(await items(id)).toBe(200);
+    expect(await noted(id)).toBe(true);
+    expect(await reconcileHeld(E)).toBe(1);
+    expect(await items(id)).toBe(201);
+    expect(await noted(id)).toBe(false);
+  });
+
+  it("a failed write in a pass restarts it from the beginning after the backoff", async () => {
+    const id = await seed();
+    await inDo(id, (i) => i.commentsHeldRetryArm());
+    await inDo(id, async (i) => {
+      let calls = 0;
+      i.heldReconciler = async () => ({ complete: ++calls > 1 });
+      const t = Date.now() + 4 * MIN;
+      i.now = () => t;
+      await i.alarm();
+      const t2 = t + 2 * MIN;
+      i.now = () => t2;
+      await i.alarm();
+    });
+    // The first page failed: back to the start, backing off, not done.
+    const j = await inDo(id, (i) => i.pendingHeldRetry());
+    expect(j).toMatchObject({ attempts: 1, cursor: null, failed: false });
+  });
+});

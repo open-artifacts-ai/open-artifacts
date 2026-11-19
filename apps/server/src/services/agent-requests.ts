@@ -560,6 +560,26 @@ export async function recordHolds(
   );
 }
 
+/** What a note carries: when it was made, and where the last pass left off (a page is read per run). A new note is just the time. */
+type ReconcileNote = {
+  since: number;
+  cursor: { at: string; commentId: string; key: string } | null;
+  failed: boolean;
+};
+function parseNote(value: string): ReconcileNote {
+  try {
+    const v = JSON.parse(value) as Partial<ReconcileNote> | number;
+    if (typeof v === "number") return { since: v, cursor: null, failed: false };
+    return {
+      since: Number(v.since ?? 0),
+      cursor: v.cursor ?? null,
+      failed: v.failed === true,
+    };
+  } catch {
+    return { since: Number(value) || 0, cursor: null, failed: false };
+  }
+}
+
 /** #2851: one settings row per page whose hold could not be written to D1: "held:reconcile:<artifactId>". */
 export const RECONCILE_PREFIX = "held:reconcile:";
 /** Pages one nightly run reconciles, and held targets it reads from each. */
@@ -655,26 +675,43 @@ export async function reconcileHeld(
   try {
     const { results } = await stmt(
       env.DB,
-      `select key, value from settings where key like ?1 order by value limit ?2`,
+      `select key, value from settings where key like ?1 order by key limit ?2`,
     )
       .bind(`${RECONCILE_PREFIX}%`, RECONCILE_PAGES)
       .all<{ key: string; value: string }>();
     for (const m of results) {
       const artifactId = m.key.slice(RECONCILE_PREFIX.length);
+      const note = parseNote(m.value);
       const done = () =>
         stmt(env.DB, "delete from settings where key = ?1").bind(m.key).run();
       try {
-        if (Number(m.value) + HELD_LAPSE_MS <= now) {
+        if (note.since + HELD_LAPSE_MS <= now) {
           await done();
           continue;
         }
+        // One page of the page's held targets per run, oldest first, after the note's cursor.
         const targets = await call(() =>
-          stub(env, artifactId).commentsHeldScan({ limit: RECONCILE_TARGETS }),
+          stub(env, artifactId).commentsHeldScan({
+            limit: RECONCILE_TARGETS,
+            after: note.cursor,
+          }),
         );
         const r = await reconcileTargets(env, artifactId, targets, now);
         written += r.written;
-        const complete = r.complete && targets.length < RECONCILE_TARGETS;
-        if (complete) await done();
+        const failed = note.failed || !r.complete;
+        const last = targets[targets.length - 1];
+        const save = (n: ReconcileNote) =>
+          stmt(env.DB, "update settings set value = ?2 where key = ?1")
+            .bind(m.key, JSON.stringify(n))
+            .run();
+        if (targets.length >= RECONCILE_TARGETS && last && r.complete)
+          await save({
+            since: note.since,
+            cursor: { at: last.at, commentId: last.commentId, key: last.key },
+            failed,
+          });
+        else if (!failed) await done();
+        else await save({ since: note.since, cursor: null, failed: false });
       } catch (e) {
         logWarn("held_reconcile_failed", {
           code: e instanceof Error ? e.name : "error",
