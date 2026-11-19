@@ -40,7 +40,8 @@ create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
   user_id text not null, option_id text not null, by text not null,
   at text not null, typed integer not null default 0, verified text,
-  guest integer not null default 0, decision integer not null default 0
+  guest integer not null default 0, decision integer not null default 0,
+  own_words text
 );
 create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
@@ -122,7 +123,10 @@ export type MentionState =
 
 /** #2381: one pick, kept for good. `guest`: the picker was a guest-role member then. */
 export type StoredPick = {
+  /** "" when the pick is the person's own words (#2895): no option. */
   optionId: string;
+  /** #2895: "Something else": the person's own words, with no option. */
+  ownWords?: string;
   by: StoredActor;
   at: string;
   verified?: "passkey";
@@ -138,6 +142,8 @@ export type StoredAsk = {
   to: StoredParty[];
   answer?: {
     optionId: string;
+    /** #2895: the decision is the decider's own words (optionId is ""). */
+    ownWords?: string;
     by: StoredActor;
     at: string;
     /** #2263: a passkey assertion for this pick verified. Set by the server only. */
@@ -413,9 +419,11 @@ type PickRow = {
   verified: string | null;
   guest: number;
   decision: number;
+  own_words: string | null;
 };
 const pickOf = (r: PickRow): StoredPick => ({
   optionId: r.option_id,
+  ...(r.own_words !== null ? { ownWords: r.own_words } : {}),
   by: JSON.parse(r.by) as StoredActor,
   at: r.at,
   ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
@@ -497,7 +505,7 @@ function attachExtras(
     }
     const hist = new Map<string, StoredPick[]>();
     for (const r of sql.exec<PickRow>(
-      `select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks
+      `select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks
        where comment_id in (select value from json_each(?)) order by seq`,
       JSON.stringify(asked),
     )) {
@@ -1465,7 +1473,7 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision, own_words) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
     p.by.ref,
     p.optionId,
@@ -1475,6 +1483,7 @@ export function addPick(
     p.verified ?? null,
     p.guest ? 1 : 0,
     p.decision ? 1 : 0,
+    p.ownWords ?? null,
   );
 }
 
@@ -1530,7 +1539,7 @@ export function askRow(
   const ask = askOf(r);
   const rows = sql
     .exec<PickRow>(
-      "select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks where comment_id = ? order by seq",
+      "select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks where comment_id = ? order by seq",
       commentId,
     )
     .toArray()

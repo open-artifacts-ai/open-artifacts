@@ -88,11 +88,6 @@ vi.mock("../src/viewer/bridge", async () => {
   };
 });
 
-vi.mock("../src/auth/webauthn", async (orig) => ({
-  ...(await orig<typeof import("../src/auth/webauthn")>()),
-  getAssertion: vi.fn(async () => ({ id: "cred" })),
-}));
-
 installHarness();
 
 // Most waits here follow a write: the PATCH or POST, then the list refetch it
@@ -969,6 +964,16 @@ describe("#2381 deciders on the card", () => {
   });
 });
 
+/** The browser's passkey prompt, watched: an ask pick must never reach it. */
+const watchPasskeyPrompt = () => {
+  const get = vi.fn(async () => null);
+  Object.defineProperty(navigator, "credentials", {
+    value: { get },
+    configurable: true,
+  });
+  return get;
+};
+
 describe("#2864 no passkey on asks", () => {
   const meP = { kind: "user" as const, id: "me", name: "Me", me: true };
   const verifiedAnswer = {
@@ -995,8 +1000,7 @@ describe("#2864 no passkey on asks", () => {
     c.querySelector(`[data-option=${id}]`) as HTMLButtonElement;
 
   it("an ask an old server marks confirm: passkey is answered in one click, with no challenge and no WebAuthn call", async () => {
-    const webauthn = await import("../src/auth/webauthn");
-    vi.mocked(webauthn.getAssertion).mockClear();
+    const getCredential = watchPasskeyPrompt();
     const posts: unknown[] = [];
     let challenged = 0;
     serveThreads(() => [passkeyAsk()]);
@@ -1024,12 +1028,11 @@ describe("#2864 no passkey on asks", () => {
     fireEvent.click(opt(c, "b"));
     await waitFor(() => expect(posts).toEqual([{ optionId: "b" }]));
     expect(challenged).toBe(0);
-    expect(webauthn.getAssertion).not.toHaveBeenCalled();
+    expect(getCredential).not.toHaveBeenCalled();
   });
 
   it("a passkey_required answer from an old server is a plain error: no passkey flow, no prompt", async () => {
-    const webauthn = await import("../src/auth/webauthn");
-    vi.mocked(webauthn.getAssertion).mockClear();
+    const getCredential = watchPasskeyPrompt();
     let challenged = 0;
     serveThreads(() => [passkeyAsk()]);
     server.use(
@@ -1053,7 +1056,7 @@ describe("#2864 no passkey on asks", () => {
     );
     expect(c.textContent).not.toMatch(/Pick again|Add a passkey|terminal/);
     expect(challenged).toBe(0);
-    expect(webauthn.getAssertion).not.toHaveBeenCalled();
+    expect(getCredential).not.toHaveBeenCalled();
     expect(opt(c, "b")).toBeEnabled();
   });
 

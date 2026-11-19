@@ -4,7 +4,7 @@
  * held request is shown word for word as plain text, never as markup or links.
  */
 import type { HeldRequest } from "@oa/shared";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAllowHeld, useNotNow } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
 import { useMe } from "../auth/useMe";
@@ -84,9 +84,27 @@ export function HeldCard({
     if (stale) {
       setWide(null);
       setSnap(null);
-      setNote("The words changed. Read them again before you allow.");
+      setNote(CHANGED);
     }
   }, [stale]);
+  // A refetch that changes the words on the notice itself: say so, and mark what changed.
+  const CHANGED = "The words changed. Read them again before you allow.";
+  const prev = useRef<Map<string, string> | null>(null);
+  const [flash, setFlash] = useState<Set<string>>(new Set());
+  // biome-ignore lint/correctness/useExhaustiveDependencies: liveKey is live's content
+  useEffect(() => {
+    const before = prev.current;
+    prev.current = new Map(live.map((i) => [i.commentId, i.wordsHash]));
+    if (!before || wide !== null) return;
+    const changed = live
+      .filter((i) => before.get(i.commentId) !== i.wordsHash)
+      .map((i) => i.commentId);
+    if (changed.length === 0) return;
+    setNote(CHANGED);
+    setFlash(new Set(changed));
+    const t = setTimeout(() => setFlash(new Set()), 3000);
+    return () => clearTimeout(t);
+  }, [liveKey]);
   // Only what is on screen goes: the snapshot in the confirm step, else the notice's own words.
   const items = wide && snap ? snap : live;
   const enter = (level: "space" | "all") => {
@@ -98,6 +116,7 @@ export function HeldCard({
 
   const run = (level: Level, until?: number) => {
     setError(null);
+    setNote(null);
     allow.mutate(
       { level, items, ...(until !== undefined ? { until } : {}) },
       {
@@ -257,7 +276,8 @@ export function HeldCard({
         {r.items.map((i) => (
           <li
             key={i.commentId}
-            className="rounded-md border border-[var(--oa-border)] bg-[var(--oa-sunken)] px-2.5 py-1.5"
+            data-changed={flash.has(i.commentId) ? "" : undefined}
+            className={`rounded-md border bg-[var(--oa-sunken)] px-2.5 py-1.5 ${flash.has(i.commentId) ? "border-[var(--oa-warning)] ring-2 ring-[var(--oa-warning)]" : "border-[var(--oa-border)]"}`}
           >
             {/* Plain quoted text: no markup, no live links. */}
             <q className="whitespace-pre-wrap break-words text-[13.5px]">

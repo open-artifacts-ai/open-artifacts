@@ -787,7 +787,7 @@ export function AskBlock({
   const decisionOpt = ask.options[decisionIdx];
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
-  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // A risky ask (an action option) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
   const risky = isRiskyAsk(ask);
   const deciderLine =

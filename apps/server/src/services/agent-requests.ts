@@ -1083,7 +1083,8 @@ export async function allow(
     throw new ApiError("not_found", NO_HELD);
   }
   const open = await pageIsOpen(env, req.artifact_id);
-  if (grant === "page" && open)
+  // Only "allow once" shows on an open page: a list entry (this page or all pages) is refused.
+  if ((grant === "page" || grant === "all") && open)
     throw new ApiError(
       "bad_request",
       "The list does not apply on a page open to guests or to anyone with the link: allow once",
@@ -1339,6 +1340,11 @@ export async function lapseHeld(env: Env, now = Date.now()): Promise<void> {
       env.DB,
       "delete from held_request_items where state in ('lapsed', 'withdrawn') and expires_at < ?1",
     ).bind(now - 30 * 24 * 60 * 60 * 1000),
+    // #2899: an allowed item is finished too; "Who asked what" reads 30 days.
+    stmt(
+      env.DB,
+      "delete from held_request_items where state = 'allowed' and created_at < ?1",
+    ).bind(now - 30 * 24 * 60 * 60 * 1000),
     stmt(
       env.DB,
       "delete from held_requests where not exists (select 1 from held_request_items i where i.request_id = held_requests.id) and last_at < ?1",
@@ -1508,7 +1514,7 @@ export async function addListens(
             level: body.scope,
             until,
             via: body.via,
-            ...(live ? { extended: true } : {}),
+            ...(live && until > live.until ? { extended: true } : {}),
             ...(artifactId ? { artifactId } : {}),
             ...(spaceId ? { spaceId } : {}),
           },
@@ -1650,14 +1656,20 @@ export async function askHistory(
           r.deleted_at === null &&
           (await receiverCanOpen(env, callerOf(me), r.artifact_id)),
       );
+    // Names only on a page the receiver can open (#2905): no roster lookup
+    // for the rest; their agents read "An agent" there.
     if (!names.has(r.artifact_id))
       names.set(
         r.artifact_id,
-        new Map(
-          (
-            await artifactAgents(env, r.artifact_id, receiverId).catch(() => [])
-          ).map((a) => [a.key, a.name]),
-        ),
+        open.get(r.artifact_id)
+          ? new Map(
+              (
+                await artifactAgents(env, r.artifact_id, receiverId).catch(
+                  () => [],
+                )
+              ).map((a) => [a.key, a.name]),
+            )
+          : new Map(),
       );
     let outcome: AskOutcome;
     if (r.listed) outcome = "on_list";

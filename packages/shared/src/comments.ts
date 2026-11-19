@@ -47,6 +47,10 @@ export const ASK_DETAIL_MAX = 500;
 export const ASK_WHY_MAX = 500;
 export const ASK_OPTIONS_MIN = 2;
 export const ASK_OPTIONS_MAX = 6;
+/** #2895: the option id an agent may not use; "Something else" is the server's and the card's. */
+export const OWN_WORDS_OPTION_ID = "other";
+/** #2895: an answer in the person's own words is 1 to 1,000 characters after trimming. */
+export const OWN_WORDS_MAX = 1000;
 export const ASK_TO_MAX = 10;
 export const MENTIONS_MAX = 10;
 
@@ -118,7 +122,10 @@ export type ReplacesRef = z.infer<typeof ReplacesRefSchema>;
 /** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
 export const AskPickSchema = z.object({
   by: CommentAuthorSchema,
-  optionId: key,
+  /** Absent on an answer in the person's own words (`ownWords`). */
+  optionId: key.optional(),
+  /** #2895: the pick is the person's own words, not an option. */
+  ownWords: z.object({ text: z.string() }).optional(),
   at: z.string(),
   /** Picked in the web app (a browser session). */
   typed: z.boolean(),
@@ -173,7 +180,10 @@ export const CommentAskSchema = z
     /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
-        optionId: key,
+        /** Absent on an answer in the person's own words (`ownWords`). */
+        optionId: key.optional(),
+        /** #2895: the decider answered in their own words, a typed message about this ask. Never a yes: `yes` is false. */
+        ownWords: z.object({ text: z.string() }).optional(),
         by: CommentAuthorSchema,
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
@@ -361,8 +371,10 @@ export const CompactAnswerSchema = z.object({
   threadId: z.string(),
   commentId: z.string(),
   question: z.string(),
-  optionId: z.string(),
-  label: z.string(),
+  /** Absent on an answer in the person's own words: `ownWords` holds the text. */
+  optionId: z.string().optional(),
+  label: z.string().optional(),
+  ownWords: z.string().optional(),
   at: z.string(),
   by: z.string(),
   yes: z.boolean(),
@@ -418,7 +430,12 @@ const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 export const AskInputSchema = z
   .object({
     question: z.string().trim().min(1).max(ASK_QUESTION_MAX),
-    options: optionRules(AskInputOptionSchema),
+    options: optionRules(AskInputOptionSchema).refine(
+      (o) => !o.some((x) => x.id === OWN_WORDS_OPTION_ID),
+      {
+        message: `The option id "${OWN_WORDS_OPTION_ID}" is reserved: every ask already offers "Something else"`,
+      },
+    ),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
     /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
@@ -488,7 +505,10 @@ export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */
 export const AnswerBodySchema = z.object({
-  optionId: key,
+  /** Either `optionId` or `ownWords`, never both (#2895). */
+  optionId: key.optional(),
+  /** #2895: "Something else": the person's own words, 1 to 1,000 characters after trimming. */
+  ownWords: z.object({ text: z.string() }).optional(),
   /** #2263: the WebAuthn assertion (PublicKeyCredential.toJSON()) for the challenge of R.commentAnswerChallenge; required on an ask with confirm "passkey". */
   assertion: PasskeyAssertionSchema.optional(),
 });

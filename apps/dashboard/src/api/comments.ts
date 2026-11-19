@@ -199,7 +199,7 @@ type Patch<V> = {
  * result at once, an error puts the snapshot back, and the settle refetch makes
  * the server's record the truth. Used only for actions whose outcome is
  * predictable. Never for answering an ask (it must show the server's record:
- * who answered, a 409 for a closed ask), a confirm or passkey step (#2263), or
+ * who answered, a 409 for a closed ask), a confirm step (#2263), or
  * an edit the server may refuse for rights the client cannot see.
  */
 const useRefetching = <V, T>(

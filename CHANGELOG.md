@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.232.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.232.0...v0.232.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **agents:** the held-request notice says when the words changed ([#2907](https://github.com/open-artifacts-ai/open-artifacts/issues/2907)) ([#2928](https://github.com/open-artifacts-ai/open-artifacts/issues/2928)) ([8eab682](https://github.com/open-artifacts-ai/open-artifacts/commit/8eab6820336b3b22b581eb61d360c504f37240ec))
+
+## [0.232.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.1...v0.232.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** "Send held requests to my phone" in Settings ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2923](https://github.com/open-artifacts-ai/open-artifacts/issues/2923)) ([3668eba](https://github.com/open-artifacts-ai/open-artifacts/commit/3668ebae654163bcddb94c817cc0b64f29e1f869))
+* **asks:** answer any ask in your own words, never a yes ([#2895](https://github.com/open-artifacts-ai/open-artifacts/issues/2895)) ([#2925](https://github.com/open-artifacts-ai/open-artifacts/issues/2925)) ([cb06d2a](https://github.com/open-artifacts-ai/open-artifacts/commit/cb06d2a5370e84dacbad2bd36ad4b6a09988aca2))
+
 ## [0.231.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.0...v0.231.1) (2026-11-19)
 
 

@@ -210,6 +210,19 @@ async function fullyLoaded() {
     env.DB.prepare(
       "insert into reserved_artifacts (id, user_id, created_at) values (?, ?, ?)",
     ).bind(newId(), id, now),
+    // #2888: a request held for them (with an item) and one from them, and a listed delivery.
+    env.DB.prepare(
+      "insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at) values (?, ?, ?, ?, ?, ?)",
+    ).bind(`hr-${newId()}`, id, owner.userId, theirs, now, now),
+    env.DB.prepare(
+      "insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at) values (?, ?, ?, ?, ?, ?)",
+    ).bind(`hs-${newId()}`, owner.userId, id, other, now, now),
+    env.DB.prepare(
+      "insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at) select ?, id, 't', ?, 'k', 'mention', 'held', ?, ? from held_requests where receiver_id = ?",
+    ).bind(newId(), `c-${newId()}`, now, now + 1000, id),
+    env.DB.prepare(
+      "insert into listed_deliveries (id, receiver_id, sender_id, artifact_id, comment_id, agent_key, created_at) values (?, ?, ?, ?, ?, 'k', ?)",
+    ).bind(newId(), owner.userId, id, other, `c-${newId()}`, now),
   ]);
   await createPat(env, id, "work laptop");
   expect((await remove(id, admin.cookie)).status).toBe(204);
@@ -240,6 +253,18 @@ const leftovers = async (id: string, email: string) => ({
     "select count(*) n from reserved_artifacts where user_id = ?",
     id,
   ),
+  heldRequests: await count(
+    "select count(*) n from held_requests where receiver_id = ?1 or sender_id = ?1",
+    id,
+  ),
+  heldItems: await count(
+    "select count(*) n from held_request_items where request_id in (select id from held_requests where receiver_id = ?1 or sender_id = ?1)",
+    id,
+  ),
+  listedDeliveries: await count(
+    "select count(*) n from listed_deliveries where receiver_id = ?1 or sender_id = ?1",
+    id,
+  ),
   otherIdentities: await count(
     "select count(*) n from identities where user_id = ? and provider <> 'google'",
     id,
@@ -257,6 +282,9 @@ const NONE = {
   tokens: 0,
   agentGrants: 0,
   reserved: 0,
+  heldRequests: 0,
+  heldItems: 0,
+  listedDeliveries: 0,
   otherIdentities: 0,
   googleIdentity: 1,
 };
@@ -268,6 +296,9 @@ const ALL = {
   tokens: 1,
   agentGrants: 1,
   reserved: 1,
+  heldRequests: 2,
+  heldItems: 1,
+  listedDeliveries: 1,
   otherIdentities: 1,
   googleIdentity: 1,
 };

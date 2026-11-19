@@ -1003,6 +1003,13 @@ const ERASE_WIPES = [
   `delete from inbox_mutes where user_id = ?1 and ${ERASABLE}`,
   `delete from settings where key = 'inbox:away_read:' || ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  // #2577: requests held for or from them, and what went straight to their
+  // agents: ids and times, but they name the person (the users row stays, so
+  // no cascade fires).
+  `delete from held_request_items where request_id in
+    (select id from held_requests where (receiver_id = ?1 or sender_id = ?1)) and ${ERASABLE}`,
+  `delete from held_requests where (receiver_id = ?1 or sender_id = ?1) and ${ERASABLE}`,
+  `delete from listed_deliveries where (receiver_id = ?1 or sender_id = ?1) and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row
   // (id, last_used_at) is how revokeUserLive below finds their BusHub to
