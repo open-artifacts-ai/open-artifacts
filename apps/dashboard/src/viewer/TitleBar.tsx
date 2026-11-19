@@ -435,41 +435,45 @@ export function TitleBar({
           iconOnly={stage >= 2}
           org={org}
         />
-        {/* #2932: one access label. In a space it names your access (Viewer,
-            Can comment, Editor…); elsewhere a page you can't write data to
-            says View only. The data note rides on it as a tooltip. */}
-        {(artifact.space || viewOnly) &&
-          (() => {
-            const label = artifact.space
-              ? ownAccessLabel(artifact, outsider)
-              : "View only";
-            return viewOnly ? (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge
-                      variant="secondary"
-                      tabIndex={0}
-                      data-access-label=""
-                      className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]"
-                    >
-                      {label}
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom" collisionPadding={8}>
-                    You can view this, but you can't change its data.
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            ) : (
-              <span
-                data-access-label=""
-                className="text-[length:var(--oa-text-sm)] text-muted-foreground"
-              >
-                {label}
-              </span>
-            );
-          })()}
+        {/* #2932: one access label. A signed-in person sees their access named
+            (Viewer, Can comment, Editor…), in a space or on a page shared with
+            them; the owner off a space sees none. "View only" is only for a
+            visitor with no role to name (a link visitor) who can't write data.
+            The data note rides on the label as a tooltip. */}
+        {(() => {
+          const named =
+            authed && (!!artifact.space || artifact.access !== "owner");
+          if (!named && !viewOnly) return null;
+          const label = named
+            ? ownAccessLabel(artifact, outsider)
+            : "View only";
+          return viewOnly ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    tabIndex={0}
+                    data-access-label=""
+                    className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]"
+                  >
+                    {label}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" collisionPadding={8}>
+                  You can view this, but you can't change its data.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span
+              data-access-label=""
+              className="text-[length:var(--oa-text-sm)] text-muted-foreground"
+            >
+              {label}
+            </span>
+          );
+        })()}
       </div>
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
         {pill && (

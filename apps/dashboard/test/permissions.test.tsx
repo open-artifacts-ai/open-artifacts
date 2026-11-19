@@ -73,7 +73,7 @@ it("hosted guest on a live-data artifact sees the chip, a tooltip on focus, no b
   mountHosted(`/a/${arts[0].id}`, true, undefined, [
     handler({ access: "viewer", can: guestCan, capabilities: live }),
   ]);
-  const chip = await screen.findByText("View only");
+  const chip = await screen.findByText("Viewer");
   expect(chip).toBeVisible();
   expect(chip).toHaveAttribute("tabindex", "0");
   act(() => chip.focus());
@@ -111,7 +111,7 @@ it("contractor + db: a restricted member on a live-data artifact gets the chip",
     }),
     [handler({ access: "viewer", can: guestCan, capabilities: live })],
   );
-  expect(await screen.findByText("View only")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
   for (const name of ["Rename", "Share", "Delete"])
     expect(screen.queryByRole("button", { name })).toBeNull();
 });
@@ -130,7 +130,7 @@ it("hosted guest on an artifact without live data gets no chip", async () => {
 
 // Review item 28: the chip follows can.dataWrite on every install, so a
 // viewer of an editors-only artifact sees "View only" instead of failing writes.
-it("self-hosted viewer of an editors-only live artifact sees View only", async () => {
+it("self-hosted viewer of an editors-only live artifact sees one label, Viewer (#2932)", async () => {
   serve({
     access: "viewer",
     can: undefined,
@@ -139,7 +139,7 @@ it("self-hosted viewer of an editors-only live artifact sees View only", async (
     dataWriters: "editors",
   });
   mount(`/a/${arts[0].id}`);
-  expect(await screen.findByText("View only")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
 });
 
 it("self-hosted viewer of a viewers-writable live artifact gets no chip", async () => {
@@ -155,7 +155,7 @@ it("self-hosted viewer of a viewers-writable live artifact gets no chip", async 
   expect(screen.queryByText("View only")).toBeNull();
 });
 
-it("hosted viewer whose can says no data writes (editors-only) sees View only", async () => {
+it("hosted viewer whose can says no data writes (editors-only) sees one label, Viewer (#2932)", async () => {
   mountHosted(`/a/${arts[0].id}`, true, undefined, [
     handler({
       access: "viewer",
@@ -164,10 +164,10 @@ it("hosted viewer whose can says no data writes (editors-only) sees View only", 
       dataWriters: "editors",
     }),
   ]);
-  expect(await screen.findByText("View only")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
 });
 
-it("self-hosted viewer share (no can, no space): no notice, no access label", async () => {
+it("self-hosted viewer share (no can, no space): names the access, no chip (#2932)", async () => {
   serve({
     access: "viewer",
     can: undefined,
@@ -176,7 +176,9 @@ it("self-hosted viewer share (no can, no space): no notice, no access label", as
   });
   mount(`/a/${arts[0].id}`);
   await screen.findByRole("heading", { name: arts[0].title });
-  expect(screen.queryByText("Viewer")).toBeNull();
+  // #2932: a page shared with you names your access, even off a space.
+  expect(await screen.findByText("Viewer")).toBeVisible();
+  expect(screen.queryByText("View only")).toBeNull();
 });
 
 it("a space manager gets Share and Delete, is labelled Manager, never Owner", async () => {
