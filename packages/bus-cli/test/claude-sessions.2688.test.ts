@@ -22,7 +22,11 @@ const SECRET = "oa_pat_NOT_A_REAL_TOKEN";
 const session = (
   name: string,
   state: "linked" | "unlinked" | "starting",
-  cause?: "no_helper_call" | "proof_timed_out" | "proof_refused",
+  cause?:
+    | "no_helper_call"
+    | "proof_timed_out"
+    | "proof_refused"
+    | "proof_unmapped",
 ) => ({
   name,
   cwd: "/work/app",
@@ -115,6 +119,7 @@ describe("doctor, live Claude sessions", () => {
     for (const [cause, text] of [
       ["proof_timed_out", "expired"],
       ["proof_refused", "did not match this session"],
+      ["proof_unmapped", "not tied to an instance yet"],
     ] as const) {
       const ctx = ctxWith(
         status({ claude_sessions: [session("s", "unlinked", cause)] }),
@@ -138,6 +143,21 @@ describe("doctor, live Claude sessions", () => {
       "recent helper runs that linked nothing",
     );
     expect(ctx.all().join("\n")).toContain("no live session record appeared");
+  });
+
+  it("an unmapped folder's held proof says the folder is unmapped, not another instance", async () => {
+    const ctx = ctxWith(
+      status({
+        claude_sessions: [],
+        unbound_proofs: [
+          { at: Date.UTC(2026, 10, 17, 9, 30), cause: "unmapped_folder" },
+        ],
+      }),
+    );
+    await doctor(ctx);
+    const all = ctx.all().join("\n");
+    expect(all).toContain("folder is not tied to an instance yet");
+    expect(all).not.toContain("another instance");
   });
 
   it("with the daemon down, adds no second failure: the daemon check already says so", async () => {

@@ -781,15 +781,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /**
    * Merges the saved hashes of this pid + procStart under the record's own
    * (#2861: also when the record already has some, or learned its procStart
-   * after it was created). Returns whether it added any.
+   * after it was created). Returns whether it added any. #2793 S4: only an
+   * entry of the record's own instance (lane) is seeded, so one proof is never
+   * offered to two hubs.
    */
-  // TODO(#2793 S3/S4): once a daemon serves several instances (lanes), the
-  // saved hashes must also match the record's instance, so one proof is never
-  // offered to two hubs (rule 9).
   const seedLinks = (rec: AgentRecord): boolean => {
     if (rec.pid === undefined || rec.procStart === undefined) return false;
     const hit = saved.find(
-      (e) => e.pid === rec.pid && e.procStart === rec.procStart,
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === homedOf(rec),
     );
     if (!hit) return false;
     saved = saved.filter((e) => e !== hit);
@@ -816,7 +818,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // #2861: a record closed by one missed read keeps its hashes while its
       // process still runs.
       if (!a.live && !sameProc(a.pid, a.procStart)) continue;
-      rows.push({ pid: a.pid, procStart: a.procStart, hashes: a.linkHashes });
+      rows.push({
+        pid: a.pid,
+        procStart: a.procStart,
+        hashes: a.linkHashes,
+        ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
+          ? { instance: a.instance }
+          : {}),
+      });
     }
     saved = saved.filter((e) => sameProc(e.pid, e.procStart));
     const all = [...rows, ...saved].slice(0, CLAUDE_LINKS_MAX);
@@ -1309,19 +1318,104 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * unwritten). The latest hash per pid and start time waits here, briefly and
    * bounded; a live record with that pid and start time takes it.
    */
+  // Keyed by pid and instance: one Claude process runs a helper per instance,
+  // and the second must not replace the first.
   const pendingProofs = new Map<
-    number,
-    { procStart: string; hashes: string[]; at: number }
+    string,
+    {
+      pid: number;
+      procStart: string;
+      hashes: string[];
+      at: number;
+      instance: string;
+    }
   >();
+  const pendingKey = (pid: number, instance: string) => `${pid}:${instance}`;
+  /**
+   * #2793 S4: the instance a session's proofs are for: the one it is homed on.
+   * A record on no hub yet counts as main only while main is the one link.
+   */
+  const homedOf = (rec: AgentRecord): string | undefined =>
+    rec.instance ?? (lanes.multi ? undefined : MAIN_INSTANCE);
+  /**
+   * A proof for a session that is homed nowhere yet (its folder is unmapped) is
+   * held, keyed by pid, start time and instance, and sent on that instance's
+   * link once the session is homed there. Claude never runs its helper again,
+   * so dropping it would lose it for good. No frame goes out now. Kept in
+   * claude-links.json with the instance, so a restart keeps it too.
+   */
+  const holdProof = (want: string, rec: AgentRecord, hash: string) => {
+    const { pid, procStart } = rec;
+    if (pid === undefined || procStart === undefined) return;
+    const same = (e: ClaudeLink) =>
+      e.pid === pid &&
+      e.procStart === procStart &&
+      (e.instance ?? MAIN_INSTANCE) === want;
+    const hit = saved.find(same);
+    saved = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        ...(want !== MAIN_INSTANCE ? { instance: want } : {}),
+      },
+      ...saved.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_LINKS_MAX);
+    log(
+      `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
+    );
+    noteUnbound("unmapped_folder", pid);
+    persistLinks();
+  };
+  /** Binds the proofs held for a session once it is homed on their instance. */
+  const claimHeld = (rec: AgentRecord) => {
+    const home = homedOf(rec);
+    if (home === undefined || rec.pid === undefined) return;
+    const hit = saved.find(
+      (e) =>
+        e.pid === rec.pid &&
+        e.procStart === rec.procStart &&
+        (e.instance ?? MAIN_INSTANCE) === home,
+    );
+    if (!hit) return;
+    saved = saved.filter((e) => e !== hit);
+    proofIssues.delete(rec.pid);
+    for (const h of hit.hashes)
+      rec.linkHashes = withLinkHash(rec.linkHashes, h);
+    persistLinks();
+    for (const h of hit.hashes) sendLink(rec, h);
+  };
+  /** A proof for another instance than the session's is dropped here, never offered to any hub. */
+  const dropProof = (want: string, rec: AgentRecord) => {
+    log(
+      `dropped a proof for the instance ${want}: session ${rec.ref} is homed on ${homedOf(rec) ?? "no instance"}`,
+    );
+    noteUnbound("wrong_instance", rec.pid);
+  };
+  /** The hashes a replacing record keeps: only those of a record homed on the same instance. */
+  const carryLinks = (
+    instance: string | undefined,
+    ...from: (AgentRecord | undefined)[]
+  ): string[] | undefined =>
+    from.find((r) => r?.linkHashes !== undefined && r.instance === instance)
+      ?.linkHashes;
   /**
    * #2688: why a pid's proof did not link its session, and the last few
    * `mcp-proof` calls that bound nothing. Causes and times only: never a proof,
    * a hash or a header.
    */
-  const proofIssues = new Map<number, "proof_timed_out" | "proof_refused">();
+  const proofIssues = new Map<
+    number,
+    "proof_timed_out" | "proof_refused" | "proof_unmapped"
+  >();
   const unboundProofs: {
     at: number;
-    cause: "no_live_record" | "process_mismatch" | "no_process_start";
+    cause:
+      | "no_live_record"
+      | "process_mismatch"
+      | "no_process_start"
+      | "wrong_instance"
+      | "unmapped_folder";
   }[] = [];
   const noteUnbound = (
     cause: (typeof unboundProofs)[number]["cause"],
@@ -1333,7 +1427,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proofIssues.delete(pid);
       proofIssues.set(
         pid,
-        cause === "no_live_record" ? "proof_timed_out" : "proof_refused",
+        cause === "no_live_record"
+          ? "proof_timed_out"
+          : cause === "unmapped_folder"
+            ? "proof_unmapped"
+            : "proof_refused",
       );
       while (proofIssues.size > PENDING_PROOF_MAX) {
         const oldest = proofIssues.keys().next().value;
@@ -1343,25 +1441,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
   };
   const claimProofs = () => {
+    for (const rec of agents.all())
+      if (rec.kind === "claude-code" && rec.live) claimHeld(rec);
     if (pendingProofs.size === 0) return;
     const now = Date.now();
-    for (const [pid, p] of pendingProofs)
+    for (const [key, p] of pendingProofs)
       if (now - p.at > PENDING_PROOF_MS) {
-        pendingProofs.delete(pid);
-        noteUnbound("no_live_record", pid);
+        pendingProofs.delete(key);
+        noteUnbound("no_live_record", p.pid);
       }
     for (const rec of agents.all()) {
       if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
         continue;
-      const p = pendingProofs.get(rec.pid);
-      if (!p || p.procStart !== rec.procStart) continue;
-      pendingProofs.delete(rec.pid);
-      proofIssues.delete(rec.pid);
-      for (const hash of p.hashes) {
-        rec.linkHashes = withLinkHash(rec.linkHashes, hash);
-        sendLink(rec, hash);
+      const pid = rec.pid;
+      for (const [key, p] of [...pendingProofs]) {
+        if (p.pid !== pid || p.procStart !== rec.procStart) continue;
+        pendingProofs.delete(key);
+        if (homedOf(rec) === undefined) {
+          for (const h of p.hashes) holdProof(p.instance, rec, h);
+          continue;
+        }
+        if (p.instance !== homedOf(rec)) {
+          dropProof(p.instance, rec);
+          continue;
+        }
+        proofIssues.delete(pid);
+        for (const hash of p.hashes) {
+          rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+          sendLink(rec, hash);
+        }
+        persistLinks();
       }
-      persistLinks();
     }
   };
   /**
@@ -1487,8 +1597,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         pid: s.pid,
         procStart: s.procStart,
         // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
-        ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
-          ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
+        ...(carryLinks(instance, prev, old) !== undefined
+          ? { linkHashes: carryLinks(instance, prev, old) as string[] }
           : {}),
         sessionName: s.name,
         ...(s.nameChosen ? { nameChosen: true } : {}),
@@ -1517,12 +1627,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         unknownSince.set(a.ref, since);
         if (now - since <= UNKNOWN_GRACE_MS) continue;
       }
-      // TODO(#2793 S3/S4): the sibling must also be on the same instance (lane),
-      // so one proof is never offered to two hubs (rule 9).
       // #2861: another record of the same process (a resume's hello can
       // register the new ref before the file switches) takes the hashes the
       // proof in use was bound under, and binds them on its own ref first: the
-      // hub drops this ref's proofs when it goes down.
+      // hub drops this ref's proofs when it goes down. #2793 S4: only a sibling
+      // homed on the same instance (lane), so one proof is never offered to two hubs.
       if (a.linkHashes?.length && a.procStart !== undefined) {
         const next = agents
           .all()
@@ -1531,6 +1640,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               b.kind === "claude-code" &&
               b.live &&
               b.ref !== a.ref &&
+              b.instance === a.instance &&
               b.pid === a.pid &&
               b.procStart === a.procStart &&
               liveRefs.has(b.ref),
@@ -2142,6 +2252,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      const want = req.instance ?? MAIN_INSTANCE;
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
       if (start === null || start === undefined) {
         noteUnbound("no_process_start");
@@ -2162,6 +2273,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           noteUnbound("process_mismatch", req.pid);
           return { bound: false };
         }
+        // #2793 S4: a proof binds only on its own instance's hub, for a
+        // session homed there. Anything else is dropped before any hub sees it.
+        if (homedOf(rec) === undefined) {
+          holdProof(want, rec, req.hash);
+          return { bound: true };
+        }
+        if (want !== homedOf(rec)) {
+          dropProof(want, rec);
+          return { bound: false };
+        }
         proofIssues.delete(req.pid);
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
         persistLinks();
@@ -2171,18 +2292,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Still no record: hold it for the one that may appear (same pid and
       // start time only). Bounded, and a proof nobody claims expires.
       // #2861: keep the first hash and the newest (Claude sends the first).
-      // TODO(#2793 S3/S4): the claiming record must also match this proof's
-      // instance (lane), so one proof is never offered to two hubs (rule 9).
-      const held = pendingProofs.get(req.pid);
+      const key = pendingKey(req.pid, want);
+      const held = pendingProofs.get(key);
       const prior = held?.procStart === start ? held.hashes : [];
-      pendingProofs.delete(req.pid);
-      pendingProofs.set(req.pid, {
+      pendingProofs.delete(key);
+      pendingProofs.set(key, {
+        pid: req.pid,
         procStart: start,
         hashes:
           prior.length === 0 || prior[0] === req.hash
             ? [req.hash]
             : [prior[0] as string, req.hash],
         at: Date.now(),
+        instance: want,
       });
       while (pendingProofs.size > PENDING_PROOF_MAX) {
         const oldest = pendingProofs.keys().next().value;
@@ -2550,8 +2672,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
-          ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
-            ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
+          ...(carryLinks(instance, prev, old) !== undefined
+            ? { linkHashes: carryLinks(instance, prev, old) as string[] }
             : {}),
           ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,

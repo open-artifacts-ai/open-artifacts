@@ -557,6 +557,7 @@ describe("review fixes (#2793 S3)", () => {
       path: h.socketPath,
       pid: 4242,
       hash: "a".repeat(64),
+      instance: "b",
     });
     await vi.waitFor(() => expect(hubB.of("link_bind")).toHaveLength(1));
     expect(h.of("link_bind")).toEqual([]);
