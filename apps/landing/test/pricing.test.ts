@@ -149,6 +149,7 @@ describe("pricing", () => {
       "✓",
     ]);
     // "Soon" only replaces a tick we cannot deliver yet; a dash stays a dash
+    expect(pricing).not.toContain("Outside-sharing");
     expect(cells("Audit log")).toEqual(["–", "–", "Soon", "Soon"]);
     expect(cells("Custom domain")).toEqual(["–", "–", "Soon", "✓"]);
     expect(pricing).toContain(

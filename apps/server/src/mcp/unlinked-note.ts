@@ -41,5 +41,5 @@ export function unlinkedNote(why: UnlinkedWhy | undefined): string | null {
   if (!why || why === "no_machine") return null;
   const row = TABLE[why];
   if (!row) return null;
-  return `This agent isn't linked to its bus session (${row[0]}), so answers to its asks won't reach it. ${row[1]}`;
+  return `This agent isn't linked to its bus session (${row[0]}), so answers to its asks won't reach it. ${row[1]} To see what it missed, call list_comments with answeredSince and compact: true.`;
 }

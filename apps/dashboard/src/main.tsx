@@ -718,7 +718,7 @@ async function startMocks() {
     hosted: parseHostedParam(params.get("hosted")),
     events,
     // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
-    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
+    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect; &bus=0 hides name and mention (never connected the bus).
     welcome:
       params.get("mock") === "welcome"
         ? {
@@ -733,6 +733,8 @@ async function startMocks() {
             // #2632: &teammate=1 ticks the optional sixth step.
             teamStep: params.get("teammate") === "1",
             invitedBy: "Bob Builder",
+            // #2890: &bus=0 is a chat-only person (never connected the bus): three steps.
+            bus: params.get("bus") !== "0",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
@@ -876,8 +878,17 @@ async function startMocks() {
     extra.push(...pushSwitchHandlers(() => mainHandlers));
   }
   // #2508: pictures in comments.
+  const pics = (await import("./mockPictures")).pictureHandlers(
+    mainHandlers,
+    params,
+  );
+  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
   extra.push(
-    ...(await import("./mockPictures")).pictureHandlers(mainHandlers, params),
+    ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
+      ...pics,
+      ...mainHandlers,
+    ]),
+    ...pics,
   );
   // #1910: &waiting=1 carries the waiting fields.
   extra.unshift(

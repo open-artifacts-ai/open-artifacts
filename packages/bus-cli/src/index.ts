@@ -20,7 +20,7 @@ export type Command = (
   | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
-  | { cmd: "mcp-proof"; tokenFile?: string }
+  | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -103,7 +103,7 @@ const FLAGS: Record<string, string[]> = {
   skill: ["instance", "check", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
-  "mcp-proof": ["token-file"],
+  "mcp-proof": ["token-file", "instance"],
   "mcp-proxy": ["instance", "token-file", "token-env", "for"],
   namespace: ["yes"],
 };
@@ -229,7 +229,13 @@ export function parse(argv: string[]): Command {
   }
   const parsed =
     cmd === "mcp-proof"
-      ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
+      ? {
+          cmd,
+          ...(tokenFile ? { tokenFile } : {}),
+          ...(values.instance !== undefined
+            ? { instance: values.instance }
+            : {}),
+        }
       : cmd === "mcp-proxy"
         ? {
             cmd,

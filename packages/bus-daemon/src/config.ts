@@ -175,7 +175,11 @@ export const revokedMarker = (token: string, at = new Date()): string =>
  * older daemon's) or cannot be read still holds.
  */
 export function revokedFor(token: string, h = home()): boolean {
-  const file = join(h, "revoked");
+  return markerHolds(join(h, "revoked"), token);
+}
+
+/** Whether the revoked marker at `file` holds for `token` (same rules as `revokedFor`). */
+export function markerHolds(file: string, token: string): boolean {
   if (!existsSync(file)) return false;
   try {
     const m = JSON.parse(readFileSync(file, "utf8")) as {

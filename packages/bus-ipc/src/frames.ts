@@ -299,6 +299,15 @@ export const LinkProofRequest = z.object({
   type: z.literal("link_proof"),
   pid: z.number().int().positive(),
   hash: LinkProofHashSchema,
+  /**
+   * #2793 S4: the instance this proof is for (a local name). Absent means
+   * main, so an older helper's frame is unchanged. The daemon binds it only on
+   * that instance's hub, and only for a session homed there.
+   */
+  instance: z
+    .string()
+    .regex(/^[a-z0-9-]{1,32}$/)
+    .optional(),
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 
