@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.228.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.227.0...v0.228.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** risky steps described in general words ([#2893](https://github.com/open-artifacts-ai/open-artifacts/issues/2893)) ([#2916](https://github.com/open-artifacts-ai/open-artifacts/issues/2916)) ([ed8562a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8562a034d4ef551ab43286f6651cb915bc521c))
+
 ## [0.227.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.226.0...v0.227.0) (2026-11-19)
 
 
