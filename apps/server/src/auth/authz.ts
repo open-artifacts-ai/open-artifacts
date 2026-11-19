@@ -32,6 +32,7 @@ import {
   spaceMembers,
   spaces,
 } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -188,7 +189,13 @@ export async function accessLevel(
   return loadAccess(env, c, artifactId, opts);
 }
 
-type Access = { level: AccessLevel; artifact: ArtifactRow; personal: boolean };
+type Access = {
+  level: AccessLevel;
+  artifact: ArtifactRow;
+  personal: boolean;
+  /** The caller's own share is a "commenter" one. */
+  commenter: boolean;
+};
 const prefetched = new AsyncLocalStorage<Map<string, Access | null>>();
 const accessKey = (c: Caller, id: string, opts: { allowDeleted?: boolean }) =>
   `${c.kind === "user" ? `u:${c.user.id}:${c.cap ?? ""}` : "anon"}|${id}|${opts.allowDeleted ? 1 : 0}`;
@@ -209,13 +216,18 @@ async function loadAccess(
   artifactId: string,
   opts: { allowDeleted?: boolean },
 ): Promise<Access | null> {
+  return accessOf(c, await accessQuery(env, c, artifactId), opts);
+}
+
+/** The one statement that reads an artifact, its space, the caller's share and space rank. */
+function accessQuery(env: Env, c: Caller, artifactId: string) {
   const db = getDb(env);
   const user = c.kind === "user" ? c.user : null;
   const email = user ? callerEmail(user) : null;
-  const rows = await db
+  return db
     .select({
       a: artifacts,
-      shareRole: shares.role,
+      shareRole: shareRoleSql(),
       kind: spaces.kind,
       publicLinks: spaces.publicLinks,
       allMembersRole: spaces.allMembersRole,
@@ -236,6 +248,15 @@ async function loadAccess(
     )
     .where(eq(artifacts.id, artifactId))
     .limit(1);
+}
+
+type AccessRows = Awaited<ReturnType<typeof accessQuery>>;
+
+function accessOf(
+  c: Caller,
+  rows: AccessRows,
+  opts: { allowDeleted?: boolean },
+): Access | null {
   const row = rows[0];
   if (!row) return null;
   const space: SpaceInput = {
@@ -246,8 +267,39 @@ async function loadAccess(
   };
   const level = rowLevel(c, row.a, row.shareRole, space, opts);
   return level
-    ? { level, artifact: row.a, personal: space.kind !== "shared" }
+    ? {
+        level,
+        artifact: row.a,
+        personal: space.kind !== "shared",
+        commenter: row.shareRole === "commenter",
+      }
     : null;
+}
+
+/**
+ * accessLevel for many callers on one artifact in a few D1 round trips (a
+ * batch of up to 50 statements each) instead of one per caller. No request
+ * cache: it is for background writers (the inbox).
+ */
+export async function accessLevels(
+  env: Env,
+  callers: Caller[],
+  artifactId: string,
+): Promise<(Access | null)[]> {
+  const out: (Access | null)[] = [];
+  for (let i = 0; i < callers.length; i += 50) {
+    const chunk = callers.slice(i, i + 50);
+    const qs = chunk.map((c) => accessQuery(env, c, artifactId));
+    const res =
+      qs.length === 1
+        ? [await qs[0]]
+        : await getDb(env).batch(
+            qs as unknown as [(typeof qs)[0], ...typeof qs],
+          );
+    for (const [j, c] of chunk.entries())
+      out.push(accessOf(c, res[j] as AccessRows, {}));
+  }
+  return out;
 }
 
 /** An artifact's space as decide() reads it; a missing row reads as personal. */
@@ -289,7 +341,11 @@ export function rowLevel(
     },
     spaceRole: space.role,
     shareRole:
-      shareRole === "viewer" || shareRole === "editor" ? shareRole : null,
+      shareRole === "viewer" ||
+      shareRole === "commenter" ||
+      shareRole === "editor"
+        ? shareRole
+        : null,
     allowDeleted: opts.allowDeleted === true,
   });
 }
@@ -524,6 +580,7 @@ export async function authorize(
   const ctx: CanCtx = {
     ...base,
     personal: r.personal,
+    commenterShare: r.commenter,
     ...opts.ctx,
     anonymous: base.anonymous,
     dataWriters: base.dataWriters,
@@ -768,3 +825,6 @@ export function inviteTtlDays(role: string): number | null {
 
 /** True for an admin's row: its lapsed invite is never waived by the domain path. */
 export const isAdminRow = (role: string): boolean => role === "admin";
+
+/** True for a guest invite: restoring that address brings them back as a guest only (#2520). */
+export const isGuestInvite = (role: string): boolean => role === "guest";

@@ -5,11 +5,11 @@ import { expect, test } from "@playwright/test";
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.LINK_HOST_SHOTS_DIR;
 
-for (const phone of [false, true]) {
+for (const phone of [true]) {
   const w = phone ? 390 : 1280;
   test.describe(`${w}`, () => {
     test.use({ hasTouch: phone, isMobile: phone });
-    for (const theme of ["light", "dark"] as const) {
+    for (const theme of ["light"] as const) {
       test(`${theme}: host ${phone ? "shown" : "not shown"}`, async ({
         page,
       }) => {

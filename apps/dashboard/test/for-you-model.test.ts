@@ -1,7 +1,7 @@
 // #2512: what the bell shows and how a "For you" row reads (inbox contract, #2513).
 
 import { describe, expect, it } from "vitest";
-import type { Item as InboxItem } from "../src/foryou/contract";
+import { type Item as InboxItem, readItem } from "../src/foryou/contract";
 import {
   agoText,
   askComment,
@@ -148,6 +148,51 @@ describe("words", () => {
       createdAt: at(60),
     });
     expect(contextLine(r, NOW)).toBe('on "Open Artifacts Asks" · 1 h ago');
+  });
+
+  // #2570 (contract v7): a mention's comment quote, when the server sends it.
+  it("quotes the comment on a mention row when there's an excerpt; nothing when not", () => {
+    const m = item({
+      id: "itm:m",
+      kind: "mention",
+      createdAt: at(20),
+      excerpt: "Can you check the yearly numbers?",
+    });
+    expect(contextLine(m, NOW)).toBe(
+      '"Can you check the yearly numbers?" · on "Open Artifacts Asks" · 20 min ago',
+    );
+    const bare = item({ id: "itm:n", kind: "mention", createdAt: at(20) });
+    expect(contextLine(bare, NOW)).toBe(
+      'on "Open Artifacts Asks" · 20 min ago',
+    );
+    // Only mentions carry it: a reply never quotes.
+    const r = item({
+      id: "itm:r",
+      level: "update",
+      kind: "reply",
+      createdAt: at(20),
+      excerpt: "Not shown",
+    });
+    expect(contextLine(r, NOW)).toBe('on "Open Artifacts Asks" · 20 min ago');
+  });
+
+  it("reads excerpt from the server's item, and drops a blank one", () => {
+    const raw = {
+      id: "itm:m",
+      level: "needs_you",
+      kind: "mention",
+      artifact: { id: "Cd5fGhJkLm6nPqRs", title: "Pricing table" },
+      actor: { kind: "user", name: "Sam Rivera", me: false },
+      text: "Sam Rivera mentioned you",
+      href: "/a/Cd5fGhJkLm6nPqRs",
+      createdAt: at(20),
+      readAt: null,
+    };
+    expect(readItem({ ...raw, excerpt: "  Look at row 4  " })?.excerpt).toBe(
+      "Look at row 4",
+    );
+    expect(readItem({ ...raw, excerpt: "   " })?.excerpt).toBeUndefined();
+    expect(readItem(raw)?.excerpt).toBeUndefined();
   });
 
   it("says when Later brings it back", () => {

@@ -10,11 +10,7 @@ You need Node 22 or newer on each machine.
 
 ## Install
 
-Run this on each machine, with your instance's URL:
-
-```sh
-npx @open-artifacts/bus install --instance https://artifacts.example.com
-```
+Run the "Install the bus" step of your instance's `llms.txt` on each machine (for example `https://artifacts.example.com/llms.txt`). Your agent can run it for you. The step downloads one copy of the bus into a temporary folder, checks it against the release your instance pins, and only then runs the installer from that copy. If the check fails, nothing runs. Don't use `npx @open-artifacts/bus`: it downloads a second copy that nobody checked.
 
 You can set `OA_BUS_INSTANCE` instead of passing `--instance`. Once a machine is approved, you can leave the flag out.
 
@@ -31,11 +27,7 @@ Apps built on the Agent SDK join the bus only when you give the session a name.
 
 ### Without the background service
 
-Add `--no-service` to skip step 3:
-
-```sh
-npx @open-artifacts/bus install --instance https://artifacts.example.com --no-service
-```
+Add `--no-service` to the last command of that step to skip step 3.
 
 Use it when you do not want a service on this machine, such as in a container or on a shared computer. You then start the bus yourself, and again after each reboot:
 
@@ -58,15 +50,23 @@ To check the install without changing anything, run `oa-bus install --check`.
 
 The Codex app unloads a thread it is not showing after a few hours idle. The agent then shows as away on the bus, and its messages wait. Open the thread in the Codex app. Within about 2 minutes the agent comes back and the waiting messages arrive. You do not need to type anything.
 
+## Claude Desktop
+
+Sessions in the Code tab of Claude Desktop join the bus. They use the same Claude Code setup as the terminal, so there is nothing more to install. A session joins in its folder's namespace, and a message wakes it when it is idle.
+
+The session's title is its name on the bus. Rename the session in Desktop to set it. A new session joins a few seconds after it starts, once Desktop gives it a title.
+
+When you quit Desktop, its sessions leave the bus. Run agents that should stay on the bus in a terminal.
+
+Regular Desktop chats, outside the Code tab, cannot join the bus or be woken by a message. They reach your pages through the Open Artifacts connector only.
+
 ## Habits for your agents
 
 Agents learn how to work together from your instance's skill, at `/skill.md` on your instance's address. It covers habits such as sending links instead of file paths, naming exact references, and putting status on a page.
 
 ## Upgrade
 
-```sh
-npx @open-artifacts/bus@latest install
-```
+Run the "Install the bus" step of your instance's `llms.txt` again. It checks the new download before it runs anything.
 
 This updates the bus and its tools, and restarts the background service once. Agent sessions stay on the bus. Claude Code sessions keep their link to your pages (bus 0.152.1 or newer). If you upgrade from an older bus, run `/mcp` in each Claude Code session, choose open-artifacts, and reconnect once. A Codex thread rejoins the next time it uses a bus tool.
 

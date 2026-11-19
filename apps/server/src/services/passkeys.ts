@@ -850,6 +850,52 @@ export async function confirmFor(
   return undefined;
 }
 
+/** #2577: the prompt for adding someone to "my agents listen to": bound to the level and end date. */
+export const listenScope = (owner: string, member: string) =>
+  `listen:${owner}:${member}`;
+
+export const listenChallenge = (
+  env: Env,
+  owner: string,
+  member: string,
+  binding: string,
+  now = Date.now(),
+): Promise<PasskeyChallenge> =>
+  requestOptions(env, owner, "pick", listenScope(owner, member), binding, now);
+
+export const verifyListen = (
+  env: Env,
+  owner: string,
+  member: string,
+  binding: string,
+  assertion: unknown,
+  now = Date.now(),
+) =>
+  verifyForScope(
+    env,
+    owner,
+    "pick",
+    listenScope(owner, member),
+    binding,
+    assertion,
+    now,
+  );
+
+/** Whether the member has a passkey at all (one still pending removal counts until it goes). */
+export async function hasPasskey(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const r = await stmt(
+    env.DB,
+    "select 1 as x from passkeys where user_id = ?1 and (removal_at is null or removal_at > ?2) limit 1",
+  )
+    .bind(userId, now)
+    .first();
+  return !!r;
+}
+
 /** The ask a pick or challenge is for: its binding is the option. */
 export const pickScope = (artifactId: string, commentId: string) =>
   `pick:${artifactId}:${commentId}`;

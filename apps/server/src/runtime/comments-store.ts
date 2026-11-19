@@ -33,7 +33,7 @@ create index if not exists comments_thread on comments (thread_id, created_at);
 create table if not exists comment_asks (
   comment_id text primary key, thread_id text not null, question text not null,
   options text not null, recommended text, addressees text not null, answer text,
-  confirm text, decider text, replaces text
+  confirm text, decider text, replaces text, withdrawn text
 );
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_ask_picks (
@@ -151,6 +151,12 @@ export type StoredAsk = {
   replaces?: string;
   /** #2323: the comment id of the ask that replaces this one (read from the other row, never stored here). */
   replacedBy?: string;
+  /** #2511: withdrawn by its asker before any decision. `replacedBy` names the card that replaces it on another artifact. */
+  withdrawn?: {
+    at: string;
+    by: StoredActor;
+    replacedBy?: { artifactId: string; threadId: string; commentId: string };
+  };
   /** #2381: every pick in order, append-only (a change is a new entry); a legacy ask's lone answer reads as one. */
   history?: StoredPick[];
   /** The thread is resolved. */
@@ -174,17 +180,36 @@ export type StoredComment = {
   editedAt: string | null;
   ask?: StoredAsk;
   mentions?: StoredTarget[];
+  /** #2770: the people this comment @mentions, by user id (comment_targets kind "person"). */
+  people?: string[];
   /** #2035: the participant agents a person's reply also told (comment_targets kind "reply"). */
   notified?: StoredTarget[];
+  /** #2577: agents of other people this comment's delivery is held for (comment_targets kind "held"): `held` until their person allows it, `releasing` between the allow and the notice. */
+  held?: { key: string; owner: string; state: string; way: string }[];
+};
+
+/** #2577: an agent of another person, as a held delivery needs it: its roster key, name, owner and bus namespace. */
+export type HeldAgent = {
+  key: string;
+  name: string;
+  owner: string;
+  namespace: string;
 };
 
 /** What a new comment carries besides its text (#1535). */
 export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
-  ask?: Omit<StoredAsk, "answer" | "closed" | "history" | "replacedBy">;
+  ask?: Omit<
+    StoredAsk,
+    "answer" | "closed" | "history" | "replacedBy" | "withdrawn"
+  >;
   mentions?: StoredAgent[];
+  /** #2770: people @mentioned, by user id; already checked to be able to read the artifact. */
+  people?: string[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
+  /** #2577: held for the agent's person; the words stay, undelivered, and agents of that person read a placeholder. `way`: mention | reply | ask | page. */
+  held?: { agent: HeldAgent; way: string }[];
 };
 
 /**
@@ -367,6 +392,7 @@ type AskRow = {
   confirm: string | null;
   decider: string | null;
   replaces: string | null;
+  withdrawn: string | null;
   status: string;
 };
 type TargetRow = {
@@ -430,6 +456,13 @@ const askOf = (r: AskRow): StoredAsk => ({
   ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
+  ...(r.withdrawn
+    ? {
+        withdrawn: JSON.parse(r.withdrawn) as NonNullable<
+          StoredAsk["withdrawn"]
+        >,
+      }
+    : {}),
   ...(r.answer
     ? { answer: JSON.parse(r.answer) as NonNullable<StoredAsk["answer"]> }
     : {}),
@@ -446,7 +479,7 @@ function attachExtras(
   const ids = JSON.stringify(threadIds);
   const byId = new Map(comments.map((c) => [c.id, c]));
   for (const r of sql.exec<AskRow>(
-    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status
+    `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, a.withdrawn, t.status
      from comment_asks a join comment_threads t on t.id = a.thread_id
      where a.thread_id in (select value from json_each(?))`,
     ids,
@@ -480,11 +513,27 @@ function attachExtras(
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
      from comment_targets g
-     where g.kind in ('mention', 'asker', 'reply') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
+     where g.kind in ('mention', 'asker', 'reply', 'held', 'person') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
     if (!c) continue;
+    if (r.kind === "person") {
+      c.people = [...(c.people ?? []), r.key];
+      continue;
+    }
+    if (r.kind === "held") {
+      c.held = [
+        ...(c.held ?? []),
+        {
+          key: r.key,
+          owner: r.owner ?? "",
+          state: r.state,
+          way: r.name,
+        },
+      ];
+      continue;
+    }
     const t: StoredTarget = {
       key: r.key,
       name: r.name,
@@ -537,8 +586,8 @@ function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
   };
   if (old === commentId) refuse("bad_request", "An ask cannot replace itself");
   const row = sql
-    .exec<{ author: string }>(
-      "select c.author as author from comment_asks a join comments c on c.id = a.comment_id where a.comment_id = ?",
+    .exec<{ author: string; answer: string | null; withdrawn: string | null }>(
+      "select c.author as author, a.answer as answer, a.withdrawn as withdrawn from comment_asks a join comments c on c.id = a.comment_id where a.comment_id = ?",
       old,
     )
     .toArray()[0];
@@ -564,6 +613,76 @@ function checkReplaces(sql: SqlStorage, commentId: string, old: string): void {
     )
     .one().n;
   if (taken > 0) refuse("already_replaced", "That ask is already replaced");
+  // #2511: an answered card's pick is the record; a withdrawn one is already gone.
+  if ((row as { answer: string | null }).answer || hasDecision(sql, old))
+    refuse(
+      "already_answered",
+      "That ask is answered: post a new ask instead of replacing it",
+    );
+  if ((row as { withdrawn: string | null }).withdrawn)
+    refuse("withdrawn", "That ask was withdrawn");
+}
+
+/** Whether the ask has a decision (a pick made as its decider, or a stored answer). */
+function hasDecision(sql: SqlStorage, commentId: string): boolean {
+  return (
+    sql
+      .exec<{ n: number }>(
+        "select count(*) as n from comment_ask_picks where comment_id = ? and decision = 1",
+        commentId,
+      )
+      .one().n > 0
+  );
+}
+
+/**
+ * #2511: withdraws the ask on `commentId` (its asker's check is the service's).
+ * Refused 409 `already_answered` once it has a decision. Idempotent: a repeat
+ * returns the same state, and a repeat that names the card that replaces it
+ * fills that in (the retry of a cross-page replace); a different one is
+ * `already_replaced`. Returns whether anything changed.
+ */
+export function withdrawAsk(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  by: StoredActor,
+  now: string,
+  replacedBy?: { artifactId: string; threadId: string; commentId: string },
+): boolean {
+  const r = askRow(sql, threadId, commentId);
+  if (!r) throw new Error("oa:not_found:Not found");
+  const w = r.ask.withdrawn;
+  if (w) {
+    const have = w.replacedBy;
+    if (!replacedBy) return false;
+    if (
+      have &&
+      (have.artifactId !== replacedBy.artifactId ||
+        have.threadId !== replacedBy.threadId ||
+        have.commentId !== replacedBy.commentId)
+    )
+      throw new Error("oa:already_replaced:That ask is already replaced");
+    if (have) return false;
+    sql.exec(
+      "update comment_asks set withdrawn = ? where comment_id = ?",
+      JSON.stringify({ ...w, replacedBy }),
+      commentId,
+    );
+    return true;
+  }
+  if (r.ask.answer || hasDecision(sql, commentId))
+    throw new Error(
+      "oa:already_answered:That ask is answered: post a new ask instead of withdrawing it",
+    );
+  if (r.ask.replacedBy)
+    throw new Error("oa:already_replaced:That ask is already replaced");
+  sql.exec(
+    "update comment_asks set withdrawn = ? where comment_id = ?",
+    JSON.stringify({ at: now, by, ...(replacedBy ? { replacedBy } : {}) }),
+    commentId,
+  );
+  return true;
 }
 
 /** Stores the ask and mentions of a new comment, in the caller's transaction. */
@@ -602,6 +721,162 @@ export function insertExtras(
     );
   for (const m of x.mentions ?? []) put("mention", m);
   for (const m of x.asker ?? []) put("asker", m);
+  for (const id of x.people ?? [])
+    sql.exec(
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+       values (?, ?, 'person', ?, '', 'noted', null, null)`,
+      commentId,
+      threadId,
+      id,
+    );
+  for (const h of x.held ?? [])
+    addHeld(sql, threadId, commentId, h.agent, h.way);
+}
+
+/** #2577: holds the delivery to an agent of another person (kind "held": `name` carries the way in). */
+export function addHeld(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  p: HeldAgent,
+  way: string,
+): void {
+  sql.exec(
+    `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+     values (?, ?, 'held', ?, ?, 'held', ?, ?)`,
+    commentId,
+    threadId,
+    p.key,
+    way,
+    p.owner,
+    JSON.stringify({ namespace: p.namespace, name: p.name }),
+  );
+}
+
+/** #2733: lets go of the holds a reply took up front for agents it may deliver to (only holds still in state "held"). */
+export function releaseHeldTargets(
+  sql: SqlStorage,
+  commentId: string,
+  keys: string[],
+): void {
+  for (const key of keys)
+    sql.exec(
+      "delete from comment_targets where comment_id = ? and kind = 'held' and key = ? and state = 'held'",
+      commentId,
+      key,
+    );
+}
+
+/**
+ * #2577: everything the placeholder hides, as one string: the comment's words,
+ * an ask's question, options and recommendation, the thread's quote and the
+ * mention names. The service hashes it; an allow carries that hash, and the
+ * release below compares the string itself inside the transaction, so an edit
+ * between the notice and the allow is never delivered.
+ */
+export function heldCanon(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+): string | null {
+  const c = sql
+    .exec<{ body: string; anchor: string }>(
+      `select c.body as body, t.anchor as anchor from comments c join comment_threads t on t.id = c.thread_id
+       where c.id = ? and c.thread_id = ?`,
+      commentId,
+      threadId,
+    )
+    .toArray()[0];
+  if (!c) return null;
+  const ask = sql
+    .exec<{ question: string; options: string; recommended: string | null }>(
+      "select question, options, recommended from comment_asks where comment_id = ?",
+      commentId,
+    )
+    .toArray()[0];
+  const names = sql
+    .exec<{ name: string }>(
+      "select name from comment_targets where comment_id = ? and kind = 'mention' order by key",
+      commentId,
+    )
+    .toArray()
+    .map((n) => n.name);
+  return JSON.stringify([c.body, c.anchor, ask ?? null, names]);
+}
+
+/** The held targets of a comment, optionally for one owner. */
+export function heldOf(
+  sql: SqlStorage,
+  commentId: string,
+  owner?: string,
+): {
+  key: string;
+  owner: string;
+  state: string;
+  way: string;
+  namespace: string;
+  name: string;
+}[] {
+  return sql
+    .exec<{
+      key: string;
+      owner: string;
+      state: string;
+      name: string;
+      identity: string | null;
+    }>(
+      `select key, owner, state, name, identity from comment_targets where comment_id = ? and kind = 'held'${owner ? " and owner = ?" : ""}`,
+      ...(owner ? [commentId, owner] : [commentId]),
+    )
+    .toArray()
+    .map((r) => {
+      const a = JSON.parse(r.identity ?? "{}") as {
+        namespace?: string;
+        name?: string;
+      };
+      return {
+        key: r.key,
+        owner: r.owner,
+        state: r.state,
+        way: r.name,
+        namespace: a.namespace ?? "",
+        name: a.name ?? "",
+      };
+    });
+}
+
+/**
+ * Moves the held targets of `owner` on a comment to "releasing", only if the
+ * words are still exactly `expect`. False: they changed (stay held).
+ */
+export function releaseHeld(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  owner: string,
+  expect: string,
+): boolean {
+  if (heldCanon(sql, threadId, commentId) !== expect) return false;
+  sql.exec(
+    "update comment_targets set state = 'releasing' where comment_id = ? and kind = 'held' and owner = ? and state = 'held'",
+    commentId,
+    owner,
+  );
+  return true;
+}
+
+/** The notices went out: these keys are allowed. The row stays, so an edit of the words can send it back to held. */
+export function finishHeld(
+  sql: SqlStorage,
+  commentId: string,
+  keys: string[],
+): void {
+  for (const k of keys)
+    sql.exec(
+      "update comment_targets set state = 'allowed' where comment_id = ? and kind = 'held' and key = ?",
+      commentId,
+      k,
+    );
 }
 
 /**
@@ -843,6 +1118,13 @@ export function takeThreadReply(
   max: number,
   /** The comment @-mentions someone: agents that joined only as the page's publisher are skipped (#1968). */
   skipPage = false,
+  /**
+   * #2733: fail closed. Every participant that belongs to another person than
+   * `author` is held for this comment in the same step that takes them, so the
+   * words are masked for them from the moment the reply is told about; the
+   * service then lets go (releaseHeldTargets) of the ones it may deliver to.
+   */
+  hold?: { commentId: string; author: string },
 ): StoredParticipant[] {
   if (threadStatus(sql, threadId) !== "open") return [];
   const total =
@@ -872,6 +1154,14 @@ export function takeThreadReply(
       at,
     );
     room--;
+    if (hold && r.owner !== hold.author)
+      addHeld(
+        sql,
+        threadId,
+        hold.commentId,
+        { key: r.key, name: r.name, owner: r.owner, namespace: r.namespace },
+        "reply",
+      );
     out.push({
       kind: "agent",
       key: r.key,
@@ -994,7 +1284,7 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state not in ('gone', 'withdrawn') limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind not in ('reply', 'person') and state not in ('gone', 'withdrawn') limit 1",
       commentId,
     )
     .toArray();
@@ -1167,7 +1457,7 @@ export function askRow(
 ): { ask: StoredAsk; status: string; author: string; legacy: boolean } | null {
   const r = sql
     .exec<AskRow & { status: string; author: string }>(
-      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, t.status, c.author
+      `select a.comment_id, a.question, a.options, a.recommended, a.addressees, a.answer, a.confirm, a.decider, a.replaces, a.withdrawn, t.status, c.author
        from comment_asks a join comment_threads t on t.id = a.thread_id join comments c on c.id = a.comment_id
        where a.comment_id = ? and a.thread_id = ?`,
       commentId,

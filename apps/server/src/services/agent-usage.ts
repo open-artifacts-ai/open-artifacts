@@ -28,7 +28,26 @@ export type AgentIdentity = {
 export const NAMES_OF_MAX = 100;
 
 /** An agent ref plus the grant or token behind it, and the bus session it proved (server-internal; never serialized). */
-export type AgentAttr = AgentRef & { via?: Via; identity?: AgentIdentity };
+export type AgentAttr = AgentRef & {
+  via?: Via;
+  identity?: AgentIdentity;
+  /** Why this call carried no link (#2688): a fixed word, never an id or a hash. Server-internal; only a tool result's note reads it. */
+  unlinked?: UnlinkedWhy;
+};
+
+/** Why an MCP call is unlinked: the proof lookup's miss reasons (#2810, #2826), plus no_proof (none sent). */
+export type UnlinkedWhy =
+  | "no_proof"
+  | "unbound"
+  | "closed"
+  | "unlinked"
+  | "revoked"
+  | "other"
+  | "no_hub"
+  | "malformed"
+  | "timeout"
+  | "no_machine"
+  | "error";
 
 /** `versions.agent_via` for a publish: `g:<grantId>` or `t:<tokenId>` (a scrubbed row: SCRUBBED_VIA). */
 export const viaKey = (v: Via) => `${v.kind === "grant" ? "g" : "t"}:${v.id}`;

@@ -26,6 +26,8 @@ import {
   MAILBOX_RETAIN_MS,
   MachineLabelSchema,
   type NameKind,
+  type NoticeMeta,
+  NoticeMetaSchema,
   newId,
   PING,
   PONG,
@@ -34,6 +36,7 @@ import {
   type RefusalReason,
   type SendFrame,
   type ServerFrame,
+  semverGte,
   suffixName,
   utf8Bytes,
 } from "@oa/bus-protocol";
@@ -70,6 +73,7 @@ import {
   pruneDeadFollows,
   unfollow,
 } from "../services/follows.js";
+import { awayState } from "../services/notification-prefs.js";
 import {
   namedRecorded,
   noteAgentNamed,
@@ -156,6 +160,13 @@ import {
   type StatusChange,
   statusWire,
 } from "./status.js";
+import {
+  markStopped,
+  noteHello,
+  readRunVersion,
+  recordReport,
+  STOPPED_AFTER_MS,
+} from "./updates.js";
 
 // BusHub (#1291): OpenBus 0.63.0's hub DO (apps/server/src/hub/do.ts), one per
 // member (idFromName(busHubName(userId))). Dropped from the port: machines'
@@ -209,6 +220,8 @@ const HOUR_MS = 3_600_000;
 const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 /** meta key: when the last closeAll started (ms). */
 const REVOKED_AT_KEY = "revoked_at";
+/** meta key: when the earliest `switching` report's 5 minutes end (ms); absent: none waits (#2552). */
+const UPDATE_DUE_KEY = "update_due";
 /**
  * Latest alarm time ever asked of workerd, which throws past year 2189. A
  * later deadline is clamped here (and re-checked when this alarm fires).
@@ -352,7 +365,45 @@ const HUB_CAPS = [
   BUS_CAPS.noticeAck,
   BUS_CAPS.nameChosen,
   BUS_CAPS.ackConfirm,
+  BUS_CAPS.runVersion,
+  BUS_CAPS.noticeMeta,
+  BUS_CAPS.ownerAway,
 ];
+
+/** #2759: `owner_away` goes only to a socket whose hello listed BUS_CAPS.ownerAway. */
+const ownerAwayGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ownerAway);
+};
+
+/** #2759: how long a hello waits for the member's quiet hours before it answers without them. */
+const OWNER_AWAY_READ_MS = 300;
+const OWNER_AWAY_DUE_KEY = "owner_away_due";
+/** The soonest the next quiet-hours edge is armed, so a bad edge cannot loop the alarm. */
+const OWNER_AWAY_MIN_GAP_MS = 60_000;
+/** The `owner_away` push: when quiet hours end (ms), or null outside them. */
+const ownerAwayFrame = (until: number | null) =>
+  ({
+    v: 1,
+    id: frameId(),
+    type: "owner_away",
+    until: until === null ? null : new Date(until).toISOString(),
+  }) as const;
+
+/**
+ * #2552: the update frames (run_version, install_now, update_ack, and an
+ * accepted update_report) go only to, and come only from, a socket whose
+ * hello listed BUS_CAPS.runVersion.
+ */
+const runVersionGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.runVersion);
+};
+
+/** How long the hub keeps the instance's named version before it asks D1 again. */
+const RUN_VERSION_TTL_MS = 30_000;
+/** A report's D1 write waits this long; the daemon waits 5 s for the answer. */
+const REPORT_WRITE_MS = 3000;
 
 /**
  * Follows (#1317, BUS_CAPS.follow): the follow, unfollow and following frames
@@ -391,6 +442,12 @@ const linkGated = (ws: WebSocket): boolean => {
  * socket with the cap. 0.138.x daemons count as old, which is acceptable.
  */
 const noticeGated = (ws: WebSocket): boolean => followGated(ws);
+
+/** #2768: `deliver.meta` goes only to a socket whose hello listed BUS_CAPS.noticeMeta. */
+const noticeMetaGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.noticeMeta);
+};
 
 /**
  * #1752 (BUS_CAPS.noticeAck): a socket that acks a notice only once its
@@ -888,8 +945,12 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
-/** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
-export const PROOFS_PER_SESSION = 4;
+/**
+ * #1984: most proofs a live session holds; a newer bind evicts the least
+ * recently used. 16, not 4: Claude may run the helper several times while it
+ * keeps sending an older proof, and evicting that one unlinks every call.
+ */
+export const PROOFS_PER_SESSION = 16;
 
 /**
  * #2110: how long a session closed into away (sessions{closed}: the daemon's
@@ -910,9 +971,12 @@ function dropProofs(sql: SqlStorage, ids: string): void {
 
 /**
  * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
- * PROOFS_PER_SESSION: the oldest goes) and mints the agent's identity_id at
- * its first bind. Another row holding the same hash loses it, so a hash names
- * one session. `agents.proof_hash` mirrors the newest proof.
+ * PROOFS_PER_SESSION: the least recently used goes) and mints the agent's
+ * identity_id at its first bind. Another row holding the same hash loses it,
+ * so a hash names one session. A hash this session already holds keeps its
+ * place: a daemon's replay after a reconnect must not push out the proof the
+ * session is sending (agentByProof moves that one up on each use).
+ * `agents.proof_hash` mirrors the newest proof.
  */
 function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
   const lost = all<{ agent_id: string }>(
@@ -924,7 +988,9 @@ function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
   sql.exec(
     `insert into agent_proofs (hash, agent_id, seq)
      values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
-     on conflict (hash) do update set agent_id = excluded.agent_id, seq = excluded.seq`,
+     on conflict (hash) do update set agent_id = excluded.agent_id,
+       seq = case when agent_proofs.agent_id = excluded.agent_id
+                  then agent_proofs.seq else excluded.seq end`,
     hash,
     agentId,
   );
@@ -3636,9 +3702,11 @@ type NoticeRow = {
   foldAcks: string | null;
   /** #2238: the identity the notice is addressed to; null: by name only. */
   toIdentity: string | null;
+  /** #2768: the notice's structured fields as JSON (NoticeMeta); null: none. */
+  meta: string | null;
 };
 const NOTICE_COLS =
-  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity";
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks, to_identity as toIdentity, meta";
 
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
@@ -3732,6 +3800,34 @@ function noticeAckOf(n: BusNotice): string | null {
   });
 }
 
+/**
+ * #2768: the notice's structured fields as the JSON stored with it, or null
+ * when it has none worth sending (a field that fails the wire schema leaves the
+ * whole object out: the frame must never fail a daemon's decoder).
+ */
+function noticeMetaOf(n: BusNotice): string | null {
+  const meta = NoticeMetaSchema.safeParse({
+    kind: n.kind,
+    ...(n.artifactId ? { artifact_id: n.artifactId } : {}),
+    ...(n.commentId ? { comment_id: n.commentId } : {}),
+    ...(n.threadId ? { thread_id: n.threadId } : {}),
+    ...(n.userId ? { user_id: n.userId } : {}),
+    ...(n.until ? { until: n.until } : {}),
+  });
+  return meta.success ? JSON.stringify(meta.data) : null;
+}
+
+/** #2768: the stored meta, or undefined when absent or malformed (never a throw). */
+function parseNoticeMeta(s: string | null): NoticeMeta | undefined {
+  if (!s) return undefined;
+  try {
+    const r = NoticeMetaSchema.safeParse(JSON.parse(s));
+    return r.success ? r.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
 function wellFormedNotice(n: BusNotice): boolean {
   return (
@@ -3755,7 +3851,14 @@ function wellFormedNotice(n: BusNotice): boolean {
     (n.toIdentity === undefined ||
       (typeof n.toIdentity === "string" &&
         n.toIdentity.length > 0 &&
-        n.toIdentity.length <= 128))
+        n.toIdentity.length <= 128)) &&
+    // #2768: structured fields are bounded and safe, or the notice is refused.
+    (n.userId === undefined ||
+      (typeof n.userId === "string" &&
+        NoticeMetaSchema.shape.user_id.safeParse(n.userId).success)) &&
+    (n.until === undefined ||
+      (typeof n.until === "string" &&
+        NoticeMetaSchema.shape.until.safeParse(n.until).success))
   );
 }
 
@@ -3772,7 +3875,11 @@ function identityOfAgent(sql: SqlStorage, agentId: string): string | null {
 }
 
 /** #1317: one notice as a deliver frame from the reserved sender; no receipt, no mail row, no from_id. */
-function noticeFrame(agent: AgentRow, text: string): ServerFrame {
+function noticeFrame(
+  agent: AgentRow,
+  text: string,
+  meta?: NoticeMeta,
+): ServerFrame {
   return {
     v: 1,
     id: frameId(),
@@ -3782,6 +3889,7 @@ function noticeFrame(agent: AgentRow, text: string): ServerFrame {
     from_name: NOTICE_SENDER,
     namespace: agent.namespace,
     body: text,
+    ...(meta ? { meta } : {}),
   };
 }
 
@@ -4400,7 +4508,7 @@ export class BusHub extends DurableObject<Env> {
               );
             }
             sql.exec(
-              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}
+              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?, meta = null"}
                where to_ns = ? and to_lname = ? and ckey = ?`,
               ack,
               foldN,
@@ -4491,7 +4599,7 @@ export class BusHub extends DurableObject<Env> {
    */
   async agentByProof(hash: string): Promise<AgentIdentity | null> {
     if (!LinkProofHashSchema.safeParse(hash).success) return null;
-    return one<AgentIdentity>(
+    const found = one<AgentIdentity>(
       this.ctx.storage.sql,
       `select a.identity_id as identityId, a.namespace, a.name, a.kind
         from agent_proofs p join agents a on a.id = p.agent_id
@@ -4502,6 +4610,52 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       this.#now() - PROOF_AWAY_GRACE_MS,
     );
+    // The proof in use becomes its session's newest, so no later bind or
+    // replay evicts it. A no-op when it already is.
+    if (found)
+      this.ctx.storage.sql.exec(
+        `update agent_proofs set seq = (select max(seq) + 1 from agent_proofs)
+          where hash = ?1 and seq < (select max(seq) from agent_proofs
+            where agent_id = (select agent_id from agent_proofs where hash = ?1))`,
+        hash,
+      );
+    return found;
+  }
+
+  /**
+   * Why `hash` resolves to no session (agentByProof gave null), for the log
+   * only: "unbound" (no session holds it), "closed" (its session is closed or
+   * away past PROOF_AWAY_GRACE_MS), "unlinked" (no identity), "revoked" (its
+   * machine is revoked) or "other". Never the hash, an id or a name. Worker only.
+   */
+  async proofMissReason(
+    hash: string,
+  ): Promise<"unbound" | "closed" | "unlinked" | "revoked" | "other"> {
+    if (!LinkProofHashSchema.safeParse(hash).success) return "other";
+    const r = one<{
+      live: number;
+      away: number | null;
+      identity: string | null;
+      revoked: number | null;
+    }>(
+      this.ctx.storage.sql,
+      `select a.live, a.away_since as away, a.identity_id as identity,
+              m.revoked_at as revoked
+         from agent_proofs p join agents a on a.id = p.agent_id
+         left join machines m on m.id = a.machine_id
+        where p.hash = ? and a.org_id = ? limit 1`,
+      hash,
+      OWNER_ORG_ID,
+    );
+    if (!r) return "unbound";
+    if (r.revoked !== null) return "revoked";
+    if (r.identity === null) return "unlinked";
+    if (
+      r.live !== 1 &&
+      (r.away === null || r.away <= this.#now() - PROOF_AWAY_GRACE_MS)
+    )
+      return "closed";
+    return "other";
   }
 
   /**
@@ -5411,6 +5565,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #2552: as unknown as it is to an older hub without the cap.
+    if (f.type === "update_report" && !runVersionGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // #2079: as unknown as it is to an older hub without the cap.
     if (f.type === "waiting_query" && !waitingQueryGated(ws)) {
       reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
@@ -5432,7 +5592,7 @@ export class BusHub extends DurableObject<Env> {
     }
 
     switch (f.type) {
-      case "hello":
+      case "hello": {
         // #1325: the hello's caps gate the rename wire (renameGated). Kept
         // in the attachment so they survive hibernation; a later hello
         // replaces them. Other attachment fields are kept.
@@ -5443,6 +5603,12 @@ export class BusHub extends DurableObject<Env> {
             ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
           } satisfies Attachment);
         }
+        // #2759: a cap'd hello is told when the owner's quiet hours end when
+        // the hub already knows (a fresh cache); else a push follows the read.
+        const awayUntil =
+          hasCap(f, BUS_CAPS.ownerAway) && this.#awayFresh()
+            ? this.#away
+            : undefined;
         sendFrame(ws, {
           v: 1,
           id: f.id,
@@ -5461,11 +5627,45 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
           hasCap(f, BUS_CAPS.waitingQuery) ||
-          hasCap(f, BUS_CAPS.ackConfirm)
-            ? { caps: [...HUB_CAPS] }
+          hasCap(f, BUS_CAPS.ackConfirm) ||
+          hasCap(f, BUS_CAPS.runVersion) ||
+          hasCap(f, BUS_CAPS.noticeMeta) ||
+          hasCap(f, BUS_CAPS.ownerAway)
+            ? // Everything the hub always listed, plus owner_away only to a
+              // daemon that listed it: an older daemon decodes at most 16
+              // caps, and HUB_CAPS outgrew that (#2759).
+              {
+                caps: HUB_CAPS.filter(
+                  (c) => c !== BUS_CAPS.ownerAway || hasCap(f, c),
+                ),
+              }
+            : {}),
+          ...(awayUntil !== undefined
+            ? {
+                owner_away_until:
+                  awayUntil.until === null
+                    ? null
+                    : new Date(awayUntil.until).toISOString(),
+              }
+            : {}),
+          // #2552: only when the instance names one, and only to a socket
+          // that listed the cap. Unknown yet (cold cache): the push below.
+          // null: it names none (cleared, #2719).
+          ...(hasCap(f, BUS_CAPS.runVersion) && this.#runVersionFresh()
+            ? { run_version: this.#runVersion }
             : {}),
         });
-        return;
+        {
+          const updates = hasCap(f, BUS_CAPS.runVersion)
+            ? this.#helloUpdates(ws, f.id, machineId)
+            : undefined;
+          if (!hasCap(f, BUS_CAPS.ownerAway)) return updates;
+          const away = this.#helloOwnerAway(ws, awayUntil !== undefined);
+          return updates === undefined
+            ? away
+            : Promise.all([updates, away]).then(() => undefined);
+        }
+      }
       case "sessions": {
         // Open sessions come back with their own agent_up; closed ones end.
         const change: RosterChange = { namespaces: [], global: false };
@@ -5618,6 +5818,8 @@ export class BusHub extends DurableObject<Env> {
       case "unfollow":
       case "following":
         return sender ? this.#follows(ws, f, sender) : undefined;
+      case "update_report":
+        return this.#updateReport(ws, f, machineId);
       case "waiting_query":
         // Machine-authenticated: only this machine's own away agents answer.
         sendFrame(ws, {
@@ -5650,6 +5852,348 @@ export class BusHub extends DurableObject<Env> {
         }
         return this.#rename(ws, f, a);
       }
+    }
+  }
+
+  // ------------------------------------------------- #2759 owner away
+
+  /** The member's quiet-hours state as last read (by a hello, an edge or a prefs save). */
+  #away: { until: number | null; next: number | null } | undefined;
+  #awayAt = -Infinity;
+  #awayFresh(): boolean {
+    return this.#away !== undefined && this.#now() - this.#awayAt < 30_000;
+  }
+
+  /**
+   * A cap'd hello: when hello_ok already carried the answer, only make sure the
+   * next edge is armed; otherwise read it and push `owner_away` to this socket.
+   */
+  async #helloOwnerAway(ws: WebSocket, sent: boolean): Promise<void> {
+    if (sent) {
+      this.#armOwnerAway(this.#away?.next ?? null);
+      return;
+    }
+    const state = await this.#readOwnerAway();
+    if (state === undefined) return;
+    if (!trySendFrame(ws, ownerAwayFrame(state.until))) return;
+    this.#armOwnerAway(state.next);
+    await this.#commitArm();
+  }
+
+  /** The member's quiet-hours state, bounded; undefined when it cannot be read in time. */
+  async #readOwnerAway(): Promise<
+    { until: number | null; next: number | null } | undefined
+  > {
+    const userId = this.#userId();
+    if (userId === null) return undefined;
+    try {
+      const state = await Promise.race([
+        awayState(this.env, userId, this.#now()),
+        new Promise<undefined>((r) =>
+          setTimeout(() => r(undefined), OWNER_AWAY_READ_MS),
+        ),
+      ]);
+      if (state !== undefined) {
+        this.#away = state;
+        this.#awayAt = this.#now();
+      }
+      return state;
+    } catch (e) {
+      logError("bus_owner_away_read_failed", e);
+      return undefined;
+    }
+  }
+
+  /** Keeps the next quiet-hours edge in meta (an eviction forgets nothing) and arms the alarm. */
+  #armOwnerAway(next: number | null): void {
+    const sql = this.ctx.storage.sql;
+    if (next === null) {
+      sql.exec(
+        "delete from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        OWNER_AWAY_DUE_KEY,
+      );
+      return;
+    }
+    // Never sooner than a minute out: an edge at or before now (a row with
+    // start equal to end, a zone edge) must not loop the alarm on D1 reads.
+    const at = Math.max(next, this.#now() + OWNER_AWAY_MIN_GAP_MS);
+    sql.exec(
+      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+      OWNER_ORG_ID,
+      OWNER_AWAY_DUE_KEY,
+      String(at),
+    );
+    this.#arm(at);
+  }
+
+  #ownerAwayDue(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      OWNER_AWAY_DUE_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /**
+   * Tells every open socket that listed the cap when the owner's quiet hours
+   * end (null: not in them), and arms the alarm for the next edge. Only this
+   * member's own sockets are on this hub. No cap'd socket: nothing is read or
+   * armed, so an idle hub stays idle.
+   */
+  async #pushOwnerAway(commit = true): Promise<void> {
+    const sockets = this.ctx
+      .getWebSockets(DAEMON_TAG)
+      .filter((ws) => !isReplaced(ws) && ownerAwayGated(ws));
+    if (sockets.length === 0) {
+      this.#armOwnerAway(null);
+      return;
+    }
+    const state = await this.#readOwnerAway();
+    if (state === undefined) {
+      // Try again shortly; never leave the sockets with a stale answer.
+      this.#armOwnerAway(this.#now() + 60_000);
+      if (commit) await this.#commitArm();
+      return;
+    }
+    for (const ws of sockets) trySendFrame(ws, ownerAwayFrame(state.until));
+    this.#armOwnerAway(state.next);
+    // The alarm re-arms itself from #nextDeadline when it ends.
+    if (commit) await this.#commitArm();
+  }
+
+  /** The member saved their prefs: tell their sockets now (the Worker calls this on their own hub). */
+  async ownerAwayChanged(): Promise<void> {
+    await this.#pushOwnerAway();
+  }
+
+  /** The alarm's part: a quiet-hours edge has come. */
+  async #ownerAwayEdge(now: number): Promise<void> {
+    const due = this.#ownerAwayDue();
+    if (due === null) return;
+    if (due > now) {
+      this.#arm(due);
+      return;
+    }
+    // Cleared first: the push re-arms for the next edge.
+    this.#armOwnerAway(null);
+    try {
+      await this.#pushOwnerAway(false);
+    } catch (e) {
+      logError("bus_owner_away_push_failed", e);
+      this.#armOwnerAway(now + 60_000);
+    }
+  }
+
+  // ----------------------------------------------------- #2552 updates
+
+  /** The instance's named version as last read; null: none. Stale after RUN_VERSION_TTL_MS. */
+  #runVersion: string | null = null;
+  #runVersionAt = -Infinity;
+  #runVersionFresh(): boolean {
+    return this.#now() - this.#runVersionAt < RUN_VERSION_TTL_MS;
+  }
+  #userId(): string | null {
+    const n = this.ctx.id.name;
+    return n?.startsWith("bus:") ? n.slice(4) : null;
+  }
+
+  /**
+   * A cap'd hello: record that the machine is alive (its `switching` clock
+   * stops), and make sure it knows the named version. The hello_ok carried it
+   * when the cache was fresh; otherwise it is read now and pushed.
+   */
+  async #helloUpdates(
+    ws: WebSocket,
+    _id: string,
+    machineId: string,
+  ): Promise<void> {
+    this.indexInFlight++;
+    try {
+      const fresh = this.#runVersionFresh();
+      const sent = fresh ? this.#runVersion : undefined;
+      await Promise.race([
+        noteHello(this.env, machineId, this.#now()),
+        new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
+      ]).catch((e) => logError("bus_update_hello_failed", e));
+      // #2719: a failed read leaves the cache stale; push nothing then.
+      if (!fresh && !(await this.#refreshRunVersion())) return;
+      if (this.#runVersion !== sent) this.#pushRunVersion(ws);
+    } finally {
+      this.indexInFlight--;
+    }
+  }
+
+  async #refreshRunVersion(): Promise<boolean> {
+    try {
+      this.#runVersion = await readRunVersion(this.env);
+      this.#runVersionAt = this.#now();
+      return true;
+    } catch (e) {
+      // Keep what we had; a later hello asks again.
+      logError("bus_run_version_read_failed", e);
+      return false;
+    }
+  }
+
+  #pushRunVersion(ws: WebSocket): void {
+    if (!runVersionGated(ws)) return;
+    sendFrame(ws, {
+      v: 1,
+      id: frameId(),
+      type: "run_version",
+      run_version: this.#runVersion,
+    });
+  }
+
+  /**
+   * An update report: kept as the machine's latest. A `switching` one is
+   * answered yes once it is stored (no when it could not be), and starts the
+   * 5 minute "the bus stopped" clock.
+   */
+  async #updateReport(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "update_report" }>,
+    machineId: string,
+  ): Promise<void> {
+    // #2719: a swap the instance does not name is vetoed before anything is
+    // stored (so no stop clock starts), whatever the daemon believes. Read
+    // fresh, not from the cache; a failed read is a no. A step back (`to`
+    // below `from`) and the person's own request pass.
+    if (f.event === "switching") {
+      let allowed =
+        f.reason === "requested" ||
+        (f.to !== "" &&
+          f.from !== "" &&
+          f.to !== f.from &&
+          semverGte(f.from, f.to));
+      if (!allowed) {
+        try {
+          allowed = (await readRunVersion(this.env)) === f.to;
+        } catch (e) {
+          logError("bus_run_version_read_failed", e);
+        }
+      }
+      if (!allowed) {
+        sendFrame(ws, { v: 1, id: f.id, type: "update_ack", ok: false });
+        return;
+      }
+    }
+    const now = this.#now();
+    let stored = false;
+    this.indexInFlight++;
+    try {
+      await Promise.race([
+        recordReport(this.env, machineId, f, now).then(() => {
+          stored = true;
+        }),
+        new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
+      ]);
+    } catch (e) {
+      logError("bus_update_report_failed", e);
+    } finally {
+      this.indexInFlight--;
+    }
+    if (f.event === "switching") {
+      if (stored) {
+        this.#setUpdateDue(now + STOPPED_AFTER_MS + 1);
+        // The arm commit of this frame's turn came before the D1 write ended.
+        await this.#commitArm();
+      }
+      sendFrame(ws, { v: 1, id: f.id, type: "update_ack", ok: stored });
+      return;
+    }
+    // A report is also a moment to learn a changed version.
+    if (!this.#runVersionFresh()) {
+      await this.#refreshRunVersion();
+      this.#pushRunVersion(ws);
+    }
+  }
+
+  /**
+   * "Install now" (#2552): a fieldless frame to every open socket of one
+   * machine that listed the cap. The Worker calls this only for a signed-in
+   * member's own machine, from a browser session. Returns how many sockets
+   * it reached.
+   */
+  async installNow(machineId: string): Promise<number> {
+    if (typeof machineId !== "string" || !isId(machineId)) return 0;
+    if (!activeMachine(this.ctx, machineId)) return 0;
+    let n = 0;
+    for (const ws of this.ctx.getWebSockets(machineId)) {
+      if (isReplaced(ws) || !runVersionGated(ws)) continue;
+      if (trySendFrame(ws, { v: 1, id: frameId(), type: "install_now" })) n++;
+    }
+    return n;
+  }
+
+  /**
+   * The named version changed (the owner's route): forget the cache and tell
+   * this hub's connected sockets (null: none named now). The route calls this
+   * on every member's hub.
+   */
+  async runVersionChanged(): Promise<void> {
+    this.#runVersionAt = -Infinity;
+    await this.#refreshRunVersion();
+    for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
+      this.#pushRunVersion(ws);
+  }
+
+  #updateDue(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      UPDATE_DUE_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /** Keeps the earliest due time in meta (so an eviction forgets nothing) and arms the alarm. */
+  #setUpdateDue(at: number | null): void {
+    const sql = this.ctx.storage.sql;
+    if (at === null) {
+      sql.exec(
+        "delete from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        UPDATE_DUE_KEY,
+      );
+      return;
+    }
+    const cur = this.#updateDue();
+    const next = cur === null ? at : Math.min(cur, at);
+    sql.exec(
+      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+      OWNER_ORG_ID,
+      UPDATE_DUE_KEY,
+      String(next),
+    );
+    this.#arm(next);
+  }
+
+  /** The alarm's part: machines whose `switching` went 5 minutes with no hello. */
+  async #stoppedMachines(now: number): Promise<void> {
+    const userId = this.#userId();
+    const due = this.#updateDue();
+    // No D1 round trip unless a `switching` report is waiting out its 5 minutes.
+    if (userId === null || due === null) return;
+    if (due > now) {
+      this.#arm(due);
+      return;
+    }
+    // Clear before the await: a `switching` report stored meanwhile sets its
+    // own due, and setUpdateDue below keeps the earlier of the two.
+    this.#setUpdateDue(null);
+    try {
+      const next = await markStopped(this.env, userId, now);
+      if (next !== null) this.#setUpdateDue(next + 1);
+    } catch (e) {
+      this.#setUpdateDue(now + 60_000);
+      logError("bus_update_stopped_failed", e);
     }
   }
 
@@ -7286,8 +7830,13 @@ export class BusHub extends DurableObject<Env> {
     agent: AgentRow,
     text: string,
     ack: string | null,
+    metaJson: string | null,
   ): boolean {
-    const frame = noticeFrame(agent, text);
+    const frame = noticeFrame(
+      agent,
+      text,
+      noticeMetaGated(ws) ? parseNoticeMeta(metaJson) : undefined,
+    );
     if (!trySendFrame(ws, frame)) return false;
     if (ack !== null && !noticeAckGated(ws)) {
       // #2062: no notice_ack on this socket, so a send is the delivery: the
@@ -7533,6 +8082,7 @@ export class BusHub extends DurableObject<Env> {
         foldRef: foldN > 0 ? n.artifactId : null,
         foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
         toIdentity: heldIdentity,
+        meta: noticeMetaOf(n),
       };
       if (
         this.#sendNotice(
@@ -7540,6 +8090,7 @@ export class BusHub extends DurableObject<Env> {
           agent,
           noticeTextOf(merged),
           noticeSendAck(merged),
+          merged.meta,
         )
       ) {
         sql.exec(
@@ -7578,8 +8129,8 @@ export class BusHub extends DurableObject<Env> {
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
     const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks, to_identity, meta)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
@@ -7591,6 +8142,7 @@ export class BusHub extends DurableObject<Env> {
       foldRef,
       folds.length > 0 ? JSON.stringify(folds) : null,
       heldIdentity,
+      noticeMetaOf(n),
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
@@ -7642,7 +8194,9 @@ export class BusHub extends DurableObject<Env> {
       if (liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id)
         continue;
       if (this.#identityMismatch(r, agent)) continue;
-      if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
+      if (
+        !this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r), r.meta)
+      )
         break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -7739,7 +8293,13 @@ export class BusHub extends DurableObject<Env> {
       if (
         agent &&
         socket &&
-        this.#sendNotice(socket, agent, noticeTextOf(r), noticeSendAck(r))
+        this.#sendNotice(
+          socket,
+          agent,
+          noticeTextOf(r),
+          noticeSendAck(r),
+          r.meta,
+        )
       ) {
         sent++;
         sql.exec(
@@ -7931,6 +8491,11 @@ export class BusHub extends DurableObject<Env> {
     if (this.#purgeClosedAgents(now)) more = true;
     if (this.#purgeDefaultNamed(now)) more = true;
 
+    // 7. #2552: a machine that reported `switching` and never said hello again.
+    await this.#stoppedMachines(now);
+    // 8. #2759: the owner's quiet hours began or ended.
+    await this.#ownerAwayEdge(now);
+
     const want = this.#armWant;
     this.#armWant = null;
     const deadline = more ? now + 1 : this.#nextDeadline(want);
@@ -7952,6 +8517,7 @@ export class BusHub extends DurableObject<Env> {
       if (heldNext === null || h.at < heldNext) heldNext = h.at;
     const ts = [
       want,
+      this.#ownerAwayDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       min(
         "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",

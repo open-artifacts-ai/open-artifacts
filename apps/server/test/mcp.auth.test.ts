@@ -64,7 +64,7 @@ describe("MCP auth: PAT", () => {
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
     // 21 plus the bus's bus_role_propose: the test pool binds BUS_HUB (#1372).
-    expect((await c.listTools()).tools.length).toBe(22);
+    expect((await c.listTools()).tools.length).toBe(24);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -337,7 +337,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(22);
+    expect((await c.listTools()).tools).toHaveLength(24);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",
@@ -816,9 +816,15 @@ describe("MCP auth: fix round 1", () => {
       );
     const net = `2001:db8:${Math.floor(Math.random() * 0xffff).toString(16)}:7`;
     let limitedAt = 0;
-    for (let i = 1; i <= 40 && !limitedAt; i++)
-      if ((await reg(`${net}::${i.toString(16)}`)).status === 429)
-        limitedAt = i;
+    // A frozen clock: a window boundary mid-loop would reset the count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 1; i <= 40 && !limitedAt; i++)
+        if ((await reg(`${net}::${i.toString(16)}`)).status === 429)
+          limitedAt = i;
+    } finally {
+      vi.useRealTimers();
+    }
     // Different hosts in one /64 share the key; another IP is unaffected.
     expect(limitedAt).toBe(31);
     expect((await reg(nextIp())).status).toBe(201);

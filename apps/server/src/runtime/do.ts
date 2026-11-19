@@ -48,6 +48,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  addHeld,
   addParticipants,
   addPick,
   askAuthors,
@@ -58,8 +59,12 @@ import {
   claimEmail,
   clearDecider,
   deleteExtras,
+  finishHeld,
   getComment,
   getThread,
+  type HeldAgent,
+  heldCanon,
+  heldOf,
   heldTargets,
   insertComment,
   insertExtras,
@@ -77,6 +82,8 @@ import {
   refundEmail,
   refundThreadReply,
   refundThreadReplyCount,
+  releaseHeld,
+  releaseHeldTargets,
   replyCount,
   rootId,
   type StoredActor,
@@ -93,6 +100,7 @@ import {
   threadExists,
   threadStatus,
   touchThread,
+  withdrawAsk,
   withdrawTargets,
 } from "./comments-store.js";
 import {
@@ -405,6 +413,8 @@ type DocRow = {
   data: string;
   updated_at: string;
   updated_by: string | null;
+  /** 1: last written by a guest or an anonymous writer, and not fully replaced since by anyone else. */
+  outsider?: number;
 };
 
 const toDoc = (r: DocRow): DataDoc => ({
@@ -412,12 +422,15 @@ const toDoc = (r: DocRow): DataDoc => ({
   data: JSON.parse(r.data),
   updatedAt: r.updated_at,
   updatedBy: r.updated_by,
+  // Written by a guest or an anonymous writer: outsider content, never instructions.
+  ...(r.outsider === 1 ? { outsider: true as const } : {}),
 });
 
 const SCHEMA = `
 create table if not exists docs (
   collection text not null, id text not null, data text not null, size integer not null,
-  updated_at text not null, updated_by text, primary key (collection, id)
+  updated_at text not null, updated_by text, outsider integer not null default 0,
+  primary key (collection, id)
 ) without rowid;
 create index if not exists docs_updated on docs (collection, updated_at, id);
 create table if not exists storage (
@@ -551,6 +564,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           )
           .toArray().length > 0;
       sql.exec(SCHEMA);
+      // #2590: docs.outsider, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>("select name from pragma_table_info('docs')")
+          .toArray()
+          .some((c) => c.name === "outsider")
+      )
+        sql.exec(
+          "alter table docs add column outsider integer not null default 0",
+        );
       // #1822: comment_targets.owner, for DOs created before it.
       if (
         !sql
@@ -624,6 +647,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "replaces")
       )
         sql.exec("alter table comment_asks add column replaces text");
+      // #2511: comment_asks.withdrawn, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_asks')",
+          )
+          .toArray()
+          .some((c) => c.name === "withdrawn")
+      )
+        sql.exec("alter table comment_asks add column withdrawn text");
       if (!pcols.some((c) => c.name === "removed"))
         sql.exec(
           "alter table comment_participants add column removed integer not null default 0",
@@ -765,7 +798,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return (
       this.sql
         .exec<DocRow>(
-          "select id, data, updated_at, updated_by from docs where collection = ? and id = ?",
+          "select id, data, updated_at, updated_by, outsider from docs where collection = ? and id = ?",
           collection,
           id,
         )
@@ -780,8 +813,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     json: string,
     bytes: number,
     actor: string,
+    /** A guest (by role) wrote it; an anonymous ("ip:") actor always counts. */
+    outsider = false,
+    /** A full replace (PUT): a non-outsider's clears the mark; a patch never does. */
+    full = true,
   ): string {
     const by = publicActor(actor);
+    const mark = outsider || actor.startsWith("ip:") ? 1 : 0;
     const size =
       bytes + collection.length + id.length + by.length + ROW_OVERHEAD;
     const updatedAt = this.iso();
@@ -797,13 +835,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
         .toArray()[0];
       this.bump(size - (old?.size ?? 0), collection);
       this.sql.exec(
-        "insert into docs (collection, id, data, size, updated_at, updated_by) values (?, ?, ?, ?, ?, ?) on conflict (collection, id) do update set data = excluded.data, size = excluded.size, updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+        `insert into docs (collection, id, data, size, updated_at, updated_by, outsider) values (?, ?, ?, ?, ?, ?, ?)
+         on conflict (collection, id) do update set data = excluded.data, size = excluded.size, updated_at = excluded.updated_at, updated_by = excluded.updated_by,
+           outsider = case when excluded.outsider = 1 then 1 when ? = 1 then 0 else docs.outsider end`,
         collection,
         id,
         json,
         size,
         updatedAt,
         by,
+        mark,
+        full ? 1 : 0,
       );
     });
     this.broadcastDoc(
@@ -819,9 +861,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     data: unknown,
     actor: string,
+    outsider = false,
+    full = true,
   ): { doc: DataDoc; json: string } {
     const { json, bytes } = serialize(data, this.docLimit);
-    const updatedAt = this.writeJson(collection, id, json, bytes, actor);
+    const updatedAt = this.writeJson(
+      collection,
+      id,
+      json,
+      bytes,
+      actor,
+      outsider,
+      full,
+    );
     // The caller's value (already a structured-clone copy) is returned as-is: no re-parse.
     return {
       doc: { id, data, updatedAt, updatedBy: publicActor(actor) },
@@ -886,7 +938,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       : [c, n + 1];
     const rows = this.sql
       .exec<DocRow>(
-        `select id, data, updated_at, updated_by from docs where collection = ?
+        `select id, data, updated_at, updated_by, outsider from docs where collection = ?
          ${cur ? "and (updated_at > ? or (updated_at = ? and id > ?))" : ""}
          order by updated_at, id limit ?`,
         ...params,
@@ -1006,7 +1058,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const dir = desc ? "desc" : "asc";
     const rows = this.sql
       .exec<DocRow & { sv: SqlStorageValue }>(
-        `select id, data, updated_at, updated_by, ${sv} as sv from docs
+        `select id, data, updated_at, updated_by, outsider, ${sv} as sv from docs
          where ${conds.join(" and ")} order by sv ${dir}, id ${dir} limit ?`,
         ...svp,
         ...params,
@@ -1036,12 +1088,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { items: items.map(toDoc), nextCursor };
   }
 
-  set(collection: string, id: string, data: unknown, actor: string): DataDoc {
+  set(
+    collection: string,
+    id: string,
+    data: unknown,
+    actor: string,
+    outsider = false,
+  ): DataDoc {
     return this.writeDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
       data,
       actorOf(actor),
+      outsider,
     ).doc;
   }
 
@@ -1055,12 +1114,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    outsider = false,
   ): { updatedAt: string } {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
     const { json, bytes } = this.rawJson(body);
-    return { updatedAt: this.writeJson(c, i, json, bytes, a) };
+    return { updatedAt: this.writeJson(c, i, json, bytes, a, outsider) };
   }
 
   /** Shallow merge into the doc (non-object docs are replaced); a missing doc is created. */
@@ -1069,8 +1129,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     patch: Record<string, unknown>,
     actor: string,
+    outsider = false,
   ): DataDoc {
-    return this.merge(collection, id, patch, actor).doc;
+    return this.merge(collection, id, patch, actor, outsider).doc;
   }
 
   /** update() from the raw request body; returns the DataDoc as JSON text. */
@@ -1079,6 +1140,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    outsider = false,
   ): string {
     const { json } = this.rawJson(body);
     const { doc, json: data } = this.merge(
@@ -1086,6 +1148,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       id,
       JSON.parse(json) as Record<string, unknown>,
       actor,
+      outsider,
     );
     return docJson({ ...doc, data: null }, data);
   }
@@ -1095,6 +1158,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     patch: Record<string, unknown>,
     actor: string,
+    outsider = false,
   ): { doc: DataDoc; json: string } {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
@@ -1107,7 +1171,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       old !== null && typeof old === "object" && !Array.isArray(old)
         ? (old as Record<string, unknown>)
         : {};
-    return this.writeDoc(c, i, { ...base, ...p.data }, a);
+    return this.writeDoc(c, i, { ...base, ...p.data }, a, outsider, false);
   }
 
   delete(collection: string, id: string, actor: string): void {
@@ -2092,7 +2156,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
-  private checkBody(body: string): void {
+  private checkBody(body: string, allowEmpty = false): void {
+    // #2508: a comment with pictures may have no text.
+    if (allowEmpty && typeof body === "string" && body.trim() === "") return;
     if (!bodyOk(body))
       fail(
         "invalid_body",
@@ -2132,12 +2198,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredThread {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
@@ -2155,11 +2223,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     actor: StoredActor;
     rate: string;
     body: string;
+    /** #2508: the comment carries pictures, so its text may be empty. */
+    allowEmpty?: boolean;
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
   }): StoredComment {
-    this.checkBody(a.body);
+    this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");
@@ -2237,6 +2307,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // A newer ask replaced this one: a stale card cannot approve it (#2323).
       if (r.ask.replacedBy)
         fail("replaced", "A newer ask replaced this one: pick on that");
+      // #2511: a withdrawn ask takes no picks.
+      if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
@@ -2341,6 +2413,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "forbidden",
           "Only the person who asked can take the decision back",
         );
+      if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.decider || r.ask.decider === a.by.ref)
         fail("bad_request", "You already decide this");
@@ -2351,6 +2424,48 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
     });
     this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * #2511: withdraws an ask (the service checked who may). 409 already_answered
+   * once it has a decision; idempotent; `replacedBy` names the card on another
+   * artifact that replaces it. Returns the comment as then stored and whether it changed.
+   */
+  commentsWithdraw(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    rate: string;
+    replacedBy?: { artifactId: string; threadId: string; commentId: string };
+  }): { comment: StoredComment; changed: boolean } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      let changed: boolean;
+      try {
+        changed = withdrawAsk(
+          this.sql,
+          a.threadId,
+          a.commentId,
+          a.by,
+          this.iso(),
+          a.replacedBy,
+        );
+      } catch (e) {
+        const m = /^oa:([a-z_]+):(.*)$/.exec(
+          e instanceof Error ? e.message : "",
+        );
+        if (m) fail(m[1] as ErrorCode, m[2] ?? "");
+        throw e;
+      }
+      if (changed) touchThread(this.sql, a.threadId, this.iso());
+      return {
+        comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
+        changed,
+      };
+    });
+    if (out.changed) this.broadcastComments();
     return out;
   }
 
@@ -2447,9 +2562,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     at: string;
     exclude: string[];
     skipPage?: boolean;
+    /** #2733: hold every other person's participant for this comment in the same step (fail closed). */
+    hold?: { commentId: string; author: string };
   }): StoredParticipant[] {
     this.ensureSchema();
-    return this.ctx.storage.transactionSync(() =>
+    const out = this.ctx.storage.transactionSync(() =>
       takeThreadReply(
         this.sql,
         a.threadId,
@@ -2457,8 +2574,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.at,
         THREAD_REPLY_NOTICES_MAX,
         a.skipPage === true,
+        a.hold,
       ),
     );
+    if (a.hold && out.some((p) => p.owner !== a.hold?.author))
+      this.broadcastComments();
+    return out;
+  }
+
+  /** #2733: lets go of the holds a reply took up front, for the agents the service may deliver to. */
+  commentsUnhold(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      releaseHeldTargets(this.sql, a.commentId, a.keys),
+    );
+    this.broadcastComments();
   }
 
   /** #2035: the participant agents of `threadIds`, removed ones included (the service decides what shows). */
@@ -2510,6 +2640,70 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.ensureSchema();
     this.ctx.storage.transactionSync(() =>
       withdrawTargets(this.sql, a.threadId, a.key, a.targets),
+    );
+    this.broadcastComments();
+  }
+
+  /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */
+  commentsHeldCanon(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+  }): {
+    canon: string;
+    held: ReturnType<typeof heldOf>;
+  } | null {
+    this.ensureSchema();
+    const canon = heldCanon(this.sql, a.threadId, a.commentId);
+    if (canon === null) return null;
+    return { canon, held: heldOf(this.sql, a.commentId, a.owner) };
+  }
+
+  /**
+   * #2577: an allow. The held targets of `owner` on the comment move to
+   * "releasing" only if the words are still exactly `expect` (one transaction:
+   * an edit in the gap is never delivered). Returns what to send, including
+   * targets a crashed earlier allow left "releasing" (resumable).
+   */
+  commentsRelease(a: {
+    threadId: string;
+    commentId: string;
+    owner: string;
+    expect: string;
+  }): {
+    ok: boolean;
+    keys: ReturnType<typeof heldOf>;
+    comment: StoredComment | null;
+  } {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      const ok = releaseHeld(
+        this.sql,
+        a.threadId,
+        a.commentId,
+        a.owner,
+        a.expect,
+      );
+      const keys = ok
+        ? heldOf(this.sql, a.commentId, a.owner).filter(
+            (h) => h.state === "releasing",
+          )
+        : [];
+      return {
+        ok,
+        keys,
+        comment: ok ? getComment(this.sql, a.threadId, a.commentId) : null,
+      };
+    });
+    if (out.ok) this.broadcastComments();
+    return out;
+  }
+
+  /** #2577: the notices went out; the held rows of these keys are gone. */
+  commentsFinishHeld(a: { commentId: string; keys: string[] }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      finishHeld(this.sql, a.commentId, a.keys),
     );
     this.broadcastComments();
   }
@@ -2609,6 +2803,23 @@ export class ArtifactRuntime extends DurableObject<Env> {
       const who = JSON.parse(row.author) as StoredActor;
       if (who.kind !== a.by.kind || who.ref !== a.by.ref)
         fail("forbidden", "Only the author can edit a comment");
+      // #2511: people may have read, or picked on, an ask: its comment is not
+      // edited once anyone has picked, nor from the start when it names an
+      // action or needs a passkey. Withdraw it and post a new card.
+      const ask = askRow(this.sql, a.threadId, a.commentId);
+      if (ask && ((ask.ask.history?.length ?? 0) > 0 || ask.ask.answer))
+        fail(
+          "already_answered",
+          "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
+        );
+      if (
+        ask &&
+        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
+      )
+        fail(
+          "conflict",
+          "A card that approves an action can't be edited. Withdraw it and post a new card.",
+        );
       const now = this.iso();
       if (who.typed && a.typed !== true) {
         const { typed: _typed, ...rest } = who;
@@ -2618,6 +2829,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
           a.commentId,
         );
       }
+      // #2577: an edit after an allow is new words, not what was allowed: the
+      // request goes back to held (masked, and delivered only on a new allow).
+      const before = this.sql
+        .exec<{ body: string }>(
+          "select body from comments where id = ?",
+          a.commentId,
+        )
+        .toArray()[0]?.body;
+      if (before !== a.body.trim())
+        this.sql.exec(
+          "update comment_targets set state = 'held' where comment_id = ? and kind = 'held' and state = 'allowed'",
+          a.commentId,
+        );
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),
@@ -2731,6 +2955,7 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTakeBack"
+  | "commentsWithdraw"
   | "commentsTargetStates"
   | "commentsTargetSettle"
   | "commentsAskerRefund"
@@ -2744,6 +2969,10 @@ type RpcMethods =
   | "commentsAskAuthors"
   | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
+  | "commentsUnhold"
+  | "commentsHeldCanon"
+  | "commentsRelease"
+  | "commentsFinishHeld"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

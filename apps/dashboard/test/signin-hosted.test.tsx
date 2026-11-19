@@ -407,6 +407,31 @@ it.each(["2468-1357", "2468 1357", " 24681357 "])(
   },
 );
 
+it.each([
+  ["bidi", "\u202eadmin\u202c@example.com"],
+  ["long", `${"a".repeat(300)}@example.com`],
+  ["markup", "<script>alert(1)</script>@example.com"],
+])(
+  "a hostile %s email stops at the field: no request, no markup",
+  async (_kind, email) => {
+    const seen = calls("POST");
+    mountHosted("/sign-in?method=code");
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: EMAIL_FIELD }),
+      {
+        target: { value: email },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: SEND }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Enter a valid email address.",
+    );
+    expect(screen.queryByRole("textbox", { name: "Code" })).toBeNull();
+    expect(seen.some((c) => c.path === "/auth/code/request")).toBe(false);
+    expect(document.querySelector("script, img[src=x]")).toBeNull();
+  },
+);
+
 it("a short code is refused before sending", async () => {
   const seen = calls("POST");
   mountHosted("/sign-in?method=code");

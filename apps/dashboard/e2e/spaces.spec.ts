@@ -1,7 +1,8 @@
-// Hosted P4 Tasks 10 and 11: /settings/spaces (D5 as drawn) at 1280 and 390,
-// light and dark: the list with Every space and the Access switch, one space
-// (Engineering) and the admin's no-role view (Clients); axe, no sideways
-// scroll, keyboard.
+// Hosted P4 Tasks 10 to 12: /settings/spaces at 1280 light: the list, one space
+// (Engineering), the admin's no-role view (Clients) and the People card with
+// the Add people dialog; axe, no sideways scroll, keyboard. Variants and the
+// logic live in test/spaces-admin.test.tsx, space-access.test.tsx and
+// space-people.test.tsx (#2711).
 import { createRequire } from "node:module";
 import { expect, type Page, test } from "@playwright/test";
 
@@ -38,39 +39,15 @@ const settle = (page: Page) =>
     document.getAnimations().every((x) => x.playState !== "running"),
   );
 
-const VIEWS: [string, string, string][] = [
-  ["list", "/settings/spaces?hosted=1", "Spaces"],
-  [
-    "engineering",
-    "/settings/spaces?hosted=1&space=SpEngNpQrSt2uVwX",
-    "Engineering",
-  ],
-  ["clients", "/settings/spaces?hosted=1&space=SpCliNpQrSt4uVwX", "Clients"],
-  [
-    "frozen",
-    "/settings/spaces?hosted=frozen&space=SpEngNpQrSt2uVwX",
-    "Engineering",
-  ],
-];
-
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
-    test.describe(`${scheme} ${width}`, () => {
-      test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
-      for (const [name, url, heading] of VIEWS)
-        test(`${name}: axe, no sideways scroll`, async ({ page }, info) => {
-          await page.goto(url);
-          await page.waitForLoadState("networkidle");
-          await page.getByRole("heading", { name: heading }).first().waitFor();
-          const v = await axeRun(page);
-          expect(v, v.join("\n")).toEqual([]);
-          await noOverflow(page);
-          await page.screenshot({
-            path: info.outputPath(`spaces-${name}-${scheme}-${width}.png`),
-            fullPage: true,
-          });
-        });
-    });
+test("list: axe, no sideways scroll", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/settings/spaces?hosted=1");
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("heading", { name: "Spaces" }).first().waitFor();
+  const v = await axeRun(page);
+  expect(v, v.join("\n")).toEqual([]);
+  await noOverflow(page);
+});
 
 test("dialogs pass axe: New space, Add me, public links off", async ({
   page,
@@ -85,6 +62,11 @@ test("dialogs pass axe: New space, Add me, public links off", async ({
   expect(v, v.join("\n")).toEqual([]);
   await page.keyboard.press("Escape");
   await page.goto("/settings/spaces?hosted=1&space=SpCliNpQrSt4uVwX");
+  // The admin's no-role view of Clients.
+  await page.getByRole("heading", { name: "Clients" }).first().waitFor();
+  v = await axeRun(page);
+  expect(v, v.join("\n")).toEqual([]);
+  await noOverflow(page);
   await page.getByRole("button", { name: "Add me to this space" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "Add yourself to Clients?",
@@ -115,6 +97,9 @@ test("keyboard: open a space from the list, add a group, change its role", async
     .focus();
   await page.keyboard.press("Enter");
   await page.getByRole("heading", { level: 2, name: "Engineering" }).waitFor();
+  const detail = await axeRun(page);
+  expect(detail, detail.join("\n")).toEqual([]);
+  await noOverflow(page);
   const box = page.getByRole("combobox", { name: "Add a group" });
   await box.focus();
   await page.keyboard.type("sa");
@@ -133,76 +118,21 @@ test("keyboard: open a space from the list, add a group, change its role", async
   await expect(role).toHaveText("Editor");
 });
 
-// Hosted P4 Task 12 (D6): the People card on Engineering (and frozen), with
-// the Add people dialog, at 1280 and 390, light and dark.
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
-    test.describe(`people ${scheme} ${width}`, () => {
-      test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
-
-      for (const [name, hosted] of [
-        ["people", "1"],
-        ["people-frozen", "frozen"],
-      ] as const)
-        test(`${name}: axe, no sideways scroll`, async ({ page }, info) => {
-          await page.goto(
-            `/settings/spaces?hosted=${hosted}&space=SpEngNpQrSt2uVwX`,
-          );
-          await page.waitForLoadState("networkidle");
-          const card = page.getByRole("region", { name: "People" });
-          await expect(card.getByText("Bob Builder")).toBeVisible();
-          await card.scrollIntoViewIfNeeded();
-          const v = await axeRun(page);
-          expect(v, v.join("\n")).toEqual([]);
-          await noOverflow(page);
-          // Viewport, not fullPage: a full-page capture paints the sticky top
-          // bar mid-page. The card is scrolled into view above.
-          await page.screenshot({
-            path: info.outputPath(`${name}-${scheme}-${width}.png`),
-          });
-        });
-
-      test("frozen: Edit people filters People to the group", async ({
-        page,
-      }, info) => {
-        await page.goto(
-          "/settings/spaces?hosted=frozen&space=SpEngNpQrSt2uVwX",
-        );
-        await page.waitForLoadState("networkidle");
-        await page
-          .getByRole("button", { name: "Edit people from eng@example.com" })
-          .click();
-        const card = page.getByRole("region", { name: "People" });
-        await expect(
-          card.getByText(/^1 person from eng@ as of .+ · Editor$/),
-        ).toBeVisible();
-        await expect(card.getByText("Bob Builder")).toBeVisible();
-        await expect(card.getByText("Ada Lovelace")).toHaveCount(0);
-        await card.scrollIntoViewIfNeeded();
-        await page.screenshot({
-          path: info.outputPath(
-            `people-frozen-filtered-${scheme}-${width}.png`,
-          ),
-        });
-      });
-
-      test("add people dialog", async ({ page }, info) => {
-        await page.goto("/settings/spaces?hosted=1&space=SpEngNpQrSt2uVwX");
-        await page.waitForLoadState("networkidle");
-        await page
-          .getByRole("region", { name: "People" })
-          .getByRole("button", { name: "Add people" })
-          .click();
-        const d = page.getByRole("dialog", {
-          name: "Add people to Engineering",
-        });
-        await d.getByRole("combobox", { name: "People" }).fill("da");
-        await page.getByRole("option", { name: /Dan Contractor/ }).click();
-        await settle(page);
-        const v = await axeRun(page);
-        expect(v, v.join("\n")).toEqual([]);
-        await page.screenshot({
-          path: info.outputPath(`people-add-${scheme}-${width}.png`),
-        });
-      });
-    });
+test("add people dialog", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/settings/spaces?hosted=1&space=SpEngNpQrSt2uVwX");
+  await page.waitForLoadState("networkidle");
+  const card = page.getByRole("region", { name: "People" });
+  await expect(card.getByText("Bob Builder")).toBeVisible();
+  await card.scrollIntoViewIfNeeded();
+  let v = await axeRun(page);
+  expect(v, v.join("\n")).toEqual([]);
+  await noOverflow(page);
+  await card.getByRole("button", { name: "Add people" }).click();
+  const d = page.getByRole("dialog", { name: "Add people to Engineering" });
+  await d.getByRole("combobox", { name: "People" }).fill("da");
+  await page.getByRole("option", { name: /Dan Contractor/ }).click();
+  await settle(page);
+  v = await axeRun(page);
+  expect(v, v.join("\n")).toEqual([]);
+});

@@ -108,7 +108,8 @@ describe("auth events", () => {
     const ev = cap.events();
     expect(ev.map((x) => [x.provider, x.outcome, x.stage ?? null])).toEqual([
       ["google", "ok", null],
-      ["google", "refused", "tenant"],
+      // A weak account outside the domains is bound and refused by admit (#2590).
+      ["google", "refused", "no_access"],
       ["google", "refused", "identity_conflict"],
       ["code", "refused", "invalid_code"],
       ["code", "ok", null],

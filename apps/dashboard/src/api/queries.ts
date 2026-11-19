@@ -10,6 +10,7 @@ import {
   type BusRolePut,
   BusRoleSchema,
   BusRolesSchema,
+  DocVersionResultSchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -78,6 +79,7 @@ import {
   errorCopy,
   errorLink,
 } from "./errorCopy";
+import { keepLocal } from "./myOnboarding";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -148,11 +150,21 @@ export const useArtifacts = (q: ListQueryInput) =>
     queryFn: ({ signal }) =>
       api.get(withQuery(R.artifacts, q), ArtifactPage, signal),
   });
+/**
+ * PROVISIONAL (#2590): GET R.artifact gains `sharedBy` for a guest viewer, in
+ * OA Backend's draft contract. TODO(#2590): drop this once @oa/shared has it.
+ */
+export const ArtifactViewSchema = ArtifactSummarySchema.extend({
+  /** Who shared it with this guest viewer; null or absent otherwise. */
+  sharedBy: z.object({ name: z.string() }).nullable().optional(),
+});
+export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
+
 export const useArtifact = (id: string) =>
   useQuery({
     queryKey: qk.artifact(id),
     queryFn: ({ signal }) =>
-      api.get(R.artifact(id), ArtifactSummarySchema, signal),
+      api.get(R.artifact(id), ArtifactViewSchema, signal),
   });
 export const useVersions = (id: string, opts?: { enabled?: boolean }) =>
   useQuery({
@@ -188,6 +200,7 @@ export const useShares = (id: string, enabled = true) =>
   useQuery({
     queryKey: qk.shares(id),
     queryFn: ({ signal }) =>
+      // PROVISIONAL (#2590): the wide role, until packages/shared has it.
       api.get(R.shares(id), z.array(ShareSchema), signal),
     enabled,
   });
@@ -212,26 +225,32 @@ export const useTokens = (enabled = true) =>
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
-/** The first-run checklist's server state (GET R.onboarding); the owner only. */
+/** The first-run checklist's server state (GET R.onboarding), the caller's own (#2632: every member; a guest gets 403). */
 export const useOnboarding = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.onboarding,
     queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
   });
-/** PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer. */
-export const useSetOnboarding = () => {
+/**
+ * PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer.
+ * #2632: `member` saves a member's own; today's server refuses that with 403,
+ * which is "not saved": no error, the change stays for this session.
+ */
+export const useSetOnboarding = (member?: { userId: string }) => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (patch: OnboardingPatch) =>
       api.send("PUT", R.onboarding, patch, OnboardingSchema),
     onMutate: (patch) => {
+      if (member) keepLocal(member.userId, patch);
       const before = qc.getQueryData<Onboarding>(qk.onboarding);
       if (before)
         qc.setQueryData<Onboarding>(qk.onboarding, { ...before, ...patch });
       return { before };
     },
     onError: (e, _p, ctx) => {
+      if (member && e instanceof ApiClientError && e.status === 403) return;
       if (ctx?.before) qc.setQueryData(qk.onboarding, ctx.before);
       failToast(e, "Couldn't save that.");
     },
@@ -486,6 +505,31 @@ export const useRestoreVersion = (id: string) =>
   useInvalidating(
     (v: number) =>
       api.send("POST", R.restoreVersion(id, v), undefined, PublishResultSchema),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
+/**
+ * #1100 (#2496): a doc's "Save version" (a named version of what
+ * its room holds now). The room also broadcasts a saved frame.
+ */
+export const useDocSaveVersion = (id: string) =>
+  useInvalidating(
+    (name: string | undefined) =>
+      api.send(
+        "POST",
+        R.docSaveVersion(id),
+        name ? { name } : {},
+        DocVersionResultSchema,
+      ),
+    () => [...artifactKeys(id)(), qk.versions(id)],
+  );
+/**
+ * #1100 (#2140): restore a doc version through its room,
+ * which saves unsaved edits first and applies the restore live for everyone.
+ */
+export const useDocRestore = (id: string) =>
+  useInvalidating(
+    (v: number) =>
+      api.send("POST", R.docRestore(id, v), undefined, DocVersionResultSchema),
     () => [...artifactKeys(id)(), qk.versions(id)],
   );
 export const usePatchArtifact = (id: string) =>

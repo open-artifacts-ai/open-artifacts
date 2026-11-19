@@ -5,6 +5,7 @@
  */
 import type { Me } from "@oa/shared";
 import {
+  Button,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -22,6 +23,7 @@ import {
   type ComponentProps,
   type MouseEvent,
   type ReactNode,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -34,6 +36,7 @@ import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { AskBlock, asksForMe, showsAskBody } from "../viewer/comments/asks";
 import { Markdown } from "../viewer/comments/Markdown";
 import {
+  browserTimeZone,
   failedToast,
   useDropItem,
   useInbox,
@@ -41,7 +44,9 @@ import {
   useLater,
   useMarkRead,
   useMute,
+  usePrefs,
   useReadAll,
+  useSavePrefs,
   useUnmute,
 } from "./api";
 import type { List as Inbox, Item as InboxItem } from "./contract";
@@ -55,8 +60,25 @@ import {
   safePath,
   unread,
   waitMs,
-  waitText,
 } from "./model";
+import { muteErrorCopy } from "./prefsContract";
+import {
+  dismissNudge,
+  nudgeDismissed,
+  PermissionRefused,
+  PUSH_WORDS,
+  permission,
+  pushSupported,
+  thisBrowser,
+  turnOn,
+  useDropForeignSubscription,
+  useMeId,
+  useNotificationOpen,
+  usePushKey,
+  useThisBrowserOn,
+  waitedFor,
+} from "./push";
+import { WaitMark } from "./waiting";
 
 /** Settings › Notifications (today the email switch; slice 2 adds For you's). */
 export const FOR_YOU_SETTINGS = "/settings/notifications";
@@ -72,6 +94,19 @@ const useMedia = (q: string) =>
     () => window.matchMedia(q).matches,
     () => false,
   );
+
+/** #2512 slice 3: opens a clicked notification's page (once, at the app root). */
+export function NotificationOpen() {
+  const navigate = useNavigate();
+  const go = useCallback(
+    (path: string) => void navigate({ to: path as string }),
+    [navigate],
+  );
+  useNotificationOpen(go);
+  // Axe: a subscription left by another member on this browser is dropped.
+  useDropForeignSubscription();
+  return null;
+}
 
 /**
  * The bell, in the app header and the viewer's title bar. Absent when Me has
@@ -462,6 +497,7 @@ function ForYouPanel({
   return (
     <div data-for-you-panel="" ref={root}>
       {header}
+      {!phone && <PushNudge needsYou={needsYou} />}
       <section aria-labelledby="oa-fy-needs">
         <h3
           id="oa-fy-needs-heading"
@@ -495,6 +531,14 @@ function ForYouPanel({
             <span>{updates.length}</span>
           )}
         </h3>
+        {updates.length === 0 && !more && (
+          <p
+            data-for-you-updates-empty=""
+            className="m-0 px-[18px] py-3 text-left text-[13.5px] text-[var(--oa-text-muted)]"
+          >
+            No updates yet.
+          </p>
+        )}
         <ul className="m-0 list-none p-0">
           {updates.map((x) => row(x))}
           {more && (
@@ -539,6 +583,84 @@ function ForYouPanel({
   );
 }
 
+/**
+ * #2512 slice 3, Design's screen 3: asked in the inbox, once something has
+ * waited on you, never on a phone (no push there in v1). "Turn on" is the click
+ * the browser's own prompt needs; "Not now" hides it for good.
+ */
+function PushNudge({ needsYou }: { needsYou: InboxItem[] }) {
+  const userId = useMeId();
+  const key = usePushKey(
+    pushSupported() && needsYou.length > 0 && !nudgeDismissed(),
+  );
+  const prefs = usePrefs(!!key.data);
+  const savePrefs = useSavePrefs();
+  const [gone, setGone] = useState(nudgeDismissed);
+  const [busy, setBusy] = useState(false);
+  const [on] = useThisBrowserOn();
+  const waits = needsYou
+    .map((x) => waitMs(x))
+    .filter((w): w is number => w !== undefined);
+  if (
+    gone ||
+    !key.data ||
+    on !== false ||
+    permission() !== "default" ||
+    waits.length === 0
+  )
+    return null;
+  const d = waitedFor(Math.max(...waits));
+  const turn = async () => {
+    setBusy(true);
+    try {
+      await turnOn(key.data as string, thisBrowser(), userId);
+      // As the Settings switch does: Needs you reaches the browser now.
+      const p = prefs.data;
+      if (p && !p.needsYou.browser)
+        await savePrefs.mutateAsync({
+          ...p,
+          needsYou: { ...p.needsYou, browser: true },
+          timeZone: browserTimeZone(),
+        });
+      setGone(true);
+    } catch (e) {
+      // A refusal ends the ask here; Settings says how to unblock.
+      if (e instanceof PermissionRefused) setGone(true);
+      else toast({ title: PUSH_WORDS.failed, tone: "danger" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div
+      data-push-nudge=""
+      className="mx-3 my-2.5 flex items-center gap-2.5 rounded-[10px] bg-[var(--oa-accent-soft)] px-3 py-2.5 text-[13.5px]"
+    >
+      <span className="min-w-0 flex-1">
+        {d ? PUSH_WORDS.waited(d) : PUSH_WORDS.ask}
+      </span>
+      <Button
+        size="sm"
+        className="flex-none"
+        disabled={busy}
+        onClick={() => void turn()}
+      >
+        {PUSH_WORDS.turnOn}
+      </Button>
+      <button
+        type="button"
+        className="flex-none cursor-pointer border-0 bg-transparent p-0 text-[13px] text-[var(--oa-accent-fg)] underline"
+        onClick={() => {
+          dismissNudge();
+          setGone(true);
+        }}
+      >
+        {PUSH_WORDS.notNow}
+      </button>
+    </div>
+  );
+}
+
 function Glyph({ children }: { children: ReactNode }) {
   return (
     <span
@@ -577,15 +699,7 @@ function Face({ x }: { x: InboxItem }) {
 /** A waiting ask's calm mark: a clock and the server's duration. */
 function Urgency({ x }: { x: InboxItem }) {
   const ms = waitMs(x);
-  if (ms !== undefined)
-    return (
-      <span
-        data-for-you-wait=""
-        className={`${CHIP} bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]`}
-      >
-        <span aria-hidden="true">◷</span> {waitText(ms)}
-      </span>
-    );
+  if (ms !== undefined) return <WaitMark ms={ms} />;
   return null;
 }
 
@@ -611,6 +725,8 @@ function Row({
   /** A mute keeps the row; the toast says so and can take it back. */
   const muteWith = (m: { kind: "agent" | "page"; id: string }, title: string) =>
     mute.mutate(m, {
+      onError: (e) =>
+        toast({ title: muteErrorCopy(e, "mute"), tone: "danger" }),
       onSuccess: () =>
         toast({
           title,

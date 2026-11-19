@@ -3,6 +3,7 @@ import {
   type AuditReason,
   INVITE_UNREACHABLE_MESSAGE,
   type InviteUnreachableDetails,
+  type LoginWay,
   type Member,
   type MemberInvite,
   type MemberInviteResult,
@@ -10,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  type Role,
   type Settings,
   type SettingsPatch,
 } from "@oa/shared";
@@ -25,10 +27,15 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
-import { managesAdmins, planOfMember } from "../auth/authz.js";
+import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { isOrgAdmin } from "../auth/policy.js";
-import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
+import { isGuestRole, isOrgAdmin } from "../auth/policy.js";
+import {
+  type EffectivePlan,
+  effectivePlan,
+  planError,
+  requireTeamPlan,
+} from "../billing/plan.js";
 import { startTrialAnswer } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -40,10 +47,13 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
+  revokeFanoutCap,
   revokeUserLive,
+  revokeUsersLive,
 } from "../runtime/revoke.js";
 import {
   type AuditActor,
@@ -52,7 +62,9 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
-import { inviteReach } from "./reach.js";
+import { invitedByKey, purgeSeededWelcome } from "./onboarding.js";
+import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
+import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
   identitiesOf,
@@ -68,6 +80,16 @@ import { insertUser, toMember } from "./users.js";
 /** A guest with a live artifact in their personal space (notices' guestOwners). */
 const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifacts a
   where a.space_id = users.id and a.owner_id = users.id and a.deleted_at is null))`;
+
+/**
+ * Member.transferable: a suspended or removed person (any status but active,
+ * as statusOf reads it) with any artifact in their personal space, trash
+ * included. The same rows transferSummary counts (DEPARTED_COUNTS in
+ * services/spaces.ts), on the same indexes, as an exists per row.
+ */
+const TRANSFERABLE_SQL = `(users.status <> 'active' and (
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null and not ${untouchedWelcomeSql("a")})
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id and not ${untouchedWelcomeSql("a")})))`;
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
@@ -94,8 +116,10 @@ export async function listMembers(
   const order = [asc(users.createdAt), asc(users.id)] as const;
   // In the list's own query: a row needs no request of its own.
   const owns = sql<number>`${sql.raw(GUEST_OWNS_SQL)}`;
-  const flag = (r: { owns: number }) =>
-    r.owns ? { personalArtifacts: true } : {};
+  const flag = (r: { owns: number; transferable: number }) => ({
+    ...(r.owns ? { personalArtifacts: true } : {}),
+    ...(r.transferable ? { transferable: true } : {}),
+  });
   const managed = await directoryManagedOf(env);
   const rows = await getDb(env)
     .select({
@@ -110,6 +134,7 @@ export async function listMembers(
       groups: sql<string | null>`${sql.raw(RESTRICTED_GROUPS_SQL)}`,
       idents: sql<string | null>`${sql.raw(IDENTITIES_SQL)}`,
       owns,
+      transferable: sql<number>`${sql.raw(TRANSFERABLE_SQL)}`,
       // A target-row fact for directoryManaged (the owner is never synced
       // away), read in SQL: role checks stay in src/auth (authz-lint).
       isOwner: sql<number>`(users.role = 'owner')`,
@@ -290,9 +315,13 @@ export async function inviteMemberOutcome(
   const email = normalizeEmail(input.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   const reach = await inviteReach(env, email, input.role);
+  const ways = waysOf(reach);
   if (reach.methods.length === 0 && !reach.googleUncertain) {
-    // An existing row is still a 409 (member_removed or conflict), not a 400.
-    if (await stmt(env.DB, EXISTING).bind(email).first())
+    // An existing row is still a 409 (conflict), not a 400.
+    const there = await stmt(env.DB, EXISTING).bind(email).first<{
+      status: string;
+    }>();
+    if (there && statusOf(there.status) !== "removed")
       await existingConflict(env, email);
     const details: InviteUnreachableDetails = {
       field: "email",
@@ -303,6 +332,33 @@ export async function inviteMemberOutcome(
       INVITE_UNREACHABLE_MESSAGE[details.reason],
       details,
     );
+  }
+  // A removed person (#2520): inviting them restores them as a fresh invite.
+  const gone = await stmt(env.DB, EXISTING).bind(email).first<{
+    id: string;
+    status: string;
+  }>();
+  if (gone && statusOf(gone.status) === "removed") {
+    // At most the role asked for: a guest invite restores a guest; a member
+    // invite restores a member (a guest row stays a guest); never an admin.
+    const restored = await restoreMember(
+      env,
+      gone.id,
+      inviter,
+      undefined,
+      isGuestInvite(input.role) ? "guest" : undefined,
+    );
+    const [back] = await getDb(env).batch([
+      getDb(env)
+        .update(users)
+        .set({ invitedAt: Date.now() })
+        .where(and(eq(users.id, gone.id), eq(users.status, "active")))
+        .returning(),
+      inviteCreateAuditByEmail(env, email, inviter.id, restored.role),
+    ]);
+    const row = back[0];
+    if (!row) return existingConflict(env, email);
+    return await invited(env, inviter, email, row, reach, ways, true, true);
   }
   // A re-invite (#2520): an invited, never-signed-in active row gets a fresh
   // invited_at and its own invite.create row (the existing role, as a first
@@ -363,12 +419,6 @@ export async function inviteMemberOutcome(
     row = rows[0];
   }
   if (!row) return existingConflict(env, email);
-  // What the email names, and the result reports: uncertain Google is still
-  // the only way in, so it is named.
-  const signInMethods: SignInProvider[] = reach.methods.length
-    ? reach.methods
-    : ["google"];
-  let emailed = false;
   // A re-invite mails at most once per address per 10 minutes (the refresh
   // itself always happens). sendEmail also caps invites per UTC day: the
   // instance, 5 per recipient and the inviter's own budget.
@@ -376,6 +426,48 @@ export async function inviteMemberOutcome(
     !again ||
     prior?.invitedAt == null ||
     Date.now() - prior.invitedAt >= REINVITE_COOLDOWN_MS;
+  return invited(
+    env,
+    inviter,
+    email,
+    row,
+    reach,
+    ways,
+    Boolean(again),
+    cooledDown,
+  );
+}
+
+/** The invite email and result for a row an invite just wrote or refreshed. */
+async function invited(
+  env: Env,
+  inviter: Member,
+  email: string,
+  row: Parameters<typeof toMember>[0],
+  reach: Awaited<ReturnType<typeof inviteReach>>,
+  ways: LoginWay[],
+  reinvited: boolean,
+  cooledDown: boolean,
+): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
+  // What the email names, and the result reports: uncertain Google is still
+  // the only way in, so it is named.
+  const signInMethods: SignInProvider[] = reach.methods.length
+    ? reach.methods
+    : ["google"];
+  // #2632: who added them, for their Welcome and the "is set up" line.
+  await stmt(
+    env.DB,
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = excluded.value`,
+  )
+    .bind(invitedByKey(row.id), inviter.id)
+    .run()
+    .catch((e) =>
+      logWarn("invited_by_failed", {
+        code: e instanceof Error ? e.name : "error",
+      }),
+    );
+  let emailed = false;
   if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
       .name;
@@ -390,6 +482,7 @@ export async function inviteMemberOutcome(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
+          guest: isGuestRole(row.role as Role),
         }),
       {
         kind: "invite",
@@ -399,11 +492,12 @@ export async function inviteMemberOutcome(
     );
   }
   return {
-    reinvited: Boolean(again),
+    reinvited,
     result: {
       ...toMember(row),
       emailed,
       signInMethods,
+      reach: { ways },
       ...(reach.methods.length === 0
         ? {
             signIn: {
@@ -736,7 +830,12 @@ const RESTORE_TARGET = `id = ?1 and status = 'removed' and guest_lapsed = 0
   and role <> 'owner' and (role <> 'admin' or ?3 = 1)`;
 // An admin's restore: never a directory removal while sync manages the
 // install (?4 = 1), never a row whose address was released (?5, placeholder).
-const RESTORE = `${RESTORE_SET}
+// ?6 = 1: restore as a guest whatever the row held (an invite that asked for
+// a guest, #2520): never a higher role than was asked for.
+const RESTORE = `${RESTORE_SET.replace(
+  "role = case when role = 'guest' then",
+  "role = case when role = 'guest' or ?6 = 1 then",
+)}
   where ${RESTORE_TARGET} and (removed_by_sync = 0 or ?4 = 0) and email <> ?5`;
 // Directory sync's revive: only a directory removal (removed_by_sync = 1),
 // only while the row still holds Google subject ?5 (the same person, never a
@@ -772,6 +871,8 @@ export async function restoreMember(
   id: string,
   actor: Member,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  /** An invite's role: "guest" restores them as a guest (never higher than asked). */
+  asRole?: "guest",
 ): Promise<Member> {
   // Hosted billing: bringing someone back adds a person, a team feature, so
   // it takes the invite's path (a free instance whose trial never ran passes
@@ -790,7 +891,14 @@ export async function restoreMember(
   if (row.email === placeholder(id)) throw addressReleased();
   if (plan?.trialEligible) await requireTrialStarted(env);
   const out = await env.DB.batch([
-    stmt(env.DB, RESTORE).bind(id, Date.now(), admins, synced, placeholder(id)),
+    stmt(env.DB, RESTORE).bind(
+      id,
+      Date.now(),
+      admins,
+      synced,
+      placeholder(id),
+      asRole === "guest" ? 1 : 0,
+    ),
     audit(env, "user.status", { type: "user", id }, userActor(actor.id), {
       reason: "admin_restore",
       detail: { status: "active" },
@@ -891,6 +999,9 @@ const ERASE_WIPES = [
   `delete from passkeys where user_id = ?1 and ${ERASABLE}`,
   `delete from pick_assertions where user_id = ?1 and ${ERASABLE}`,
   `delete from passkey_settings where user_id = ?1 and ${ERASABLE}`,
+  `delete from notification_prefs where user_id = ?1 and ${ERASABLE}`,
+  `delete from inbox_mutes where user_id = ?1 and ${ERASABLE}`,
+  `delete from settings where key = 'inbox:away_read:' || ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row
@@ -947,12 +1058,13 @@ async function checkNothingLeft(env: Env, id: string): Promise<void> {
  * member_active when not removed, the owner, or the owner's configured
  * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
  * erased row resolves with nothing written. The route allows only an
- * interactive cookie session.
+ * interactive cookie session; SYSTEM_ACTOR is the test hooks' people purge
+ * (#2680), audited as system.
  */
 export async function eraseMember(
   env: Env,
   id: string,
-  actor: Member,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const row = await getRow(env, id);
@@ -969,6 +1081,7 @@ export async function eraseMember(
     throw active();
   // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
   if (row.erasedAt !== null) return wipeUserBus(env, id);
+  await purgeSeededWelcome(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([
@@ -976,7 +1089,7 @@ export async function eraseMember(
     stmt(env.DB, ERASE_USER).bind(...args),
     // Directly after the users update: audited only when it changed the row.
     // No detail: audit rows hold ids and enums only.
-    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+    audit(env, "user.erased", { type: "user", id }, auditActor(actor), {
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
@@ -1006,7 +1119,11 @@ const DEFAULT_SETTINGS: Settings = {
   name: "Open Artifacts",
   defaultVisibility: "private",
 };
-const KEY = { name: "name", defaultVisibility: "default_visibility" } as const;
+const KEY = {
+  name: "name",
+  defaultVisibility: "default_visibility",
+  outsideSharing: OUTSIDE_SHARING_KEY,
+} as const;
 
 // Per-user notice dismissals (services/notices.ts USER_NOTICE_PREFIX, one
 // row per member who dismissed) stay out: notices.ts reads the caller's own.
@@ -1052,8 +1169,10 @@ export async function settingsView(
   env: Env,
   spaces: boolean,
 ): Promise<Settings> {
+  // The stored fact (outside.ts): the first read writes the default once.
+  const outsideSharing = await outsideSharingOn(env);
   const kv = await getSettingsKv(env);
-  const s = toSettings(kv);
+  const s: Settings = { ...toSettings(kv), outsideSharing };
   return spaces
     ? {
         ...s,
@@ -1061,6 +1180,14 @@ export async function settingsView(
       }
     : s;
 }
+
+// Share-made guests (a guest row nobody invited) at an address outside the
+// login domains (?1: their JSON list, or [] for every address).
+const OUTSIDE_GUESTS_WHERE = `role = 'guest' and invited_at is null and status = 'active'
+  and lower(substr(email, instr(email, '@') + 1)) not in (select value from json_each(?1))`;
+const OUTSIDE_GUESTS = `select id from users where ${OUTSIDE_GUESTS_WHERE} limit ?2`;
+const END_OUTSIDE_GUESTS = `update users set session_epoch = session_epoch + 1
+  where ${OUTSIDE_GUESTS_WHERE}`;
 
 const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
   on conflict (key) do update set value = excluded.value`;
@@ -1073,7 +1200,11 @@ const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
-  opts: { spaces?: boolean; by?: AuditActor } = {},
+  opts: {
+    spaces?: boolean;
+    by?: AuditActor;
+    ctx?: Pick<ExecutionContext, "waitUntil">;
+  } = {},
 ): Promise<Settings> {
   const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
     (k) => patch[k] !== undefined,
@@ -1083,7 +1214,11 @@ export async function patchSettings(
   // default visibility are plain instance settings, no secrets. Read before
   // the batch; the row is written only when a value differs now.
   if (keys.length) {
-    const before = toSettings(await getSettingsKv(env));
+    const outsideSharing = await outsideSharingOn(env);
+    const before: Settings = {
+      ...toSettings(await getSettingsKv(env)),
+      outsideSharing,
+    };
     const changed = keys.filter((k) => before[k] !== patch[k]);
     if (changed.length)
       writes.push(
@@ -1128,6 +1263,26 @@ export async function patchSettings(
         String(smm),
       ),
     );
+  // #2590: turning outside sharing off ends share-made guests' sessions now
+  // (their logins are refused from here on), not only their next login: the
+  // epoch bump ends every session, and their live sockets close
+  // (revokeUsersLive, under its fan-out cap, as the plan lock does). Past the
+  // cap the rest keep no session either: the epoch bump (one UPDATE for all of
+  // them) ends theirs at their next authorization; only their open sockets
+  // wait for the socket TTL.
+  let revoked: string[] = [];
+  if (keys.includes("outsideSharing") && patch.outsideSharing === false) {
+    if (await outsideSharingOn(env)) {
+      const domains = JSON.stringify(authConfig(env).domains);
+      const { results } = await stmt(env.DB, OUTSIDE_GUESTS)
+        .bind(domains, revokeFanoutCap(env) + 1)
+        .all<{ id: string }>();
+      revoked = results.map((r) => r.id);
+      writes.push(stmt(env.DB, END_OUTSIDE_GUESTS).bind(domains));
+    }
+  }
   if (writes.length) await env.DB.batch(writes);
+  if (revoked.length)
+    await revokeUsersLive(env, revoked, "outside sharing off", opts.ctx);
   return settingsView(env, opts.spaces === true);
 }

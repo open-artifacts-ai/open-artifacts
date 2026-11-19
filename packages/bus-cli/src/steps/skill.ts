@@ -640,3 +640,30 @@ export const codexSkillState = (
   }
   return out;
 };
+
+/**
+ * Read-only: where our skill is saved for one harness, or undefined. With a
+ * folder (the instance's skill name) only that copy counts; without, any of ours.
+ */
+export const savedSkill = (
+  deps: Pick<SkillDeps, "home" | "env">,
+  h: Harness,
+  folder?: string,
+): string | undefined => {
+  if (h === "codex") {
+    const st = codexSkillState(deps);
+    return st.file ?? st.block;
+  }
+  const base = skillDir(deps, h);
+  let entries: string[];
+  try {
+    entries = folder ? [folder] : readdirSync(base);
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const file = join(base, entry, "SKILL.md");
+    if (ourSkillFile(targetOf(file), entry)) return file;
+  }
+  return undefined;
+};

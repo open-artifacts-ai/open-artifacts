@@ -46,8 +46,75 @@ class Registration(unittest.TestCase):
     def test_registers_the_hooks(self):
         ctx, *_ = plugin()
         self.assertEqual(
-            sorted(ctx.hooks), ["on_session_end", "on_session_finalize", "pre_llm_call", "subagent_start"]
+            sorted(ctx.hooks),
+            ["on_session_end", "on_session_finalize", "on_session_open", "on_session_start", "pre_llm_call",
+             "subagent_start"],
         )
+
+    def test_session_hooks_open_the_link_before_any_turn(self):
+        ctx, _, bus, _ = plugin()
+        opened = []
+        bus.touch = opened.append
+        ctx.hooks["on_session_open"][0](session_id="root-1", platform="cli", reason="create", extra=1)
+        ctx.hooks["on_session_start"][0](session_id="rot", model="m", platform="telegram")
+        self.assertEqual(opened, ["root-1", "root-1"])
+
+    def test_session_hooks_leave_an_unknown_or_subagent_session_alone(self):
+        ctx, roots, bus, _ = plugin()
+        opened = []
+        bus.touch = opened.append
+        roots.note_subagent("root-1", "kid")
+        ctx.hooks["on_session_open"][0](session_id="nope", platform="cli", reason="create")
+        ctx.hooks["on_session_open"][0](session_id="kid", platform="cli", reason="create")
+        ctx.hooks["on_session_open"][0](session_id=None)
+        self.assertEqual(opened, [])
+
+    def test_an_older_hermes_that_rejects_the_new_hooks_still_registers(self):
+        class Old(support.FakeCtx):
+            def register_hook(self, name, cb):
+                if name in ("on_session_open", "on_session_start"):
+                    raise ValueError(name)
+                super().register_hook(name, cb)
+
+        ctx = Old()
+        roots = Roots({"root-1": "root-1"}.get)
+        register(ctx, roots=roots, bus=Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t"))
+        self.assertIn("pre_llm_call", ctx.hooks)
+
+    def test_a_session_known_at_load_opens_its_link_then(self):
+        import os
+
+        os.environ["HERMES_SESSION_ID"] = "root-1"
+        try:
+            ctx = support.FakeCtx()
+            roots = Roots({"root-1": "root-1"}.get)
+            bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t")
+            opened = []
+            bus.touch = opened.append
+            register(ctx, roots=roots, bus=bus)
+        finally:
+            del os.environ["HERMES_SESSION_ID"]
+        self.assertEqual(opened, ["root-1"])
+
+    def test_the_gateways_session_key_reaches_the_turn(self):
+        import sys
+        import types
+
+        mod = types.ModuleType("gateway.session_context")
+        mod.bound_session_key = lambda: "agent:main:telegram:dm:1"
+        pkg = types.ModuleType("gateway")
+        saved = {k: sys.modules.get(k) for k in ("gateway", "gateway.session_context")}
+        sys.modules.update({"gateway": pkg, "gateway.session_context": mod})
+        try:
+            ctx, _, bus, _ = plugin()
+            ctx.hooks["pre_llm_call"][0](session_id="root-1", platform="telegram")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    sys.modules.pop(k, None)
+                else:
+                    sys.modules[k] = v
+        self.assertEqual(bus.state("root-1").session_key, "agent:main:telegram:dm:1")
 
     def test_hooks_take_unknown_keyword_arguments(self):
         ctx, *_ = plugin()

@@ -78,6 +78,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // same-origin) and the pending code cookie carry the protection.
   "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
   "POST /auth/code/verify": { public: "code verify; login guard" },
+  // #2590 G2: the masked address of the Google account waiting for a code,
+  // read from this browser's own link cookie; nothing without it.
+  "GET /auth/code/link": {
+    public: "masked address from this browser's link cookie",
+  },
   // #1467 comment-email unsubscribe: a signed token (one person, one flag)
   // is the only credential; GET changes nothing.
   "GET /auth/unsubscribe/comments": {
@@ -85,6 +90,21 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   },
   "POST /auth/unsubscribe/comments": {
     public: "comment email unsubscribe (RFC 8058 one-click); signed token",
+  },
+  // #2632 "Don't remind me" in the setup reminder: same shape, one flag.
+  "GET /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/setup-reminder": {
+    public: "setup reminder opt-out (RFC 8058 one-click); signed token",
+  },
+  // #2590 "Don't email me again" in outside share emails: a signed token (one
+  // address, one purpose) is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/shares": {
+    public: "share email opt-out confirm; signed token",
+  },
+  "POST /auth/unsubscribe/shares": {
+    public: "share email opt-out (RFC 8058 one-click); signed token",
   },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
@@ -98,7 +118,24 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me": { user: "the caller" },
   // #2512: the caller's own For you inbox (their open asks).
   "GET /api/v1/me/inbox": { user: "the caller" },
+  "POST /api/v1/me/inbox/read": { user: "the caller" },
+  "POST /api/v1/me/inbox/read-all": { user: "the caller" },
+  // #2762: put one of the caller's own Needs-you items off (browser sessions only, handler).
+  "POST /api/v1/me/inbox/:id/later": { user: "the caller" },
   "PATCH /api/v1/me": { user: "the caller" },
+  // #2512 S4: the caller's own notification choices; PUT browser sessions only (handler).
+  "GET /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S4: the caller's own mutes (push only); changes take a browser session (handler).
+  "GET /api/v1/me/inbox/mutes": { user: "the caller" },
+  "POST /api/v1/me/inbox/mutes": { user: "the caller" },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": { user: "the caller" },
+  "PUT /api/v1/me/notification-prefs": { user: "the caller" },
+  // #2512 S5: the caller's own browsers; 404 push_unavailable with no VAPID key; changes need a browser session (handler).
+  "GET /api/v1/me/push/key": { user: "the caller" },
+  "GET /api/v1/me/push/subscriptions": { user: "the caller" },
+  "POST /api/v1/me/push/subscriptions": { user: "the caller" },
+  "PATCH /api/v1/me/push/subscriptions/:id": { user: "the caller" },
+  "DELETE /api/v1/me/push/subscriptions/:id": { user: "the caller" },
   // #1292: the caller's own share-notice picks; PUT browser sessions only (handler).
   "GET /api/v1/bus/share-notices": { org: "mcp.connect" },
   "PUT /api/v1/bus/share-notices": { org: "mcp.connect" },
@@ -115,6 +152,12 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The handler requires a manager and 404s for the owner's own link.
   "DELETE /api/v1/members/:id/identities/google": { org: "members.manage" },
   "GET /api/v1/settings": { org: "settings.read" },
+  // #2520: login for invited people. Reach and login settings: owner or admin;
+  // changing them: the owner, and the handler needs a fresh login.
+  "GET /api/v1/members/reach": { org: "members.manage" },
+  "GET /api/v1/settings/login": { org: "members.manage" },
+  "POST /api/v1/settings/login/first-invite-seen": { org: "members.manage" },
+  "PUT /api/v1/settings/login": { org: "login.manage" },
   // P3 T9 spaces API: 404 without the spaces feature. Space routes admit any
   // signed-in caller; the service applies the per-space rule (member, the
   // space's manager, or an org admin; 404 otherwise, never 403 except the
@@ -188,8 +231,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
   "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
   // The first-run checklist's install-wide state: the uncapped org owner.
-  "GET /api/v1/onboarding": { org: "onboarding.manage" },
-  "PUT /api/v1/onboarding": { org: "onboarding.manage" },
+  "GET /api/v1/onboarding": { org: "onboarding.own" },
+  "PUT /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -228,6 +271,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/shares`]: art("share", signedIn),
   [`PUT ${ARTS}/shares`]: art("share", signedIn),
   [`DELETE ${ARTS}/shares/:email`]: art("unshare", signedIn),
+  // #2508 comment pictures: reserve like writing a comment (the handler adds
+  // signed-in and never a guest); the PUT is signed; the GET reads like the
+  // page's comments, on every request.
+  [`POST ${ARTS}/pictures`]: art("comments.write"),
+  [`PUT ${ARTS}/pictures/:pictureId`]: {
+    signed: "picture reservation signature",
+  },
+  [`GET ${ARTS}/pictures/:pictureId`]: art("comments.read"),
   "POST /api/v1/uploads": { user: "authorizes the target artifact itself" },
   "PUT /api/v1/uploads/:uploadId": { signed: "upload URL signature" },
   "GET /api/v1/search": { user: "search, filtered by listFilterSql" },
@@ -246,6 +297,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/events`]: art("events"),
   // #1100: the doc room socket; the handler grants role edit by "publish".
   [`GET ${ARTS}/doc`]: art("events"),
+  // #1100: edit_doc over REST; the service checks "publish" (plan lock, caps).
+  [`POST ${ARTS}/doc/ops`]: art("publish", signedIn),
+  // #1100: save a named doc version and restore one, through the room.
+  [`POST ${ARTS}/doc/versions`]: art("publish", signedIn),
+  [`POST ${ARTS}/doc/versions/:v/restore`]: art("publish", signedIn),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
@@ -280,7 +336,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     "comments.write",
     { anon401: COMMENT },
   ),
+  // #2511: the asker (the asking agent, or the person it acts for) withdraws its ask.
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
+  // #2770: the people an owner or editor may @mention; everyone else gets none (handler).
+  [`POST ${ARTS}/mention-candidates`]: art("comments.write"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
   // comments.write (never a guest or restricted cap); the service allows only
   // the agent's person and the owner.
@@ -304,6 +367,27 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
   "POST /api/v1/passkeys/settings/challenge": {
     user: "the caller's passkey settings",
+  },
+  // #2577: the receiver's side of asking someone else's agent; the handlers refuse anything but a browser session.
+  "GET /api/v1/me/agent-asks/held": { user: "the caller's held requests" },
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    user: "the caller's held requests",
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    user: "the caller's held requests",
+  },
+  // #2577 S2: the switch and the "listens to" list; the handlers refuse anything but a browser session (the switch can be read by any signed-in person).
+  "GET /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "PUT /api/v1/me/agent-requests": { user: "the caller's own switch" },
+  "GET /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "PATCH /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
+  },
+  "DELETE /api/v1/me/agent-listens/:id": {
+    user: "the caller's listens-to list",
   },
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
@@ -363,6 +447,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
+  // #2552 the version the instance names: owner only, cookie session only (handler).
+  "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  // #2552 "Install now" for the caller's own machine: browser session only (handler).
+  "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
   // #1299: the hosted canary's probe of the reserved ping hub; a read, so a
@@ -525,6 +613,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   search_artifacts: { user: "filtered by listFilterSql" },
   list_versions: art("versions"),
   restore_version: art("restore"),
+  // #1100: offered only while docs are available; the service checks the doc.
+  edit_doc: art("publish"),
   share_artifact: art("share"),
   unshare_artifact: art("unshare"),
   set_visibility: art("visibility"),
@@ -539,6 +629,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   list_comments: art("comments.read"),
   add_comment: art("comments.write"),
   resolve_comment: art("comments.write"),
+  withdraw_ask: art("comments.write"),
+  edit_comment: art("comments.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

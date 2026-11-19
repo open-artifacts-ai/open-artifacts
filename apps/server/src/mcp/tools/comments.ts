@@ -7,8 +7,10 @@ import {
   addThread,
   type CommentViewer,
   type CommentWho,
+  editComment,
   listComments,
   setStatus,
+  withdrawAsk,
 } from "../../services/comments.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
@@ -53,6 +55,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
       guest: isGuestRole(t.user.role),
       capped: capsReads(capOfCaller(caller)),
       moderator: can(level, "comments.moderate", canCtx(caller, artifact)),
+      caller,
     };
     const who: CommentWho = {
       kind: "user",
@@ -121,6 +124,49 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         opts,
       );
       return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
+    }),
+  );
+
+  server.registerTool("withdraw_ask", toolConfig("withdraw_ask"), (i) =>
+    guard(async () => {
+      const { viewer, who } = await open(i.id, "comments.write");
+      const comment = await threadOf(
+        withdrawAsk(
+          env,
+          i.id,
+          i.threadId,
+          i.commentId,
+          who,
+          viewer,
+          i.replacedBy,
+        ),
+      );
+      return ok(`Withdrew the ask ${i.commentId} on ${i.id}.`, {
+        threadId: i.threadId,
+        comment,
+      });
+    }),
+  );
+
+  server.registerTool("edit_comment", toolConfig("edit_comment"), (i) =>
+    guard(async () => {
+      const { viewer, who } = await open(i.id, "comments.write");
+      const comment = await threadOf(
+        editComment(
+          env,
+          i.id,
+          i.threadId,
+          i.commentId,
+          who,
+          viewer,
+          i.body,
+          true,
+        ),
+      );
+      return ok(`Edited comment ${i.commentId} on ${i.id}.`, {
+        threadId: i.threadId,
+        comment,
+      });
     }),
   );
 

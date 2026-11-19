@@ -328,7 +328,8 @@ describe("sweepLostIndexJobs", () => {
         c.ctx as unknown as ExecutionContext,
       ),
     ).resolves.toBeUndefined();
-    expect(c.pending).toHaveLength(1);
+    // The tick sweep, and the run-version fan-out drain (#2719).
+    expect(c.pending).toHaveLength(2);
     await c.drain();
     expect(sweepLog(spy)).toMatchObject([{ mode: "tick" }]);
     expect(await pending(id)).toMatchObject({ version: 1 });

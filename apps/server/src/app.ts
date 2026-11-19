@@ -13,6 +13,8 @@ import {
 import { readSession, sessionCookieName } from "./auth/session.js";
 import { authProviders } from "./auth/sign-in.js";
 import { withPlanScope } from "./billing/features.js";
+import { billingActive } from "./billing/plan.js";
+import { reportSeatsAfter, SEAT_ROUTES } from "./billing/seats.js";
 import { ApiError, errorJson, toErrorResponse } from "./http/errors.js";
 import {
   type AppEnv,
@@ -113,12 +115,36 @@ const SESSION_PATHS = [
 
 // PUT R.upload(id) is authorized by its signature: no session, no CSRF.
 const SIGNED_UPLOAD = /^\/api\/v1\/uploads\/[^/]+$/;
+// PUT R.commentPicture(id, pictureId) likewise (#2508): the reservation's signature.
+const SIGNED_PICTURE = /^\/api\/v1\/artifacts\/[^/]+\/pictures\/[^/]+$/;
 const isSignedUpload = (c: Context<AppEnv>) =>
-  c.req.method === "PUT" && SIGNED_UPLOAD.test(c.req.path);
+  c.req.method === "PUT" &&
+  (SIGNED_UPLOAD.test(c.req.path) || SIGNED_PICTURE.test(c.req.path));
 const unlessSigned =
   (mw: MiddlewareHandler<AppEnv>): MiddlewareHandler<AppEnv> =>
   (c, next) =>
     isSignedUpload(c) ? next() : mw(c, next);
+
+/**
+ * After a request on one of SEAT_ROUTES (the routes that change who counts as
+ * a member) answered below 400, report the count when it changed. waitUntil,
+ * fire and forget; hosted only. Data writes and publishes never come here.
+ */
+function seatsReport(): MiddlewareHandler<AppEnv> {
+  return async (c, next) => {
+    await next();
+    if (c.res.status >= 400 || !billingActive(c.env)) return;
+    const route = c.req.matchedRoutes.at(-1)?.path;
+    if (!route || !SEAT_ROUTES.has(`${c.req.method} ${route}`)) return;
+    let ctx: Pick<ExecutionContext, "waitUntil"> | undefined;
+    try {
+      ctx = c.executionCtx;
+    } catch {
+      ctx = undefined;
+    }
+    reportSeatsAfter(c.env, ctx);
+  };
+}
 
 /** `extraPolicy`: rules for routes a custom `mount` adds (tests). */
 export function createApp(
@@ -147,6 +173,9 @@ export function createApp(
       );
     }),
   );
+  // Hosted billing (#2580): after any write that can move the member count
+  // (and any sign-in), report it when it changed (billing/seats.ts).
+  app.use(mw(seatsReport()));
   app.use(mw(securityHeaders()));
   // Every route's access rule (auth/route-policy.ts), before any other
   // middleware or handler: an unlisted route is 404 before anything runs.

@@ -10,6 +10,7 @@ import {
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
+import { markLoginActive } from "@oa/bus-daemon";
 import {
   BUS_ROUTES,
   DeviceCodeRequestSchema,
@@ -52,6 +53,12 @@ type LoginArgs = {
   /** Waits between /bus/device attempts (transcript state 6: 2, 4, 8 s). Default: one attempt. */
   codeRetryMs?: number[];
   events?: Partial<LoginEvents>;
+  /**
+   * `oa-bus add`: no redirect is followed (a 3xx ends the login), and the
+   * approved key goes to `save` instead of machine.json.
+   */
+  noRedirect?: boolean;
+  save?: (r: { hub: string; label: string; machineToken: string }) => void;
   /** For the default label (macOS scutil); platform is for tests. */
   platform?: NodeJS.Platform;
 } & Pick<Deps, "fetch" | "openBrowser" | "sleep" | "now"> &
@@ -88,6 +95,9 @@ export type LoginResult = {
   hub: string;
   home: string;
 };
+
+/** A 3xx answer during `oa-bus add`: the key and the code stay with the address that was typed. */
+export class RedirectRefused extends Error {}
 
 const POLL_MAX_BACKOFF_MS = 30_000;
 
@@ -129,19 +139,30 @@ function writeMachineFile(home: string, body: string) {
   }
 }
 
-const post = (
+async function post(
   hub: string,
   fetch: Deps["fetch"],
   path: string,
   body: unknown,
   signal?: AbortSignal,
-) =>
-  fetch(`${hub}${path}`, {
+  noRedirect?: boolean,
+): Promise<Response> {
+  const res = await fetch(`${hub}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
     ...(signal ? { signal } : {}),
+    ...(noRedirect ? { redirect: "manual" as const } : {}),
   });
+  if (
+    noRedirect &&
+    (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))
+  )
+    throw new RedirectRefused(
+      "the address redirected somewhere else; nothing was saved",
+    );
+  return res;
+}
 
 /** POST /bus/device, retried on a network error, a timeout or a 5xx. */
 async function requestCode(
@@ -161,11 +182,12 @@ async function requestCode(
         BUS_ROUTES.device,
         body,
         AbortSignal.timeout(CODE_TIMEOUT_MS),
+        args.noRedirect,
       );
       if (res.status < 500 || total === 1) return res;
       error = `HTTP ${res.status}`;
     } catch (e) {
-      if (total === 1) throw e;
+      if (e instanceof RedirectRefused || total === 1) throw e;
       error = errorTail(e);
     }
     const waitMs = waits[attempt - 1];
@@ -180,7 +202,17 @@ async function requestCode(
   }
 }
 
+/** While it waits for an approval, an update keeps its hands off (#2552). */
 export async function login(args: LoginArgs): Promise<LoginResult> {
+  const done = markLoginActive(args.home);
+  try {
+    return await loginInner(args);
+  } finally {
+    done();
+  }
+}
+
+async function loginInner(args: LoginArgs): Promise<LoginResult> {
   const print = args.print ?? realDeps.print;
   const hub = normalizeHub(args.hub);
   const label = newMachineLabel(
@@ -227,8 +259,11 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
         args.fetch,
         BUS_ROUTES.deviceToken,
         DeviceTokenRequestSchema.parse({ device_code: device.device_code }),
+        undefined,
+        args.noRedirect,
       );
-    } catch {
+    } catch (e) {
+      if (e instanceof RedirectRefused) throw e;
       events?.poll?.(false);
       continue; // transient network error
     }
@@ -263,12 +298,16 @@ export async function login(args: LoginArgs): Promise<LoginResult> {
           { userCode: device.user_code },
         );
       case "approved": {
-        writeMachineFile(
-          args.home,
-          `${JSON.stringify({ hub, label, machine_token: poll.machine_token }, null, 2)}\n`,
-        );
-        // Approved again: the daemon's revoked marker no longer holds.
-        rmSync(join(args.home, "revoked"), { force: true });
+        if (args.save)
+          args.save({ hub, label, machineToken: poll.machine_token });
+        else {
+          writeMachineFile(
+            args.home,
+            `${JSON.stringify({ hub, label, machine_token: poll.machine_token }, null, 2)}\n`,
+          );
+          // Approved again: the daemon's revoked marker no longer holds.
+          rmSync(join(args.home, "revoked"), { force: true });
+        }
         if (!events?.code) print(`Approved this machine as ${label}.`);
         return {
           machineToken: poll.machine_token,

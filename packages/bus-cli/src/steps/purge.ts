@@ -14,6 +14,13 @@ const FILES = [
   "codex-mcp-entry.json",
   "revoked",
   "update.json",
+  // The rescue shim the service runs (#2552): written only by an install.
+  "rescue",
+  "rescue-node",
+  "rescue.mjs",
+  "update-reports.json",
+  "update-request.json",
+  "login.active",
   // A symlink since #2552; a real folder (older install) is handled below.
   "bin",
 ];
@@ -26,7 +33,12 @@ const TEMP = [
   /^daemon\.sock\.keep-\d+$/,
   // The version switch: a new link or state file an interrupted update left.
   /^bin\.\d+\.new$/,
-  /^update\.json\.\d+\.tmp$/,
+  /^update\.json\.\d+\.(policy\.)?tmp$/,
+  /^update\.json\.\d+\.rescue\.tmp$/,
+  /^update-reports\.json\.\d+\.tmp$/,
+  /^update-request\.json\.(\d+\.tmp|taken\.\d+)$/,
+  /^bin\.\d+\.rescue$/,
+  /^rescue(-node|\.mjs)?\.\d+\.tmp$/,
 ];
 /**
  * Folders Open Artifacts bus creates, and what in them is the bus's. A folder goes only

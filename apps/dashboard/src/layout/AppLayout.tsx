@@ -39,13 +39,14 @@ import { useSignOut } from "../auth/signOut";
 import { useMe } from "../auth/useMe";
 import { canUseBus } from "../bus/access";
 import { isEmbed, isFullPath } from "../embed";
-import { ForYouBell } from "../foryou/ForYou";
+import { ForYouBell, NotificationOpen } from "../foryou/ForYou";
 import { SearchBox } from "../library/SearchBox";
 import { EdgePanel } from "../pages/Edge";
 import { NotPublic } from "../pages/NotPublic";
 import { useDeparted } from "../settings/departed";
 import { MEASURE } from "../settings/ui";
 import { SpaceSwitcher } from "../spaces/SpaceSwitcher";
+import { GUEST } from "../viewer/guest";
 import { ATTENTION, AttentionDot } from "./AttentionDot";
 import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
@@ -111,6 +112,8 @@ export function AppLayout() {
     <>
       <Layout />
       <Toaster />
+      {/* #2512 slice 3: a notification clicked while the app is open opens its page here. */}
+      <NotificationOpen />
     </>
   );
 }
@@ -443,7 +446,7 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                     to="/shared"
                     active={on("/shared")}
                     icon={I.share}
-                    label="Shared with me"
+                    label={GUEST.home}
                   />
                 ) : (
                   <>

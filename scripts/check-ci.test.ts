@@ -203,22 +203,15 @@ describe("ci.yml", () => {
     // -f stays: an HTTP error that outlasts the retries still fails the step.
     expect(curl).toMatch(/ -[a-zA-Z]*f/);
   });
-  // #2254: public-only always reports and decides inside the job; on a pull
-  // request it runs only for scripts/ci, scripts/test or ci.yml changes, and
-  // any diff error means run.
-  it("public-only runs on the merge queue, on PRs only for CI paths, and needs nothing from it", () => {
+  // public-only is a seconds-long guard that the hosted paths are absent. It
+  // runs on every event with no path filter, and nothing waits on it.
+  it("public-only always runs the guard and needs nothing from it", () => {
     const job = w.jobs["public-only"];
     expect(job.if).toBeUndefined();
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const steps: any[] = job.steps;
-    const i = steps.findIndex((s) => s.id === "changed");
-    expect(steps[i].run).toMatch(/^run=true\n/);
-    expect(steps[i].run).toContain("scripts/ci/");
-    expect(steps[i].run).toContain("scripts/test/");
-    expect(steps[i].run).toContain("ci\\.yml");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-    const gate = "${{ steps.changed.outputs.run == 'true' }}";
-    for (const s of steps.slice(i + 1)) expect(s.if).toBe(gate);
+    for (const s of steps) expect(s.if, "no step is gated").toBeUndefined();
+    expect(steps.some((s) => s.id === "changed")).toBe(false);
     // Nothing waits on it: a skipped job must not hold an aggregate.
     for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
       w.jobs,
@@ -258,33 +251,10 @@ describe("ci.yml", () => {
   });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
-    // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
-    // the merge queue and a dispatch keep four, the full proof before main.
-    // Resolves `<event check> && a || b` for an event (a literal stays as is).
-    const PR = "github.event_name == 'pull_request'";
-    const forEvent = (expr: string, pr: boolean): string => {
-      if (/^\d+$/.test(expr)) return expr;
-      const body = /^\$\{\{ (.*) \}\}$/.exec(expr)?.[1] ?? expr;
-      const m = new RegExp(
-        `^(?:fromJSON)?\\(?${PR} && ('[^']*'|\\d+) \\|\\| ('[^']*'|\\d+)\\)?$`,
-      ).exec(body);
-      if (!m) throw new Error(`unexpected expression: ${expr}`);
-      return ((pr ? m[1] : m[2]) as string).replace(/^'|'$/g, "");
-    };
-    const events = [
-      { pr: true, shards: [1, 2], of: 2, timeout: 25 },
-      { pr: false, shards: [1, 2, 3, 4], of: 4, timeout: 15 },
-    ];
-    for (const e of events) {
-      expect(JSON.parse(forEvent(job.strategy.matrix.shard, e.pr))).toEqual(
-        e.shards,
-      );
-      const env = /^\$\{\{ matrix\.shard \}\}\/(\$\{\{ .* \}\})$/.exec(
-        job.env.E2E_SHARD,
-      );
-      expect(Number(forEvent(env?.[1] as string, e.pr))).toBe(e.of);
-      expect(Number(forEvent(job["timeout-minutes"], e.pr))).toBe(e.timeout);
-    }
+    // Four shards on every event but a pull request, which runs the one-shard
+    // smoke (see "pull request smoke" below for the exact expressions).
+    const SHARDS = [1, 2, 3, 4];
+    expect(job["timeout-minutes"]).toBe(15);
     expect(job.strategy["fail-fast"]).toBe(false);
     // Browsers and their OS deps come baked into the image, pinned by digest:
     // no apt step, so a slow Ubuntu mirror can't eat the job's budget (#462).
@@ -309,8 +279,29 @@ describe("ci.yml", () => {
     // A mock failure must not skip the real suite; a failed browser install must.
     expect(steps[order[2] as number].id).toBe("install");
     expect(steps[order[5] as number].if).toMatch(
-      /^\$\{\{ !cancelled\(\) && steps\.ro\.outputs\.release_only != 'true' && steps\.install\.outcome == 'success' \}\}$/,
+      /^\$\{\{ !cancelled\(\) && steps\.ro\.outputs\.release_only != 'true' && steps\.e2e\.outputs\.run != 'false' && steps\.install\.outcome == 'success' \}\}$/,
     );
+    // Pull requests may skip the browser suites, decided inside the job by
+    // e2e-affected.sh: every step after it runs unless it said exactly
+    // run=false, so a missing output or an error runs them.
+    const pick = steps.findIndex((s) => s.id === "e2e");
+    expect(steps[pick].run).toBe("bash scripts/ci/e2e-affected.sh");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(steps[pick].env.BASE_SHA).toBe(
+      "${{ github.event.pull_request.base.sha }}",
+    );
+    expect(pick).toBeLessThan(at("pnpm install --frozen-lockfile"));
+    for (const st of steps.slice(pick + 1)) {
+      const cond = String(st.if ?? "");
+      if (cond === "failure()") continue;
+      if (st.name === "browser suites not affected") {
+        expect(cond).toContain("steps.e2e.outputs.run == 'false'");
+        continue;
+      }
+      expect(cond, st.name ?? st.run ?? st.uses).toContain(
+        "steps.e2e.outputs.run != 'false'",
+      );
+    }
     // No browser cache and no --with-deps: the image already has both.
     expect(
       steps.some((s) => (s.with?.path ?? "").includes("ms-playwright")),
@@ -329,25 +320,21 @@ describe("ci.yml", () => {
     ]);
     expect(uploads[1].if).toBe("failure()");
     // The spaces suite (one spec, its own server) runs whole in exactly one
-    // shard per event: 2 of two on a pull request, 3 of four in the queue.
-    // The unsharded ui and landing checks in shard 1 only.
-    const shardsRunning = (name: string, pr: boolean, all: number[]) => {
+    // shard, 3 of four. The unsharded ui and landing checks in shard 1 only.
+    const shardsRunning = (name: string) => {
       const step = steps.find(
         (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
       );
       const cond = step.if as string;
-      const picks = [...cond.matchAll(/matrix\.shard == (\d+|\([^)]*\))/g)].map(
-        (m) => Number(forEvent(m[1] as string, pr)),
+      const picks = [...cond.matchAll(/matrix\.shard == (\S+)/g)].map((m) =>
+        Number(m[1]),
       );
       expect(picks).toHaveLength(1);
-      return all.filter((n) => picks.includes(n));
+      return SHARDS.filter((n) => picks.includes(n));
     };
-    for (const e of events) {
-      expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
-      for (const name of ["ui", "landing"]) {
-        expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
-      }
-    }
+    expect(shardsRunning("spaces")).toEqual([3]);
+    for (const name of ["ui", "landing"])
+      expect(shardsRunning(name)).toEqual([1]);
     // Local wrangler dev only: no secrets, nothing pointing at staging.
     const s = JSON.stringify(job);
     expect(s).not.toContain("secrets.");
@@ -356,6 +343,172 @@ describe("ci.yml", () => {
     // The deleted hosted package has no step left.
     expect(ci("e2e.sh")).not.toContain("provisioning");
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
+  });
+  // The pull request smoke: pull requests run only the @smoke tests on one
+  // shard; the merge queue and every other event run the whole suite on four.
+  describe("pull request smoke", () => {
+    const job = () => w.jobs["e2e-shard"];
+    it("only the pull_request event gets one shard; anything else gets four", () => {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().strategy.matrix.shard).toBe(
+        "${{ fromJSON(github.event_name == 'pull_request' && '[1]' || '[1, 2, 3, 4]') }}",
+      );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(job().env.E2E_SHARD).toBe(
+        "${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 1 || 4 }}",
+      );
+      // Decided inside the job: no job-level if (a skipped job passes a
+      // required check), and the aggregate and its name are unchanged.
+      expect(job().if).toBeUndefined();
+      expect(w.jobs.e2e.needs).toEqual(["e2e-shard"]);
+      // The workflow never names the filter: only e2e.sh applies it.
+      expect(JSON.stringify(job())).not.toContain("@smoke");
+      expect(JSON.stringify(job())).not.toContain("--grep");
+    });
+    // Runs e2e.sh with a stand-in pnpm that records its arguments. For
+    // `--list` it prints `list` (default: two tests) and exits `listExit`.
+    const LIST2 = JSON.stringify({
+      suites: [{ specs: [{}], suites: [{ specs: [{}] }] }],
+    });
+    const run = (
+      suite: string,
+      event: string | undefined,
+      o: { list?: string; listExit?: number } = {},
+    ) => {
+      const dir = mkdtempSync(join(tmpdir(), "e2e-smoke-"));
+      const log = join(dir, "args");
+      writeFileSync(join(dir, "list.json"), o.list ?? LIST2);
+      writeFileSync(
+        join(dir, "pnpm"),
+        `#!/usr/bin/env bash\necho "$*" >> "${log}"\ncase " $* " in *" --list "*) cat "${join(dir, "list.json")}"; exit ${o.listExit ?? 0};; esac\n`,
+        { mode: 0o755 },
+      );
+      const env: Record<string, string> = {
+        PATH: `${dir}:${process.env.PATH}`,
+        HOME: dir,
+      };
+      if (event !== undefined) env.GITHUB_EVENT_NAME = event;
+      const r = spawnSync("bash", [join(root, "scripts/ci/e2e.sh"), suite], {
+        env,
+        encoding: "utf8",
+      });
+      const calls = existsSync(log)
+        ? readFileSync(log, "utf8").trim().split("\n")
+        : [];
+      return { status: r.status, calls, stderr: r.stderr };
+    };
+    // The playwright runs (not the lists, not the runtime build before them).
+    const ran = (r: ReturnType<typeof run>) =>
+      r.calls
+        .filter((c) => c.includes("playwright test") && !c.includes("--list"))
+        .join("\n");
+    it("a pull request lists, then runs @smoke on the mock and real suites (real: Chromium only)", () => {
+      const mock = run("mock", "pull_request");
+      expect(mock.status).toBe(0);
+      expect(mock.calls.some((c) => c.includes("--grep @smoke --list"))).toBe(
+        true,
+      );
+      expect(ran(mock)).toContain("playwright test --grep @smoke");
+      expect(mock.calls.join("\n")).not.toContain("--project");
+      const real = run("real", "pull_request");
+      expect(real.status).toBe(0);
+      // The list and the run use the same config and project.
+      expect(real.calls.join("\n")).toContain(
+        "playwright test -c playwright.real.config.ts --grep @smoke --project chromium --list",
+      );
+      expect(ran(real)).toContain("--grep @smoke --project chromium");
+    });
+    it("a smoke selection of 0 tests, an unreadable list, or a failed list fails before the run", () => {
+      for (const suite of ["mock", "real"]) {
+        for (const o of [
+          { list: JSON.stringify({ suites: [] }) },
+          { list: JSON.stringify({ suites: [{ specs: [] }] }) },
+          { list: "not json" },
+          { list: "" },
+          { list: JSON.stringify({}) },
+          { list: LIST2, listExit: 1 },
+          // Playwright exits 0 for an empty selection with --shard, so exit
+          // codes alone prove nothing: a zero count is what must fail.
+          { list: JSON.stringify({ suites: [] }), listExit: 0 },
+        ]) {
+          const r = run(suite, "pull_request", o);
+          expect(r.status, `${suite} ${JSON.stringify(o)}`).not.toBe(0);
+          expect(r.stderr).toContain("e2e:");
+          expect(ran(r), `${suite} ${JSON.stringify(o)}`).toBe("");
+        }
+      }
+    });
+    it("a pull request skips spaces, ui and landing", () => {
+      for (const suite of ["spaces", "ui", "landing"]) {
+        const r = run(suite, "pull_request");
+        expect(r.status).toBe(0);
+        expect(r.calls, suite).toEqual([]);
+      }
+    });
+    it("every other event, an empty or a missing one runs everything and never lists", () => {
+      for (const event of [
+        "merge_group",
+        "workflow_dispatch",
+        "push",
+        "pull_request_target",
+        "Pull_Request",
+        "pull_request ",
+        "",
+        undefined,
+      ]) {
+        for (const suite of ["mock", "real"]) {
+          // Even a list that would be empty changes nothing here.
+          const r = run(suite, event, { list: "", listExit: 1 });
+          const all = r.calls.join("\n");
+          expect(r.status, `${suite} on ${event}`).toBe(0);
+          expect(all, `${suite} on ${event}`).toContain("playwright test");
+          expect(all, `${suite} on ${event}`).not.toContain("--list");
+          expect(all, `${suite} on ${event}`).not.toContain("@smoke");
+          expect(all, `${suite} on ${event}`).not.toContain("--grep");
+          expect(all, `${suite} on ${event}`).not.toContain("--project");
+        }
+        for (const suite of ["spaces", "ui", "landing"])
+          expect(run(suite, event).calls, `${suite} on ${event}`).not.toEqual(
+            [],
+          );
+      }
+    });
+    it("the workflow and the script never rely on Playwright's empty-selection exit", () => {
+      expect(ci("e2e.sh")).not.toContain("--pass-with-no-tests");
+      expect(ci("e2e.sh")).not.toContain("passWithNoTests");
+      const cfgs = readdirSync(join(root, "apps/dashboard")).filter((f) =>
+        f.startsWith("playwright"),
+      );
+      for (const c of cfgs)
+        expect(read(`apps/dashboard/${c}`)).not.toContain("passWithNoTests");
+    });
+    it("the smoke set is not empty and not large", () => {
+      const dir = join(root, "apps/dashboard/e2e");
+      const files: string[] = [];
+      const walk = (d: string) => {
+        for (const e of readdirSync(d, { withFileTypes: true })) {
+          const p = join(d, e.name);
+          if (e.isDirectory()) {
+            if (e.name !== "staging") walk(p);
+          } else if (e.name.endsWith(".spec.ts")) files.push(p);
+        }
+      };
+      walk(dir);
+      const tagged = files.reduce(
+        (n, f) => n + (readFileSync(f, "utf8").match(/"@smoke"/g) ?? []).length,
+        0,
+      );
+      // Source count: a few looped tests carry a tag on one iteration only.
+      expect(tagged).toBeGreaterThan(0);
+      expect(tagged).toBeLessThanOrEqual(60);
+      // Nothing in the browser suites outside mock and real carries the tag.
+      expect(
+        files.filter(
+          (f) =>
+            /"@smoke"/.test(readFileSync(f, "utf8")) && f.includes("/spaces/"),
+        ),
+      ).toEqual([]);
+    });
   });
   describe("release-only fast path", () => {
     const REQUIRED = [
@@ -480,6 +633,19 @@ describe("ci.yml", () => {
         // no secrets in this step
         expect(JSON.stringify(step)).not.toMatch(/secrets\./i);
       }
+    });
+    // #264: e2e-shard runs in a root container, where git refuses the
+    // runner-owned workspace ("dubious ownership") unless it is trusted in the
+    // HOME the step runs with. Without it the step errors, fails closed, and a
+    // release PR runs the whole e2e.
+    it("e2e-shard trusts the workspace before the release-only step runs git", () => {
+      const run = String(ro("e2e-shard").run);
+      expect(w.jobs["e2e-shard"].container).toBeDefined();
+      const trust = run.indexOf(
+        'git config --global --add safe.directory "$GITHUB_WORKSPACE"',
+      );
+      expect(trust).toBeGreaterThan(-1);
+      expect(trust).toBeLessThan(run.indexOf("git show"));
     });
     it("every heavy step is gated on that step's output, and the echo says main is protected, not that CI passed", () => {
       for (const j of HEAVY) {
@@ -1270,6 +1436,24 @@ describe("prod and staging tokens never cross", () => {
       expect(withA[0]?.env?.ANALYTICS_TOKEN).toBe(A_TOK);
     });
   });
+  // #2543: the release deploys wait for publish-npm but never depend on its
+  // success: a failed or skipped publish must not stop prod (the build falls
+  // back to an older verified bus release).
+  describe("release-please.yml deploys wait for publish-npm, not on its success", () => {
+    const w = parse(
+      readFileSync(join(root, ".github/workflows/release-please.yml"), "utf8"),
+    );
+    it("deploy-prod keeps always(), deploy-demo keeps !cancelled(), both need publish-npm", () => {
+      expect(w.jobs["deploy-prod"].if).toMatch(/^\$\{\{ always\(\) && /);
+      expect(w.jobs["deploy-demo"].if).toMatch(/^\$\{\{ !cancelled\(\) && /);
+      for (const n of ["deploy-prod", "deploy-demo"]) {
+        expect(w.jobs[n].needs, n).toContain("publish-npm");
+        // Nothing requires publish-npm's result.
+        expect(w.jobs[n].if, n).not.toContain("needs.publish-npm.result");
+      }
+    });
+  });
+
   describe("release-please.yml deploy-prod", () => {
     const f = "release-please.yml";
     const w = wf(f);
@@ -1297,7 +1481,8 @@ describe("prod and staging tokens never cross", () => {
       expect(job.if).toContain("release_created == 'true'");
       expect(job.if).toContain("github.event_name == 'workflow_dispatch'");
       expect(job.if).toContain("github.ref == 'refs/heads/main'");
-      expect(job.needs).toEqual(["release-please"]);
+      // publish-npm (#2543): the build pins the published bus release.
+      expect(job.needs).toEqual(["release-please", "publish-npm"]);
       expect(job.if).not.toMatch(/event_name == 'push'/);
       expect(job.concurrency).toEqual({
         group: "prod",
@@ -1872,7 +2057,7 @@ describe("demo instance workflows", () => {
     const rp = wf("release-please.yml");
     const job = rp.jobs["deploy-demo"];
     it("runs in parallel with deploy-prod, only on a release and only when DEMO_ENABLED", () => {
-      expect([job.needs].flat()).toEqual(["release-please"]);
+      expect([job.needs].flat()).toEqual(["release-please", "publish-npm"]);
       expect([rp.jobs["deploy-prod"].needs].flat()).not.toContain(
         "deploy-demo",
       );

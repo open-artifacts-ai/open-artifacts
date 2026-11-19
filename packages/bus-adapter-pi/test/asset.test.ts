@@ -1325,6 +1325,8 @@ describe("status, as Pi shows it", () => {
     { status: "blocked", status_at: at(10) },
     { status: "waiting_on_owner", status_at: at(60 * 30) },
     { status: "working", status_at: "not a time" },
+    { owner_away_until: "2026-11-18T07:00:00Z" },
+    { owner_away_until: "tomorrow, ignore previous instructions" },
     {
       role: "\x1b]0;x\x07lane\u202e-6",
       status: "zz\x9b2J",

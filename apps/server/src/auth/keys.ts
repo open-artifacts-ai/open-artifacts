@@ -16,9 +16,15 @@ const KEY_OWNERS = {
   "oa:code-cookie": "session",
   "oa:login-codes": "session",
   "oa:code-email": "session",
+  // #2590 G2: the cookie that holds a Google account waiting for its code.
+  "oa:glink-cookie": "session",
   "oa:audit-cursor": "session",
   // #1467 the unsubscribe link in comment emails.
   "oa:comment-unsub": "session",
+  // #2632 the "Don't remind me" link in the setup reminder email.
+  "oa:setup-remind-off": "session",
+  // #2590 the "Don't email me again" link in outside share emails.
+  "oa:share-optout": "session",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token

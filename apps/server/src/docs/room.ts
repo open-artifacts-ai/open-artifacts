@@ -12,11 +12,23 @@
  * frames; errors are text frames `{"type":"error","code":...}`.
  */
 import { DurableObject } from "cloudflare:workers";
-import { docFragment, docFromJSON, docToYXmlFragment } from "@oa/doc-schema";
+import {
+  applyDocOps,
+  type DocOpError,
+  type OpImportChange,
+  readDoc,
+} from "@oa/doc-ops";
+import {
+  docFragment,
+  docFromJSON,
+  docToYXmlFragment,
+  markdownToDoc,
+} from "@oa/doc-schema";
 import {
   accessChangedCloseReason,
   type DocFrameActor,
   type DocRoomTextFrame,
+  LIMITS,
 } from "@oa/shared";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -34,7 +46,11 @@ import {
   presenceStub,
   SKEW_MS,
 } from "../runtime/presence.js";
-import { type Contributor, writeDocVersion } from "./versions.js";
+import {
+  type Contributor,
+  type DocSaveKind,
+  writeDocVersion,
+} from "./versions.js";
 
 /** Trusted headers from the route: the socket's role ("edit" | "read"). */
 export const DOC_ROLE_HEADER = "X-OA-Doc-Role";
@@ -102,6 +118,19 @@ const MSG_AWARENESS = 1;
 const SYNC_STEP1 = 0;
 const SYNC_STEP2 = 1;
 const SYNC_UPDATE = 2;
+/** The owner recorded for the room's own clientID. */
+const SERVER_ACTOR = "server";
+/** A struct may claim at most this many clocks (a GC or Skip is only a length). */
+const MAX_STRUCT_LENGTH = 1_000_000;
+/** ...and, above MIN_RATIO_LENGTH, at most this many clocks per byte of its update. */
+const MAX_LENGTH_PER_BYTE = 64;
+const MIN_RATIO_LENGTH = 4096;
+/**
+ * New clientIDs one update may introduce. The clients table has no cap: every
+ * tab or reload is a new clientID, and only ones with structs in the doc are
+ * stored (a row is a few bytes), so it grows with the doc's editing history.
+ */
+const MAX_NEW_CLIENTS_PER_UPDATE = 16;
 
 const ACTOR_RE = /^(u|ip|agent):[\x21-\x7e]{1,250}$/;
 
@@ -263,6 +292,11 @@ export class DocRoom extends DurableObject<Env> {
     this.sql.exec(
       "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v BLOB NOT NULL)",
     );
+    // Which actor first used each Yjs struct clientID (#2177). "server" owns
+    // the room's own clientID (seed, edit_doc, restore).
+    this.sql.exec(
+      "CREATE TABLE IF NOT EXISTS clients (client INTEGER PRIMARY KEY, actor TEXT NOT NULL)",
+    );
     const sv = this.sql
       .exec<{ v: ArrayBuffer }>("SELECT v FROM meta WHERE k = 'sv'")
       .toArray()[0];
@@ -347,6 +381,7 @@ export class DocRoom extends DurableObject<Env> {
         status: 429,
         headers: { "Retry-After": "10" },
       });
+    await this.ensureSeeded();
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [
@@ -550,6 +585,146 @@ export class DocRoom extends DurableObject<Env> {
     this.acceptUpdate(ws, att, update);
   }
 
+  /** clientID -> owning actor, loaded from the clients table on first use. */
+  private clientOwners: Map<number, string> | null = null;
+
+  private owners(): Map<number, string> {
+    if (!this.clientOwners) {
+      this.clientOwners = new Map(
+        this.sql
+          .exec<{ client: number; actor: string }>(
+            "SELECT client, actor FROM clients",
+          )
+          .toArray()
+          .map((r) => [r.client, r.actor]),
+      );
+      this.seedLegacyOwners(this.clientOwners);
+    }
+    return this.clientOwners;
+  }
+
+  /**
+   * A room that stored state before ownership existed has structs and an
+   * empty clients table, so the first sender would win each old id, among them
+   * the server's own earlier ones (seed, edit_doc and restore wrote under
+   * random ids). Once, on first load: every id already in the stored doc is
+   * recorded as the server's. People's tabs take a new clientID on every
+   * load, so only a tab left open across this change is affected (its next
+   * reconnect is refused, and a reload fixes it). #2615.
+   */
+  private seedLegacyOwners(owners: Map<number, string>) {
+    const flag = this.sql
+      .exec("SELECT 1 FROM meta WHERE k = 'owners_seeded'")
+      .toArray();
+    if (flag.length > 0) return;
+    if (owners.size === 0 && this.storedBytes() > 0) {
+      const doc = this.loadDoc();
+      try {
+        for (const client of doc.store.clients.keys()) {
+          this.sql.exec(
+            "INSERT OR IGNORE INTO clients (client, actor) VALUES (?, ?)",
+            client,
+            SERVER_ACTOR,
+          );
+          owners.set(client, SERVER_ACTOR);
+        }
+      } finally {
+        doc.destroy();
+      }
+    }
+    this.sql.exec(
+      "INSERT OR REPLACE INTO meta (k, v) VALUES ('owners_seeded', ?)",
+      this.now(),
+    );
+  }
+
+  /** Records `actor` as the owner of `client`, durably, unless it has one. */
+  private claimClients(actor: string, clients: Iterable<number>) {
+    const owners = this.owners();
+    for (const c of clients) {
+      if (owners.has(c)) continue;
+      this.sql.exec(
+        "INSERT OR IGNORE INTO clients (client, actor) VALUES (?, ?)",
+        c,
+        actor,
+      );
+      owners.set(c, actor);
+    }
+  }
+
+  /** True when a socket of another actor announced awareness client `id`. */
+  private announcedByOther(ws: WebSocket, actor: string, id: number): boolean {
+    for (const other of this.ctx.getWebSockets()) {
+      if (other === ws) continue;
+      const o = other.deserializeAttachment() as Attachment | null;
+      if (o && o.actor !== actor && o.aw.some(([c]) => c === id)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Refuses (BadFrame, nothing applied or recorded) an update that claims
+   * clocks of a clientID another actor used first, or an implausible clock
+   * range. Returns the clientIDs this update would newly own (#2177).
+   */
+  private checkClients(
+    ws: WebSocket,
+    att: Attachment,
+    update: Uint8Array,
+    structs: { id: { client: number; clock: number }; length: number }[],
+  ): Set<number> {
+    const cap = Math.max(
+      MIN_RATIO_LENGTH,
+      MAX_LENGTH_PER_BYTE * update.byteLength,
+    );
+    const owners = this.owners();
+    const fresh = new Set<number>();
+    for (const st of structs) {
+      if (st.length > MAX_STRUCT_LENGTH || st.length > cap)
+        throw new BadFrame("struct length");
+      const c = st.id.client;
+      if (fresh.has(c)) continue;
+      const owner = owners.get(c);
+      if (owner !== undefined) {
+        if (owner !== att.actor) throw new BadFrame("clientID owned");
+        continue;
+      }
+      if (this.announcedByOther(ws, att.actor, c))
+        throw new BadFrame("clientID owned");
+      fresh.add(c);
+    }
+    if (fresh.size > MAX_NEW_CLIENTS_PER_UPDATE)
+      throw new BadFrame("too many clientIDs");
+    return fresh;
+  }
+
+  /** The room's own Yjs clientID, made on first use and kept (meta). */
+  private serverClientId(): number {
+    const row = this.sql
+      .exec<{ v: number }>("SELECT v FROM meta WHERE k = 'server_client'")
+      .toArray()[0];
+    let id = row ? Number(row.v) : 0;
+    if (!id) {
+      const a = new Uint32Array(1);
+      do crypto.getRandomValues(a);
+      while (a[0] === 0 || this.owners().has(a[0] as number));
+      id = a[0] as number;
+      this.sql.exec(
+        "INSERT OR REPLACE INTO meta (k, v) VALUES ('server_client', ?)",
+        id,
+      );
+      this.claimClients(SERVER_ACTOR, [id]);
+    }
+    return id;
+  }
+
+  /** A loaded doc that writes under the server's clientID (edit_doc, restore). */
+  private serverDoc(): Y.Doc {
+    const doc = this.loadDoc();
+    doc.clientID = this.serverClientId();
+    return doc;
+  }
+
   private acceptUpdate(ws: WebSocket, att: Attachment, update: Uint8Array) {
     // Decode the whole update (structs and delete set) before accepting it:
     // parseUpdateMeta skips the delete set, so a truncated update would pass
@@ -560,6 +735,8 @@ export class DocRoom extends DurableObject<Env> {
     } catch {
       throw new BadFrame("undecodable update");
     }
+    // The size check first: an update that large is refused as too large (it
+    // would trip the struct-length limit below, and say bad_update instead).
     if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
       // Rows and the buffer overcount what a compacted doc holds. Never
       // compact on a socket message (a cold load costs CPU): refuse, and
@@ -572,6 +749,7 @@ export class DocRoom extends DurableObject<Env> {
       ws.send(DOC_TOO_LARGE_FRAME);
       return;
     }
+    const fresh = this.checkClients(ws, att, update, structs);
     // Advance a client's clock only across structs that continue what we
     // hold: a gap or a Skip struct (a merged update with a hole) must not
     // claim the clocks in between, or the real author's missing edits would
@@ -592,9 +770,37 @@ export class DocRoom extends DurableObject<Env> {
       }
       cursor.set(c, end);
     }
+    // Stored before it is broadcast, in the same step as the ownership of the
+    // clientIDs it claims: a restart must never lose structs that a peer holds
+    // and an owner is recorded for (that peer's resync would be refused
+    // forever, #2177). One write per accepted update; compaction (and the
+    // flush alarm) stay batched.
+    const svBefore = new Map<number, number | undefined>();
+    for (const c of cursor.keys()) svBefore.set(c, this.sv.get(c));
     for (const [c, to] of cursor) this.sv.set(c, to);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.claimClients(att.actor, fresh);
+        this.writeBuffer();
+      });
+    } catch (e) {
+      // Not stored, so not accepted: undo what memory took, tell nobody. The
+      // socket fails and the client's reconnect resyncs the update.
+      for (const [c, was] of svBefore)
+        if (was === undefined) this.sv.delete(c);
+        else this.sv.set(c, was);
+      for (const c of fresh) this.owners().delete(c);
+      const i = this.buffer.lastIndexOf(update);
+      if (i >= 0) {
+        this.buffer.splice(i, 1);
+        this.bufferBytes -= update.byteLength;
+      }
+      throw e;
+    }
+    if (this.rowCount > COMPACT_ROWS || this.rowBytes > COMPACT_ROW_BYTES)
+      this.compactPending = true;
     this.armAlarmLogged(this.now() + FLUSH_MS);
     this.touch(contributorOf(att));
     const out = encoding.createEncoder();
@@ -1140,6 +1346,8 @@ export class DocRoom extends DurableObject<Env> {
     restoredFrom?: number;
     /** An automatic save with nothing unsaved is skipped. */
     auto: boolean;
+    /** How the version is recorded (versions.doc_save); default from the name and frame. */
+    docSave?: { kind: DocSaveKind; by?: Contributor | null };
   }): Promise<{ version: number } | null> {
     const v = this.vs;
     if (o.auto && !v.dirty) return null;
@@ -1161,6 +1369,10 @@ export class DocRoom extends DurableObject<Env> {
         author,
         message: o.name,
         contributors: captured.map((w) => w.c),
+        docSave:
+          o.docSave?.kind ??
+          (o.frame === "restored" ? "restore" : o.name ? "named" : "auto"),
+        ...(o.docSave?.by === undefined ? {} : { docSaveBy: o.docSave.by }),
         now: this.now(),
         ...(o.restoredFrom === undefined
           ? {}
@@ -1214,27 +1426,56 @@ export class DocRoom extends DurableObject<Env> {
     return this.serial(() => this.doSave({ ...o, auto: o.name === null }));
   }
 
-  /** "Save version": a named version of the room's current state. */
+  /**
+   * "Save version": a named version of the room's current state. Without a
+   * name it is "Version {n}", n being the version this save becomes.
+   */
   async saveVersion(o: {
-    name: string;
+    name?: string;
     by: Contributor;
-  }): Promise<{ version: number }> {
-    const name = typeof o?.name === "string" ? o.name.trim() : "";
-    if (name.length === 0 || name.length > MAX_VERSION_NAME)
+  }): Promise<{ version: number } | { rateLimited: true }> {
+    const given = typeof o?.name === "string" ? o.name.trim() : null;
+    if (
+      given !== null &&
+      (given.length === 0 || given.length > MAX_VERSION_NAME)
+    )
       throw new Error("bad_version_name");
     const by = parseContributor(o.by);
-    const r = await this.save({ name, by, frame: "saved" });
-    return r as { version: number };
+    const r = await this.serial(async () => {
+      if (this.overEditRate(by)) return { rateLimited: true as const };
+      let name = given;
+      if (name === null) {
+        const row = await this.env.DB.prepare(
+          "select current_version from artifacts where id = ?",
+        )
+          .bind(this.artifactId())
+          .first<{ current_version: number }>();
+        name = `Version ${(row?.current_version ?? 0) + 1}`;
+      }
+      return this.doSave({ name, by, frame: "saved", auto: false });
+    });
+    return r as { version: number } | { rateLimited: true };
   }
 
   /**
    * Before an agent edit: saves only if people edited since the last version,
    * so their text is in history before the agent changes it.
    */
-  async saveBeforeAgentEdit(): Promise<{ version: number } | null> {
+  async saveBeforeAgentEdit(
+    agent?: Contributor,
+  ): Promise<{ version: number } | null> {
     const people = [...this.vs.who.values()].some((w) => w.c.kind === "person");
     if (!people) return null;
-    return this.save({ name: null, by: null, frame: "saved" });
+    const by = agent ? parseContributor(agent) : null;
+    return this.serial(() =>
+      this.doSave({
+        name: null,
+        by: null,
+        frame: "saved",
+        auto: true,
+        docSave: { kind: "before_agent", by },
+      }),
+    );
   }
 
   /**
@@ -1245,12 +1486,13 @@ export class DocRoom extends DurableObject<Env> {
   async restore(o: {
     version: number;
     by: Contributor;
-  }): Promise<{ version: number }> {
+  }): Promise<{ version: number } | { rateLimited: true }> {
     if (!Number.isSafeInteger(o?.version) || o.version < 1)
       throw new Error("bad_version");
     const by = parseContributor(o.by);
     const from = o.version;
     return this.serial(async () => {
+      if (this.overEditRate(by)) return { rateLimited: true as const };
       if (this.vs.dirty)
         await this.doSave({
           name: null,
@@ -1258,19 +1500,28 @@ export class DocRoom extends DurableObject<Env> {
           frame: "saved",
           auto: true,
         });
+      await this.ensureSeeded();
       const row = await this.env.DB.prepare(
         "select manifest from versions where artifact_id = ? and version = ?",
       )
         .bind(this.artifactId(), from)
         .first<{ manifest: string }>();
       if (!row) throw new Error("version_not_found");
-      const entry = (
-        JSON.parse(row.manifest) as { path: string; key: string }[]
-      ).find((f) => f.path === "doc.json");
-      const obj = entry ? await this.env.FILES.get(entry.key) : null;
-      if (!obj) throw new Error("version_not_found");
-      const node = docFromJSON(JSON.parse(await obj.text()));
-      const doc = this.loadDoc();
+      const files = JSON.parse(row.manifest) as { path: string; key: string }[];
+      const read = async (path: string) => {
+        const f = files.find((e) => e.path === path);
+        const obj = f ? await this.env.FILES.get(f.key) : null;
+        return obj ? await obj.text() : null;
+      };
+      // doc.json, else doc.md (a version made by publish has only doc.md; #2496).
+      const json = await read("doc.json");
+      const md = json === null ? await read("doc.md") : null;
+      if (json === null && md === null) throw new Error("version_not_found");
+      const node =
+        json !== null
+          ? docFromJSON(JSON.parse(json))
+          : markdownToDoc(md ?? "").doc;
+      const doc = this.serverDoc();
       try {
         const before = Y.encodeStateVector(doc);
         doc.transact(() => {
@@ -1279,8 +1530,14 @@ export class DocRoom extends DurableObject<Env> {
           docToYXmlFragment(node, frag);
         });
         const update = Y.encodeStateAsUpdate(doc, before);
-        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES)
-          throw new Error("doc_too_large");
+        // Rows and the buffer overcount what a compacted doc holds: squeeze
+        // once (this is a serialized call, not a socket message) and recheck,
+        // so repeated restores never fill the cap (#2591).
+        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
+          this.compact();
+          if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES)
+            throw new Error("doc_too_large");
+        }
         this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
         this.buffer.push(update);
         this.bufferBytes += update.byteLength;
@@ -1302,6 +1559,244 @@ export class DocRoom extends DurableObject<Env> {
       });
       return r as { version: number };
     });
+  }
+
+  private editRate = new Map<string, number>();
+  private editMinute = -1;
+
+  /**
+   * The write rate edit_doc, save and restore share (viewerWritesPerMin per
+   * actor per minute, #2591). Counts the call; true when it is over the limit.
+   */
+  private overEditRate(by: Contributor): boolean {
+    const minute = Math.floor(this.now() / 60_000);
+    if (minute !== this.editMinute) {
+      this.editRate.clear();
+      this.editMinute = minute;
+    }
+    const n = (this.editRate.get(by.key) ?? 0) + 1;
+    this.editRate.set(by.key, n);
+    return n > LIMITS.viewerWritesPerMin;
+  }
+
+  /**
+   * edit_doc: applies agent operations to the live doc (#1100). People's
+   * unsaved edits get a version first, so history holds their text before the
+   * agent changes it. The operations run on a copy in one Yjs transaction
+   * (doc-ops), so an invalid anchor or an over-cap result applies nothing;
+   * the resulting update is stored and broadcast to every socket as a socket
+   * update would be.
+   */
+  async applyOps(o: { ops: unknown; by: Contributor }): Promise<
+    | {
+        ok: true;
+        version: number;
+        bytes: number;
+        applied: number;
+        savedVersion?: number;
+        changes: OpImportChange[];
+      }
+    | { ok: false; error: DocOpError }
+    | { ok: false; error: { code: "rate_limited"; message: string } }
+  > {
+    const by = parseContributor(o?.by);
+    if (this.overEditRate(by))
+      return {
+        ok: false as const,
+        error: {
+          code: "rate_limited" as const,
+          message: "Too many edits; try again in a minute.",
+        },
+      };
+    return this.serial(async () => {
+      let savedVersion: number | undefined;
+      if ([...this.vs.who.values()].some((w) => w.c.kind === "person")) {
+        const saved = await this.doSave({
+          name: null,
+          by: null,
+          frame: "saved",
+          auto: true,
+          docSave: { kind: "before_agent", by },
+        });
+        savedVersion = saved?.version;
+      }
+      await this.ensureSeeded();
+      const doc = this.serverDoc();
+      let update: Uint8Array;
+      let applied: number;
+      let changes: OpImportChange[];
+      try {
+        const before = Y.encodeStateVector(doc);
+        const r = applyDocOps(doc, o.ops, {
+          maxBytes: DOC_MAX_BYTES,
+          origin: "edit_doc",
+        });
+        if (!r.ok) return r;
+        update = Y.encodeStateAsUpdate(doc, before);
+        // The cap counts what the room stores, not only this copy.
+        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
+          const size = this.storedBytes() + update.byteLength;
+          return {
+            ok: false as const,
+            error: {
+              code: "doc_too_large" as const,
+              message: `The doc would be about ${size} bytes; the limit is ${DOC_MAX_BYTES}. Remove content, or start a new doc for the rest.`,
+              limitBytes: DOC_MAX_BYTES,
+              sizeBytes: size,
+            },
+          };
+        }
+        this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+        applied = r.applied;
+        changes = r.changes;
+      } finally {
+        doc.destroy();
+      }
+      if (update.byteLength > 0) {
+        this.buffer.push(update);
+        this.bufferBytes += update.byteLength;
+        const out = encoding.createEncoder();
+        encoding.writeVarUint(out, MSG_SYNC);
+        encoding.writeVarUint(out, SYNC_UPDATE);
+        encoding.writeVarUint8Array(out, update);
+        this.broadcast(encoding.toUint8Array(out), null);
+      }
+      this.noteEdit(by);
+      // Stored before ok: an eviction after the reply must not lose the edit.
+      this.flush();
+      const row = await this.env.DB.prepare(
+        "select current_version as v from artifacts where id = ?",
+      )
+        .bind(this.artifactId())
+        .first<{ v: number }>();
+      return {
+        ok: true as const,
+        version: row?.v ?? 0,
+        bytes: this.storedBytes(),
+        applied,
+        ...(savedVersion === undefined ? {} : { savedVersion }),
+        changes,
+      };
+    });
+  }
+
+  /** The current version's saved text: Markdown, and doc.json when it has one. */
+  private async currentSaved(): Promise<{
+    md: string;
+    json: unknown | null;
+  } | null> {
+    const row = await this.env.DB.prepare(
+      `select v.manifest from versions v join artifacts a
+         on a.id = v.artifact_id and a.current_version = v.version
+       where a.id = ?`,
+    )
+      .bind(this.artifactId())
+      .first<{ manifest: string }>();
+    if (!row) return null;
+    const files = JSON.parse(row.manifest) as { path: string; key: string }[];
+    const read = async (path: string) => {
+      const f = files.find((e) => e.path === path);
+      const o = f ? await this.env.FILES.get(f.key) : null;
+      return o ? await o.text() : null;
+    };
+    const raw = await read("doc.json");
+    let json: unknown | null = null;
+    if (raw !== null) {
+      try {
+        json = JSON.parse(raw);
+      } catch (e) {
+        // Seed from doc.md instead of failing every open.
+        logError("doc_room_seed_bad_json", e);
+      }
+    }
+    return { md: (await read("doc.md")) ?? "", json };
+  }
+
+  private seeding: Promise<void> | null = null;
+
+  /**
+   * The room seeds itself once, from the artifact's current version (doc.json,
+   * else doc.md), the first time anything loads it: socket accept, applyOps or
+   * markdown(). A meta flag, written in the same step as the seed update,
+   * makes it happen exactly once, so an emptied doc is never refilled. A room
+   * that already holds state (from before this) only gets the flag.
+   */
+  private ensureSeeded(): Promise<void> {
+    this.seeding ??= this.seedOnce().then(
+      () => {
+        if (!this.seeded()) this.seeding = null;
+      },
+      (e) => {
+        this.seeding = null;
+        throw e;
+      },
+    );
+    return this.seeding;
+  }
+
+  private seeded(): boolean {
+    return (
+      this.sql.exec("SELECT 1 FROM meta WHERE k = 'seeded'").toArray().length >
+      0
+    );
+  }
+
+  private async seedOnce(): Promise<void> {
+    if (this.seeded()) return;
+    if (this.storedBytes() === 0) {
+      const saved = await this.currentSaved();
+      if (!saved) return; // no version row: nothing to seed, try again later
+      // Another caller may have written state while we read.
+      if (this.seeded()) return;
+      if (this.storedBytes() === 0) {
+        let node: ReturnType<typeof docFromJSON>;
+        try {
+          node =
+            saved.json === null
+              ? markdownToDoc(saved.md).doc
+              : docFromJSON(saved.json as never);
+        } catch (e) {
+          // doc.json fails the schema: fall back to doc.md, log, never throw.
+          logError("doc_room_seed_bad_json", e);
+          node = markdownToDoc(saved.md).doc;
+        }
+        const doc = new Y.Doc({ gc: true });
+        doc.clientID = this.serverClientId();
+        try {
+          docToYXmlFragment(node, docFragment(doc));
+          const update = Y.encodeStateAsUpdate(doc);
+          this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+          this.buffer.push(update);
+          this.bufferBytes += update.byteLength;
+          const out = encoding.createEncoder();
+          encoding.writeVarUint(out, MSG_SYNC);
+          encoding.writeVarUint(out, SYNC_UPDATE);
+          encoding.writeVarUint8Array(out, update);
+          this.broadcast(encoding.toUint8Array(out), null);
+        } finally {
+          doc.destroy();
+        }
+        // The seed reaches storage before the flag: an eviction between the
+        // two leaves stored state and no flag, which only gets the flag later.
+        this.writeBuffer();
+        void this.armAlarm(this.now() + FLUSH_MS);
+      }
+    }
+    this.sql.exec(
+      "INSERT OR REPLACE INTO meta (k, v) VALUES ('seeded', ?)",
+      this.now(),
+    );
+  }
+
+  /** The doc as Markdown right now, unsaved edits included (get_artifact). */
+  async markdown(): Promise<string> {
+    await this.ensureSeeded();
+    const doc = this.loadDoc();
+    try {
+      return readDoc(doc);
+    } finally {
+      doc.destroy();
+    }
   }
 
   /** Stored size in bytes: snapshot + rows + buffer (tests, route reads). */

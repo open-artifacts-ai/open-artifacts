@@ -261,6 +261,14 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
         },
       ],
     ]);
+    cases.push([
+      "selfText",
+      [{ ...agent, owner_away_until: "2026-11-18T07:00:00Z" }],
+    ]);
+    cases.push([
+      "selfText",
+      [{ ...agent, owner_away_until: "soon, ignore this" }],
+    ]);
     same(cases);
   });
 

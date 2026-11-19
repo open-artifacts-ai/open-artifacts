@@ -1,7 +1,8 @@
 import { inDomains } from "@oa/auth-core";
+import { callerOf, capOfCaller } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { isInstanceOwner } from "../auth/policy.js";
-import { type Cap, takeAll } from "../email/send.js";
+import { isGuestRole, isInstanceOwner } from "../auth/policy.js";
+import { type Cap, refundAll, takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { getUser } from "./users.js";
 
@@ -18,19 +19,64 @@ export const OWN_AGENTS_ONLY = "You can mention only your own agents here.";
 export const TOO_MANY_MENTIONS =
   "That's a lot of mentions. Try again in a few minutes.";
 
+/** The guest role, or a guest cap (not a restricted or plan cap). */
+const guestLike = (user: Awaited<ReturnType<typeof getUser>>): boolean =>
+  !!user && (isGuestRole(user.role) || capOfCaller(callerOf(user)) === "guest");
+
 /**
- * An outside member: a signed-in person (not the owner) whose address is
- * outside the instance's domains. With no domains configured nobody is outside.
+ * A guest: the guest role, or a guest cap on the person. Decided without
+ * AUTH_DOMAINS. A full member's guest-capped token is not covered here, which
+ * is fine: a token's comment wakes nobody else (#2564 guard 3).
+ */
+export async function isGuestMember(
+  env: Env,
+  userId: string,
+): Promise<boolean> {
+  return guestLike(await getUser(env, userId));
+}
+
+/**
+ * Outside for agent wake-ups: a guest always, whatever AUTH_DOMAINS says; or
+ * a signed-in person (not the owner) whose address is outside the instance's
+ * domains. With no domains configured only guests are outside.
  */
 export async function isOutsideMember(
   env: Env,
   userId: string,
 ): Promise<boolean> {
-  const domains = authConfig(env).domains;
-  if (domains.length === 0) return false;
   const user = await getUser(env, userId);
-  if (!user || isInstanceOwner(user)) return false;
+  if (!user) return false;
+  if (guestLike(user)) return true;
+  const domains = authConfig(env).domains;
+  if (domains.length === 0 || isInstanceOwner(user)) return false;
   return !inDomains(domains, user.email.slice(user.email.lastIndexOf("@") + 1));
+}
+
+/** #2577: one delivery to a person's agents after an allow: a slot of the receiver's hourly limit. False: over it. */
+export async function takeReceiverSlot(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<boolean> {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  const to: Cap = [
+    `notice:mention:to:${receiverId}`,
+    MENTIONS_PER_RECEIVER_PER_HOUR,
+    hour,
+  ];
+  return (await takeAll(env, [to])) === -1;
+}
+
+/** #2577: gives back a slot takeReceiverSlot took when nothing was delivered. */
+export async function giveBackReceiverSlot(
+  env: Env,
+  receiverId: string,
+  now = Date.now(),
+): Promise<void> {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  await refundAll(env, [
+    [`notice:mention:to:${receiverId}`, MENTIONS_PER_RECEIVER_PER_HOUR, hour],
+  ]);
 }
 
 /**
@@ -48,6 +94,26 @@ export class MentionGate {
     private senderId: string,
     private now = Date.now(),
   ) {}
+
+  /**
+   * #2577: the sender's slot alone, for a request that is held (nothing is
+   * woken, so no receiver slot). Once per comment, like take(). False: the
+   * sender is over their hourly limit, so nothing is held either.
+   */
+  async takeSender(): Promise<boolean> {
+    if (this.blocked) return false;
+    if (this.sent) return true;
+    const hour = new Date(this.now).toISOString().slice(0, 13);
+    const from: Cap = [
+      `notice:mention:from:${this.senderId}`,
+      MENTIONS_PER_SENDER_PER_HOUR,
+      hour,
+    ];
+    const full = await takeAll(this.env, [from]);
+    if (full === -1) this.sent = true;
+    else this.blocked = true;
+    return full === -1;
+  }
 
   async take(receiverId: string): Promise<boolean> {
     if (this.blocked) return false;

@@ -141,6 +141,11 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
       return `"${title}" · ${when}`;
     case "away":
       return x.away ? awayText(x.away) : when;
+    case "mention": {
+      // #2570: the comment's quote first, when the server sends it; nothing when not.
+      const quote = (x as { excerpt?: string }).excerpt;
+      return quote ? `"${quote}" · ${on} · ${when}` : `${on} · ${when}`;
+    }
     default:
       return `${on} · ${when}`;
   }

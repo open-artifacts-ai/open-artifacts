@@ -133,6 +133,30 @@ describe("invite email", () => {
     expect(s.subject).toContain("added you to");
   });
 
+  it("a member invite carries the agent setup line; a guest invite doesn't (#2632)", async () => {
+    const o = await newOwner();
+    const m = mailer();
+    const e = { ...m, EMAIL_FROM: FROM };
+    const line =
+      "Set up Open Artifacts for me: follow https://app.localhost/llms.txt";
+    const member = fresh();
+    expect((await invite(e, o.cookie, member)).status).toBe(201);
+    const guest = fresh();
+    const g = await call(e, R.members, o.cookie, "POST", {
+      email: guest,
+      role: "guest",
+    });
+    expect(g.status).toBe(201);
+    const to = (a: string) => m.sent.find((x) => x.to === a) as Sent;
+    expect(to(member).text).toContain(line);
+    expect(to(member).html).toContain(line.replace(/\//g, "/<wbr>"));
+    expect(to(guest).text).toContain("https://app.localhost/sign-in");
+    for (const part of [to(guest).text, to(guest).html]) {
+      expect(part).not.toContain("llms.txt");
+      expect(part).not.toContain("connect your agent");
+    }
+  });
+
   it("missing EMAIL or EMAIL_FROM gives emailed:false", async () => {
     const o = await newOwner();
     const m = mailer();
@@ -321,9 +345,12 @@ describe("share email", () => {
     });
     const url = `http://app.localhost/a/${id}`;
     expect(textOf(r)).toBe(
-      `Shared ${id} with ${email}. They're a guest, so they can only view for now. ${url}. No email sent.`,
+      `Shared ${id} with ${email}. They're a guest, so they can view and comment. ${url}. No email sent.`,
     );
-    expect(r.structuredContent).toMatchObject({ role: "editor", guest: true });
+    expect(r.structuredContent).toMatchObject({
+      role: "commenter",
+      guest: true,
+    });
     const viewer = fresh();
     expect(
       textOf(

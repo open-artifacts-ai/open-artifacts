@@ -104,7 +104,9 @@ export function devConfig(): Record<string, unknown> {
       ? { FEATURES: process.env.OA_E2E_FEATURES, AUTH_PROVIDERS: "email" }
       : {}),
     ACCESS_CLIENT_SECRET: secret(),
-    SESSION_SECRET: secret(),
+    // Random per run. globalSetup puts it in the env first, so a spec can mint
+    // a signed link the way the server does (share-optout.spec.ts).
+    SESSION_SECRET: process.env.OA_E2E_SESSION_SECRET ?? secret(),
     CONTENT_SIGNING_KEY: secret(),
   };
   return cfg;

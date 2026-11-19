@@ -30,6 +30,7 @@ import {
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { api, fetchAndWait, login } from "./helpers.js";
 
 // #1535: the roster adds the VIEWER's own running agents, a mention makes the
@@ -117,6 +118,7 @@ function hubs(byUser: Record<string, unknown[]>) {
 async function setup() {
   const owner = await mk("r-owner");
   const editor = await mk("r-editor");
+  await listenEachOther(E, [owner.userId, editor.userId]);
   const a = await publish(
     E,
     owner.member,
@@ -712,11 +714,12 @@ describe("route and hub reads", () => {
     await E.DB.prepare("update users set role = 'guest' where id = ?")
       .bind(guest.userId)
       .run();
-    const sh = await api(app, R.shares(s.id), s.owner.cookie, {
-      method: "PUT",
-      body: { email: guest.email, role: "editor" },
-    });
-    expect(sh.status).toBe(200);
+    // A stored editor row (an outsider is clamped when shared through the API).
+    await E.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'editor', ?, ?)",
+    )
+      .bind(s.id, guest.email, s.owner.userId, Date.now())
+      .run();
     await machineFor(s.owner.userId);
     await follow(E, s.owner.userId, { namespace: "ns-o", name: "Mine" }, s.id);
     const h = hubs({

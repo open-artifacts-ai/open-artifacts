@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "version:emit": "node --experimental-strip-types scripts/emit-version.ts",
-    "gen": "pnpm --filter @oa/shared build && pnpm run version:emit && node --experimental-strip-types scripts/emit-tool-manifest.ts && node --experimental-strip-types scripts/emit-skill.ts && node --experimental-strip-types scripts/emit-upgrade.ts",
-    "build": "pnpm run gen && node --experimental-strip-types scripts/emit-consent-template.ts && node --experimental-strip-types scripts/emit-bus-templates.ts && node --experimental-strip-types scripts/emit-email-templates.ts && pnpm --filter @oa/dashboard run --if-present build && pnpm --filter @oa/render build --if-present && pnpm --filter @oa/runtime build --if-present && node scripts/assemble-assets.mjs && node scripts/check-worker-size.mjs",
+    "version:pin": "node --experimental-strip-types scripts/emit-version.ts --pin",
+    "gen": "pnpm --filter @oa/provisioning-contract build && pnpm run version:emit && node --experimental-strip-types scripts/emit-tool-manifest.ts && node --experimental-strip-types scripts/emit-skill.ts && node --experimental-strip-types scripts/emit-upgrade.ts",
+    "build": "pnpm run gen && pnpm run version:pin && node --experimental-strip-types scripts/emit-consent-template.ts && node --experimental-strip-types scripts/emit-bus-templates.ts && node --experimental-strip-types scripts/emit-email-templates.ts && pnpm --filter @oa/dashboard run --if-present build && pnpm --filter @oa/render build --if-present && pnpm --filter @oa/runtime build --if-present && node scripts/assemble-assets.mjs && node scripts/check-worker-size.mjs",
     "dev": "echo \"@oa/server dev: placeholder\"",
     "test": "pnpm run gen && pnpm --filter @oa/provisioning-contract build && vitest run --exclude \"test/smoke/**\" --passWithNoTests && vitest run -c vitest.node.config.ts && vitest run -c vitest.xt.config.ts",
     "test:authz": "pnpm run gen && vitest run -c vitest.authz.config.ts",
@@ -15,7 +16,7 @@
     "test:cpu:strict": "CPU_STRICT=1 pnpm run test:cpu",
     "xt:live": "XT_LIVE=1 vitest run -c vitest.xt.config.ts",
     "bench": "pnpm run gen && vitest run -c vitest.bench.config.ts",
-    "smoke": "pnpm --filter @oa/shared build && vitest run -c vitest.smoke.config.ts --passWithNoTests",
+    "smoke": "pnpm --filter @oa/provisioning-contract build && vitest run -c vitest.smoke.config.ts --passWithNoTests",
     "typecheck": "pnpm run gen && pnpm --filter @oa/provisioning-contract build && tsc --noEmit -p tsconfig.json"
   },
   "devDependencies": {
@@ -23,6 +24,7 @@
     "@cloudflare/workers-types": "^5.20261018.1",
     "@modelcontextprotocol/client": "2.3.1",
     "@oa/auth-broker": "workspace:*",
+    "@oa/bus-daemon": "workspace:*",
     "@oa/broker-core": "workspace:*",
     "@oa/dashboard": "workspace:*",
     "@oa/directory-broker": "workspace:*",
@@ -40,6 +42,7 @@
     "@modelcontextprotocol/server": "2.3.1",
     "@oa/auth-core": "workspace:*",
     "@oa/bus-protocol": "workspace:*",
+    "@oa/doc-ops": "workspace:*",
     "@oa/doc-schema": "workspace:*",
     "@oa/shared": "workspace:*",
     "agents": "0.28.1",

@@ -729,6 +729,9 @@ describe("DocEditor", () => {
       ),
     );
     const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
+    // The server refuses an edit it received: wait for the room's batched send
+    // (a timer) before the error, so a slow runner cannot flush it after.
+    await waitFor(() => expect(first.sentUpdates).toHaveLength(1));
     act(() => first.frame(frame));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "This doc is full (2 MB).",
@@ -738,7 +741,7 @@ describe("DocEditor", () => {
     const second = p.made.last as NonNullable<typeof p.made.last>;
     expect(second.doc).not.toBe(first.doc);
     expect(first.destroyed).toBe(true);
-    expect(first.sentUpdates).toHaveLength(0);
+    expect(first.sentUpdates).toHaveLength(1);
     act(() => second.connect());
     await waitFor(() =>
       expect(document.querySelector(".ProseMirror")?.textContent).not.toContain(
@@ -753,7 +756,8 @@ describe("DocEditor", () => {
     ).toBe("false");
     // A repeat error does not rebuild again.
     act(() => second.frame(frame));
-    await new Promise((r) => setTimeout(r, 20));
+    // The rebuild is queued with setTimeout(0); a timer queued now runs after it.
+    await new Promise((r) => setTimeout(r, 0));
     expect(p.made.last).toBe(second);
   });
 
@@ -1168,13 +1172,16 @@ describe("DocEditor", () => {
         await screen.findByRole("toolbar");
         expect(leave()).toBe(false);
         act(() => f.close(4401));
+        // Refused before the fake's 200 ms reconnect can run (#2671: a sleep
+        // here raced it on a slow runner, and the reconnect delivered).
+        f.refuse = true;
         // Written while the socket is down: unsent.
         act(() => {
           f.doc.getText("t").insert(0, "offline");
         });
-        await new Promise((r) => setTimeout(r, 150));
-        f.refuse = true;
         await waitFor(() => expect(f.connects).toBe(2), { timeout: 2000 });
+        // The refused reconnect delivered nothing.
+        expect(f.server?.getText("t").toString()).toBe("");
         act(() => f.close(1006));
         const alert = await screen.findByRole("alert");
         expect(alert).toHaveTextContent(
@@ -1441,6 +1448,85 @@ describe("DocEditor", () => {
     expect(seen.at(-1)).toBe("saving");
   });
 
+  describe("the save state settles while typing (#2752)", () => {
+    afterEach(() => vi.useRealTimers());
+    const SETTLE = 1000;
+    async function open() {
+      const p = fakeProviders();
+      const seen: (string | null)[] = [];
+      render(
+        <DocEditor
+          {...base}
+          canEdit
+          makeProvider={p.make}
+          onStatus={(s) => seen.push(s)}
+        />,
+      );
+      act(() => p.made.last?.connect(false));
+      await screen.findByRole("toolbar");
+      act(() => p.made.last?.connect());
+      expect(seen.at(-1)).toBe("saved");
+      const type = (ch: string) =>
+        act(() => {
+          p.made.last?.doc.getText("t").insert(0, ch);
+        });
+      return { p, seen, type };
+    }
+
+    it("shows Saved only after typing pauses, not between keystrokes", async () => {
+      const { seen, type } = await open();
+      vi.useFakeTimers();
+      const from = seen.length;
+      type("a");
+      expect(seen.at(-1)).toBe("saving");
+      // The room acks within a moment; a key every 300ms keeps it saving.
+      for (let i = 0; i < 5; i++) {
+        act(() => vi.advanceTimersByTime(300));
+        type("b");
+        expect(seen.at(-1)).toBe("saving");
+      }
+      expect(seen.slice(from)).not.toContain("saved");
+      // Typing stops: acked, then Saved after the pause.
+      // In steps: each state change re-arms the hold after React renders.
+      const wait = (ms: number) => {
+        for (let t = 0; t < ms; t += 50) act(() => vi.advanceTimersByTime(50));
+      };
+      wait(SETTLE - 200);
+      expect(seen.at(-1)).toBe("saving");
+      wait(500);
+      expect(seen.at(-1)).toBe("saved");
+    });
+
+    it("a problem shows at once, even mid-hold", async () => {
+      const { p, seen, type } = await open();
+      vi.useFakeTimers();
+      type("a");
+      act(() => vi.advanceTimersByTime(300));
+      expect(seen.at(-1)).toBe("saving");
+      act(() => p.made.last?.disconnect());
+      expect(seen.at(-1)).toBe("offline");
+      // Back online and acked: the hold does not outlive the problem.
+      act(() => p.made.last?.connect());
+      for (let t = 0; t < SETTLE + 500; t += 50)
+        act(() => vi.advanceTimersByTime(50));
+      expect(seen.at(-1)).toBe("saved");
+    });
+  });
+
+  it("opens exactly one room, and keeps it across a re-render (#2711: was an e2e socket count)", async () => {
+    const p = fakeProviders();
+    let rooms = 0;
+    const make: typeof p.make = (...a) => {
+      rooms++;
+      return p.make(...a);
+    };
+    const view = render(<DocEditor {...base} canEdit makeProvider={make} />);
+    act(() => p.made.last?.connect(false));
+    await screen.findByRole("toolbar");
+    view.rerender(<DocEditor {...base} canEdit makeProvider={make} />);
+    expect(rooms).toBe(1);
+  });
+
   it("leaves the room on unmount", async () => {
     const p = fakeProviders();
     const view = render(<DocEditor {...base} canEdit makeProvider={p.make} />);
@@ -1468,7 +1554,39 @@ describe("cursor name flags", () => {
       false,
     );
     expect(agent.dataset.kind).toBe("agent");
-    expect(agent.querySelector(".oa-doc-flag-mark")).not.toBeNull();
+    // No face fields (an unlinked agent): AuthorFace's dashed robot.
+    expect(
+      agent.querySelector('.oa-doc-flag-face [data-avatar="agent"]'),
+    ).toHaveAttribute("data-linked", "false");
+  });
+
+  it("an agent's flag leads with its AuthorFace tile; an outsider sees the dashed robot and 'Agent'", () => {
+    const u = {
+      name: "OA Product",
+      color: "#9333ea",
+      kind: "agent" as const,
+      linked: true,
+      animal: { id: "duck", color: 6 },
+    };
+    const tile = renderCaret(u, false).querySelector(
+      '.oa-doc-flag-face [data-avatar="agent"]',
+    );
+    expect(tile).toHaveAttribute("data-linked", "true");
+    expect(tile).toHaveAttribute("data-animal", "duck");
+    expect(tile?.getAttribute("style")).toContain("--oa-presence-6");
+    const outside = renderCaret(u, true);
+    expect(outside.querySelector(".oa-doc-flag")?.textContent).toBe("Agent");
+    const robot = outside.querySelector(
+      '.oa-doc-flag-face [data-avatar="agent"]',
+    );
+    expect(robot).toHaveAttribute("data-linked", "false");
+    expect(robot?.hasAttribute("data-animal")).toBe(false);
+    // A person's flag has no face.
+    expect(
+      renderCaret({ name: "Maya", kind: "user" }, false).querySelector(
+        ".oa-doc-flag-face",
+      ),
+    ).toBeNull();
   });
 
   it("opens a flag on a move and closes it after 2 s", () => {

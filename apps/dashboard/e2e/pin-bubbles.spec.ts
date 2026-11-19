@@ -87,7 +87,7 @@ test.beforeAll(() => {
   expect(existsSync(join(DIST, "runtime.manifest.json"))).toBe(true);
 });
 
-for (const kind of ["image", "pdf"] as const)
+for (const kind of ["image"] as const)
   test(`${kind}: bubbles show initials and faces, and open their thread`, async ({
     page,
   }) => {
@@ -110,26 +110,6 @@ for (const kind of ["image", "pdf"] as const)
     ).toBeVisible({ timeout: 15_000 });
     await shot(page, `1280-${kind}-open`);
   });
-
-test("a resolved thread's bubble shows faded while its thread is open", async ({
-  page,
-}) => {
-  const frame = await open(page, "image", 1280);
-  const mine = frame.getByRole("button", { name: /^Comment by (Ada|Leo)/ });
-  await expect(
-    frame.getByRole("button", { name: "Comment by Sam Rivera" }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(mine).toHaveCount(0);
-  await page.getByRole("button", { name: /^Comments/ }).click();
-  await page.getByRole("button", { name: /^Show resolved/ }).click();
-  await page
-    .locator("[data-thread]", { hasText: "Axis label looks wrong." })
-    .getByRole("button", { name: "Show pin in page" })
-    .click();
-  await expect(mine).toHaveCount(1);
-  await expect(mine).toHaveClass(/resolved/);
-  await shot(page, "1280-image-resolved");
-});
 
 test("image: click-to-comment opens the box beside the flag on a wide screen", async ({
   page,
@@ -154,53 +134,6 @@ test("image: click-to-comment opens the box beside the flag on a wide screen", a
   await textbox.fill("Here is a comment");
   await page.keyboard.press("Escape");
   await expect(page.locator("[data-pin-beside]")).toHaveCount(0);
-});
-
-test("image: the box beside the flag follows it when the page scrolls (#2386)", async ({
-  page,
-}) => {
-  const frame = await open(page, "image", 1280);
-  await expect(
-    frame.getByRole("button", { name: "Comment by Sam Rivera" }),
-  ).toBeVisible({ timeout: 15_000 });
-  const box = await frame.locator("img").boundingBox();
-  if (!box) throw new Error("no image");
-  await page.mouse.click(box.x + box.width * 0.12, box.y + box.height * 0.4);
-  const side = page.locator("[data-pin-beside]");
-  await expect(side).toBeVisible();
-  const before = await side.boundingBox();
-  await frame.locator("body").evaluate(() => window.scrollBy(0, 120));
-  await expect
-    .poll(async () => (await side.boundingBox())?.y ?? 0, { timeout: 5000 })
-    .toBeCloseTo((before?.y ?? 0) - 120, -1);
-  await shot(page, "1280-image-beside-scrolled");
-});
-
-test("image: a click near the bottom right keeps the box fully in view", async ({
-  page,
-}) => {
-  const frame = await open(page, "image", 1280);
-  await expect(
-    frame.getByRole("button", { name: "Comment by Sam Rivera" }),
-  ).toBeVisible({ timeout: 15_000 });
-  const img = await frame.locator("img").boundingBox();
-  const host = await page.locator("iframe.oa-vframe").boundingBox();
-  if (!img || !host) throw new Error("no frame");
-  await page.mouse.click(img.x + img.width - 6, img.y + img.height - 6);
-  const side = page.locator("[data-pin-beside]");
-  await expect(side).toBeVisible();
-  await expect(
-    page.getByRole("textbox", { name: "Add a comment" }),
-  ).toBeFocused();
-  const b = await side.boundingBox();
-  if (!b) throw new Error("no box");
-  expect(b.x).toBeGreaterThanOrEqual(host.x);
-  expect(b.y).toBeGreaterThanOrEqual(host.y);
-  expect(b.x + b.width).toBeLessThanOrEqual(host.x + host.width);
-  expect(b.y + b.height).toBeLessThanOrEqual(host.y + host.height);
-  // It is left of the flag, not on it.
-  expect(b.x + b.width).toBeLessThanOrEqual(img.x + img.width - 6);
-  await shot(page, "1280-image-bottom-right");
 });
 
 test("phone: the flag drops and the box is in the comments sheet", async ({

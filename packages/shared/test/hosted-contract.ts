@@ -954,8 +954,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
         .array()
         .parse(await json(await d.call("GET", R.shares(id))));
       const of = (e: string) => rows.find((r) => r.email === e);
+      // An outsider is never stored as editor (#2590).
       expect(of("outside@elsewhere.test")).toMatchObject({
-        role: "editor",
+        role: "commenter",
         guest: true,
       });
       for (const e of ["newhire@example.com", "bob@example.com"]) {

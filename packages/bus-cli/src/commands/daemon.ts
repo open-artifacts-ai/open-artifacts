@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createEventLog,
   type Daemon,
@@ -7,8 +8,12 @@ import {
   runDaemon,
   START_ERROR_CODES,
 } from "@oa/bus-daemon";
+import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, sayErr } from "../context.ts";
-import { readMachine } from "../machine.ts";
+import { originOf, readMachine } from "../machine.ts";
+import { reapplyClaudeProof } from "../steps/adapters.ts";
+import { readRecord } from "../steps/claude-proof.ts";
+import { PROOF_EVENT } from "../steps/claude-proof-check.ts";
 import { REVOKED_EXIT } from "../steps/service.ts";
 
 export type Signals = Pick<NodeJS.Process, "once" | "off">;
@@ -44,6 +49,25 @@ export async function daemon(
     sayErr(ctx, ctx.copy.revoked());
     return 0;
   }
+  // Always on: ~/.oa-bus/logs/events.log (the service owns daemon.log's fd); `oa-bus logs` shows both.
+  const events = createEventLog(join(ctx.home, "logs", "events.log"));
+  // #2688: an update restarts the daemon, so this also runs after `oa-bus update`.
+  // Only for a bus the harness configs name, and only in the Claude config
+  // file install recorded: another bus, or a config nothing was recorded for,
+  // is never touched.
+  const config = readRecord(join(ctx.home, "install.json")).config;
+  if (m.state === "ok" && config !== undefined && wiredTo(ctx))
+    reapplyClaudeProof(
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        busBin: ctx.service.argv?.() ?? [],
+        hub: originOf(m.hub),
+        config,
+      },
+      (c) => events(PROOF_EVENT, { name: c.entry, kind: c.scope }),
+    );
   return new Promise<number>((resolve) => {
     let running: Daemon | undefined;
     let ended = false;
@@ -59,12 +83,13 @@ export async function daemon(
     signals.once("SIGTERM", onSignal);
     run({
       version: ctx.version,
-      // Always on: ~/.oa-bus/logs/events.log (the service owns daemon.log's fd); `oa-bus logs` shows both.
-      events: createEventLog(join(ctx.home, "logs", "events.log")),
+      events,
       // Only an older token was revoked: a restart picks up the new one.
       onRevoked: (replaced) => end(replaced ? 1 : REVOKED_EXIT),
       // Exit non-zero: the service restarts the daemon, which binds again.
       onSocketLost: () => end(1),
+      // #2552: the updater ends the daemon non-zero to restart it from a new `bin`.
+      update: { entryFile: fileURLToPath(import.meta.url), exit: end },
     }).then(
       (d) => {
         running = d;

@@ -20,7 +20,7 @@ import {
 } from "../context.ts";
 import type { RosterAgent } from "../copy.ts";
 import { spinner } from "../live.ts";
-import { readMachine } from "../machine.ts";
+import { originOf, readMachine } from "../machine.ts";
 import {
   checkAdapters,
   type Harness,
@@ -66,14 +66,6 @@ export type InstallOpts = {
   habits?: HabitsMode;
   /** The result as one JSON line on stdout; the human lines go to stderr. */
   json?: boolean;
-};
-
-const originOf = (hub: string) => {
-  try {
-    return new URL(hub.replace(/^ws(s?):/, "http$1:")).origin;
-  } catch {
-    return hub;
-  }
 };
 
 const hostOf = (hub: string) => {

@@ -33,6 +33,46 @@ export interface Env {
    */
   USER_PRESENCE?: DurableObjectNamespace<UserPresence>;
   /**
+   * The name of the Queue Cloudflare Email Service publishes sending events
+   * to (message.bounced, message.failed, message.complained), when the
+   * platform has bound this Worker as its consumer (#2650). Unset: the queue
+   * handler ignores any batch and nothing changes (self-host).
+   */
+  EMAIL_EVENTS_QUEUE?: string;
+  /**
+   * "on": this hosted install pulls bounce and complaint events from the
+   * platform over the LoginGate on its frequent system tick (#2650), instead of
+   * a Queue consumer. Off by default; self-host never reads it.
+   */
+  EMAIL_EVENTS_PULL?: string;
+  /**
+   * "on": this hosted install asks the platform's opt-out list before it
+   * emails an outside address, and reports opt-outs to it (#2652). The
+   * platform sets it once its routes are live; unset, hosted behaves as before.
+   * Self-host never reads it.
+   */
+  OPTOUT_PLATFORM?: string;
+  /** Secret, held by hosted installs only: the key of h1 = HMAC(key, address), what the install sends the platform instead of an address (#2652). */
+  OPTOUT_HASH_KEY?: string;
+  /**
+   * Secret, minted once per install (the provisioner on hosted, setup on
+   * self-host) and never rotated (#2820): 48 random bytes, base64url without
+   * padding, used as the raw HMAC-SHA256 key that hashes opted-out addresses.
+   * Distinct from OPTOUT_HASH_KEY (the hosted-wide platform list). Unset: the
+   * opt-out table keeps the plain SHA-256, as before. Never logged or sent.
+   */
+  INSTALL_OPTOUT_KEY?: string;
+  /**
+   * The instance's Web Push key pair (#2512 S5), base64url: the 65-byte
+   * uncompressed P-256 public point and the 32-byte private scalar. Secrets
+   * the platform sets on hosted and setup sets on self-host; the code never
+   * makes one. Either missing: push is off and every push route answers 404.
+   */
+  VAPID_PUBLIC_KEY?: string;
+  VAPID_PRIVATE_KEY?: string;
+  /** The platform's public unsubscribe page (on the sign-up host), the base of every outside share email's opt-out link (#2652). Unset with the switch on: no email goes out. */
+  OPTOUT_UNSUBSCRIBE_URL?: string;
+  /**
    * One DirectorySync DO per install (directory/sync-do.ts): Google polling,
    * reconcile and queued access jobs. Unbound, directory sync never runs.
    */
@@ -115,6 +155,15 @@ export interface Env {
    */
   ANON_WRITES_PER_MIN?: string;
   /**
+   * An unsupported preview: "1" opens doc creation as if DOC_SWITCH.creation
+   * were true (docCreationOpen), so docs can be tried before the switch ships.
+   * A plain runtime var: the release bundle honours it, so a prod install must
+   * never carry it (this repo's public configs and the setup steps do not;
+   * the cloud deploy and provisioner refuse it). docsAvailable's paid-plan
+   * rule still applies.
+   */
+  DOCS_PREVIEW?: string;
+  /**
    * Per-doc data limit in bytes (dataLimits; empty or unset: the plan's
    * default). Clamped to 256 KB on Free, 1920 KB on Paid.
    */
@@ -163,6 +212,12 @@ export interface Env {
   AUTH_DOMAINS?: string;
   /** "member": anyone in AUTH_DOMAINS joins as a member; anything else: invite only. */
   AUTH_DOMAIN_JOIN?: string;
+  /**
+   * Hosted only: "owner" lifts the invite-only force on AUTH_DOMAIN_JOIN
+   * "member". The platform sets it after the owner's proven login-settings
+   * change (#2520); any other value, or none, keeps hosted invite-only.
+   */
+  AUTH_DOMAIN_JOIN_SOURCE?: string;
   /** "on": domain members may sign in with emailed codes (trial; only while Google is off). */
   EMAIL_CODE_DOMAIN?: string;
   GOOGLE_CLIENT_ID?: string;

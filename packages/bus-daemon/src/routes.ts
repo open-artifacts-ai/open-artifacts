@@ -56,6 +56,10 @@ const unrefTimer: Timer = (ms, fn) => {
  */
 export class Pending {
   #byHubId = new Map<string, Waiter>();
+  /** Requests still waiting for the hub's answer. */
+  get size(): number {
+    return this.#byHubId.size;
+  }
   constructor(
     private readonly timeoutMs = 10_000,
     /**
@@ -224,6 +228,11 @@ export type RouteCtx = {
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
   configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
+  /**
+   * When the owner's quiet hours end, while they last (#2759). Every agent on
+   * this daemon is its member's own, so `self` may say it.
+   */
+  ownerAwayUntil?: () => string | undefined;
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -305,6 +314,7 @@ export function routeLocal(
             hello.caps?.includes(ADAPTER_CAPS.pending),
           ) ?? [])
         : [];
+      const away = ctx.ownerAwayUntil?.();
       const self = {
         type: "agent",
         agent: {
@@ -317,6 +327,7 @@ export function routeLocal(
           live: agent.live,
           global: agent.global,
           ...(files.length > 0 ? { config_files: files } : {}),
+          ...(away === undefined ? {} : { owner_away_until: away }),
         },
       } as const;
       // The status is the hub's: asked for only by the self tool.

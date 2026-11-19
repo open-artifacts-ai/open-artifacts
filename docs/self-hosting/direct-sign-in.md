@@ -55,7 +55,7 @@ Direct login keys everything it signs from `SESSION_SECRET`: one key per purpose
 - **Emailed codes need it.** With a shorter secret, code requests answer 503 `code_unavailable`.
 - **Shorter, older secrets (legacy).** Session and login cookies keep working, signed with the raw secret as before, so nobody is logged out. Emailed codes stay off (503 `code_unavailable`) until you rotate it, so rotate it soon. `/healthz` never reports this: it is public, and naming a weak secret there would help an attacker.
 - **Cookies from before the per-purpose keys** (signed with the raw secret) are still accepted until 1 December 2026. After that date they are refused, and anyone still holding one logs in again once.
-- **Rotating it** signs everyone out and invalidates every pending code.
+- **Rotating it** signs everyone out and invalidates every pending code. It also breaks every "Don't email me again" link already sent in outside share emails and every unsubscribe link in comment emails: those links are signed with a key derived from it, so they answer "This link doesn't work" until a new email carries a fresh one.
 
 ## Setting up Google
 

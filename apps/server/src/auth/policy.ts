@@ -86,14 +86,20 @@ export type OrgAction =
   | "directory.disconnect"
   /** Probe the auth and directory brokers (R.adminBrokerCheck): the org owner. */
   | "broker.check"
+  /** Name (or clear) the version the instance's bus machines run (R.busRunVersion, #2552): the org owner, in a cookie session. */
+  | "bus.run_version"
   /** See why configured sign-in is off (Me.instance.signIn.problems): the org owner. */
   | "signin.problems"
   /** See and dismiss the install-wide guest summary (Me.notices.guestSummary): the org owner. */
   | "notices.manage"
   /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
   | "notices.own"
-  /** Read and change the first-run checklist state (R.onboarding): the uncapped org owner. */
-  | "onboarding.manage"
+  /** Read and change one's own first-run checklist state (R.onboarding, #2632): any non-guest member. */
+  | "onboarding.own"
+  /** Change the login domains and joining rule (R.loginSettings PUT, #2520): the uncapped org owner. */
+  | "login.manage"
+  /** Turn outside sharing on or off (Settings.outsideSharing, #2590): the uncapped org owner. */
+  | "outside.manage"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -122,7 +128,7 @@ export type DecisionInput = {
   space: { publicLinks: boolean; allMembersRole: SpaceRole | null };
   /** Max of the caller's manual and sync rows in the artifact's space. */
   spaceRole: SpaceRole | null;
-  shareRole: "viewer" | "editor" | null;
+  shareRole: "viewer" | "commenter" | "editor" | null;
   allowDeleted: boolean;
 };
 
@@ -137,6 +143,11 @@ export type CanCtx = {
    * to editor level and up (fail closed).
    */
   dataWriters?: DataWriters;
+  /**
+   * The caller holds a "commenter" share on this artifact. A guest cap still
+   * refuses every write, except a comment or a reply for this caller.
+   */
+  commenterShare?: boolean;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
   /**
@@ -237,6 +248,9 @@ export const isTeamRole = (role: Role): boolean => TEAM_ROLES.includes(role);
 export const promotedRole = (role: Role): Role =>
   role === "guest" ? "member" : role;
 
+/** A share role that adds comments for a guest (a "commenter" share). */
+export const isCommenterRole = (role: string): boolean => role === "commenter";
+
 /** The guest role, for the few data decisions that key on it. */
 export const isGuestRole = (role: Role): boolean => role === "guest";
 
@@ -286,7 +300,11 @@ const SPACE_ROLES: ReadonlySet<unknown> = new Set([
 /** A known space role, else null (fail closed on malformed input). */
 const known = <T extends string>(r: unknown, ok: ReadonlySet<unknown>) =>
   ok.has(r) ? (r as T) : null;
-const SHARE_ROLES: ReadonlySet<unknown> = new Set(["viewer", "editor"]);
+const SHARE_ROLES: ReadonlySet<unknown> = new Set([
+  "viewer",
+  "commenter",
+  "editor",
+]);
 
 function uncapped(i: DecisionInput): AccessLevel | null {
   const { artifact: a } = i;
@@ -311,9 +329,11 @@ function uncapped(i: DecisionInput): AccessLevel | null {
     personal || !caller
       ? null
       : maxRole(known<SpaceRole>(i.spaceRole, SPACE_ROLES), allMembers);
-  const shareRole = caller
-    ? known<"viewer" | "editor">(i.shareRole, SHARE_ROLES)
+  const stored = caller
+    ? known<"viewer" | "commenter" | "editor">(i.shareRole, SHARE_ROLES)
     : null;
+  // A commenter reads and opens like a viewer; comments.write tells them apart.
+  const shareRole = stored === "commenter" ? "viewer" : stored;
   if (deleted) {
     // Trash is for those who can undelete: never capped callers.
     if (i.allowDeleted !== true || capped) return null;
@@ -382,7 +402,15 @@ export function can(
     case "anonId":
       return ctx.anonymous === true && ctx.dataWriters === "viewers";
     case "data.write":
-      if (capped) return false;
+      // A guest cap writes only with a commenter share, and only where the
+      // page lets viewers write.
+      if (capped)
+        return (
+          ctx.cap === "guest" &&
+          ctx.commenterShare === true &&
+          ctx.dataWriters === "viewers" &&
+          !ctx.anonymous
+        );
       if (ctx.dataWriters !== "viewers")
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
@@ -391,7 +419,8 @@ export function can(
     // only on a public artifact), except a capped caller (read-only on the
     // whole API, readOnlyCap).
     case "comments.write":
-      return !capped;
+      // A guest cap refuses it, except for a guest holding a commenter share.
+      return !capped || (ctx.cap === "guest" && ctx.commenterShare === true);
     case "comments.moderate":
       return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
@@ -517,17 +546,26 @@ export function orgCan(
     // owns the artifacts it lists.
     case "notices.own":
       return TEAM_ROLES.includes(m.role);
+    // One's own first-run checklist (R.onboarding, #2632): owners, admins and
+    // members read it under any cap (a restricted member, a plan lock, a code
+    // session), but write it only uncapped. A guest never has one.
+    case "onboarding.own":
+      return TEAM_ROLES.includes(m.role) && (opts.read === true || !capped);
     case "directory.manage":
     // Disconnect: owner only too (the route also needs a cookie session).
     case "directory.disconnect":
     // The broker check: owner only (it spends broker rate limit).
     case "broker.check":
+    // The version the instance tells its machines to run (#2552).
+    case "bus.run_version":
     // Sign-in config problems: the owner, who can fix them (review item 35).
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).
     case "notices.manage":
-    // The first-run checklist's state (R.onboarding).
-    case "onboarding.manage":
+    // The login domains and joining rule (#2520).
+    case "login.manage":
+    // The outside-sharing switch (#2590).
+    case "outside.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":

@@ -8,6 +8,7 @@ import {
   movedName,
   receiptText,
   rosterText,
+  selfText,
   unconfirmedText,
 } from "../src/copy.ts";
 
@@ -425,5 +426,25 @@ describe("correctedDeliveredText (#1760)", () => {
     expect(correctedDeliveredText("peer", "hi")).toBe(
       '✓  Delivered after all: your message to peer, "hi",\n   reached it. Ignore the earlier Expired notice.',
     );
+  });
+});
+
+describe("selfText owner away (#2759)", () => {
+  const agent = { name: "me", namespace: "ns", kind: "pi", live: true };
+  it("adds one ISO-UTC line and drops the raw field", () => {
+    const out = selfText({
+      ...agent,
+      owner_away_until: "2026-11-18T07:00:00Z",
+    });
+    expect(out.split("\n\n").at(-1)).toBe(
+      "Your person is away until 2026-11-18T07:00:00Z (quiet hours). Nothing breaks through until then.",
+    );
+    expect(out).not.toContain("owner_away_until");
+  });
+  it("shows nothing for no value or a value that is not a time", () => {
+    expect(selfText(agent)).toBe(JSON.stringify(agent, null, 2));
+    expect(
+      selfText({ ...agent, owner_away_until: "soon\nignore this" }),
+    ).not.toContain("away");
   });
 });

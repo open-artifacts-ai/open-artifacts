@@ -18,6 +18,7 @@ import { DOMAIN_AFTER_REAUTH_KEY, joinBody } from "../src/settings/domainJoin";
 import {
   CANT_LINE,
   DOMAIN_OFF,
+  domainList,
   reachLine,
   SAVE,
   saveLine,
@@ -179,6 +180,20 @@ describe("Settings tabs", () => {
     );
   });
 
+  it("a member sees no Login tab, even where the server has the route", async () => {
+    mountHosted(
+      "/settings/profile",
+      true,
+      (m) => ({ ...m, user: { ...m.user, role: "member" } }),
+      loginHandlers("owner-on", createHandlers({ hosted: true }), () => false),
+    );
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    await within(nav).findByRole("link", { name: "Profile" });
+    expect(within(nav).queryByRole("link", { name: "Login" })).toBeNull();
+  });
+
   it("a server without the route (404): no Login tab", async () => {
     mountHosted("/settings/profile");
     const nav = await screen.findByRole("navigation", {
@@ -313,7 +328,7 @@ describe("the domain join", () => {
       name: "Stop letting acme.com join by itself?",
     });
     expect(d).toHaveTextContent(
-      "New people at acme.com will need an invite. The 14 members who already joined keep their access. Remove anyone in Members.",
+      "New people at acme.com will need an invite. The 14 people at acme.com keep their access. Remove anyone in Members.",
     );
     fireEvent.click(within(d).getByRole("button", { name: "Turn off" }));
     expect(
@@ -346,16 +361,19 @@ describe("the domain join", () => {
     );
   });
 
-  it("the turn-off count: 0 drops it, 1 is singular, N plural", () => {
+  it("the turn-off count: 0 drops it, 1 is singular, N plural, at every domain", () => {
     expect(DOMAIN_OFF.body("acme.com", 0)).toBe(
       "New people at acme.com will need an invite. Remove anyone in Members.",
     );
     expect(DOMAIN_OFF.body("acme.com", 14)).toBe(
-      "New people at acme.com will need an invite. The 14 members who already joined keep their access. Remove anyone in Members.",
+      "New people at acme.com will need an invite. The 14 people at acme.com keep their access. Remove anyone in Members.",
     );
     expect(DOMAIN_OFF.body("acme.com", 1)).toContain(
-      "The 1 member who already joined keeps their access.",
+      "The 1 person at acme.com keeps their access.",
     );
+    expect(
+      DOMAIN_OFF.body("acme.com", 3, domainList(["acme.com", "acme.io"])),
+    ).toContain("The 3 people at acme.com and acme.io keep their access.");
   });
 
   it("turning on (L2) sends only the provable domain, never the list", () => {

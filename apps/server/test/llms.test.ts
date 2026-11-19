@@ -147,6 +147,7 @@ describe("GET /llms.txt", () => {
     const txt = await guide(E({ BUS_HUB: undefined }));
     expect(txt.startsWith(`# Open Artifacts at ${HOST}\n`)).toBe(true);
     expect([...sections(txt).keys()]).toEqual([
+      "If you can't run commands",
       "Connect",
       "Restart",
       "Verify",
@@ -169,6 +170,7 @@ describe("GET /llms.txt", () => {
   it("bus on: a numbered Setup steps section first, with connect then the bus install as one sequence", async () => {
     const txt = await guide(E({ HOSTED: undefined }));
     expect([...sections(txt).keys()]).toEqual([
+      "If you can't run commands",
       "Setup steps",
       "Connect",
       "Restart",
@@ -177,20 +179,25 @@ describe("GET /llms.txt", () => {
     const steps = sections(txt).get("Setup steps") ?? "";
     expect(steps).toMatch(/1\. \*\*Connect\.\*\*/);
     expect(steps).toMatch(/2\. \*\*Install the bus\.\*\*/);
+    // No release pin in this build: no install line, and never a plain npx one.
     expect(steps).toContain(
-      `npx @open-artifacts/bus install --instance ${skillOrigin(HOST)}`,
+      "The bus can't be installed from this build of the instance",
     );
+    expect(steps).not.toContain("npx @open-artifacts/bus install");
     expect(steps).toContain("They approve this machine once, in their browser");
     expect(steps).toContain("QUESTION FOR YOUR USER");
     expect(steps).toContain(
-      "5. **Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as \"Acme Web\". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus `self` tool shows it.",
+      "6. **Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as \"Acme Web\". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus `self` tool shows it.",
     );
     expect(steps).toContain("`/rename <name>`");
+    expect(steps).toContain(
+      "in Claude Desktop's Code tab, to rename the session in Desktop;",
+    );
     expect(steps).toContain("`/name <name>`");
     expect(steps).toContain(
       "After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.",
     );
-    expect(steps).toMatch(/6\. \*\*Publish a first page\.\*\*/);
+    expect(steps).toMatch(/7\. \*\*Publish a first page\.\*\*/);
     expect(steps).toContain("On this first page only");
     expect(steps).toContain("bus `follow` tool");
     expect(steps).toContain("I'm {name}, your agent.");
@@ -202,8 +209,10 @@ describe("GET /llms.txt", () => {
     expect(steps).toContain('with `visibility: "private"`');
     expect(steps).toContain("a short page about the project you're in");
     expect(steps).toContain("the next session finishes setup by itself");
-    expect(steps).toContain("saves this instance's skill for your harness");
-    expect(steps).toContain(`Read ${skillOrigin(HOST)}/skill.md now`);
+    expect(steps).not.toContain("installer also saves");
+    expect(steps).toMatch(/3\. \*\*Install the skill\.\*\*/);
+    expect(steps).toMatch(/4\. \*\*Habit lines\./);
+    expect(steps).toContain(`Then read ${skillOrigin(HOST)}/skill.md now`);
     // One ending: no Verify section, no test page, one "connected" line.
     expect(txt).not.toContain("## Verify");
     expect(txt).not.toContain("setup check");
@@ -216,6 +225,26 @@ describe("GET /llms.txt", () => {
       ),
     ).toHaveLength(1);
     expect(steps).toContain("Open Artifacts is connected, but the bus isn't");
+  });
+
+  it("a chat app gets connector steps for the person, and what a chat can't do", async () => {
+    for (const e of [E({ BUS_HUB: undefined }), E({ HOSTED: undefined })]) {
+      const chat =
+        sections(await guide(e)).get("If you can't run commands") ?? "";
+      expect(chat).toContain(
+        "chat app with no shell, such as a Claude chat or ChatGPT",
+      );
+      expect(chat).toContain(
+        `with this address:\n\n${skillOrigin(HOST)}/mcp\n\nThen ask them to log in`,
+      );
+      expect(chat).toContain("add Open Artifacts as a custom connector");
+      expect(chat).toContain("a chat can't join the bus");
+      expect(chat).toContain("Code tab of Claude Desktop");
+      expect(chat).toContain(
+        "https://open-artifacts.com/docs/claude-and-chatgpt/",
+      );
+      expect(chat).not.toMatch(/token|\u2014/i);
+    }
   });
 
   it("bus off (no hub, or hosted without the bus feature): no Agent bus section", async () => {
@@ -234,7 +263,7 @@ describe("GET /llms.txt", () => {
     expect(txt).not.toContain("/skill.md");
     const busOn = await guide(E({ SKILL_MD: "off", HOSTED: undefined }));
     expect(busOn).not.toContain("/skill.md");
-    expect(busOn).not.toContain("saves this instance's skill");
+    expect(busOn).not.toContain("Install the skill");
     expect(sections(txt).get("Verify")).toContain("1. List the server's tools");
   });
 });
@@ -497,5 +526,175 @@ describe("content host: an artifact's .md and .txt files", () => {
       expect(r.status, p).toBe(200);
       expect(await r.text(), p).toBe(body);
     }
+  });
+});
+
+// #2543: the first install runs only the bytes it checked.
+describe("the bus install step (#2543)", () => {
+  const PIN = {
+    version: "1.2.3",
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+  const stepOf = (txt: string) =>
+    txt.slice(
+      txt.indexOf("2. **Install the bus.**"),
+      txt.indexOf("3. **Install the skill"),
+    );
+
+  it("with a pin: registry install, lockfile check, audit, then node runs the installer", () => {
+    const origin = skillOrigin(HOST);
+    const step = stepOf(renderLlms(HOST, { bus: true, pin: PIN }));
+    const at = (needle: string) => {
+      const i = step.indexOf(needle);
+      expect(i, needle).toBeGreaterThan(-1);
+      return i;
+    };
+    const order = [
+      "npm install --ignore-scripts --registry https://registry.npmjs.org @open-artifacts/bus@1.2.3",
+      PIN.integrity,
+      "npm audit signatures",
+      `node "$tmp/node_modules/@open-artifacts/bus/dist/index.js" install --instance ${origin}`,
+    ].map(at);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(step).toContain("If the check prints MISMATCH, stop.");
+    expect(step).toContain(
+      "If another command fails, stop too, and tell the person which command failed and what it printed. Don't try another way to install.",
+    );
+    expect(step).toContain("They approve this machine once, in their browser");
+    expect(step).not.toMatch(/npx @open-artifacts\/bus[ @]install/);
+    expect(step).not.toContain("npm pack");
+    expect(step).not.toContain(".bin/oa-bus");
+  });
+
+  it("without a pin: no install line at all, and why", () => {
+    const txt = renderLlms(HOST, {
+      bus: true,
+      pin: null,
+      pinWhy: "proof_failed: issuer mismatch",
+    });
+    const step = stepOf(txt);
+    expect(step).toContain(
+      "The bus can't be installed from this build of the instance",
+    );
+    expect(step).toContain("proof_failed: issuer mismatch");
+    expect(step).not.toMatch(
+      /npm install|npm pack|install --instance|dist\/index\.js/,
+    );
+    expect(txt).not.toContain("npx @open-artifacts/bus install");
+    expect(step).toContain("Then go on with the next step.");
+  });
+
+  it("a build that was never pinned (tests, CI, a dev checkout) says so", () => {
+    const step = stepOf(renderLlms(HOST, { bus: true }));
+    expect(step).toContain("this build was not asked to verify a bus release");
+    expect(step).not.toContain("install --instance");
+  });
+
+  it("bus off: nothing about the bus install", () => {
+    const txt = renderLlms(HOST, { bus: false, pin: PIN });
+    expect(txt).not.toContain("npm install");
+    expect(txt).not.toContain("npx @open-artifacts/bus");
+  });
+
+  it("/upgrade.md no longer sends anyone to npx", async () => {
+    const r = await get(`${APP}/upgrade.md`);
+    const txt = await r.text();
+    expect(txt).not.toContain("npx @open-artifacts/bus@latest");
+    expect(txt).not.toContain("npx @open-artifacts/bus install");
+    expect(txt).toContain('"Install the bus" step');
+  });
+});
+
+// #2624: the skill is a step of its own, after the bus step.
+describe("the skill step (#2624)", () => {
+  const PIN = {
+    version: "1.2.3",
+    integrity: `sha512-${"A".repeat(86)}==`,
+  };
+  const origin = skillOrigin(HOST);
+  const stepOf = (txt: string) => {
+    const from = txt.indexOf("3. **Install the skill.**");
+    expect(from).toBeGreaterThan(-1);
+    return txt.slice(from, txt.indexOf("4. **Habit"));
+  };
+
+  it("pinned: its own step right after the bus step, run from the checked copy", () => {
+    const txt = renderLlms(HOST, {
+      bus: true,
+      pin: PIN,
+      skillMin: PIN.version,
+    });
+    expect(txt.indexOf("2. **Install the bus.**")).toBeLessThan(
+      txt.indexOf("3. **Install the skill.**"),
+    );
+    const bus = txt.slice(
+      txt.indexOf("2. **Install the bus.**"),
+      txt.indexOf("3. **Install the skill."),
+    );
+    expect(bus).not.toContain("skill");
+    const step = stepOf(txt);
+    expect(step).toContain("This step still applies if the bus step failed");
+    expect(step).toContain(`dist/index.js" skill --check --instance ${origin}`);
+    expect(step).toContain(`dist/index.js" skill --instance ${origin}`);
+    expect(step).toContain("npm audit signatures");
+    expect(step).toContain(`save ${origin}/skill.md the way your harness`);
+    expect(step).toContain(
+      '"The Open Artifacts skill is installed for {harness}."',
+    );
+    expect(step).toContain(`Then read ${origin}/skill.md now and follow it`);
+    expect(step).not.toContain("\u2014");
+    expect(step).not.toContain("claude plugin");
+  });
+
+  it("a pin older than the first bus with `skill`: save by hand only", () => {
+    const old = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: "0.199.7" },
+      skillMin: "0.203.0",
+    });
+    const step = stepOf(old);
+    expect(step).toContain("has no `skill` command");
+    expect(step).not.toContain("skill --check");
+    expect(step).toContain(`Save ${origin}/skill.md the way your harness`);
+    const at = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: "0.203.0" },
+      skillMin: "0.203.0",
+    });
+    expect(stepOf(at)).toContain("skill --check --instance");
+    // Not released yet (no CHANGELOG release cites #2624): no pin has it.
+    const none = renderLlms(HOST, {
+      bus: true,
+      pin: { ...PIN, version: "9.9.9" },
+      skillMin: null,
+    });
+    expect(stepOf(none)).not.toContain("skill --check");
+  });
+
+  it("no pin: no checked command, an oa-bus already here, or save it by hand", () => {
+    const step = stepOf(renderLlms(HOST, { bus: true, pin: null }));
+    expect(step).toContain("`oa-bus skill --check --instance");
+    expect(step).toContain(
+      `Otherwise, save ${origin}/skill.md the way your harness`,
+    );
+    expect(step).not.toMatch(/npm install|dist\/index\.js/);
+    expect(step).toContain("still applies if the bus step failed");
+  });
+
+  it("skill off: no step, and the numbering closes up", () => {
+    const txt = renderLlms(HOST, { bus: true, pin: PIN, skill: false });
+    expect(txt).not.toContain("Install the skill");
+    expect(txt).toContain("3. **Habit lines.**");
+  });
+
+  it("plugin on: Claude Code installs the plugin instead, not both", () => {
+    const step = stepOf(
+      renderLlms(HOST, { bus: true, pin: PIN, plugin: true }),
+    );
+    expect(step).toContain("install the open-artifacts plugin");
+    expect(step).toContain("The plugin brings the skill.");
+    expect(step).toContain("`claude plugin list`");
+    expect(step).not.toContain("so don't also");
+    expect(step).toContain("On any other harness:");
   });
 });

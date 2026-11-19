@@ -51,6 +51,8 @@ async function connect(
     role?: "edit" | "read";
     actor?: string;
     authzAt?: number;
+    /** Reconnect with a doc that already holds state. */
+    doc?: Y.Doc;
     /** Keep the real per-actor full-state budget (default: widened). */
     strict?: boolean;
   } = {},
@@ -71,7 +73,7 @@ async function connect(
   if (res.status !== 101) throw new Error(`status ${res.status}`);
   const ws = res.webSocket as WebSocket;
   ws.accept();
-  const doc = new Y.Doc();
+  const doc = o.doc ?? new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(doc);
   const texts: string[] = [];
   const hellos: string[] = [];
@@ -262,7 +264,10 @@ describe("DocRoom relay", () => {
       await a.ping();
       await runDurableObjectAlarm(stub);
     };
-    type(a, "b".repeat(1_900_000));
+    // Two inserts, each under the per-struct length limit.
+    type(a, "b".repeat(950_000));
+    await flush();
+    type(a, "b".repeat(950_000));
     await flush();
     const chunk = "c".repeat(100_000);
     a.doc.getText("t").insert(0, chunk);
@@ -287,17 +292,18 @@ describe("DocRoom relay", () => {
 });
 
 describe("DocRoom storage", () => {
-  it("batches many updates in one second into one row, one alarm", async () => {
+  it("stores each accepted update at once (one row each), with one alarm for compaction", async () => {
     const stub = roomStub();
     const a = await connect(stub);
     for (let i = 0; i < 50; i++) a.doc.getText("t").insert(i, "k");
     await a.ping();
-    expect(await rows(stub)).toBe(0);
+    // Stored before it was broadcast (#2177); nothing waits for the alarm.
+    expect(await rows(stub)).toBe(50);
     expect(
       await runInDurableObject(stub, (_r, st) => st.storage.getAlarm()),
     ).not.toBeNull();
     await runDurableObjectAlarm(stub);
-    expect(await rows(stub)).toBe(1);
+    expect(await rows(stub)).toBe(50);
     // Buffer empty again: the next update arms a new alarm.
     a.doc.getText("t").insert(0, "z");
     await a.ping();
@@ -749,11 +755,10 @@ describe("DocRoom review fixes (#2154)", () => {
     expect(Y.decodeStateVector(j.serverSvs[0] as Uint8Array).get(41)).toBe(1);
   });
 
-  it("keeps the batch when the SQL write fails and stores it on a later flush", async () => {
+  it("an update whose write fails is not accepted or broadcast; the reconnect resyncs it", async () => {
     const stub = roomStub();
-    const a = await connect(stub);
-    type(a, "keep");
-    await a.ping();
+    const a = await connect(stub, { actor: "u:alice" });
+    const peer = await connect(stub, { actor: "u:peer" });
     await inRoom(stub, (r) => {
       const x = r as unknown as { sql: SqlStorage };
       const real = x.sql;
@@ -770,26 +775,20 @@ describe("DocRoom review fixes (#2154)", () => {
       } as unknown as SqlStorage;
       (x as unknown as { realSql: SqlStorage }).realSql = real;
     });
-    await runDurableObjectAlarm(stub).catch(() => {});
+    type(a, "keep");
+    await a.closed;
+    // Never stored, so never broadcast, and no owner was recorded for it.
+    await peer.ping();
+    expect(textOf(peer)).toBe("");
     expect(await rows(stub)).toBe(0);
-    expect(await inRoom(stub, (r) => r.size())).toBeGreaterThan(0);
-    const sv = await inRoom(stub, (r) => {
-      const x = r as unknown as { realSql: SqlStorage };
-      return x.realSql
-        .exec<{ n: number }>("SELECT count(*) AS n FROM meta WHERE k = 'sv'")
-        .one().n;
-    });
-    expect(sv).toBe(0);
-    expect(
-      await runInDurableObject(stub, (_r, st) => st.storage.getAlarm()),
-    ).not.toBeNull();
     await inRoom(stub, () => {
       (globalThis as { __fail?: boolean }).__fail = false;
     });
-    await runDurableObjectAlarm(stub);
+    // The client still holds the edit: its reconnect sync sends it again.
+    const j = await connect(stub, { actor: "u:alice", doc: a.doc });
+    await j.ping();
+    await peer.until(() => textOf(peer) === "keep");
     expect(await rows(stub)).toBe(1);
-    const j = await connect(stub);
-    await j.until(() => textOf(j) === "keep");
   });
 
   it("an over-cap write does not pull the alarm earlier", async () => {
