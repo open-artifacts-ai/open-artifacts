@@ -55,6 +55,16 @@ export function teammatesHandlers(
         listensAsked: asked,
       });
     }),
+    http.put("*/api/v1/onboarding", async ({ request }) => {
+      const res = await getResponse(next, request);
+      if (!res?.ok) return res;
+      const o = (await res.json()) as Record<string, unknown>;
+      return HttpResponse.json({
+        ...o,
+        agentConnected: true,
+        listensAsked: asked,
+      });
+    }),
     http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
       const res = await getResponse(next, request.clone());
       if (!res?.ok) return res;

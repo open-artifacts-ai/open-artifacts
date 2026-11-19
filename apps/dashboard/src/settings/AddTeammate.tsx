@@ -24,6 +24,37 @@ export const BRING_BACK =
 type Scope = "page" | "space" | "all";
 const DAY = 24 * 3600_000;
 
+/** One scope as a radio card; its pickers sit inside it while it is chosen. */
+function ScopeCard({
+  on,
+  onPick,
+  title,
+  children,
+}: {
+  on: boolean;
+  onPick: () => void;
+  title: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-2 rounded-md border p-2.5 ${on ? "border-[var(--oa-accent)] bg-[var(--oa-accent-soft)]" : "border-border"}`}
+    >
+      <input
+        type="radio"
+        name="listen-scope"
+        className="mt-1"
+        checked={on}
+        onChange={onPick}
+      />
+      <span className="grid min-w-0 flex-1 gap-1">
+        <b className="text-[length:var(--oa-text-sm)] font-semibold">{title}</b>
+        {children}
+      </span>
+    </label>
+  );
+}
+
 export function AddTeammate({
   people,
   full,
@@ -42,6 +73,7 @@ export function AddTeammate({
   const [scope, setScope] = useState<Scope>(prefill?.scope ?? "page");
   const [artifactId, setArtifactId] = useState(prefill?.artifact?.id ?? "");
   const [spaceId, setSpaceId] = useState(prefill?.space?.id ?? "");
+  const [changeUntil, setChangeUntil] = useState(false);
   const [days, setDays] = useState<number>(UNTIL_CHOICES[0]?.days ?? 30);
   const [error, setError] = useState<string | null>(null);
   const pages = useArtifacts({ limit: 100 });
@@ -101,14 +133,14 @@ export function AddTeammate({
       description="Their requests reach your agents without asking you first."
       sheetOnPhone
       footer={
-        <>
+        <div className="flex w-full justify-end gap-2">
           <Button variant="outline" onClick={onClose} disabled={add.isPending}>
             Cancel
           </Button>
           <Button disabled={!ready} onClick={submit}>
             {who ? `Add ${who}` : "Add"}
           </Button>
-        </>
+        </div>
       }
     >
       <div className="grid gap-3">
@@ -125,71 +157,99 @@ export function AddTeammate({
             Teammates who ask your agents show up here.
           </p>
         )}
-        <OptionSelect
-          label="Where"
-          value={scope}
-          options={[
-            { value: "page", label: "One page" },
-            { value: "space", label: "One space" },
-            { value: "all", label: "All pages my agents work on" },
-          ]}
-          onChange={(v) => setScope(v as Scope)}
-        />
-        {scope === "page" && (
-          <OptionSelect
-            label="Page"
-            value={artifactId || null}
-            placeholder="Pick a page"
-            options={[...withPage, ...pageItems].map((a) => ({
-              value: a.id,
-              label: a.title,
-            }))}
-            onChange={setArtifactId}
-          />
-        )}
-        {scope === "space" && (
-          <>
-            <OptionSelect
-              label="Space"
-              value={spaceId || null}
-              placeholder="Pick a space"
-              options={[...withSpace, ...spaceItems].map((s) => ({
-                value: s.id,
-                label: s.name,
-              }))}
-              onChange={setSpaceId}
-            />
-            <p className={`m-0 ${muted}`}>Includes pages added to it later.</p>
-          </>
-        )}
-        {scope === "all" && (
-          <p className={`m-0 ${muted}`}>
-            Including pages they start working on later.
-          </p>
-        )}
-        <fieldset className="m-0 grid gap-1 border-0 p-0">
-          <legend className="mb-1 p-0 text-[length:var(--oa-text-sm)] font-semibold">
-            Until
-          </legend>
-          {UNTIL_CHOICES.map((c) => (
-            <label
-              key={c.days}
-              className="flex items-center gap-2 text-[length:var(--oa-text-sm)]"
-            >
-              <input
-                type="radio"
-                name="listen-until"
-                checked={days === c.days}
-                onChange={() => setDays(c.days)}
+        <div role="radiogroup" aria-label="Where" className="grid gap-2">
+          <ScopeCard
+            on={scope === "page"}
+            onPick={() => setScope("page")}
+            title="One page"
+          >
+            {scope === "page" && (
+              <OptionSelect
+                label="Page"
+                value={artifactId || null}
+                placeholder="Pick a page"
+                options={[...withPage, ...pageItems].map((a) => ({
+                  value: a.id,
+                  label: a.title,
+                }))}
+                onChange={setArtifactId}
               />
-              {c.label}{" "}
-              <span className="text-muted-foreground">
-                {endDate(Date.now() + c.days * DAY)}
-              </span>
-            </label>
-          ))}
-        </fieldset>
-        <p className={`m-0 ${muted}`}>{ADD_GUARD(who || "them")}</p>
+            )}
+          </ScopeCard>
+          <ScopeCard
+            on={scope === "space"}
+            onPick={() => setScope("space")}
+            title="One space"
+          >
+            {scope === "space" && (
+              <OptionSelect
+                label="Space"
+                value={spaceId || null}
+                placeholder="Pick a space"
+                options={[...withSpace, ...spaceItems].map((x) => ({
+                  value: x.id,
+                  label: x.name,
+                }))}
+                onChange={setSpaceId}
+              />
+            )}
+            <span className={muted}>Includes pages added to it later.</span>
+          </ScopeCard>
+          <ScopeCard
+            on={scope === "all"}
+            onPick={() => setScope("all")}
+            title="All pages my agents work on"
+          >
+            <span className={muted}>
+              Including pages they start working on later.
+            </span>
+          </ScopeCard>
+        </div>
+        <div className="grid gap-1">
+          <div className="flex items-baseline justify-between">
+            <b className="text-[length:var(--oa-text-sm)] font-semibold">
+              Until
+            </b>
+            {!changeUntil && (
+              <button
+                type="button"
+                className="cursor-pointer border-0 bg-transparent p-0 text-[length:var(--oa-text-xs)] text-primary underline"
+                onClick={() => setChangeUntil(true)}
+              >
+                Change
+              </button>
+            )}
+          </div>
+          <span className={muted}>
+            {endDate(Date.now() + days * DAY)},{" "}
+            {days === 365 ? "1 year" : `${days} days`} from now
+          </span>
+          {changeUntil && (
+            <fieldset className="m-0 grid gap-1 border-0 p-0">
+              <legend className="sr-only">Until</legend>
+              {UNTIL_CHOICES.map((c) => (
+                <label
+                  key={c.days}
+                  className="flex items-center gap-2 text-[length:var(--oa-text-sm)]"
+                >
+                  <input
+                    type="radio"
+                    name="listen-until"
+                    checked={days === c.days}
+                    onChange={() => setDays(c.days)}
+                  />
+                  {c.label}{" "}
+                  <span className="text-muted-foreground">
+                    {endDate(Date.now() + c.days * DAY)}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+        </div>
+        <p className="m-0 rounded-md bg-[var(--oa-warning-soft)] px-2.5 py-2 text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]">
+          {ADD_GUARD(who || "them")}
+        </p>
         <p className={`m-0 ${muted}`}>{BRING_BACK}</p>
         {error && (
           <p

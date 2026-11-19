@@ -68,8 +68,14 @@ describe("Settings: Add a teammate", () => {
       "Their requests reach your agents without asking you first.",
     );
     expect(d).toHaveTextContent("Until");
-    expect(d).toHaveTextContent("30 days");
-    expect(d).toHaveTextContent("1 year");
+    expect(d).toHaveTextContent("30 days from now");
+    for (const name of [/One page/, /One space/, /All pages my agents work on/])
+      expect(within(d).getByRole("radio", { name })).toBeInTheDocument();
+    // The choices open behind Change.
+    expect(within(d).queryByLabelText(/^90 days/)).toBeNull();
+    fireEvent.click(within(d).getByRole("button", { name: "Change" }));
+    expect(within(d).getByLabelText(/^30 days/)).toBeInTheDocument();
+    expect(within(d).getByLabelText(/^1 year/)).toBeInTheDocument();
     expect(d).toHaveTextContent(
       "Your agents are told to bring merging, deploying, deleting, sharing and making a page public back to you",
     );
@@ -95,8 +101,12 @@ describe("Settings: Add a teammate", () => {
     const posts = calls("POST");
     const d = await openDialog();
     await pickOption("Teammate", "Bob Builder");
-    await pickOption("Where", "All pages my agents work on");
+    fireEvent.click(
+      within(d).getByRole("radio", { name: /All pages my agents work on/ }),
+    );
+    fireEvent.click(within(d).getByRole("button", { name: "Change" }));
     fireEvent.click(within(d).getByLabelText(/^90 days/));
+    expect(d).toHaveTextContent("90 days from now");
     fireEvent.click(within(d).getByRole("button", { name: "Add Bob" }));
     await waitFor(() =>
       expect(posts.some((c) => c.path === R.agentListens)).toBe(true),
@@ -141,7 +151,9 @@ describe("Settings: Add a teammate", () => {
     );
     const d = await screen.findByRole("dialog", { name: "Add a teammate" });
     await pickOption("Teammate", "Bob Builder");
-    await pickOption("Where", "All pages my agents work on");
+    fireEvent.click(
+      within(d).getByRole("radio", { name: /All pages my agents work on/ }),
+    );
     fireEvent.click(within(d).getByRole("button", { name: "Add Bob" }));
     expect(await within(d).findByRole("alert")).toHaveTextContent(
       "That person cannot edit this page",
@@ -201,9 +213,9 @@ describe("Settings: Who asked what", () => {
     const rows = [...document.querySelectorAll("[data-history-row]")].map(
       (r) => r.textContent,
     );
-    expect(rows[0]).toContain("Web, asked by Maya Chen");
+    expect(rows[0]).toContain("Web, asked by Maya");
     expect(rows[0]).toContain('on "Launch status" · yesterday · on your list');
-    expect(rows[1]).toContain("Web, asked by Dev Patel");
+    expect(rows[1]).toContain("Web, asked by Dev");
     expect(rows[1]).toContain("today · you allowed once");
   });
 
@@ -495,6 +507,49 @@ describe("First setup: one question", () => {
     await waitFor(() =>
       expect(posts.some((p) => p.path.endsWith("/listens-asked"))).toBe(true),
     );
+  });
+
+  it("says this person when there is one, and 1 person on the button", async () => {
+    mountIt({}, [PEOPLE[0] as (typeof PEOPLE)[number]]);
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    expect(await within(c).findByText("Add this person?")).toBeInTheDocument();
+    expect(
+      within(c).getByRole("button", { name: "Add 1 person" }),
+    ).toBeInTheDocument();
+    expect(within(c).queryByText(/and \d+ more/)).toBeNull();
+  });
+
+  it("shows six names, then 'and N more' that opens the rest", async () => {
+    const eight = Array.from({ length: 8 }, (_, i) => ({
+      id: `u${i}`,
+      name: `Person ${i}`,
+      initials: "P",
+    }));
+    mountIt({}, eight);
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    expect(
+      await within(c).findByText("Add these 8 people?"),
+    ).toBeInTheDocument();
+    expect(within(c).getAllByRole("checkbox")).toHaveLength(6);
+    fireEvent.click(within(c).getByRole("button", { name: "and 2 more" }));
+    expect(within(c).getAllByRole("checkbox")).toHaveLength(8);
+    expect(
+      within(c).getByRole("button", { name: "Add 8 people" }),
+    ).toBeInTheDocument();
   });
 
   it("adds in batches of 50", async () => {

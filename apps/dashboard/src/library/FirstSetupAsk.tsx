@@ -34,6 +34,8 @@ export const FIRST_ASK = {
 } as const;
 
 const DAYS = 90;
+/** Names listed before "and N more". */
+const SHOWN = 6;
 const DAY = 24 * 3600_000;
 
 type Pick = "yes" | "choose" | "no";
@@ -50,6 +52,7 @@ export function FirstSetupAsk() {
   const [pick, setPick] = useState<Pick>("choose");
   const [step, setStep] = useState<"ask" | "confirm">("ask");
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
+  const [more, setMore] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const people = team.data?.members ?? [];
@@ -131,13 +134,15 @@ export function FirstSetupAsk() {
           id="oa-first-setup-h"
           className="m-0 text-[length:var(--oa-text-md)] font-semibold"
         >
-          Add these {chosen.length} {chosen.length === 1 ? "person" : "people"}?
+          {people.length === 1
+            ? "Add this person?"
+            : `Add these ${people.length} people?`}
         </h2>
         <p className="mt-1 mb-2 text-[length:var(--oa-text-sm)] text-muted-foreground">
           All pages your agents work on, until {endDate(until)}.
         </p>
         <ul className="m-0 grid max-h-60 list-none gap-1 overflow-y-auto p-0">
-          {people.map((p) => (
+          {(more ? people : people.slice(0, SHOWN)).map((p) => (
             <li key={p.id}>
               <label className="flex items-center gap-2 text-[length:var(--oa-text-sm)]">
                 <input
@@ -164,6 +169,18 @@ export function FirstSetupAsk() {
           ))}
         </ul>
         <p className="mt-2 mb-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
+          {!more && people.length > SHOWN && (
+            <>
+              <button
+                type="button"
+                className="cursor-pointer border-0 bg-transparent p-0 text-primary underline"
+                onClick={() => setMore(true)}
+              >
+                and {people.length - SHOWN} more
+              </button>
+              {". "}
+            </>
+          )}
           Untick anyone. People outside your team aren't offered.
         </p>
         {error && (
@@ -188,7 +205,9 @@ export function FirstSetupAsk() {
             disabled={busy || chosen.length === 0}
             onClick={() => void addAll()}
           >
-            Add {chosen.length} {chosen.length === 1 ? "person" : "people"}
+            {chosen.length === 1
+              ? "Add 1 person"
+              : `Add ${chosen.length} people`}
           </Button>
         </div>
       </section>

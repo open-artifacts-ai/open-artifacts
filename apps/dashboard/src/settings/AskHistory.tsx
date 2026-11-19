@@ -1,6 +1,7 @@
 /** #2577 (Design v8, screen 5): "Who asked what", the last 30 days. Names, pages and times only, never the words. */
 import type { AskHistoryRow } from "@oa/shared";
 import { useAskHistory } from "../api/agentAsks";
+import { firstName } from "../foryou/held";
 import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { errorText, muted, SettingsCard } from "./ui";
 
@@ -65,7 +66,7 @@ export function AskHistory() {
               />
               <span className="grid min-w-0">
                 <b className="text-[length:var(--oa-text-sm)] font-semibold">
-                  {r.agent.name}, asked by {r.asker.name}
+                  {r.agent.name}, asked by {firstName(r.asker.name)}
                 </b>
                 <span className={muted}>
                   {[
