@@ -745,7 +745,7 @@ describe("waking an away Codex thread (#2029)", () => {
 /** Answers each `waiting_query` with `counts(refs)`; hello_ok lists the query cap. */
 function answerQueries(
   h: H,
-  counts: (refs: string[]) => Record<string, number>,
+  counts: (refs: string[]) => Record<string, number> | undefined,
 ) {
   const done = new Set<string>();
   h.toDaemon({
@@ -760,10 +760,12 @@ function answerQueries(
     for (const f of h.of("waiting_query")) {
       if (done.has(f.id)) continue;
       done.add(f.id);
+      const reply = counts(f.agent_refs);
+      if (!reply) continue;
       h.toDaemon({
         id: f.id,
         type: "waiting_counts",
-        counts: counts(f.agent_refs),
+        counts: reply,
       });
     }
   }, 5);
@@ -805,34 +807,45 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     stop();
   });
 
-  it("wakes a reloaded thread with known waiting mail before the next hub poll", async () => {
-    const w = world();
-    let loaded = false;
-    let observed = false;
-    const { two } = await restarted(
-      w,
-      {
-        wakeCheckMs: 300_000,
-        holdersOf: (files: string[]) =>
-          loaded
-            ? w.codex.holdersOf(files)
-            : new Map(files.map((f) => [f, []])),
-      },
-      {
-        events: (event: string) => {
-          if (event === "codex_wake_skipped") observed = true;
+  it.each([false, true])(
+    "wakes a reloaded thread before the next hub poll (first refresh times out: %s)",
+    async (dropFirst) => {
+      const w = world();
+      let loaded = false;
+      let observed = false;
+      const { two } = await restarted(
+        w,
+        {
+          wakeCheckMs: 300_000,
+          holdersOf: (files: string[]) =>
+            loaded
+              ? w.codex.holdersOf(files)
+              : new Map(files.map((f) => [f, []])),
         },
-      },
-    );
-    const stop = answerQueries(two, () => ({ [THREAD]: 2 }));
-    try {
-      await waitFor(() => expect(observed).toBe(true));
-      loaded = true;
-      await waitFor(() => expect(w.runs()).toHaveLength(1));
-    } finally {
-      stop();
-    }
-  });
+        {
+          statusRosterMs: 120,
+          events: (event: string) => {
+            if (event === "codex_wake_skipped") observed = true;
+          },
+        },
+      );
+      let dropped = false;
+      const stop = answerQueries(two, () => {
+        if (loaded && dropFirst && !dropped) {
+          dropped = true;
+          return undefined;
+        }
+        return { [THREAD]: 2 };
+      });
+      try {
+        await waitFor(() => expect(observed).toBe(true));
+        loaded = true;
+        await waitFor(() => expect(w.runs()).toHaveLength(1));
+      } finally {
+        stop();
+      }
+    },
+  );
 
   it("a machine with no other live agent: one frame by its own away refs wakes the thread", async () => {
     const w = world();

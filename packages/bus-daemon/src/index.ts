@@ -3661,6 +3661,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const ref of waitingForLoad)
         if (!away.has(ref)) waitingForLoad.delete(ref);
       if (!rows.length || !main.hub.open || main.version === undefined) return;
+      if (!main.waitingQuery) waitingForLoad.clear();
       // The checks cost an lsof, a ps and rollout reads: not on every tick.
       if (
         wakeCheckedAt !== undefined &&
@@ -3674,7 +3675,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         )
           return;
       }
-      waitingForLoad.clear();
       wakeCheckedAt = now;
       const held = codexCheck.holders(rows.map((r) => r.ref));
       if (!held) return;
@@ -3697,7 +3697,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           .slice(0, MAX_WAITING_QUERY);
         if (refs.length) {
           counts = await hubWaitingCounts(refs);
-          if (!counts) log("codex wake skipped: the hub did not answer");
+          // A timeout leaves the last known mail eligible for the next lock sweep.
+          if (counts) waitingForLoad.clear();
+          else log("codex wake skipped: the hub did not answer");
         }
       }
       for (const r of rows) {
