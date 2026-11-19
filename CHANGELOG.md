@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.231.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.230.0...v0.231.0) (2026-11-19)
+
+
+### Features
+
+* **notifications:** Mute in the page menu and on a For you ask, and the quiet-hours away line ([#2860](https://github.com/open-artifacts-ai/open-artifacts/issues/2860)) ([#2920](https://github.com/open-artifacts-ai/open-artifacts/issues/2920)) ([d374f86](https://github.com/open-artifacts-ai/open-artifacts/commit/d374f86bb0708b41ded92ce496c8b169d8192efe))
+* **share:** a share that wasn't emailed for a private reason says so neutrally ([#2649](https://github.com/open-artifacts-ai/open-artifacts/issues/2649)) ([#2654](https://github.com/open-artifacts-ai/open-artifacts/issues/2654)) ([1e3b1f4](https://github.com/open-artifacts-ai/open-artifacts/commit/1e3b1f41f5675477c5935295f7a847f3b58dcd72))
+
+
+### Bug Fixes
+
+* **members:** an invite row on a codes-only instance says how they log in ([#2608](https://github.com/open-artifacts-ai/open-artifacts/issues/2608)) ([4e70e3d](https://github.com/open-artifacts-ai/open-artifacts/commit/4e70e3d97d87ab1fd6f3c50af03f278236c07efc))
+
 ## [0.230.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.229.0...v0.230.0) (2026-11-19)
 
 
