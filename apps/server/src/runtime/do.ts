@@ -20,6 +20,7 @@ import {
   dataResetDocLimit,
   ERROR_CODES,
   type ErrorCode,
+  HELD_LAPSE_MS,
   LIMITS,
   type Page,
   planOf,
@@ -32,7 +33,7 @@ import {
 import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError } from "../log.js";
+import { logError, logWarn } from "../log.js";
 import {
   ASKER_NOTICE_WINDOW_MS,
   ASKER_NOTICES_MAX,
@@ -192,6 +193,12 @@ const MAX_ANON_EVENTS_PER_ACTOR = 3;
 const MAX_SOCKETS_PER_ACTOR = 20;
 /** Max socket lifetime: a revocation the server missed can't outlive a signed URL. */
 export const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
+/** #2851: the hold retry's first try, its target read per run, and its backoff (3 min doubling, at most 6 h). */
+const HELD_RETRY_FIRST_MS = 3 * 60_000;
+const HELD_RETRY_TARGETS = 200;
+const heldRetryBackoffMs = (attempts: number): number =>
+  Math.min(HELD_RETRY_FIRST_MS * 2 ** attempts, 6 * 3_600_000);
+
 /** The alarm also closes sockets this close to their TTL, batching alarms (≤1/min). */
 export const SOCKET_TTL_SLACK_MS = 60_000;
 /**
@@ -447,6 +454,10 @@ create table if not exists index_job (
   version integer not null, attempts integer not null, due integer not null,
   seq integer not null
 );
+create table if not exists held_retry (
+  id integer primary key check (id = 1), since integer not null,
+  attempts integer not null, due integer not null
+);
 create table if not exists thumb_job (
   id integer primary key check (id = 1), artifact_id text not null,
   version integer not null, attempts integer not null, due integer not null,
@@ -537,6 +548,23 @@ export class ArtifactRuntime extends DurableObject<Env> {
     artifactId: string,
     version: number,
   ) => Promise<void> = indexVersionOrThrow;
+
+  /**
+   * #2851: writes the D1 rows of held targets that have none (the alarm's
+   * hold retry); overridable in tests. Dynamic import: the service imports this file.
+   */
+  heldReconciler: (
+    env: Env,
+    artifactId: string,
+    targets: ReturnType<typeof heldScan>,
+    now: number,
+  ) => Promise<{ complete: boolean }> = async (env, artifactId, targets, now) =>
+    (await import("../services/agent-requests.js")).reconcileTargets(
+      env,
+      artifactId,
+      targets,
+      now,
+    );
 
   /** The thumbnail capture the alarm runs; overridable in tests. */
   thumbnailer: (
@@ -1823,7 +1851,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // on stays dormant, unread and unattempted).
     const thumbs = serverThumbnails(this.env);
     const thumb = thumbs ? this.pendingThumbnail() : null;
-    if (!job && !thumb && sockets.length === 0) return;
+    const heldJob = this.pendingHeldRetry();
+    if (!job && !thumb && !heldJob && sockets.length === 0) return;
     const now = this.now();
     let next = Number.POSITIVE_INFINITY;
     for (const ws of sockets) {
@@ -1864,6 +1893,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
     if (!indexDue && thumb && (thumb.attempts === 0 || thumb.due <= now))
       await this.runThumbnail(thumb);
+    // #2851: the hold retry shares this alarm; it never waits on or delays the other work.
+    if (heldJob && heldJob.due <= now) await this.runHeldRetry(heldJob, now);
+    const pendingHeld = this.pendingHeldRetry();
+    if (pendingHeld) next = Math.min(next, pendingHeld.due);
     const pending = this.pendingIndex();
     if (pending) next = Math.min(next, pending.due);
     const pendingThumb = thumbs ? this.pendingThumbnail() : null;
@@ -2643,6 +2676,73 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.broadcastComments();
   }
 
+  /**
+   * #2851: a hold's D1 write failed: retry from this DO's own alarm in a few
+   * minutes, however D1 is doing (the settings note and the nightly sweep are
+   * the fast path). One job per page; a second failure keeps the first's clock.
+   */
+  async commentsHeldRetryArm(): Promise<void> {
+    this.ensureSchema();
+    const now = this.now();
+    const due = now + HELD_RETRY_FIRST_MS;
+    this.sql.exec(
+      "insert or ignore into held_retry (id, since, attempts, due) values (1, ?, 0, ?)",
+      now,
+      due,
+    );
+    await this.armAt(this.pendingHeldRetry()?.due ?? due);
+  }
+
+  /** The pending hold retry, if any (tests and the alarm). */
+  pendingHeldRetry(): {
+    since: number;
+    attempts: number;
+    due: number;
+  } | null {
+    const r = this.sql
+      .exec<{ since: number; attempts: number; due: number }>(
+        "select since, attempts, due from held_retry where id = 1",
+      )
+      .toArray()[0];
+    return r ?? null;
+  }
+
+  /** #2851: one alarm run of the hold retry: done (job gone) when every held target has its row, or after the 7-day lapse window; else backoff. */
+  private async runHeldRetry(
+    j: { since: number; attempts: number },
+    now: number,
+  ): Promise<void> {
+    let done = false;
+    let more = false;
+    try {
+      if (now - j.since >= HELD_LAPSE_MS) done = true;
+      else {
+        const targets = heldScan(this.sql, HELD_RETRY_TARGETS);
+        const r = await this.heldReconciler(
+          this.env,
+          this.artifactId(),
+          targets,
+          now,
+        );
+        more = r.complete && targets.length >= HELD_RETRY_TARGETS;
+        done = r.complete && !more;
+      }
+    } catch (e) {
+      logWarn("held_retry_failed", {
+        code: e instanceof Error ? e.name : "error",
+      });
+    }
+    if (done) this.sql.exec("delete from held_retry where id = 1");
+    else if (more)
+      this.sql.exec("update held_retry set due = ? where id = 1", now + 60_000);
+    else
+      this.sql.exec(
+        "update held_retry set attempts = ?, due = ? where id = 1",
+        j.attempts + 1,
+        now + heldRetryBackoffMs(j.attempts + 1),
+      );
+  }
+
   /** #2851: the targets still held on this page (newest comments first), for the reconcile sweep. */
   commentsHeldScan(a: { limit: number }): ReturnType<typeof heldScan> {
     this.ensureSchema();
@@ -2974,6 +3074,7 @@ type RpcMethods =
   | "commentsUnhold"
   | "commentsHeldCanon"
   | "commentsHeldScan"
+  | "commentsHeldRetryArm"
   | "commentsRelease"
   | "commentsFinishHeld"
   | "commentsStatus"

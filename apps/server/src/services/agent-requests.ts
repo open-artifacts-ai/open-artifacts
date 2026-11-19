@@ -543,14 +543,21 @@ export async function recordHolds(
     )
       return;
   logError("hold_write_failed", undefined, { artifactId });
-  // #2851: leave a note for the nightly sweep (best effort: a settings row, no content).
-  await stmt(
-    env.DB,
-    "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
-  )
-    .bind(`${RECONCILE_PREFIX}${artifactId}`, String(now))
-    .run()
-    .catch(() => undefined);
+  // #2851: leave a note for the nightly sweep (best effort: a settings row, no content)...
+  try {
+    await stmt(
+      env.DB,
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
+    )
+      .bind(`${RECONCILE_PREFIX}${artifactId}`, String(now))
+      .run();
+  } catch {
+    // D1 is down too: the page's DO retries from its own alarm (below).
+  }
+  // ...and, however D1 is doing, ask the page's DO to retry from its own alarm in a few minutes.
+  await call(() => stub(env, artifactId).commentsHeldRetryArm()).catch(
+    () => undefined,
+  );
 }
 
 /** #2851: one settings row per page whose hold could not be written to D1: "held:reconcile:<artifactId>". */
@@ -558,6 +565,78 @@ export const RECONCILE_PREFIX = "held:reconcile:";
 /** Pages one nightly run reconciles, and held targets it reads from each. */
 export const RECONCILE_PAGES = 10;
 export const RECONCILE_TARGETS = 200;
+
+/** #2851: one held target, as the DO's scan reads it. */
+type HeldScanned = {
+  commentId: string;
+  threadId: string;
+  key: string;
+  way: string;
+  owner: string;
+  namespace: string;
+  name: string;
+  at: string;
+  author: string;
+};
+
+/**
+ * Writes the missing request and item rows for held targets read from a page's
+ * DO (the nightly sweep and the DO's own retry alarm both call it). Skips
+ * targets that have a row, are past their 7 days, or are not a person's.
+ * `complete` is false when any read or write failed. Never throws.
+ */
+export async function reconcileTargets(
+  env: Env,
+  artifactId: string,
+  targets: HeldScanned[],
+  now = Date.now(),
+): Promise<{ complete: boolean; written: number }> {
+  let complete = true;
+  let written = 0;
+  try {
+    for (const t of targets) {
+      const at = Date.parse(t.at);
+      const author = JSON.parse(t.author) as { kind?: string; ref?: string };
+      // Only a person's request is ever held; one past its 7 days lapses by age.
+      if (author.kind !== "user" || !author.ref || !(at + HELD_LAPSE_MS > now))
+        continue;
+      const known = await stmt(
+        env.DB,
+        "select 1 as x from held_request_items where comment_id = ?1 and agent_key = ?2",
+      )
+        .bind(t.commentId, t.key)
+        .first();
+      if (known) continue;
+      const ok = await recordHoldsOnce(
+        env,
+        author.ref,
+        artifactId,
+        t.threadId,
+        t.commentId,
+        [
+          {
+            agent: {
+              key: t.key,
+              owner: t.owner,
+              namespace: t.namespace,
+              name: t.name,
+            } as HeldAgent,
+            way: t.way,
+          },
+        ],
+        at,
+      );
+      if (ok) written++;
+      else complete = false;
+    }
+  } catch (e) {
+    logWarn("held_reconcile_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+    complete = false;
+  }
+  return { complete, written };
+}
 
 /**
  * #2851: a hold whose D1 request row failed to write (hold_write_failed)
@@ -592,49 +671,9 @@ export async function reconcileHeld(
         const targets = await call(() =>
           stub(env, artifactId).commentsHeldScan({ limit: RECONCILE_TARGETS }),
         );
-        let complete = targets.length < RECONCILE_TARGETS;
-        for (const t of targets) {
-          const at = Date.parse(t.at);
-          const author = JSON.parse(t.author) as {
-            kind?: string;
-            ref?: string;
-          };
-          // Only a person's request is ever held; one past its 7 days lapses by age.
-          if (
-            author.kind !== "user" ||
-            !author.ref ||
-            !(at + HELD_LAPSE_MS > now)
-          )
-            continue;
-          const known = await stmt(
-            env.DB,
-            "select 1 as x from held_request_items where comment_id = ?1 and agent_key = ?2",
-          )
-            .bind(t.commentId, t.key)
-            .first();
-          if (known) continue;
-          const ok = await recordHoldsOnce(
-            env,
-            author.ref,
-            artifactId,
-            t.threadId,
-            t.commentId,
-            [
-              {
-                agent: {
-                  key: t.key,
-                  owner: t.owner,
-                  namespace: t.namespace,
-                  name: t.name,
-                } as HeldAgent,
-                way: t.way,
-              },
-            ],
-            at,
-          );
-          if (ok) written++;
-          else complete = false;
-        }
+        const r = await reconcileTargets(env, artifactId, targets, now);
+        written += r.written;
+        const complete = r.complete && targets.length < RECONCILE_TARGETS;
         if (complete) await done();
       } catch (e) {
         logWarn("held_reconcile_failed", {

@@ -1,7 +1,9 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type BusNotice, type Member, newId } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { Env } from "../src/env.js";
+import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import {
   listHeld,
   RECONCILE_PAGES,
@@ -55,6 +57,12 @@ async function mk(prefix: string): Promise<U> {
 }
 let owner: U;
 let editor: U;
+beforeEach(async () => {
+  // Each test mentions anew: the per-sender hourly limit is not under test.
+  await E.DB.prepare(
+    "delete from counters where key like 'notice:mention:%'",
+  ).run();
+});
 beforeAll(async () => {
   owner = await mk("rc-owner");
   editor = await mk("rc-editor");
@@ -273,5 +281,127 @@ describe("held reconcile sweep (#2851)", () => {
     expect(
       (await Promise.all(pages.map((id) => noted(id)))).some(Boolean),
     ).toBe(false);
+  });
+});
+
+// The DO's own retry: when even the settings note cannot be written (D1 is
+// down), the page's DO retries from its alarm a few minutes later.
+const inDo = <T>(id: string, cb: (i: ArtifactRuntime) => T | Promise<T>) =>
+  runInDurableObject(
+    runtimeStub(E, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+    (i) => {
+      (i as unknown as { env: Env }).env = E;
+      return cb(i);
+    },
+  );
+const MIN = 60_000;
+const d1Down = {
+  ...E,
+  DB: new Proxy(E.DB, {
+    get: (t, k) =>
+      k === "prepare"
+        ? (sql: string) => {
+            if (sql.includes("held_request") || sql.includes("settings"))
+              throw new Error("D1 down");
+            return t.prepare(sql);
+          }
+        : (t as never)[k],
+  }),
+} as Env;
+const hold = (p: { id: string; key: string }) =>
+  recordHolds(d1Down, editor.userId, p.id, "t1", "c-x", [
+    {
+      agent: {
+        key: p.key,
+        owner: owner.userId,
+        namespace: "ns-o",
+        name: "Claude",
+      },
+      way: "mention",
+    },
+  ]);
+/** Fires the page's alarm as if `ms` had passed. */
+const fire = (id: string, ms: number) =>
+  inDo(id, (i) => {
+    const t = Date.now() + ms;
+    i.now = () => t;
+    return i.alarm();
+  });
+
+describe("the DO's own hold retry (#2851)", () => {
+  it("D1 down for the row AND the note: the alarm later, with D1 back, writes the row and schedules nothing more", async () => {
+    const p = await held();
+    await wipe(p.id);
+    await hold(p);
+    expect(await noted(p.id)).toBe(false);
+    expect(await rowsOf(p.id)).toHaveLength(0);
+    const job = await inDo(p.id, (i) => i.pendingHeldRetry());
+    expect(job).not.toBeNull();
+    expect((job?.due as number) - (job?.since as number)).toBe(3 * MIN);
+    // Too early: nothing happens.
+    await fire(p.id, MIN);
+    expect(await rowsOf(p.id)).toHaveLength(0);
+    expect(await inDo(p.id, (i) => i.pendingHeldRetry())).not.toBeNull();
+    // D1 is back: the alarm writes the row, dated from the comment, and the job is gone.
+    await fire(p.id, 4 * MIN);
+    const after = await rowsOf(p.id);
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ agent_key: p.key, state: "held" });
+    expect(await inDo(p.id, (i) => i.pendingHeldRetry())).toBeNull();
+    expect(
+      (await listHeld(E, owner.userId)).requests.some(
+        (r) => r.artifact.id === p.id,
+      ),
+    ).toBe(true);
+  });
+
+  it("an alarm with nothing to do schedules nothing further", async () => {
+    const p = await held();
+    await inDo(p.id, (i) => i.commentsHeldRetryArm());
+    expect(await inDo(p.id, (i) => i.pendingHeldRetry())).not.toBeNull();
+    // The row exists already (the nightly sweep or the first write got there).
+    expect(await rowsOf(p.id)).toHaveLength(1);
+    const sets = await inDo(p.id, async (i) => {
+      const storage = (i as unknown as { ctx: DurableObjectState }).ctx.storage;
+      let n = 0;
+      const real = storage.setAlarm.bind(storage);
+      storage.setAlarm = async (t: number | Date) => {
+        n++;
+        return real(t);
+      };
+      const t = Date.now() + 4 * MIN;
+      i.now = () => t;
+      await i.alarm();
+      storage.setAlarm = real;
+      return n;
+    });
+    expect(await inDo(p.id, (i) => i.pendingHeldRetry())).toBeNull();
+    expect(sets).toBe(0);
+  });
+
+  it("a failed try backs off (3 min, doubling) and gives up after the 7-day window", async () => {
+    const p = await held();
+    await inDo(p.id, (i) => i.commentsHeldRetryArm());
+    const times: number[] = [];
+    for (let k = 1; k <= 3; k++) {
+      const next = await inDo(p.id, async (i) => {
+        i.heldReconciler = async () => ({ complete: false });
+        const t = Date.now() + 30 * 60_000 * k;
+        i.now = () => t;
+        await i.alarm();
+        const j = i.pendingHeldRetry();
+        return j ? { attempts: j.attempts, wait: j.due - t } : null;
+      });
+      times.push(next?.wait as number);
+      expect(next?.attempts).toBe(k);
+    }
+    expect(times).toEqual([6 * MIN, 12 * MIN, 24 * MIN]);
+    await inDo(p.id, async (i) => {
+      i.heldReconciler = async () => ({ complete: false });
+      const t = Date.now() + 8 * 86_400_000;
+      i.now = () => t;
+      await i.alarm();
+    });
+    expect(await inDo(p.id, (i) => i.pendingHeldRetry())).toBeNull();
   });
 });
