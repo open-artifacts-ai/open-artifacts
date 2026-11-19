@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.225.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.224.0...v0.225.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** add a teammate to the listens-to list, and who asked what ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2878](https://github.com/open-artifacts-ai/open-artifacts/issues/2878)) ([8d19872](https://github.com/open-artifacts-ai/open-artifacts/commit/8d19872823a63c9181368f0dbd7ecad364d2ff57))
+* **agents:** held requests, the listens-to list and the @ list states ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) UI slice 1) ([#2871](https://github.com/open-artifacts-ai/open-artifacts/issues/2871)) ([def1519](https://github.com/open-artifacts-ai/open-artifacts/commit/def15196e73db33458df2ca6ce2a89d62cf31895))
+
+
+### Bug Fixes
+
+* **agents:** held requests lapse: run lapseHeld in the daily cron ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2898](https://github.com/open-artifacts-ai/open-artifacts/issues/2898)) ([fff58f3](https://github.com/open-artifacts-ai/open-artifacts/commit/fff58f3027c064a03773c0f985cf269c78167135))
+
 ## [0.224.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.223.0...v0.224.0) (2026-11-19)
 
 

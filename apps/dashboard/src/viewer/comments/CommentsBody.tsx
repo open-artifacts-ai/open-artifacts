@@ -600,7 +600,7 @@ function Composer({
     )
       void agentsQ.refetch();
   };
-  // PROVISIONAL (#2780): people join the agents in one list. The server
+  // People join the agents in one list. The server
   // answers only for the owner and editors (everyone else gets none).
   const peopleOn = mentionable && api.canMention && api.canComment;
   const [picked, setPicked] = useState<CommentAuthor[]>([]);
@@ -632,8 +632,14 @@ function Composer({
   })();
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
+  // #2577: the active row is never an agent whose person turned asking off (a reset to 0 lands on the first pickable row).
+  const firstOk = matches.findIndex((a) => a.askState !== "off");
+  const activeIdx =
+    matches[activeOpt]?.askState === "off" ? Math.max(firstOk, 0) : activeOpt;
   const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
+    // #2577: its person turned asking off; a mention would be refused.
+    if (a.askState === "off") return;
     // Over the cap nothing more is added (the note under the list says so).
     if (atCap) return;
     if (isPersonKey(a.key)) {
@@ -729,7 +735,7 @@ function Composer({
       const mentions = keys
         .filter((k) => !isPersonKey(k))
         .map((key) => ({ key }));
-      // PROVISIONAL (#2780): people go by id, apart from agents.
+      // People go by id, apart from agents.
       const people = peopleIds(keys);
       const pictureRefs = withPictures ? pics.refs : [];
       if (instant) {
@@ -888,7 +894,7 @@ function Composer({
           aria-describedby={card && !coarse && !shut ? hintId : undefined}
           aria-controls={menuOpen ? menuId : undefined}
           aria-activedescendant={
-            menuOpen ? `${menuId}-${activeOpt}` : undefined
+            menuOpen ? `${menuId}-${activeIdx}` : undefined
           }
           onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
@@ -916,9 +922,15 @@ function Composer({
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const n = matches.length;
-                setActiveOpt(
-                  (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
-                );
+                // #2577: an agent whose person turned asking off can't be picked: skip it.
+                const step = e.key === "ArrowDown" ? 1 : n - 1;
+                setActiveOpt(() => {
+                  for (let k = 1; k <= n; k++) {
+                    const j = (activeIdx + step * k) % n;
+                    if (matches[j]?.askState !== "off") return j;
+                  }
+                  return activeIdx;
+                });
                 return;
               }
               if (
@@ -929,7 +941,7 @@ function Composer({
                 !e.ctrlKey
               ) {
                 e.preventDefault();
-                const a = matches[activeOpt];
+                const a = matches[activeIdx];
                 if (a) pick(a);
                 return;
               }
@@ -988,7 +1000,7 @@ function Composer({
           id={menuId}
           matches={matches}
           all={agents}
-          active={activeOpt}
+          active={activeIdx}
           onPick={pick}
         />
       )}

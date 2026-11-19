@@ -1,6 +1,5 @@
-// PROVISIONAL (#2780): mock-only person @mentions, over the shared mocks
-// (which do not know `people` yet). Delete with src/viewer/comments/people.ts
-// once the shared mocks serve the route.
+// Mock-only person @mentions, over the shared mocks (which do not serve the
+// mention-candidates route or keep `people` yet).
 // - POST mention-candidates { q } lists people by the start of a name or of any
 //   word in it (never an email), at most 8.
 // - A new thread or reply keeps its `people`, and the list shows them.

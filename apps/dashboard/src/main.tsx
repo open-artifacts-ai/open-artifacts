@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { makeQueryClient } from "./api/queryClient";
 import { isEmbed, lockToPath } from "./embed";
 import { parseHostedParam } from "./hostedParam";
+import { agentAsksOn, forYouVariant } from "./mockForYou";
 import { router } from "./router";
 import "./styles.css";
 import "./shadcn.css";
@@ -783,12 +784,9 @@ async function startMocks() {
     bus: params.get("mock") === "bus",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
     // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
-    forYou:
-      params.get("mock") === "foryou"
-        ? ((["calm", "empty", "back", "error"] as const).find(
-            (v) => v === params.get("foryou"),
-          ) ?? "mixed")
-        : undefined,
+    forYou: forYouVariant(params),
+    // ?mock=foryou&foryou=held or ?mock=agent-asks (#2577): a held request, the switch and the "listens to" list.
+    agentAsks: agentAsksOn(params),
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -882,7 +880,7 @@ async function startMocks() {
     mainHandlers,
     params,
   );
-  // PROVISIONAL (#2780): person @mentions, in front of the picture handlers.
+  // Person @mentions (mock only), in front of the picture handlers.
   extra.push(
     ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
       ...pics,

@@ -5,7 +5,10 @@ import {
   COMMENT_BODY_MAX,
   type Comment,
   type CommentList,
+  CommentListSchema,
+  CommentSchema,
   type CommentThread,
+  CommentThreadSchema,
   MENTIONS_MAX,
   type Me,
   type NewThreadBody,
@@ -26,11 +29,6 @@ import {
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
-import {
-  CommentListSchema,
-  CommentSchema,
-  CommentThreadSchema,
-} from "../viewer/comments/people"; // PROVISIONAL (#2780): the shared schemas, plus `people`
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -358,8 +356,6 @@ const knownIds = (list: CommentList | undefined) => {
 };
 
 type NewThreadVars = NewThreadBody & {
-  /** PROVISIONAL (#2780): the people @mentioned, by user id. */
-  people?: string[];
   /** The shown version's hash, for a pin's temp anchor. Not sent. */
   contentHash?: string | null;
 };
@@ -453,7 +449,6 @@ export const useReply = (id: string, guest = false) =>
           body: v.body,
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
-          // PROVISIONAL (#2780)
           ...(v.people?.length ? { people: v.people } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
           ...(v.pictures?.length ? { pictures: v.pictures } : {}),

@@ -120,7 +120,7 @@ export const installHarness = () => {
       ...events.handlers,
       // #2520's PROVISIONAL routes: absent unless a test serves them.
       ...loginAbsentHandlers(),
-      // PROVISIONAL (#2780): no people to mention unless a test serves them.
+      // No people to mention unless a test serves them.
       ...mentionPeopleAbsentHandlers(),
     );
     vi.stubGlobal(
