@@ -19,6 +19,31 @@ export const SETUP_STEPS = [
 ] as const;
 export type SetupStep = (typeof SETUP_STEPS)[number];
 
+/**
+ * Steps that only the bus can tick: "named" (the bus hub records the name) and
+ * "mention" (needs a verified bus identity's reply). A person who only uses
+ * Open Artifacts from ChatGPT or a regular Claude chat never connects the bus,
+ * so for them these two are hidden and the count is of 3 (#2890).
+ */
+export const BUS_STEPS = [
+  "named",
+  "mention",
+] as const satisfies readonly SetupStep[];
+
+/**
+ * The steps that apply to this person, in order. `busConnected` false hides the
+ * bus-only steps; absent or null (an older server) is true: all five.
+ */
+export function applicableSteps(
+  busConnected?: boolean | null,
+): readonly SetupStep[] {
+  return busConnected === false
+    ? SETUP_STEPS.filter(
+        (s) => !(BUS_STEPS as readonly SetupStep[]).includes(s),
+      )
+    : SETUP_STEPS;
+}
+
 /** The R.onboarding fields the count reads (any may be absent: not done). */
 export type SetupStepsInput = {
   agentConnected?: boolean | null;
@@ -26,12 +51,18 @@ export type SetupStepsInput = {
   firstArtifact?: unknown;
   mentionReplied?: boolean | null;
   askAnswered?: boolean | null;
+  /** The person has ever connected the bus. False: three steps. Absent: five. */
+  busConnected?: boolean | null;
 };
 
 export type SetupStepsResult = {
-  /** Of 5. */
+  /** Of `total`. */
   done: number;
-  /** The first step not done; absent at five of five. */
+  /** 5, or 3 when the bus was never connected. */
+  total: number;
+  /** The steps that apply, in order. */
+  steps: readonly SetupStep[];
+  /** The first applicable step not done; absent when all are done. */
   stalled?: SetupStep;
 };
 
@@ -45,7 +76,13 @@ export function setupSteps(
     mention: o?.mentionReplied === true,
     ask: o?.askAnswered === true,
   };
-  const done = SETUP_STEPS.filter((s) => on[s]).length;
-  const stalled = SETUP_STEPS.find((s) => !on[s]);
-  return stalled ? { done, stalled } : { done };
+  const steps = applicableSteps(o?.busConnected);
+  const done = steps.filter((s) => on[s]).length;
+  const stalled = steps.find((s) => !on[s]);
+  return {
+    done,
+    total: steps.length,
+    steps,
+    ...(stalled ? { stalled } : {}),
+  };
 }

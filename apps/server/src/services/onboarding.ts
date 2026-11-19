@@ -24,7 +24,7 @@ import {
 } from "../onboarding/untouched.js";
 import { WELCOME_TITLE, welcomeHtml } from "../onboarding/welcome.js";
 import { publish, purgeNow } from "./artifacts.js";
-import { busView } from "./bus.js";
+import { busView, hasConnectedMachine } from "./bus.js";
 import {
   askAnsweredKey,
   MENTION_STALLED_MS,
@@ -170,6 +170,10 @@ export async function getOnboarding(
   const mentionReplied = at.has(mentionRepliedKey(userId));
   const mentionedAt = at.get(mentionedKey(userId));
   const inviter = val(invitedByKey(userId));
+  // #2890: someone who only uses OA from a chat (OAuth MCP) never ticks the bus-only
+  // steps. A recorded name or reply proves the bus too (a machine may be gone since).
+  const busConnected =
+    agentNamed || mentionReplied || (await hasConnectedMachine(env, userId));
   return {
     dismissed: keys.has(dismissedKey(userId)) || keys.has(DISMISSED_KEY),
     completed,
@@ -189,6 +193,7 @@ export async function getOnboarding(
       mentionedAt !== undefined &&
       Date.now() - mentionedAt >= MENTION_STALLED_MS,
     askAnswered: at.has(askAnsweredKey(userId)),
+    busConnected,
     teamStep: keys.has(teamStepKey(userId)),
     invitedBy: inviter ? { name: await realName(env, inviter) } : null,
   };
@@ -547,7 +552,7 @@ export async function memberSetups(
   const out = new Map<string, MemberSetup>();
   const people = members.filter((m) => !isGuestRole(m.role));
   if (!people.length) return out;
-  const [settings, agents, owners] = await env.DB.batch([
+  const [settings, agents, owners, buses] = await env.DB.batch([
     stmt(
       env.DB,
       `select key, value from settings where substr(key, 1, 11) = 'onboarding:'`,
@@ -561,6 +566,11 @@ export async function memberSetups(
       env.DB,
       `select distinct owner_id as id from artifacts where deleted_at is null and not ${SELF_TEST}
        and ${NOT_A_WELCOME}`,
+    ),
+    // #2890: who ever connected the bus (the same fact as hasConnectedMachine).
+    stmt(
+      env.DB,
+      "select distinct user_id as id from bus_machines where last_used_at is not null",
     ),
   ]);
   const values = new Map(
@@ -576,8 +586,13 @@ export async function memberSetups(
   const published = new Set(
     (owners.results as { id: string }[]).map((r) => r.id),
   );
+  const onBus = new Set((buses.results as { id: string }[]).map((r) => r.id));
   for (const m of people) {
     const p = setupSteps({
+      busConnected:
+        onBus.has(m.id) ||
+        keys.has(namedKey(m.id)) ||
+        keys.has(mentionRepliedKey(m.id)),
       agentConnected: connected.has(m.id),
       agentNamed: keys.has(namedKey(m.id)),
       firstArtifact: published.has(m.id) ? true : null,
@@ -587,12 +602,13 @@ export async function memberSetups(
     const set =
       keys.has(completedKey(m.id)) ||
       (isInstanceOwner(m) && keys.has(COMPLETED_KEY)) ||
-      p.done === 5;
+      p.done === p.total;
     // When the one reminder went (setup-reminder.ts writes the time).
     const reminded = Number(values.get(`onboarding:reminded:${m.id}`));
     out.set(m.id, {
       state: set ? "set" : m.lastSeenAt === null ? "invited" : "partial",
       done: p.done,
+      total: p.total,
       ...(!set && p.stalled ? { stalled: p.stalled } : {}),
       ...(reminded > 0 ? { remindedAt: new Date(reminded).toISOString() } : {}),
     });
