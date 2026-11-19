@@ -1012,8 +1012,8 @@ export function AskBlock({
                       !canAnswer ||
                       holdPicks ||
                       answer.isPending ||
-                      sel ||
-                      (locked && !sel)
+                      // Own words can be sent again once Change reopens the options.
+                      (isOwn ? locked : sel || (locked && !sel))
                     }
                     aria-pressed={sel}
                     aria-expanded={isOwn ? ownOpen : undefined}
@@ -1023,6 +1023,8 @@ export function AskBlock({
                       if (holdPicks) return;
                       // "Something else" opens its box; Send records it.
                       if (isOwn) {
+                        if (!ownOpen && ownText === "" && sel && answerWords)
+                          setOwnText(answerWords);
                         setOwnOpen((v) => !v);
                         return;
                       }
@@ -1066,7 +1068,7 @@ export function AskBlock({
                       )}
                     </span>
                   </Button>
-                  {isOwn && ownOpen && canAnswer && !sel && (
+                  {isOwn && ownOpen && canAnswer && (
                     <form
                       data-own-words-box=""
                       className="mt-1 flex flex-col gap-1 px-2"

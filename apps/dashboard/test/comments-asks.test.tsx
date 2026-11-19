@@ -3187,6 +3187,49 @@ describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", 
     expect(within(c).getByText("Ideas 1 + 3 + 5")).toBeInTheDocument();
   });
 
+  it("Change reopens the box with the earlier words, and sending again posts the new ones", async () => {
+    let sent: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T10:05:00Z",
+            typed: true,
+            yes: false,
+            ownWords: { text: "first words" },
+          },
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    const c = await open();
+    await within(c).findByText(/You answered in your own words/);
+    expect(
+      within(c).getByRole("button", { name: /Something else/ }),
+    ).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    fireEvent.click(within(c).getByRole("button", { name: /Something else/ }));
+    const box = await within(c).findByPlaceholderText(
+      "Say what you'd like instead",
+    );
+    expect(box).toHaveValue("first words");
+    fireEvent.change(box, { target: { value: "second words" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ ownWords: { text: "second words" } }),
+    );
+  });
+
   it("others see it with the person's name", async () => {
     serveThreads(() => [
       askThread(
