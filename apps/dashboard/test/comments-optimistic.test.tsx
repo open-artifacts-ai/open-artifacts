@@ -396,8 +396,8 @@ describe("picking an option on an ask shows at once", () => {
     expect(within(c).queryByText(/picked B/)).toBeNull();
   });
 
-  it("an ask with confirm is never optimistic (the cache stays as the server has it)", async () => {
-    // The schema does not carry `confirm` yet (#2263), so seed the cache directly.
+  it("an ask an old server marks confirm: passkey is answered like any other (#2864)", async () => {
+    // The schema does not carry `confirm`, so seed the cache directly.
     const qc = new QueryClient();
     qc.setQueryData(
       commentsKey(OWNED),
@@ -423,7 +423,7 @@ describe("picking an option on an ask shows at once", () => {
     });
     await waitFor(() => expect(result.current.isPending).toBe(true));
     const cached = qc.getQueryData<CommentList>(commentsKey(OWNED));
-    expect(cached?.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
+    expect(cached?.threads[0]?.comments[0]?.ask?.answer?.optionId).toBe("a");
   });
 });
 

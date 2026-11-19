@@ -11,21 +11,12 @@ import type {
 } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import {
-  CheckCheck,
-  Clock,
-  KeyRound,
-  Loader2,
-  Minus,
-  ShieldCheck,
-} from "lucide-react";
+import { CheckCheck, Clock, Minus, ShieldCheck } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ApiClientError } from "../../api/client";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
-  usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
 import { AskWaiting, askWaitingSince } from "../../foryou/waiting";
@@ -36,8 +27,6 @@ import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
-import { PasskeyBlocked } from "./PasskeyParts";
-import { passkeyFailure, passkeyLine } from "./passkey";
 import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
@@ -77,9 +66,9 @@ export const needsMe = (ask: AskT): boolean => {
   );
 };
 
-/** A risky ask: a passkey-confirm ask, or any option with an `action`. It is only answered in the pane. */
+/** A risky ask: any option with an `action`. It is only answered in the pane. A passkey is never asked for (#2864). */
 export const isRiskyAsk = (ask: AskT): boolean =>
-  ask.confirm === "passkey" || ask.options.some((o) => !!o.action);
+  ask.options.some((o) => !!o.action);
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
@@ -685,17 +674,10 @@ export function AskBlock({
 }) {
   const ask = c.ask;
   const plain = useAnswerAsk(artifactId);
-  const passkey = usePasskeyAnswer(artifactId);
   const takeBack = useTakeBackAsk(artifactId);
-  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
-  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
-  // time (their switches changed after it was posted): a plain pick that comes back
-  // passkey_required switches this ask to the passkey path and asks to pick again, so
-  // the passkey prompt starts from a click (Safari needs the gesture).
-  const [viaPasskey, setViaPasskey] = useState(false);
-  const [repick, setRepick] = useState(false);
-  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
-  const [lastPick, setLastPick] = useState<string | null>(null);
+  // #2864: no ask needs a passkey. A pick is one plain answer, even when an old
+  // server still marks the ask `confirm: "passkey"`.
+  const answer = plain;
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
@@ -790,11 +772,6 @@ export function AskBlock({
     );
   }
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
-  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
-  const pk = ask.confirm === "passkey" || viaPasskey;
-  const pkErr = pk && err != null ? passkeyFailure(err) : null;
-  const pkLine = pkErr ? passkeyLine(pkErr) : null;
-  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
@@ -841,26 +818,6 @@ export function AskBlock({
     views.length,
   );
   const bars = people >= 4;
-  const slot = answer.isPending ? (
-    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
-      Waiting for your passkey…
-    </p>
-  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
-    <p
-      role="alert"
-      data-passkey-error={pkErr.kind}
-      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
-    >
-      {pkLine?.text ?? answerError(err, errCtx)}
-    </p>
-  ) : !pickedOpt && !blocked ? (
-    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
-      <KeyRound aria-hidden="true" className="size-3.5" />
-      {repick
-        ? "This now needs your passkey. Pick again."
-        : "Approving this needs your passkey."}
-    </p>
-  ) : null;
   const recIdx = ask.options.findIndex(
     (o) => o.id === ask.recommended?.optionId,
   );
@@ -994,13 +951,6 @@ export function AskBlock({
               {views.length} of {people} weighed in. The tally decides nothing.
             </p>
           )}
-          {pk && slot && (
-            // One slot for the idle line, the wait and the failure; absent when empty.
-            <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
-              {slot}
-            </div>
-          )}
-          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
           <ul
             ref={opts}
             aria-labelledby={qid}
@@ -1025,21 +975,19 @@ export function AskBlock({
                         : sel
                           ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                           : ""
-                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
+                    }`}
                     disabled={
                       !canAnswer ||
                       holdPicks ||
                       answer.isPending ||
                       sel ||
-                      (locked && !sel) ||
-                      blocked
+                      (locked && !sel)
                     }
                     aria-pressed={sel}
                     data-option={o.id}
                     onClick={() => {
                       if (holdPicks) return;
                       setErr(null);
-                      setLastPick(o.id);
                       const v = {
                         thread: thread.id,
                         comment: c.id,
@@ -1050,22 +998,7 @@ export function AskBlock({
                         // Back to unanswered: focus returns to the option.
                         setRefocus(o.id);
                       };
-                      setRepick(false);
-                      answer.mutate(v, {
-                        onError: (e) => {
-                          if (
-                            answer === plain &&
-                            e instanceof ApiClientError &&
-                            e.code === "passkey_required"
-                          ) {
-                            setErr(null);
-                            setViaPasskey(true);
-                            setRepick(true);
-                            return;
-                          }
-                          failed(e);
-                        },
-                      });
+                      answer.mutate(v, { onError: failed });
                     }}
                   >
                     {letters && (
@@ -1093,27 +1026,6 @@ export function AskBlock({
                         </span>
                       )}
                     </span>
-                    {pk && !sel && (
-                      <span
-                        data-passkey-hint=""
-                        role="img"
-                        aria-label={
-                          answer.isPending && lastPick === o.id
-                            ? "Waiting for your passkey"
-                            : "Needs a passkey"
-                        }
-                        className={`ml-auto shrink-0 ${MUTED}`}
-                      >
-                        {answer.isPending && lastPick === o.id ? (
-                          <Loader2
-                            aria-hidden="true"
-                            className="size-3.5 animate-spin motion-reduce:animate-none"
-                          />
-                        ) : (
-                          <KeyRound aria-hidden="true" className="size-3.5" />
-                        )}
-                      </span>
-                    )}
                   </Button>
                   <OptionViews
                     views={views.filter((p) => p.optionId === o.id)}
@@ -1216,7 +1128,7 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && !pk && (
+          {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>
