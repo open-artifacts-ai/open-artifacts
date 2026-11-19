@@ -62,12 +62,13 @@ test("asks waiting: the Comments button is gold and counts the asks", async ({
 // may clip: every button's right edge stays inside the viewport.
 for (const [name, role] of [
   ["member (Manager, Share, bell)", "member"],
-  ["guest (Can comment)", "guest"],
+  ["guest (Can comment, bell)", "guest"],
 ] as const) {
   test(`widest case, ${name}: two rows, nothing clipped at 360px`, async ({
     page,
   }) => {
-    await page.goto(`/a/${ID}/v/115?mock=asks&widest=1&role=${role}`);
+    // The For you mock turns the bell on; asks=1 keeps the page's asks.
+    await page.goto(`/a/${ID}/v/115?mock=foryou&asks=1&widest=1&role=${role}`);
     const b = page.getByRole("button", { name: "12 asks for you" });
     await expect(b).toBeVisible();
     await expect(b).toHaveText(/^12 asks\s*$/);
@@ -75,6 +76,8 @@ for (const [name, role] of [
       page.getByRole("button", { name: /^v115, not the latest version$/ }),
     ).toBeVisible();
     const bar = page.locator(".oa-vt").first();
+    // The bell is in the bar, and measured with the rest.
+    await expect(bar.locator("[data-for-you-bell]")).toBeVisible();
     const m = await bar.evaluate((el) => {
       const rows = new Set<number>();
       let maxRight = 0;

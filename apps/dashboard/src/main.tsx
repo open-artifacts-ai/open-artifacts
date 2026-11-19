@@ -198,10 +198,15 @@ async function startMocks() {
     );
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
-      http.get("*/api/v1/me", () =>
-        HttpResponse.json({
-          ...fixtures.me,
-          user: { ...fixtures.me.user, role },
+      http.get("*/api/v1/me", async ({ request }) => {
+        // The mock's own Me (with its `inbox` when For you is on), as this role.
+        const res = await getResponse(mainHandlers, request);
+        const base = (
+          res?.ok ? await res.json() : fixtures.me
+        ) as typeof fixtures.me;
+        return HttpResponse.json({
+          ...base,
+          user: { ...base.user, role },
           // #2702: a guest is capped, so read-only, as the server says.
           ...(role === "guest"
             ? {
@@ -215,8 +220,8 @@ async function startMocks() {
             : {}),
           // #2632: the owner's name (MeSchema instanceOwner).
           instanceOwner: { name: "Bob Builder" },
-        }),
-      ),
+        });
+      }),
     );
   // ?mock=members-setup (#2632 slice 2, MemberSchema `setup`): the
   // Members list in every Setup state, as Design's screen shows it.
