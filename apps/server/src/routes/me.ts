@@ -297,12 +297,7 @@ export function mountMe(app: AppType): void {
   // the person picker. Members only: a guest, or a capped caller, gets 403.
   app.get(R.meTeammates, async (c) => {
     const user = requireUser(c);
-    if (
-      !orgCan(user, "onboarding.own", {
-        cap: capOfCaller(caller(c)),
-        read: false,
-      })
-    )
+    if (!orgCan(user, "teammates.read", { cap: capOfCaller(caller(c)) }))
       throw new ApiError("members_only", "The team list is for members");
     return c.json(await listTeammates(c.env, user.id));
   });

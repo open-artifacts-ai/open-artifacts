@@ -234,7 +234,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/onboarding": { org: "onboarding.own" },
   // #2577: the team picker and the "listens to" asked flag: members, uncapped; the flag also a browser session.
-  "GET /api/v1/me/teammates": { org: "onboarding.own" },
+  "GET /api/v1/me/teammates": { org: "teammates.read" },
   "POST /api/v1/me/onboarding/listens-asked": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },

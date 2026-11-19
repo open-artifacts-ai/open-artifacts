@@ -103,8 +103,8 @@ describe("GET R.meTeammates", () => {
     expect(m?.initials).toBe("S");
   });
 
-  it("refuses a guest (403) and anonymous (401)", async () => {
-    expect((await teammates(guest.cookie)).status).toBe(403);
+  it("refuses a guest (404, the route gate hides it) and anonymous (401)", async () => {
+    expect((await teammates(guest.cookie)).status).toBe(404);
     expect((await teammates(null)).status).toBe(401);
   });
 });
