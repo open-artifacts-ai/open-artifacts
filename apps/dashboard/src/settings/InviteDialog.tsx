@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@oa/ui/shadcn";
 import { useQueries } from "@tanstack/react-query";
+import { usePostHog } from "@posthog/react";
 import { XIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
@@ -345,6 +346,7 @@ function InviteList({
   onClose: () => void;
 }) {
   const sends = emailEnabled(me);
+  const posthog = usePostHog();
   const spaces = hasFeature(me, "spaces");
   const domains = useSignInDomains();
   const invite = useInviteMember();
@@ -444,6 +446,11 @@ function InviteList({
     const left = all.filter((v) => !done.includes(v));
     setList(left);
     if (done.length === 0) return;
+    posthog.capture("member_invited", {
+      invited_count: done.length,
+      role,
+      email_delivery_enabled: sends,
+    });
     if (left.length === 0 && done.length === 1 && last) return setSent(last);
     toast({ title: INVITE.sent(done.length), tone: "success" });
     if (left.length === 0) onClose();

@@ -8,6 +8,7 @@ packages:
 # package that has a build script (strictDepBuilds).
 allowBuilds:
   "@swc/core": false
+  core-js: set this to true or false
   core-js-pure: false
   esbuild: false
   msw: false

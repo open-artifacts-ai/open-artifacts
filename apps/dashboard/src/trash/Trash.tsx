@@ -17,6 +17,7 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { usePostHog } from "@posthog/react";
 import { useState } from "react";
 import type { TrashItem } from "../api/contract";
 import { useRestoreDeleted, useTrash } from "../api/queries";
@@ -161,6 +162,7 @@ function Row({
 export function Trash() {
   useDocumentTitle("Trash");
   const navigate = useNavigate();
+  const posthog = usePostHog();
   const { spaceId } = useSearch({ strict: false }) as { spaceId?: string };
   const { spaces, personalSpaceId, features } = useHosted();
   // Self-hosted (spaces off): one trash, no filter and no space chips.
@@ -198,6 +200,9 @@ export function Trash() {
     restore.mutateAsync(item).then(
       (a) => {
         mark(item.id, false);
+        posthog.capture("artifact_restored", {
+          restored_to_space: a.space?.kind ?? "unknown",
+        });
         // Its space may be gone: then the server puts it back in Personal.
         const to = !spacesOn
           ? null

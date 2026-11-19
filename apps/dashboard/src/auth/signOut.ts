@@ -1,4 +1,5 @@
 import { AUTH } from "@oa/shared";
+import { usePostHog } from "@posthog/react";
 import { api } from "../api/client";
 import { forgetThisBrowser } from "../foryou/push";
 import { toast } from "../layout/toast";
@@ -21,6 +22,7 @@ export function clearDisplayNameSkips() {
  * sign-out goes through here.
  */
 export function useSignOut() {
+  const posthog = usePostHog();
   const redirect = useRedirect();
   return async () => {
     // While the session still exists, so the server can delete it.
@@ -35,6 +37,7 @@ export function useSignOut() {
       });
       return;
     }
+    posthog.reset();
     clearDisplayNameSkips();
     redirect("/sign-in");
   };
