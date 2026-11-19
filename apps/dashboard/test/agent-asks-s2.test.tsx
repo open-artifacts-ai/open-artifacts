@@ -429,6 +429,15 @@ describe("First setup: one question", () => {
     ),
   ];
   const card = () => document.querySelector("section[data-first-setup]");
+  /** Yes loads the team (not before), then Continue opens the confirm. */
+  const chooseYes = async (c: HTMLElement) => {
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    const next = within(c).getByRole("button", { name: "Continue" });
+    await waitFor(() => expect(next).toBeEnabled());
+    fireEvent.click(next);
+  };
   const mountIt = (over: object = {}, people = PEOPLE) =>
     mountHosted("/", true, member, base(over, people));
 
@@ -442,14 +451,62 @@ describe("First setup: one question", () => {
       "Let teammates ask your agents about pages they work on?",
     );
     expect(c).toHaveTextContent("Your agents run on your computer.");
-    expect(c).toHaveTextContent("The 3 members of");
-    expect(c).toHaveTextContent(
+    // The team is read only once Yes is chosen.
+    expect(c).toHaveTextContent("Everyone else on");
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    expect(await within(c).findByText(/^The 3 members of/)).toHaveTextContent(
       "for 90 days. Not people who join later, and never people outside your team.",
+    );
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Only people I choose/ }),
     );
     expect(
       within(c).getByRole("radio", { name: /Only people I choose/ }),
     ).toBeChecked();
     expect(c).not.toHaveTextContent(/passkey/i);
+  });
+
+  it.each([
+    ["listensAsked true", { listensAsked: true }],
+    ["listensAsked absent (old server)", { listensAsked: undefined }],
+  ])("the Library makes no /me/teammates request: %s", async (_n, over) => {
+    const gets = calls("GET");
+    mountIt(over);
+    await waitFor(() =>
+      expect(gets.some((c) => c.path === "/api/v1/onboarding")).toBe(true),
+    );
+    await new Promise((r) => setTimeout(r, 400));
+    expect(gets.some((c) => c.path === R.meTeammates)).toBe(false);
+  });
+
+  it("no teammates request until Yes is chosen; a refused one is asked once and never again", async () => {
+    const gets = calls("GET");
+    mountHosted("/", true, member, [
+      http.get("*/api/v1/me/teammates", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "x" } },
+          { status: 404 },
+        ),
+      ),
+      ...base(),
+    ]);
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(0);
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    await waitFor(() =>
+      expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(1),
+    );
+    window.dispatchEvent(new Event("focus"));
+    await new Promise((r) => setTimeout(r, 500));
+    expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(1);
   });
 
   it.each([
@@ -465,10 +522,19 @@ describe("First setup: one question", () => {
     expect(card()).toBeNull();
   });
 
-  it("is not shown on Solo (nobody to ask)", async () => {
+  it("with nobody else on the team, Yes says so and cannot continue", async () => {
     mountIt({}, []);
-    await new Promise((r) => setTimeout(r, 400));
-    expect(card()).toBeNull();
+    const c = await waitFor(() => {
+      expect(card()).not.toBeNull();
+      return card() as HTMLElement;
+    });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    expect(
+      await within(c).findByText(/^Nobody else is on/),
+    ).toBeInTheDocument();
+    expect(within(c).getByRole("button", { name: "Continue" })).toBeDisabled();
   });
 
   it("Skip for now and Only people I choose just mark it asked", async () => {
@@ -512,10 +578,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     expect(
       await within(c).findByText("Add these 3 people?"),
     ).toBeInTheDocument();
@@ -542,10 +605,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     expect(await within(c).findByText("Add this person?")).toBeInTheDocument();
     expect(
       within(c).getByRole("button", { name: "Add 1 person" }),
@@ -564,10 +624,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     expect(
       await within(c).findByText("Add these 8 people?"),
     ).toBeInTheDocument();
@@ -607,10 +664,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     fireEvent.click(
       await within(c).findByRole("button", { name: "Add 120 people" }),
     );
@@ -635,6 +689,10 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
+    fireEvent.click(
+      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
+    );
+    await within(c).findByText(/^The one other member of/);
     expect(c).toHaveTextContent(
       /The one other member of .+ today, for 90 days\. Not people who join later/,
     );
@@ -647,10 +705,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     await within(c).findByText("Add these 3 people?");
     fireEvent.click(within(c).getByRole("checkbox", { name: /Dev Patel/ }));
     expect(within(c).getByText("Add these 2 people?")).toBeInTheDocument();
@@ -671,10 +726,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    fireEvent.click(
-      within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Continue" }));
+    await chooseYes(c);
     fireEvent.click(
       await within(c).findByRole("button", { name: "Add 120 people" }),
     );

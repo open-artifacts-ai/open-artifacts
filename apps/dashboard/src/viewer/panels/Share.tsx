@@ -303,9 +303,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   // The box shows only on a server that has the list routes; the person is
   // known (memberId) once the share is saved.
   const addListens = useAddListens();
-  const hasListens = useMyTeammates(people).isSuccess;
   const [askTick, setAskTick] = useState(false);
   const typed = parseEmail(email);
+  // Only when the tick could show: Editor picked and an address typed.
+  const hasListens = useMyTeammates(
+    people && pick === "editor" && !!typed && !typedOutside,
+  ).isSuccess;
   const showTick =
     people &&
     hasListens &&

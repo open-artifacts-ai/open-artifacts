@@ -20,9 +20,15 @@ export type MyTeammate = Teammates["members"][number];
 export const useMyTeammates = (enabled = true) =>
   useQuery({
     enabled,
-    queryKey: ["me", "teammates"],
+    // Not under ["me"]: invalidating the person would refetch it (and a refused one again and again).
+    queryKey: ["teammates"],
+    // A 403 or 404 settles to "no teammates": never retried, never refetched.
     retry: false,
-    staleTime: 60_000,
+    retryOnMount: false,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    staleTime: 10 * 60_000,
     queryFn: ({ signal }) => api.get(R.meTeammates, TeammatesSchema, signal),
   });
 

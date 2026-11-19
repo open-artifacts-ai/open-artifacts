@@ -50,13 +50,21 @@ export function FirstSetupAsk() {
   const me = state.status === "authed" ? state.me : null;
   const member = isMember(me?.user.role);
   const onboarding = useOnboarding(member);
-  const team = useMyTeammates(member);
+  const [pick, setPick] = useState<Pick>("choose");
+  // Ask for the team only when the question will show: a connected agent and an explicit false.
+  const wantsAsk =
+    member &&
+    (onboarding.data as { agentConnected?: boolean } | undefined)
+      ?.agentConnected === true &&
+    listensAskedOf(onboarding.data) === false;
+  // The team list is read only once "Yes, my colleagues" is chosen: the question shows
+  // without it, so a page load never asks the server for it.
+  const team = useMyTeammates(wantsAsk && pick === "yes");
   const asked = useMarkListensAsked();
   const add = useAddListens();
   const qc = useQueryClient();
   const added = useRef(new Set<string>());
   const off = useSetAgentRequests();
-  const [pick, setPick] = useState<Pick>("choose");
   const [step, setStep] = useState<"ask" | "confirm">("ask");
   const [skipped, setSkipped] = useState<Set<string>>(new Set());
   const [more, setMore] = useState(false);
@@ -66,12 +74,8 @@ export function FirstSetupAsk() {
   const connected =
     (onboarding.data as { agentConnected?: boolean } | undefined)
       ?.agentConnected === true;
-  // Only an explicit false asks; absent is an old server. Solo has nobody to ask.
-  const show =
-    member &&
-    connected &&
-    listensAskedOf(onboarding.data) === false &&
-    people.length > 0;
+  // Only an explicit false asks; absent is an old server.
+  const show = member && connected && listensAskedOf(onboarding.data) === false;
   if (!show) return null;
   const team_name = me?.instance.name ?? "your team";
   const chosen = people.filter((p) => !skipped.has(p.id));
@@ -242,11 +246,15 @@ export function FirstSetupAsk() {
     {
       id: "yes",
       label: FIRST_ASK.yes,
-      hint: `${
-        people.length === 1
-          ? "The one other member"
-          : `The ${people.length} members`
-      } of ${team_name} today, for ${DAYS} days. Not people who join later, and never people outside your team.`,
+      hint: !team.data
+        ? `Everyone else on ${team_name} today, for ${DAYS} days. Not people who join later, and never people outside your team.`
+        : people.length === 0
+          ? `Nobody else is on ${team_name} yet.`
+          : `${
+              people.length === 1
+                ? "The one other member"
+                : `The ${people.length} members`
+            } of ${team_name} today, for ${DAYS} days. Not people who join later, and never people outside your team.`,
     },
     { id: "choose", label: FIRST_ASK.choose, hint: FIRST_ASK.chooseHint },
     { id: "no", label: FIRST_ASK.no, hint: FIRST_ASK.noHint },
@@ -314,7 +322,11 @@ export function FirstSetupAsk() {
         >
           {FIRST_ASK.skip}
         </Button>
-        <Button size="sm" disabled={busy} onClick={() => void submitPick()}>
+        <Button
+          size="sm"
+          disabled={busy || (pick === "yes" && people.length === 0)}
+          onClick={() => void submitPick()}
+        >
           {FIRST_ASK.next}
         </Button>
       </div>

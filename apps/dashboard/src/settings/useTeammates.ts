@@ -14,7 +14,7 @@ import { isOrgAdmin } from "./spaces/access";
 
 export type Teammate = { id: string; name: string; initials?: string };
 
-export function useTeammates(): {
+export function useTeammates(enabled = true): {
   people: Teammate[];
   /** The whole team, not only people already known. */
   full: boolean;
@@ -23,8 +23,8 @@ export function useTeammates(): {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const mine = useMyTeammates();
-  const fallback = mine.isError;
+  const mine = useMyTeammates(enabled);
+  const fallback = enabled && mine.isError;
   const members = useMembers(undefined, fallback && admin);
   const history = useAskHistory(fallback && !admin);
   const listens = useListens(fallback && !admin);

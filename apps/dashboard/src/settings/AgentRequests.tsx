@@ -51,9 +51,10 @@ export function AgentRequests() {
   const save = useSetAgentRequests();
   const listens = useListens();
   const remove = useRemoveListen();
-  const team = useTeammates();
   // "Add a teammate", or "Add again" on an ended entry (prefilled).
   const [adding, setAdding] = useState<{ prefill?: ListenEntry } | null>(null);
+  // The team is read when the dialog opens, not before.
+  const team = useTeammates(adding !== null);
   const on = save.isPending ? save.variables : (sw.data?.on ?? true);
   return (
     <>
