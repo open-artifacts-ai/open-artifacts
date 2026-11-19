@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.227.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.226.0...v0.227.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** held requests to my phone, and on-your-list history ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577), migration 0051) ([#2884](https://github.com/open-artifacts-ai/open-artifacts/issues/2884)) ([00ebcdf](https://github.com/open-artifacts-ai/open-artifacts/commit/00ebcdfc0015fd6aed433f6176447f53f012597a))
+
 ## [0.226.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.225.0...v0.226.0) (2026-11-19)
 
 
