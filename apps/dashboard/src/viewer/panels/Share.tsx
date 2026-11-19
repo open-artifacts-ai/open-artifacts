@@ -594,7 +594,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <small id="oa-ask-tick-hint" className="oa-muted">
                 {askTick
                   ? `Until ${endDate(Date.now() + 30 * 24 * 3600_000)}. Change or remove it in Settings, Connections.`
-                  : `Without asking me each time, for 30 days. Your agents treat their words as a teammate's, not yours.`}
+                  : `Without asking me each time, for 30 days. My agents treat their words as a teammate's, not mine.`}
               </small>
             </div>
           )}

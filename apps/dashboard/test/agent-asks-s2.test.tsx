@@ -262,7 +262,7 @@ describe("Share: the tick box", () => {
     expect(box).not.toBeChecked();
     expect(
       screen.getByText(
-        /Without asking me each time, for 30 days\. Your agents treat their words as a teammate.s, not yours/,
+        /Without asking me each time, for 30 days\. My agents treat their words as a teammate.s, not mine/,
       ),
     ).toBeInTheDocument();
     fireEvent.click(box);
