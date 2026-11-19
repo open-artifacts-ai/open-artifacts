@@ -274,6 +274,28 @@ describe("no ask carries or needs a passkey (#2864)", () => {
       }
     });
 
+    it("untyped picks kept beside a typed decision hit the per-person cap and are refused", async () => {
+      const u = await mkUser("pk-cap");
+      const k = await ask(u);
+      expect((await answer(k, u.cookie, { optionId: "merge" })).status).toBe(
+        200,
+      );
+      let refused = 0;
+      for (let i = 0; i < 60; i++) {
+        const r = await answer(k, u.pat, {
+          optionId: i % 2 ? "merge" : "wait",
+        });
+        if (r.status !== 200) {
+          expect((await errOf(r)).code).toBe("rate_limited");
+          refused++;
+        }
+      }
+      expect(refused).toBeGreaterThan(0);
+      const c = await read(k, u.cookie);
+      expect(c.ask?.answer?.optionId).toBe("merge");
+      expect(c.ask?.answer?.yes).toBe(true);
+    });
+
     it("a token pick with no typed answer sets the answer as before (not a yes)", async () => {
       const k = await ask(alice);
       expect((await answer(k, alice.pat, { optionId: "merge" })).status).toBe(

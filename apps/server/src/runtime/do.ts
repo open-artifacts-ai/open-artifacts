@@ -2345,10 +2345,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         r.ask.answer?.by.kind === "user" &&
         r.ask.answer.by.typed === true;
       const now = this.iso();
-      // The cap is for weigh-ins: a decision is never refused by it.
+      // The cap is for weigh-ins and for untyped picks kept beside a typed decision: a decision is never refused by it.
       if (
         !unchanged &&
-        !isDecider &&
+        (!isDecider || keepTyped) &&
         a.by.kind === "user" &&
         pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
       )
