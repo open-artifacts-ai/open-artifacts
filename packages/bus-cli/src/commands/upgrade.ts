@@ -1,13 +1,23 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
+  clearPending,
   compareVersions,
   type FetchedRelease,
   fetchRelease,
+  loginActive,
   parseVersion,
   ReleaseError,
   readPolicy,
+  setPending,
   stage,
   unpackTo,
   type VerifiedRelease,
@@ -64,7 +74,7 @@ async function serverVersion(
  */
 export async function upgrade(
   ctx: Ctx,
-  opts: { version?: string },
+  opts: { version?: string; allowFailed?: boolean },
   deps: UpgradeDeps = realUpgradeDeps(ctx),
 ): Promise<number> {
   const c = ctx.copy;
@@ -84,6 +94,19 @@ export async function upgrade(
   }
   const policy = readPolicy(ctx.home);
   const running = ctx.version;
+  // Same gates as `oa-bus update`: a person at a terminal, updates on.
+  if (policy.unreadable) {
+    sayErr(ctx, c.updateOff());
+    return 1;
+  }
+  if (policy.off) {
+    sayErr(ctx, c.updateOff());
+    return 1;
+  }
+  if (ctx.stdinIsTTY !== true || ctx.stdout.isTTY !== true) {
+    sayErr(ctx, c.updateNotATerminal());
+    return 2;
+  }
   let target = opts.version;
   if (target === undefined) {
     if (parseVersion(server) === undefined) {
@@ -92,6 +115,7 @@ export async function upgrade(
     }
     target = server;
   }
+  const named = opts.version !== undefined;
   // Never ahead of the instance: it vouches for what its machines may run.
   const base = server.split(/[-+]/)[0] ?? server;
   const preRelease = parseVersion(server) === undefined;
@@ -103,10 +127,22 @@ export async function upgrade(
     sayErr(ctx, c.upgradeAhead(target, server));
     return 1;
   }
-  const isPrevious = policy.previous === target;
-  if (parseVersion(running) !== undefined) {
-    const cmp = compareVersions(target, running);
-    if (cmp === 0) {
+  // A step back only when the person names the version: a bare `upgrade`
+  // follows the instance forward, never back.
+  const isPrevious = named && policy.previous === target;
+  if (policy.failed.includes(target) && opts.allowFailed !== true) {
+    sayErr(ctx, c.upgradeFailedVersion(target));
+    return 1;
+  }
+  // A dev or pre-release build compares by its x.y.z base.
+  const runBase = running.split(/[-+]/)[0] ?? running;
+  if (parseVersion(runBase) === undefined) {
+    sayErr(ctx, c.upgradeNotForward(target, running));
+    return 1;
+  }
+  {
+    const cmp = compareVersions(target, runBase);
+    if (cmp === 0 && runBase === running) {
       say(ctx, c.upgradeCurrent(running));
       return 0;
     }
@@ -116,6 +152,15 @@ export async function upgrade(
     }
   }
 
+  if (loginActive(ctx.home)) {
+    sayErr(ctx, c.updateBusy());
+    return 1;
+  }
+  const answer = (await ctx.readLine?.(c.updatePrompt(target))) ?? "";
+  if (answer.trim().toLowerCase() !== "yes") {
+    say(ctx, c.updateDeclined());
+    return 1;
+  }
   say(ctx, c.upgradeChecking(target));
   let verified: VerifiedRelease;
   try {
@@ -149,14 +194,33 @@ export async function upgrade(
     sayErr(ctx, c.upgradeRefused(target, "bad_tar"));
     return 1;
   }
+  // A daemon prune must not take the unpacked copy before its installer runs:
+  // mark it live for this process, and check it is still whole.
+  const marker = join(dest, ".live", String(process.pid));
+  try {
+    mkdirSync(join(dest, ".live"), { recursive: true, mode: 0o700 });
+    writeFileSync(marker, "", { mode: 0o600 });
+  } catch {
+    // best effort; the check below still catches a missing copy
+  }
+  const entry = join(dest, "dist", "index.js");
+  if (!existsSync(entry)) {
+    sayErr(ctx, c.upgradeStaleStage(target));
+    return 1;
+  }
   say(ctx, c.upgradeInstalling(target));
   const args = ["install", "--instance", m.hub];
   if (!isDefaultHome(ctx.home, ctx.userHome)) args.push("--home", ctx.home);
   if (ctx.service.kind === undefined && !ctx.service.fallback)
     args.push("--no-service");
   // Never --habits or --no-habits: the person answers that question themselves.
-  const code = deps.runInstaller(join(dest, "dist", "index.js"), args);
+  // A switch under way, so a bad install steps back on its own: the daemon's
+  // self-check reads `pending`, as it does for an update it started.
+  setPending(ctx.home, { from: runBase, to: target, startedAt: ctx.now() });
+  const code = deps.runInstaller(entry, args);
+  rmSync(marker, { force: true });
   if (code !== 0) {
+    clearPending(ctx.home);
     sayErr(ctx, c.upgradeInstallFailed(target, code));
     return code;
   }

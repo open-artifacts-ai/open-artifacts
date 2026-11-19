@@ -44,7 +44,7 @@ export type Command = (
   | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "auto-update"; sub: "off" | "on" | "status" }
   | { cmd: "update" }
-  | { cmd: "upgrade"; version?: string }
+  | { cmd: "upgrade"; version?: string; allowFailed: boolean }
   | { cmd: "version" }
   | { cmd: "help" }
 ) & {
@@ -108,6 +108,7 @@ const FLAGS: Record<string, string[]> = {
   "mcp-proof": ["token-file"],
   "mcp-proxy": ["instance", "token-file", "token-env", "for"],
   namespace: ["yes"],
+  upgrade: ["allow-failed"],
 };
 
 export { main } from "./main.ts";
@@ -141,6 +142,7 @@ export function parse(argv: string[]): Command {
       "show-habits": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
+      "allow-failed": { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
       help: { type: "boolean", short: "h", default: false },
       "no-color": { type: "boolean", default: false },
@@ -270,6 +272,7 @@ type Values = {
   "show-habits": boolean;
   json: boolean;
   purge: boolean;
+  "allow-failed": boolean;
 };
 
 function route(cmd: string, values: Values, positionals: string[]) {
@@ -327,7 +330,11 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "auto-update":
       return { cmd, sub: positionals[0] as "off" | "on" | "status" };
     case "upgrade":
-      return { cmd, ...(positionals[0] ? { version: positionals[0] } : {}) };
+      return {
+        cmd,
+        allowFailed: values["allow-failed"],
+        ...(positionals[0] ? { version: positionals[0] } : {}),
+      };
     case "link":
     case "unlink": {
       if (cmd === "link" && positionals[0] === "list")

@@ -174,7 +174,10 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
     case "update":
       return update(ctx, (v) => installViaDaemon(ctx, v));
     case "upgrade":
-      return upgrade(ctx, { ...(cmd.version ? { version: cmd.version } : {}) });
+      return upgrade(ctx, {
+        allowFailed: cmd.allowFailed,
+        ...(cmd.version ? { version: cmd.version } : {}),
+      });
     case "link":
       return link(cmd, ctx);
     case "version":

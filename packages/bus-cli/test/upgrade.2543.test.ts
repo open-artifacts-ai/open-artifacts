@@ -10,7 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { verifyRelease, writeState } from "@oa/bus-daemon";
+import {
+  markFailed,
+  readPolicy,
+  setOff,
+  verifyRelease,
+  writeState,
+} from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
 import {
   GOLDEN_NOW,
@@ -19,6 +25,7 @@ import {
 } from "../../bus-daemon/test/update-helpers.ts";
 import { installedForm } from "../src/bus-cmd.ts";
 import { type UpgradeDeps, upgrade } from "../src/commands/upgrade.ts";
+import type { Ctx } from "../src/context.ts";
 import { copy } from "../src/copy.ts";
 import { parse } from "../src/index.ts";
 import { type Fake, fakeCtx, TAGS } from "./fake.ts";
@@ -27,8 +34,21 @@ const HUB = "https://artifacts.example.com";
 const TOKEN = `oa_machine_${"a".repeat(32)}`;
 
 /** A machine approved on HUB, whose instance says it runs `server`. */
-function world(server: string, running = "0.185.0") {
-  const ctx = fakeCtx({ version: running });
+function world(
+  server: string,
+  running = "0.185.0",
+  over: Partial<Ctx> = {},
+  tty = true,
+) {
+  const ctx = fakeCtx(
+    {
+      version: running,
+      stdinIsTTY: tty,
+      readLine: async () => "yes",
+      ...over,
+    },
+    tty,
+  );
   mkdirSync(ctx.home, { recursive: true, mode: 0o700 });
   chmodSync(ctx.home, 0o700);
   const f = join(ctx.home, "machine.json");
@@ -286,5 +306,119 @@ describe("no npx advice to install or update (#2543)", () => {
       `${join(c.home, "bin", "node")} ${join(c.home, "bin", "dist", "index.js")}`,
     );
     expect(readdirSync(join(c.home, "bin"))).toContain("node");
+  });
+});
+
+describe("oa-bus upgrade: the same gates as update (#2543 review)", () => {
+  it("updates off: refuses, fetches nothing, runs no installer", async () => {
+    const c = world(GOLDEN_VERSION);
+    setOff(c.home, true);
+    const { d, ran, fetched } = deps();
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(fetched).toEqual([]);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("Auto-update is off");
+  });
+
+  it("a failed version refuses unless --allow-failed", async () => {
+    const c = world(GOLDEN_VERSION);
+    markFailed(c.home, GOLDEN_VERSION);
+    const { d, ran } = deps();
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("failed on this machine before");
+    expect(await upgrade(c, { allowFailed: true }, d)).toBe(0);
+    expect(ran.length).toBe(1);
+  });
+
+  it("no terminal: refuses and runs no installer", async () => {
+    const c = world(GOLDEN_VERSION, "0.185.0", {}, false);
+    const { d, ran, fetched } = deps();
+    expect(await upgrade(c, {}, d)).toBe(2);
+    expect(fetched).toEqual([]);
+    expect(ran).toEqual([]);
+  });
+
+  it("anything but a typed yes declines", async () => {
+    const c = world(GOLDEN_VERSION, "0.185.0", { readLine: async () => "no" });
+    const { d, ran } = deps();
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("Nothing was installed.");
+  });
+
+  it("a login in progress refuses", async () => {
+    const c = world(GOLDEN_VERSION);
+    writeFileSync(
+      join(c.home, "login.active"),
+      `${process.pid} ${Date.now()}\n`,
+    );
+    const { d, ran } = deps();
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("login or an approval is in progress");
+  });
+
+  it("a bare upgrade never steps back to the previous, a named one may", async () => {
+    const c = world("0.185.0", "0.186.0");
+    writeState(c.home, {
+      armed: true,
+      current: "0.186.0",
+      previous: "0.185.0",
+    });
+    const r = deps();
+    expect(await upgrade(c, {}, r.d)).toBe(1);
+    expect(r.fetched).toEqual([]);
+    await upgrade(c, { version: "0.185.0" }, r.d);
+    expect(r.fetched).toEqual(["0.185.0"]);
+  });
+
+  it("a dev build is compared by its base: no step back to 0.100.0", async () => {
+    const c = world("0.190.0", "0.190.0-dev");
+    const r = deps();
+    expect(await upgrade(c, { version: "0.100.0" }, r.d)).toBe(1);
+    expect(r.fetched).toEqual([]);
+    expect(text(c)).toContain("older than this bus");
+  });
+
+  it("a hand upgrade leaves a pending record while the installer runs, so it steps back", async () => {
+    const c = world(GOLDEN_VERSION);
+    let during: unknown;
+    const { d } = deps({
+      runInstaller: () => {
+        during = readPolicy(c.home).pending;
+        return 0;
+      },
+    });
+    expect(await upgrade(c, {}, d)).toBe(0);
+    expect(during).toMatchObject({ from: "0.185.0", to: GOLDEN_VERSION });
+  });
+
+  it("an installer that fails is reported, clears pending and keeps the current version", async () => {
+    const c = world(GOLDEN_VERSION);
+    writeState(c.home, { armed: true, current: "0.185.0" });
+    const { d } = deps({ runInstaller: () => 3 });
+    expect(await upgrade(c, {}, d)).toBe(3);
+    expect(text(c)).toContain("3");
+    const p = readPolicy(c.home);
+    expect(p.pending).toBeUndefined();
+    expect(p.current).toBe("0.185.0");
+  });
+
+  it("a bad tar or a release with no dist refuses and runs no installer", async () => {
+    const c = world(GOLDEN_VERSION);
+    const { d, ran } = deps({
+      verifyRelease: (r) =>
+        ({
+          version: r.version,
+          sha512: "",
+          commit: "",
+          entries: [],
+          packageJson: {},
+        }) as never,
+    });
+    expect(await upgrade(c, {}, d)).toBe(1);
+    expect(ran).toEqual([]);
+    expect(text(c)).toContain("bad_tar");
   });
 });

@@ -1158,7 +1158,11 @@ export function copy(
     updateDeclined: () => "Nothing was installed.",
     updateDone: (v: string) => `Installed ${v}.`,
     // `upgrade` (#2543): a hand upgrade through the installed bus. New strings, for Product.
-    upgradeUsage: () => `usage: ${bus} upgrade [x.y.z]`,
+    upgradeUsage: () => `usage: ${bus} upgrade [x.y.z] [--allow-failed]`,
+    upgradeFailedVersion: (v: string) =>
+      `${v} failed on this machine before. To try it anyway, run ${bus} upgrade ${v} --allow-failed.`,
+    upgradeStaleStage: (v: string) =>
+      `The unpacked ${v} went missing before it could install. Nothing was installed; run ${bus} upgrade again.`,
     upgradeNotInstalled: () =>
       'There is no bus on this machine to upgrade. Run the "Install the bus" step of your instance\'s llms.txt.',
     upgradeNoServerVersion: () =>
