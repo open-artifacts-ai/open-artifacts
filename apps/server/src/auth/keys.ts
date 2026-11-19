@@ -27,6 +27,8 @@ const KEY_OWNERS = {
   "oa:share-optout": "session",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state": "session",
+  // #2879: the anonymous per-member id sent to PostHog (analytics.ts).
+  "oa:analytics-member": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token
   // and an upload signature can never verify as each other.
   "oa:content-url": "content",

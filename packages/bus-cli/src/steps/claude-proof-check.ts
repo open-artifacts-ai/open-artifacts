@@ -1,11 +1,13 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { listInstances } from "@oa/bus-daemon";
 import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, tilde } from "../context.ts";
 import { originOf } from "../machine.ts";
 import {
   claudeConfigFile,
   type EntryState,
+  type InstanceTarget,
   proofReport,
   readRecord,
 } from "./claude-proof.ts";
@@ -55,7 +57,11 @@ const where = (ctx: Ctx, e: Pick<EntryState, "scope" | "project">) =>
  * No line shows a command that edits a repo's `.mcp.json`, and an entry's
  * name (a repo can choose it) appears only in prose.
  */
-export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
+export function claudeProofChecks(
+  ctx: Ctx,
+  hub: string,
+  instance?: InstanceTarget,
+): ProofCheck[] {
   const origin = originOf(hub);
   let host: string;
   try {
@@ -63,6 +69,9 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
   } catch {
     return [];
   }
+  const cc = instance
+    ? `Claude Code (${safeText(instance.name, 32)}):`
+    : "Claude Code:";
   const rec = readRecord(join(ctx.home, "install.json"));
   // The file install used, which is the one the daemon edits.
   const file = rec.config ?? claudeConfigFile(ctx.userHome, ctx.env);
@@ -70,6 +79,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
     projectFile: join(ctx.cwd, ".mcp.json"),
     cwd: ctx.cwd,
     recorded: rec.proofs,
+    ...(instance ? { instance } : {}),
     ...(isDefaultHome(ctx.home, ctx.userHome) ? {} : { busHome: ctx.home }),
   });
   const out: ProofCheck[] = [];
@@ -81,14 +91,14 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
         e.state === "helper" && e.trusted !== false
           ? {
               level: "pass",
-              lines: [`Claude Code: ${at} has the helper.`],
+              lines: [`${cc} ${at} has the helper.`],
             }
           : {
               level: "warn",
               lines: [
                 e.state === "helper"
-                  ? `Claude Code: ${at} has the helper, but Claude doesn't trust this folder yet, so it won't run it.`
-                  : `Claude Code: ${at} is not set up by the bus; it links only if it has our helper and the folder is trusted.`,
+                  ? `${cc} ${at} has the helper, but Claude doesn't trust this folder yet, so it won't run it.`
+                  : `${cc} ${at} is not set up by the bus; it links only if it has our helper and the folder is trusted.`,
                 e.state === "helper"
                   ? "  Open Claude Code in this folder and accept the trust prompt."
                   : `  Re-add it at user scope with Claude Code, then ${install}.`,
@@ -103,28 +113,36 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
           ? {
               level: "warn",
               lines: [
-                `Claude Code: ${at} has the helper, but Claude doesn't trust that folder yet, so it won't run it.`,
+                `${cc} ${at} has the helper, but Claude doesn't trust that folder yet, so it won't run it.`,
                 "  Open Claude Code in that folder and accept the trust prompt.",
               ],
             }
           : {
               level: "pass",
-              lines: [`Claude Code: ${at} shows as this session on pages.`],
+              lines: [`${cc} ${at} shows as this session on pages.`],
             },
       );
     else if (e.state === "other-bus")
       out.push({
         level: "warn",
         lines: [
-          `Claude Code: ${at} has the helper of another bus (${e.owner === undefined ? "the default home" : safeText(tilde(ctx, e.owner), 120)}), so this bus left it alone.`,
+          `${cc} ${at} has the helper of another bus (${e.owner === undefined ? "the default home" : safeText(tilde(ctx, e.owner), 120)}), so this bus left it alone.`,
           "  An entry links one bus; use another entry for this one.",
+        ],
+      });
+    else if (e.state === "other-instance")
+      out.push({
+        level: "fail",
+        lines: [
+          `${cc} ${at} has a helper for another instance, so its calls can't be tied to this session.`,
+          `  Fix: ${install}`,
         ],
       });
     else if (e.state === "unrecorded")
       out.push({
         level: "warn",
         lines: [
-          `Claude Code: ${at} has the helper, but was set up by another bus or an older install.`,
+          `${cc} ${at} has the helper, but was set up by another bus or an older install.`,
           `  Fix: ${install} to adopt it`,
         ],
       });
@@ -132,7 +150,7 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
       out.push({
         level: "fail",
         lines: [
-          `Claude Code: ${at} has no session helper, so what it posts can't be tied to this session.`,
+          `${cc} ${at} has no session helper, so what it posts can't be tied to this session.`,
           `  Fix: ${install}`,
         ],
       });
@@ -140,13 +158,14 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
       out.push({
         level: "fail",
         lines: [
-          `Claude Code: ${at} has a headersHelper that is not oa-bus's, so oa-bus left it alone.`,
+          `${cc} ${at} has a headersHelper that is not oa-bus's, so oa-bus left it alone.`,
           `  Fix: remove that headersHelper from the entry in ${tilde(ctx, file)}, then ${install}`,
         ],
       });
   }
   // Existing installs: nothing was recorded, so the daemon has no file to keep linked.
   if (
+    !instance &&
     rec.config === undefined &&
     wiredTo(ctx) &&
     r.entries.some((e) => e.scope !== "project")
@@ -158,11 +177,11 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
         `  Fix: ${install} once to turn it on`,
       ],
     });
-  if (r.symlink)
+  if (r.symlink && !instance)
     out.push({
       level: "warn",
       lines: [
-        `Claude Code: ${tilde(ctx, file)} is a symlink, so the daemon doesn't edit it on its own.`,
+        `${cc} ${tilde(ctx, file)} is a symlink, so the daemon doesn't edit it on its own.`,
         `  Fix: ${install} to link its entries`,
       ],
     });
@@ -171,17 +190,28 @@ export function claudeProofChecks(ctx: Ctx, hub: string): ProofCheck[] {
       level: "info",
       lines: [
         `No Claude Code entry for ${host}.`,
-        "   Agents using a connector or another client aren't checked.",
+        instance
+          ? `   To connect it: claude mcp add --transport http open-artifacts-${safeText(instance.name, 32)} ${safeUrl(`${instance.hub}/mcp`)}, then run ${ctx.busCmd} install`
+          : "   Agents using a connector or another client aren't checked.",
       ],
     });
   for (const e of r.elsewhere)
     out.push({
       level: "warn",
       lines: [
-        `Claude Code: the ${safeText(e.name)} entry (${e.scope} scope) points at ${safeUrl(e.url)}, not ${origin}/mcp, so it can't be linked.`,
+        `${cc} the ${safeText(e.name)} entry (${e.scope} scope) points at ${safeUrl(e.url)}, not ${safeUrl(`${instance ? instance.hub : origin}/mcp`)}, so it can't be linked.`,
       ],
     });
   return out;
+}
+
+/** #2793 S4: the same checks for each added instance's entries. Nothing for a home with only main. */
+export function instanceProofChecks(ctx: Ctx): ProofCheck[] {
+  return listInstances(ctx.home)
+    .filter((i) => !i.main && i.hub !== "")
+    .flatMap((i) =>
+      claudeProofChecks(ctx, i.hub, { name: i.name, hub: i.hub }),
+    );
 }
 
 /** What the daemon's last automatic re-apply changed, from the event log, when it ran in the last 7 days. */

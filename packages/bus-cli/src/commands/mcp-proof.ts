@@ -3,7 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, readlinkSync } from "node:fs";
 import { basename, join } from "node:path";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
-import { createEventLog } from "@oa/bus-daemon";
+import { createEventLog, MAIN_INSTANCE, nameProblem } from "@oa/bus-daemon";
 import { daemonLinkProof, systemTool } from "@oa/bus-ipc";
 import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
@@ -17,7 +17,7 @@ export type ProofDeps = {
   /** A process's parent and executable name; null when it cannot be read. */
   proc: (pid: number) => { ppid: number; name: string } | null;
   /** Tells the daemon; true when a live Claude record took the hash. */
-  link: (pid: number, hash: string) => Promise<boolean>;
+  link: (pid: number, hash: string, instance?: string) => Promise<boolean>;
   /** 32 random bytes. */
   random: () => Buffer;
   /** The helper's own parent: the shell, or Claude itself. */
@@ -97,12 +97,17 @@ function tokenOf(file: string | undefined): string | undefined {
  * (#2688), so doctor can say why a session is unlinked. No secret goes in it.
  */
 export async function mcpProof(
-  opts: { tokenFile?: string },
+  opts: { tokenFile?: string; instance?: string },
   ctx: Ctx,
   deps: ProofDeps = {
     proc: readProc,
-    link: (pid, hash) =>
-      daemonLinkProof({ path: daemonSocketPath(ctx.home), pid, hash }),
+    link: (pid, hash, instance) =>
+      daemonLinkProof({
+        path: daemonSocketPath(ctx.home),
+        pid,
+        hash,
+        ...(instance === undefined ? {} : { instance }),
+      }),
     random: () => randomBytes(32),
     ppid: process.ppid,
   },
@@ -111,30 +116,58 @@ export async function mcpProof(
   const token = tokenOf(opts.tokenFile);
   if (token) headers.Authorization = `Bearer ${token}`;
   let why: string | undefined;
+  let detail: string | undefined;
   let claude: number | undefined;
-  try {
-    claude = findClaude(deps.ppid, deps.proc);
-    if (claude === undefined) why = "no_claude_ancestor";
-  } catch {
-    why = "process_table_error";
-  }
+  // #2793 S4: the proof is for one instance. No flag means main, and then the
+  // daemon is told nothing new. A name that is not one is never turned into main.
+  const instance =
+    opts.instance === undefined || opts.instance === MAIN_INSTANCE
+      ? undefined
+      : opts.instance;
+  const badInstance =
+    instance !== undefined && nameProblem(instance) !== undefined;
+  if (badInstance) why = "bad_instance";
+  else
+    try {
+      claude = findClaude(deps.ppid, deps.proc);
+      if (claude === undefined) why = "no_claude_ancestor";
+    } catch {
+      why = "process_table_error";
+    }
   if (claude !== undefined)
     try {
       const proof = deps.random().toString("base64url");
       const hash = createHash("sha256").update(proof).digest("hex");
       // The daemon answers false only for a pid it could not match to a live
       // record by start time (it holds a proof that has no record yet).
-      if (await deps.link(claude, hash)) headers[LINK_PROOF_HEADER] = proof;
+      if (
+        await (instance === undefined
+          ? deps.link(claude, hash)
+          : deps.link(claude, hash, instance))
+      )
+        headers[LINK_PROOF_HEADER] = proof;
       else why = "process_not_matched";
-    } catch {
+    } catch (e) {
       why = "daemon_unreachable";
+      // The class only (never a message or a path): why the daemon was not reached.
+      const code = (e as { code?: unknown })?.code;
+      const msg = e instanceof Error ? e.message : "";
+      detail =
+        code === "ENOENT" || code === "ECONNREFUSED"
+          ? code
+          : /did not answer|time/i.test(msg)
+            ? "timeout"
+            : "other";
     }
   // Claude's connect comes first: the headers go out before the log is touched.
   say(ctx, JSON.stringify(headers));
   if (why !== undefined)
     try {
       const events = createEventLog(join(ctx.home, "logs", "events.log"));
-      events(UNBOUND_EVENT, { reason: why });
+      events(UNBOUND_EVENT, {
+        reason: why,
+        ...(detail !== undefined ? { code: detail } : {}),
+      });
       // Bounded: a slow disk never holds the helper up.
       await Promise.race([
         events.flush(),

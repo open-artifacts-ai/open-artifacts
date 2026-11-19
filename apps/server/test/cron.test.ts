@@ -114,6 +114,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // expirePending (P3 T12 directory confirm)
       "fulfilled", // sweepAuditEvents (400-day audit retention)
       "fulfilled", // sendSetupReminders (#2632)
+      "fulfilled", // backfillActivation (#2879)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
       "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);

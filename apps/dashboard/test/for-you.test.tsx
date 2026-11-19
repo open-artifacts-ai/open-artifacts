@@ -628,7 +628,16 @@ describe("an ask opened in the panel", () => {
   });
 
   it("a pick an old server refuses with passkey_required is a plain error, with no passkey flow (#2864)", async () => {
-    const { card } = await openAsk("Ship the changelog?");
+    const { card, ids } = await openAsk("Ship the changelog?");
+    // The shared mock no longer refuses (#2885): stand in for an old server.
+    server.use(
+      http.post(`*${R.commentAnswer(LANDING, ids.thread, ids.comment)}`, () =>
+        HttpResponse.json(
+          { error: { code: "passkey_required", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
     fireEvent.click(within(card).getByRole("button", { name: /Ship it/ }));
     expect(await within(card).findByRole("alert")).toHaveTextContent(
       "Couldn't send your answer. Reload the page and try again.",

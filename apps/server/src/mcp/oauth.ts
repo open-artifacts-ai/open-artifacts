@@ -48,7 +48,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../services/agent-usage.js";
-import { noteInstanceFirst } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
@@ -199,8 +199,8 @@ async function apiFetch(
           logError("grant_touch_failed", e),
         ),
       );
-      // #2479: an agent connected (first time on the instance; a no-op unless analytics is on).
-      await noteInstanceFirst(env, "agent_connected", ctx);
+      // #2479: an agent connected (first time for this member; a no-op unless analytics is on).
+      await noteMemberFirst(env, user.id, "agent_connected", ctx);
     }
     return res;
   }
