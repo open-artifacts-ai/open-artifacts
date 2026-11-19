@@ -749,6 +749,31 @@ describe("codex code-mode attestation (C27)", () => {
     expect(check.attestNow(codeHello())).toEqual(ok);
   });
 
+  it("follows a resumed rollout in the same host without replaying its first send", () => {
+    const { home, rollout } = cmHome();
+    const check = codexAttestor({ home, ...fakeProcs() });
+    expect(check.attestNow(codeHello())).toEqual(ok);
+
+    const resumed = rollout.replace(".jsonl", "_resumed.jsonl");
+    writeFileSync(
+      resumed,
+      cmMeta() + turnEv("task_started") + exec("ctc_new", "call_new"),
+    );
+    const db = new DatabaseSync(join(home, "state_5.sqlite"));
+    try {
+      db.prepare("UPDATE threads SET rollout_path = ? WHERE id = ?").run(
+        resumed,
+        CM_THREAD,
+      );
+    } finally {
+      db.close();
+    }
+    const send = codeHello({ call_id: EXEC2, item_id: "ctc_new" });
+    expect(check.attestNow(send)).toEqual(ok);
+    expect(check.attestNow(send)).toEqual(no);
+    expect(check.attestNow(codeHello())).toEqual(no);
+  });
+
   it("refuses a second Open Artifacts bus call from the same exec, telling the agent to use its own", async () => {
     const { home, rollout } = cmHome();
     const check = codexAttestor({ home, ...fakeProcs() });
