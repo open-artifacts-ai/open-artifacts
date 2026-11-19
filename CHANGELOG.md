@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.223.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.222.0...v0.223.0) (2026-11-19)
+
+
+### Features
+
+* **asks:** no passkey on any ask for now ([#2864](https://github.com/open-artifacts-ai/open-artifacts/issues/2864)) ([#2885](https://github.com/open-artifacts-ai/open-artifacts/issues/2885)) ([bfe3be2](https://github.com/open-artifacts-ai/open-artifacts/commit/bfe3be2c74937a13aecb2caaf8c401c1d7cc9bca))
+* **bus:** join the multi-instance slices, status and docs ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S6) ([#2844](https://github.com/open-artifacts-ai/open-artifacts/issues/2844)) ([106fd2a](https://github.com/open-artifacts-ai/open-artifacts/commit/106fd2a8dab76c66586cc35ecc12f31474e86303))
+* **bus:** upgrade by hand through the installed bus's proof check ([#2543](https://github.com/open-artifacts-ai/open-artifacts/issues/2543)) ([#2678](https://github.com/open-artifacts-ai/open-artifacts/issues/2678)) ([a006193](https://github.com/open-artifacts-ai/open-artifacts/commit/a00619329726ad941864507df79647c53b0817cb))
+
 ## [0.222.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.221.0...v0.222.0) (2026-11-19)
 
 
