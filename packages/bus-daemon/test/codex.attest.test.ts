@@ -749,16 +749,9 @@ describe("codex code-mode attestation (C27)", () => {
     expect(check.attestNow(codeHello())).toEqual(ok);
   });
 
-  it("follows a resumed rollout in the same host without replaying its first send", () => {
-    const { home, rollout } = cmHome();
-    const check = codexAttestor({ home, ...fakeProcs() });
-    expect(check.attestNow(codeHello())).toEqual(ok);
-
+  function rotateRollout(home: string, rollout: string) {
     const resumed = rollout.replace(".jsonl", "_resumed.jsonl");
-    writeFileSync(
-      resumed,
-      cmMeta() + turnEv("task_started") + exec("ctc_new", "call_new"),
-    );
+    writeFileSync(resumed, CODE_MODE + exec("ctc_new", "call_new"));
     const db = new DatabaseSync(join(home, "state_5.sqlite"));
     try {
       db.prepare("UPDATE threads SET rollout_path = ? WHERE id = ?").run(
@@ -768,10 +761,44 @@ describe("codex code-mode attestation (C27)", () => {
     } finally {
       db.close();
     }
+  }
+
+  it("follows a resumed rollout in the same host without replaying its first send", () => {
+    const { home, rollout } = cmHome();
+    const check = codexAttestor({ home, ...fakeProcs() });
+    expect(check.attestNow(codeHello())).toEqual(ok);
+
+    rotateRollout(home, rollout);
     const send = codeHello({ call_id: EXEC2, item_id: "ctc_new" });
     expect(check.attestNow(send)).toEqual(ok);
     expect(check.attestNow(send)).toEqual(no);
     expect(check.attestNow(codeHello())).toEqual(no);
+    expect(
+      check.attestNow(
+        codeHello({ call_id: "exec-45b07873-5013-45d2-ac6e-24bff618a48f" }),
+      ),
+    ).toEqual(once);
+  });
+
+  it("rejects a pending retry on the old transcript after a rotation reprove", async () => {
+    const { home, rollout } = cmHome();
+    let wake!: () => void;
+    const sleeping = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    const check = codexAttestor({
+      home,
+      ...fakeProcs({ retryMs: 1, sleep: () => sleeping }),
+    });
+    const pending = check.attest(codeHello({ item_id: "ctc_late" }));
+    rotateRollout(home, rollout);
+    expect(
+      check.attestNow(codeHello({ call_id: EXEC2, item_id: "ctc_new" })),
+    ).toEqual(ok);
+    // The old pending call becomes visible on the retired transcript only.
+    appendFileSync(rollout, exec("ctc_late", "call_late"));
+    wake();
+    expect(await pending).toEqual(no);
   });
 
   it("refuses a second Open Artifacts bus call from the same exec, telling the agent to use its own", async () => {
