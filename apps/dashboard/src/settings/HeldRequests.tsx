@@ -12,9 +12,9 @@ import { AppLink } from "../library/AppLink";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 
-export const PHONE_OFF = "Off: they wait in your inbox.";
+export const PHONE_OFF = "Off: they wait in For you.";
 export const PHONE_ON =
-  "On: a held request also sends a notification to your phone. It waits in your inbox too.";
+  "On: you also get a notification on your phone. They still wait in For you.";
 const NOTIFICATIONS = "/settings/notifications";
 
 export function HeldRequests() {

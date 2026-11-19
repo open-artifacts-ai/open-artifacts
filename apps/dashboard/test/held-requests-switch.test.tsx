@@ -60,9 +60,7 @@ describe("Held requests", () => {
     const sw = await open(KEY);
     await waitFor(() => expect(sw).toBeEnabled());
     expect(sw).toHaveAttribute("aria-checked", "false");
-    expect(
-      screen.getByText("Off: they wait in your inbox."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Off: they wait in For you.")).toBeInTheDocument();
     expect(
       screen.getByRole("heading", { name: "Held requests" }),
     ).toBeInTheDocument();
@@ -74,7 +72,7 @@ describe("Held requests", () => {
     );
     expect(
       await screen.findByText(
-        /^On: a held request also sends a notification to your phone\./,
+        /^On: you also get a notification on your phone\. They still wait in For you\./,
       ),
     ).toBeInTheDocument();
     expect(sw).toHaveAttribute("aria-checked", "true");
