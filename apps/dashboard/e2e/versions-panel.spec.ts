@@ -40,7 +40,7 @@ const settle = (page: Page) =>
   page.waitForFunction(() =>
     document.getAnimations().every((x) => x.playState !== "running"),
   );
-const chip = (page: Page) => page.getByRole("button", { name: /^Version: v/ });
+const chip = (page: Page) => page.getByRole("button", { name: /^Version[: ]/ });
 const list = (page: Page) => page.getByRole("list", { name: "Versions" });
 const search = (page: Page) =>
   page.getByRole("searchbox", { name: "Search versions" });
@@ -97,7 +97,7 @@ for (const scheme of ["light"] as const)
           row.getByRole("button", { name: "Restore" }),
         ).toBeVisible();
         await expect(chip(page)).toHaveAccessibleName(
-          /^Version: v21 · Jan 22(, 2026)?$/,
+          /^(Version: v21 · Jan 22(, 2026)?|Version v21, not the latest)$/,
         );
         if (width < 600)
           for (const b of await row.getByRole("button").all())

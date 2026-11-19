@@ -494,3 +494,83 @@ describe("wide windows are unchanged (#2486)", () => {
     expect(topPill()).toBeTruthy();
   });
 });
+
+describe("the phone page bar (#2622)", () => {
+  beforeEach(() => viewport(360));
+  const serve = (threads: unknown[]) =>
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads,
+          open: threads.length,
+          truncated: false,
+        }),
+      ),
+    );
+  const second = {
+    ...askThread,
+    id: "t-ask2",
+    comments: [{ ...askThread.comments[0], id: "c-ask2" }],
+  };
+
+  it("one ask: the Comments button turns gold and says '1 ask'; it is named '1 ask for you'", async () => {
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: "1 ask for you" });
+    expect(b).toHaveTextContent("1 ask");
+    expect(b).not.toHaveTextContent("Comments");
+    expect(b.className).toMatch(/oa-warning/);
+    expect(b).toHaveAttribute("data-asks-for-you");
+    // The separate pill is gone on a phone, and so is the idle line.
+    expect(document.querySelectorAll("[data-asks-for-you]")).toHaveLength(1);
+    expect(screen.queryByText("No asks for you")).toBeNull();
+  });
+
+  it("two asks: '2 asks', named '2 asks for you'; tapping it opens the first ask", async () => {
+    serve([askThread, second]);
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: "2 asks for you" });
+    expect(b).toHaveTextContent("2 asks");
+    fireEvent.click(b);
+    await waitFor(() =>
+      expect(document.querySelector('[data-thread="t-ask"]')).not.toBeNull(),
+    );
+  });
+
+  it("no ask waiting: the plain Comments button, no gold, no idle line", async () => {
+    serve([]);
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: /^Comments/ });
+    expect(b.className).not.toMatch(/bg-\[var\(--oa-warning\)\]/);
+    expect(screen.queryByText("No asks for you")).toBeNull();
+    expect(document.querySelector("[data-asks-for-you]")).toBeNull();
+  });
+
+  it("has a back arrow, and the path row (Open Artifacts / Library / title) is hidden", async () => {
+    mount(viewerPath(OWNED));
+    expect(
+      await screen.findByRole("button", { name: "Back" }),
+    ).toBeInTheDocument();
+    const crumbs = document.querySelector('nav[aria-label="Breadcrumb"]');
+    expect(crumbs?.closest("header")?.className).toMatch(
+      /max-\[600px\]:hidden/,
+    );
+  });
+
+  it("an older version reads 'v1' and is named 'Version v1, not the latest' (the name holds the visible text)", async () => {
+    mount(`${viewerPath(OWNED)}/v/1`);
+    const chip = await screen.findByRole("button", {
+      name: /^Version v\d+, not the latest$/,
+    });
+    expect(chip).toHaveTextContent(/^v1/);
+  });
+});
+
+describe("wide bars keep the pill and drop only the idle line (#2622)", () => {
+  beforeEach(() => viewport(1200));
+  it("no back arrow; the asks pill stays", async () => {
+    mount(viewerPath(OWNED));
+    await waitFor(() => expect(topPill()).toBeTruthy());
+    expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+    expect(screen.queryByText("No asks for you")).toBeNull();
+  });
+});

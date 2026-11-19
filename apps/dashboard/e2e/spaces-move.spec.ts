@@ -28,7 +28,7 @@ const axeRun = async (page: Page): Promise<string[]> => {
 /** Opens the side panel on Details without a reload (a reload resets the mock). */
 const openDetails = async (page: Page, width: number) => {
   if (width > 600)
-    await page.getByRole("button", { name: /^Version: / }).click();
+    await page.getByRole("button", { name: /^Version[: ]/ }).click();
   else {
     await page.getByRole("button", { name: "More actions" }).click();
     await page.getByRole("menuitem", { name: "Versions" }).click();
