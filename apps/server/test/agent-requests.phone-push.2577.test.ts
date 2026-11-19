@@ -173,6 +173,10 @@ describe("a held request and the phone", () => {
       excerpt: HELD_EXCERPT,
     };
     for (const detail of [false, true])
+      expect(
+        JSON.stringify(pushPayload([row], detail, "Open Artifacts")),
+      ).not.toMatch(/Dev|Claude|words/);
+    for (const detail of [false, true])
       expect(pushPayload([row], detail, "Open Artifacts").body).toBe(
         DEFAULT_HELD_BODY,
       );

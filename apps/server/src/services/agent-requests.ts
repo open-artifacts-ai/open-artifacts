@@ -604,16 +604,6 @@ async function recordHoldsOnce(
         ).run();
         // Browser push only for a member who turned it on; otherwise the inbox alone. Never the words.
         if (await phonePushOn(env, owner)) {
-          const u = await stmt(
-            env.DB,
-            "select name, display_name as displayName, email from users where id = ?1",
-          )
-            .bind(senderId)
-            .first<{
-              name: string | null;
-              displayName: string | null;
-              email: string;
-            }>();
           await queuePush(
             env,
             [owner],
@@ -622,7 +612,8 @@ async function recordHoldsOnce(
               kind: "ask",
               artifactId,
               threadId: "",
-              askerName: u ? personName(u) : "Someone",
+              // No name: a held request's push carries neither the words nor the sender.
+              askerName: "Someone",
               excerpt: HELD_EXCERPT,
             },
             now,
@@ -1333,6 +1324,44 @@ export async function addListens(
   return {
     entries: entryIds.flatMap((e) => all.filter((x) => x.id === e)),
   };
+}
+
+/** One delivery that went straight to a listed sender's receiver (ids and a time, no words). */
+export type ListedDelivery = {
+  agentKey: string;
+  senderId: string;
+  artifactId: string;
+  commentId: string;
+  at: number;
+};
+
+/** The receiver's listed deliveries since `since` (ms), newest first, at most `limit`. */
+export async function listedDeliveries(
+  env: Env,
+  receiverId: string,
+  since: number,
+  limit = 500,
+): Promise<ListedDelivery[]> {
+  const { results } = await stmt(
+    env.DB,
+    `select agent_key, sender_id, artifact_id, comment_id, created_at from listed_deliveries
+      where receiver_id = ?1 and created_at >= ?2 order by created_at desc, id limit ?3`,
+  )
+    .bind(receiverId, since, limit)
+    .all<{
+      agent_key: string;
+      sender_id: string;
+      artifact_id: string;
+      comment_id: string;
+      created_at: number;
+    }>();
+  return results.map((r) => ({
+    agentKey: r.agent_key,
+    senderId: r.sender_id,
+    artifactId: r.artifact_id,
+    commentId: r.comment_id,
+    at: r.created_at,
+  }));
 }
 
 /** The window "Who asked what" covers. */

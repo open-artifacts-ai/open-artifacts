@@ -13,6 +13,7 @@ import type { Env } from "../src/env.js";
 import {
   askHistory,
   lapseHeld,
+  listedDeliveries,
   listHeld,
   recordListed,
 } from "../src/services/agent-requests.js";
@@ -160,6 +161,16 @@ describe("listed deliveries", () => {
       sender_id: editor.userId,
       agent_key: s.claude,
     });
+    const read = await listedDeliveries(E, owner.userId, 0);
+    expect(read.filter((x) => x.artifactId === s.id)).toEqual([
+      {
+        agentKey: s.claude,
+        senderId: editor.userId,
+        artifactId: s.id,
+        commentId: rows[0]?.comment_id,
+        at: rows[0]?.created_at,
+      },
+    ]);
     // Ids and a time only.
     expect(Object.keys(rows[0] ?? {}).sort()).toEqual([
       "agent_key",
