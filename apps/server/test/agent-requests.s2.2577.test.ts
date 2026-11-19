@@ -244,17 +244,21 @@ describe("the switch", () => {
     const get = async () =>
       (await (await api(app, R.agentRequests, u.cookie)).json()) as {
         on: boolean;
+        phonePush: boolean;
       };
-    expect(await get()).toEqual({ on: true });
+    expect(await get()).toEqual({ on: true, phonePush: false });
     expect(await auditCount("agent_requests.switch", u.userId)).toBe(0);
     const off = await flip(false, u);
     expect(off.status).toBe(200);
-    expect(await off.json()).toEqual({ on: false });
-    expect(await get()).toEqual({ on: false });
+    expect(await off.json()).toEqual({ on: false, phonePush: false });
+    expect(await get()).toEqual({ on: false, phonePush: false });
     // The same value again writes nothing.
     await flip(false, u);
     expect(await auditCount("agent_requests.switch", u.userId)).toBe(1);
-    expect(await (await flip(true, u)).json()).toEqual({ on: true });
+    expect(await (await flip(true, u)).json()).toEqual({
+      on: true,
+      phonePush: false,
+    });
     expect(await auditCount("agent_requests.switch", u.userId)).toBe(2);
     // A save keeps the member's other notification choices.
     const prefs = await api(app, R.meNotificationPrefs, u.cookie);
@@ -284,6 +288,7 @@ describe("the switch", () => {
     expect((await api(app, R.agentRequests, null)).status).toBe(401);
     expect(await (await api(app, R.agentRequests, u.cookie)).json()).toEqual({
       on: true,
+      phonePush: false,
     });
   });
 });

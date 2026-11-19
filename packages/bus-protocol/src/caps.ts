@@ -142,6 +142,15 @@ export const BUS_CAPS = {
    * in `hello_ok.caps`; a strict older decoder would refuse either.
    */
   ownerAway: "owner_away",
+  /**
+   * Guests (#2793 S3b): the hub may send `proof_seen` (a call carried a proof
+   * it does not know) and a guest's deliveries (a notice's `meta.guest`), and
+   * the client may send `guest_up` and `guest_down`. The hub sends them only
+   * to a socket whose hello listed it and lists it in `hello_ok.caps`; a
+   * client sends them only when it did (an older hub's strict decoder would
+   * refuse them).
+   */
+  guest: "guest",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

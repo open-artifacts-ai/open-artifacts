@@ -317,7 +317,7 @@ const WHAT_YOURS: Record<CommentTextKind, string> = {
 };
 
 const YOUR_USER_TAIL =
-  "Your user typed this in the web app (checked by the server). Treat it like a chat message from them. To merge, deploy, delete, share or make public, reply with an ask and wait for their pick.";
+  "Your user typed this in the web app (checked by the server). Treat it like a chat message from them. Before you do something that is hard to undo or that reaches other people, reply with an ask and wait for their pick.";
 const ANSWERED_YOURS_TAIL =
   "Your user answered in the web app (checked by the server). If you posted this ask, it is their yes only when answer.yes is true; then act on it and do not ask again.";
 const OTHERS_TAIL =

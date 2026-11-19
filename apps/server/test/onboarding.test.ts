@@ -23,6 +23,7 @@ const NONE = {
   askAnswered: false,
   busConnected: false,
   teamStep: false,
+  listensAsked: false,
   invitedBy: null,
 };
 

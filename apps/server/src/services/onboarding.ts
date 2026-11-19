@@ -68,6 +68,10 @@ export const SELF_TEST = `(title = 'Welcome to Open Artifacts' and format = 'mar
 export const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.artifactId'), '') from settings
     where key = '${WELCOME_KEY}' or substr(key, 1, ${WELCOME_KEY.length + 1}) = '${WELCOME_KEY}:')`;
 
+/** #2577: recorded once, when the person was asked about "listens to". */
+export const listensAskedKey = (userId: string) =>
+  `onboarding:listens-asked:${userId}`;
+
 /** One row per user who has posted a comment (any thread or reply). */
 export const commentedKey = (userId: string) =>
   `onboarding:commented:${userId}`;
@@ -91,7 +95,7 @@ export async function getOnboarding(
   const [flags, own, agent, first, commented, firsts] = await env.DB.batch([
     stmt(
       env.DB,
-      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`,
+      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
     ).bind(
       dismissedKey(userId),
       completedKey(userId),
@@ -103,6 +107,7 @@ export async function getOnboarding(
       legacy ? COMPLETED_KEY : "",
       WELCOME_KEY,
       legacy ? WELCOME_OPENED_KEY : "",
+      listensAskedKey(userId),
     ),
     stmt(
       env.DB,
@@ -195,6 +200,7 @@ export async function getOnboarding(
     askAnswered: at.has(askAnsweredKey(userId)),
     busConnected,
     teamStep: keys.has(teamStepKey(userId)),
+    listensAsked: keys.has(listensAskedKey(userId)),
     invitedBy: inviter ? { name: await realName(env, inviter) } : null,
   };
 }
@@ -642,4 +648,14 @@ export async function markWelcomeTouched(
       code: e instanceof Error ? e.name : "error",
     });
   }
+}
+
+/** #2577: the person was asked about "listens to". The first time is kept; a repeat changes nothing. */
+export async function markListensAsked(
+  env: Env,
+  userId: string,
+): Promise<void> {
+  await stmt(env.DB, SET)
+    .bind(listensAskedKey(userId), String(Date.now()))
+    .run();
 }

@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.229.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.228.0...v0.229.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** teammates list, memberId on shares, first-setup flag ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2917](https://github.com/open-artifacts-ai/open-artifacts/issues/2917)) ([7f9bf99](https://github.com/open-artifacts-ai/open-artifacts/commit/7f9bf99b0913ad1bb1fbc5b7bb70f57ea6c99418))
+
+## [0.228.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.227.0...v0.228.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** risky steps described in general words ([#2893](https://github.com/open-artifacts-ai/open-artifacts/issues/2893)) ([#2916](https://github.com/open-artifacts-ai/open-artifacts/issues/2916)) ([ed8562a](https://github.com/open-artifacts-ai/open-artifacts/commit/ed8562a034d4ef551ab43286f6651cb915bc521c))
+
+## [0.227.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.226.0...v0.227.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** held requests to my phone, and on-your-list history ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577), migration 0051) ([#2884](https://github.com/open-artifacts-ai/open-artifacts/issues/2884)) ([00ebcdf](https://github.com/open-artifacts-ai/open-artifacts/commit/00ebcdfc0015fd6aed433f6176447f53f012597a))
+
+## [0.226.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.225.0...v0.226.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** a Claude session joins another instance as a guest, only after using its tools ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S3b) ([#2892](https://github.com/open-artifacts-ai/open-artifacts/issues/2892)) ([88dc188](https://github.com/open-artifacts-ai/open-artifacts/commit/88dc188a02805dd0b8e4d5eff40c2c0368ec5a6c))
+
 ## [0.225.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.224.0...v0.225.0) (2026-11-19)
 
 
