@@ -2,7 +2,7 @@
  * #2577 (Design v8, "First setup"): one question, asked once, when a member has
  * connected their first agent on a team. It starts on "Only people I choose";
  * "Skip for now" keeps that. Never a wall: a card under Get started.
- * PROVISIONAL (#2577 s2): `listensAsked` and the teammates list.
+ * #2577 s2: `listensAsked` and the teammates list (server #2917).
  */
 import { LISTEN_ADD_BATCH_MAX } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";

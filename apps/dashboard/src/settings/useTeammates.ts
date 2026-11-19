@@ -1,6 +1,6 @@
 /**
  * #2577: the teammates the caller can name for "listens to". The team's members
- * from GET /me/teammates (PROVISIONAL (#2577 s2)) for anyone. An older server
+ * from GET /me/teammates (R.meTeammates) for anyone. An older server
  * answers 404; then owners and admins read the member list, and everyone else
  * gets the people already known to them (recent askers, their list).
  */

@@ -888,7 +888,7 @@ async function startMocks() {
     ]),
     ...pics,
   );
-  // PROVISIONAL (#2577 s2): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
+  // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
   if (agentAsksOn(params))
     extra.unshift(
       ...(await import("./mockTeammates")).teammatesHandlers(mainHandlers, {
