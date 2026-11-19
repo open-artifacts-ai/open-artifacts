@@ -605,9 +605,12 @@ export class Receipts {
   }
 
   /** The hub link dropped: every waiting send answers now, as it stands. */
-  release(): void {
-    for (const w of [...this.#waiting.values()]) w.done?.(undefined);
-    this.#waiting.clear();
+  release(only?: (msgId: string) => boolean): void {
+    for (const [id, w] of [...this.#waiting]) {
+      if (only && !only(id)) continue;
+      w.done?.(undefined);
+      this.#waiting.delete(id);
+    }
   }
 
   /** Hands `f` to the send waiting on it; false when none waits. */

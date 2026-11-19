@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.221.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.220.0...v0.221.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** one daemon talks to several hubs ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S3) ([#2839](https://github.com/open-artifacts-ai/open-artifacts/issues/2839)) ([84c5398](https://github.com/open-artifacts-ai/open-artifacts/commit/84c5398b2b56638b61aba246f7b9d0280a24a495))
+* **onboarding:** chat-only members see three setup steps, not five ([#2887](https://github.com/open-artifacts-ai/open-artifacts/issues/2887)) ([b1fb1fb](https://github.com/open-artifacts-ai/open-artifacts/commit/b1fb1fb68bd0f4c3728e1a7edcc806d84f091282))
+* **setup:** self-host setup and upgrade generate the VAPID push keys ([#2775](https://github.com/open-artifacts-ai/open-artifacts/issues/2775)) ([#2863](https://github.com/open-artifacts-ai/open-artifacts/issues/2863)) ([74592d4](https://github.com/open-artifacts-ai/open-artifacts/commit/74592d437861045495ebd534ab41dc28eaee177a))
+
+
+### Bug Fixes
+
+* **bus:** habits no longer tell agents to wait for a passkey on asks ([#2864](https://github.com/open-artifacts-ai/open-artifacts/issues/2864)) ([#2866](https://github.com/open-artifacts-ai/open-artifacts/issues/2866)) ([8f357c2](https://github.com/open-artifacts-ai/open-artifacts/commit/8f357c2a36650897e25866a54b46d97a9dc0244d))
+* **bus:** running sessions stay linked across a daemon restart, an upgrade and claude --resume ([#2861](https://github.com/open-artifacts-ai/open-artifacts/issues/2861)) ([#2869](https://github.com/open-artifacts-ai/open-artifacts/issues/2869)) ([e82975f](https://github.com/open-artifacts-ai/open-artifacts/commit/e82975f3aa59877a42307c0a0c4614bf9aa2b82a))
+* **plans:** drop outside-sharing controls from the plan cards ([#2853](https://github.com/open-artifacts-ai/open-artifacts/issues/2853)) ([#2877](https://github.com/open-artifacts-ai/open-artifacts/issues/2877)) ([b582700](https://github.com/open-artifacts-ai/open-artifacts/commit/b582700cd4af36ce0f87f1215dcbe6322dc50e27))
+
+## [0.220.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.1...v0.220.0) (2026-11-18)
+
+
+### Features
+
+* **comments:** mention people in a comment ([#2784](https://github.com/open-artifacts-ai/open-artifacts/issues/2784)) ([e1ba320](https://github.com/open-artifacts-ai/open-artifacts/commit/e1ba320e148053a038b25f94f0b7defab2887fa0))
+
 ## [0.219.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.219.0...v0.219.1) (2026-11-18)
 
 

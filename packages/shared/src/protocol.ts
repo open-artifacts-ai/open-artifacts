@@ -94,6 +94,8 @@ export const OnboardingProgressSchema = z.strictObject({
   mentionReplied: z.boolean().optional(),
   mentionStalled: z.boolean().optional(),
   askAnswered: z.boolean().optional(),
+  /** #2890: false hides "named" and "mention" (three steps). Absent from an older shell: five. */
+  busConnected: z.boolean().optional(),
   /**
    * #2632: on a member's own Welcome (never the owner's): who it greets.
    * Absent from an older shell: the page reads as the owner's.

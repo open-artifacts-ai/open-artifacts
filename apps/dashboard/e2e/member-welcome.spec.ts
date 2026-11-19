@@ -80,3 +80,18 @@ test("a member's first login lands on their own Welcome: 0 of 5, the sixth step"
     f.getByRole("heading", { name: "Connect your agent" }),
   ).toBeHidden();
 });
+
+test("a member who never connected the bus sees three steps: 0 of 3 (#2890)", async ({
+  page,
+}) => {
+  await page.goto("/?mock=welcome&role=member&bus=0");
+  await page.waitForURL(`**/a/${ID}**`);
+  const f = frame(page);
+  await expect(f.getByRole("heading", { name: "Welcome, Ada" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(f.getByText("0 of 3 done")).toBeVisible();
+  await expect(f.locator('[data-step="name"]')).toBeHidden();
+  await expect(f.locator('[data-step="mention"]')).toBeHidden();
+  await expect(f.locator('[data-step="connect"]')).toBeVisible();
+});
