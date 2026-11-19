@@ -133,6 +133,59 @@ describe("viewer shell: per-load nonce", () => {
     expect(hello(second, nonceOf(second))).toContain("welcome");
   });
 
+  it("the content host's expiry page reloads the frame from a fresh URL, with no load event of ours (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    const n1 = nonceOf(first);
+    loaded(first); // the frame's src is frozen to the URL it loaded with
+    // A restored tab brings the frame back on that URL and the content host
+    // answers with its expiry page, which announces itself. The shell never got
+    // a load it could call unexpected, so it heals from the message alone.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 700_000);
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    vi.useRealTimers();
+    const second = await reloaded(first);
+    expect(nonceOf(second)).toBeDefined();
+    expect(nonceOf(second)).not.toBe(n1);
+    loaded(second);
+    expect(hello(second, nonceOf(second))).toContain("welcome");
+  });
+
+  it("an expiry announce from another window, or while our URL is fresh, reloads nothing (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    act(() => {
+      // Not the artifact frame: another window cannot ask for a reload.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: window,
+        }),
+      );
+      // The frame, but the URL we hold is fresh: a 410 cannot be real.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(first);
+  });
+
   it("a second renavigation after expiry, with the bridge already disposed, reloads too (#2686)", async () => {
     mount(viewerPath(OWNED));
     const first = await frame();
