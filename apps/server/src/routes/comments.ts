@@ -200,6 +200,10 @@ function withAnon(issued: string | null, res: Response): Response {
 
 const StatusQuery = z.object({
   status: z.enum(["open", "resolved", "all"]).default("all"),
+  // #2688: the catch-up read, as on the MCP list_comments.
+  answeredSince: z.string().datetime({ offset: true }).optional(),
+  mentionedSince: z.string().datetime({ offset: true }).optional(),
+  compact: z.enum(["true", "false"]).optional(),
 });
 const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
 const EditBody = z.strictObject({ body: z.string() });
@@ -230,17 +234,36 @@ export function mountComments(app: AppType): void {
     } = await open(c, "comments.read");
     const q = StatusQuery.safeParse({
       status: c.req.query("status") ?? undefined,
+      answeredSince: c.req.query("answeredSince") ?? undefined,
+      mentionedSince: c.req.query("mentionedSince") ?? undefined,
+      compact: c.req.query("compact") ?? undefined,
     });
-    if (!q.success) throw new ApiError("bad_request", "Invalid status");
+    if (!q.success)
+      throw new ApiError(
+        "bad_request",
+        "Invalid status, answeredSince, mentionedSince or compact",
+      );
+    const { answeredSince, mentionedSince } = q.data;
+    const compact = q.data.compact === "true";
+    if (compact && answeredSince === undefined && mentionedSince === undefined)
+      throw new ApiError(
+        "bad_request",
+        "compact needs answeredSince or mentionedSince.",
+      );
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
     // #2080: a signed-out viewer under signed-in-only may edit and delete nothing.
     if (art.commentAccess === "signed-in" && !c.var.user)
       viewer.readOnly = true;
-    const out = await listComments(c.env, id, q.data.status, {
-      ...viewer,
-      owner: level === "owner",
-    });
-    return c.json(out);
+    const v = { ...viewer, owner: level === "owner" };
+    if (answeredSince === undefined && mentionedSince === undefined)
+      return c.json(await listComments(c.env, id, q.data.status, v));
+    return c.json(
+      await listComments(c.env, id, q.data.status, v, {
+        ...(answeredSince !== undefined ? { answeredSince } : {}),
+        ...(mentionedSince !== undefined ? { mentionedSince } : {}),
+        ...(compact ? { compact } : {}),
+      }),
+    );
   });
 
   app.post(COMMENTS, async (c) => {

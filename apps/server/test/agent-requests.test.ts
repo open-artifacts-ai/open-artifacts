@@ -1779,3 +1779,51 @@ describe("pictures of a held request (#2508, #2577)", () => {
     await check(s, reply.id, pic, () => allowOnce(s.id));
   });
 });
+
+describe("catch-up read masks like the plain list (#2688)", () => {
+  const since = { mentionedSince: new Date(0).toISOString() };
+  it("a held mention never shows its words to the receiver's agent, compact or not", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "secret words", mention(s.claude));
+    expect((await held(s.id))[0]?.items).toHaveLength(1);
+    const small = await listComments(E, s.id, "all", asAgent(owner), {
+      ...since,
+      compact: true,
+    });
+    expect(JSON.stringify(small)).not.toContain("secret words");
+    expect(small).toEqual({ mentions: [], truncated: false });
+    const full = await listComments(E, s.id, "all", asAgent(owner), since);
+    expect(JSON.stringify(full)).not.toContain("secret words");
+    expect(JSON.stringify(full)).toContain("is waiting for your person");
+  });
+
+  it("a guest-role member mentioned as a person reads the same names as the plain list", async () => {
+    const s = await setup();
+    const g = await login(`ar-gm-${tag}@x.com`, "guest");
+    await putShare(E, owner.member, s.id, {
+      email: `ar-gm-${tag}@x.com`,
+      role: "viewer",
+    });
+    const agent = {
+      kind: "user" as const,
+      id: editor.userId,
+      agent: {
+        name: "Codex",
+        version: null,
+        via: { kind: "token" as const, id: "t2" },
+      },
+    };
+    await post(s.id, agent, editor, "hi guest", { people: [g.userId] });
+    const gv: CommentViewer = { userId: g.userId, short: null, guest: true };
+    const plain = (await listComments(E, s.id, "all", gv)).threads
+      .flatMap((t) => t.comments)
+      .find((c) => c.body === "hi guest");
+    const small = (await listComments(E, s.id, "all", gv, {
+      ...since,
+      compact: true,
+    })) as { mentions?: { by: string; excerpt: string }[] };
+    expect(small.mentions).toHaveLength(1);
+    expect(small.mentions?.[0]?.by).toBe(plain?.author.name);
+    expect(small.mentions?.[0]?.by).not.toBe("Codex");
+  });
+});

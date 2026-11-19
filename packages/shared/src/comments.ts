@@ -356,6 +356,37 @@ export const CommentListSchema = z.object({
 });
 export type CommentList = z.infer<typeof CommentListSchema>;
 
+/** #2688: one answer to an ask of yours, in the compact catch-up read. */
+export const CompactAnswerSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  question: z.string(),
+  optionId: z.string(),
+  label: z.string(),
+  at: z.string(),
+  by: z.string(),
+  yes: z.boolean(),
+});
+export type CompactAnswer = z.infer<typeof CompactAnswerSchema>;
+
+/** #2688: one comment that mentions you, in the compact catch-up read. */
+export const CompactMentionSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  at: z.string(),
+  by: z.string(),
+  excerpt: z.string(),
+});
+export type CompactMention = z.infer<typeof CompactMentionSchema>;
+
+/** #2688: `list_comments` with `compact: true`. Each list is present when its `...Since` was asked. */
+export const CompactCommentListSchema = z.object({
+  answers: z.array(CompactAnswerSchema).optional(),
+  mentions: z.array(CompactMentionSchema).optional(),
+  truncated: z.boolean(),
+});
+export type CompactCommentList = z.infer<typeof CompactCommentListSchema>;
+
 export type CommentStatusFilter = "open" | "resolved" | "all";
 
 /** An anchor as a client sends it: `version` is optional on text and pin (the current version). */
@@ -508,9 +539,18 @@ export const MentionCandidatesSchema = z.object({
 export type MentionCandidates = z.infer<typeof MentionCandidatesSchema>;
 
 /** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
+const SinceIso = z.string().datetime({ offset: true });
+
+/** #2688: the catch-up read. Timestamps are ISO 8601 with a zone (for example 2026-11-19T10:00:00Z). */
 export const ListCommentsInputSchema = z.strictObject({
   id: IdSchema,
   status: z.enum(["open", "resolved", "all"]).optional(),
+  /** Only threads with an ask of yours whose answer came after this time. */
+  answeredSince: SinceIso.optional(),
+  /** Only comments after this time that mention you. */
+  mentionedSince: SinceIso.optional(),
+  /** With answeredSince or mentionedSince: a small list instead of full threads. */
+  compact: z.boolean().optional(),
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 
