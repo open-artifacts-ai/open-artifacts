@@ -166,11 +166,12 @@ describe("pinned node check in doctor (#1448 item 4)", () => {
     const launcher = join(bin, "node");
     writeFileSync(launcher, launcherText("/gone/node", []), { mode: 0o700 });
     record(ctx.home, launcher);
-    expect(await svc.checkNode?.()).toEqual({
-      node: launcher,
-      reason:
-        "oa-bus: Node.js 22 or newer not found. Install it, then run: npx @open-artifacts/bus install",
-    });
+    const bad = await svc.checkNode?.();
+    expect(bad?.node).toBe(launcher);
+    expect(bad?.reason).toContain(
+      `oa-bus: Node.js 22 or newer not found. Install it, then run: ${bin}/node `,
+    );
+    expect(bad?.reason).not.toContain("npx");
   });
 
   it("doctor probes with the service's PATH: a node only doctor's shell reaches is reported (#1729)", async () => {

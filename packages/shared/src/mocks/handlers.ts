@@ -182,6 +182,8 @@ export type MockOptions = {
         /** #2632: the optional sixth step, and who added the caller. */
         teamStep?: boolean;
         invitedBy?: string;
+        /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
+        bus?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -449,6 +451,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     mentionReplied: !opts.welcome,
     mentionStalled: false,
     askAnswered: !opts.welcome,
+    busConnected: true,
   };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
@@ -471,6 +474,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       askAnswered: w.askAnswered ?? false,
       teamStep: w.teamStep ?? false,
       invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
+      busConnected: w.bus ?? true,
     });
   }
   if (opts.bus) {

@@ -11,6 +11,7 @@ import {
   isGlobalDir,
   nearestConfig,
   readGlobalDirs,
+  readSuggestion,
   remotesFile,
   resolveNamespace,
   scanConfigFiles,
@@ -41,6 +42,7 @@ import {
 } from "../steps/claude-plugins.ts";
 import {
   claudeProofChecks,
+  instanceProofChecks,
   lastAutoFix,
   safeText,
 } from "../steps/claude-proof-check.ts";
@@ -69,6 +71,8 @@ import { approvalsFileFor } from "./namespace.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
 const HEALTHZ_TIMEOUT_MS = 10_000;
+/** The first oa-bus that reads the `instance` key of .oa-bus.json (#2840); older ones refuse the file. */
+const INSTANCE_KEY_MIN_VERSION = "0.218.0";
 
 const sameOrigin = (url: string, hub: string) => {
   try {
@@ -338,7 +342,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
       else if (plugins) pass(c.pluginsDoctor());
       // #2688: each entry for the instance, at every scope, and what the last automatic fix did.
       if (hub !== undefined) {
-        for (const chk of claudeProofChecks(ctx, hub))
+        for (const chk of [
+          ...claudeProofChecks(ctx, hub),
+          ...instanceProofChecks(ctx),
+        ])
           if (chk.level === "pass") pass(chk.lines[0] as string);
           else if (chk.level === "warn") warn(chk.lines);
           else if (chk.level === "info") say(ctx, chk.lines);
@@ -444,6 +451,12 @@ export async function doctor(ctx: Ctx): Promise<number> {
     n.warnings += files.length;
     say(ctx, configFileLines(ctx, files));
   }
+  // #2840: older buses refuse a .oa-bus.json that has `instance`, the whole file.
+  if (readSuggestion(ctx.cwd) !== undefined)
+    say(
+      ctx,
+      `This repo's .oa-bus.json has an instance key. This version reads it; oa-bus before ${INSTANCE_KEY_MIN_VERSION} refuses the whole file.`,
+    );
   if (asksForGlobal(ctx, list.dirs)) warn(c.globalAsked());
 
   say(ctx, "", c.summary(n.failed, n.warnings, n.passed));
