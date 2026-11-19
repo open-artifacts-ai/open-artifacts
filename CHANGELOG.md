@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.232.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.232.0...v0.232.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **agents:** the held-request notice says when the words changed ([#2907](https://github.com/open-artifacts-ai/open-artifacts/issues/2907)) ([#2928](https://github.com/open-artifacts-ai/open-artifacts/issues/2928)) ([8eab682](https://github.com/open-artifacts-ai/open-artifacts/commit/8eab6820336b3b22b581eb61d360c504f37240ec))
+
 ## [0.232.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.1...v0.232.0) (2026-11-19)
 
 
