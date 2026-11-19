@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.230.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.229.0...v0.230.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** Add a teammate, Who asked what and the share tick box ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577) UI slice 2) ([#2912](https://github.com/open-artifacts-ai/open-artifacts/issues/2912)) ([abbf6d6](https://github.com/open-artifacts-ai/open-artifacts/commit/abbf6d6a4e4e54143c8d6b248c51b671e58bcdd5))
+
 ## [0.229.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.228.0...v0.229.0) (2026-11-19)
 
 
