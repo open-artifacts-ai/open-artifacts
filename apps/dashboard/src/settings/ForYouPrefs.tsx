@@ -363,6 +363,12 @@ function Interrupts({
           </b>
           <p id="oa-quiet-hint" className={`m-0 ${muted}`}>
             Nothing interrupts between these times. It waits in the inbox.
+            {quiet && (
+              <>
+                {" "}
+                Your own agents see "away until {end}" and can plan around it.
+              </>
+            )}
           </p>
         </div>
         <div className="flex flex-none items-center gap-2">
