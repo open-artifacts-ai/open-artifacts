@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.233.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.232.1...v0.233.0) (2026-11-19)
+
+
+### Features
+
+* **asks:** every ask offers "Something else" with a typed answer ([#2895](https://github.com/open-artifacts-ai/open-artifacts/issues/2895)) ([#2901](https://github.com/open-artifacts-ai/open-artifacts/issues/2901)) ([72010c7](https://github.com/open-artifacts-ai/open-artifacts/commit/72010c70905057a8d98e2a840bfaf97ae00e2d57))
+
+
+### Bug Fixes
+
+* **viewer:** a guest commenter's title bar reads Can comment, not Viewer ([#2932](https://github.com/open-artifacts-ai/open-artifacts/issues/2932)) ([#2933](https://github.com/open-artifacts-ai/open-artifacts/issues/2933)) ([81f1703](https://github.com/open-artifacts-ai/open-artifacts/commit/81f1703f9d857905cf9ca19d6a77b39d708703b8))
+
 ## [0.232.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.232.0...v0.232.1) (2026-11-19)
 
 
