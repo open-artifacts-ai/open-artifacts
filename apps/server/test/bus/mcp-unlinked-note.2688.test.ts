@@ -189,7 +189,9 @@ describe("the note's table", () => {
     "You can run `oa-bus doctor` to check. Tell your person: reconnect the Open Artifacts connection (in Claude Code: /mcp, then Reconnect). If it stays unlinked, run `oa-bus install` again and restart this session.";
   const RETRY =
     "It may clear on the next write. You can run `oa-bus doctor` to check.";
-  const exact: [UnlinkedWhy, string][] = [
+  const HINT =
+    "To see what it missed, call list_comments with answeredSince and compact: true.";
+  const rows: [UnlinkedWhy, string][] = [
     ["no_proof", `${lead("this connection sent no link proof")} ${FULL}`],
     [
       "unbound",
@@ -213,6 +215,10 @@ describe("the note's table", () => {
     ["timeout", `${lead("the link check timed out")} ${RETRY}`],
     ["error", `${lead("the link check failed")} ${RETRY}`],
   ];
+  const exact = rows.map(([why, line]): [UnlinkedWhy, string] => [
+    why,
+    `${line} ${HINT}`,
+  ]);
   it.each(exact)("%s is exactly the agreed line", (why, line) => {
     expect(unlinkedNote(why)).toBe(line);
   });
