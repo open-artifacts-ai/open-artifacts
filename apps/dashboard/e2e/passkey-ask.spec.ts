@@ -3,12 +3,16 @@ import { expect, type Page, test } from "@playwright/test";
 
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 
-async function open(page: Page, mode: string) {
-  await page.goto(`/a/${ID}?mock=asks&passkey=${mode}`);
-  await page.getByRole("button", { name: /^Comments/ }).click();
+async function open(page: Page) {
+  await page.goto(`/a/${ID}?mock=asks`);
+  // The Comments pane opens by itself; asks for the reader sit behind one button.
+  await page
+    .getByRole("button", { name: /ask for you$/ })
+    .last()
+    .click();
   const card = page
     .locator("[data-ask]")
-    .filter({ hasText: "Merge the release PR?" });
+    .filter({ hasText: "Which layout do we ship?" });
   await expect(card).toBeVisible();
   return card;
 }
@@ -26,10 +30,7 @@ test("an ordinary ask is unchanged", { tag: "@smoke" }, async ({ page }) => {
       },
     });
   });
-  await open(page, "ok");
-  const card = page
-    .locator("[data-ask]")
-    .filter({ hasText: "Which layout do we ship?" });
+  const card = await open(page);
   await expect(card.locator("[data-passkey-hint]")).toHaveCount(0);
   await card.locator("[data-option=wide]").click();
   await expect(card.locator("[data-ask-answer]")).toContainText("picked");

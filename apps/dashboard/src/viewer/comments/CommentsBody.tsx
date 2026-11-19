@@ -1902,7 +1902,7 @@ export const ASK_BESIDE_HOLD_MS = 700;
  * #2426: an unanswered ask the reader clicked in the page opens its card right
  * beside the mark, over the page, drawn here and not in the sandboxed frame. It
  * is the pane's own AskBlock, so the pick goes the same way (the server records
- * it, a passkey ask asks for the passkey). Esc or a click outside closes it.
+ * it). Esc or a click outside closes it.
  */
 export function AskBeside({ frame }: { frame: HTMLElement | null }) {
   const api = useCommentsApi();

@@ -747,26 +747,6 @@ async function startMocks() {
     commentDecisions: params.get("mock") === "decisions",
     // ?mock=withdrawn (#2511): asks in each withdrawn state.
     commentWithdrawn: params.get("mock") === "withdrawn",
-    // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
-    commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
-      params.get("passkey") ?? "",
-    )
-      ? (params.get("passkey") as
-          | "ok"
-          | "none"
-          | "cooling"
-          | "expired"
-          | "many")
-      : undefined,
-    // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
-    passkeys:
-      params.get("mock") === "passkey-cooling"
-        ? "cooling"
-        : params.get("mock") === "passkey-usable"
-          ? "usable"
-          : params.get("mock") === "passkey-pending"
-            ? "pending"
-            : "none",
     // ?mock=agents (#1822): agent-authored comments, linked and not.
     commentAgents: params.get("mock") === "agents",
     // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
