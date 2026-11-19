@@ -12,12 +12,14 @@ import {
   useListens,
   useRemoveListen,
   useSetAgentRequests,
+  useSetPhonePush,
 } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
 import { toast } from "../layout/toast";
 import { initials } from "../viewer/comments/AuthorFace";
 import { AddTeammate } from "./AddTeammate";
 import { AskHistory } from "./AskHistory";
+import { HeldRequests } from "./HeldRequests";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 import { useTeammates } from "./useTeammates";
@@ -180,6 +182,7 @@ export function AgentRequests() {
         </WriteLock>
         <p className={`m-0 ${muted}`}>{LISTENS_FINE_PRINT}</p>
       </SettingsCard>
+      <HeldRequests />
       <AskHistory />
       {adding && (
         <AddTeammate
