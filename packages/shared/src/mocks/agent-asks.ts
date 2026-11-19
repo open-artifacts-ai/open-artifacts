@@ -5,7 +5,8 @@
  */
 import { type HttpHandler, HttpResponse, http } from "msw";
 import {
-  AgentRequestsSwitchSchema,
+  type AgentRequestsSwitch,
+  AgentRequestsSwitchBodySchema,
   AllowBodySchema,
   type AllowResult,
   type HeldList,
@@ -38,6 +39,7 @@ export function createAgentAsksMock(d: Deps): {
   const now = d.now ?? Date.now;
   const person = (id: string, name: string) => ({ id, name });
   let on = true;
+  let phonePush = false;
   let nextId = 1;
   const item = (
     i: number,
@@ -153,12 +155,18 @@ export function createAgentAsksMock(d: Deps): {
         held = held.filter((x) => x.id !== params.id);
         return done();
       }),
-      http.get(`*${R.agentRequests}`, () => HttpResponse.json({ on })),
+      http.get(`*${R.agentRequests}`, () =>
+        HttpResponse.json({ on, phonePush } satisfies AgentRequestsSwitch),
+      ),
       http.put(`*${R.agentRequests}`, async ({ request }) => {
-        const p = AgentRequestsSwitchSchema.safeParse(await request.json());
+        const p = AgentRequestsSwitchBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
-        on = p.data.on;
-        return HttpResponse.json({ on });
+        on = p.data.on ?? on;
+        phonePush = p.data.phonePush ?? phonePush;
+        return HttpResponse.json({
+          on,
+          phonePush,
+        } satisfies AgentRequestsSwitch);
       }),
       http.get(`*${R.agentListens}`, () =>
         HttpResponse.json({ entries: listens } satisfies ListensList),
