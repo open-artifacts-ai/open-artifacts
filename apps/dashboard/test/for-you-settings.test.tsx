@@ -463,6 +463,9 @@ describe("this browser's notifications (slice 3, S5)", () => {
     for (const name of ["Interrupt me for", "On lock screens"])
       expect(screen.getByRole("combobox", { name })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+    expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
   });
 
   it("no push key on the server: both switches off and disabled, in plain words", async () => {
@@ -485,15 +488,140 @@ describe("this browser's notifications (slice 3, S5)", () => {
     ]) {
       expect(el).toHaveAttribute("aria-checked", "false");
       expect(el).toBeDisabled();
-      expect(el).toHaveAccessibleDescription("Not set up here yet");
+      expect(el).toHaveAccessibleDescription("Not turned on yet");
     }
+    // An owner step, in plain words, once, under the table.
     expect(
-      screen.getByText(/^Browser notifications aren't set up for .+ yet\.$/),
+      screen.getByText(
+        /^Browser notifications aren't turned on for .+ yet\. The owner turns them on by upgrading the instance\.$/,
+      ),
     ).toBeInTheDocument();
     expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
+    // The account settings never wait on push (#2943).
+    expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("combobox", { name: "Interrupt me for" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  });
+
+  it("no push key: the interrupts box still saves", async () => {
+    server.use(
+      http.get(`*${R.mePushKey}`, () => err("push_unavailable", 404)),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    fakePush("default");
+    mount("/settings/notifications");
+    const puts = calls("PUT");
+    fireEvent.keyDown(
+      await screen.findByRole(
+        "combobox",
+        { name: "On lock screens" },
+        { timeout: FIRST_LOAD_MS },
+      ),
+      { key: "Enter" },
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Show details" }),
+    );
+    await waitFor(() =>
+      expect(
+        puts.find((c) => c.path === R.meNotificationPrefs)?.body,
+      ).toMatchObject({
+        lockScreenDetail: true,
+      }),
+    );
+  });
+});
+
+/** An iPhone or iPad, in a Safari tab or opened from the Home Screen. */
+function ios(standalone: boolean) {
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+  });
+  Object.defineProperty(navigator, "standalone", {
+    configurable: true,
+    value: standalone,
+  });
+}
+const realUa = navigator.userAgent;
+const resetIos = () => {
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: realUa,
+  });
+  Object.defineProperty(navigator, "standalone", {
+    configurable: true,
+    value: undefined,
+  });
+};
+
+describe("iPhone and iPad (#2943)", () => {
+  afterEach(resetIos);
+
+  it("in a Safari tab: says to add it to the Home Screen, not 'can't show notifications'", async () => {
+    ios(false);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/settings/notifications");
+    expect(
+      await screen.findByText(
+        "Add to Home Screen first",
+        {},
+        { timeout: FIRST_LOAD_MS },
+      ),
+    ).toBeInTheDocument();
+    expect(document.querySelector("[data-push-note]")?.textContent).toMatch(
+      /^On iPhone, notifications work once you add .+ to your Home Screen: tap Share, then Add to Home Screen, then open it from there\.$/,
+    );
+    expect(
+      screen.queryByText("This browser can't show notifications."),
+    ).toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "On lock screens" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
+  });
+
+  it("from the Home Screen it is the normal case: a switch, no iOS line", async () => {
+    ios(true);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(document.querySelector("[data-push-note]")).toBeNull();
+    expect(screen.queryByText(/Add to Home Screen/)).toBeNull();
+    expect(
+      screen.queryByText(
+        "These apply as soon as notifications reach a browser.",
+      ),
+    ).toBeNull();
+  });
+
+  it("For you says it instead of hiding the ask silently", async () => {
+    ios(false);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/");
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: /^For you/ },
+        { timeout: FIRST_LOAD_MS },
+      ),
+    );
+    const panel = await screen.findByRole("dialog", { name: "For you" });
+    const note = await waitFor(() => {
+      const el = panel.querySelector("[data-push-ios]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(note).toHaveTextContent("tap Share, then Add to Home Screen");
   });
 });
 

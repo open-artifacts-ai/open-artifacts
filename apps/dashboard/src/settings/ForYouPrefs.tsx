@@ -24,6 +24,8 @@ import {
 } from "../foryou/api";
 import { muteErrorCopy } from "../foryou/prefsContract";
 import {
+  iosNeedsHomeScreen,
+  NOTIF_WORDS,
   PermissionRefused,
   PUSH_WORDS,
   permission,
@@ -66,14 +68,22 @@ export function ForYouPrefs() {
   const mutes = useMutes(true);
   // #2512 slice 3: no push key on the server: the browser column isn't shown.
   const key = usePushKey(true);
+  // Lifted here: Levels says it per cell, the account box says it once.
+  const [perm, setPerm] = useState(permission);
   if (!prefs.data || key.isPending) return null;
-  // Design: these are per account and reach other browsers, so only a server
-  // with no push key turns them off (not this browser's own capability).
-  const available = !!key.data;
+  // #2943: these are per account and always saved. Push only decides whether a
+  // notification can reach this browser; the account box says so when it can't.
+  const cantReach =
+    !key.data || !pushSupported() || perm === "denied" || iosNeedsHomeScreen();
   return (
     <>
-      <Levels prefs={prefs.data} pushKey={key.data ?? null} />
-      <Interrupts prefs={prefs.data} unavailable={!available} />
+      <Levels
+        prefs={prefs.data}
+        pushKey={key.data ?? null}
+        perm={perm}
+        setPerm={setPerm}
+      />
+      <Interrupts prefs={prefs.data} cantReach={cantReach} />
       {mutes.data && mutes.data.items.length > 0 && (
         <Muted items={mutes.data.items} />
       )}
@@ -99,28 +109,41 @@ function useSave() {
 function Levels({
   prefs,
   pushKey,
+  perm,
+  setPerm,
 }: {
   prefs: NotificationPrefs;
   pushKey: string | null;
+  perm: ReturnType<typeof permission>;
+  setPerm: (p: NotificationPermission) => void;
 }) {
   const supported = pushSupported();
-  // Lifted here: the cell says it short, the row under it says it in full.
-  const [perm, setPerm] = useState(permission);
+  const site = useInstanceName();
+  // The cell says it short, the row under it says it in full.
   const blocked = supported && perm === "denied";
+  // iPhone or iPad in a Safari tab: a person step, not "can't".
+  const ios = !supported && iosNeedsHomeScreen();
   // This browser's own row, from the list (S5, #2774).
   const subs = usePushSubscriptions(pushKey !== null && supported);
   const userId = useMeId();
   const mine = thisSubscription(subs.data, userId);
   const note =
     pushKey === null
-      ? null
-      : !supported
-        ? PUSH_WORDS.cant
-        : blocked
-          ? PUSH_WORDS.blocked
-          : null;
+      ? NOTIF_WORDS.noKey(site)
+      : ios
+        ? NOTIF_WORDS.iosHome(site)
+        : !supported
+          ? PUSH_WORDS.cant
+          : blocked
+            ? PUSH_WORDS.blocked
+            : null;
+  // The cell for a reason that stops the switch; no key keeps its disabled switch.
   const cantHere =
-    pushKey === null ? null : !supported ? (
+    pushKey === null ? null : ios ? (
+      <span data-push="ios" className={MUTED_SM}>
+        {NOTIF_WORDS.iosCell}
+      </span>
+    ) : !supported ? (
       <span data-push="unsupported" className={MUTED_SM}>
         {PUSH_WORDS.notAvailable}
       </span>
@@ -144,7 +167,7 @@ function Levels({
           <tr>
             <td className={th} />
             <th scope="col" className={th}>
-              In the app
+              {NOTIF_WORDS.inOA}
             </th>
             <th scope="col" className={th}>
               This browser
@@ -276,7 +299,7 @@ function NeedsYouBrowser({
         data-push={on ? "on" : "off"}
       >
         {pushKey === null
-          ? PUSH_WORDS.noKey
+          ? NOTIF_WORDS.noKeyCell
           : mine && on
             ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
             : ""}
@@ -314,7 +337,7 @@ function UpdatesBrowser({
       />
       <small id="oa-updates-browser" className={sub}>
         {pushKey === null
-          ? PUSH_WORDS.noKey
+          ? NOTIF_WORDS.noKeyCell
           : mine
             ? ""
             : PUSH_WORDS.turnOnFirst}
@@ -332,30 +355,21 @@ function patchFailed(e: unknown, qc: QueryClient) {
 
 function Interrupts({
   prefs,
-  unavailable,
+  cantReach,
 }: {
   prefs: NotificationPrefs;
-  /** No push key on the server, or a browser that can't notify (Design). */
-  unavailable: boolean;
+  /** Push can't reach this browser (no key, blocked, can't, or not on the Home Screen): said once; nothing is disabled. */
+  cantReach: boolean;
 }) {
-  // Live (#2674), except where this server or browser can't notify (Design).
-  const live = !unavailable;
-  const site = useInstanceName();
   const save = useSave();
   const quiet = prefs.quietHours;
   const end = quiet?.end ?? QUIET_DEFAULT.end;
   return (
     <section
       aria-label="When to interrupt"
-      aria-describedby={unavailable ? "oa-interrupts-later" : undefined}
       className={BOX}
-      data-interrupts={live ? "live" : "later"}
+      data-interrupts="live"
     >
-      {unavailable && (
-        <p id="oa-interrupts-later" className={`m-0 pb-2 ${muted}`}>
-          {PUSH_WORDS.notSetUp(site)}
-        </p>
-      )}
       <div className={ROW}>
         <div className="min-w-0">
           <b className="font-semibold" id="oa-quiet-label">
@@ -376,7 +390,6 @@ function Interrupts({
             label="Quiet hours"
             describedBy="oa-quiet-hint"
             checked={quiet !== null}
-            disabled={!live}
             onChange={(on) =>
               save({ ...prefs, quietHours: on ? QUIET_DEFAULT : null })
             }
@@ -386,7 +399,7 @@ function Interrupts({
               label="Quiet hours start"
               value={quiet?.start ?? QUIET_DEFAULT.start}
               options={HALF_HOURS}
-              disabled={!live || !quiet}
+              disabled={!quiet}
               onChange={(start) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, start } })
               }
@@ -398,7 +411,7 @@ function Interrupts({
               label="Quiet hours end"
               value={end}
               options={HALF_HOURS}
-              disabled={!live || !quiet}
+              disabled={!quiet}
               onChange={(e) =>
                 quiet && save({ ...prefs, quietHours: { ...quiet, end: e } })
               }
@@ -418,7 +431,6 @@ function Interrupts({
           <OptionSelect
             label="Interrupt me for"
             value={prefs.browserAllAsks ? "all" : "waiting"}
-            disabled={!live}
             options={[
               { value: "waiting", label: "Waiting asks and approvals" },
               { value: "all", label: "Every ask put to me" },
@@ -433,7 +445,6 @@ function Interrupts({
           <OptionSelect
             label="On lock screens"
             value={prefs.lockScreenDetail ? "show" : "hide"}
-            disabled={!live}
             options={[
               { value: "hide", label: "Hide details" },
               { value: "show", label: "Show details" },
@@ -442,6 +453,11 @@ function Interrupts({
           />
         </span>
       </div>
+      {cantReach && (
+        <p data-interrupts-later="" className={`m-0 pt-2 ${muted}`}>
+          {NOTIF_WORDS.applyLater}
+        </p>
+      )}
     </section>
   );
 }
