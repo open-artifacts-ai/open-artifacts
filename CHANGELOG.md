@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.229.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.228.0...v0.229.0) (2026-11-19)
+
+
+### Features
+
+* **agents:** teammates list, memberId on shares, first-setup flag ([#2577](https://github.com/open-artifacts-ai/open-artifacts/issues/2577)) ([#2917](https://github.com/open-artifacts-ai/open-artifacts/issues/2917)) ([7f9bf99](https://github.com/open-artifacts-ai/open-artifacts/commit/7f9bf99b0913ad1bb1fbc5b7bb70f57ea6c99418))
+
 ## [0.228.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.227.0...v0.228.0) (2026-11-19)
 
 
