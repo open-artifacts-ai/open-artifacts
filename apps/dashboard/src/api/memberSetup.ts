@@ -8,7 +8,7 @@
 export const SETUP = {
   heading: "Setup",
   set: "Set up",
-  of: (n: number) => `${n} of 5`,
+  of: (n: number, total = 5) => `${n} of ${total}`,
   invited: "Invited",
   guest: "–",
   stalled: {

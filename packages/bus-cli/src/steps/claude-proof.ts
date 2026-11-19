@@ -7,6 +7,7 @@ import {
   removeJsoncValue,
   setJsoncValue,
 } from "@oa/bus-adapter-mcp-json";
+import { canonicalAddress, MAIN_INSTANCE } from "@oa/bus-daemon";
 
 /**
  * #1822: Claude Code runs a `headersHelper` command when it connects to an
@@ -24,6 +25,8 @@ export const claudeConfigFile = (
 ) => join(env.CLAUDE_CONFIG_DIR ?? home, ".claude.json");
 
 export const PROOF_COMMAND = "mcp-proof";
+/** #2793 S4: names the instance a proof is for. No flag means main. */
+export const PROOF_INSTANCE_FLAG = "--instance";
 
 /** The token form's helper (packages/shared agent-clients.ts), and the file it reads. */
 const TOKEN_HELPER =
@@ -36,12 +39,13 @@ const quote = (s: string) =>
 export function proofHelper(
   busBin: string[],
   // `tokenFile` is shell text taken from the old helper, so it stays as it was.
-  opts: { tokenFile?: string; busHome?: string },
+  opts: { tokenFile?: string; busHome?: string; instance?: string },
 ): string {
   const run = [
     ...(opts.busHome ? [`OA_BUS_HOME=${quote(opts.busHome)}`] : []),
     ...busBin.map(quote),
     PROOF_COMMAND,
+    ...(opts.instance ? [PROOF_INSTANCE_FLAG, quote(opts.instance)] : []),
     ...(opts.tokenFile ? ["--token-file", opts.tokenFile] : []),
   ].join(" ");
   // A token entry must keep its Authorization when oa-bus cannot run (its
@@ -54,6 +58,13 @@ export function proofHelper(
 /** Whether `helper` is one of ours. */
 export const isProofHelper = (helper: unknown): boolean =>
   typeof helper === "string" && / mcp-proof( |$)/.test(helper);
+
+/** The instance a helper of ours is for; undefined for the main form (no flag). */
+export function helperInstance(helper: string): string | undefined {
+  return new RegExp(
+    ` ${PROOF_COMMAND} ${PROOF_INSTANCE_FLAG} ([a-z0-9-]{1,32})( |$)`,
+  ).exec(helper)?.[1];
+}
 
 /**
  * The bus home a helper of ours runs for: its `OA_BUS_HOME`, or undefined for
@@ -98,6 +109,26 @@ export function isInstanceEntry(entry: unknown, origin: string): boolean {
   }
 }
 
+/** An added instance: its local name and the address saved for it. */
+export type InstanceTarget = { name: string; hub: string };
+
+/**
+ * Whether `entry` is an HTTP server at the instance's /mcp, by canonical
+ * address (ws and http, a trailing slash, the default port all compare equal).
+ */
+export function isEntryFor(entry: unknown, hub: string): boolean {
+  if (!isRecord(entry) || typeof entry.url !== "string") return false;
+  if (entry.type !== undefined && entry.type !== "http") return false;
+  const want = canonicalAddress(hub);
+  const got = canonicalAddress(entry.url);
+  return want !== undefined && got !== undefined && got === `${want}/mcp`;
+}
+
+const matcherFor =
+  (origin: string, instance?: InstanceTarget) =>
+  (entry: unknown): boolean =>
+    instance ? isEntryFor(entry, instance.hub) : isInstanceEntry(entry, origin);
+
 /** Every server entry in the file with its scope: top-level (user) and `projects[dir]` (local). */
 function allEntries(doc: Doc): Found[] {
   const out: Found[] = [];
@@ -124,20 +155,28 @@ function allEntries(doc: Doc): Found[] {
 }
 
 /** The entries that point at this instance's /mcp, at user and local scope. Their names are the user's, so they are found by address. */
-export const findEntries = (doc: Doc, origin: string): Found[] =>
-  allEntries(doc).filter((f) => isInstanceEntry(f.entry, origin));
+export const findEntries = (
+  doc: Doc,
+  origin: string,
+  instance?: InstanceTarget,
+): Found[] =>
+  allEntries(doc).filter((f) => matcherFor(origin, instance)(f.entry));
 
 /** Entries on the instance's host whose address is not its /mcp (another path, port or scheme). */
-export function findElsewhere(doc: Doc, origin: string): Found[] {
+export function findElsewhere(
+  doc: Doc,
+  origin: string,
+  instance?: InstanceTarget,
+): Found[] {
   let host: string;
   try {
     host = new URL(origin).hostname;
   } catch {
     return [];
   }
+  const is = matcherFor(origin, instance);
   return allEntries(doc).filter((f) => {
-    if (typeof f.entry.url !== "string" || isInstanceEntry(f.entry, origin))
-      return false;
+    if (typeof f.entry.url !== "string" || is(f.entry)) return false;
     try {
       return new URL(f.entry.url).hostname === host;
     } catch {
@@ -270,7 +309,7 @@ export function installProof(
   origin: string,
   busBin: string[],
   busHome?: string,
-  opts: { guard?: boolean } = {},
+  opts: { guard?: boolean; instance?: InstanceTarget } = {},
 ): ProofResult {
   const out: ProofResult = { notes: [], changed: [] };
   const read = io.read ?? readText;
@@ -278,13 +317,18 @@ export function installProof(
   const { rest, proofs, config } = readRecord(io.record);
   if (text === "") {
     // Recorded even before the file exists, so a later one is picked up.
-    if (!opts.guard && config !== io.file)
+    // An added instance never turns on main's automatic linking.
+    if (!opts.guard && !opts.instance && config !== io.file)
       writeRecord(io, rest, proofs, io.file);
     return out;
   }
   const records = [...proofs];
   let next = text;
-  for (const f of findEntries(parseJsonc(text, io.file), origin)) {
+  for (const f of findEntries(
+    parseJsonc(text, io.file),
+    origin,
+    opts.instance,
+  )) {
     const at = recordOf(records, io.file, f.name, f.project);
     const rec = records[at];
     const cur = f.entry.headersHelper;
@@ -315,6 +359,7 @@ export function installProof(
     const helper = proofHelper(busBin, {
       ...(tokenFile ? { tokenFile } : {}),
       ...(busHome ? { busHome } : {}),
+      ...(opts.instance ? { instance: opts.instance.name } : {}),
     });
     if (cur === helper && rec) continue;
     const made: ProofRecord = {
@@ -329,7 +374,8 @@ export function installProof(
     out.changed.push({ entry: f.name, scope: f.scope });
   }
   const recorded = config === io.file;
-  if (out.changed.length === 0 && (recorded || opts.guard)) return out;
+  if (out.changed.length === 0 && (recorded || opts.guard || opts.instance))
+    return out;
   if (opts.guard) {
     let link = false;
     try {
@@ -338,7 +384,8 @@ export function installProof(
     if (link || read(io.file) !== text)
       return { notes: out.notes, changed: [], skipped: true };
   }
-  writeRecord(io, rest, records, io.file);
+  // An added instance's entries are recorded for uninstall; main's config marker is left as it was.
+  writeRecord(io, rest, records, opts.instance ? config : io.file);
   if (out.changed.length > 0) io.write(io.file, next);
   return out;
 }
@@ -396,7 +443,13 @@ export type EntryState = {
   name: string;
   scope: Scope | "project";
   project?: string;
-  state: "helper" | "missing" | "foreign" | "unrecorded" | "other-bus";
+  state:
+    | "helper"
+    | "missing"
+    | "foreign"
+    | "unrecorded"
+    | "other-bus"
+    | "other-instance";
   /** For `other-bus`: the home that owns the helper; undefined is the default home. */
   owner?: string;
   /** Whether Claude trusts the folder, when its config says; undefined when it can't be read. */
@@ -444,6 +497,8 @@ export function proofReport(
     recorded?: ProofRecord[];
     /** This bus's home when it is not the default one. */
     busHome?: string;
+    /** An added instance: entries are found by its address and need its own helper form. */
+    instance?: InstanceTarget;
   } = {},
 ): ProofReport {
   const report: ProofReport = { entries: [], elsewhere: [], symlink: false };
@@ -461,8 +516,17 @@ export function proofReport(
   } catch {}
   const localNames = new Set<string>();
   if (doc) {
-    for (const f of findEntries(doc, origin)) {
+    for (const f of findEntries(doc, origin, opts.instance)) {
       const base = stateOf(f.entry.headersHelper);
+      const form =
+        typeof f.entry.headersHelper === "string" && base === "helper"
+          ? helperInstance(f.entry.headersHelper)
+          : undefined;
+      const wrongForm =
+        base === "helper" &&
+        (opts.instance
+          ? form !== opts.instance.name
+          : form !== undefined && form !== MAIN_INSTANCE);
       const known =
         opts.recorded === undefined ||
         recordOf(opts.recorded, file, f.name, f.project) >= 0;
@@ -481,15 +545,17 @@ export function proofReport(
         ...(f.project === undefined ? {} : { project: f.project }),
         state: !mine
           ? "other-bus"
-          : base === "helper" && !known
-            ? "unrecorded"
-            : base,
+          : wrongForm
+            ? "other-instance"
+            : base === "helper" && !known
+              ? "unrecorded"
+              : base,
         ...(!mine && owner !== undefined ? { owner } : {}),
         ...(f.scope === "local" && trusted !== undefined ? { trusted } : {}),
       });
       if (f.scope === "local" && f.project === opts.cwd) localNames.add(f.name);
     }
-    for (const f of findElsewhere(doc, origin))
+    for (const f of findElsewhere(doc, origin, opts.instance))
       report.elsewhere.push({
         name: f.name,
         scope: f.scope,
@@ -501,7 +567,7 @@ export function proofReport(
   if (proj && isRecord(proj.mcpServers))
     for (const [name, entry] of Object.entries(proj.mcpServers)) {
       if (!isRecord(entry)) continue;
-      if (isInstanceEntry(entry, origin)) {
+      if (matcherFor(origin, opts.instance)(entry)) {
         if (localNames.has(name)) continue;
         const trusted =
           doc && opts.cwd !== undefined ? trustOf(doc, opts.cwd) : undefined;
@@ -519,4 +585,29 @@ export function proofReport(
       }
     }
   return report;
+}
+
+/**
+ * #2793 S4: after `oa-bus add`, gives the Claude entries whose address is the
+ * new instance's the `--instance` helper. The same ownership rules as
+ * installProof. `matched` counts the entries at that address, so the caller
+ * can tell "none" from "left alone".
+ */
+export function addInstanceProof(
+  io: ProofIo,
+  target: InstanceTarget,
+  busBin: string[],
+  busHome?: string,
+): ProofResult & { matched: number } {
+  let matched = 0;
+  try {
+    const text = (io.read ?? readText)(io.file);
+    if (text !== "")
+      matched = findEntries(parseJsonc(text, io.file), "", target).length;
+  } catch {}
+  if (matched === 0) return { notes: [], changed: [], matched };
+  return {
+    ...installProof(io, "", busBin, busHome, { instance: target }),
+    matched,
+  };
 }

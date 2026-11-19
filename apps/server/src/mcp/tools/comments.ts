@@ -68,6 +68,38 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   server.registerTool("list_comments", toolConfig("list_comments"), (i) =>
     guard(async () => {
       const { viewer } = await open(i.id, "comments.read");
+      if (
+        i.compact &&
+        i.answeredSince === undefined &&
+        i.mentionedSince === undefined
+      )
+        throw new ApiError(
+          "bad_request",
+          "compact needs answeredSince or mentionedSince.",
+        );
+      if (i.answeredSince !== undefined || i.mentionedSince !== undefined) {
+        const found = await listComments(env, i.id, i.status ?? "all", viewer, {
+          ...(i.answeredSince !== undefined
+            ? { answeredSince: i.answeredSince }
+            : {}),
+          ...(i.mentionedSince !== undefined
+            ? { mentionedSince: i.mentionedSince }
+            : {}),
+          ...(i.compact ? { compact: true } : {}),
+        });
+        if ("threads" in found) {
+          return ok(
+            `${plural(found.threads.length, "thread")} on ${i.id} since your time (${found.open} open)${
+              found.truncated ? ", more exist than are shown" : ""
+            }.`,
+            found,
+          );
+        }
+        return ok(
+          `${plural(found.answers?.length ?? 0, "answer")}, ${plural(found.mentions?.length ?? 0, "mention")} on ${i.id} since your time.`,
+          found,
+        );
+      }
       const out = await listComments(env, i.id, i.status ?? "all", viewer);
       return ok(
         `${plural(out.threads.length, "thread")} on ${i.id} (${out.open} open)${

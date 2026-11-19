@@ -6,7 +6,13 @@ import { SETUP_STEPS, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { fiveOf, mySteps, useOwnerName, withLocal } from "../api/myOnboarding";
+import {
+  BUS_LINE,
+  fiveOf,
+  mySteps,
+  useOwnerName,
+  withLocal,
+} from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -112,9 +118,13 @@ export function MemberGetStarted() {
   const userId = me?.user.id;
   const setOnboarding = useSetOnboarding(userId ? { userId } : undefined);
   // A refused save (today's server) still holds for this session.
-  const s = mySteps(withLocal(onboarding.data, userId));
+  const merged = withLocal(onboarding.data, userId);
+  const s = mySteps(merged);
   const five = fiveOf(s);
-  const all = five.every(Boolean);
+  // The one count (packages/shared setupSteps): card, Welcome and Members agree.
+  // #2890: chat-only (never connected the bus), three steps: no name, no mention.
+  const sum = setupSteps(merged);
+  const all = sum.stalled === undefined;
   // Nothing shows until the server has said the card is still open.
   const live = member && onboarding.isSuccess && !s.hidden && !s.completed;
 
@@ -125,22 +135,24 @@ export function MemberGetStarted() {
     if (answered && userId) rememberNoCard(userId, gone);
   }, [answered, userId, gone]);
 
-  // Five of five: the server keeps that, so the card stays gone.
+  // Five of five: the server keeps that, so the card stays gone. Never saved
+  // while the bus was never connected (#2890): 3 of 3 can come before oa-bus
+  // first connects, and a saved `completed` would hide Name and Mention for good.
   const { mutate: save } = setOnboarding;
   useEffect(() => {
-    if (live && all) save({ completed: true });
-  }, [live, all, save]);
+    if (live && all && s.bus) save({ completed: true });
+  }, [live, all, s.bus, save]);
 
   // Steps happen elsewhere (an agent, another tab): re-read until done.
   const qc = useQueryClient();
   useEffect(() => {
-    if (!live || all) return;
+    if (!live || (all && s.bus)) return;
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
       void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
-  }, [live, all, qc]);
+  }, [live, all, s.bus, qc]);
 
   // While R.onboarding loads, the card's slot is held (the results render at
   // once, below it), so the card never pushes them down when it arrives. A
@@ -158,10 +170,10 @@ export function MemberGetStarted() {
   const hide = () => save({ dismissed: true });
   const o = onboarding.data;
   const nm = o?.agentName || "your agent";
-  // The one count (packages/shared setupSteps): card, Welcome and Members agree.
-  const { done: count, stalled } = setupSteps(o);
+  const { done: count, total, stalled } = sum;
   const cur = stalled ? SETUP_STEPS.indexOf(stalled) : -1;
   const st = (i: number) => (five[i] ? "done" : cur === i ? "cur" : "todo");
+  const no = (k: (typeof SETUP_STEPS)[number]) => sum.steps.indexOf(k) + 1;
 
   return (
     <section aria-labelledby="oa-get-started-h" data-member="" className={CARD}>
@@ -173,7 +185,7 @@ export function MemberGetStarted() {
           Get started
         </h2>
         <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-          {count} of 5
+          {count} of {total}
         </span>
         <Button
           variant="ghost"
@@ -185,7 +197,7 @@ export function MemberGetStarted() {
         </Button>
       </div>
       <ol className="m-0 list-none p-0">
-        <Step n={1} state={st(0)} title={MEMBER_STEPS.connect}>
+        <Step n={no("agent")} state={st(0)} title={MEMBER_STEPS.connect}>
           {s.connected ? (
             <p className="m-0">Agent connected</p>
           ) : (
@@ -195,34 +207,46 @@ export function MemberGetStarted() {
             </>
           )}
         </Step>
-        <Step n={2} state={st(1)} title={MEMBER_STEPS.name}>
-          <p className="m-0">
-            {s.named ? `Named: ${nm}` : MEMBER_STEPS.nameHint}
-          </p>
-        </Step>
-        <Step n={3} state={st(2)} title={MEMBER_STEPS.publish}>
+        {s.bus && (
+          <Step n={no("named")} state={st(1)} title={MEMBER_STEPS.name}>
+            <p className="m-0">
+              {s.named ? `Named: ${nm}` : MEMBER_STEPS.nameHint}
+            </p>
+          </Step>
+        )}
+        <Step n={no("artifact")} state={st(2)} title={MEMBER_STEPS.publish}>
           <p className="m-0">
             {s.published
               ? `Published: ${o?.firstArtifact?.title ?? "your first artifact"}`
               : MEMBER_STEPS.publishHint}
           </p>
         </Step>
-        <Step n={4} state={st(3)} title={MEMBER_STEPS.mention}>
-          {s.replied ? (
-            <p className="m-0">{o?.agentName || "Your agent"} replied</p>
-          ) : (
-            <>
-              <p className="m-0">{MEMBER_STEPS.mentionHint}</p>
-              {o?.mentionStalled && <Waiting>{MEMBER_STEPS.stalled}</Waiting>}
-            </>
-          )}
-        </Step>
-        <Step n={5} state={st(4)} title={MEMBER_STEPS.ask}>
+        {s.bus && (
+          <Step n={no("mention")} state={st(3)} title={MEMBER_STEPS.mention}>
+            {s.replied ? (
+              <p className="m-0">{o?.agentName || "Your agent"} replied</p>
+            ) : (
+              <>
+                <p className="m-0">{MEMBER_STEPS.mentionHint}</p>
+                {o?.mentionStalled && <Waiting>{MEMBER_STEPS.stalled}</Waiting>}
+              </>
+            )}
+          </Step>
+        )}
+        <Step n={no("ask")} state={st(4)} title={MEMBER_STEPS.ask}>
           <p className="m-0">
             {s.answered ? "Answered" : MEMBER_STEPS.askHint}
           </p>
         </Step>
       </ol>
+      {!s.bus && (
+        <p
+          data-bus-line=""
+          className="m-0 mt-[var(--oa-space-2)] text-[length:var(--oa-text-xs)] text-muted-foreground"
+        >
+          {BUS_LINE}
+        </p>
+      )}
     </section>
   );
 }

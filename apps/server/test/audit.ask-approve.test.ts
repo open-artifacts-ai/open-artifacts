@@ -134,23 +134,12 @@ const answer = (k: K, auth: string, body: object) =>
     method: "POST",
     body,
   });
-const passkeyPick = async (k: K, optionId = "merge") => {
-  const r = await api(
-    app,
-    R.commentAnswerChallenge(k.artifactId, k.threadId, k.commentId),
-    alice.cookie,
-    { method: "POST", body: { optionId } },
-  );
-  const c = (await r.json()) as PasskeyChallenge;
-  if (!c.options) throw new Error(`challenge ${r.status} ${JSON.stringify(c)}`);
-  return answer(k, alice.cookie, {
-    optionId,
-    assertion: await assertFor(aliceKey, c),
-  });
-};
+// #2864: no passkey on asks: a typed browser pick is the decision.
+const passkeyPick = async (k: K, optionId = "merge") =>
+  answer(k, alice.cookie, { optionId });
 
 describe("ask.approve", () => {
-  it("a passkey decision: who, ids, the option, the action, passkey true; no text", async () => {
+  it("a typed decision: who, ids, the option, the action, passkey false; no text", async () => {
     const k = await ask(alice, OPTS);
     expect((await passkeyPick(k)).status).toBe(200);
     const r = await rows(k);
@@ -168,7 +157,7 @@ describe("ask.approve", () => {
       commentId: k.commentId,
       optionId: "merge",
       action: "merge",
-      passkey: true,
+      passkey: false,
       typed: true,
       askerIsAgent: false,
     });
@@ -176,9 +165,9 @@ describe("ask.approve", () => {
     for (const s of [QUESTION, LABEL, "zebra", "Option", "Not yet"])
       expect(all).not.toContain(s);
     expect(all).not.toMatch(/@/);
-    // Replaying the same pick is refused (409) and writes nothing more.
+    // Replaying the same pick changes nothing and writes nothing more.
     expect((await answer(k, alice.cookie, { optionId: "merge" })).status).toBe(
-      409,
+      200,
     );
     expect(await rows(k)).toHaveLength(1);
   });
@@ -280,14 +269,8 @@ describe("ask.approve", () => {
     expect(await rows(k)).toHaveLength(0);
   });
 
-  it("refused picks write nothing: no assertion, a token with passkey ask, a stranger", async () => {
+  it("a refused pick writes nothing: a stranger", async () => {
     const k = await ask(alice, OPTS);
-    expect((await answer(k, alice.cookie, { optionId: "merge" })).status).toBe(
-      403,
-    );
-    expect((await answer(k, alice.pat, { optionId: "merge" })).status).toBe(
-      403,
-    );
     expect((await answer(k, bob.cookie, { optionId: "merge" })).status).toBe(
       403,
     );
