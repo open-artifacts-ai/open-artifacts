@@ -116,6 +116,7 @@ describe("purgeDeleted", () => {
       "fulfilled", // sendSetupReminders (#2632)
       "fulfilled", // backfillActivation (#2879)
       "fulfilled", // lapseHeld (#2577)
+      "fulfilled", // reconcileHeld (#2851)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
       "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);

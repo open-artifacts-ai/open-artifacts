@@ -322,9 +322,11 @@ const robots = (e: unknown) => callWorker(new Request(`${APP}/robots.txt`), e);
  * adds 1: one delete. The held-request lapse (lapseHeld, #2577) adds 5: its
  * update of held items past their expiry, its three deletes (lapsed or withdrawn, allowed, empty requests) and the delete of
  * listed deliveries older than 30 days (one D1 batch, counted per statement),
- * on an empty DB too.
+ * on an empty DB too. The held-request reconcile (reconcileHeld, #2851) adds
+ * 1: its select of pages noted for it (none on an empty DB, so nothing more).
+ * With the lapse's 5 that makes 30 on the merged tree.
  */
-const NIGHTLY_QUERIES = 29;
+const NIGHTLY_QUERIES = 30;
 
 /** Another isolate: its own marker check (keyed by the DB binding). */
 const isolate = (mode: OAuthStoreMode, over: Record<string, unknown> = {}) =>

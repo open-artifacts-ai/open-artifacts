@@ -811,6 +811,69 @@ export function heldCanon(
   return JSON.stringify([c.body, c.anchor, ask ?? null, names]);
 }
 
+/** #2851: where a held-target scan left off. */
+export type HeldScanCursor = { at: string; commentId: string; key: string };
+
+/**
+ * #2851: the targets still held in this page's comments, oldest comment first,
+ * with who wrote the comment and when. For the sweep that finds a held target
+ * whose D1 request row never got written. Ids, keys and times only.
+ */
+export function heldScan(
+  sql: SqlStorage,
+  limit: number,
+  /** The last target of the previous page: the next page starts after it (oldest comment first, then comment id, then key: a stable order). */
+  after?: HeldScanCursor | null,
+): {
+  commentId: string;
+  threadId: string;
+  key: string;
+  way: string;
+  owner: string;
+  namespace: string;
+  name: string;
+  at: string;
+  author: string;
+}[] {
+  return sql
+    .exec<{
+      comment_id: string;
+      thread_id: string;
+      key: string;
+      way: string;
+      owner: string | null;
+      identity: string | null;
+      at: string;
+      author: string;
+    }>(
+      `select t.comment_id, t.thread_id, t.key, t.name as way, t.owner, t.identity, c.created_at as at, c.author
+         from comment_targets t join comments c on c.id = t.comment_id
+        where t.kind = 'held' and t.state = 'held' and t.owner is not null
+          ${after ? "and (c.created_at, t.comment_id, t.key) > (?, ?, ?)" : ""}
+        order by c.created_at, t.comment_id, t.key limit ?`,
+      ...(after ? [after.at, after.commentId, after.key] : []),
+      limit,
+    )
+    .toArray()
+    .map((r) => {
+      const a = JSON.parse(r.identity ?? "{}") as {
+        namespace?: string;
+        name?: string;
+      };
+      return {
+        commentId: r.comment_id,
+        threadId: r.thread_id,
+        key: r.key,
+        way: r.way,
+        owner: r.owner as string,
+        namespace: a.namespace ?? "",
+        name: a.name ?? "",
+        at: r.at,
+        author: r.author,
+      };
+    });
+}
+
 /** The held targets of a comment, optionally for one owner. */
 export function heldOf(
   sql: SqlStorage,
