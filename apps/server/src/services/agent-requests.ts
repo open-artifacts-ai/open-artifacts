@@ -1162,12 +1162,20 @@ export async function addListens(
 
   let artifactId: string | null = null;
   let spaceId: string | null = null;
+  let spaceName = "";
+  let pageTitle = "";
   if (body.scope === "page") {
     if (!body.artifactId || body.spaceId)
       throw refuse("A page needs artifactId", "artifactId");
     artifactId = body.artifactId;
     if (!(await accessLevel(env, callerOf(owner), artifactId)))
       throw refuse("No such page", "artifactId");
+    pageTitle =
+      (
+        await stmt(env.DB, "select title from artifacts where id = ?1")
+          .bind(artifactId)
+          .first<{ title: string }>()
+      )?.title ?? "";
     if (await pageIsOpen(env, artifactId))
       throw refuse(
         "A page open to guests or the link takes no list",
@@ -1179,19 +1187,33 @@ export async function addListens(
     spaceId = body.spaceId;
     const sp = await stmt(
       env.DB,
-      `select 1 as x from spaces s join space_members m on m.space_id = s.id
+      `select s.name as name from spaces s join space_members m on m.space_id = s.id
         where s.id = ?1 and m.user_id = ?2 and s.kind = 'shared' and s.deleted_at is null limit 1`,
     )
       .bind(spaceId, ownerId)
-      .first();
+      .first<{ name: string }>();
     if (!sp) throw refuse("No such space", "spaceId");
+    spaceName = sp.name;
   } else if (body.artifactId || body.spaceId)
     throw refuse("All pages takes no page or space", "scope");
 
+  const names = new Map<string, string>();
   for (const id of ids) {
     const m = id && id !== ownerId ? await getUser(env, id) : null;
     if (!m || (await isOutsideMember(env, id)))
       throw refuse("Not a teammate you can add");
+    // The app's name for them (never the email), from the raw columns.
+    const raw = await stmt(
+      env.DB,
+      "select name, display_name as displayName, email from users where id = ?1",
+    )
+      .bind(id)
+      .first<{
+        name: string | null;
+        displayName: string | null;
+        email: string;
+      }>();
+    names.set(id, raw ? personName(raw) : "Someone");
     if (artifactId) {
       const acc = await accessLevel(env, callerOf(m), artifactId);
       if (!acc || !meetsLevel(acc.level, "editor"))
@@ -1200,16 +1222,16 @@ export async function addListens(
   }
 
   const stmts: D1PreparedStatement[] = [];
-  const entryIds: string[] = [];
+  const written: ListenEntry[] = [];
   for (const id of ids) {
     const live = await stmt(
       env.DB,
-      `select id, until from agent_listens
+      `select id, until, created_at from agent_listens
         where owner_id = ?1 and member_id = ?2 and scope = ?3 and removed_at is null and until > ?4
           and artifact_id is ?5 and space_id is ?6 limit 1`,
     )
       .bind(ownerId, id, body.scope, now, artifactId, spaceId)
-      .first<{ id: string; until: number }>();
+      .first<{ id: string; until: number; created_at: number }>();
     let entryId: string;
     if (live) {
       entryId = live.id;
@@ -1240,7 +1262,15 @@ export async function addListens(
         ),
       );
     }
-    entryIds.push(entryId);
+    written.push({
+      id: entryId,
+      member: { id, name: names.get(id) ?? "Someone" },
+      scope: body.scope,
+      artifact: artifactId ? { id: artifactId, title: pageTitle } : null,
+      space: spaceId ? { id: spaceId, name: spaceName } : null,
+      until: Math.max(until, live?.until ?? 0),
+      createdAt: live?.created_at ?? now,
+    });
     stmts.push(
       audit(
         env,
@@ -1261,10 +1291,8 @@ export async function addListens(
     );
   }
   await env.DB.batch(stmts);
-  const all = (await listListens(env, ownerId, now)).entries;
-  return {
-    entries: entryIds.flatMap((e) => all.filter((x) => x.id === e)),
-  };
+  // Built from what was just written: no second read that could fail after the commit.
+  return { entries: written };
 }
 
 /** The window "Who asked what" covers. */

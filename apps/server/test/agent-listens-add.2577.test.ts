@@ -288,7 +288,7 @@ describe("POST agent-listens", () => {
     expect(await rows(m.userId)).toHaveLength(2);
   });
 
-  it("batch: all members, one refusal refuses all, at most 200", async () => {
+  it("batch: all members, one refusal refuses all, at most 50", async () => {
     const a = await mk("la-b1");
     const b = await mk("la-b2");
     const ok = await add({
@@ -306,8 +306,32 @@ describe("POST agent-listens", () => {
     expect(bad.status).toBe(400);
     expect(await rows(c.userId)).toHaveLength(0);
 
-    const many = Array.from({ length: 201 }, (_, i) => `u${i}`);
-    expect((await add({ ...base, memberIds: many })).status).toBe(400);
+    // The cap: 51 is refused, 50 is added and answered from what was written.
+    expect(
+      (
+        await add({
+          ...base,
+          memberIds: Array.from({ length: 51 }, (_, i) => `u${i}`),
+        })
+      ).status,
+    ).toBe(400);
+    const fifty = await Promise.all(
+      Array.from({ length: 50 }, (_, i) => mk(`la-cap${i}`)),
+    );
+    const cap = await add({ ...base, memberIds: fifty.map((u) => u.userId) });
+    expect(cap.status).toBe(200);
+    const got = ((await cap.json()) as ListenAddResult).entries;
+    expect(got).toHaveLength(50);
+    expect(got.map((e) => e.member.id)).toEqual(fifty.map((u) => u.userId));
+    expect(new Set(got.map((e) => e.member.name))).toEqual(
+      new Set(["Someone"]),
+    );
+    // The same rows the list shows.
+    const listed = (await listListens(E, owner.userId)).entries;
+    for (const e of got) expect(listed.find((x) => x.id === e.id)).toEqual(e);
+    // A retry extends, never duplicates.
+    await add({ ...base, memberIds: fifty.map((u) => u.userId) });
+    expect(await rows(fifty[0]?.userId as string)).toHaveLength(1);
     // Both or neither of memberId and memberIds is a bad body.
     expect((await add({ ...base })).status).toBe(400);
     expect(
