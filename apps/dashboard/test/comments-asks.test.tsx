@@ -3120,7 +3120,7 @@ describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", 
 
   it.each([
     ["empty", "Write your answer first."],
-    ["too_long", "That is over 1,000 characters. Shorten it."],
+    ["too_long", "That's over 1,000 characters. Shorten it."],
   ])(
     "says %s in plain words and keeps the box and the words",
     async (reason, copy) => {

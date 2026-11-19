@@ -44,6 +44,6 @@ export function ownWordsRefusal(e: unknown): string | null {
   return d.reason === "empty"
     ? "Write your answer first."
     : d.reason === "too_long"
-      ? `That is over ${OWN_WORDS_MAX.toLocaleString("en")} characters. Shorten it.`
-      : "Couldn't send your words. Try again.";
+      ? `That's over ${OWN_WORDS_MAX.toLocaleString("en")} characters. Shorten it.`
+      : "Couldn't send your answer. Try again.";
 }
