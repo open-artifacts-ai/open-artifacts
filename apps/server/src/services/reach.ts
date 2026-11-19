@@ -40,6 +40,14 @@ export type Reach = {
   googleUncertain: boolean;
   /** The address's domain is one of AUTH_DOMAINS. */
   inDomain: boolean;
+  /**
+   * Google admits them, but not on its own evidence: a consumer account on a
+   * custom address (or a Workspace one) is let in after an emailed code,
+   * first login only (#2590 G2). Only where Google and codes are both offered.
+   * A Google client of type Internal (no outside account can log in) isn't
+   * visible to config; the sharer's warning can't tell it apart.
+   */
+  googleAfterCode: boolean;
 };
 
 /** LoginWay order, as the schema lists them. */
@@ -51,13 +59,13 @@ const WAY_ORDER: readonly LoginWay[] = [
 ];
 
 /**
- * The ways in from what reachOf found. "google_after_code" waits for the code
- * step (slice 2), so it is never returned yet.
+ * The ways in from what reachOf found.
  */
 export function waysOf(r: Reach): LoginWay[] {
   const ways = new Set<LoginWay>();
   if (r.methods.includes("google")) ways.add("google");
   else if (r.googleUncertain) ways.add("google_workspace");
+  if (r.googleAfterCode) ways.add("google_after_code");
   if (r.methods.includes("email")) ways.add("email_code");
   return WAY_ORDER.filter((w) => ways.has(w));
 }
@@ -85,6 +93,7 @@ export async function reachOf(
   // admit: a removed or suspended row is refused; no row needs a join rule.
   // A share to the exact address makes a guest on strong evidence (#2590), so
   // Google admits a recipient with no row too, on any install.
+  let googleAfterCode = false;
   if (
     offered.has("google") &&
     active &&
@@ -103,7 +112,10 @@ export async function reachOf(
       noDomainIdentityOk(email, null) ||
       (cfg.domains.length > 0 && googleTenantOk(cfg, domain));
     if (certain) methods.push("google");
-    else googleUncertain = true;
+    else {
+      googleUncertain = true;
+      googleAfterCode = offered.has("email");
+    }
   }
   if (
     offered.has("email") &&
@@ -114,6 +126,7 @@ export async function reachOf(
     methods: orderSignInMethods(methods),
     googleUncertain,
     inDomain: inDomains(cfg.domains, domain),
+    googleAfterCode,
   };
 }
 
@@ -179,10 +192,16 @@ export async function shareReach(
   // Only Google as a Workspace account might admit them (#2590): the email
   // names Google, and the sharer is warned it works only if the address is a
   // Google Workspace account (a consumer account waits for the code step).
+  // Where codes are on, a consumer account is let in after a code, so the
+  // warning only applies where they are off.
   if (r.googleUncertain)
     return {
       methods: ["google"],
-      recipient: { canSignIn: false, reason: "workspace_only" },
+      ...(r.googleAfterCode
+        ? {}
+        : {
+            recipient: { canSignIn: false, reason: "workspace_only" } as const,
+          }),
       role,
       ways,
     };

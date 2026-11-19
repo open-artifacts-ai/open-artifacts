@@ -32,7 +32,6 @@ import { Members } from "./settings/Members";
 import { Notifications } from "./settings/Notifications";
 import { Plan } from "./settings/Plan";
 import { Profile } from "./settings/Profile";
-import { Security } from "./settings/Security";
 import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
 import { Spaces } from "./settings/spaces/Spaces";
@@ -102,13 +101,22 @@ function FullRoute() {
 
 /** `/sign-in`: the SPA owns the chooser and the code forms. */
 function SignInRoute() {
-  const { error, next, method, via } = useSearch({ strict: false }) as {
+  const { error, next, method, via, link } = useSearch({ strict: false }) as {
     error?: string;
     next?: string;
     method?: string;
     via?: "access" | "google";
+    link?: string;
   };
-  return <SignIn error={error} next={next} method={method} via={via} />;
+  return (
+    <SignIn
+      error={error}
+      next={next}
+      method={method}
+      via={via}
+      link={link === "1"}
+    />
+  );
 }
 
 function DiffRoute() {
@@ -288,7 +296,14 @@ const routeTree = root.addChildren([
   settings.addChildren([
     gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
     gated("/settings/notifications", [...ADMINS, "member"], "/", Notifications),
-    gated("/settings/security", [...ADMINS, "member"], "/", Security),
+    // #2864: no passkey UI, so Security is gone; old links land on Profile.
+    createRoute({
+      getParentRoute: () => settings,
+      path: "/settings/security",
+      beforeLoad: () => {
+        throw redirect({ to: "/settings/profile", replace: true } as never);
+      },
+    }),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
     gated("/settings/login", ADMINS, "/settings/connections", Login),
     createRoute({
@@ -338,11 +353,15 @@ const routeTree = root.addChildren([
       const method = s.method === "code" ? "code" : undefined;
       // Which sign-in refused a no_access (#799); anything else is dropped.
       const via = s.via === "access" || s.via === "google" ? s.via : undefined;
+      // #2590 G2: link=1 (the server holds a refused guest's address);
+      // anything else is dropped. Never an address in the URL.
+      const link = s.link === "1" || s.link === 1 ? "1" : undefined;
       return {
         ...(error !== undefined && { error }),
         ...(next && { next }),
         ...(method && { method }),
         ...(via && { via }),
+        ...(link && { link }),
       };
     },
     component: SignInRoute,

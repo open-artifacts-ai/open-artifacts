@@ -22,6 +22,7 @@ import {
   BusReachProposeSchema,
   BusReachPutSchema,
   BusRolePutSchema,
+  BusRunVersionPutSchema,
   type Member,
   R,
 } from "@oa/shared";
@@ -43,7 +44,7 @@ import {
 import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
-import { noteInstanceFirst } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
@@ -51,6 +52,7 @@ import {
   deleteBusLink,
   deleteBusReach,
   deleteBusRole,
+  installNowOnMachine,
   listBusAgents,
   listBusLinks,
   listBusMachines,
@@ -63,6 +65,7 @@ import {
   putBusReach,
   putBusRole,
   revokeBusMachine,
+  setBusRunVersion,
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
@@ -723,7 +726,7 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
     const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
     if (first.meta.changes !== 1) return unauthorized();
     // #2479: a machine's first connect (no-op unless analytics is on).
-    await noteInstanceFirst(env, "agent_connected", c.executionCtx);
+    await noteMemberFirst(env, m.userId, "agent_connected", c.executionCtx);
   } else if (m.lastUsedAt <= now - LAST_USED_MS)
     c.executionCtx.waitUntil(
       stmt(env.DB, TOUCH_MACHINE)
@@ -764,6 +767,40 @@ export function mountBus(app: AppType): void {
     const id = c.req.param("id") ?? "";
     if (!(await revokeBusMachine(c.env, user.id, id))) throw notFound();
     return c.body(null, 204);
+  });
+  // #2552: the owner names the version the instance's machines run. Owner
+  // only (the policy gate), in an interactive cookie session: no PAT, OAuth
+  // grant or machine token, so no agent can name a version.
+  app.put(R.busRunVersion, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw notFound();
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const body = await jsonBody(c, BusRunVersionPutSchema);
+    await setBusRunVersion(
+      c.env,
+      user.id,
+      body.version,
+      body.stepBack === true,
+    );
+    return c.body(null, 204);
+  });
+  // #2552 "Install now": the machine's own member, in a browser session.
+  app.post(`${R.busMachines}/:id/install-now`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    switch (await installNowOnMachine(c.env, user.id, id)) {
+      case "machine_unknown":
+        throw notFound();
+      case "offline":
+        throw new ApiError("conflict", "That machine is not connected", {
+          reason: "machine_offline",
+        });
+      default:
+        return c.body(null, 204);
+    }
   });
   // #1299: the hosted canary's probe. Reads the reserved hub, never the caller's.
   app.get(R.busPing, async (c) => {

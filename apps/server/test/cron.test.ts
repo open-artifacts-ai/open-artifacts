@@ -102,6 +102,9 @@ describe("purgeDeleted", () => {
     expect(settled.map((s) => s.status)).toEqual([
       "fulfilled",
       "fulfilled",
+      "fulfilled", // sweepPictures (#2508)
+      "fulfilled", // sweepInboxLater (#2762)
+      "fulfilled", // sweepEmailEvents (#2650)
       "fulfilled",
       "fulfilled", // sweepOAuthStore (expired rows, old tombstones)
       "fulfilled", // C3: reindexStale
@@ -110,11 +113,63 @@ describe("purgeDeleted", () => {
       "fulfilled", // checkLatestRelease (B3)
       "fulfilled", // expirePending (P3 T12 directory confirm)
       "fulfilled", // sweepAuditEvents (400-day audit retention)
+      "fulfilled", // sendSetupReminders (#2632)
+      "fulfilled", // backfillActivation (#2879)
+      "fulfilled", // lapseHeld (#2577)
       "fulfilled", // kickSync (P3 T13; a no-op with sync off)
       "fulfilled", // marks the day for RECOVERY_CRON's daily slot (O1)
     ]);
     expect(
       await count("select count(*) n from artifacts where id = ?", gone),
     ).toBe(0);
+  });
+
+  it("the daily run lapses a held request past its expiry (#2577)", async () => {
+    const owner = await login(`cron-own-${tag}@x.com`);
+    const a = await publish(
+      env,
+      user,
+      { title: "held", format: "markdown", content: "x" } as never,
+      null,
+    );
+    const rid = newId();
+    const mkItem = async (id: string, expires: number) =>
+      env.DB.prepare(
+        `insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at)
+         values (?1, ?2, 't', ?1, 'k', 'mention', 'held', ?3, ?4)`,
+      )
+        .bind(id, rid, Date.now() - 8 * DAY, expires)
+        .run();
+    await env.DB.prepare(
+      `insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at)
+       values (?1, ?2, ?3, ?4, ?5, ?5)`,
+    )
+      .bind(rid, owner.userId, user.id, a.id, Date.now() - 8 * DAY)
+      .run();
+    const late = newId();
+    const live = newId();
+    await mkItem(late, Date.now() - DAY);
+    await mkItem(live, Date.now() + DAY);
+    const waits: Promise<unknown>[] = [];
+    const ctx = {
+      waitUntil: (p: Promise<unknown>) => waits.push(p),
+      passThroughOnException() {},
+    } as unknown as ExecutionContext;
+    const f = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async () => new Response("", { status: 429 }));
+    await worker.scheduled?.({} as ScheduledController, env, ctx);
+    await Promise.all(waits);
+    f.mockRestore();
+    const state = async (id: string) =>
+      (
+        await env.DB.prepare(
+          "select state from held_request_items where id = ?1",
+        )
+          .bind(id)
+          .first<{ state: string }>()
+      )?.state;
+    expect(await state(late)).toBe("lapsed");
+    expect(await state(live)).toBe("held");
   });
 });

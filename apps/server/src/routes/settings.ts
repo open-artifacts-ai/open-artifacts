@@ -14,6 +14,7 @@ import { orgCan } from "../auth/policy.js";
 import { requireFreshReauth } from "../auth/reauth.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
+import { execCtx } from "../http/middleware.js";
 import { userActor } from "../services/audit.js";
 import {
   firstUnproven,
@@ -22,6 +23,7 @@ import {
   markFirstInviteSeen,
   soloPlan,
 } from "../services/login.js";
+import { applyLoginChange } from "../services/login-apply.js";
 import { patchSettings, settingsView } from "../services/members.js";
 import { spacesOn } from "../services/spaces.js";
 import type { AppType } from "./index.js";
@@ -59,10 +61,17 @@ export function mountSettings(app: AppType): void {
     const actor = requireManager(c);
     const patch = await jsonBody(c, SettingsPatchSchema);
     if (patch.name !== undefined) patch.name = cleanName(patch.name);
+    // #2590: only the owner turns outside sharing on or off.
+    if (
+      patch.outsideSharing !== undefined &&
+      !orgCan(actor, "outside.manage", { cap: capOfCaller(caller(c)) })
+    )
+      throw new ApiError("owner_only", "Only the owner can change this");
     return c.json(
       await patchSettings(c.env, patch, {
         spaces: spacesOn(c.env),
         by: userActor(actor.id),
+        ctx: execCtx(c),
       }),
     );
   });
@@ -103,6 +112,15 @@ export function mountSettings(app: AppType): void {
         "apply_pending",
         "This instance can't apply a login change yet; try again later.",
       );
+    // Hosted with the platform's gate: it applies the change (a redeploy in
+    // about a minute). Fails closed: a refusal is its reason, no answer is
+    // login_unavailable, and nothing changes here either way.
+    await applyLoginChange(c.env, {
+      ownerUserId: user.id,
+      hd: (c.var.sessionHd ?? "").toLowerCase(),
+      domains: body.domains,
+      autoJoin: body.autoJoin,
+    });
     return c.json(
       await loginSettings(c.env, user.id, c.var.sessionHd, planOfMember(user)),
     );

@@ -77,5 +77,11 @@ export const restrictedHandlers = (
     : [
         http.get("*/api/v1/tokens", () => HttpResponse.json([])),
         http.get("*/api/v1/oauth-clients", () => HttpResponse.json([])),
+        http.get("*/api/v1/me/agent-listens", () =>
+          HttpResponse.json({ entries: [] }),
+        ),
+        http.get("*/api/v1/me/agent-asks/held", () =>
+          HttpResponse.json({ requests: [] }),
+        ),
       ]),
 ];

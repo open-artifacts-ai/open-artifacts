@@ -366,6 +366,7 @@ describe("settings", () => {
     expect(SettingsSchema.parse(await r.json())).toEqual({
       name: "Acme",
       defaultVisibility: "team",
+      outsideSharing: true,
     });
     const r2 = await call(R.settings, owner.cookie, {
       method: "PATCH",
@@ -374,6 +375,7 @@ describe("settings", () => {
     expect(SettingsSchema.parse(await r2.json())).toEqual({
       name: "Acme",
       defaultVisibility: "private",
+      outsideSharing: true,
     });
     const me = MeSchema.parse(await (await call(R.me, member.cookie)).json());
     expect(me.instance.name).toBe("Acme");

@@ -495,6 +495,15 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["DELETE", /^\/api\/v1\/bus\/reach\/[^/]+$/],
   // Dismissing their own guest-share notice (notices.own; guests get 404 there).
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
+  // A comment or a reply: the route's policy refuses it (404) unless the
+  // caller is a guest holding a commenter share.
+  // A live-data doc write: the policy refuses it (404) unless a guest holds a
+  // commenter share and the page lets viewers write.
+  ["PUT", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["PATCH", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["DELETE", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/[^/]+$/],
+  ["POST", /^\/api\/v1\/artifacts\/[^/]+\/comments$/],
+  ["POST", /^\/api\/v1\/artifacts\/[^/]+\/comments\/[^/]+\/replies$/],
 ];
 
 /**

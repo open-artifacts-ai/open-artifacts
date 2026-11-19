@@ -1,6 +1,7 @@
 import type { PlanLimit, PlanLimitDetails } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import { scopedPlan } from "./features.js";
 import { billingActive } from "./plan.js";
 
@@ -86,10 +87,11 @@ export function planLimitError(limit: PlanLimit, max: number): ApiError {
  * still holds. One statement, bounded by the cap itself (it runs only while
  * the cap is on).
  */
-const STORED_BYTES = `select coalesce(sum(size), 0) as n from (
+const STORED_BYTES = `select coalesce(sum(size), 0)
+  + (select coalesce(sum(bytes), 0) from comment_pictures where received_at > 0) as n from (
   select max(json_extract(j.value, '$.size')) as size
   from artifacts a join versions v on v.artifact_id = a.id, json_each(v.manifest) j
-  where a.deleted_at is null
+  where a.deleted_at is null and not ${untouchedWelcomeSql("a")}
   group by coalesce('d:' || json_extract(j.value, '$.digest'), 'k:' || json_extract(j.value, '$.key'))
 )`;
 

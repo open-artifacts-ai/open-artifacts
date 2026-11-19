@@ -92,6 +92,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 - `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
 - `waiting_query {agent_refs}` (`BUS_CAPS.waitingQuery`, up to 64): pending mail for this machine's own away agents.
+- `update_report {event, from, to, reason, detail?, rescue_version, at}` (`BUS_CAPS.runVersion`, see Updates): the machine's update state. `event` is `updated`, `refused`, `stepped_back`, `needs_you`, `held` or `switching`; `from` and `to` are x.y.z or empty; `reason` is a closed set (`UPDATE_REASONS`); `detail` is at most 200 chars.
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -101,7 +102,7 @@ Hub to client (`SERVER_FRAMES`):
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`, and `follow_limit` to a socket whose hello listed `follow`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
-- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
+- `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice, meta?}`; `from_id` is the sender's agent id. `meta` (#2768, `notice_meta`) is a server notice's structured fields as data: `{kind, artifact_id?, comment_id?, thread_id?, user_id?, until?}` (ids bounded `[A-Za-z0-9_.:-]`, `until` an ISO UTC time). Only from `from_name` `open-artifacts`, and only to a socket whose hello listed `notice_meta`; the hub lists it in `hello_ok.caps`.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
@@ -109,6 +110,10 @@ Hub to client (`SERVER_FRAMES`):
 - `link_bound {}`: reply to `link_bind`.
 - `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
 - `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
+- `run_version {run_version}`, `install_now {}`, `update_ack {ok}` (`BUS_CAPS.runVersion`, see Updates).
+- `guest_up {agent_ref, kind, proposed_name}` and `guest_down {agent_ref}` (`BUS_CAPS.guest`, #2793 S3b): a Claude Code session of another instance's home registers on this one as a guest only after it used this instance's tools. The hub gets the name and the kind (`claude-code`) and nothing else: no address, folder, namespace, global flag or role. A guest is on no roster and is reached by no name; `guest_up` is answered by `agent_ok`.
+- `proof_seen {hash}` (`BUS_CAPS.guest`): a `tools/call` carried a link proof this hub resolves to no session. Sent only to the daemons of the member whose credential made the call, and only to a socket whose hello listed `guest`. The daemon matches the hash against what it holds for this instance. A notice's `meta.guest` (`reply`, `mention` or `answer`) marks the only deliveries a guest gets.
+- `owner_away {until}` (`BUS_CAPS.ownerAway`, #2759): `until` is an ISO 8601 UTC time (`OwnerAwayUntilSchema`, at most 40 chars) when the owner's quiet hours end, or `null` when they are not in quiet hours. Sent at the start and end of quiet hours and when the setting changes. `hello_ok.owner_away_until` carries the same value at connect. The hub sends the field and the frame only to a socket whose hello listed `owner_away` and lists it in `hello_ok.caps`; a strict older decoder would refuse either. A `hello_ok` without the field means unknown: a client treats it as not away. A client treats a time already past by its own clock as not away.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -119,6 +124,33 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Updates (`BUS_CAPS.runVersion`, #2552)
+
+The instance names a version and nothing else. `hello_ok.run_version` (and
+the `run_version` push while connected) is strict `x.y.z`, at most 32 chars,
+or `null` when the instance names none (the owner cleared it: the daemon then
+stops any rollout it has staged). A hub sends it only to a socket whose hello
+listed `run_version`; a `hello_ok` without the field means the hub does not
+know yet and a push follows. The daemon never reads a URL, hash or flag from
+the instance; it verifies the release itself. `install_now {}` has no field:
+the daemon installs only the version it already staged and the instance named.
+
+A machine reports with `update_report`; the hub keeps the latest per machine.
+A `switching` report is answered by `update_ack {ok}` (yes or no, nothing
+else) and the machine swaps only after `ok: true`; with no answer it holds and
+tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
+that listed it, and a daemon sends `update_report` only to a hub that listed
+it. The hub answers `ok: false` to a `switching` report whose `to` is not the
+version the instance names, read fresh from the setting (not the 30 s cache),
+unless the move is a step back (`to` lower than `from`) or the person asked for
+it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
+is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
+guards against stale state on an honest daemon, not against a hostile one: the
+proof check and the forward-only rule on the machine are what stop a bad
+version. The daemon, for its part, swaps to a version it staged from the
+instance only while that version is the one last named. A machine with `switching` as its latest report and no `hello` for 5
+minutes is marked stopped.
 
 ## Follows (`BUS_CAPS.follow`, #1317)
 
@@ -225,11 +257,15 @@ reservations are per member (one hub per member); there is no cross-member
 addressing.
 
 - Gate: a capability, not a version (the client reports 0.0.0 until #1308).
-  `hello.caps` is up to `MAX_CAPS` (16) distinct tokens matching
+  `hello.caps` is up to `MAX_CAPS` (32) distinct tokens matching
   `[a-z][a-z0-9_-]{0,31}`; consumers ignore unknown ones. `BUS_CAPS.rename`
   (`rename`): the hub sends roster `former_names` and a former-name receipt
   `to_name` only to a socket whose hello listed it (`hasCap`). A decoder
   older than these fields refuses them, failing the whole frame.
+  `BUS_CAPS.noticeMeta` (`notice_meta`, #2768): the hub adds `deliver.meta` to
+  a server notice only for a socket whose hello listed it. `BUS_CAPS` has 17
+  tokens, so `MAX_CAPS` is 32; a daemon's own hello list stays at 16 or fewer
+  for older hubs.
 - Client frames are strict, so a hub decoder older than this change refuses a
   `hello` with `caps`, an `agent_up` with `name_kind` and any `rename`. A
   client sends them only to hubs that accept them.

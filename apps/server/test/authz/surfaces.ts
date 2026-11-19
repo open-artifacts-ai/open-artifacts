@@ -64,6 +64,12 @@ export type Surface = {
    * throwaway artifact. scripts/authz-probe.ts never runs either.
    */
   mutates?: "data" | "access";
+  /**
+   * An MCP tool the install offers only conditionally (edit_doc, with docs
+   * on). scripts/authz-probe.ts runs the surface only where tools/list shows
+   * it; the local matrix opens the switch, so it always runs there.
+   */
+  offeredTool?: string;
   probe(
     base: string,
     cred: Cred,
@@ -224,6 +230,8 @@ const exact =
     return classify(`${method} ${path(id)}`, r, allow);
   };
 
+/** edit_doc's tool error for an artifact that is not a doc (#1100, #2490). */
+const NOT_A_DOC = /not[ _]a[ _]doc/i;
 const badRequest = (r: { status: number; code: string }) =>
   r.status === 400 && r.code === "bad_request";
 /** #681: a data write refused by dataWriters "editors". */
@@ -271,6 +279,71 @@ export type ToolOut = {
   text: string;
   structured?: Record<string, unknown>;
 };
+
+/**
+ * The tool names /mcp offers this token (tools/list), or null when it can't
+ * be read (no token, a refusal, an unparsable reply): the caller then runs
+ * every surface rather than hide one.
+ */
+export async function offeredTools(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+): Promise<Set<string> | null> {
+  if (!cred.token) return null;
+  try {
+    const r = await doFetch(
+      io,
+      new Request(`${base}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${cred.token}`,
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "mcp-protocol-version": "2025-06-18",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    if (r.status !== 200) return null;
+    const text = await r.text();
+    const json = text.trimStart().startsWith("{")
+      ? text
+      : (text
+          .split("\n")
+          .find((l) => l.startsWith("data:"))
+          ?.slice(5) ?? "");
+    const msg = JSON.parse(json) as { result?: { tools?: { name: string }[] } };
+    const tools = msg.result?.tools;
+    return tools ? new Set(tools.map((t) => t.name)) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A tool tools/list does not offer: every caller must get the unknown-tool
+ * answer ("unknown_tool"), a refused or absent token included (it never
+ * reaches the lookup). A tool hidden from the list but still callable shows
+ * up as "callable".
+ */
+export async function hiddenToolAnswer(
+  io: ProbeIO | undefined,
+  base: string,
+  cred: Cred,
+  name: string,
+): Promise<"unknown_tool" | "callable"> {
+  const unknown = /unknown tool|tool [\w-]+ not found|method not found/i;
+  let o: ToolOut;
+  try {
+    o = await callTool(io, base, cred, name, { id: SOME_ID });
+  } catch (e) {
+    // /mcp's JSON-RPC error for a tool it does not have.
+    return unknown.test((e as Error).message) ? "unknown_tool" : "callable";
+  }
+  if (DENY_MCP.has(o.http)) return "unknown_tool";
+  return o.isError && unknown.test(o.text) ? "unknown_tool" : "callable";
+}
 
 /** One tools/call on /mcp (stateless JSON-RPC), as the caller's agent token. */
 export async function callTool(
@@ -491,7 +564,9 @@ const mcp = (
   action: SurfaceAction,
   probe: Surface["probe"],
   mutates?: Surface["mutates"],
+  offeredTool?: string,
 ): Surface => ({
+  ...(offeredTool ? { offeredTool } : {}),
   name: `mcp ${name}`,
   action,
   via: "mcp",
@@ -598,6 +673,28 @@ export const SURFACES: readonly Surface[] = [
       "POST",
       (id) => `${A(id)}/doc/ops`,
       () => ({ body: { ops: [{ op: "delete", quote: "probe" }] } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc save version",
+    "publish",
+    [`POST ${ARTS}/doc/versions`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions`,
+      () => ({ body: { name: "probe" } }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "rest doc restore",
+    "publish",
+    [`POST ${ARTS}/doc/versions/:v/restore`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/doc/versions/1/restore`,
+      () => ({}),
       badRequest,
     ),
   ),
@@ -980,6 +1077,32 @@ export const SURFACES: readonly Surface[] = [
       (r) => r.status === 400,
     ),
   ),
+  // #2508 comment pictures: the reservation is a comment write (the handler
+  // adds signed-in and never a guest, after the body check, so an empty body is
+  // a 400 for every caller the policy admits); the GET reads like the
+  // comments. The signed PUT is listed with the other signed routes.
+  rest(
+    "comment picture reserve",
+    "comments.write",
+    [`POST ${ARTS}/pictures`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/pictures`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comment picture read",
+    "comments.read",
+    [`GET ${ARTS}/pictures/:pictureId`],
+    exact(
+      "GET",
+      (id) => `${A(id)}/pictures/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "comments thread status",
     "comments.write",
@@ -1046,6 +1169,29 @@ export const SURFACES: readonly Surface[] = [
       (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/ask/decider`,
       () => ({ body: {} }),
       badRequest,
+    ),
+  ),
+  // #2511: the asker withdraws its ask; the service refuses anyone else. A malformed id stops at 400.
+  rest(
+    "comments ask withdraw",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/withdraw`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/withdraw`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "artifact mention candidates",
+    "comments.write",
+    [`POST ${ARTS}/mention-candidates`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/mention-candidates`,
+      () => ({ body: { q: "a" } }),
+      (r) => r.status === 200,
     ),
   ),
   rest(
@@ -1179,8 +1325,14 @@ export const SURFACES: readonly Surface[] = [
     tool(
       "edit_doc",
       (id) => ({ id, ops: [{ op: "delete", quote: "probe" }] }),
-      (o) => o.isError && /^bad_request\b/.test(o.text),
+      // The "not a doc" tool error is the allowed answer, as the REST doc
+      // route counts 400 not-a-doc (#2490): matched by the not-a-doc reason
+      // only, never any bad_request (a schema error can precede the access
+      // check) and never a denial.
+      (o) => o.isError && NOT_A_DOC.test(o.text),
     ),
+    undefined,
+    "edit_doc",
   ),
   withReal(
     mcp(
@@ -1338,6 +1490,26 @@ export const SURFACES: readonly Surface[] = [
     tool(
       "resolve_comment",
       (id) => ({ id, threadId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  // #2511: withdraw and edit over MCP; a thread that does not exist stops them
+  // after the access rules, so nothing is written.
+  mcp(
+    "withdraw_ask",
+    "comments.write",
+    tool(
+      "withdraw_ask",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  mcp(
+    "edit_comment",
+    "comments.write",
+    tool(
+      "edit_comment",
+      (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID, body: "x" }),
       (o) => o.isError && /^not_found: No such thread/.test(o.text),
     ),
   ),
@@ -1536,6 +1708,12 @@ const code =
   (...c: string[]) =>
   (r: Answer) =>
     c.includes(r.code);
+/** #2577: the 404 of a request the caller does not hold (see NO_HELD in services/agent-requests.ts). */
+const noHeld = (r: Answer) =>
+  r.code === "not_found" && r.message === "No such held request";
+/** #2577 S2: the 404 of a "listens to" entry the caller does not have (see NO_LISTEN in services/agent-requests.ts). */
+const noListen = (r: Answer) =>
+  r.code === "not_found" && r.message === "No such entry";
 const ok =
   (...s: number[]) =>
   (r: Answer) =>
@@ -1579,6 +1757,98 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     real: {
       req: () => ({ path: "", body: { displayName: "Probe" } }),
       allow: ok(200),
+    },
+  },
+  // #2512 S2: the caller's own inbox items; ids that are not theirs change nothing.
+  "POST /api/v1/me/inbox/read": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { ids: [] } }),
+      allow: ok(200),
+    },
+  },
+  // #2762: an allowed caller gets 400 for a bad `until` before any lookup (a
+  // capped caller's 404 is the cap's, so a 404 could not tell them apart).
+  "POST /api/v1/me/inbox/:id/later": {
+    refuse: {
+      req: async () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "never" },
+      }),
+      allow: code("bad_request"),
+    },
+    real: {
+      req: () => ({
+        path: "/api/v1/me/inbox/ask%3Anone/later",
+        body: { until: "never" },
+      }),
+      allow: code("bad_request"),
+    },
+  },
+  // #2577: the "listens to" asked flag: once, idempotent; a probe of a live install only sets the caller's own flag.
+  "POST /api/v1/me/onboarding/listens-asked": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
+  "POST /api/v1/me/inbox/read-all": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
+  // #2512 S4: mutes. A body that names nothing is a 400 past the guard; an unmute of nothing is 204.
+  "POST /api/v1/me/inbox/mutes": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("bad_request"),
+    },
+  },
+  "DELETE /api/v1/me/inbox/mutes/:kind/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/inbox/mutes/page/none" }),
+      allow: ok(204),
+    },
+  },
+  // #2512 S4: the caller's own choices; the defaults saved back change nothing.
+  "PUT /api/v1/me/notification-prefs": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          needsYou: { inApp: true, browser: false },
+          updates: { inApp: true, browser: false },
+          browserAllAsks: false,
+          quietHours: null,
+          timeZone: "UTC",
+          lockScreenDetail: false,
+        },
+      }),
+      allow: ok(200),
+    },
+  },
+  "POST /api/v1/me/push/subscriptions": {
+    refuse: {
+      req: async () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+    real: {
+      req: () => ({ path: "", body: {} }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "PATCH /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/push/subscriptions/x",
+        body: { needsYou: true },
+      }),
+      allow: code("push_unavailable"),
+    },
+  },
+  "DELETE /api/v1/me/push/subscriptions/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/push/subscriptions/x" }),
+      allow: code("push_unavailable"),
     },
   },
   // #1292: the caller's own picks; a real write sets none (the default).
@@ -1987,6 +2257,73 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("reauth_required"),
     },
   },
+  // #2577: the receiver's held requests. A browser session of the receiver
+  // only; an allowed caller has no such request, so a 404 with its own text before
+  // anything is written (a capped caller's 404 from the cap guard says "Not found").
+  "POST /api/v1/me/agent-asks/held/:id/allow": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-asks/held/probe/allow",
+        body: {
+          level: "once",
+          items: [{ commentId: "c1", wordsHash: "0".repeat(64) }],
+        },
+      }),
+      allow: noHeld,
+    },
+  },
+  "POST /api/v1/me/agent-asks/held/:id/allow/challenge": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-asks/held/probe/allow/challenge",
+        body: { until: Date.now() + 86_400_000 },
+      }),
+      allow: noHeld,
+    },
+  },
+  "POST /api/v1/me/agent-asks/held/:id/not-now": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-asks/held/probe/not-now" }),
+      allow: noHeld,
+    },
+  },
+  // #2577 S2: the switch and the "listens to" list. Browser session of the member only (the switch can be read by any signed-in person); an allowed caller owns no such entry.
+  "PUT /api/v1/me/agent-requests": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-requests", body: { on: true } }),
+      allow: ok(200),
+    },
+  },
+  // A matrix caller names nobody who is a teammate: the add is refused (400) before anything is written; a denied caller is refused before that.
+  "POST /api/v1/me/agent-listens": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens",
+        body: {
+          memberId: "probe",
+          scope: "all",
+          until: 30,
+          via: "settings",
+        },
+      }),
+      allow: code("bad_request"),
+    },
+  },
+  "PATCH /api/v1/me/agent-listens/:id": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens/probe",
+        body: { until: Date.now() + 1000 },
+      }),
+      allow: noListen,
+    },
+  },
+  "DELETE /api/v1/me/agent-listens/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/me/agent-listens/probe" }),
+      allow: noListen,
+    },
+  },
   "POST /api/v1/passkeys/:id/challenge": {
     real: {
       req: () => ({ path: "/api/v1/passkeys/probe/challenge" }),
@@ -2088,6 +2425,26 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #2552: the owner names the version machines run. Refusal mode sends an
+  // invalid body (400 after the owner check); real mode clears it (204).
+  "PUT /api/v1/bus/run-version": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { version: null } }),
+      allow: ok(204),
+    },
+  },
+  // #2552 "Install now": only the caller's own machine answers past the
+  // rules: real only. 409 machine_offline is the answer while it is not connected.
+  "POST /api/v1/bus/machines/:id/install-now": {
+    real: {
+      needs: ["busMachineId"],
+      req: (r) => ({
+        path: `/api/v1/bus/machines/${r.busMachineId}/install-now`,
+      }),
+      allow: either(ok(204), code("conflict")),
+    },
+  },
   // #1296: the caller's own role addresses. A vacant role (agentId null) is
   // 200 on a member's bus, or the named conflict while they have none.
   "PUT /api/v1/bus/roles": {
@@ -2165,6 +2522,8 @@ function orgProbe(
     if (method === "GET") {
       const r = await send(io, base, p, cred);
       // A 409 is allowed only as member_active (past the transfer guard).
+      // A guest on a member-only read (members_only): seen, refused.
+      if (r.status === 403 && r.code === "members_only") return "deny";
       return classify(route, r, (x) =>
         x.status === 409
           ? okStatus.includes(409) && x.code === "member_active"
@@ -2197,6 +2556,7 @@ function orgProbe(
     });
     // A create by a capped caller: the contract's 403, a refusal.
     if (r.status === 403 && r.code === "space_forbidden") return "deny";
+    if (r.status === 403 && r.code === "members_only") return "deny";
     if (!t.real && !w.refuse && !DENY.has(r.status))
       throw new Unexpected(`${route}: real only (no throwaways): ${r.status}`);
     return classify(route, r, allow);
@@ -2212,7 +2572,21 @@ const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
+  ["POST /api/v1/me/inbox/read", U],
+  ["POST /api/v1/me/inbox/:id/later", U],
+  ["POST /api/v1/me/inbox/read-all", U, [200]],
   ["PATCH /api/v1/me", U],
+  ["GET /api/v1/me/inbox/mutes", U, [200]],
+  ["POST /api/v1/me/inbox/mutes", U],
+  ["DELETE /api/v1/me/inbox/mutes/:kind/:id", U],
+  ["GET /api/v1/me/notification-prefs", U, [200]],
+  ["PUT /api/v1/me/notification-prefs", U],
+  // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
+  ["GET /api/v1/me/push/key", U, [404]],
+  ["GET /api/v1/me/push/subscriptions", U, [404]],
+  ["POST /api/v1/me/push/subscriptions", U, [404]],
+  ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
+  ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],
@@ -2234,8 +2608,10 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/settings/login/first-invite-seen", org("members.manage")],
   ["PUT /api/v1/settings/login", org("login.manage")],
   ["PATCH /api/v1/settings", org("settings.manage")],
-  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
-  ["PUT /api/v1/onboarding", org("onboarding.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.own")],
+  ["GET /api/v1/me/teammates", org("teammates.read"), [200]],
+  ["POST /api/v1/me/onboarding/listens-asked", org("onboarding.own"), [200]],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -2291,6 +2667,18 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/passkeys/register/challenge", U],
   ["POST /api/v1/passkeys/register/finish", U],
   ["POST /api/v1/passkeys/:id/challenge", U],
+  // #2577: held requests to the caller's agents. A browser session only.
+  ["GET /api/v1/me/agent-asks/held", U, [200]],
+  ["POST /api/v1/me/agent-asks/held/:id/allow", U],
+  ["POST /api/v1/me/agent-asks/held/:id/allow/challenge", U],
+  ["POST /api/v1/me/agent-asks/held/:id/not-now", U],
+  ["GET /api/v1/me/agent-requests", U, [200]],
+  ["PUT /api/v1/me/agent-requests", U],
+  ["GET /api/v1/me/agent-listens", U, [200]],
+  ["POST /api/v1/me/agent-listens", U],
+  ["GET /api/v1/me/agent-asks/history", U, [200]],
+  ["PATCH /api/v1/me/agent-listens/:id", U],
+  ["DELETE /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/passkeys/:id", U],
   ["POST /api/v1/passkeys/:id/cancel-removal", U],
   ["GET /api/v1/passkeys/settings", U, [200]],
@@ -2343,6 +2731,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/run-version", org("bus.run_version")],
+  ["POST /api/v1/bus/machines/:id/install-now", org("mcp.connect")],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],
   // #1346: role reach; writes also need a cookie session (the handler).
@@ -2395,13 +2785,19 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/callback/google",
   "POST /auth/code/request",
   "POST /auth/code/verify",
+  "GET /auth/code/link",
   "GET /auth/unsubscribe/comments",
   "POST /auth/unsubscribe/comments",
+  "GET /auth/unsubscribe/setup-reminder",
+  "POST /auth/unsubscribe/setup-reminder",
+  "GET /auth/unsubscribe/shares",
+  "POST /auth/unsubscribe/shares",
   "POST /auth/logout",
   "GET /auth/dev-login",
   "ALL /__test/*",
   "POST /__oa/oauth-store/copy",
   "PUT /api/v1/uploads/:uploadId",
+  "PUT /api/v1/artifacts/:id/pictures/:pictureId",
   "GET /oauth/authorize",
   "POST /oauth/authorize",
   // #1291: the bus device flow and approval page (the handlers check the

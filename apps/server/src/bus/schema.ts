@@ -362,6 +362,8 @@ create table if not exists notices (
   fold_acks text,
   -- #2238: the agent identity the notice is addressed to (null: by name only).
   to_identity text,
+  -- #2768: the notice's structured fields (JSON, bounded; null: none).
+  meta text,
   primary key (to_ns, to_lname, ckey)
 );
 create index if not exists notices_due on notices(parked, not_before);
@@ -491,6 +493,21 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   sql.exec(
     "insert or ignore into agent_proofs (hash, agent_id, seq) select proof_hash, id, 0 from agents where proof_hash is not null and live = 1",
   );
+  // #2793 S3b: GUESTS, a session homed on another instance that used this
+  // one's tools. A table of their own, never `agents`: a guest has no
+  // namespace, address, folder, global flag or role, is on no roster, no
+  // presence and no @ picker, and no name resolves to it. It holds a proof only
+  // (agent_proofs.agent_id may be a guest id) so a call it makes is attributed
+  // to it, and it is reachable only by the three structured guest deliveries.
+  sql.exec(
+    "create table if not exists guests (id text primary key, machine_id text not null, native_ref text not null, name text not null, kind text not null, identity_id text, updated_at integer not null, unique(machine_id, native_ref))",
+  );
+  sql.exec(
+    "create index if not exists guests_identity on guests(identity_id) where identity_id is not null",
+  );
+  sql.exec(
+    "create trigger if not exists guest_proofs_gone after delete on guests begin delete from agent_proofs where agent_id = old.id; end",
+  );
   sql.exec(
     "create index if not exists agents_status_due on agents(status_due) where status_due is not null",
   );
@@ -561,6 +578,8 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     sql.exec("alter table notices add column fold_acks text");
   if (!noticeCols.has("to_identity"))
     sql.exec("alter table notices add column to_identity text");
+  if (!noticeCols.has("meta"))
+    sql.exec("alter table notices add column meta text");
   sql.exec(HUB_SCHEMA_B7_INDEXES);
   // open-bus #422: when the machine's last daemon socket went (epoch ms);
   // null while it is connected, or not yet seen offline. The alarm closes the

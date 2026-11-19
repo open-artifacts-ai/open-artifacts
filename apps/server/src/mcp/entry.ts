@@ -55,9 +55,10 @@ export async function linkOrUnlinked(
   env: Env,
   userId: string,
   req: Request,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): ReturnType<typeof linkRequest> {
   try {
-    return await linkRequest(env, userId, req);
+    return await linkRequest(env, userId, req, ctx);
   } catch (e) {
     logError("mcp_link_failed", e);
     // Never forward the proof header, whatever the method.

@@ -1,5 +1,6 @@
 import {
   ArtifactPatchSchema,
+  DocSaveVersionBodySchema,
   EditDocBodySchema,
   INLINE_TOO_LARGE_MESSAGE,
   isId,
@@ -37,7 +38,11 @@ import {
   softDelete,
   undelete,
 } from "../services/artifacts.js";
-import { editDoc } from "../services/doc-edit.js";
+import {
+  editDoc,
+  restoreDocVersion,
+  saveDocVersion,
+} from "../services/doc-edit.js";
 import { planFiles, RESERVED_KEYS } from "../services/manifest.js";
 import { putExtractedText } from "../services/search.js";
 import {
@@ -323,6 +328,22 @@ export function mountArtifacts(app: AppType): void {
     const id = idParam(c);
     const body = await jsonBody(c, EditDocBodySchema);
     return c.json(await editDoc(c.env, user, agentOf(c), id, body));
+  });
+
+  // #1100, #2496: "Save version" on a doc, through its room.
+  app.post(`${ARTIFACT}/doc/versions`, async (c) => {
+    const user = requireUser(c);
+    const id = idParam(c);
+    const body = await jsonBody(c, DocSaveVersionBodySchema);
+    return c.json(await saveDocVersion(c.env, user, agentOf(c), id, body), 201);
+  });
+
+  // #1100, #2140: restore a doc version through its room.
+  app.post(`${ARTIFACT}/doc/versions/:v/restore`, async (c) => {
+    const user = requireUser(c);
+    const id = idParam(c);
+    const v = versionParam(c);
+    return c.json(await restoreDocVersion(c.env, user, agentOf(c), id, v), 201);
   });
 
   // Signed-in viewer+ contributes a pdf version's text (text/plain, ≤ extractedTextBytes).

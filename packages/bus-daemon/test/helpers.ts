@@ -106,11 +106,29 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     // Never the real ~/.claude/sessions or ~/.oa-bus: temp ones, unless a test brings its own.
     claude: {
       sessionsDir: mkdtempSync(join(tmpdir(), "ob-cs-")),
+      // #2806: the harness's home is a temp one; adopt scanned sessions as
+      // the default home does, and never read a real process's environment.
+      discover: true,
+      homeOf: () => undefined,
       socketsDir: join(mkdtempSync(join(tmpdir(), "ob-cr-")), "r"),
       heldFile: join(mkdtempSync(join(tmpdir(), "ob-ch-")), "held.json"),
       linksFile: join(
         mkdtempSync(join(tmpdir(), "ob-cl-")),
         "claude-links.json",
+      ),
+      // #2793 S3b: never the real guests file, transcripts or Claude settings.
+      guestsFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cg-")),
+        "claude-guests.json",
+      ),
+      stashFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cs2-")),
+        "claude-stash.json",
+      ),
+      projectsDir: mkdtempSync(join(tmpdir(), "ob-cp-")),
+      mcpConfigFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cm-")),
+        ".claude.json",
       ),
       ...over.claude,
     },

@@ -19,12 +19,18 @@ import type { Context } from "hono";
 import type { Env } from "../env.js";
 import type { AppEnv } from "../http/middleware.js";
 import { busOn } from "../services/bus.js";
-import { BUS_PKG, BUS_PKG_WHY, VERSION } from "../version.gen.js";
+import {
+  BUS_PKG,
+  BUS_PKG_WHY,
+  SKILL_COMMAND_MIN_BUS,
+  VERSION,
+} from "../version.gen.js";
 import {
   BUS_CHECK_STOP,
   type BusPin,
   busInstallBlock,
   busNoPin,
+  pinHasSkillCommand,
 } from "./bus-install.js";
 import { SKILL_PATH, skillEnabled } from "./skill.js";
 import { skillOrigin } from "./skill-common.js";
@@ -121,24 +127,54 @@ const SETUP_STEPS_INTRO =
  * nameSource, pi and Codex send a chosen rename. OA Product edits this; no em dashes.
  */
 const NAMING_HARNESS =
-  "To set it: in Claude Code, ask them to type `/rename <name>`; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name. After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.";
+  "To set it: in Claude Code, ask them to type `/rename <name>`; in Claude Desktop's Code tab, to rename the session in Desktop; in Codex, `/rename <name>`; in pi, `/name <name>`. Use the name they give, or your suggestion if they say yes to it. If they skip it, carry on with your session name. After they say it's done, check the bus `self` tool; the new name can take a few seconds to show.";
+/**
+ * The skill is a step of its own (#2624), so a session started after setup has
+ * it even when the bus install was refused or failed. OA Product edits this; no em dashes.
+ */
+const skillStep = (
+  origin: string,
+  pin: BusPin | null,
+  plugin: boolean,
+  skillMin: string | null,
+) => {
+  const report =
+    'When the check passes, or you have saved the file yourself, tell the person: "The Open Artifacts skill is installed for {harness}." ({harness} is the name of your agent tool.)';
+  const follow = `Then read ${origin}${SKILL_PATH} now and follow it from now on.`;
+  const manual = `If the installer doesn't know your harness (the check finds none of its harnesses), or these commands can't run, save ${origin}${SKILL_PATH} the way your harness keeps skills, and tell the person where you saved it.`;
+  const saveByHand = `Save ${origin}${SKILL_PATH} the way your harness keeps skills, and tell the person where you saved it.`;
+  const checkCmd = `skill --check --instance ${origin}`;
+  const installCmd = `skill --instance ${origin}`;
+  const bySkill =
+    pin && pinHasSkillCommand(pin.version, skillMin)
+      ? `Run this. Like the bus step, it downloads a checked copy of the bus and runs from that. It prints one line per harness with where the skill is saved, and exits 0 only if it is saved for all of them:\n\n${busInstallBlock(origin, pin, checkCmd)}\n\nIf it exits non-zero, save the skill with this, which changes nothing about the bus, then run the check again:\n\n${busInstallBlock(origin, pin, installCmd)}\n\nIf a command fails or prints MISMATCH, don't try another way to run the bus: ${manual}`
+      : pin
+        ? `This instance's pinned bus (version ${pin.version}) has no \`skill\` command, so there is no command to run for this. ${saveByHand}`
+        : `This build has no checked bus release, so there is no command to run from a checked copy. If \`oa-bus\` is already on this machine, \`oa-bus ${checkCmd}\` prints where the skill is saved and \`oa-bus ${installCmd}\` saves it. Otherwise, ${saveByHand.charAt(0).toLowerCase()}${saveByHand.slice(1)}`;
+  const stands =
+    "This step still applies if the bus step failed or was refused.";
+  if (plugin) {
+    const { name } = CLAUDE_PLUGIN;
+    return `**Install the skill.** ${stands} If you are Claude Code, install the ${name} plugin as described under "Claude Code: prefer the plugin" below. The plugin brings the skill. Check it with \`claude plugin list\`: ${name} is listed and enabled. ${report} ${follow}\n\nOn any other harness: ${bySkill} ${report} ${follow}`;
+  }
+  return `**Install the skill.** ${stands} ${bySkill} ${report} ${follow}`;
+};
 const setupSteps = (
   origin: string,
   mcpUrl: string,
   skill: boolean,
   pin: BusPin | null,
   pinWhy: string,
+  plugin: boolean,
+  skillMin: string | null,
 ): string[] => [
   `**Connect.** Add the MCP server at \`${mcpUrl}\` to your agent tool and log in through the person's browser. Never ask them to paste a token into the chat.`,
   `**Install the bus.** ${
     pin
       ? `Run these in a shell, in order. They download one copy of the bus (version ${pin.version}), check it against this instance's pin, and run the installer from that checked copy. Never run \`npx @open-artifacts/bus\` instead: it would download a second copy that nobody checked.\n\n${busInstallBlock(origin, pin)}\n\n${BUS_CHECK_STOP}`
       : busNoPin(pinWhy)
-  } The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.${
-    skill
-      ? ` The installer also saves this instance's skill for your harness, so your next sessions have it. Read ${origin}${SKILL_PATH} now and follow it from now on.`
-      : ""
-  }`,
+  } The bus is how you hear when your person comments or answers an ask on your pages, even with one agent on one machine. They approve this machine once, in their browser. That approval is the one thing they have to do.`,
+  ...(skill ? [skillStep(origin, pin, plugin, skillMin)] : []),
   "**Habit lines.** If the installer prints QUESTION FOR YOUR USER, show it to them and run the command for their answer. Never answer it yourself.",
   "**Check.** The bus tools load when your session restarts or reloads. If the installer says to restart, tell the person the next session finishes setup by itself, then restart. Check after the restart: the bus `self` tool answers with your name and the server's tool list shows `publish_artifact`. If it still doesn't, setup is not done: tell the person what failed and the exact fix.",
   `**Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as "Acme Web". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus \`self\` tool shows it. ${NAMING_HARNESS}`,
@@ -152,6 +188,8 @@ const setupBlock = (
   skill: boolean,
   pin: BusPin | null,
   pinWhy: string,
+  plugin: boolean,
+  skillMin: string | null,
 ) =>
   `${SETUP_STEPS_TITLE}\n\n${SETUP_STEPS_INTRO}\n\n${setupSteps(
     origin,
@@ -159,9 +197,33 @@ const setupBlock = (
     skill,
     pin,
     pinWhy,
+    plugin,
+    skillMin,
   )
     .map((t, i) => `${i + 1}. ${t}`)
     .join("\n")}\n\n${SETUP_FAILURE}\n\n`;
+
+/**
+ * For a chat app (a Claude chat, ChatGPT) that reads this guide but can't run
+ * a shell or add its own connector: the person adds the connector by hand.
+ * No menu paths until each app is walked; OA Product edits this wording,
+ * no em dashes.
+ */
+export const CHAT_APPS_TITLE = "If you can't run commands";
+export const CHAT_APPS_DOCS =
+  "https://open-artifacts.com/docs/claude-and-chatgpt/";
+const chatAppsBlock = (mcpUrl: string) =>
+  `## ${CHAT_APPS_TITLE}
+
+If you are a chat app with no shell, such as a Claude chat or ChatGPT, you can't run the steps below or connect yourself. Don't try. Tell the person to add ${PRODUCT_NAME} as a custom connector in their app's settings, with this address:
+
+${mcpUrl}
+
+Then ask them to log in to ${PRODUCT_NAME} when the app asks. The connector belongs to their account, so they add it once.
+
+Also tell them plainly: once connected, you can work with their pages, but a chat can't join the bus, so you only see new comments and answers when they ask you to look. For an agent that hears them on its own, they can paste the same setup line into the Code tab of Claude Desktop. Guide: ${CHAT_APPS_DOCS}
+
+`;
 
 /** The guide for `host`. `plugin` and `skill` default to the live settings. */
 export function renderLlms(
@@ -174,6 +236,8 @@ export function renderLlms(
     pin?: BusPin | null;
     /** Tests: why there is no pin; default this build's. */
     pinWhy?: string;
+    /** Tests: the first bus with `oa-bus skill`; default this build's. */
+    skillMin?: string | null;
   } = {},
 ): string {
   const plugin = opts.plugin ?? CLAUDE_PLUGIN_ENABLED;
@@ -181,6 +245,8 @@ export function renderLlms(
   const bus = opts.bus ?? false;
   const pin = opts.pin === undefined ? BUS_PKG : opts.pin;
   const pinWhy = opts.pinWhy ?? BUS_PKG_WHY;
+  const skillMin =
+    opts.skillMin === undefined ? SKILL_COMMAND_MIN_BUS : opts.skillMin;
   const { origin, mcpUrl, tokenFile, clients, tokens } = llmsInputs(host);
   const verifySteps = [
     "List the server's tools. You should see tools such as `publish_artifact` and `list_artifacts`. If the list is empty or you get 401, see Troubleshoot.",
@@ -197,7 +263,7 @@ You are setting up ${PRODUCT_NAME} for the person you're working with. Do every 
 
 Server address (MCP, streamable HTTP): ${mcpUrl}
 
-${bus ? setupBlock(origin, mcpUrl, skill, pin, pinWhy) : ""}## Connect
+${chatAppsBlock(mcpUrl)}${bus ? setupBlock(origin, mcpUrl, skill, pin, pinWhy, plugin, skillMin) : ""}## Connect
 
 Use the section for the client you are running in: you know which one that is. Only if the person asks you to set up a different client, find it with \`which claude codex cursor opencode\`; if none fits, use Generic.
 

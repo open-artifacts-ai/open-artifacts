@@ -21,6 +21,10 @@ const NONE = {
   mentionReplied: false,
   mentionStalled: false,
   askAnswered: false,
+  busConnected: false,
+  teamStep: false,
+  listensAsked: false,
+  invitedBy: null,
 };
 
 const app = createApp();
@@ -55,9 +59,10 @@ describe("R.onboarding", () => {
       hasArtifacts: false,
       ...NONE,
     });
-    // Another session of the same owner (another browser) reads it.
+    // Per person (#2632): another person's flags are their own.
     const again = await login(`own2-${tag()}@example.com`, "owner");
-    expect((await get(again.cookie)).body?.dismissed).toBe(true);
+    expect((await get(again.cookie)).body?.dismissed).toBe(false);
+    expect((await get(o.cookie)).body?.dismissed).toBe(true);
   });
 
   it("records completion once and keeps it", async () => {
@@ -79,21 +84,88 @@ describe("R.onboarding", () => {
     expect(second?.value).toBe(first?.value);
   });
 
-  it("refuses everyone but the owner, and writes nothing", async () => {
+  it("is per person: a member's flags never touch the owner's or another member's (#2632)", async () => {
     await clear();
-    for (const role of ["admin", "member", "guest"] as const) {
-      const u = await login(`${role}-${tag()}@example.com`, role);
-      expect((await put(u.cookie, { dismissed: true })).status).toBe(404);
-      expect((await get(u.cookie)).status).toBe(404);
-    }
-    expect((await put(null, { dismissed: true })).status).toBe(401);
     const o = await login(`own-${tag()}@example.com`, "owner");
-    expect((await get(o.cookie)).body).toEqual({
+    const a = await login(`mem-${tag()}@example.com`, "member");
+    const b = await login(`adm-${tag()}@example.com`, "admin");
+    expect((await put(a.cookie, { dismissed: true })).status).toBe(200);
+    expect((await get(a.cookie)).body?.dismissed).toBe(true);
+    expect((await get(b.cookie)).body?.dismissed).toBe(false);
+    expect((await get(o.cookie)).body?.dismissed).toBe(false);
+    expect((await put(b.cookie, { completed: true })).status).toBe(200);
+    expect((await get(b.cookie)).body?.completed).toBe(true);
+    expect((await get(a.cookie)).body?.completed).toBe(false);
+    expect(
+      await env.DB.prepare(
+        "select 1 from settings where key in ('onboarding:dismissed', 'onboarding:completed')",
+      ).first(),
+    ).toBeNull();
+  });
+
+  it("refuses a guest with 403 and writes nothing; anonymous is 401", async () => {
+    await clear();
+    const g = await login(`guest-${tag()}@example.com`, "guest");
+    const r = await put(g.cookie, { dismissed: true });
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "members_only",
+    );
+    expect((await get(g.cookie)).status).toBe(403);
+    expect((await put(null, { dismissed: true })).status).toBe(401);
+    expect(
+      await env.DB.prepare(
+        "select 1 from settings where key like 'onboarding:%'",
+      ).first(),
+    ).toBeNull();
+  });
+
+  it("reads the owner's install-wide rows from before as the owner's (nothing resets)", async () => {
+    await clear();
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    for (const k of ["dismissed", "completed", "welcome-opened"])
+      await env.DB.prepare("insert into settings (key, value) values (?1, '1')")
+        .bind(`onboarding:${k}`)
+        .run();
+    const got = (await get(o.cookie)).body;
+    expect(got).toMatchObject({ dismissed: true, completed: true });
+    expect((await get(m.cookie)).body).toMatchObject({
       dismissed: false,
       completed: false,
-      hasArtifacts: false,
-      ...NONE,
     });
+  });
+
+  it("records teamStep once, when the caller comments on another user's artifact", async () => {
+    await clear();
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    const mk = async (cookie: string) =>
+      (
+        (await (
+          await api(app, R.artifacts, cookie, {
+            method: "POST",
+            body: {
+              title: "p",
+              format: "html",
+              content: "<p>x</p>",
+              visibility: "team",
+            },
+          })
+        ).json()) as { id: string }
+      ).id;
+    const mine = await mk(m.cookie);
+    const theirs = await mk(o.cookie);
+    const say = (id: string, cookie: string) =>
+      api(app, R.comments(id), cookie, {
+        method: "POST",
+        body: { anchor: { kind: "note" }, body: "hi" },
+      });
+    expect((await say(mine, m.cookie)).status).toBeLessThan(300);
+    expect((await get(m.cookie)).body?.teamStep).toBe(false);
+    expect((await say(theirs, m.cookie)).status).toBeLessThan(300);
+    expect((await get(m.cookie)).body?.teamStep).toBe(true);
+    expect((await get(o.cookie)).body?.teamStep).toBe(false);
   });
 
   it("says whether the caller owns a live artifact (#1832)", async () => {
@@ -112,6 +184,25 @@ describe("R.onboarding", () => {
       (await api(app, R.artifact(id), o.cookie, { method: "DELETE" })).status,
     ).toBeLessThan(300);
     expect((await get(o.cookie)).body?.hasArtifacts).toBe(false);
+  });
+
+  it("says whether the caller ever connected the bus (#2890)", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    expect((await get(o.cookie)).body?.busConnected).toBe(false);
+    // A machine that never connected is not a connected bus.
+    const add = (userId: string, used: number | null) =>
+      env.DB.prepare(
+        "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+      )
+        .bind(newId(), userId, newId(), Date.now(), used)
+        .run();
+    await add(o.userId, null);
+    expect((await get(o.cookie)).body?.busConnected).toBe(false);
+    await add(o.userId, Date.now());
+    expect((await get(o.cookie)).body?.busConnected).toBe(true);
+    // Per person.
+    expect((await get(m.cookie)).body?.busConnected).toBe(false);
   });
 
   it("rejects a flag turned off or unknown fields", async () => {
@@ -266,20 +357,78 @@ describe("R.onboarding", () => {
       expect(got?.hasArtifacts).toBe(false);
     });
 
-    it("seeds nothing off hosted, or for a non-owner", async () => {
+    it("seeds each member their own private Welcome, once, on any install and any role but guest (#2632)", async () => {
       await clear();
+      await env.DB.prepare("delete from artifacts").run();
       const o = await owner();
       await seedWelcome(env, o.user);
       const m = await login(`mem-${tag()}@example.com`, "member");
       const mu = await getUser(env, m.userId);
       if (!mu) throw new Error("no user");
-      await seedWelcome(HOSTED_ENV, mu);
-      expect(
-        (await welcomeRows()).results.filter(
-          (r) => r.owner_id === o.userId || r.owner_id === m.userId,
-        ),
-      ).toHaveLength(0);
+      const g = await login(`guest-${tag()}@example.com`, "guest");
+      const gu = await getUser(env, g.userId);
+      if (!gu) throw new Error("no user");
+      await seedWelcome(env, mu);
+      await seedWelcome(env, mu);
+      await seedWelcome(env, gu);
+      const mine = (id: string) =>
+        welcomeRows().then((r) => r.results.filter((x) => x.owner_id === id));
+      expect(await mine(o.userId)).toHaveLength(1);
+      expect(await mine(m.userId)).toHaveLength(1);
+      expect(await mine(g.userId)).toHaveLength(0);
+      expect((await mine(m.userId))[0]).toMatchObject({
+        format: "html",
+        visibility: "private",
+      });
+      const got = (await get(m.cookie)).body;
+      expect(got?.welcomeId).toBe((await mine(m.userId))[0]?.id);
+      expect(got?.hasArtifacts).toBe(false);
+      expect(got?.firstArtifact).toBeNull();
+      // Each Welcome is its person's own.
+      expect((await get(o.cookie)).body?.welcomeId).toBe(
+        (await mine(o.userId))[0]?.id,
+      );
+    });
+
+    it("the fresh-instance check is for the first person only: a member always gets theirs", async () => {
+      await clear();
+      await env.DB.prepare("delete from artifacts").run();
+      const o = await owner();
+      await api(app, R.artifacts, o.cookie, {
+        method: "POST",
+        body: { title: "old", format: "html", content: "<p>x</p>" },
+      });
+      await seedWelcome(env, o.user);
       expect((await get(o.cookie)).body?.welcomeId).toBeNull();
+      const m = await login(`mem-${tag()}@example.com`, "member");
+      const mu = await getUser(env, m.userId);
+      if (!mu) throw new Error("no user");
+      await seedWelcome(env, mu);
+      expect((await get(m.cookie)).body?.welcomeId).not.toBeNull();
+      // The owner is not seeded later either.
+      await seedWelcome(env, o.user);
+      expect((await get(o.cookie)).body?.welcomeId).toBeNull();
+    });
+
+    it("an owner whose Welcome is the legacy install-wide row is not seeded again", async () => {
+      await clear();
+      await env.DB.prepare("delete from artifacts").run();
+      const o = await owner();
+      await seedWelcome(HOSTED_ENV, o.user);
+      const id = (await get(o.cookie)).body?.welcomeId as string;
+      await env.DB.prepare(
+        "delete from settings where key like 'onboarding:welcome:%'",
+      ).run();
+      await env.DB.prepare(
+        "insert into settings (key, value) values ('onboarding:welcome', ?1)",
+      )
+        .bind(JSON.stringify({ userId: o.userId, artifactId: id }))
+        .run();
+      await seedWelcome(HOSTED_ENV, o.user);
+      expect((await get(o.cookie)).body?.welcomeId).toBe(id);
+      expect(
+        (await welcomeRows()).results.filter((r) => r.owner_id === o.userId),
+      ).toHaveLength(1);
     });
 
     it("does not reseed after the owner deletes it, and welcomeId goes null", async () => {
@@ -307,7 +456,7 @@ describe("R.onboarding", () => {
       await expect(seedWelcome(HOSTED_ENV, ghost)).resolves.toBeUndefined();
       expect(
         await env.DB.prepare(
-          "select 1 from settings where key = 'onboarding:welcome'",
+          "select 1 from settings where key like 'onboarding:welcome%'",
         ).first(),
       ).toBeNull();
       await seedWelcome(HOSTED_ENV, o.user);

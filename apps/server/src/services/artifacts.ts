@@ -73,8 +73,10 @@ import {
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
-import { noteInstanceFirst } from "./analytics.js";
+import { noteMemberFirst } from "./analytics.js";
+import { libraryWaiting } from "./ask-waiting.js";
 import { audit, userActor } from "./audit.js";
+import { restoreDocVersion } from "./doc-edit.js";
 import {
   apiFormat,
   docPlanInput,
@@ -84,7 +86,7 @@ import {
   refuseDocSettings,
   useEditDoc,
 } from "./doc-format.js";
-import { DOC_SWITCH } from "./doc-switch.js";
+import { docCreationOpen } from "./doc-switch.js";
 import { docsAvailable } from "./docs-available.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import {
@@ -209,6 +211,8 @@ export async function publish(
   agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
+  /** `noCreator`: the page is not the person's own work (the seeded Welcome), so no creator row is written. */
+  opts: { noCreator?: boolean } = {},
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
@@ -218,7 +222,7 @@ export async function publish(
   // doc (#1100) once it is known to be a create.
   const asDoc = input.format === "doc";
   if (asDoc && !docsAvailable(env))
-    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    throw docCreationOpen(env) ? docsNeedPaid() : docsUnavailable();
   let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
@@ -558,7 +562,7 @@ export async function publish(
   // Hosted billing: the publisher is this month's creator once the version
   // row exists (an agent's publish counts for its owner). restoreVersion
   // never writes one.
-  const creator = creatorStmt(env, user.id, id, now);
+  const creator = opts.noCreator ? null : creatorStmt(env, user.id, id, now);
   if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
@@ -648,9 +652,9 @@ export async function publish(
     ]),
   );
   mark();
-  // #2479: the first page anyone publishes (not the seeded Welcome or the
+  // #2479: the first page each member publishes (not the seeded Welcome or the
   // provisioner's self-test, which share its title); a no-op unless analytics is on.
-  if (create) await noteInstanceFirst(env, "first_page_published", ctx);
+  if (create) await noteMemberFirst(env, user.id, "first_page_published", ctx);
   logPublishTiming(env, id, create, at);
   const warning = dataWritersWarning({
     visibility: visibility ?? prior.visibility,
@@ -1018,14 +1022,14 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null);
+    return decorate(env, caller, out, r.level, null, null, r.commenter);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
-  return withSpace(caller, out, r.level, r.artifact.spaceId, sp);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.commenter);
 }
 
 /** The artifact's space row as withSpace reads it (null: no row). */
@@ -1054,12 +1058,19 @@ export const spaceCols = (
     : sql<number>`0`,
 });
 
-/** Whether the caller may post: comments on, not capped, and signed in where only signed-in people may (#2080). */
+/**
+ * Whether the caller may post: comments on, not capped (a guest holding a
+ * commenter share is the exception, #2590), and signed in where only
+ * signed-in people may (#2080).
+ */
 function canComment(
   caller: Caller,
   out: Pick<ArtifactSummary, "comments" | "commenters">,
+  commenter = false,
 ): boolean {
-  if (capOfCaller(caller) || out.comments === false) return false;
+  const cap = capOfCaller(caller);
+  if ((cap && !(cap === "guest" && commenter)) || out.comments === false)
+    return false;
   return !(out.commenters === "signed-in" && caller.kind === "anonymous");
 }
 
@@ -1102,6 +1113,8 @@ export function withSpace<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  /** The caller's own share is a commenter one (#2590). */
+  commenter = false,
 ): T {
   const shared = sp?.kind === "shared";
   if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
@@ -1116,7 +1129,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, out);
+  out.can.comment = canComment(caller, out, commenter);
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1156,6 +1169,7 @@ export function withCan<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   level: AccessLevel,
+  commenter = false,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1165,7 +1179,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, out),
+    comment: canComment(caller, out, commenter),
   };
   return commentsLast(sharingFree(caller, out, true));
 }
@@ -1181,6 +1195,7 @@ export function decorate<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
+  commenter = false,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1190,8 +1205,8 @@ export function decorate<T extends ArtifactSummary>(
     return out;
   }
   return decorates(env, caller)
-    ? withSpace(caller, out, level, spaceId, sp)
-    : withCan(caller, out, level);
+    ? withSpace(caller, out, level, spaceId, sp, commenter)
+    : withCan(caller, out, level, commenter);
 }
 
 // --------------------------------------------------------------------- list
@@ -1290,6 +1305,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
+      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
@@ -1351,7 +1367,35 @@ export async function list(
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
     if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
-    items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
+    items.push(
+      decorate(
+        env,
+        caller,
+        out,
+        level,
+        r.a.spaceId,
+        r.space,
+        r.commenter === 1,
+      ),
+    );
+  }
+  // #2512: the "waiting" mark: one read of my open asks on this page and one
+  // hub call, only when a card has an ask for me. Fails soft to no mark.
+  const withAsks = items.filter((i) => (i.asksForYou ?? 0) > 0);
+  if (withAsks.length > 0) {
+    const w = await libraryWaiting(
+      env,
+      caller.user.id,
+      withAsks.map((i) => i.id),
+    );
+    for (const i of withAsks) {
+      const m = w.get(i.id);
+      if (m)
+        i.waiting = {
+          count: m.count,
+          oldestSince: new Date(m.oldestSince).toISOString(),
+        };
+    }
   }
   return {
     items,
@@ -1710,7 +1754,13 @@ export async function restoreVersion(
   agent: AgentAttr | null,
   ctx?: Ctx,
 ): Promise<PublishResult> {
-  await authorize(env, asUser(user), id, "restore");
+  const { artifact } = await authorize(env, asUser(user), id, "restore");
+  // #2140: a doc restores through its room (unsaved edits saved, one live
+  // edit, "Restored v{v}"), never as a whole-content rewrite.
+  if (artifact.doc === 1) {
+    const r = await restoreDocVersion(env, user, agent, id, v);
+    return { id, version: r.version, url: appOrigin(env) + viewerPath(id) };
+  }
   const src = await env.DB.prepare(
     `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
      from versions v join artifacts a on a.id = v.artifact_id
@@ -2285,6 +2335,11 @@ async function purgeOne(
   await env.DB.batch([
     env.DB.prepare("delete from artifact_search where rowid = ?").bind(rid),
     env.DB.prepare("delete from uploads where artifact_id = ?").bind(id),
+    // #2508: the comment pictures' rows; their bytes sit under files/<id>/ and
+    // went with the listing above, so the purge costs no extra call per artifact.
+    env.DB.prepare("delete from comment_pictures where artifact_id = ?").bind(
+      id,
+    ),
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),
@@ -2298,6 +2353,29 @@ async function purgeOne(
     ),
   ]);
   return true;
+}
+
+/**
+ * Hard-deletes one artifact now, with its files and runtime (erasing a person
+ * takes their seeded Welcome with them). True when it is gone.
+ */
+export async function purgeNow(env: Env, id: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "select rowid as rid from artifacts where id = ?",
+  )
+    .bind(id)
+    .first<{ rid: number }>();
+  if (!row) return true;
+  const now = Date.now();
+  await env.DB.prepare(
+    "update artifacts set deleted_at = coalesce(deleted_at, ?1) where id = ?2",
+  )
+    .bind(now, id)
+    .run();
+  return purgeOne(env, id, row.rid, now + 1, {
+    deletes: PURGE_R2_DELETES,
+    listed: PURGE_KEYS_LISTED,
+  });
 }
 
 async function destroyRuntime(env: Env, id: string): Promise<void> {

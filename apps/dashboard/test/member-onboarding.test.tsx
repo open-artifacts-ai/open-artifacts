@@ -1,0 +1,412 @@
+// #2632 (member onboarding, slice 1): the adapter (api/myOnboarding.ts), a member's Library card (five steps, Hide; hidden
+// isn't done), and a guest's note where a member would publish.
+import { type Me, OnboardingSchema } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
+import { cleanup, screen, waitFor } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
+import { beforeEach, describe, expect, it } from "vitest";
+import { firstName, fiveOf, mySteps } from "../src/api/myOnboarding";
+import { calls, installHarness, mountHosted, page } from "./harness";
+
+installHarness();
+// Each test is its own session.
+beforeEach(() => {
+  sessionStorage.clear();
+  localStorage.clear();
+});
+
+const onboarding = (over: object = {}) =>
+  http.get("*/api/v1/onboarding", () =>
+    HttpResponse.json({
+      dismissed: false,
+      completed: false,
+      firstArtifact: null,
+      agentConnected: true,
+      ...over,
+    }),
+  );
+const put = () =>
+  http.put("*/api/v1/onboarding", async ({ request }) =>
+    HttpResponse.json({
+      dismissed: false,
+      completed: false,
+      ...((await request.json()) as object),
+    }),
+  );
+const as =
+  (role: Me["user"]["role"], extra: object = {}) =>
+  (m: Me): Me =>
+    ({ ...m, user: { ...m.user, role }, ...extra }) as Me;
+// The contract: R.onboarding refuses a guest.
+const refused = () =>
+  http.get("*/api/v1/onboarding", () =>
+    HttpResponse.json(
+      { error: { code: "forbidden", message: "Forbidden" } },
+      { status: 403 },
+    ),
+  );
+const refusedPut = () =>
+  http.put("*/api/v1/onboarding", () =>
+    HttpResponse.json(
+      { error: { code: "forbidden", message: "Forbidden" } },
+      { status: 403 },
+    ),
+  );
+const card = () => document.querySelector("section[data-member]");
+const empty = () => http.get("*/api/v1/artifacts", () => page([], null));
+
+describe("myOnboarding (the #2639 contract)", () => {
+  it("reads the caller's own steps from R.onboarding", () => {
+    const s = mySteps({
+      dismissed: false,
+      completed: false,
+      agentConnected: true,
+      agentNamed: true,
+      firstArtifact: null,
+      teamStep: true,
+    });
+    expect(fiveOf(s)).toEqual([true, true, false, false, false]);
+    expect(s.team).toBe(true);
+  });
+
+  it("hidden is not done, and the sixth never counts", () => {
+    const s = mySteps({ dismissed: true, completed: false, teamStep: true });
+    expect(s.hidden).toBe(true);
+    expect(s.completed).toBe(false);
+    expect(fiveOf(s).some(Boolean)).toBe(false);
+  });
+
+  it("parses teamStep and invitedBy; an older server's answer still parses", () => {
+    expect(
+      OnboardingSchema.parse({
+        dismissed: false,
+        completed: false,
+        teamStep: false,
+        invitedBy: { name: "Bob Builder" },
+      }).invitedBy?.name,
+    ).toBe("Bob Builder");
+    expect(
+      OnboardingSchema.safeParse({ dismissed: false, completed: false })
+        .success,
+    ).toBe(true);
+  });
+
+  it("first name is the first word", () => {
+    expect(firstName("  Ada Lovelace ")).toBe("Ada");
+    expect(firstName("")).toBeNull();
+    expect(firstName(null)).toBeNull();
+  });
+});
+
+describe("a member's Library card", () => {
+  // The results never wait on R.onboarding: the card's slot is held instead.
+  it("the results render before R.onboarding answers, under a held slot", async () => {
+    let answer: (over?: object) => void = () => {};
+    const gate = new Promise<object>((r) => {
+      answer = (over = {}) => r(over);
+    });
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", async () =>
+        HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          firstArtifact: null,
+          agentConnected: true,
+          ...(await gate),
+        }),
+      ),
+    ]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    const slot = document.querySelector("[data-member-slot]");
+    expect(slot).not.toBeNull();
+    expect(slot).toHaveAttribute("aria-hidden", "true");
+    // Sized for a new member: step 1 held open with the line and Copy.
+    expect(slot?.textContent).toContain("Set up Open Artifacts for me: follow");
+    expect(slot?.querySelector('[aria-current="step"]')?.textContent).toContain(
+      "Connect your agent",
+    );
+    expect(card()).toBeNull();
+    answer();
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(document.querySelector("[data-member-slot]")).toBeNull();
+  });
+
+  it("a failed R.onboarding collapses the slot; the results stay", async () => {
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "not_found", message: "Not found" } },
+          { status: 404 },
+        ),
+      ),
+    ]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("[data-member-slot]")).toBeNull(),
+    );
+    expect(card()).toBeNull();
+  });
+
+  // Design: after Hide or done, a later load holds no slot (no blank flash).
+  const slotOnSecondLoad = async (over: object) => {
+    const userId = fixtures.me.user.id;
+    // First load: the card is hidden or finished, and that's remembered.
+    mountHosted("/", true, as("member"), [onboarding(over)]);
+    await waitFor(() =>
+      expect(localStorage.getItem(`oa.onboarding.no-card.${userId}`)).toBe("1"),
+    );
+    cleanup();
+    // Second load, R.onboarding not answered yet: no slot.
+    let answer: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      answer = r;
+    });
+    mountHosted("/", true, as("member"), [
+      http.get("*/api/v1/onboarding", async () => {
+        await gate;
+        return HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          firstArtifact: null,
+          agentConnected: true,
+          ...over,
+        });
+      }),
+    ]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    expect(document.querySelector("[data-member-slot]")).toBeNull();
+    answer();
+    await new Promise((r) => setTimeout(r, 100));
+    expect(card()).toBeNull();
+  };
+
+  it("a second load after Hide holds no slot", async () => {
+    await slotOnSecondLoad({ dismissed: true });
+  });
+
+  it("a second load after done holds no slot", async () => {
+    await slotOnSecondLoad({ completed: true });
+  });
+
+  it("Hide is remembered at once; a reopened card clears it", async () => {
+    const userId = fixtures.me.user.id;
+    const key = `oa.onboarding.no-card.${userId}`;
+    mountHosted("/", true, as("member"), [onboarding(), put(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(localStorage.getItem(key)).toBeNull();
+    (await screen.findByRole("button", { name: "Hide" })).click();
+    await waitFor(() => expect(localStorage.getItem(key)).toBe("1"));
+    cleanup();
+    sessionStorage.clear();
+    // The server says the card is open again: the memory goes.
+    mountHosted("/", true, as("member"), [onboarding(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    expect(localStorage.getItem(key)).toBeNull();
+  });
+
+  it("a hidden card leaves no slot", async () => {
+    mountHosted("/", true, as("member"), [onboarding({ dismissed: true })]);
+    await waitFor(() =>
+      expect(document.querySelector("article.lib-card")).not.toBeNull(),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("[data-member-slot]")).toBeNull(),
+    );
+    expect(card()).toBeNull();
+  });
+
+  it("shows the same five steps with the design's words, and Hide", async () => {
+    mountHosted("/", true, as("member"), [onboarding(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 5");
+    for (const t of [
+      "Name your agent",
+      "Your agent will suggest a name. It's what you'll type after @ in comments.",
+      "Your agent publishes one during setup. It's private until you share it.",
+      "Open your first page, type @ in a comment and pick your agent. It replies in the thread.",
+      "Your first page has a question from your agent. Pick an option.",
+    ])
+      expect(c.textContent).toContain(t);
+    // The sixth step is the Welcome's, never the card's.
+    expect(c.textContent).not.toContain("Also try");
+  });
+
+  const LINE =
+    "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.";
+  const titles = (c: HTMLElement) =>
+    [...c.querySelectorAll("ol > li")].map((li) => li.textContent ?? "");
+
+  it("a member who never connected the bus sees three steps, '1 of 3', and Product's bus line (#2890)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ busConnected: false }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 3");
+    expect(c.textContent).not.toContain("Name your agent");
+    expect(c.textContent).not.toContain("Mention your agent");
+    const t = titles(c);
+    expect(t).toHaveLength(3);
+    expect(t[0]).toContain("Connect your agent");
+    expect(t[1]).toContain("Publish");
+    expect(t[2]).toContain("Answer");
+    // Renumbered 1, 2, 3.
+    expect(t[1]).toMatch(/^2/);
+    expect(t[2]).toMatch(/^3/);
+    expect(c.querySelector("[data-bus-line]")?.textContent).toBe(LINE);
+  });
+
+  it("with the bus connected, or no flag, five steps and no bus line", async () => {
+    for (const over of [{ busConnected: true }, {}]) {
+      cleanup();
+      mountHosted("/", true, as("member"), [onboarding(over), empty()]);
+      await waitFor(() => expect(card()).not.toBeNull());
+      const c = card() as HTMLElement;
+      expect(c.textContent).toContain("1 of 5");
+      expect(c.textContent).toContain("Name your agent");
+      expect(c.textContent).toContain("Mention your agent");
+      expect(c.querySelector("[data-bus-line]")).toBeNull();
+      expect(c.textContent).not.toContain("Want your agent to hear");
+    }
+  });
+
+  it("3 of 3 with no bus is not saved as completed (#2890): the card goes, nothing persists", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: false,
+        firstArtifact: { id: "a", title: "A" },
+        askAnswered: true,
+      }),
+      put(),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).toBeNull());
+    await new Promise((r) => setTimeout(r, 300));
+    expect(puts.some((c) => JSON.stringify(c.body).includes("completed"))).toBe(
+      false,
+    );
+  });
+
+  it("5 of 5 with the bus connected is saved as completed", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: true,
+        firstArtifact: { id: "a", title: "A" },
+        agentNamed: true,
+        mentionReplied: true,
+        askAnswered: true,
+      }),
+      put(),
+      empty(),
+    ]);
+    await waitFor(() =>
+      expect(
+        puts.some((c) => JSON.stringify(c.body).includes("completed")),
+      ).toBe(true),
+    );
+  });
+
+  it("Hide hides it (dismissed), and nothing marks it done", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [onboarding(), put(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    (await screen.findByRole("button", { name: "Hide" })).click();
+    await waitFor(() =>
+      expect(
+        puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
+      ).toEqual([{ dismissed: true }]),
+    );
+  });
+
+  // Today's server refuses a member's PUT: not saved, no error, still hidden.
+  it("a refused Hide (403) hides it for the session, with no error", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [onboarding(), refusedPut(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    (await screen.findByRole("button", { name: "Hide" })).click();
+    await waitFor(() => expect(card()).toBeNull());
+    await new Promise((r) => setTimeout(r, 200));
+    expect(card()).toBeNull();
+    expect(puts.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(1);
+    expect(document.body.textContent).not.toContain("Couldn't save that.");
+    // A fresh mount in the same session still keeps it hidden.
+    cleanup();
+    mountHosted("/", true, as("member"), [onboarding(), empty()]);
+    await screen.findByRole("heading", { name: "Library" });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(card()).toBeNull();
+  });
+
+  it("a refused done (403) shows no error", async () => {
+    const puts = calls("PUT");
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        agentNamed: true,
+        firstArtifact: { id: "a1", title: "A" },
+        mentionReplied: true,
+        askAnswered: true,
+      }),
+      refusedPut(),
+      empty(),
+    ]);
+    await waitFor(() =>
+      expect(
+        puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
+      ).toEqual([{ completed: true }]),
+    );
+    await new Promise((r) => setTimeout(r, 200));
+    expect(card()).toBeNull();
+    expect(document.body.textContent).not.toContain("Couldn't save that.");
+  });
+
+  it("stays away once hidden (per person)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ dismissed: true }),
+      empty(),
+    ]);
+    await screen.findByRole("heading", { name: "Library" });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(card()).toBeNull();
+  });
+
+  it("an admin gets it too", async () => {
+    mountHosted("/", true, as("admin"), [onboarding(), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+  });
+});
+
+describe("a guest", () => {
+  it("has no card, and sees the note where a member would publish", async () => {
+    mountHosted(
+      "/shared",
+      true,
+      as("guest", { instanceOwner: { name: "Bob Builder" } }),
+      [refused()],
+    );
+    expect(
+      await screen.findByText(
+        "Guests can read and comment. To publish, ask Bob Builder to make you a member.",
+      ),
+    ).toBeTruthy();
+    expect(card()).toBeNull();
+  });
+
+  it("without the owner's name, says an owner", async () => {
+    mountHosted("/shared", true, as("guest"), [refused()]);
+    expect(
+      await screen.findByText(
+        "Guests can read and comment. To publish, ask an owner to make you a member.",
+      ),
+    ).toBeTruthy();
+  });
+});

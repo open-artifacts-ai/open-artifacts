@@ -611,12 +611,22 @@ function rosterText(
   return lines.join("\n");
 }
 
+/** #2759: one line for a person's own agents during their quiet hours; the time is ISO UTC. */
+export const ownerAwayText = (until: string): string =>
+  `Your person is away until ${until} (quiet hours). Nothing breaks through until then.`;
+
 /** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
 function selfText(
   agent: (StatusFields & Record<string, unknown>) | null,
 ): string {
   if (!agent) return JSON.stringify(agent, null, 2);
-  const { status: _s, status_label: _l, status_at: _a, ...rest } = agent;
+  const {
+    status: _s,
+    status_label: _l,
+    status_at: _a,
+    owner_away_until: away,
+    ...rest
+  } = agent;
   const label =
     typeof agent.status_label === "string"
       ? displayLabel(agent.status_label)
@@ -632,7 +642,10 @@ function selfText(
       ? { status_at: agent.status_at }
       : {}),
   };
-  return JSON.stringify(shown, null, 2);
+  const json = JSON.stringify(shown, null, 2);
+  return typeof away === "string" && /^[0-9T:.\-Z]{1,40}$/.test(away)
+    ? `${json}\n\n${ownerAwayText(away)}`
+    : json;
 }
 
 /** For the parity test; Pi uses only the default export. */
@@ -1199,7 +1212,28 @@ export default function oaBus(pi: Pi): void {
           body: stripTerminalControls(String(f.body)),
         });
     try {
-      show("oa_bus", content, { msg_id: msgId, from });
+      // #2768: a server notice's fields ride as data in `details`, never in the text.
+      // Only the known keys, as short id-shaped strings, whoever wrote the frame.
+      const raw: unknown = f.meta;
+      const meta: Record<string, string> = {};
+      if (raw && typeof raw === "object")
+        for (const k of [
+          "kind",
+          "artifact_id",
+          "comment_id",
+          "thread_id",
+          "user_id",
+          "until",
+        ]) {
+          const v = (raw as Record<string, unknown>)[k];
+          if (typeof v === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(v))
+            meta[k] = v;
+        }
+      show("oa_bus", content, {
+        msg_id: msgId,
+        from,
+        ...(meta.kind ? { meta } : {}),
+      });
     } catch {
       shown.delete(msgId);
       return; // Not handed to Pi: no ack, so the daemon does not call it delivered.

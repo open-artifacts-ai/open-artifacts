@@ -181,6 +181,20 @@ describe("Settings tabs", () => {
     );
   });
 
+  it("a member sees no Login tab, even where the server has the route", async () => {
+    mountHosted(
+      "/settings/profile",
+      true,
+      (m) => ({ ...m, user: { ...m.user, role: "member" } }),
+      loginHandlers("owner-on", createHandlers({ hosted: true }), () => false),
+    );
+    const nav = await screen.findByRole("navigation", {
+      name: "Settings sections",
+    });
+    await within(nav).findByRole("link", { name: "Profile" });
+    expect(within(nav).queryByRole("link", { name: "Login" })).toBeNull();
+  });
+
   it("a server without the route (404): no Login tab", async () => {
     mountHosted("/settings/profile");
     const nav = await screen.findByRole("navigation", {

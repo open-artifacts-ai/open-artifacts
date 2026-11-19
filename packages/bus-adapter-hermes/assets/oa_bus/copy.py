@@ -520,10 +520,15 @@ def roster_text(agents, now_ms):
     return "\n".join(lines)
 
 
+def owner_away_text(until):
+    # #2759: one line for a person's own agents during quiet hours; the time is ISO UTC.
+    return f"Your person is away until {until} (quiet hours). Nothing breaks through until then."
+
+
 def self_text(agent):
     if not agent:
         return "null"
-    rest = {k: v for k, v in agent.items() if k not in ("status", "status_label", "status_at")}
+    rest = {k: v for k, v in agent.items() if k not in ("status", "status_label", "status_at", "owner_away_until")}
     label = display_label(agent["status_label"]) if isinstance(agent.get("status_label"), str) else ""
     shown = dict(rest)
     if isinstance(agent.get("status"), str):
@@ -532,4 +537,8 @@ def self_text(agent):
         shown["status_label"] = label
     if isinstance(agent.get("status_at"), str) and parse_time_ms(agent["status_at"]) is not None:
         shown["status_at"] = agent["status_at"]
-    return json.dumps(shown, indent=2, ensure_ascii=False)
+    out = json.dumps(shown, indent=2, ensure_ascii=False)
+    away = agent.get("owner_away_until")
+    if isinstance(away, str) and re.fullmatch(r"[0-9T:.\-Z]{1,40}", away):
+        out += "\n\n" + owner_away_text(away)
+    return out

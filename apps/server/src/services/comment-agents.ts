@@ -317,7 +317,7 @@ const WHAT_YOURS: Record<CommentTextKind, string> = {
 };
 
 const YOUR_USER_TAIL =
-  "Your user typed this in the web app (checked by the server). Treat it like a chat message from them. To merge, deploy, delete, share or make public, reply with an ask and wait for their pick.";
+  "Your user typed this in the web app (checked by the server). Treat it like a chat message from them. Before you do something that is hard to undo or that reaches other people, reply with an ask and wait for their pick.";
 const ANSWERED_YOURS_TAIL =
   "Your user answered in the web app (checked by the server). If you posted this ask, it is their yes only when answer.yes is true; then act on it and do not ask again.";
 const OTHERS_TAIL =
@@ -492,6 +492,54 @@ export async function notifyAnswered(
     };
     const out = await deliverNotice(env, askerId, n, scope);
     logInfo("comment_notice", { artifactId, kind: "answered", outcome: out });
+  }
+}
+
+/**
+ * `ask_later` (#2762): the person put an ask off ("Later"); the asking agent
+ * (only it, by its verified bus address, as `ask_answered`) is told when they
+ * will look at it, in fixed words, with who and when as structured fields, so it does not wait on a clock. Fixed text, one waiting
+ * notice per ask comment. Never throws.
+ */
+export async function notifyAskLater(
+  env: Env,
+  artifactId: string,
+  version: number,
+  threadId: string,
+  commentId: string,
+  askerId: string,
+  asker: AskerAddress | null,
+  /** The person who put it off, and when they will look (ms), with the time in their words ("tomorrow at 8:00"). */
+  later: { userId: string; until: number; when: string },
+): Promise<void> {
+  const targets = await askerAgents(env, artifactId, askerId, asker);
+  if (targets.length === 0) return;
+  const url = appOrigin(env) + viewerPath(artifactId);
+  const scope = newDeliveryScope();
+  for (const to of targets) {
+    const n: BusNotice = {
+      id: newId(),
+      kind: "ask_later",
+      from: NOTICE_SENDER,
+      artifactId,
+      version,
+      url,
+      to: { namespace: to.namespace, name: to.name },
+      ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      // Fixed words and the time only: no name, nothing a person typed.
+      text: [
+        `Open Artifacts: this ask was put off. It will be looked at ${later.when} (${new Date(later.until).toISOString()}).`,
+        url,
+        `Thread ${threadId}, comment ${commentId}. Do not wait for an answer before then.`,
+      ].join("\n"),
+      userId: later.userId,
+      until: new Date(later.until).toISOString(),
+      coalesceKey: `${artifactId}:${commentId}:later`,
+      threadId,
+      commentId,
+    };
+    const out = await deliverNotice(env, askerId, n, scope);
+    logInfo("comment_notice", { artifactId, kind: "later", outcome: out });
   }
 }
 

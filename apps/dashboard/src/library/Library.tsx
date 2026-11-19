@@ -33,6 +33,7 @@ import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
 import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
+import { GuestPublishNote, MemberGetStarted } from "./MemberGetStarted";
 import {
   AGENT_LINE,
   DocsGate,
@@ -308,10 +309,14 @@ export function Library({ scope }: { scope: Scope }) {
         ))}
       {!filtered && !space && scope === "all" && !showRevoked && (
         // Your own artifacts only: ones shared with you aren't your first.
-        <GetStarted
-          ownIds={items.filter((a) => a.owner.id === meId).map((a) => a.id)}
-          loaded={q.isSuccess}
-        />
+        <>
+          <GetStarted
+            ownIds={items.filter((a) => a.owner.id === meId).map((a) => a.id)}
+            loaded={q.isSuccess}
+          />
+          {/* #2632: a member's own card (the owner's is GetStarted). */}
+          <MemberGetStarted />
+        </>
       )}
       <Filters
         outsider={guest}
@@ -458,8 +463,13 @@ export function Library({ scope }: { scope: Scope }) {
         {docs && canCreate && (!space || canPublishHere) && (
           <NewDocButton docs={docs} spaceId={uploadSpace} onGate={gate.show} />
         )}
-        {(!space || canPublishHere) && (
-          <DropZone button allowed={canCreate} spaceId={uploadSpace} />
+        {guest ? (
+          // #2632: where a member would publish, a guest learns how to.
+          <GuestPublishNote />
+        ) : (
+          (!space || canPublishHere) && (
+            <DropZone button allowed={canCreate} spaceId={uploadSpace} />
+          )
         )}
       </div>
       {/* One tree whether or not /me has loaded: the results never remount

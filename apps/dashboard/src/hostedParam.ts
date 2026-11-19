@@ -9,6 +9,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
   "1": {},
   access: { mode: "access" },
   "email-only": { providers: ["email"] },
+  // #2590 G2: Google only, codes off.
+  "google-only": { providers: ["google"] },
   turnstile: { turnstile: true },
   unhealthy: { unhealthy: true },
   "auth-failed": { unhealthy: true, unhealthyState: "auth_failed" },

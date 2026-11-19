@@ -72,6 +72,7 @@ async function downloadUrl(
 }
 
 import { editDoc } from "../../services/doc-edit.js";
+import { docCreationOpen } from "../../services/doc-switch.js";
 import { docsAvailable } from "../../services/docs-available.js";
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
@@ -82,7 +83,11 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool(
     "publish_artifact",
-    toolConfig("publish_artifact", sp, docsAvailable(env)),
+    toolConfig(
+      "publish_artifact",
+      sp,
+      docsAvailable(env) ? true : docCreationOpen(env) ? "needs_paid" : false,
+    ),
     (input) =>
       guard(async () => {
         // An id with neither content nor files: settings only, no version (#681 D).
@@ -158,7 +163,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool(
     "list_artifacts",
-    toolConfig("list_artifacts", sp),
+    toolConfig("list_artifacts", sp, docsAvailable(env)),
     (input) =>
       guard(async () => {
         const page = await list(env, caller, input);

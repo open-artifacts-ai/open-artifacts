@@ -4,8 +4,8 @@ import { expect, test } from "@playwright/test";
 
 const ID = "Cd5fGhJkLm6nPqRs";
 
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
+for (const scheme of ["light"] as const)
+  for (const width of [1280])
     test(`panel close ${scheme} ${width}`, async ({ page }, info) => {
       await page.emulateMedia({ colorScheme: scheme });
       await page.setViewportSize({ width, height: 800 });

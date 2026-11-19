@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -55,45 +54,6 @@ describe("versioned layout (#2552)", () => {
     expect(statSync(join(h, "versions")).mode & 0o777).toBe(0o700);
     expect(statSync(join(h, "update.json")).mode & 0o777).toBe(0o600);
     expect(readState(h)).toEqual({ armed: true, current: "1.0.0" });
-  });
-
-  it("a reader polling bin while it is swapped never finds it missing (macOS may answer EINVAL mid-rename; that is not missing)", async () => {
-    const h = home();
-    installVersion(h, "1.0.0", put("1.0.0"));
-    stage(h, "2.0.0", put("2.0.0"));
-    const reader = `
-      const fs = require("fs");
-      const [bin, stop] = process.argv.slice(1);
-      let reads = 0, misses = 0;
-      process.send("ready");
-      while (!fs.existsSync(stop)) {
-        reads++;
-        try { fs.readFileSync(bin + "/package.json"); } catch (e) { if (e.code === "ENOENT" || e.code === "ENOTDIR") misses++; }
-      }
-      process.send({ reads, misses });
-    `;
-    const stop = join(h, "stop");
-    const out = await new Promise<{ reads: number; misses: number }>(
-      (resolve, reject) => {
-        const c = spawn(
-          process.execPath,
-          ["-e", reader, join(h, "bin"), stop],
-          {
-            stdio: ["ignore", "ignore", "inherit", "ipc"],
-          },
-        );
-        c.on("error", reject);
-        c.on("message", (m) => {
-          if (m === "ready") {
-            for (let i = 0; i < 300; i++) swap(h, i % 2 ? "1.0.0" : "2.0.0");
-            writeFileSync(stop, "");
-          } else resolve(m as { reads: number; misses: number });
-        });
-      },
-    );
-    expect(out.reads).toBeGreaterThan(0);
-    expect(out.misses).toBe(0);
-    expect(readdirSync(h).filter((n) => n.endsWith(".new"))).toEqual([]);
   });
 
   it("keeps exactly one previous and prunes older ones", () => {

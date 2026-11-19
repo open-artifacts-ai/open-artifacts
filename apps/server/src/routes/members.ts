@@ -27,6 +27,7 @@ import {
   removeMember,
   restoreMember,
 } from "../services/members.js";
+import { memberSetups } from "../services/onboarding.js";
 import { transferPersonal, transferSummary } from "../services/spaces.js";
 import type { AppType } from "./index.js";
 
@@ -77,7 +78,16 @@ export function mountMembers(app: AppType): void {
     const q = MembersQuerySchema.safeParse(c.req.query());
     if (!q.success)
       throw new ApiError("bad_request", "Invalid query", q.error.issues);
-    return c.json(await listMembers(c.env, q.data.status));
+    const list = await listMembers(c.env, q.data.status);
+    // #2632: each person's setup, for owners and admins only (requireManager
+    // above); a guest has none.
+    const setups = await memberSetups(c.env, list);
+    return c.json(
+      list.map((m) => {
+        const setup = setups.get(m.id);
+        return setup ? { ...m, setup } : m;
+      }),
+    );
   });
 
   /**
@@ -94,6 +104,9 @@ export function mountMembers(app: AppType): void {
     return c.json(out.result, out.reinvited ? 200 : 201);
   });
 
+  // Role change. An admin raises a guest to member here (a guest never
+  // becomes a member by logging in, a login domain or not, #2590); it is
+  // the one way, and it ends their sessions like any role change.
   app.patch(MEMBER, async (c) => {
     const actor = requireManager(c);
     const patch = await jsonBody(c, MemberPatchSchema);

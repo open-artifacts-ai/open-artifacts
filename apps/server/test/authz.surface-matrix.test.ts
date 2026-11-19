@@ -794,6 +794,96 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
   );
 });
 
+describe("scripts/authz-probe.ts on an install whose tools/list hides edit_doc", () => {
+  // tools/list without edit_doc. `calls` "unknown": a call to it answers
+  // the unknown-tool error, as a real install without it does; "callable":
+  // calls still reach the tool.
+  const hide =
+    (calls: "unknown" | "callable") =>
+    async (req: Request): Promise<Response> => {
+      const r = (await io.fetch?.(req.clone() as never)) as Response;
+      const body = (await req.clone().text()) || "";
+      if (body.includes('"tools/list"')) {
+        const text = await r.text();
+        const strip = (j: string) => {
+          const m = JSON.parse(j) as {
+            result?: { tools?: { name: string }[] };
+          };
+          if (m.result?.tools)
+            m.result.tools = m.result.tools.filter(
+              (t) => t.name !== "edit_doc",
+            );
+          return JSON.stringify(m);
+        };
+        const out = text.trimStart().startsWith("{")
+          ? strip(text)
+          : text
+              .split("\n")
+              .map((l) =>
+                l.startsWith("data:") ? `data:${strip(l.slice(5))}` : l,
+              )
+              .join("\n");
+        return new Response(out, { status: r.status, headers: r.headers });
+      }
+      if (calls === "unknown" && body.includes('"name":"edit_doc"'))
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            error: { code: -32602, message: "Tool edit_doc not found" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      return r;
+    };
+  const run = async (fetch: typeof io.fetch) => {
+    const lines: string[] = [];
+    await main(
+      ["--base", BASE, "--creds", "world.json"],
+      {},
+      {
+        log: (l) => lines.push(l),
+        fetch,
+        only: (n) => n === "mcp edit_doc",
+        readFile: async () =>
+          JSON.stringify({ callers: w.creds, artifacts: w.ids }),
+      },
+    );
+    return lines;
+  };
+
+  it(
+    "hidden and unknown: every caller gets the unknown-tool answer, no mismatch",
+    async () => {
+      const lines = await run(hide("unknown"));
+      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, 0 mismatches$/);
+    },
+    SLOW,
+  );
+
+  it(
+    "hidden but still callable is a mismatch",
+    async () => {
+      const lines = await run(hide("callable"));
+      expect(lines.some((l) => l.startsWith("MISMATCH mcp edit_doc"))).toBe(
+        true,
+      );
+    },
+    SLOW,
+  );
+
+  it(
+    "offered (this world opens the switch): the normal surface runs",
+    async () => {
+      const lines = await run(io.fetch);
+      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, 0 mismatches$/);
+    },
+    SLOW,
+  );
+});
+
 // Last: it changes the instance's health for everything after it.
 describe("customer_mismatch: synced callers resolve to no one", () => {
   beforeAll(mismatchHealth);
@@ -910,7 +1000,10 @@ describe("customer_mismatch: synced callers resolve to no one", () => {
 describe("CSRF: a cookie write without X-OA-Request", () => {
   const WRITE = /^(POST|PUT|PATCH|DELETE) (\/api\/v1\/|\/auth\/logout$)/;
   /** Authenticated by its URL signature: no session, so no CSRF check (app.ts unlessSigned). */
-  const SIGNED = ["PUT /api/v1/uploads/:uploadId"];
+  const SIGNED = [
+    "PUT /api/v1/uploads/:uploadId",
+    "PUT /api/v1/artifacts/:id/pictures/:pictureId",
+  ];
   const routes = Object.keys(ROUTE_POLICY).filter(
     (k) => WRITE.test(k) && !SIGNED.includes(k),
   );

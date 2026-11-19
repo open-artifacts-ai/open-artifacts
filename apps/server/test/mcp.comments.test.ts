@@ -29,6 +29,7 @@ import {
 } from "../src/services/follows.js";
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
+import { listenEachOther } from "./held-listens.js";
 import { api, login } from "./helpers.js";
 import {
   close,
@@ -127,6 +128,7 @@ beforeAll(async () => {
   owner = await mk("mc-owner");
   reader = await mk("mc-reader");
   stranger = await mk("mc-stranger");
+  await listenEachOther(E, [owner.userId, reader.userId, stranger.userId]);
 });
 
 describe("comment tools over MCP", () => {
@@ -603,7 +605,7 @@ describe("the comment notice", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "editor",
     });
     const addr = (name: string) => ({ namespace: "github.com/acme/app", name });
     await follow(E, owner.userId, addr("owner-agent"), id);
@@ -724,12 +726,11 @@ describe("the comment notice", () => {
       body: { anchor: { kind: "note" }, body: "from a guest" },
     });
     expect(r.status).toBe(201);
-    // A member's comment is the marker that the guest's sent nothing first.
-    await api(app, comments(id), reader.cookie, {
-      method: "POST",
-      body: { anchor: { kind: "note" }, body: "member" },
-    });
-    expect(await heardAll(id)).toBe(1);
+    // #2577: on a public page the list never applies, so a member's comment
+    // is held too and there is no marker to wait for: give the after-response
+    // work a moment, then check nothing went out.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(forId(id)).toEqual([]);
   });
 
   it("a follower who lost access gets nothing and loses the follow", async () => {

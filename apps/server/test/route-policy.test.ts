@@ -138,6 +138,12 @@ describe("enforcement", () => {
     if (name === "set_visibility") args.visibility = "public";
     if (name === "add_comment") args.body = "hi";
     if (name === "resolve_comment") args.threadId = "AAAAAAAAAAAAAAAA";
+    if (name === "withdraw_ask" || name === "edit_comment")
+      Object.assign(args, {
+        threadId: "AAAAAAAAAAAAAAAA",
+        commentId: "AAAAAAAAAAAAAAAA",
+        ...(name === "edit_comment" ? { body: "hi" } : {}),
+      });
     if (name.startsWith("artifact_data_"))
       Object.assign(args, { collection: "c" });
     if (

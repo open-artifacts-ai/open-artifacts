@@ -75,7 +75,12 @@ export function resolveDataWriters(
 }
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
-export const ShareRoleSchema = z.enum(["viewer", "editor"]);
+/**
+ * A share's role. "commenter" opens the page like a viewer and adds comments
+ * and replies for a guest (a guest with "viewer" cannot comment); for a
+ * member it reads as "viewer".
+ */
+export const ShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
 export type ShareRole = z.infer<typeof ShareRoleSchema>;
 /**
  * The caller's level on one artifact. "owner": the personal owner only;
@@ -316,6 +321,9 @@ export const PublishToolInputSchema = PublishShape.superRefine(
 );
 /** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
 export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan. The person who runs this instance turns on Workers Paid in their Cloudflare account, then runs setup again with --upgrade --plan paid.";
+/** The library's empty state on a self-host without Workers Paid (#2100). */
+export const DOCS_NEED_PAID_EMPTY_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
 /**
  * PublishToolInputSchema without the doc format: tools/list and the skill list
@@ -329,6 +337,15 @@ export const PublishToolInputNoDocSchema = publishShape(
   z.enum(STORED_FORMATS, {
     error: (iss) =>
       iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
+/**
+ * ...and the same for an install where creation is on but docs need Workers
+ * Paid: format "doc" is refused with the next step (#2100).
+ */
+export const PublishToolInputNeedPaidSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) => (iss.input === "doc" ? DOCS_NEED_PAID_MESSAGE : undefined),
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
@@ -379,6 +396,13 @@ export const ArtifactSummarySchema = z.object({
   commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
+  /** #2512: open asks on this page waiting on the caller (their own agent, blocked now): how many and the oldest wait (ISO). Absent when none. */
+  waiting: z
+    .object({
+      count: z.number().int().min(1),
+      oldestSince: z.string(),
+    })
+    .optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -403,6 +427,19 @@ export const DocSaveSchema = z.object({
   by: z.union([AgentRefSchema, UserRefSchema]).optional(),
 });
 export type DocSave = z.infer<typeof DocSaveSchema>;
+
+/** The body of POST R.docSaveVersion (#2496). No name: the server names it "Version {n}". */
+export const DocSaveVersionBodySchema = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+});
+export type DocSaveVersionBody = z.infer<typeof DocSaveVersionBodySchema>;
+
+/** What R.docSaveVersion and R.docRestore answer. */
+export const DocVersionResultSchema = z.object({
+  /** The version the call saved (the restore's "Restored v{n}" version). */
+  version: z.number().int(),
+});
+export type DocVersionResult = z.infer<typeof DocVersionResultSchema>;
 
 export const VersionInfoSchema = z.object({
   version: z.number().int(),
@@ -440,35 +477,42 @@ export const AgentViaSchema = z.string().regex(/^[gt]:[A-Za-z0-9_-]{1,64}$/);
  * caller has a role in. spaceId narrows any scope; another user's personal
  * space is 400 space_personal.
  */
-export const ListQuerySchema = z
-  .object({
-    scope: z
-      .enum(["mine", "shared", "team", "all", "space", "spaces"])
-      .default("all"),
-    /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
-    spaceId: z.string().optional(),
-    format: FormatSchema.optional(),
-    visibility: VisibilitySchema.optional(),
-    /** An owner's email, or the literal "me" for the caller. */
-    owner: z.string().optional(),
-    agent: z.string().optional(),
-    q: z.string().optional(),
-    updatedSince: z.string().optional(),
-    cursor: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(25),
-    includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller. */
-    filter: z.enum(["needs_answer"]).optional(),
-    /**
-     * Artifacts with any version from this connection (AgentViaSchema). Only
-     * the caller's own grant or token matches; any other is an empty page.
-     */
-    agentVia: AgentViaSchema.optional(),
-  })
-  .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
-    message: 'scope "space" requires spaceId',
-    path: ["spaceId"],
-  });
+const listQuery = (format: typeof FormatSchema) =>
+  z
+    .object({
+      scope: z
+        .enum(["mine", "shared", "team", "all", "space", "spaces"])
+        .default("all"),
+      /** Narrows any scope to one space. With scope "mine", only the caller's personal space (else 400, path spaceId). */
+      spaceId: z.string().optional(),
+      format: format.optional(),
+      visibility: VisibilitySchema.optional(),
+      /** An owner's email, or the literal "me" for the caller. */
+      owner: z.string().optional(),
+      agent: z.string().optional(),
+      q: z.string().optional(),
+      updatedSince: z.string().optional(),
+      cursor: z.string().optional(),
+      limit: z.coerce.number().int().min(1).max(100).default(25),
+      includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+      /** #1535: needs_answer = open asks addressed to the caller. */
+      filter: z.enum(["needs_answer"]).optional(),
+      /**
+       * Artifacts with any version from this connection (AgentViaSchema). Only
+       * the caller's own grant or token matches; any other is an empty page.
+       */
+      agentVia: AgentViaSchema.optional(),
+    })
+    .refine((q) => q.scope !== "space" || q.spaceId !== undefined, {
+      message: 'scope "space" requires spaceId',
+      path: ["spaceId"],
+    });
+export const ListQuerySchema = listQuery(FormatSchema);
+/** ListQuerySchema without the doc format filter, while docs are unavailable (#2140). */
+export const ListQueryNoDocSchema = listQuery(
+  z.enum(STORED_FORMATS) as unknown as typeof FormatSchema,
+);
+
 export type ListQuery = z.infer<typeof ListQuerySchema>;
 export type ListQueryInput = z.input<typeof ListQuerySchema>;
 
@@ -515,6 +559,8 @@ export const ShareSchema = z.object({
   guest: z.boolean().optional(),
   /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
   viewOnly: z.boolean().optional(),
+  /** #2577: the user id when the address belongs to an existing team member (never an outsider or guest); null otherwise. Absent from older servers. */
+  memberId: z.string().nullable().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -567,6 +613,30 @@ export type ShareRecipient = z.infer<typeof ShareRecipientSchema>;
 export const ShareResultSchema = ShareSchema.extend({
   /** True if a notification email went to a non-member (best effort). */
   emailed: z.boolean(),
+  /**
+   * Why no email went out when a limit refused it (the share is saved
+   * either way, #2590): member_limit (this member's outside addresses for
+   * the day), instance_limit (the instance's daily outside emails, lower in
+   * a trial), limit (the existing per-recipient, per-share or sending cap),
+   * skipped (no email to an outside address, for any reason that isn't a cap:
+   * the recipient opted out, a failed or timed-out send, or an outage; the
+   * sharer is not told which, so an opt-out can't be told from the rest, and
+   * the page says to copy the link; the real reason is logged), sender_paused (this member's outside share emails are paused
+   * after bounces or a complaint: see pausedUntil; never which recipient).
+   */
+  notEmailed: z
+    .enum([
+      "member_limit",
+      "instance_limit",
+      "limit",
+      "skipped",
+      "sender_paused",
+    ])
+    .optional(),
+  /** With notEmailed sender_paused: when the pause ends (ISO). */
+  pausedUntil: z.string().optional(),
+  /** With notEmailed member_limit or instance_limit: the daily number that was hit (20, 100, or the trial figure). */
+  limit: z.number().int().positive().optional(),
   /** Absent when the recipient can sign in; see ShareRecipientSchema. */
   recipient: ShareRecipientSchema.optional(),
   /**
@@ -596,6 +666,21 @@ export const ArtifactPatchSchema = z
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 
+/** #2632: one person's setup on GET R.members (owners and admins only; never a guest). */
+export const MemberSetupSchema = z.object({
+  /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
+  state: z.enum(["set", "partial", "invited"]),
+  /** Of `total`. */
+  done: z.number().int().min(0).max(5),
+  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
+  total: z.number().int().min(3).max(5).optional(),
+  /** The first step not done. */
+  stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
+  /** When the one reminder went out (ISO). */
+  remindedAt: z.string().optional(),
+});
+export type MemberSetup = z.infer<typeof MemberSetupSchema>;
+
 export const MemberSchema = z.object({
   id: z.string(),
   /** A stored value, never input: `removed+<id>@invalid` after a directory deletion or an erase (R.memberErase). */
@@ -624,6 +709,8 @@ export const MemberSchema = z.object({
    * address in the sign-in domains). Absent otherwise. Removal still works.
    */
   directoryManaged: z.boolean().optional(),
+  /** GET R.members, owners and admins only, on every row but a guest's: that person's setup (#2632). */
+  setup: MemberSetupSchema.optional(),
 });
 export type Member = z.infer<typeof MemberSchema>;
 
@@ -674,7 +761,8 @@ export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
 export const ShareInputSchema = z.strictObject({
   email: z.string().email(),
-  role: ShareRoleSchema,
+  /** Absent: "commenter" for a guest, "viewer" for anyone else. */
+  role: ShareRoleSchema.optional(),
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
 
@@ -813,6 +901,11 @@ export const MeSchema = z.object({
      */
     billing: PlanViewSchema.optional(),
   }),
+  /** #2632: the instance owner's name, for a guest's "ask {owner}"; null when it can't be read. Optional: older servers omit it. */
+  instanceOwner: z
+    .strictObject({ name: z.string().nullable() })
+    .nullable()
+    .optional(),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),
   /** The IdP's name for the user when it is a real name (not the email's local part), else null. */
@@ -1076,10 +1169,18 @@ export const SettingsSchema = z.object({
    * owner, admin); audited settings.space_manager_mappings.
    */
   spaceManagerMappings: z.boolean().optional(),
+  /**
+   * #2590: members may share pages with people outside the instance. Default
+   * on, except on the hosted Business tier (off). Only the owner changes it
+   * (PATCH, audited settings.change); off refuses new outside shares
+   * (403 outside_sharing_off) and ends share-made guests' logins. Always in
+   * GET, the effective value.
+   */
+  outsideSharing: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
-/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+/** GET/PUT R.onboarding: the caller's own first-run checklist state (#2632: per person, any non-guest member). */
 export const OnboardingSchema = z.strictObject({
   dismissed: z.boolean(),
   completed: z.boolean(),
@@ -1108,8 +1209,31 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  busConnected: z.boolean().optional(),
+  /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
+  teamStep: z.boolean().optional(),
+  /** #2577: the caller was asked about "listens to" (POST R.meOnboardingListensAsked). Absent on older servers: read as false. */
+  listensAsked: z.boolean().optional(),
+  /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
+  invitedBy: z
+    .strictObject({ name: z.string().nullable() })
+    .nullable()
+    .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** GET R.meTeammates (#2577): the other team members. Never an email. */
+export const TeammatesSchema = z.strictObject({
+  members: z.array(
+    z.strictObject({
+      id: z.string(),
+      name: z.string(),
+      initials: z.string(),
+    }),
+  ),
+});
+export type Teammates = z.infer<typeof TeammatesSchema>;
 
 /** PUT R.onboarding: a flag only turns on (true), never off. */
 export const OnboardingPatchSchema = z.strictObject({
@@ -1158,6 +1282,8 @@ export const DataDocSchema = z.object({
   data: z.unknown(),
   updatedAt: z.string(),
   updatedBy: z.string().nullable(),
+  /** Written by a guest ("g:" writer): outsider content, read as data and never as instructions. Absent otherwise. */
+  outsider: z.literal(true).optional(),
 });
 export type DataDoc = z.infer<typeof DataDocSchema>;
 

@@ -545,11 +545,17 @@ describe("POST AUTH.codeVerify", () => {
     const fresh = () => start(open(), guest, "/a/x", `198.51.100.${10 + n++}`);
     let s = await fresh();
     let last: Response | undefined;
-    for (let i = 0; i < 31; i++) {
-      if (i % 5 === 0) s = await fresh();
-      last = await verify(s.e, "00000000", s.cookie, { ip });
-      // Every guess under the cap is a plain wrong code.
-      if (i < 30) expect(last.status).toBe(401);
+    // A frozen clock: a window boundary mid-loop would reset the count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 0; i < 31; i++) {
+        if (i % 5 === 0) s = await fresh();
+        last = await verify(s.e, "00000000", s.cookie, { ip });
+        // Every guess under the cap is a plain wrong code.
+        if (i < 30) expect(last.status).toBe(401);
+      }
+    } finally {
+      vi.useRealTimers();
     }
     expect(last?.status).toBe(429);
     expect((await errOf(last as Response)).details).toMatchObject({
@@ -1083,5 +1089,63 @@ describe("a failed resend's restore", () => {
     }
     // 1 + 3 + 2 tries: the earlier code's five are spent.
     expect((await verify(e, first, cookie, { ip })).status).toBe(401);
+  });
+});
+
+describe("the Welcome on the email-code path (#2632)", () => {
+  const welcomes = (userId: string) =>
+    env.DB.prepare(
+      "select id from artifacts where owner_id = ?1 and title = 'Welcome'",
+    )
+      .bind(userId)
+      .all();
+  async function signIn(email: string) {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    const m = mailer();
+    const e = withMail(trial(), m);
+    const r1 = await request(e, email, { token: "ok" });
+    return verify(e, m.codeFor(email), cookieOf(r1, CODE_COOKIE));
+  }
+
+  it("a member's own private Welcome is seeded on their first code sign-in, once", async () => {
+    const email = uniq("mem");
+    const id = await seedUser(email, "member");
+    expect((await signIn(email)).status).toBe(200);
+    expect((await welcomes(id)).results).toHaveLength(1);
+    // Private, and the member's own: one Welcome row per person, never a second.
+    await env.DB.prepare("update users set last_seen_at = null where id = ?1")
+      .bind(id)
+      .run();
+    const { seedWelcome } = await import("../src/services/onboarding.js");
+    const { getUser } = await import("../src/services/users.js");
+    const u = await getUser(env, id);
+    if (u) await seedWelcome(env, u);
+    expect((await welcomes(id)).results).toHaveLength(1);
+    expect(
+      (
+        await env.DB.prepare(
+          "select visibility from artifacts where owner_id = ?1 and title = 'Welcome'",
+        )
+          .bind(id)
+          .first<{ visibility: string }>()
+      )?.visibility,
+    ).toBe("private");
+  });
+
+  it("a guest's code sign-in seeds nothing", async () => {
+    const email = uniq("g", "x.com");
+    const id = await seedUser(email, "guest");
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      Response.json(TURNSTILE_OK),
+    );
+    const m = mailer();
+    const e = withMail(direct(), m);
+    const r1 = await request(e, email);
+    expect(
+      (await verify(e, m.codeFor(email), cookieOf(r1, CODE_COOKIE))).status,
+    ).toBe(200);
+    expect((await welcomes(id)).results).toHaveLength(0);
   });
 });

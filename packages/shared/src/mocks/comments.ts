@@ -53,6 +53,7 @@ export const MOCK_AGENTS: ArtifactAgent[] = [
     lastActiveAt: null,
     machine: null,
     owner: "Sam",
+    askState: "held",
   },
   {
     key: "agent:manager",
@@ -117,6 +118,8 @@ type Deps = {
   seedDeciders?: boolean;
   /** #2381 S2: also seed decided asks on "Landing page" (resolved, replaced, passkey-verified, changed) for the Decisions tab. */
   seedDecisions?: boolean;
+  /** #2511: also seed asks in each withdrawn state on "Landing page" (open, withdrawn, replaced below, replaced on another page). */
+  seedWithdrawn?: boolean;
   /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
   seedAgents?: boolean;
   /**
@@ -153,6 +156,7 @@ export function createCommentMock({
   seedAsk,
   seedDeciders,
   seedDecisions,
+  seedWithdrawn,
   seedAgents,
   passkeyMode,
   seedMarkdown,
@@ -459,6 +463,83 @@ export function createCommentMock({
         role: "weigh",
         canTakeBack: true,
         picks: [],
+      });
+    }
+    // #2511: one card per withdrawn state, as the viewer sees it.
+    const withdrawnAsks: CommentThread[] = [];
+    if (seedWithdrawn) {
+      const agent: CommentAuthor = {
+        kind: "agent",
+        name: "Maya's Claude",
+        for: "Maya Chen",
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+        me: false,
+      };
+      const ago = (m: number) =>
+        new Date(Date.now() - m * 60_000).toISOString();
+      const OPTS3 = [
+        { id: "a", label: "A: three columns" },
+        { id: "b", label: "B: two columns" },
+      ];
+      const add = (
+        q: string,
+        minutes: number,
+        ask: Partial<NonNullable<Comment["ask"]>> = {},
+      ) => {
+        const c = comment(q, agent);
+        c.createdAt = ago(minutes);
+        c.ask = {
+          question: q,
+          options: OPTS3,
+          to: [mine()],
+          closed: false,
+          picks: [],
+          ...ask,
+        };
+        withdrawnAsks.push({
+          id: newId(),
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: c.createdAt,
+          comments: [c],
+        });
+        return c;
+      };
+      // Sorted by time, so the live card (28 minutes ago) sits right after the draft it replaced (30).
+      const fresh = add("Which pricing table goes on the page?", 28);
+      add("Which pricing table? (first draft)", 40, {
+        withdrawn: { at: ago(35) },
+      });
+      add("Which pricing table? (second draft)", 30, {
+        withdrawn: { at: ago(12) },
+        replacedBy: fresh.id,
+      });
+      add("Which hero image goes on the launch post?", 20, {
+        withdrawn: {
+          at: ago(15),
+          replacedBy: {
+            artifactId: "Ab3dEfGhJk4mNpQr",
+            threadId: "Th4dEfGhJk4mNpQr",
+            commentId: "Cm4dEfGhJk4mNpQr",
+            title: "Launch post",
+          },
+        },
+      });
+      // Replaced on a page this viewer can't open: no title.
+      add("Which footer goes on the docs?", 25, {
+        withdrawn: {
+          at: ago(18),
+          replacedBy: {
+            artifactId: "Zz9dEfGhJk4mNpQr",
+            threadId: "Th9dEfGhJk4mNpQr",
+            commentId: "Cm9dEfGhJk4mNpQr",
+          },
+        },
       });
     }
     // #2381 S2: decided asks for the Decisions tab.
@@ -1004,6 +1085,7 @@ export function createCommentMock({
       },
       ...asked,
       ...deciderAsks,
+      ...withdrawnAsks,
       ...decided,
       ...faces,
     ];
@@ -1091,26 +1173,8 @@ export function createCommentMock({
     http.post(challenge, async ({ params }) => {
       const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
       if (bad) return bad;
-      if (passkeyMode === "many") return err("rate_limited", "Too many tries");
-      if (passkeyMode === "none")
-        return err("no_passkey", "Add a passkey to approve this");
-      if (passkeyMode === "cooling")
-        return HttpResponse.json(
-          {
-            error: {
-              code: "passkey_cooling",
-              message: "This passkey is new",
-              details: {
-                usableAt: new Date(Date.now() + 20 * 3600_000).toISOString(),
-              },
-            },
-          },
-          { status: 409 },
-        );
-      return HttpResponse.json({
-        options: { challenge: "bW9jay1jaGFsbGVuZ2U", rpId: "localhost" },
-        expiresAt: new Date(Date.now() + 120_000).toISOString(),
-      });
+      // #2864: no ask needs a passkey, so there is no pick challenge.
+      return err("bad_request", "This ask does not need a passkey");
     }),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
@@ -1131,16 +1195,8 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      const needsPasskey =
-        c.ask.confirm === "passkey" || pickTimePasskey.has(c.id);
-      if (needsPasskey) {
-        if (!j.data.assertion)
-          return err("passkey_required", "This pick needs a passkey");
-        if (passkeyMode === "expired")
-          return err("challenge_expired", "That approval timed out");
-      }
+      // #2864: no ask needs a passkey; a typed pick is the answer.
       const pick = {
-        ...(needsPasskey ? { verified: "passkey" as const } : {}),
         by: mine(),
         optionId: j.data.optionId,
         at: iso(),

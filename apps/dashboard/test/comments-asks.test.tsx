@@ -197,6 +197,81 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+describe("withdrawn asks (#2511)", () => {
+  const states: [string, object, RegExp][] = [
+    ["withdrawn", { withdrawn: { at: "2026-11-05T11:00:00Z" } }, /^Withdrawn$/],
+    [
+      "replaced on this page",
+      { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
+      /^Withdrawn\. See the new card\.$/,
+    ],
+    [
+      "replaced on another page",
+      {
+        withdrawn: {
+          at: "2026-11-05T11:00:00Z",
+          replacedBy: {
+            artifactId: "Ab3dEfGhJk4mNpQr",
+            threadId: "Th4dEfGhJk4mNpQr",
+            commentId: "Cm4dEfGhJk4mNpQr",
+            title: "Launch post",
+          },
+        },
+      },
+      /^Withdrawn\. Replaced by a card on Launch post\.$/,
+    ],
+  ];
+  it.each(states)(
+    "%s: a line, no options, no buttons, not 'for you'",
+    async (_n, over, line) => {
+      serveThreads(() => [askThread({}, over)]);
+      mount(viewerPath(OWNED));
+      const c = await col();
+      const card = await waitFor(() => {
+        const el = c.querySelector("[data-ask-withdrawn]");
+        if (!el) throw new Error("no card");
+        return el as HTMLElement;
+      });
+      expect(
+        card.querySelector("[data-ask-withdrawn-line]")?.textContent,
+      ).toMatch(line);
+      expect(within(card).queryAllByRole("button")).toHaveLength(0);
+      expect(within(card).queryByText("List only")).toBeNull();
+      expect(c.querySelector("[data-needs-you]")).toBeNull();
+    },
+  );
+  it("'the new card' opens the thread of the card that replaced it", async () => {
+    serveThreads(() => [
+      askThread(
+        { id: "t-old" },
+        { withdrawn: { at: "2026-11-05T11:00:00Z" }, replacedBy: "c-new" },
+      ),
+      {
+        ...askThread({ id: "t-new" }, {}),
+        comments: [{ ...askThread({}, {}).comments[0], id: "c-new" }],
+      },
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("link", { name: "the new card" }),
+    );
+    await waitFor(() =>
+      expect(
+        c.querySelector('[data-thread="t-new"]')?.hasAttribute("data-active"),
+      ).toBe(true),
+    );
+  });
+  it("links the page a card moved to", async () => {
+    serveThreads(() => [askThread({}, states[2]?.[1] ?? {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+
+    const a = await within(c).findByRole("link", { name: "Launch post" });
+    expect(a.getAttribute("href")).toBe("/a/Ab3dEfGhJk4mNpQr");
+  });
+});
+
 describe("asks on the comments column", () => {
   it("links a URL in the question", async () => {
     serveThreads(() => [
@@ -894,21 +969,37 @@ describe("#2381 deciders on the card", () => {
   });
 });
 
-describe("#2381 a pick that needs the decider's own passkey", () => {
-  it("a plain pick answered passkey_required asks to pick again, and the next click runs the passkey flow", async () => {
-    const posts: { optionId?: string; assertion?: unknown }[] = [];
+describe("#2864 no passkey on asks", () => {
+  const meP = { kind: "user" as const, id: "me", name: "Me", me: true };
+  const verifiedAnswer = {
+    optionId: "a",
+    by: meP,
+    at: "2026-11-05T11:00:00Z",
+    typed: false,
+    yes: false,
+    verified: "passkey",
+  };
+  const passkeyAsk = (answer?: object) =>
+    askThread(
+      {},
+      {
+        confirm: "passkey",
+        to: [meP],
+        decider: meP,
+        role: "decide",
+        picks: [],
+        ...(answer ? { answer } : {}),
+      },
+    );
+  const opt = (c: HTMLElement, id: string) =>
+    c.querySelector(`[data-option=${id}]`) as HTMLButtonElement;
+
+  it("an ask an old server marks confirm: passkey is answered in one click, with no challenge and no WebAuthn call", async () => {
+    const webauthn = await import("../src/auth/webauthn");
+    vi.mocked(webauthn.getAssertion).mockClear();
+    const posts: unknown[] = [];
     let challenged = 0;
-    serveThreads(() => [
-      askThread(
-        {},
-        {
-          to: [{ kind: "user", id: "me", name: "Me", me: true }],
-          decider: { kind: "user", id: "me", name: "Me", me: true },
-          role: "decide",
-          picks: [],
-        },
-      ),
-    ]);
+    serveThreads(() => [passkeyAsk()]);
     server.use(
       http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
         challenged++;
@@ -920,39 +1011,70 @@ describe("#2381 a pick that needs the decider's own passkey", () => {
       http.post(
         `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
         async ({ request }) => {
-          const b = (await request.json()) as {
-            optionId?: string;
-            assertion?: unknown;
-          };
-          posts.push(b);
-          if (!b.assertion)
-            return HttpResponse.json(
-              { error: { code: "passkey_required", message: "x" } },
-              { status: 403 },
-            );
+          posts.push(await request.json());
           return HttpResponse.json(askThread().comments[0]);
         },
       ),
     );
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: /Side by side/ }),
-    );
-    // No prompt from the failed pick: it needs a click of its own.
-    expect(
-      await within(c).findByText("This now needs your passkey. Pick again."),
-    ).toBeInTheDocument();
-    expect(posts).toEqual([{ optionId: "b" }]);
+    await within(c).findByRole("button", { name: /Side by side/ });
+    expect(c.querySelector("[data-passkey-hint]")).toBeNull();
+    expect(c.textContent).not.toMatch(/passkey/i);
+    fireEvent.click(opt(c, "b"));
+    await waitFor(() => expect(posts).toEqual([{ optionId: "b" }]));
     expect(challenged).toBe(0);
-    fireEvent.click(within(c).getByRole("button", { name: /Side by side/ }));
-    await waitFor(() => expect(posts).toHaveLength(2));
-    expect(posts[1]).toMatchObject({
-      optionId: "b",
-      assertion: { id: "cred" },
-    });
-    expect(challenged).toBe(1);
-    expect(within(c).queryByRole("alert")?.textContent).toBeUndefined();
+    expect(webauthn.getAssertion).not.toHaveBeenCalled();
+  });
+
+  it("a passkey_required answer from an old server is a plain error: no passkey flow, no prompt", async () => {
+    const webauthn = await import("../src/auth/webauthn");
+    vi.mocked(webauthn.getAssertion).mockClear();
+    let challenged = 0;
+    serveThreads(() => [passkeyAsk()]);
+    server.use(
+      http.post(`*${R.commentAnswerChallenge(OWNED, "t-ask", "c-ask")}`, () => {
+        challenged++;
+        return HttpResponse.json({}, { status: 500 });
+      }),
+      http.post(`*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`, () =>
+        HttpResponse.json(
+          { error: { code: "passkey_required", message: "x" } },
+          { status: 403 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByRole("button", { name: /Side by side/ });
+    fireEvent.click(opt(c, "b"));
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      "Couldn't send your answer. Reload the page and try again.",
+    );
+    expect(c.textContent).not.toMatch(/Pick again|Add a passkey|terminal/);
+    expect(challenged).toBe(0);
+    expect(webauthn.getAssertion).not.toHaveBeenCalled();
+    expect(opt(c, "b")).toBeEnabled();
+  });
+
+  it("an answer the server marks passkey-verified keeps its historical pill", async () => {
+    serveThreads(() => [passkeyAsk(verifiedAnswer)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText(/You (picked|decided)/);
+    expect(c.querySelector("[data-ask-verified]")?.textContent).toMatch(
+      /Verified with passkey/,
+    );
+  });
+
+  it("an unmarked answer shows no pill", async () => {
+    serveThreads(() => [
+      passkeyAsk({ ...verifiedAnswer, verified: undefined }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText(/You (picked|decided)/);
+    expect(c.querySelector("[data-ask-verified]")).toBeNull();
   });
 });
 
@@ -2021,7 +2143,7 @@ describe("@ picker details", () => {
     });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     expect(await within(c).findByRole("alert")).toHaveTextContent(
-      "Mention at most 10 agents in one comment.",
+      "Mention at most 10 agents or people in one comment.",
     );
     expect(posts).toHaveLength(0);
   });
@@ -2236,12 +2358,15 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     expect(await wholePage(c)).toHaveAttribute(
       "placeholder",
-      "Add a comment. Type @ to mention an agent.",
+      "Add a comment. Type @ to mention an agent or a person.",
     );
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     expect(
       await within(c).findByRole("textbox", { name: "Reply" }),
-    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+    ).toHaveAttribute(
+      "placeholder",
+      "Reply. Type @ to mention an agent or a person.",
+    );
   });
 
   it("keeps the plain placeholder for a viewer", async () => {

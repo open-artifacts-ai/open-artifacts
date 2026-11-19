@@ -11,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  type Role,
   type Settings,
   type SettingsPatch,
 } from "@oa/shared";
@@ -28,8 +29,13 @@ import {
 } from "drizzle-orm";
 import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { isOrgAdmin } from "../auth/policy.js";
-import { effectivePlan, planError, requireTeamPlan } from "../billing/plan.js";
+import { isGuestRole, isOrgAdmin } from "../auth/policy.js";
+import {
+  type EffectivePlan,
+  effectivePlan,
+  planError,
+  requireTeamPlan,
+} from "../billing/plan.js";
 import { startTrialAnswer } from "../billing/store.js";
 import { getDb } from "../db/client.js";
 import { shares, tokens, users } from "../db/schema.js";
@@ -41,10 +47,13 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
+import { untouchedWelcomeSql } from "../onboarding/untouched.js";
 import {
   closeRuntimeSockets,
   MAX_CLOSE,
+  revokeFanoutCap,
   revokeUserLive,
+  revokeUsersLive,
 } from "../runtime/revoke.js";
 import {
   type AuditActor,
@@ -53,6 +62,8 @@ import {
   userActor,
 } from "./audit.js";
 import { wipeUserBus } from "./bus.js";
+import { invitedByKey, purgeSeededWelcome } from "./onboarding.js";
+import { OUTSIDE_SHARING_KEY, outsideSharingOn } from "./outside.js";
 import { inviteReach, waysOf } from "./reach.js";
 import {
   IDENTITIES_SQL,
@@ -77,8 +88,8 @@ const GUEST_OWNS_SQL = `(users.role = 'guest' and exists (select 1 from artifact
  * services/spaces.ts), on the same indexes, as an exists per row.
  */
 const TRANSFERABLE_SQL = `(users.status <> 'active' and (
-  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null)
-  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id)))`;
+  exists (select 1 from artifacts a where a.space_id = users.id and a.deleted_at is null and not ${untouchedWelcomeSql("a")})
+  or exists (select 1 from artifacts a where a.owner_id = users.id and a.deleted_at is not null and a.space_id = users.id and not ${untouchedWelcomeSql("a")})))`;
 
 const STATUSES: readonly MemberStatus[] = ["active", "suspended", "removed"];
 /** A stored status; anything unknown reads as suspended (fail closed). */
@@ -443,6 +454,19 @@ async function invited(
   const signInMethods: SignInProvider[] = reach.methods.length
     ? reach.methods
     : ["google"];
+  // #2632: who added them, for their Welcome and the "is set up" line.
+  await stmt(
+    env.DB,
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = excluded.value`,
+  )
+    .bind(invitedByKey(row.id), inviter.id)
+    .run()
+    .catch((e) =>
+      logWarn("invited_by_failed", {
+        code: e instanceof Error ? e.name : "error",
+      }),
+    );
   let emailed = false;
   if (cooledDown && emailEnabled(env)) {
     const instance = (await getSettings(env).catch(() => DEFAULT_SETTINGS))
@@ -458,6 +482,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
+          guest: isGuestRole(row.role as Role),
         }),
       {
         kind: "invite",
@@ -974,6 +999,9 @@ const ERASE_WIPES = [
   `delete from passkeys where user_id = ?1 and ${ERASABLE}`,
   `delete from pick_assertions where user_id = ?1 and ${ERASABLE}`,
   `delete from passkey_settings where user_id = ?1 and ${ERASABLE}`,
+  `delete from notification_prefs where user_id = ?1 and ${ERASABLE}`,
+  `delete from inbox_mutes where user_id = ?1 and ${ERASABLE}`,
+  `delete from settings where key = 'inbox:away_read:' || ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row
@@ -1030,12 +1058,13 @@ async function checkNothingLeft(env: Env, id: string): Promise<void> {
  * member_active when not removed, the owner, or the owner's configured
  * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
  * erased row resolves with nothing written. The route allows only an
- * interactive cookie session.
+ * interactive cookie session; SYSTEM_ACTOR is the test hooks' people purge
+ * (#2680), audited as system.
  */
 export async function eraseMember(
   env: Env,
   id: string,
-  actor: Member,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const row = await getRow(env, id);
@@ -1052,6 +1081,7 @@ export async function eraseMember(
     throw active();
   // Idempotent, and a retry also finishes a hub wipe that failed (#1291).
   if (row.erasedAt !== null) return wipeUserBus(env, id);
+  await purgeSeededWelcome(env, id);
   await checkNothingLeft(env, id);
   const args = [id, admins, ownerEmail, placeholder(id), Date.now()] as const;
   const out = await env.DB.batch([
@@ -1059,7 +1089,7 @@ export async function eraseMember(
     stmt(env.DB, ERASE_USER).bind(...args),
     // Directly after the users update: audited only when it changed the row.
     // No detail: audit rows hold ids and enums only.
-    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+    audit(env, "user.erased", { type: "user", id }, auditActor(actor), {
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);
@@ -1089,7 +1119,11 @@ const DEFAULT_SETTINGS: Settings = {
   name: "Open Artifacts",
   defaultVisibility: "private",
 };
-const KEY = { name: "name", defaultVisibility: "default_visibility" } as const;
+const KEY = {
+  name: "name",
+  defaultVisibility: "default_visibility",
+  outsideSharing: OUTSIDE_SHARING_KEY,
+} as const;
 
 // Per-user notice dismissals (services/notices.ts USER_NOTICE_PREFIX, one
 // row per member who dismissed) stay out: notices.ts reads the caller's own.
@@ -1135,8 +1169,10 @@ export async function settingsView(
   env: Env,
   spaces: boolean,
 ): Promise<Settings> {
+  // The stored fact (outside.ts): the first read writes the default once.
+  const outsideSharing = await outsideSharingOn(env);
   const kv = await getSettingsKv(env);
-  const s = toSettings(kv);
+  const s: Settings = { ...toSettings(kv), outsideSharing };
   return spaces
     ? {
         ...s,
@@ -1144,6 +1180,14 @@ export async function settingsView(
       }
     : s;
 }
+
+// Share-made guests (a guest row nobody invited) at an address outside the
+// login domains (?1: their JSON list, or [] for every address).
+const OUTSIDE_GUESTS_WHERE = `role = 'guest' and invited_at is null and status = 'active'
+  and lower(substr(email, instr(email, '@') + 1)) not in (select value from json_each(?1))`;
+const OUTSIDE_GUESTS = `select id from users where ${OUTSIDE_GUESTS_WHERE} limit ?2`;
+const END_OUTSIDE_GUESTS = `update users set session_epoch = session_epoch + 1
+  where ${OUTSIDE_GUESTS_WHERE}`;
 
 const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
   on conflict (key) do update set value = excluded.value`;
@@ -1156,7 +1200,11 @@ const UPSERT_SETTING = `insert into settings (key, value) values (?1, ?2)
 export async function patchSettings(
   env: Env,
   patch: SettingsPatch,
-  opts: { spaces?: boolean; by?: AuditActor } = {},
+  opts: {
+    spaces?: boolean;
+    by?: AuditActor;
+    ctx?: Pick<ExecutionContext, "waitUntil">;
+  } = {},
 ): Promise<Settings> {
   const keys = (Object.keys(KEY) as (keyof typeof KEY)[]).filter(
     (k) => patch[k] !== undefined,
@@ -1166,7 +1214,11 @@ export async function patchSettings(
   // default visibility are plain instance settings, no secrets. Read before
   // the batch; the row is written only when a value differs now.
   if (keys.length) {
-    const before = toSettings(await getSettingsKv(env));
+    const outsideSharing = await outsideSharingOn(env);
+    const before: Settings = {
+      ...toSettings(await getSettingsKv(env)),
+      outsideSharing,
+    };
     const changed = keys.filter((k) => before[k] !== patch[k]);
     if (changed.length)
       writes.push(
@@ -1211,6 +1263,26 @@ export async function patchSettings(
         String(smm),
       ),
     );
+  // #2590: turning outside sharing off ends share-made guests' sessions now
+  // (their logins are refused from here on), not only their next login: the
+  // epoch bump ends every session, and their live sockets close
+  // (revokeUsersLive, under its fan-out cap, as the plan lock does). Past the
+  // cap the rest keep no session either: the epoch bump (one UPDATE for all of
+  // them) ends theirs at their next authorization; only their open sockets
+  // wait for the socket TTL.
+  let revoked: string[] = [];
+  if (keys.includes("outsideSharing") && patch.outsideSharing === false) {
+    if (await outsideSharingOn(env)) {
+      const domains = JSON.stringify(authConfig(env).domains);
+      const { results } = await stmt(env.DB, OUTSIDE_GUESTS)
+        .bind(domains, revokeFanoutCap(env) + 1)
+        .all<{ id: string }>();
+      revoked = results.map((r) => r.id);
+      writes.push(stmt(env.DB, END_OUTSIDE_GUESTS).bind(domains));
+    }
+  }
   if (writes.length) await env.DB.batch(writes);
+  if (revoked.length)
+    await revokeUsersLive(env, revoked, "outside sharing off", opts.ctx);
   return settingsView(env, opts.spaces === true);
 }

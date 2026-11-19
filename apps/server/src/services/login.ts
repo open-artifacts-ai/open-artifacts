@@ -2,11 +2,13 @@
 // login settings (domains, joining rule) with the owner's proof of a domain.
 import { normalizeEmail } from "@oa/auth-core";
 import type { InviteReach, LoginSettings, Role } from "@oa/shared";
+import { loginEditableProp, loginGate } from "../auth/broker-transport.js";
 import { authConfig } from "../auth/config.js";
 import type { EffectivePlan } from "../billing/plan.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { loginApplying } from "./login-apply.js";
 import { USER_NOTICE_PREFIX } from "./notices.js";
 import { inviteReach, type Reach, waysOf } from "./reach.js";
 
@@ -65,11 +67,15 @@ export async function markFirstInviteSeen(
 }
 
 /**
- * Whether the instance may apply a login-settings change itself. Self-host sets
- * them in setup, and the hosted apply path needs a platform route that doesn't
- * exist yet, so never for now.
+ * Whether the instance may apply a login-settings change itself (#2520): a
+ * hosted install whose invocation carries the platform's LOGIN gate AND its
+ * LOGIN_EDITABLE prop set to true (#2802). The gate alone isn't enough: opt-outs
+ * ride it too, so the platform binds it everywhere. Self-host sets them in
+ * setup; without the gate or the prop nothing can be applied (PUT answers 409
+ * apply_pending without calling the gate, GET says editable: false).
  */
-export const loginEditable = (_env: Env): boolean => false;
+export const loginEditable = (env: Env): boolean =>
+  env.HOSTED === "1" && loginGate() !== null && loginEditableProp();
 
 /** Hosted Solo (or the pre-Solo free tier): login settings never apply there. */
 export const soloPlan = (plan: EffectivePlan | null | undefined): boolean =>
@@ -104,6 +110,13 @@ export async function loginSettings(
     domains,
     autoJoin: !solo && cfg.domainJoin === "member",
     editable: !solo && loginEditable(env),
+    ...(!solo &&
+    (await loginApplying(env, {
+      domains,
+      autoJoin: cfg.domainJoin === "member",
+    }))
+      ? { applying: true as const }
+      : {}),
     provable: hd ? hd.toLowerCase() : null,
     joined: joined?.n ?? 0,
     firstInviteSeen: seen !== null,

@@ -18,6 +18,7 @@ import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
+import { outsiderLoginOff } from "./outside.js";
 import { googleLinkStmts, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
@@ -165,7 +166,11 @@ export async function admit(
   if (linked) {
     if (linked.status !== "active") return { ok: false, reason: "removed" };
     // A guest a share made, with no share left: no way in (#2590).
-    if (await unsharedGuest(env, linked))
+    if (
+      (await unsharedGuest(env, linked)) ||
+      (isGuestRole(linked.role as Role) &&
+        (await outsiderLoginOff(env, linked.id, linked.email)))
+    )
       return { ok: false, reason: "no_access" };
     return admitted(
       await touch(env, await followDrift(env, linked, email, id), id, now),
@@ -181,7 +186,12 @@ export async function admit(
   if (existing && existing.status !== "active")
     return { ok: false, reason: "removed" };
   if (existing?.subject) return { ok: false, reason: "identity_conflict" };
-  if (existing && (await unsharedGuest(env, existing)))
+  if (
+    existing &&
+    ((await unsharedGuest(env, existing)) ||
+      (isGuestRole(existing.role as Role) &&
+        (await outsiderLoginOff(env, existing.id, existing.email))))
+  )
     return { ok: false, reason: "no_access" };
   if (existing) {
     // A pending invite (invited_at set, never signed in) lapses; a re-invite
@@ -215,6 +225,9 @@ export async function admit(
   let role: Role = isOwner ? "owner" : "member";
   if (!existing && (id.bound || !googleNewRowOk(cfg, isOwner))) {
     if (!(await stmt(env.DB, SHARED).bind(email).first()))
+      return { ok: false, reason: "no_access" };
+    // The owner's switch (#2590): off ends share-made guests' logins.
+    if (await outsiderLoginOff(env, null, email))
       return { ok: false, reason: "no_access" };
     if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
       return { ok: false, reason: "needs_code" };
@@ -250,7 +263,8 @@ export async function admit(
  */
 const UNSHARED = `select 1 as x from users u where u.id = ?1 and u.role = 'guest'
   and u.invited_at is null
-  and not exists (select 1 from shares s where s.email = u.email)
+  and not exists (select 1 from shares s join artifacts a on a.id = s.artifact_id
+    where s.email = u.email and a.deleted_at is null)
   and not exists (select 1 from space_members sm where sm.user_id = u.id)`;
 const unsharedGuest = async (env: Env, row: { id: string; role: string }) =>
   isGuestRole(row.role as Role) &&
@@ -282,17 +296,40 @@ export const googleNewRowOk = (cfg: AuthConfig, isOwner: boolean): boolean =>
 const admitted = (user: Member | null): AdmitResult =>
   user ? { ok: true, user } : { ok: false, reason: "removed" };
 
+/**
+ * Why a code isn't allowed, for the log only (#2656): a fixed word, never the
+ * address. bad_address: not an address. row_inactive: the row is removed or
+ * suspended. linked: the row has a Google link. invite_expired: a never-signed-in
+ * invite past its window. domain_codes_off / domain_no_join: the address is in
+ * the login domains, where codes are off or a new address can't join. not_guest:
+ * a member or admin row outside the domains (they never sign in by code).
+ * no_share: no row and no live share. outsider_off: the owner's outside-sharing
+ * switch is off.
+ */
+export type CodeWhy =
+  | "bad_address"
+  | "row_inactive"
+  | "linked"
+  | "invite_expired"
+  | "domain_codes_off"
+  | "domain_no_join"
+  | "not_guest"
+  | "no_share"
+  | "outsider_off";
+
 export type CodeEligibility =
   | { kind: "member"; userId: string | null; role: Role }
   | { kind: "guest"; userId: string | null }
-  | { kind: "none"; reason?: "invite_expired" };
+  | { kind: "none"; reason?: "invite_expired"; why: CodeWhy };
 
 /** The user row codeRule reads, by email (?1). */
 export const ELIGIBILITY = `select u.id, u.role, u.status,
     u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
   from users u where u.email = ?1 limit 1`;
-const SHARED = "select 1 as x from shares where email = ?1 limit 1";
+// A share on a deleted page admits nothing (#2598 N3).
+const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifact_id
+  where s.email = ?1 and a.deleted_at is null limit 1`;
 
 /**
  * Who may get an emailed code (no writes; checked at request and at verify):
@@ -309,16 +346,62 @@ export async function codeEligibility(
   rawEmail: string,
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
-  if (!email) return { kind: "none" };
+  if (!email) return { kind: "none", why: "bad_address" };
   const row = await stmt(env.DB, ELIGIBILITY)
     .bind(email)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   // The same lapse as a Google sign-in (#2520): no code for an expired invite.
   if (row && row.status === "active" && inviteLapsed(row, Date.now()))
-    return { kind: "none", reason: "invite_expired" };
-  return codeRule(cfg, email, row, async () =>
+    return { kind: "none", reason: "invite_expired", why: "invite_expired" };
+  const rule = await codeRule(cfg, email, row, async () =>
     Boolean(await stmt(env.DB, SHARED).bind(email).first()),
   );
+  // The owner's switch (#2590): off ends share-made guests' logins by code too.
+  if (
+    rule.kind === "guest" &&
+    (await outsiderLoginOff(env, rule.userId, email))
+  )
+    return { kind: "none", why: "outsider_off" };
+  return rule;
+}
+
+/**
+ * Who may get a code to LINK a Google account that admit() refused with
+ * needs_code (#2590 G2): the person proved the Google account, the code
+ * proves the mailbox. An active, unlinked, unlapsed row (invited member or
+ * admin, or a guest); or no row and a live share (a guest row is made at
+ * verify). Never a removed or suspended row, a guest left with no share, or a
+ * row that already has a Google link. No write; checked at request and verify.
+ */
+export async function linkEligibility(
+  env: Env,
+  rawEmail: string,
+): Promise<CodeEligibility> {
+  const email = normalizeEmail(rawEmail);
+  if (!email) return { kind: "none", why: "bad_address" };
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  if (!row) {
+    if (!(await stmt(env.DB, SHARED).bind(email).first()))
+      return { kind: "none", why: "no_share" };
+    return (await outsiderLoginOff(env, null, email))
+      ? { kind: "none", why: "outsider_off" }
+      : { kind: "guest", userId: null };
+  }
+  if (row.status !== "active" || !row.id)
+    return { kind: "none", why: "row_inactive" };
+  if (row.linked) return { kind: "none", why: "linked" };
+  if (inviteLapsed(row, Date.now()))
+    return { kind: "none", reason: "invite_expired", why: "invite_expired" };
+  if (await unsharedGuest(env, { id: row.id, role: row.role }))
+    return { kind: "none", why: "no_share" };
+  if (isGuestRole(row.role)) {
+    if (await outsiderLoginOff(env, row.id, email))
+      return { kind: "none", why: "outsider_off" };
+    return { kind: "guest", userId: row.id };
+  }
+  return { kind: "member", userId: row.id, role: row.role };
 }
 
 /** The user row codeRule reads: role, status, and whether any identity is linked. */
@@ -341,20 +424,24 @@ export async function codeRule(
   row: CodeRow | null,
   shared: () => Promise<boolean>,
 ): Promise<CodeEligibility> {
-  if (row && (row.status !== "active" || row.linked)) return { kind: "none" };
+  if (row && row.status !== "active")
+    return { kind: "none", why: "row_inactive" };
+  if (row?.linked) return { kind: "none", why: "linked" };
   const domain = email.slice(email.lastIndexOf("@") + 1);
   if (inDomains(cfg.domains, domain)) {
-    if (!cfg.domainCodes) return { kind: "none" };
+    if (!cfg.domainCodes) return { kind: "none", why: "domain_codes_off" };
     if (row) return { kind: "member", userId: row.id, role: row.role };
     return cfg.domainJoin === "member"
       ? { kind: "member", userId: null, role: "member" }
-      : { kind: "none" };
+      : { kind: "none", why: "domain_no_join" };
   }
   if (row)
     return isGuestRole(row.role)
       ? { kind: "guest", userId: row.id }
-      : { kind: "none" };
-  return (await shared()) ? { kind: "guest", userId: null } : { kind: "none" };
+      : { kind: "none", why: "not_guest" };
+  return (await shared())
+    ? { kind: "guest", userId: null }
+    : { kind: "none", why: "no_share" };
 }
 
 /**

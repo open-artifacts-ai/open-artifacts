@@ -5,6 +5,9 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.{ts,tsx}"],
     // Absolute: the token harness reruns tests with a temporary --root.
+    globalSetup: [
+      fileURLToPath(new URL("../../scripts/test/tmp-root.ts", import.meta.url)),
+    ],
     setupFiles: [
       fileURLToPath(new URL("./test/setup.ts", import.meta.url)),
       fileURLToPath(

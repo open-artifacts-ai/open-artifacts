@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
-import { capOf, planCapsRole } from "../auth/policy.js";
+import { capOf, isGuestRole, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
 import {
   billingActive,
@@ -18,6 +18,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { publicName, readsAsAgent } from "./agent-display.js";
 import { inviteAcceptAuditDrizzle, signInAuditByEmail } from "./audit.js";
+import { outsiderLoginOff } from "./outside.js";
 
 type UserRow = typeof users.$inferSelect;
 type NameFields = Pick<UserRow, "email" | "name" | "displayName">;
@@ -33,6 +34,22 @@ export function idpName(name: string | null, email: string): string | null {
 /** The name to render: display name, else a real IdP name, else the full email. Never the bare local part. */
 export function effectiveName(u: NameFields): string {
   return u.displayName || idpName(u.name, u.email) || u.email;
+}
+
+/**
+ * A person's name for another member's agent-request screens (#2868): the
+ * display name, else a real IdP name, never the email or its local part.
+ * "Someone" when there is none.
+ */
+export function personName(u: {
+  email: string;
+  name: string | null;
+  displayName: string | null;
+}): string {
+  return (
+    publicName({ name: u.displayName || idpName(u.name ?? "", u.email) }) ??
+    "Someone"
+  );
 }
 
 /**
@@ -227,6 +244,12 @@ export async function upsertOnLogin(
     // Deactivated (a guest whose last share went, or P3's sync): no sign-in.
     // A new share reactivates a guest (putShare).
     if (existing.status !== "active") return null;
+    // The owner's switch (#2590): off ends share-made guests' logins.
+    if (
+      isGuestRole(existing.role as Role) &&
+      (await outsiderLoginOff(env, existing.id, e))
+    )
+      return null;
     const set: Partial<UserRow> = { lastSeenAt: Date.now() };
     if (name !== null) set.name = name;
     const update = db
@@ -254,7 +277,8 @@ export async function upsertOnLogin(
     .from(shares)
     .where(eq(shares.email, e))
     .limit(1);
-  if (shared.length === 0) return null;
+  if (shared.length === 0 || (await outsiderLoginOff(env, null, e)))
+    return null;
   // Concurrent first logins race on the unique email: the loser just refreshes.
   return toMember(await upsert(env, e, name, "guest", false, auditQ));
 }
@@ -419,6 +443,30 @@ export async function getMismatchOwner(
       .bind(id)
       .first<UserByIdRow>(),
   );
+}
+
+/**
+ * Many members by id in a few D1 round trips (batches of 50 statements): the
+ * same statement and rules as getUser. Missing or refused ids are absent.
+ */
+export async function getUsers(
+  env: Env,
+  ids: string[],
+): Promise<Map<string, Member>> {
+  const out = new Map<string, Member>();
+  const sql = billingActive(env) ? USER_BY_ID_HOSTED : USER_BY_ID;
+  for (let i = 0; i < ids.length; i += 50) {
+    const chunk = ids.slice(i, i + 50);
+    const res = await env.DB.batch(
+      chunk.map((id) => stmt(env.DB, sql).bind(id, 0)),
+    );
+    chunk.forEach((id, j) => {
+      const row = (res[j]?.results as UserByIdRow[] | undefined)?.[0] ?? null;
+      const u = withEpoch(env, row)?.user;
+      if (u) out.set(id, u);
+    });
+  }
+  return out;
 }
 
 export async function getUser(env: Env, id: string): Promise<Member | null> {

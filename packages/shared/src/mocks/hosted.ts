@@ -101,6 +101,7 @@ import {
   OnboardingPatchSchema,
   SettingsPatchSchema,
 } from "../schemas.js";
+import { mockSetup } from "./fixtures.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -370,7 +371,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const sharesDismissed = new Set<string>();
   /** guest_summary dismissed for the install. */
   let summaryDismissed = false;
-  // R.onboarding: install-wide, the uncapped owner only (anyone else 404).
+  // R.onboarding: the caller's own (#2632: any non-guest member; a guest gets 403).
   const onboarding = { dismissed: false, completed: false };
   if (o.actAs === "admin") me.user.role = "admin";
   /**
@@ -844,7 +845,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     let l: AccessLevel | null;
     if (role === "manager") l = "manager";
     else {
-      const best = maxRole(role, share);
+      const best = maxRole(role, share === "commenter" ? "viewer" : share);
       l =
         best === "editor" || best === "viewer"
           ? best
@@ -1352,6 +1353,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         });
       if (o.turnstile && r.data.turnstileToken === "fail")
         return err("turnstile_failed", "Verification failed; try again");
+      // { link: true } finishes a Google login; the mock has no such cookie.
+      if ("link" in r.data)
+        return err("bad_request", "Invalid email", { field: "email" });
       const email = r.data.email.toLowerCase();
       const n = (requests.get(email) ?? 0) + 1;
       requests.set(email, n);
@@ -1626,6 +1630,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
             )
             .map((m) => ({
               ...m,
+              ...(mockSetup(m) ? { setup: mockSetup(m) } : {}),
               ...(m.role === "guest" && (departed.get(m.id)?.live ?? 0) > 0
                 ? { personalArtifacts: true }
                 : {}),
@@ -2310,15 +2315,16 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     http.get(
       "*/api/v1/onboarding",
       authed(() =>
-        me.user.role === "owner" && cap() === null
+        me.user.role !== "guest"
           ? HttpResponse.json(onboarding)
-          : notFound(),
+          : err("members_only", "The checklist is for members"),
       ),
     ),
     http.put(
       "*/api/v1/onboarding",
       authed(async ({ request }) => {
-        if (me.user.role !== "owner" || cap() !== null) return notFound();
+        if (me.user.role === "guest")
+          return err("members_only", "The checklist is for members");
         const r = await c.body(request, OnboardingPatchSchema);
         if (r.error) return r.error;
         Object.assign(onboarding, r.data);

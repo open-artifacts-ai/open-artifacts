@@ -48,7 +48,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../services/agent-usage.js";
-import { noteInstanceFirst } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText, userActor } from "../services/audit.js";
 import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
@@ -163,7 +163,7 @@ async function apiFetch(
       return mcpUnauthorized(env, "Only members can connect agents");
     const capped0 = await capMcpBody(req, env);
     if (capped0 instanceof Response) return capped0;
-    const link = await linkOrUnlinked(env, user.id, capped0);
+    const link = await linkOrUnlinked(env, user.id, capped0, ctx);
     const capped = link.req;
     const grantId = grantIdOf(
       (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,
@@ -173,6 +173,7 @@ async function apiFetch(
       version: null,
       ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
       ...(link.identity ? { identity: link.identity } : {}),
+      ...(!link.identity && link.why ? { unlinked: link.why } : {}),
     };
     let server: ReturnType<typeof createServer> | undefined;
     // Audit rows from these tools name the grant (by id, never the token).
@@ -198,8 +199,8 @@ async function apiFetch(
           logError("grant_touch_failed", e),
         ),
       );
-      // #2479: an agent connected (first time on the instance; a no-op unless analytics is on).
-      await noteInstanceFirst(env, "agent_connected", ctx);
+      // #2479: an agent connected (first time for this member; a no-op unless analytics is on).
+      await noteMemberFirst(env, user.id, "agent_connected", ctx);
     }
     return res;
   }

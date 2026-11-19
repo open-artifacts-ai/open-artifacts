@@ -107,6 +107,14 @@ const recommendedMsg = {
   path: ["recommended", "optionId"],
 };
 
+/** #2511: an ask on another artifact, named to replace it. */
+export const ReplacesRefSchema = z.strictObject({
+  artifactId: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+});
+export type ReplacesRef = z.infer<typeof ReplacesRefSchema>;
+
 /** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
 export const AskPickSchema = z.object({
   by: CommentAuthorSchema,
@@ -133,6 +141,8 @@ export const CommentAskSchema = z
     chosenBy: CommentAuthorSchema.optional(),
     /** #2381: the viewer's part: they decide, weigh in, or neither (absent). */
     role: z.enum(["decide", "weigh"]).optional(),
+    /** #2512: when the viewer's own agent began waiting on this open ask (ISO). Only on an open ask the viewer's own agent posted, while it is blocked; absent for everyone else. */
+    waitingSince: z.string().optional(),
     /** #2381: the asker's own user may say "I'll decide this" (decider is someone else, no decision yet). */
     canTakeBack: z.boolean().optional(),
     /** #2381: the latest pick of each person, oldest first. The decider's is the decision's source. */
@@ -141,6 +151,25 @@ export const CommentAskSchema = z
     replaces: key.optional(),
     /** #2323: the id of the ask that replaces this one. */
     replacedBy: key.optional(),
+    /**
+     * #2511: the asking agent (or its person) withdrew the ask before it had a
+     * decision. No buttons, no picks (409 withdrawn), never a yes. `replacedBy`
+     * names the card that replaces it on another page; `title` only when the
+     * viewer can open that page.
+     */
+    withdrawn: z
+      .object({
+        at: z.string(),
+        replacedBy: z
+          .object({
+            artifactId: IdSchema,
+            threadId: IdSchema,
+            commentId: key,
+            title: z.string().optional(),
+          })
+          .optional(),
+      })
+      .optional(),
     /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
@@ -200,6 +229,72 @@ export const CommentNotifiedSchema = CommentMentionSchema.required({
 });
 export type CommentNotified = z.infer<typeof CommentNotifiedSchema>;
 
+/** The bytes of a comment picture (#2508): at most this many each, and this many to a comment. */
+export const COMMENT_PICTURE_MAX_BYTES = 10 * 1024 * 1024;
+export const COMMENT_PICTURES_MAX = 4;
+/** Alt text: plain text, one line, at most this long. */
+export const COMMENT_PICTURE_ALT_MAX = 200;
+/** Per person: reservations a day, and reserved but not yet attached at once. */
+export const COMMENT_PICTURE_RESERVATIONS_PER_DAY = 100;
+export const COMMENT_PICTURE_PENDING_MAX = 20;
+/** A picture no comment uses is deleted after this long. */
+export const COMMENT_PICTURE_PENDING_TTL_MS = 60 * 60 * 1000;
+/** unsupported_format message for a HEIC photo as a comment picture (OA Product). */
+export const COMMENT_PICTURE_HEIC_MESSAGE =
+  "This photo is in HEIC format. Save it as JPEG and try again.";
+
+export const CommentPictureTypeSchema = z.enum([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+]);
+export type CommentPictureType = z.infer<typeof CommentPictureTypeSchema>;
+
+/** A picture on a comment, as comments return it. */
+export const CommentPictureSchema = z.object({
+  id: z.string(),
+  type: CommentPictureTypeSchema,
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+  bytes: z.number().int().positive(),
+  alt: z.string().optional(),
+});
+export type CommentPicture = z.infer<typeof CommentPictureSchema>;
+
+/** POST R.commentPictures body. The server reads w and h from the file; nothing a client says about them is used. */
+export const CommentPictureReserveSchema = z.strictObject({
+  type: z.string().min(1).max(100),
+  bytes: z.number().int().positive(),
+  sha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .toLowerCase()
+    .optional(),
+});
+export type CommentPictureReserve = z.infer<typeof CommentPictureReserveSchema>;
+
+export const CommentPictureReservedSchema = z.object({
+  pictureId: z.string(),
+  /** A signed PUT for the raw bytes; it answers the CommentPicture. */
+  url: z.string(),
+  expiresAt: z.string(),
+});
+export type CommentPictureReserved = z.infer<
+  typeof CommentPictureReservedSchema
+>;
+
+/** A picture a new comment attaches: your own, uploaded, unattached, on this artifact. */
+export const CommentPictureRefSchema = z.strictObject({
+  pictureId: z.string().min(1).max(64),
+  alt: z.string().max(COMMENT_PICTURE_ALT_MAX).optional(),
+});
+export type CommentPictureRef = z.infer<typeof CommentPictureRefSchema>;
+const pictureRefs = z
+  .array(CommentPictureRefSchema)
+  .max(COMMENT_PICTURES_MAX)
+  .optional();
+
 export const CommentSchema = z.object({
   id: z.string(),
   body: z.string(),
@@ -215,10 +310,14 @@ export const CommentSchema = z.object({
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
+  /** #2770: the people this comment @mentions (their faces), absent when none. */
+  people: z.array(CommentAuthorSchema).optional(),
   /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
   notified: z.array(CommentNotifiedSchema).optional(),
   /** #2559: a non-fatal notice on the POST response only (a mention over the limit); never stored. */
   notice: z.string().optional(),
+  /** #2508: up to 4 pictures; absent when there are none. */
+  pictures: z.array(CommentPictureSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -257,6 +356,37 @@ export const CommentListSchema = z.object({
 });
 export type CommentList = z.infer<typeof CommentListSchema>;
 
+/** #2688: one answer to an ask of yours, in the compact catch-up read. */
+export const CompactAnswerSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  question: z.string(),
+  optionId: z.string(),
+  label: z.string(),
+  at: z.string(),
+  by: z.string(),
+  yes: z.boolean(),
+});
+export type CompactAnswer = z.infer<typeof CompactAnswerSchema>;
+
+/** #2688: one comment that mentions you, in the compact catch-up read. */
+export const CompactMentionSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  at: z.string(),
+  by: z.string(),
+  excerpt: z.string(),
+});
+export type CompactMention = z.infer<typeof CompactMentionSchema>;
+
+/** #2688: `list_comments` with `compact: true`. Each list is present when its `...Since` was asked. */
+export const CompactCommentListSchema = z.object({
+  answers: z.array(CompactAnswerSchema).optional(),
+  mentions: z.array(CompactMentionSchema).optional(),
+  truncated: z.boolean(),
+});
+export type CompactCommentList = z.infer<typeof CompactCommentListSchema>;
+
 export type CommentStatusFilter = "open" | "resolved" | "all";
 
 /** An anchor as a client sends it: `version` is optional on text and pin (the current version). */
@@ -277,7 +407,8 @@ export const anchorInputSchema = z.discriminatedUnion("kind", [
 ]);
 export type AnchorInput = z.infer<typeof anchorInputSchema>;
 
-const commentBody = z.string().trim().min(1).max(COMMENT_BODY_MAX);
+/** With pictures a comment may have no text (#2508): empty or up to the same length. */
+const commentBodyOrPictures = z.string().trim().max(COMMENT_BODY_MAX);
 const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 
 /**
@@ -292,8 +423,13 @@ export const AskInputSchema = z
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
     /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
     decider: KeyRefSchema.optional(),
-    /** #2323: the id of an earlier ask by the same asker that this one replaces. */
-    replaces: key.optional(),
+    /**
+     * #2323: the id of an earlier ask by the same asker that this one replaces
+     * (on this artifact). #2511: or `{ artifactId, threadId, commentId }` for
+     * an ask on another artifact you can edit; that card is withdrawn once this
+     * one is posted.
+     */
+    replaces: z.union([key, ReplacesRefSchema]).optional(),
   })
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
@@ -301,30 +437,53 @@ export type AskInput = z.infer<typeof AskInputSchema>;
 /** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */
 const extras = {
   mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
+  /**
+   * #2770: people to @mention, by user id (R.artifactMentionCandidates lists them). Owner and
+   * editors only (403 forbidden), like mentions; each must be able to read the page, else the
+   * same 400 as an unknown agent. At most MENTIONS_MAX with `mentions` together. A mentioned
+   * person gets the comment in "Needs you". A person in a browser only: a token, an agent or a
+   * grant that sends `people` gets 400 (so an agent can't fill someone's Needs you). A sender
+   * causes at most 200 such items a day; over it the comment posts and no more items are written.
+   */
+  people: z.array(key).max(MENTIONS_MAX).optional(),
 };
 
 /** POST R.comments body. */
-export const NewThreadBodySchema = z.object({
-  anchor: anchorInputSchema,
-  body: commentBody,
-  guestName,
-  ...extras,
-});
+export const NewThreadBodySchema = z
+  .object({
+    anchor: anchorInputSchema,
+    body: commentBodyOrPictures,
+    guestName,
+    ...extras,
+    /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
+    pictures: pictureRefs,
+  })
+  .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
+    path: ["body"],
+    message: "A comment needs text or a picture",
+  });
 export type NewThreadBody = z.infer<typeof NewThreadBodySchema>;
 
 /** POST R.commentReplies body. */
-export const ReplyBodySchema = z.object({
-  body: commentBody,
-  guestName,
-  ...extras,
-  /**
-   * Address the reply to the thread root's ask author (#1614): anyone who may
-   * reply, viewers included. 400 not_an_ask when the root has no ask or its
-   * author is not an agent; 400 when combined with mentions or ask. Its agents get a
-   * fixed notice; `mentions` on the returned comment says who and how it went.
-   */
-  toAsker: z.boolean().optional(),
-});
+export const ReplyBodySchema = z
+  .object({
+    body: commentBodyOrPictures,
+    guestName,
+    ...extras,
+    /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
+    pictures: pictureRefs,
+    /**
+     * Address the reply to the thread root's ask author (#1614): anyone who may
+     * reply, viewers included. 400 not_an_ask when the root has no ask or its
+     * author is not an agent; 400 when combined with mentions or ask. Its agents get a
+     * fixed notice; `mentions` on the returned comment says who and how it went.
+     */
+    toAsker: z.boolean().optional(),
+  })
+  .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
+    path: ["body"],
+    message: "A comment needs text or a picture",
+  });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */
@@ -359,13 +518,39 @@ export const ArtifactAgentSchema = z.object({
   machine: z.string().nullable().optional(),
   /** The owner's public name for another member's agent; null for the viewer's own. */
   owner: z.string().nullable().optional(),
+  /** #2577: what asking this agent does for the viewer here and now: "listening" (it hears them: their own agents always, or an owner who lists them), "held" (the request waits for the owner to allow it), "off" (the owner's agents hear nobody outside; a mention is refused). Absent for a guest or signed-out viewer. */
+  askState: z.enum(["listening", "held", "off"]).optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 
+/** The longest `q` a mention candidates search takes. */
+export const MENTION_CANDIDATES_Q_MAX = 40;
+/** The most people one mention candidates answer holds. */
+export const MENTION_CANDIDATES_MAX = 8;
+/** POST R.artifactMentionCandidates body (#2770): the search, in the body so a typed address never reaches a URL or a log. */
+export const MentionCandidatesBodySchema = z.strictObject({
+  q: z.string().min(1).max(MENTION_CANDIDATES_Q_MAX),
+});
+export type MentionCandidatesBody = z.infer<typeof MentionCandidatesBodySchema>;
+/** The answer to POST R.artifactMentionCandidates (#2770): people who can read the artifact, as faces (kind user, id, name; never an email). */
+export const MentionCandidatesSchema = z.object({
+  items: z.array(CommentAuthorSchema).max(MENTION_CANDIDATES_MAX),
+});
+export type MentionCandidates = z.infer<typeof MentionCandidatesSchema>;
+
 /** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
+const SinceIso = z.string().datetime({ offset: true });
+
+/** #2688: the catch-up read. Timestamps are ISO 8601 with a zone (for example 2026-11-19T10:00:00Z). */
 export const ListCommentsInputSchema = z.strictObject({
   id: IdSchema,
   status: z.enum(["open", "resolved", "all"]).optional(),
+  /** Only threads with an ask of yours whose answer came after this time. */
+  answeredSince: SinceIso.optional(),
+  /** Only comments after this time that mention you. */
+  mentionedSince: SinceIso.optional(),
+  /** With answeredSince or mentionedSince: a small list instead of full threads. */
+  compact: z.boolean().optional(),
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 
@@ -379,6 +564,30 @@ export const AddCommentInputSchema = z.strictObject({
   ask: AskInputSchema.optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
+
+/** MCP withdraw_ask (#2511): withdraw an ask you posted before it has a decision. `replacedBy` names the card that replaces it (finishes a cross-page replace). */
+export const WithdrawAskInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+  replacedBy: ReplacesRefSchema.optional(),
+});
+export type WithdrawAskInput = z.infer<typeof WithdrawAskInputSchema>;
+
+/** POST R.commentWithdraw body (#2511). */
+export const WithdrawBodySchema = z.strictObject({
+  replacedBy: ReplacesRefSchema.optional(),
+});
+export type WithdrawBody = z.infer<typeof WithdrawBodySchema>;
+
+/** MCP edit_comment (#2511): the text of your own comment (an ask's question and options are never editable). */
+export const EditCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  commentId: key,
+  body: z.string(),
+});
+export type EditCommentInput = z.infer<typeof EditCommentInputSchema>;
 
 /** MCP resolve_comment: `resolved` false reopens the thread. */
 export const ResolveCommentInputSchema = z.strictObject({
