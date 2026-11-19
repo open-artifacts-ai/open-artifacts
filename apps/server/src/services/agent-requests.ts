@@ -543,6 +543,111 @@ export async function recordHolds(
     )
       return;
   logError("hold_write_failed", undefined, { artifactId });
+  // #2851: leave a note for the nightly sweep (best effort: a settings row, no content).
+  await stmt(
+    env.DB,
+    "insert into settings (key, value) values (?1, ?2) on conflict (key) do nothing",
+  )
+    .bind(`${RECONCILE_PREFIX}${artifactId}`, String(now))
+    .run()
+    .catch(() => undefined);
+}
+
+/** #2851: one settings row per page whose hold could not be written to D1: "held:reconcile:<artifactId>". */
+export const RECONCILE_PREFIX = "held:reconcile:";
+/** Pages one nightly run reconciles, and held targets it reads from each. */
+export const RECONCILE_PAGES = 10;
+export const RECONCILE_TARGETS = 200;
+
+/**
+ * #2851: a hold whose D1 request row failed to write (hold_write_failed)
+ * leaves the target held in the page's DO with nothing for its person to
+ * allow. For each noted page (bounded), reads the DO's held targets and writes
+ * the missing request and item rows, dated from the comment so the 7 days
+ * still count from it (an older one lapses by age alone and gets no row). The
+ * note goes once every target has its row, or a week after it was made; a
+ * failed write keeps it for the next night. Best effort: never throws.
+ */
+export async function reconcileHeld(
+  env: Env,
+  now = Date.now(),
+): Promise<number> {
+  let written = 0;
+  try {
+    const { results } = await stmt(
+      env.DB,
+      `select key, value from settings where key like ?1 order by value limit ?2`,
+    )
+      .bind(`${RECONCILE_PREFIX}%`, RECONCILE_PAGES)
+      .all<{ key: string; value: string }>();
+    for (const m of results) {
+      const artifactId = m.key.slice(RECONCILE_PREFIX.length);
+      const done = () =>
+        stmt(env.DB, "delete from settings where key = ?1").bind(m.key).run();
+      try {
+        if (Number(m.value) + HELD_LAPSE_MS <= now) {
+          await done();
+          continue;
+        }
+        const targets = await call(() =>
+          stub(env, artifactId).commentsHeldScan({ limit: RECONCILE_TARGETS }),
+        );
+        let complete = targets.length < RECONCILE_TARGETS;
+        for (const t of targets) {
+          const at = Date.parse(t.at);
+          const author = JSON.parse(t.author) as {
+            kind?: string;
+            ref?: string;
+          };
+          // Only a person's request is ever held; one past its 7 days lapses by age.
+          if (
+            author.kind !== "user" ||
+            !author.ref ||
+            !(at + HELD_LAPSE_MS > now)
+          )
+            continue;
+          const known = await stmt(
+            env.DB,
+            "select 1 as x from held_request_items where comment_id = ?1 and agent_key = ?2",
+          )
+            .bind(t.commentId, t.key)
+            .first();
+          if (known) continue;
+          const ok = await recordHoldsOnce(
+            env,
+            author.ref,
+            artifactId,
+            t.threadId,
+            t.commentId,
+            [
+              {
+                agent: {
+                  key: t.key,
+                  owner: t.owner,
+                  namespace: t.namespace,
+                  name: t.name,
+                } as HeldAgent,
+                way: t.way,
+              },
+            ],
+            at,
+          );
+          if (ok) written++;
+          else complete = false;
+        }
+        if (complete) await done();
+      } catch (e) {
+        logWarn("held_reconcile_failed", {
+          code: e instanceof Error ? e.name : "error",
+        });
+      }
+    }
+  } catch (e) {
+    logWarn("held_reconcile_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+  return written;
 }
 
 /** One try at recordHolds' D1 writes; false when it threw. */

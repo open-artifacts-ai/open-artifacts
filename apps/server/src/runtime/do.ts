@@ -65,6 +65,7 @@ import {
   type HeldAgent,
   heldCanon,
   heldOf,
+  heldScan,
   heldTargets,
   insertComment,
   insertExtras,
@@ -2642,6 +2643,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.broadcastComments();
   }
 
+  /** #2851: the targets still held on this page (newest comments first), for the reconcile sweep. */
+  commentsHeldScan(a: { limit: number }): ReturnType<typeof heldScan> {
+    this.ensureSchema();
+    return heldScan(this.sql, a.limit);
+  }
+
   /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */
   commentsHeldCanon(a: {
     threadId: string;
@@ -2966,6 +2973,7 @@ type RpcMethods =
   | "commentsReplyTargets"
   | "commentsUnhold"
   | "commentsHeldCanon"
+  | "commentsHeldScan"
   | "commentsRelease"
   | "commentsFinishHeld"
   | "commentsStatus"
