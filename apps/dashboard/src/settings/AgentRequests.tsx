@@ -6,6 +6,7 @@
  */
 import type { ListenEntry } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { useState } from "react";
 import {
   useAgentRequests,
   useListens,
@@ -15,8 +16,11 @@ import {
 import { errorCopy } from "../api/errorCopy";
 import { toast } from "../layout/toast";
 import { initials } from "../viewer/comments/AuthorFace";
+import { AddTeammate } from "./AddTeammate";
+import { AskHistory } from "./AskHistory";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, WriteLock } from "./ui";
+import { useTeammates } from "./useTeammates";
 
 export const REQUESTS_OFF =
   "Off: your agents only answer you, and teammates are told so.";
@@ -47,6 +51,10 @@ export function AgentRequests() {
   const save = useSetAgentRequests();
   const listens = useListens();
   const remove = useRemoveListen();
+  // "Add a teammate", or "Add again" on an ended entry (prefilled).
+  const [adding, setAdding] = useState<{ prefill?: ListenEntry } | null>(null);
+  // The team is read when the dialog opens, not before.
+  const team = useTeammates(adding !== null);
   const on = save.isPending ? save.variables : (sw.data?.on ?? true);
   return (
     <>
@@ -120,36 +128,67 @@ export function AgentRequests() {
                   </span>
                 </span>
                 <WriteLock>
-                  <Button
-                    variant="link"
-                    size="sm"
-                    className="h-auto p-0 text-[length:var(--oa-text-xs)] underline"
-                    aria-label={`Remove ${e.member.name}`}
-                    disabled={remove.isPending && remove.variables === e.id}
-                    onClick={() =>
-                      remove.mutate(e.id, {
-                        onError: (x) =>
-                          toast({
-                            title: errorCopy(x, "Couldn't remove that."),
-                            tone: "danger",
-                          }),
-                        onSuccess: () =>
-                          toast({
-                            title: `Removed ${e.member.name}. Their requests ask you again.`,
-                            tone: "neutral",
-                          }),
-                      })
-                    }
-                  >
-                    Remove
-                  </Button>
+                  {e.until <= Date.now() ? (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-[length:var(--oa-text-xs)] underline"
+                      aria-label={`Add ${e.member.name} again`}
+                      onClick={() => setAdding({ prefill: e })}
+                    >
+                      Add again
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-[length:var(--oa-text-xs)] underline"
+                      aria-label={`Remove ${e.member.name}`}
+                      disabled={remove.isPending && remove.variables === e.id}
+                      onClick={() =>
+                        remove.mutate(e.id, {
+                          onError: (x) =>
+                            toast({
+                              title: errorCopy(x, "Couldn't remove that."),
+                              tone: "danger",
+                            }),
+                          onSuccess: () =>
+                            toast({
+                              title: `Removed ${e.member.name}. Their requests ask you again.`,
+                              tone: "neutral",
+                            }),
+                        })
+                      }
+                    >
+                      Remove
+                    </Button>
+                  )}
                 </WriteLock>
               </li>
             ))}
           </ul>
         )}
+        <WriteLock>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-fit"
+            onClick={() => setAdding({})}
+          >
+            Add a teammate
+          </Button>
+        </WriteLock>
         <p className={`m-0 ${muted}`}>{LISTENS_FINE_PRINT}</p>
       </SettingsCard>
+      <AskHistory />
+      {adding && (
+        <AddTeammate
+          people={team.people}
+          full={team.full}
+          prefill={adding.prefill}
+          onClose={() => setAdding(null)}
+        />
+      )}
     </>
   );
 }

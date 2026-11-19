@@ -4,8 +4,11 @@ import {
   type AllowBody,
   type AllowResult,
   AllowResultSchema,
+  AskHistorySchema,
   type HeldList,
   HeldListSchema,
+  type ListenAddBody,
+  ListenAddResultSchema,
   type ListensList,
   ListensListSchema,
   R,
@@ -94,5 +97,26 @@ export const useRemoveListen = () => {
     mutationFn: (id: string) =>
       api.send("DELETE", R.agentListen(id), undefined),
     onSettled: () => qc.invalidateQueries({ queryKey: listensKey }),
+  });
+};
+
+export const historyKey = ["agent-asks", "history"] as const;
+
+/** "Who asked what": the last 30 days, newest first. No words. Browser session only. */
+export const useAskHistory = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: historyKey,
+    queryFn: ({ signal }) =>
+      api.get(R.agentAskHistory, AskHistorySchema, signal),
+  });
+
+/** Adds teammates to the list directly (Settings, the share tick, first setup). A refusal is a plain 400 message. */
+export const useAddListens = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ListenAddBody) =>
+      api.send("POST", R.agentListens, body, ListenAddResultSchema),
+    onSuccess: () => qc.invalidateQueries({ queryKey: listensKey }),
   });
 };
