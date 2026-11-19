@@ -33,7 +33,7 @@ import {
   usePatchArtifact,
   useVersionInfo,
 } from "../api/queries";
-import { accessLabel, useCan } from "../auth/permissions";
+import { ownAccessLabel, useCan } from "../auth/permissions";
 import { ForYouBell } from "../foryou/ForYou";
 import { useMuteToggle } from "../foryou/muteToggle";
 import { toast } from "../layout/toast";
@@ -455,7 +455,7 @@ export function TitleBar({
         )}
         {artifact.space && (
           <span className="text-[length:var(--oa-text-sm)] text-muted-foreground">
-            {accessLabel(artifact.access)}
+            {ownAccessLabel(artifact, outsider)}
           </span>
         )}
       </div>
