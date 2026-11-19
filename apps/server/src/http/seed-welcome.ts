@@ -1,5 +1,6 @@
 import type { Member } from "@oa/shared";
 import type { Context } from "hono";
+import { noteMemberFirst } from "../services/analytics.js";
 import { seedWelcome } from "../services/onboarding.js";
 import { type AppEnv, execCtx } from "./middleware.js";
 
@@ -15,6 +16,8 @@ export function seedWelcomeAfter(
 ): Promise<void> | void {
   const run = seedWelcome(c.env, user);
   const ctx = execCtx(c);
+  // #2879: the member's first sign-in is the funnel's first step (a no-op unless analytics is on).
+  void noteMemberFirst(c.env, user.id, "signed_up", ctx);
   if (ctx) ctx.waitUntil(run);
   else return run;
 }

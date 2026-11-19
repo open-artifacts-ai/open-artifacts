@@ -57,7 +57,7 @@ import { logError, logInfo } from "../log.js";
 import { runtimeStub } from "../runtime/do.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
-import { activation } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import {
   type BusCloseKind,
   busCloseKind,
@@ -6246,7 +6246,7 @@ export class BusHub extends DurableObject<Env> {
         if (await noteAgentNamed(this.env, userId)) {
           this.#namedKnown = true;
           // #2479: the first time only; best effort, never fails the frame.
-          await activation(this.env, "agent_named", this.ctx);
+          await noteMemberFirst(this.env, userId, "agent_named", this.ctx);
         } else if (await namedRecorded(this.env, userId))
           this.#namedKnown = true;
       })().catch(() => {}),

@@ -71,7 +71,7 @@ import {
   recordHolds,
 } from "./agent-requests.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
-import { activation } from "./analytics.js";
+import { noteMemberFirst } from "./analytics.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
 import {
   addresseeOf,
@@ -2794,7 +2794,7 @@ export async function answerAsk(
     c.ask.answer.by.ref === who.id
   )
     if (await noteAskAnswered(env, who.id))
-      await activation(env, "first_ask_answered", after?.ctx);
+      await noteMemberFirst(env, who.id, "first_ask_answered", after?.ctx);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -3451,7 +3451,12 @@ async function noteMentionActivity(
             c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
         );
       if (asked && (await noteMentionReplied(env, who.id)))
-        await activation(env, "agent_replied_to_mention", after?.ctx);
+        await noteMemberFirst(
+          env,
+          who.id,
+          "agent_replied_to_mention",
+          after?.ctx,
+        );
     })(),
   );
 }
