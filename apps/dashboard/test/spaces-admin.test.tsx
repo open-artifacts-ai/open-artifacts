@@ -450,7 +450,7 @@ it("turning sharing by link off: Design's confirm, then PATCH", async () => {
   const lines = [...d.querySelectorAll("p")].map((p) => p.textContent);
   expect(lines).toEqual([
     "No one can share by link from Engineering any more. Links already shared keep working.",
-    "To stop an existing link, open the artifact and make it private.",
+    "To stop a link already shared, open the artifact and change “Anyone with the link” to Restricted.",
   ]);
   expect(d).not.toHaveTextContent("visible to the team only");
   fireEvent.click(

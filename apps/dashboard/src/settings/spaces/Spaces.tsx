@@ -598,7 +598,8 @@ function General({ space }: { space: Space }) {
               shared keep working.
             </p>
             <p>
-              To stop an existing link, open the artifact and make it private.
+              To stop a link already shared, open the artifact and change
+              &ldquo;Anyone with the link&rdquo; to Restricted.
             </p>
           </>
         }
