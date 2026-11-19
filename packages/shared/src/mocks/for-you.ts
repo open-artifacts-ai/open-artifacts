@@ -12,8 +12,13 @@ import {
   InboxMuteBodySchema,
   type InboxMutes,
   InboxReadBodySchema,
+  type NotificationPrefs,
+  NotificationPrefsSchema,
+  PushSubscribeBodySchema,
+  type PushSubscriptions,
 } from "../inbox.js";
 import { R } from "../routes.js";
+import { MOCK_HELD_ID } from "./agent-asks.js";
 import { FOR_YOU_ASK } from "./comments.js";
 
 /**
@@ -21,9 +26,16 @@ import { FOR_YOU_ASK } from "./comments.js";
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
  * back: the mention is back from Later.
+ * held: one held request of someone else asking your agent (#2577; pair with agentAsks).
  * error: as mixed, but the list itself fails to load (the bell still counts).
  */
-export type ForYouVariant = "mixed" | "calm" | "empty" | "back" | "error";
+export type ForYouVariant =
+  | "mixed"
+  | "calm"
+  | "empty"
+  | "back"
+  | "held"
+  | "error";
 
 type Deps = {
   variant?: ForYouVariant;
@@ -80,23 +92,26 @@ export function createForYouMock(d: Deps): {
     readAt: null,
   };
   /** Design v10: a mention that needs you, with Open and Later. */
-  const mention = (back: boolean): InboxItem => ({
-    id: "itm:mention1",
-    level: "needs_you",
-    kind: "mention",
-    artifact: page(d.otherId, "Pricing table"),
-    actor: person("Sam Rivera"),
-    text: "Sam Rivera mentioned you",
-    href: `/a/${d.otherId}`,
-    createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
-    readAt: null,
-    ...(back
-      ? {
-          backFromLater: true as const,
-          later: { until: ago(MIN), used: true as const },
-        }
-      : {}),
-  });
+  const mention = (back: boolean): InboxItem =>
+    ({
+      id: "itm:mention1",
+      level: "needs_you",
+      kind: "mention",
+      artifact: page(d.otherId, "Pricing table"),
+      actor: person("Sam Rivera"),
+      text: "Sam Rivera mentioned you",
+      // #2570 (contract v7, PROVISIONAL): the comment's quote on a mention.
+      excerpt: "Can you check the yearly numbers?",
+      href: `/a/${d.otherId}`,
+      createdAt: ago(back ? 26 * 60 * MIN : 20 * MIN),
+      readAt: null,
+      ...(back
+        ? {
+            backFromLater: true as const,
+            later: { until: ago(MIN), used: true as const },
+          }
+        : {}),
+    }) as InboxItem;
   const update = (
     id: string,
     kind: InboxItem["kind"],
@@ -186,6 +201,22 @@ export function createForYouMock(d: Deps): {
     ];
   }
   if (d.variant === "back") needsYou = [mention(true)];
+  if (d.variant === "held")
+    needsYou = [
+      {
+        id: `request:${MOCK_HELD_ID}`,
+        level: "needs_you",
+        kind: "request",
+        urgency: "approval",
+        waitingSince: ago(15 * MIN),
+        artifact: page(d.landingId, "Launch status"),
+        actor: person("Dev Patel"),
+        text: "Dev Patel wants to ask your agent",
+        href: `/a/${d.landingId}`,
+        createdAt: ago(15 * MIN),
+        readAt: null,
+      },
+    ];
 
   const open = () =>
     needsYou.filter((x) => {
@@ -199,8 +230,33 @@ export function createForYouMock(d: Deps): {
     needsYou: open().length,
     unreadUpdates: updates.filter((x) => x.readAt === null).length,
   });
-  const mutes: InboxMutes["items"] = [];
+  // Design's screen 4: one agent and one page muted already.
+  const mutes: InboxMutes["items"] =
+    d.variant === "mixed"
+      ? [
+          { kind: "agent", id: "agent:polish", name: "OA Polish" },
+          { kind: "page", id: "WeeklyNumbers001", name: "Weekly numbers" },
+        ]
+      : [];
+  /** The server's defaults: browser off, quiet hours off, details hidden. */
+  let prefs: NotificationPrefs = {
+    needsYou: { inApp: true, browser: false },
+    updates: { inApp: true, browser: false },
+    browserAllAsks: false,
+    quietHours: d.variant === "mixed" ? { start: "22:00", end: "07:30" } : null,
+    timeZone: "UTC",
+    lockScreenDetail: false,
+  };
+  /** A mute's name, as the server would know it. */
+  const nameOf = (kind: string, id: string) => {
+    const all = [...needsYou, ...later, ...updates];
+    if (kind === "agent")
+      return all.find((x) => x.agentKey === id)?.actor?.name ?? id;
+    return all.find((x) => x.artifact?.id === id)?.artifact?.title ?? id;
+  };
   const done = () => new HttpResponse(null, { status: 204 });
+  /** This mock's push subscriptions (one per browser that turned it on). */
+  const subs: PushSubscriptions["items"] = [];
   const readNow = (x: InboxItem) =>
     x.readAt === null ? { ...x, readAt: ago(0) } : x;
   return {
@@ -255,6 +311,13 @@ export function createForYouMock(d: Deps): {
         later = [...later, moved];
         return HttpResponse.json(moved);
       }),
+      http.get(`*${R.meNotificationPrefs}`, () => HttpResponse.json(prefs)),
+      http.put(`*${R.meNotificationPrefs}`, async ({ request }) => {
+        const p = NotificationPrefsSchema.safeParse(await request.json());
+        if (!p.success) return d.err("bad_request", "Invalid body");
+        prefs = p.data;
+        return HttpResponse.json(prefs);
+      }),
       http.get(`*${R.meInboxMutes}`, () =>
         HttpResponse.json({ items: mutes } satisfies InboxMutes),
       ),
@@ -263,7 +326,7 @@ export function createForYouMock(d: Deps): {
         const p = InboxMuteBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
         if (!mutes.some((m) => m.kind === p.data.kind && m.id === p.data.id))
-          mutes.push({ ...p.data, name: p.data.id });
+          mutes.push({ ...p.data, name: nameOf(p.data.kind, p.data.id) });
         return done();
       }),
       http.delete("*/api/v1/me/inbox/mutes/:kind/:id", ({ params }) => {
@@ -271,6 +334,35 @@ export function createForYouMock(d: Deps): {
           (m) => m.kind === params.kind && m.id === params.id,
         );
         if (i >= 0) mutes.splice(i, 1);
+        return done();
+      }),
+      // #2512 slice 3: web push. The key is a stand-in (65 bytes, base64url).
+      http.get(`*${R.mePushKey}`, () =>
+        HttpResponse.json({
+          publicKey:
+            "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U",
+        }),
+      ),
+      http.get(`*${R.mePushSubscriptions}`, () =>
+        HttpResponse.json({ items: subs }),
+      ),
+      http.post(`*${R.mePushSubscriptions}`, async ({ request }) => {
+        const p = PushSubscribeBodySchema.safeParse(await request.json());
+        if (!p.success) return d.err("bad_request", "Invalid body");
+        const id = `sub_${subs.length + 1}`;
+        subs.push({
+          id,
+          label: p.data.label ?? null,
+          createdAt: ago(0),
+          lastSentAt: null,
+          needsYou: true,
+          updates: prefs.updates.browser,
+        });
+        return HttpResponse.json({ id }, { status: 201 });
+      }),
+      http.delete("*/api/v1/me/push/subscriptions/:id", ({ params }) => {
+        const i = subs.findIndex((x) => x.id === params.id);
+        if (i >= 0) subs.splice(i, 1);
         return done();
       }),
     ],

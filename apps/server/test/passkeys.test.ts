@@ -6,7 +6,7 @@ import {
   type PasskeySettings,
   R,
 } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../src/auth/session.js";
@@ -543,12 +543,20 @@ describe("challenges", () => {
   });
 
   it("are limited per member", async () => {
-    const u = await mk("ch-spam");
-    await addPasskey(u);
-    let last = 0;
-    for (let i = 0; i < 12 && last !== 429; i++)
-      last = (await get(u, off("deploy"), R.passkeySettingsChallenge)).status;
-    expect(last).toBe(429);
+    // The budget counts per 10-minute bucket of the clock (issue()). Frozen, the
+    // whole test is one bucket: a boundary passing mid-loop reset the count and
+    // the 12th request still answered 200 (flaked in CI, #2700).
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      const u = await mk("ch-spam");
+      await addPasskey(u);
+      let last = 0;
+      for (let i = 0; i < 12 && last !== 429; i++)
+        last = (await get(u, off("deploy"), R.passkeySettingsChallenge)).status;
+      expect(last).toBe(429);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -11,7 +11,11 @@ import {
 import { loginCodeEmail } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { codeEligibility, linkEligibility } from "../services/identity.js";
+import {
+  type CodeWhy,
+  codeEligibility,
+  linkEligibility,
+} from "../services/identity.js";
 import { getSettings } from "../services/members.js";
 import { noteTestOtp } from "../test-hooks/index.js";
 import { b64urlDecode, hmacSign } from "../util/crypto.js";
@@ -340,8 +344,26 @@ export function errorClass(e: unknown): string {
  * The one code_send line per deliverCode call: the outcome, and for "error"
  * the exception's class. Never the address, its key or the code.
  */
-export function logCodeSend(outcome: CodeSendOutcome, error?: string): void {
-  console.log(JSON.stringify({ evt: "code_send", outcome, error }));
+export function logCodeSend(
+  outcome: CodeSendOutcome,
+  error?: string,
+  why?: CodeWhy,
+): void {
+  console.log(JSON.stringify({ evt: "code_send", outcome, error, why }));
+}
+
+/** Why a code request was refused before any send (#2656): a fixed word, never the address, its key or the network. */
+export type CodeRefusal =
+  | "turnstile_required"
+  | "turnstile_failed"
+  | "turnstile_off_hosted"
+  | "limiter_unbound"
+  | "ip_limit"
+  | "request_slot_ip"
+  | "request_slot_email";
+
+export function logCodeRefused(reason: CodeRefusal): void {
+  console.log(JSON.stringify({ evt: "code_request_refused", reason }));
 }
 
 // One real send per (address, network) per resendSec, sliding: n holds the last send's
@@ -374,21 +396,21 @@ export async function deliverCode(
   link = false,
 ): Promise<{ requestId: string } | null> {
   /** Logs (and, in test builds, records) why nothing was sent. */
-  const none = async (outcome: CodeSendOutcome): Promise<null> => {
-    logCodeSend(outcome);
+  const none = async (
+    outcome: CodeSendOutcome,
+    why?: CodeWhy,
+  ): Promise<null> => {
+    logCodeSend(outcome, undefined, why);
     if (noteOtp) await noteOtp(env, email, ek, outcome);
     return null;
   };
   if (!emailEnabled(env)) return none("email_off");
   const to = normalizeEmail(email);
-  if (!to) return none("ineligible");
-  if (
-    (link
-      ? await linkEligibility(env, to)
-      : await codeEligibility(env, cfg, to)
-    ).kind === "none"
-  )
-    return none("ineligible");
+  if (!to) return none("ineligible", "bad_address");
+  const elig = link
+    ? await linkEligibility(env, to)
+    : await codeEligibility(env, cfg, to);
+  if (elig.kind === "none") return none("ineligible", elig.why);
   const day = counterBucket("day", now);
   const nk = await netKey(env, ip);
   const caps: Cap[] = [

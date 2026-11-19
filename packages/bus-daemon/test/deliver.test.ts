@@ -63,6 +63,49 @@ describe("createDeliver", () => {
   });
 });
 
+describe("notice meta (#2768)", () => {
+  it("is handed to the transport unchanged, and absent when the frame has none", async () => {
+    const agents = new AgentTable();
+    agents.up({
+      ref: "A",
+      kind: "pi",
+      proposedName: "a",
+      busName: "a",
+      namespace: "ns",
+      global: false,
+      pid: 1,
+      cwd: "/",
+      live: true,
+    });
+    const seen: unknown[] = [];
+    const d = createDeliver({
+      agents,
+      hub: { send: () => true },
+      transports: {
+        pi: async (_a, mail) => {
+          seen.push(mail);
+          return { ok: true };
+        },
+      },
+      onClosed: () => {},
+    });
+    const meta = {
+      kind: "ask_later",
+      user_id: "u_1",
+      until: "2026-11-20T09:00:00Z",
+    };
+    await d.deliver({
+      ...frame("mmmmmmmmmmmmmmm3"),
+      from_name: "open-artifacts",
+      meta,
+    });
+    await d.deliver(frame("mmmmmmmmmmmmmmm4"));
+    d.stop();
+    expect(seen[0]).toMatchObject({ body: "hi", meta });
+    expect(seen[1]).not.toHaveProperty("meta");
+  });
+});
+
 describe("peer bodies never carry terminal controls", () => {
   const evil = "hi \x1b]52;c;cHduZWQ=\x07 \x1b[8mrm -rf ~\x1b[0m \x9b2J\x07";
   it.each(["claude-code", "opencode", "pi"] as const)(

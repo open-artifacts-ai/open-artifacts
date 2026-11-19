@@ -194,7 +194,8 @@ describe("Get started checklist", () => {
     expect(screen.getByText("1 of 5")).toBeInTheDocument();
   });
 
-  it("is not shown to invited members", async () => {
+  // #2632: a member gets their own card (MemberGetStarted), never the owner's.
+  it("an invited member gets their own card, not the owner's", async () => {
     mountHosted(
       "/",
       true,
@@ -202,7 +203,9 @@ describe("Get started checklist", () => {
       [...none(), ...noTokens()],
     );
     await screen.findByText("No artifacts yet");
-    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
+    const card = await screen.findByRole("region", { name: "Get started" });
+    expect(card).toHaveAttribute("data-member");
+    expect(screen.queryByText("Invite your team")).toBeNull();
   });
 
   describe("the five steps (#2478)", () => {
@@ -219,6 +222,31 @@ describe("Get started checklist", () => {
           }),
         ),
       );
+
+    it("an owner who never connected the bus sees three steps, the invite, '0 of 3' and the bus line (#2890)", async () => {
+      withOnboarding({ busConnected: false });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 3")).toBeInTheDocument();
+      expect(screen.queryByText("Name your agent")).toBeNull();
+      expect(screen.queryByText("Mention your agent")).toBeNull();
+      expect(
+        screen.getByText("Publish your first artifact"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Answer your agent's ask")).toBeInTheDocument();
+      expect(document.querySelector("[data-bus-line]")?.textContent).toBe(
+        "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.",
+      );
+    });
+
+    it("with the bus connected the five and no bus line", async () => {
+      withOnboarding({ busConnected: true });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 5")).toBeInTheDocument();
+      expect(screen.getByText("Name your agent")).toBeInTheDocument();
+      expect(document.querySelector("[data-bus-line]")).toBeNull();
+    });
 
     it("lists the five in order, then the optional invite, with Product's strings", async () => {
       withOnboarding({});

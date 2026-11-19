@@ -1,5 +1,5 @@
 // Hosted P4 Task 8: the Move dialog from the Details panel and the
-// public-off confirm, at 1280 and 390, light and dark, with axe.
+// public-off confirm, at 1280 light, with axe (the rest: test/spaces-move.test.tsx).
 import { createRequire } from "node:module";
 import { expect, type Page, test } from "@playwright/test";
 
@@ -40,66 +40,57 @@ const settle = (page: Page) =>
     document.getAnimations().every((x) => x.playState !== "running"),
   );
 
-for (const scheme of ["light", "dark"] as const)
-  for (const width of [1280, 390])
-    test.describe(`${scheme} ${width}`, () => {
-      test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
+const width = 1280;
+test.describe("1280 light", () => {
+  test.use({ colorScheme: "light", viewport: { width, height: 900 } });
 
-      test("move out of Personal: the list and the one-way note", async ({
-        page,
-      }, info) => {
-        await page.goto("/?hosted=1");
-        await page.getByRole("link", { name: "Landing page" }).first().click();
-        await page.waitForURL(/\/a\//);
-        await openDetails(page, width);
-        await page.getByRole("button", { name: "Move" }).click();
-        const d = page.getByRole("dialog", { name: 'Move "Landing page" to' });
-        await d.getByRole("radio", { name: /^Engineering/ }).check();
-        await expect(d).toContainText("You can't move it back to Personal.");
-        await settle(page);
-        const v = await axeRun(page);
-        expect(v, v.join("\n")).toEqual([]);
-        await page.screenshot({
-          path: info.outputPath(`move-${scheme}-${width}.png`),
-        });
-      });
+  test("move out of Personal: the list and the one-way note", async ({
+    page,
+  }) => {
+    await page.goto("/?hosted=1");
+    await page.getByRole("link", { name: "Landing page" }).first().click();
+    await page.waitForURL(/\/a\//);
+    await openDetails(page, width);
+    await page.getByRole("button", { name: "Move" }).click();
+    const d = page.getByRole("dialog", { name: 'Move "Landing page" to' });
+    await d.getByRole("radio", { name: /^Engineering/ }).check();
+    await expect(d).toContainText("You can't move it back to Personal.");
+    await settle(page);
+    const v = await axeRun(page);
+    expect(v, v.join("\n")).toEqual([]);
+  });
 
-      test("public into a public-off space: the confirm", async ({
-        page,
-      }, info) => {
-        await page.goto("/?hosted=1");
-        await page.getByRole("link", { name: "Q4 report" }).first().waitFor();
-        // Public links off in Engineering, before the artifact loads (a reload resets the mock).
-        const status = await page.evaluate(async () => {
-          const r = await fetch("/api/v1/spaces/SpEngNpQrSt2uVwX", {
-            method: "PATCH",
-            headers: {
-              "content-type": "application/json",
-              "X-OA-Request": "1",
-            },
-            body: JSON.stringify({ publicLinks: false }),
-          });
-          return r.status;
-        });
-        expect(status).toBe(200);
-        await page.getByRole("link", { name: "Q4 report" }).first().click();
-        await page.waitForURL(/\/a\//);
-        await openDetails(page, width);
-        await page.getByRole("button", { name: "Move" }).click();
-        const d = page.getByRole("dialog", { name: 'Move "Q4 report" to' });
-        await d.getByRole("radio", { name: /^Engineering/ }).check();
-        await d.getByRole("button", { name: "Move" }).click();
-        const c = page.getByRole("alertdialog");
-        await expect(c).toContainText(
-          "Public links are off in Engineering, so this link stops working",
-        );
-        await settle(page);
-        const v = await axeRun(page);
-        expect(v, v.join("\n")).toEqual([]);
-        await page.screenshot({
-          path: info.outputPath(`move-confirm-${scheme}-${width}.png`),
-        });
-        await c.getByRole("button", { name: "Move and turn off link" }).click();
-        await expect(page.getByText("Moved to Engineering.")).toBeVisible();
+  test("public into a public-off space: the confirm", async ({ page }) => {
+    await page.goto("/?hosted=1");
+    await page.getByRole("link", { name: "Q4 report" }).first().waitFor();
+    // Sharing by link off in Engineering, before the artifact loads (a reload resets the mock).
+    const status = await page.evaluate(async () => {
+      const r = await fetch("/api/v1/spaces/SpEngNpQrSt2uVwX", {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "X-OA-Request": "1",
+        },
+        body: JSON.stringify({ publicLinks: false }),
       });
+      return r.status;
     });
+    expect(status).toBe(200);
+    await page.getByRole("link", { name: "Q4 report" }).first().click();
+    await page.waitForURL(/\/a\//);
+    await openDetails(page, width);
+    await page.getByRole("button", { name: "Move" }).click();
+    const d = page.getByRole("dialog", { name: 'Move "Q4 report" to' });
+    await d.getByRole("radio", { name: /^Engineering/ }).check();
+    await d.getByRole("button", { name: "Move" }).click();
+    const c = page.getByRole("alertdialog");
+    await expect(c).toContainText(
+      "Sharing by link is off in Engineering, so this link stops working",
+    );
+    await settle(page);
+    const v = await axeRun(page);
+    expect(v, v.join("\n")).toEqual([]);
+    await c.getByRole("button", { name: "Move and turn off link" }).click();
+    await expect(page.getByText("Moved to Engineering.")).toBeVisible();
+  });
+});

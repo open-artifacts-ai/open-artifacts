@@ -32,8 +32,9 @@ describe("RECOVERY_CRON idle tick CPU", () => {
       } as unknown as ExecutionContext;
       await scheduled({ cron: RECOVERY_CRON, scheduledTime: NOON }, e, ctx);
       await Promise.all(pending);
-      // The sweep only: no daily work registered.
-      expect(pending).toHaveLength(1);
+      // The sweep and the run-version fan-out drain (#2719): no daily work
+      // registered.
+      expect(pending).toHaveLength(2);
     };
     const ms = await medianMs(idle);
     await budget(annotate, "idle RECOVERY_CRON tick", ms, 5);

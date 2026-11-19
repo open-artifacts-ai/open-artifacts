@@ -4,7 +4,9 @@ import {
   AnswerBodySchema,
   COMMENT_KEY_RE,
   isId,
+  MentionCandidatesBodySchema,
   NewThreadBodySchema,
+  OWN_WORDS_MAX,
   ReplyBodySchema,
   TakeBackBodySchema,
   WithdrawBodySchema,
@@ -50,6 +52,8 @@ import {
   takeBackAsk,
   withdrawAsk,
 } from "../services/comments.js";
+import { mentionCandidates } from "../services/mention-candidates.js";
+import { isGuestMember, isOutsideMember } from "../services/mention-guards.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
 
@@ -105,7 +109,7 @@ const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
  * Authorization shared by every comment route: access for `action` (404
  * otherwise), then no embeds (403), then comments on (403 comments_off).
  */
-async function open(
+export async function open(
   c: Context<AppEnv>,
   action: PolicyAction,
   /** A write even though the policy floor is read access (delete). */
@@ -197,12 +201,50 @@ function withAnon(issued: string | null, res: Response): Response {
 
 const StatusQuery = z.object({
   status: z.enum(["open", "resolved", "all"]).default("all"),
+  // #2688: the catch-up read, as on the MCP list_comments.
+  answeredSince: z.string().datetime({ offset: true }).optional(),
+  mentionedSince: z.string().datetime({ offset: true }).optional(),
+  compact: z.enum(["true", "false"]).optional(),
 });
 const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
 const EditBody = z.strictObject({ body: z.string() });
 const ChallengeBodySchema = z.strictObject({
   optionId: z.string().regex(COMMENT_KEY_RE),
 });
+
+/**
+ * #2895: the pick in an answer body: an option, or the person's own words
+ * (trimmed, 1 to 1,000 characters). Both, or neither, is a 400; so is
+ * `ownWords.text` empty or too long, with the path and the reason in details.
+ */
+function pickOf(b: {
+  optionId?: string;
+  ownWords?: { text: string };
+}): string | { ownWords: string } {
+  if (b.ownWords === undefined) {
+    if (b.optionId === undefined)
+      throw new ApiError(
+        "bad_request",
+        "Pick an option or answer in your own words",
+      );
+    return b.optionId;
+  }
+  if (b.optionId !== undefined)
+    throw new ApiError("bad_request", "Send optionId or ownWords, not both");
+  const text = b.ownWords.text.trim();
+  if (text.length === 0)
+    throw new ApiError("bad_request", "Say what you'd like instead", {
+      path: "ownWords.text",
+      reason: "empty",
+    });
+  if (text.length > OWN_WORDS_MAX)
+    throw new ApiError(
+      "bad_request",
+      `Your own words are at most ${OWN_WORDS_MAX} characters`,
+      { path: "ownWords.text", reason: "too_long" },
+    );
+  return { ownWords: text };
+}
 
 /** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
 const bad = (issues: { path: PropertyKey[] }[]): never => {
@@ -227,17 +269,36 @@ export function mountComments(app: AppType): void {
     } = await open(c, "comments.read");
     const q = StatusQuery.safeParse({
       status: c.req.query("status") ?? undefined,
+      answeredSince: c.req.query("answeredSince") ?? undefined,
+      mentionedSince: c.req.query("mentionedSince") ?? undefined,
+      compact: c.req.query("compact") ?? undefined,
     });
-    if (!q.success) throw new ApiError("bad_request", "Invalid status");
+    if (!q.success)
+      throw new ApiError(
+        "bad_request",
+        "Invalid status, answeredSince, mentionedSince or compact",
+      );
+    const { answeredSince, mentionedSince } = q.data;
+    const compact = q.data.compact === "true";
+    if (compact && answeredSince === undefined && mentionedSince === undefined)
+      throw new ApiError(
+        "bad_request",
+        "compact needs answeredSince or mentionedSince.",
+      );
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
     // #2080: a signed-out viewer under signed-in-only may edit and delete nothing.
     if (art.commentAccess === "signed-in" && !c.var.user)
       viewer.readOnly = true;
-    const out = await listComments(c.env, id, q.data.status, {
-      ...viewer,
-      owner: level === "owner",
-    });
-    return c.json(out);
+    const v = { ...viewer, owner: level === "owner" };
+    if (answeredSince === undefined && mentionedSince === undefined)
+      return c.json(await listComments(c.env, id, q.data.status, v));
+    return c.json(
+      await listComments(c.env, id, q.data.status, v, {
+        ...(answeredSince !== undefined ? { answeredSince } : {}),
+        ...(mentionedSince !== undefined ? { mentionedSince } : {}),
+        ...(compact ? { compact } : {}),
+      }),
+    );
   });
 
   app.post(COMMENTS, async (c) => {
@@ -246,6 +307,7 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const named = raw.data.guestName;
@@ -274,19 +336,23 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     // toAsker stands alone (400), before the owner-and-editor check on mentions.
-    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
+    if (
+      raw.data.toAsker &&
+      (raw.data.mentions?.length ?? 0) + (raw.data.people?.length ?? 0) > 0
+    )
       throw new ApiError(
         "bad_request",
         "toAsker cannot be combined with mentions",
       );
     mayTarget(raw.data, moderator);
+    peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Log in to comment");
     const w: CommentWho =
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, toAsker } = raw.data;
+    const { mentions, people, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -294,7 +360,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, toAsker },
+      { mentions, people, toAsker, pictures: raw.data.pictures },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
@@ -370,6 +436,7 @@ export function mountComments(app: AppType): void {
     const commentId = idParam(c, "commentId");
     const raw = AnswerBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
+    const pick = pickOf(raw.data);
     // Never minted: a guest has no key, so is never one of the people asked
     // (the DO answers 403 after 404, as for a signed-in stranger).
     const { who: signed, viewer } = await identity(
@@ -390,7 +457,7 @@ export function mountComments(app: AppType): void {
       commentId,
       who,
       viewer,
-      raw.data.optionId,
+      pick,
       { version: artifact.currentVersion, ctx: execCtx(c) },
       // #2263: only a browser session can carry a passkey assertion.
       { interactive: interactiveSession(c), assertion: raw.data.assertion },
@@ -495,6 +562,23 @@ export function mountComments(app: AppType): void {
     );
   });
 
+  // #2770: who can be @mentioned: owner and editors, as they alone may mention;
+  // everyone else sees none. Guests and outside members name no one.
+  app.post(`${ART}/mention-candidates`, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const user = c.var.user;
+    if (!user || !modOf(cw, level, artifact)) return c.json({ items: [] });
+    const { viewer } = await identity(c, id, false, true);
+    if (
+      (await isGuestMember(c.env, user.id)) ||
+      (await isOutsideMember(c.env, user.id))
+    )
+      return c.json({ items: [] });
+    const raw = MentionCandidatesBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    return c.json(await mentionCandidates(c.env, id, user, viewer, raw.data.q));
+  });
+
   // #2035: stop replies in a thread reaching one agent (DELETE), or undo (PUT).
   // The agent's own person or the artifact's owner; the service enforces it.
   for (const [method, removed] of [
@@ -553,9 +637,25 @@ const execCtx = (
   }
 };
 
+/**
+ * #2770: people are @mentioned by a person in a browser only. A token, an
+ * agent or a grant carrying `people` is a 400, so no agent can fill someone's
+ * Needs you.
+ */
+function peopleByPerson(c: Context<AppEnv>, b: { people?: unknown[] }): void {
+  if ((b.people?.length ?? 0) > 0 && !interactiveSession(c))
+    throw new ApiError(
+      "bad_request",
+      "people can only be mentioned from the web app, not with a token or an agent",
+    );
+}
+
 /** 403 forbidden for mentions from anyone but the owner and editors. */
-function mayTarget(b: { mentions?: unknown[] }, moderator: boolean): void {
-  if ((b.mentions?.length ?? 0) > 0 && !moderator)
+function mayTarget(
+  b: { mentions?: unknown[]; people?: unknown[] },
+  moderator: boolean,
+): void {
+  if ((b.mentions?.length ?? 0) + (b.people?.length ?? 0) > 0 && !moderator)
     throw new ApiError("forbidden", "Only the owner and editors can mention");
 }
 

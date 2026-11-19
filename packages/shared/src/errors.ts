@@ -55,6 +55,8 @@ export const ERROR_CODES = [
   // Notifications v1 (#2512).
   "later_used",
   "push_unavailable",
+  "login_unavailable",
+  "mutes_full",
   // Self-serve billing (hosted/billing.ts).
   "plan_required",
   "plan_read_only",
@@ -191,6 +193,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   later_used: 409,
   /** GET R.mePushKey on a server with no push key configured. */
   push_unavailable: 404,
+  /** PUT R.loginSettings when the platform can't be reached or answers something unknown (#2520): the change may still take effect (unless the request never left), so check back before trying again. */
+  login_unavailable: 503,
+  /** POST R.meInboxMutes with 200 mutes already: unmute one first (#2512). */
+  mutes_full: 409,
   /** A team feature on a free (solo) instance whose trial was already used: an invite, a shared space (sharing an artifact is free on every plan); details PlanRefusalDetails. */
   plan_required: 403,
   /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */

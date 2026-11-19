@@ -40,7 +40,8 @@ create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
   user_id text not null, option_id text not null, by text not null,
   at text not null, typed integer not null default 0, verified text,
-  guest integer not null default 0, decision integer not null default 0
+  guest integer not null default 0, decision integer not null default 0,
+  own_words text
 );
 create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
@@ -122,7 +123,10 @@ export type MentionState =
 
 /** #2381: one pick, kept for good. `guest`: the picker was a guest-role member then. */
 export type StoredPick = {
+  /** "" when the pick is the person's own words (#2895): no option. */
   optionId: string;
+  /** #2895: "Something else": the person's own words, with no option. */
+  ownWords?: string;
   by: StoredActor;
   at: string;
   verified?: "passkey";
@@ -138,6 +142,8 @@ export type StoredAsk = {
   to: StoredParty[];
   answer?: {
     optionId: string;
+    /** #2895: the decision is the decider's own words (optionId is ""). */
+    ownWords?: string;
     by: StoredActor;
     at: string;
     /** #2263: a passkey assertion for this pick verified. Set by the server only. */
@@ -180,8 +186,20 @@ export type StoredComment = {
   editedAt: string | null;
   ask?: StoredAsk;
   mentions?: StoredTarget[];
+  /** #2770: the people this comment @mentions, by user id (comment_targets kind "person"). */
+  people?: string[];
   /** #2035: the participant agents a person's reply also told (comment_targets kind "reply"). */
   notified?: StoredTarget[];
+  /** #2577: agents of other people this comment's delivery is held for (comment_targets kind "held"): `held` until their person allows it, `releasing` between the allow and the notice. */
+  held?: { key: string; owner: string; state: string; way: string }[];
+};
+
+/** #2577: an agent of another person, as a held delivery needs it: its roster key, name, owner and bus namespace. */
+export type HeldAgent = {
+  key: string;
+  name: string;
+  owner: string;
+  namespace: string;
 };
 
 /** What a new comment carries besides its text (#1535). */
@@ -192,8 +210,12 @@ export type NewExtras = {
     "answer" | "closed" | "history" | "replacedBy" | "withdrawn"
   >;
   mentions?: StoredAgent[];
+  /** #2770: people @mentioned, by user id; already checked to be able to read the artifact. */
+  people?: string[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
+  /** #2577: held for the agent's person; the words stay, undelivered, and agents of that person read a placeholder. `way`: mention | reply | ask | page. */
+  held?: { agent: HeldAgent; way: string }[];
 };
 
 /**
@@ -397,9 +419,11 @@ type PickRow = {
   verified: string | null;
   guest: number;
   decision: number;
+  own_words: string | null;
 };
 const pickOf = (r: PickRow): StoredPick => ({
   optionId: r.option_id,
+  ...(r.own_words !== null ? { ownWords: r.own_words } : {}),
   by: JSON.parse(r.by) as StoredActor,
   at: r.at,
   ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
@@ -437,7 +461,6 @@ const askOf = (r: AskRow): StoredAsk => ({
       }
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
-  ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
   ...(r.withdrawn
@@ -482,7 +505,7 @@ function attachExtras(
     }
     const hist = new Map<string, StoredPick[]>();
     for (const r of sql.exec<PickRow>(
-      `select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks
+      `select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks
        where comment_id in (select value from json_each(?)) order by seq`,
       JSON.stringify(asked),
     )) {
@@ -497,11 +520,27 @@ function attachExtras(
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
      from comment_targets g
-     where g.kind in ('mention', 'asker', 'reply') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
+     where g.kind in ('mention', 'asker', 'reply', 'held', 'person') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
     if (!c) continue;
+    if (r.kind === "person") {
+      c.people = [...(c.people ?? []), r.key];
+      continue;
+    }
+    if (r.kind === "held") {
+      c.held = [
+        ...(c.held ?? []),
+        {
+          key: r.key,
+          owner: r.owner ?? "",
+          state: r.state,
+          way: r.name,
+        },
+      ];
+      continue;
+    }
     const t: StoredTarget = {
       key: r.key,
       name: r.name,
@@ -689,6 +728,225 @@ export function insertExtras(
     );
   for (const m of x.mentions ?? []) put("mention", m);
   for (const m of x.asker ?? []) put("asker", m);
+  for (const id of x.people ?? [])
+    sql.exec(
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+       values (?, ?, 'person', ?, '', 'noted', null, null)`,
+      commentId,
+      threadId,
+      id,
+    );
+  for (const h of x.held ?? [])
+    addHeld(sql, threadId, commentId, h.agent, h.way);
+}
+
+/** #2577: holds the delivery to an agent of another person (kind "held": `name` carries the way in). */
+export function addHeld(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  p: HeldAgent,
+  way: string,
+): void {
+  sql.exec(
+    `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+     values (?, ?, 'held', ?, ?, 'held', ?, ?)`,
+    commentId,
+    threadId,
+    p.key,
+    way,
+    p.owner,
+    JSON.stringify({ namespace: p.namespace, name: p.name }),
+  );
+}
+
+/** #2733: lets go of the holds a reply took up front for agents it may deliver to (only holds still in state "held"). */
+export function releaseHeldTargets(
+  sql: SqlStorage,
+  commentId: string,
+  keys: string[],
+): void {
+  for (const key of keys)
+    sql.exec(
+      "delete from comment_targets where comment_id = ? and kind = 'held' and key = ? and state = 'held'",
+      commentId,
+      key,
+    );
+}
+
+/**
+ * #2577: everything the placeholder hides, as one string: the comment's words,
+ * an ask's question, options and recommendation, the thread's quote and the
+ * mention names. The service hashes it; an allow carries that hash, and the
+ * release below compares the string itself inside the transaction, so an edit
+ * between the notice and the allow is never delivered.
+ */
+export function heldCanon(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+): string | null {
+  const c = sql
+    .exec<{ body: string; anchor: string }>(
+      `select c.body as body, t.anchor as anchor from comments c join comment_threads t on t.id = c.thread_id
+       where c.id = ? and c.thread_id = ?`,
+      commentId,
+      threadId,
+    )
+    .toArray()[0];
+  if (!c) return null;
+  const ask = sql
+    .exec<{ question: string; options: string; recommended: string | null }>(
+      "select question, options, recommended from comment_asks where comment_id = ?",
+      commentId,
+    )
+    .toArray()[0];
+  const names = sql
+    .exec<{ name: string }>(
+      "select name from comment_targets where comment_id = ? and kind = 'mention' order by key",
+      commentId,
+    )
+    .toArray()
+    .map((n) => n.name);
+  return JSON.stringify([c.body, c.anchor, ask ?? null, names]);
+}
+
+/** #2851: where a held-target scan left off. */
+export type HeldScanCursor = { at: string; commentId: string; key: string };
+
+/**
+ * #2851: the targets still held in this page's comments, oldest comment first,
+ * with who wrote the comment and when. For the sweep that finds a held target
+ * whose D1 request row never got written. Ids, keys and times only.
+ */
+export function heldScan(
+  sql: SqlStorage,
+  limit: number,
+  /** The last target of the previous page: the next page starts after it (oldest comment first, then comment id, then key: a stable order). */
+  after?: HeldScanCursor | null,
+): {
+  commentId: string;
+  threadId: string;
+  key: string;
+  way: string;
+  owner: string;
+  namespace: string;
+  name: string;
+  at: string;
+  author: string;
+}[] {
+  return sql
+    .exec<{
+      comment_id: string;
+      thread_id: string;
+      key: string;
+      way: string;
+      owner: string | null;
+      identity: string | null;
+      at: string;
+      author: string;
+    }>(
+      `select t.comment_id, t.thread_id, t.key, t.name as way, t.owner, t.identity, c.created_at as at, c.author
+         from comment_targets t join comments c on c.id = t.comment_id
+        where t.kind = 'held' and t.state = 'held' and t.owner is not null
+          ${after ? "and (c.created_at, t.comment_id, t.key) > (?, ?, ?)" : ""}
+        order by c.created_at, t.comment_id, t.key limit ?`,
+      ...(after ? [after.at, after.commentId, after.key] : []),
+      limit,
+    )
+    .toArray()
+    .map((r) => {
+      const a = JSON.parse(r.identity ?? "{}") as {
+        namespace?: string;
+        name?: string;
+      };
+      return {
+        commentId: r.comment_id,
+        threadId: r.thread_id,
+        key: r.key,
+        way: r.way,
+        owner: r.owner as string,
+        namespace: a.namespace ?? "",
+        name: a.name ?? "",
+        at: r.at,
+        author: r.author,
+      };
+    });
+}
+
+/** The held targets of a comment, optionally for one owner. */
+export function heldOf(
+  sql: SqlStorage,
+  commentId: string,
+  owner?: string,
+): {
+  key: string;
+  owner: string;
+  state: string;
+  way: string;
+  namespace: string;
+  name: string;
+}[] {
+  return sql
+    .exec<{
+      key: string;
+      owner: string;
+      state: string;
+      name: string;
+      identity: string | null;
+    }>(
+      `select key, owner, state, name, identity from comment_targets where comment_id = ? and kind = 'held'${owner ? " and owner = ?" : ""}`,
+      ...(owner ? [commentId, owner] : [commentId]),
+    )
+    .toArray()
+    .map((r) => {
+      const a = JSON.parse(r.identity ?? "{}") as {
+        namespace?: string;
+        name?: string;
+      };
+      return {
+        key: r.key,
+        owner: r.owner,
+        state: r.state,
+        way: r.name,
+        namespace: a.namespace ?? "",
+        name: a.name ?? "",
+      };
+    });
+}
+
+/**
+ * Moves the held targets of `owner` on a comment to "releasing", only if the
+ * words are still exactly `expect`. False: they changed (stay held).
+ */
+export function releaseHeld(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  owner: string,
+  expect: string,
+): boolean {
+  if (heldCanon(sql, threadId, commentId) !== expect) return false;
+  sql.exec(
+    "update comment_targets set state = 'releasing' where comment_id = ? and kind = 'held' and owner = ? and state = 'held'",
+    commentId,
+    owner,
+  );
+  return true;
+}
+
+/** The notices went out: these keys are allowed. The row stays, so an edit of the words can send it back to held. */
+export function finishHeld(
+  sql: SqlStorage,
+  commentId: string,
+  keys: string[],
+): void {
+  for (const k of keys)
+    sql.exec(
+      "update comment_targets set state = 'allowed' where comment_id = ? and kind = 'held' and key = ?",
+      commentId,
+      k,
+    );
 }
 
 /**
@@ -930,6 +1188,13 @@ export function takeThreadReply(
   max: number,
   /** The comment @-mentions someone: agents that joined only as the page's publisher are skipped (#1968). */
   skipPage = false,
+  /**
+   * #2733: fail closed. Every participant that belongs to another person than
+   * `author` is held for this comment in the same step that takes them, so the
+   * words are masked for them from the moment the reply is told about; the
+   * service then lets go (releaseHeldTargets) of the ones it may deliver to.
+   */
+  hold?: { commentId: string; author: string },
 ): StoredParticipant[] {
   if (threadStatus(sql, threadId) !== "open") return [];
   const total =
@@ -959,6 +1224,14 @@ export function takeThreadReply(
       at,
     );
     room--;
+    if (hold && r.owner !== hold.author)
+      addHeld(
+        sql,
+        threadId,
+        hold.commentId,
+        { key: r.key, name: r.name, owner: r.owner, namespace: r.namespace },
+        "reply",
+      );
     out.push({
       kind: "agent",
       key: r.key,
@@ -1081,7 +1354,7 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state not in ('gone', 'withdrawn') limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind not in ('reply', 'person') and state not in ('gone', 'withdrawn') limit 1",
       commentId,
     )
     .toArray();
@@ -1200,7 +1473,7 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision, own_words) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
     p.by.ref,
     p.optionId,
@@ -1210,6 +1483,7 @@ export function addPick(
     p.verified ?? null,
     p.guest ? 1 : 0,
     p.decision ? 1 : 0,
+    p.ownWords ?? null,
   );
 }
 
@@ -1265,7 +1539,7 @@ export function askRow(
   const ask = askOf(r);
   const rows = sql
     .exec<PickRow>(
-      "select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks where comment_id = ? order by seq",
+      "select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks where comment_id = ? order by seq",
       commentId,
     )
     .toArray()

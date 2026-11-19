@@ -180,7 +180,10 @@ describe("install through the service", () => {
     expect(ctx.out()).not.toContain(NO_SERVICE[1]);
     // status says the same thing afterwards.
     expect(await statusCmd(ctx)).toBe(0);
-    expect(ctx.out().filter((l) => l === FALLBACK[1])).toHaveLength(2);
+    // The line follows the printed command: npx while nothing was installed
+    // yet, the installed files after (never npx once a bus is installed).
+    const after = /^ {3}After a reboot, start it again with .+ daemon\.$/;
+    expect(ctx.out().filter((l) => after.test(l))).toHaveLength(2);
   });
 
   it("a service that never answers is the timeout failure", async () => {

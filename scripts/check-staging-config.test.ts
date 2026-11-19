@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -319,4 +319,40 @@ describe("DocRoom (#1100 tag v5, ships unbound; the doc route binds DOC_ROOM lat
           );
     });
   }
+});
+
+describe("DOCS_PREVIEW is an unsupported preview", () => {
+  // A plain runtime var that opens doc creation (docCreationOpen), also in a
+  // release bundle. This repo's public configs and setup steps must not set it
+  // (the cloud deploy and provisioner refuse it on prod installs).
+  const VAR = /(?<![A-Z_])DOCS_PREVIEW(?![A-Z_])/;
+  const files = [
+    "apps/server/wrangler.template.jsonc",
+    "apps/server/wrangler.test.jsonc",
+    "apps/auth-broker/wrangler.jsonc",
+    "apps/directory-broker/wrangler.jsonc",
+    "apps/landing/wrangler.jsonc",
+    "apps/demo-ops/wrangler.jsonc",
+  ];
+  for (const f of files)
+    it(`${f} does not set the DOCS_PREVIEW var`, () => {
+      expect(readFileSync(join(root, f), "utf8")).not.toMatch(VAR);
+    });
+  it("the self-host setup writes no DOCS_PREVIEW", () => {
+    const dir = join(root, "scripts/setup/src");
+    const walk = (d: string): string[] =>
+      readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+        e.isDirectory()
+          ? walk(join(d, e.name))
+          : e.name.endsWith(".ts")
+            ? [join(d, e.name)]
+            : [],
+      );
+    for (const f of walk(dir))
+      expect(readFileSync(f, "utf8"), f).not.toMatch(VAR);
+  });
+  it("the staging config sets it only to 1, if at all", () => {
+    const v = env.vars?.DOCS_PREVIEW;
+    expect(v === undefined || v === "1").toBe(true);
+  });
 });

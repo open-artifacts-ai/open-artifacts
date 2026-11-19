@@ -1,6 +1,8 @@
+import { applicableSteps, SETUP_STEPS } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
+import { BUS_LINE } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -13,62 +15,7 @@ import {
 import { useMe } from "../auth/useMe";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
 import { AppLink } from "./AppLink";
-
-const dot =
-  "grid size-5 flex-none place-items-center rounded-full border-[1.5px] text-[length:var(--oa-text-xs)] font-semibold";
-
-function Step({
-  n,
-  state,
-  title,
-  children,
-}: {
-  /** The step number; absent on the optional row, which shows an empty circle. */
-  n?: number;
-  state: "done" | "cur" | "todo";
-  title: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <li
-      data-state={state}
-      aria-current={state === "cur" ? "step" : undefined}
-      className="grid grid-cols-[20px_1fr] gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-1)] border-t border-border py-[var(--oa-space-3)]"
-    >
-      <span
-        className={`${dot} ${
-          state === "done"
-            ? "border-[var(--oa-success)] bg-[var(--oa-success)] text-[var(--oa-accent-text)]"
-            : state === "cur"
-              ? "border-primary text-primary"
-              : "border-border text-muted-foreground"
-        }`}
-        aria-hidden
-      >
-        {state === "done" ? "✓" : n}
-      </span>
-      <div
-        className={`font-semibold ${state === "done" ? "text-muted-foreground line-through" : ""}`}
-      >
-        {title}
-        {state === "done" && <span className="sr-only"> (done)</span>}
-        {state === "cur" && <span className="sr-only"> (current step)</span>}
-      </div>
-      <div className="col-start-2 grid gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)] text-[var(--oa-text-2)]">
-        {children}
-      </div>
-    </li>
-  );
-}
-
-const Waiting = ({ children }: { children: string }) => (
-  <p
-    role="status"
-    className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground"
-  >
-    {children}
-  </p>
-);
+import { Step, Waiting } from "./steps";
 
 /**
  * The first-run "Get started" checklist above an empty Library (Design,
@@ -116,26 +63,33 @@ export function GetStarted({
   );
   const ready =
     loaded && tokens.isSuccess && clients.isSuccess && members.isSuccess;
-  // #2478: the five steps, then the optional invite.
+  // #2478: the five steps, then the optional invite. #2890: someone who never
+  // connected the bus (chat-only) sees three: the bus-only two are hidden.
+  const steps = applicableSteps(o?.busConnected);
+  const bus = steps.includes("named");
   const named = o?.agentNamed === true;
   const replied = o?.mentionReplied === true;
   const answered = o?.askAnswered === true;
   const nm = o?.agentName || "your agent";
-  const done = [connected, named, hasArtifacts, replied, answered, invited];
-  const all = ready && done.every(Boolean);
+  const five = [connected, named, hasArtifacts, replied, answered];
+  const shown = steps.map((s) => SETUP_STEPS.indexOf(s));
+  const all = ready && shown.every((i) => five[i]) && invited;
 
   // Every step done: the server keeps that, so removing a member or a token
-  // later never brings the list back.
+  // later never brings the list back. Not while the bus was never connected
+  // (#2890): a Claude Code user can reach 3 of 3 before oa-bus first connects,
+  // and a saved `completed` would hide Name and Mention for good.
   const { mutate: save } = setOnboarding;
   useEffect(() => {
-    if (live && all) save({ completed: true });
-  }, [live, all, save]);
+    if (live && all && bus) save({ completed: true });
+  }, [live, all, bus, save]);
 
   // Events happen elsewhere (an agent, another tab): re-read what is still
   // open, quietly, until it is done. Focus refetch covers returning to the tab.
   const qc = useQueryClient();
   useEffect(() => {
-    if (!live || all) return;
+    // Without the bus, 3 of 3 keeps listening: connecting it brings two steps back.
+    if (!live || (all && bus)) return;
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
       // Only what is still open; the Library's pages refetch only while no
@@ -146,7 +100,8 @@ export function GetStarted({
       }
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
       if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
-      if (!(hasArtifacts && named && replied && answered))
+      // Without the bus, keep reading: connecting it brings two steps back.
+      if (!bus || !(hasArtifacts && answered && named && replied))
         void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
@@ -157,6 +112,7 @@ export function GetStarted({
     connected,
     invited,
     hasArtifacts,
+    bus,
     named,
     replied,
     answered,
@@ -165,9 +121,12 @@ export function GetStarted({
   if (!live || !ready || all || !me?.instance.mcpUrl) return null;
 
   const hide = () => save({ dismissed: true });
-  const count = done.slice(0, 5).filter(Boolean).length;
-  const cur = done.indexOf(false);
-  const st = (i: number) => (done[i] ? "done" : cur === i ? "cur" : "todo");
+  const count = shown.filter((i) => five[i]).length;
+  // Index 5 is the optional invite step.
+  const cur = shown.find((i) => !five[i]) ?? (invited ? -1 : 5);
+  const st = (i: number) =>
+    (i === 5 ? invited : five[i]) ? "done" : cur === i ? "cur" : "todo";
+  const no = (i: number) => shown.indexOf(i) + 1;
   // The trial line is true only when the server would start the Business
   // trial on an invite (plan.trialEligible): Solo or free, no trial used yet,
   // not read-only. Self-hosted installs have no billing.
@@ -192,7 +151,7 @@ export function GetStarted({
           Get started
         </h2>
         <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-          {count} of 5
+          {count} of {shown.length}
         </span>
         <Button
           variant="ghost"
@@ -204,7 +163,7 @@ export function GetStarted({
         </Button>
       </div>
       <ol className="m-0 list-none p-0">
-        <Step n={1} state={st(0)} title="Connect your agent">
+        <Step n={no(0)} state={st(0)} title="Connect your agent">
           {connected ? (
             <p className="m-0">Agent connected</p>
           ) : (
@@ -214,17 +173,19 @@ export function GetStarted({
             </>
           )}
         </Step>
-        <Step n={2} state={st(1)} title="Name your agent">
-          {named ? (
-            <p className="m-0">Named: {nm}</p>
-          ) : (
-            <p className="m-0">
-              Your agent will suggest a name. It's what you'll type after @ in
-              comments.
-            </p>
-          )}
-        </Step>
-        <Step n={3} state={st(2)} title="Publish your first artifact">
+        {bus && (
+          <Step n={no(1)} state={st(1)} title="Name your agent">
+            {named ? (
+              <p className="m-0">Named: {nm}</p>
+            ) : (
+              <p className="m-0">
+                Your agent will suggest a name. It's what you'll type after @ in
+                comments.
+              </p>
+            )}
+          </Step>
+        )}
+        <Step n={no(2)} state={st(2)} title="Publish your first artifact">
           {hasArtifacts ? (
             <p className="m-0">
               Published: {o?.firstArtifact?.title ?? "your first artifact"}
@@ -238,25 +199,27 @@ export function GetStarted({
             </>
           )}
         </Step>
-        <Step n={4} state={st(3)} title="Mention your agent">
-          {replied ? (
-            <p className="m-0">{o?.agentName || "Your agent"} replied</p>
-          ) : (
-            <>
-              <p className="m-0">
-                Open your first page, type @ in a comment and pick {nm}. It
-                replies in the thread.
-              </p>
-              {o?.mentionStalled && (
-                <Waiting>
-                  No reply yet. Your agent may not be listening. Ask it: "Check
-                  the bus."
-                </Waiting>
-              )}
-            </>
-          )}
-        </Step>
-        <Step n={5} state={st(4)} title="Answer your agent's ask">
+        {bus && (
+          <Step n={no(3)} state={st(3)} title="Mention your agent">
+            {replied ? (
+              <p className="m-0">{o?.agentName || "Your agent"} replied</p>
+            ) : (
+              <>
+                <p className="m-0">
+                  Open your first page, type @ in a comment and pick {nm}. It
+                  replies in the thread.
+                </p>
+                {o?.mentionStalled && (
+                  <Waiting>
+                    No reply yet. Your agent may not be listening. Ask it:
+                    "Check the bus."
+                  </Waiting>
+                )}
+              </>
+            )}
+          </Step>
+        )}
+        <Step n={no(4)} state={st(4)} title="Answer your agent's ask">
           {answered ? (
             <p className="m-0">Answered</p>
           ) : (
@@ -305,6 +268,14 @@ export function GetStarted({
           )}
         </Step>
       </ol>
+      {!bus && (
+        <p
+          data-bus-line=""
+          className="m-0 mt-[var(--oa-space-2)] text-[length:var(--oa-text-xs)] text-muted-foreground"
+        >
+          {BUS_LINE}
+        </p>
+      )}
     </section>
   );
 }

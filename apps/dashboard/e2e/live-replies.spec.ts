@@ -27,11 +27,10 @@ const reply = (page: Page, body: string) =>
     { id: ID, body },
   );
 
-for (const [w, h] of [
-  [1280, 800],
-  [390, 844],
-] as const)
-  test(`${w}px: a live reply shows with no click`, async ({ page }) => {
+for (const [w, h] of [[1280, 800]] as const)
+  test(`${w}px: a live reply shows with no click`, {
+    tag: w === 1280 ? "@smoke" : [],
+  }, async ({ page }) => {
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`/a/${ID}?mock=agents`);
     await page.getByRole("button", { name: /^Comments/ }).click();

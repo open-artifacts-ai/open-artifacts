@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { makeQueryClient } from "./api/queryClient";
 import { isEmbed, lockToPath } from "./embed";
 import { parseHostedParam } from "./hostedParam";
+import { agentAsksOn, forYouVariant } from "./mockForYou";
 import { router } from "./router";
 import "./styles.css";
 import "./shadcn.css";
@@ -104,10 +105,21 @@ async function startMocks() {
         }),
       ),
     );
+  // &push=off (#2512 slice 3): the server has no push key (404 push_unavailable).
+  if (params.get("push") === "off")
+    extra.push(
+      http.get("*/api/v1/me/push/key", () =>
+        HttpResponse.json(
+          { error: { code: "push_unavailable", message: "No push key" } },
+          { status: 404 },
+        ),
+      ),
+    );
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   // #2590 (PROVISIONAL): a guest's artifact says who shared it (`sharedBy`);
-  // &sharedBy=none answers null.
+  // &sharedBy=none answers null. #2702: as the server does, the guest's own
+  // share decides can.comment (&share=viewer: View only; else Can comment).
   if (role === "guest")
     extra.push(
       http.get("*/api/v1/artifacts/:id", async ({ request }) => {
@@ -116,6 +128,16 @@ async function startMocks() {
         const body = (await res.json()) as object;
         return HttpResponse.json({
           ...body,
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: params.get("share") !== "viewer",
+          },
           sharedBy:
             params.get("sharedBy") === "none" ? null : { name: "Ada Lovelace" },
         });
@@ -150,7 +172,96 @@ async function startMocks() {
         HttpResponse.json({
           ...fixtures.me,
           user: { ...fixtures.me.user, role },
+          // #2702: a guest is capped, so read-only, as the server says.
+          ...(role === "guest"
+            ? {
+                auth: {
+                  method: "access",
+                  readOnly: true,
+                  cap: "guest",
+                  expiresAt: null,
+                },
+              }
+            : {}),
+          // #2632: the owner's name (MeSchema instanceOwner).
+          instanceOwner: { name: "Bob Builder" },
         }),
+      ),
+    );
+  // ?mock=members-setup (#2632 slice 2, MemberSchema `setup`): the
+  // Members list in every Setup state, as Design's screen shows it.
+  if (params.get("mock") === "members-setup")
+    extra.push(
+      http.get("*/api/v1/members", ({ request }) => {
+        const status = new URL(request.url).searchParams.get("status");
+        if (status && status !== "active") return HttpResponse.json([]);
+        const day = (n: number) =>
+          new Date(Date.UTC(2026, 10, 16 - n, 10)).toISOString();
+        const me = fixtures.me.user;
+        return HttpResponse.json([
+          {
+            id: me.id,
+            email: me.email,
+            name: me.name,
+            role: "owner",
+            lastSeenAt: day(0),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_sam",
+            email: "sam@example.com",
+            name: "Sam Ortiz",
+            role: "member",
+            lastSeenAt: day(0),
+            setup: { state: "partial", done: 3, stalled: "mention" },
+          },
+          {
+            id: "m_priya",
+            email: "priya@example.com",
+            name: "Priya Shah",
+            role: "member",
+            lastSeenAt: day(4),
+            setup: {
+              state: "partial",
+              done: 0,
+              stalled: "agent",
+              remindedAt: day(1),
+            },
+          },
+          {
+            id: "m_jon",
+            email: "jon@example.com",
+            name: "Jon Lee",
+            role: "admin",
+            lastSeenAt: day(1),
+            setup: { state: "set", done: 5 },
+          },
+          {
+            id: "m_dana",
+            email: "dana@example.com",
+            name: null,
+            role: "member",
+            lastSeenAt: null,
+            setup: { state: "invited", done: 0 },
+          },
+          {
+            id: "m_ana",
+            email: "ana@venue.example",
+            name: null,
+            role: "guest",
+            lastSeenAt: day(3),
+          },
+        ]);
+      }),
+    );
+  // #2632: R.onboarding refuses a guest.
+  if (role === "guest")
+    extra.push(
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "Forbidden" } },
+          { status: 403 },
+        ),
       ),
     );
   // ?mock=space-manager (with ?hosted=1): the caller is a plain member who manages
@@ -631,7 +742,7 @@ async function startMocks() {
     hosted: parseHostedParam(params.get("hosted")),
     events,
     // ?mock=welcome (#2287): Welcome is seeded and named by the onboarding state.
-    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect.
+    // &ticks=connect,name,publish,mention,ask (or stalled) sets how far it is; &opened=1 skips the first-open redirect; &bus=0 hides name and mention (never connected the bus).
     welcome:
       params.get("mock") === "welcome"
         ? {
@@ -643,37 +754,25 @@ async function startMocks() {
             mentionStalled: params.get("ticks")?.includes("stalled"),
             askAnswered: params.get("ticks")?.includes("ask"),
             opened: params.get("opened") === "1",
+            // #2632: &teammate=1 ticks the optional sixth step.
+            teamStep: params.get("teammate") === "1",
+            invitedBy: "Bob Builder",
+            // #2890: &bus=0 is a chat-only person (never connected the bus): three steps.
+            bus: params.get("bus") !== "0",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
     // &asks=1: the same asks with another mock (e.g. ?mock=doc, #1100).
-    commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
+    commentAsks:
+      params.get("mock") === "asks" ||
+      params.get("mock") === "own-words" ||
+      params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
     commentDecisions: params.get("mock") === "decisions",
     // ?mock=withdrawn (#2511): asks in each withdrawn state.
     commentWithdrawn: params.get("mock") === "withdrawn",
-    // ?passkey=ok|none|cooling|expired (#2263): with mock=asks, a dangerous ask that needs a passkey.
-    commentPasskey: ["ok", "none", "cooling", "expired", "many"].includes(
-      params.get("passkey") ?? "",
-    )
-      ? (params.get("passkey") as
-          | "ok"
-          | "none"
-          | "cooling"
-          | "expired"
-          | "many")
-      : undefined,
-    // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
-    passkeys:
-      params.get("mock") === "passkey-cooling"
-        ? "cooling"
-        : params.get("mock") === "passkey-usable"
-          ? "usable"
-          : params.get("mock") === "passkey-pending"
-            ? "pending"
-            : "none",
     // ?mock=agents (#1822): agent-authored comments, linked and not.
     commentAgents: params.get("mock") === "agents",
     // ?mock=pins and ?mock=pins-pdf (#2019): the "Landing page" is an image (or a pdf) with pins on it.
@@ -691,12 +790,9 @@ async function startMocks() {
     bus: params.get("mock") === "bus",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's
     // examples; &foryou=calm (nothing needs you), empty (first time), back (back from Later) or error (the list fails).
-    forYou:
-      params.get("mock") === "foryou"
-        ? ((["calm", "empty", "back", "error"] as const).find(
-            (v) => v === params.get("foryou"),
-          ) ?? "mixed")
-        : undefined,
+    forYou: forYouVariant(params),
+    // ?mock=foryou&foryou=held or ?mock=agent-asks (#2577): a held request, the switch and the "listens to" list.
+    agentAsks: agentAsksOn(params),
   });
   // e2e (#1100): window.__oaDocVersion makes the doc's GET answer that
   // currentVersion, so a test can watch the version pill tick after the room
@@ -745,7 +841,7 @@ async function startMocks() {
       ),
     );
   }
-  // &share=workspace-only (#2590, PROVISIONAL): every share answers that the
+  // &share=workspace-only (#2590): every share answers that the
   // address can open it only if it's a Google account.
   if (params.get("share") === "workspace-only")
     extra.push(
@@ -759,7 +855,7 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit (#2620): every share is
+  // &notEmailed=member_limit|instance_limit|limit|skipped (#2620, #2649): every share is
   // saved without an email, for that reason.
   const notEmailed = params.get("notEmailed");
   if (notEmailed)
@@ -780,6 +876,42 @@ async function startMocks() {
       params.get("glink") === "1" ? "sam@partner.org" : null,
       () => mainHandlers,
     ),
+  );
+  if (params.get("mock") === "foryou") {
+    const { pushSwitchHandlers } = await import("./mockPushSwitches");
+    extra.push(...pushSwitchHandlers(() => mainHandlers));
+  }
+  // #2508: pictures in comments.
+  const pics = (await import("./mockPictures")).pictureHandlers(
+    mainHandlers,
+    params,
+  );
+  // Person @mentions (mock only), in front of the picture handlers.
+  extra.push(
+    ...(await import("./mockMentionPeople")).mentionPeopleHandlers([
+      ...pics,
+      ...mainHandlers,
+    ]),
+    ...pics,
+  );
+  // ?mock=own-words, "Something else" with a typed answer.
+  if (params.get("mock") === "own-words" || params.get("ownwords") === "1")
+    extra.unshift(
+      ...(await import("./mockOwnWords")).ownWordsHandlers([
+        ...pics,
+        ...mainHandlers,
+      ]),
+    );
+  // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
+  if (agentAsksOn(params))
+    extra.unshift(
+      ...(await import("./mockTeammates")).teammatesHandlers(mainHandlers, {
+        asked: params.get("asked") === "1",
+      }),
+    );
+  // #1910: &waiting=1 carries the waiting fields.
+  extra.unshift(
+    ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),
   );
   await setupWorker(
     ...extra,

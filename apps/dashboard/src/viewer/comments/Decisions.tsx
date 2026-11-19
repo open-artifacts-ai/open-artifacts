@@ -14,6 +14,7 @@ import { AuthorFace } from "./AuthorFace";
 import { type Decision, weighIns } from "./decisionsModel";
 import { FaceStack } from "./FaceStack";
 import { scrollWithin } from "./keepScroll";
+import { optionIdOf, textOf } from "./ownWords";
 import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
@@ -120,14 +121,17 @@ export function CommentsTabs({
 const Pill = ({
   children,
   tone = "neutral",
+  mono = false,
   ...rest
 }: {
   children: ReactNode;
   tone?: "neutral" | "ok";
+  /** The small mono chip of the design ("Own words"). */
+  mono?: boolean;
 } & Record<string, unknown>) => (
   <span
     {...rest}
-    className={`inline-flex w-fit items-center gap-1 rounded px-1.5 ${TXT} font-semibold ${
+    className={`inline-flex w-fit items-center gap-1 rounded px-1.5 ${TXT} ${mono ? "font-[family-name:var(--oa-font-mono)] font-normal" : "font-semibold"} ${
       tone === "ok"
         ? "bg-[var(--oa-success-soft)] text-[var(--oa-success-fg)]"
         : "bg-muted text-muted-foreground"
@@ -147,11 +151,13 @@ function Row({
   onOpen: () => void;
 }) {
   const { ask, answer, comment, thread } = d;
-  const opt = ask.options.find((o) => o.id === answer.optionId);
+  const opt = ask.options.find((o) => o.id === optionIdOf(answer));
   const was = answer.was
     ? ask.options.find((o) => o.id === answer.was?.optionId)
     : undefined;
   const w = weighIns(d);
+  // an answer in the person's own words leads with the words.
+  const words = textOf(answer);
   const replacedBy = ask.replacedBy
     ? all.find((x) => x.id === ask.replacedBy)
     : undefined;
@@ -196,6 +202,18 @@ function Row({
         </span>
       ),
     },
+    ...(words
+      ? [
+          {
+            key: "own",
+            el: (
+              <Pill data-chip="own-words" mono>
+                Own words
+              </Pill>
+            ),
+          },
+        ]
+      : []),
     ...(w.n > 0
       ? [
           {
@@ -262,9 +280,9 @@ function Row({
       >
         <Check aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
         <span
-          className={`min-w-0 break-words ${replaced ? "line-through" : ""}`}
+          className={`min-w-0 whitespace-pre-wrap break-words ${replaced ? "line-through" : ""}`}
         >
-          {opt?.label ?? answer.optionId}
+          {words ?? opt?.label ?? optionIdOf(answer)}
         </span>
       </button>
       <p

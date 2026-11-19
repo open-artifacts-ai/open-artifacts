@@ -9,9 +9,9 @@ import {
   codexBinFile,
   globalFile,
   isGlobalDir,
-  namespacesFile,
   nearestConfig,
   readGlobalDirs,
+  readSuggestion,
   remotesFile,
   resolveNamespace,
   scanConfigFiles,
@@ -32,6 +32,7 @@ import {
   codexProxyProblem,
   type Harness,
   opencodeProxyProblem,
+  skippedProxyEntries,
 } from "../steps/adapters.ts";
 import {
   claudePluginsState,
@@ -39,6 +40,18 @@ import {
   cmpVersion,
   MIN_CLAUDE,
 } from "../steps/claude-plugins.ts";
+import {
+  claudeProofChecks,
+  instanceProofChecks,
+  lastAutoFix,
+  safeText,
+} from "../steps/claude-proof-check.ts";
+import {
+  hubOrigin,
+  sessionChecks,
+  sseCheck,
+  sseEntries,
+} from "../steps/claude-sessions.ts";
 import {
   codexConfig,
   codexHome,
@@ -54,9 +67,12 @@ import { isDefaultHome, MIN_NODE } from "../steps/service.ts";
 import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
+import { approvalsFileFor } from "./namespace.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
 const HEALTHZ_TIMEOUT_MS = 10_000;
+/** The first oa-bus that reads the `instance` key of .oa-bus.json (#2840); older ones refuse the file. */
+const INSTANCE_KEY_MIN_VERSION = "0.218.0";
 
 const sameOrigin = (url: string, hub: string) => {
   try {
@@ -65,6 +81,12 @@ const sameOrigin = (url: string, hub: string) => {
     return false;
   }
 };
+
+const skipDeps = (ctx: Ctx) => ({
+  home: ctx.userHome,
+  busHome: ctx.home,
+  env: ctx.env,
+});
 
 type Health = Healthz & { error?: string };
 
@@ -217,7 +239,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       st,
       async () => (await health()).version,
     );
-    if (update) warn(c.updateAvailable(update, st.version));
+    if (update) warn(c.updateAvailable(update, st.version, hub ?? ""));
   } else
     fail(
       probe.state === "stalled"
@@ -318,6 +340,36 @@ export async function doctor(ctx: Ctx): Promise<number> {
         fail(c.pluginsDoctorMissing(plugins.missing));
       else if (plugins?.unconfigured) warn(c.pluginsDoctorUnconfigured());
       else if (plugins) pass(c.pluginsDoctor());
+      // #2688: each entry for the instance, at every scope, and what the last automatic fix did.
+      if (hub !== undefined) {
+        for (const chk of [
+          ...claudeProofChecks(ctx, hub),
+          ...instanceProofChecks(ctx),
+        ])
+          if (chk.level === "pass") pass(chk.lines[0] as string);
+          else if (chk.level === "warn") warn(chk.lines);
+          else if (chk.level === "info") say(ctx, chk.lines);
+          else fail(chk.lines);
+        const fixed = lastAutoFix(ctx);
+        if (fixed) say(ctx, fixed);
+      }
+      // #2688: which live sessions are not linked, and why; and an sse entry, which can't link.
+      if (hub !== undefined)
+        for (const name of sseEntries(ctx, hubOrigin(hub) ?? "")) {
+          const k = sseCheck(ctx, name);
+          warn(c.check(k.level, k.head, k.notes));
+        }
+      for (const chk of sessionChecks(
+        ctx,
+        probe.state === "up" ? probe.st : undefined,
+        hub,
+      )) {
+        const ls = c.check(chk.level, chk.head, chk.notes);
+        if (chk.level === "pass") pass(ls[0] as string);
+        else if (chk.level === "warn") warn(ls);
+        else if (chk.level === "info") say(ctx, ls);
+        else fail(ls);
+      }
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({
@@ -327,6 +379,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
+      if (hub !== undefined)
+        for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
+          if (k.harness === "OpenCode")
+            warn([`OpenCode: ${safeText(k.note, 400)}`]);
     }
     if (h === "codex") {
       codexChecks(ctx, { pass, warn });
@@ -337,6 +393,9 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
+      if (hub !== undefined)
+        for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
+          if (k.harness === "Codex") warn([`Codex: ${safeText(k.note, 400)}`]);
     }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
@@ -373,7 +432,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   try {
     const ns = resolveNamespace(ctx.cwd, {
       globalFile: allow,
-      namespacesFile: namespacesFile(ctx.home),
+      namespacesFile: approvalsFileFor(ctx, "."),
       remotesFile: remotesFile(ctx.home),
       recordRemote: false,
       allowMissing: true,
@@ -385,13 +444,19 @@ export async function doctor(ctx: Ctx): Promise<number> {
   // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
   const files = scanConfigFiles(ctx.cwd, {
     globalFile: allow,
-    namespacesFile: namespacesFile(ctx.home),
+    namespacesFile: approvalsFileFor(ctx, "."),
     remotesFile: remotesFile(ctx.home),
   }).filter((f) => f.file !== allow);
   if (files.length > 0) {
     n.warnings += files.length;
     say(ctx, configFileLines(ctx, files));
   }
+  // #2840: older buses refuse a .oa-bus.json that has `instance`, the whole file.
+  if (readSuggestion(ctx.cwd) !== undefined)
+    say(
+      ctx,
+      `This repo's .oa-bus.json has an instance key. This version reads it; oa-bus before ${INSTANCE_KEY_MIN_VERSION} refuses the whole file.`,
+    );
   if (asksForGlobal(ctx, list.dirs)) warn(c.globalAsked());
 
   say(ctx, "", c.summary(n.failed, n.warnings, n.passed));

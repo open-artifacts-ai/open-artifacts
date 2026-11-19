@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { ApiClientError } from "../api/client";
+import { firstName } from "../api/myOnboarding";
 import {
   qk,
   useArtifact,
@@ -25,12 +26,14 @@ import { useMe } from "../auth/useMe";
 import { isEmbed } from "../embed";
 import { useCpuSignals } from "../layout/cpu";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { isMember } from "../library/MemberGetStarted";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos } from "./bridge";
+import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
+  AskBeside,
   CommentsBody,
   CompactComments,
   PinBar,
@@ -356,9 +359,18 @@ function Viewer({
   const latest = useRef({ artifact, viewer, theme });
   latest.current = { artifact, viewer, theme };
   // #2287: the Welcome page may ask how far the checklist is; the bridge
-  // answers only the owner, and only on the Welcome artifact.
-  const gate = useRef({ owner: role === "owner" });
-  gate.current = { owner: role === "owner" };
+  // answers only the owner, and (#2632) a member, on their own Welcome.
+  const member = isMember(role);
+  // From the props the shell already has (no fetch of its own): the bridge
+  // adds the rest (who added them, the sixth step) from R.onboarding.
+  const greet: WelcomeGreet | undefined =
+    member && viewer ? { firstName: firstName(viewer.name), org } : undefined;
+  const gate = useRef<{
+    owner: boolean;
+    member: boolean;
+    greet?: WelcomeGreet;
+  }>({ owner: role === "owner", member, greet });
+  gate.current = { owner: role === "owner", member, greet };
   const fx = useArtifactSideEffects(
     artifact,
     version,
@@ -395,6 +407,12 @@ function Viewer({
   const slowTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dismissed = useRef(false);
   const reloading = useRef(false);
+  const goneRef = useRef(gone);
+  goneRef.current = gone;
+  const srcRef = useRef<string | null>(null);
+  const reloadRef = useRef<(force: boolean) => void>(() => {});
+  const urlStaleRef = useRef(content.urlStale);
+  urlStaleRef.current = content.urlStale;
   const [slow, setSlow] = useState(false);
   const [reloads, setReloads] = useState(0);
   const [frame, setFrame] = useState<{ key: number; src: string | null }>({
@@ -482,6 +500,9 @@ function Viewer({
   const renavigated = useRef(false);
   const [renav, setRenav] = useState(false);
   const onRenavigated = useCallback(() => {
+    // A reload is already replacing this frame (onFrameLoad's expiry recovery
+    // runs just before the bridge reports the same load): nothing to flag.
+    if (reloading.current) return;
     renavigated.current = true;
     // The viewer followed a link inside the artifact.
     touch();
@@ -504,7 +525,21 @@ function Viewer({
       // No src prop, so a new frame first loads about:blank, before the bridge
       // calls loadArtifactFrame. That load isn't the artifact: it must neither
       // freeze the content URL nor arm the slow timer.
-      if (!frameLoad(e.currentTarget)) return;
+      const fl = frameLoad(e.currentTarget);
+      if (!fl) return;
+      // #2686: a load the shell didn't start (React's onLoad runs before the
+      // bridge consumes `expected`, so ours still reads true here), by a frame
+      // whose signed URL has expired: the content host would answer with an
+      // expiry page. Start over from a fresh URL. Every renavigation gets this
+      // check, not only the first (the bridge is gone after that one).
+      if (
+        !fl.expected &&
+        !goneRef.current &&
+        urlStaleRef.current(srcRef.current)
+      ) {
+        reloadRef.current(true);
+        return;
+      }
       setPaintedKey(frameKey);
       if (renavigated.current) {
         setRenav(live);
@@ -522,7 +557,7 @@ function Viewer({
     [contentLoaded, live, frameKey],
   );
   useEffect(() => () => clearTimeout(slowTimer.current), []);
-  const reload = () => {
+  const reloadWith = (force: boolean) => {
     if (reloading.current) return;
     reloading.current = true;
     helloSeen.current = false;
@@ -534,17 +569,22 @@ function Viewer({
     renavigated.current = false;
     setRenav(false);
     setReloads((r) => r + 1);
-    const ready = content.fresh()
-      ? Promise.resolve(content.current)
-      : content.refresh();
+    const ready =
+      !force && content.fresh()
+        ? Promise.resolve(content.current)
+        : content.refresh();
     void ready.then((u) =>
       setFrame((f) => ({ key: f.key + 1, src: safeContentUrl(u) ?? f.src })),
     );
   };
+  const reload = () => reloadWith(false);
 
   // Every intentional load (first load, a refreshed URL before the first load,
   // Reload) gets a fresh bridge, which loads the frame with a fresh nonce.
   const src = frame.src ?? url;
+  // Read by onFrameLoad (declared earlier); set each render.
+  srcRef.current = src;
+  reloadRef.current = reloadWith;
   useEffect(() => {
     if (!el || !src || gone) return;
     const b = createBridge({
@@ -570,7 +610,7 @@ function Viewer({
       },
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p, ghost) => cmtRef.current.onPositions(p, ghost),
-      onCommentOpen: (id) => cmtRef.current.onOpen(id),
+      onCommentOpen: (id, rect) => cmtRef.current.onOpen(id, rect),
       onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
@@ -751,6 +791,7 @@ function Viewer({
               gone={gone !== null}
               comments={commentsButton}
               asks={asksButton}
+              titleInDoc={isDoc && !!shown}
             />
             <SignupNudge
               authed={authed}
@@ -925,6 +966,7 @@ function Viewer({
                 allow="clipboard-write"
               />
               {commentsOn && <PinBeside frame={el} />}
+              {commentsOn && <AskBeside frame={el} />}
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
@@ -1025,6 +1067,7 @@ function ArtifactShell({
     explicit: v,
     chromeless,
     embed,
+    doc: data ? isDocArtifact(data) : false,
     frame: () =>
       frames.current.get(shownRef.current ?? -1) ?? {
         hello: false,
@@ -1079,6 +1122,7 @@ function ArtifactShell({
   shownRef.current = version;
   const preload = live.preload?.version;
   const newer = live.latest > (v ?? preload ?? version);
+  const docFollows = v === undefined && isDocArtifact(data);
   const layers = [
     ...(live.leaving !== null && live.leaving !== version
       ? [live.leaving]
@@ -1111,7 +1155,9 @@ function ArtifactShell({
         return (
           <div
             // New id/version remounts everything, so a new document never inherits the old bridge.
-            key={`${data.id}:${n}`}
+            // A doc following Current is live in the room: a newer saved
+            // version never remounts its editor (caret, focus, cursors).
+            key={`${data.id}:${docFollows ? "doc" : n}`}
             className="oa-vlayer"
             data-preload={n === preload}
             data-arrived={shown && live.leaving !== null}

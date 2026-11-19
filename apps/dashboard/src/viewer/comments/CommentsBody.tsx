@@ -56,6 +56,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  needsMe,
   newProblems,
   nextAskFor,
   removeMention,
@@ -78,15 +79,39 @@ import {
   useLostDrafts,
   useLostPost,
 } from "./lostPosts";
+import { Markdown } from "./Markdown";
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
 import { NotifyChip, usePageAgentChip } from "./notifyChip";
-import { besideWidth, placeBeside } from "./pinPlacement";
+import {
+  isPersonKey,
+  mentionsWithPeople,
+  peopleIds,
+  personAsAgent,
+  useMentionCandidates,
+} from "./people";
+import {
+  AttachButton,
+  AttachedThumbs,
+  filesOf,
+  hasFiles,
+  PICTURE_WORDS,
+  PictureNotes,
+  UploadStatus,
+  usePictureDrawer,
+} from "./pictures/drawer";
+import { CommentPictures } from "./pictures/view";
+import { besideWidth, placeBeside, placeBesideRect } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
-import { type CommentsApi, type Lost, useCommentsApi } from "./useComments";
+import {
+  type CommentsApi,
+  type Lost,
+  MODAL_OR_FIELD,
+  useCommentsApi,
+} from "./useComments";
 import {
   fieldCap,
   keyboardInset,
@@ -151,7 +176,7 @@ export function PinBar() {
   return (
     <div
       role="status"
-      className="fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
+      className="fixed bottom-[max(1rem,env(safe-area-inset-bottom))] left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
     >
       <span className={`${TXT} whitespace-nowrap`}>
         <span>{pinHint()}</span>
@@ -438,7 +463,10 @@ function Composer({
   seed,
   onLost,
   collapse = false,
+  pictures = false,
 }: {
+  /** #2508: offer the picture button, paste and drop (members who can comment). */
+  pictures?: boolean;
   /**
    * #2486: an empty box is one line (the field alone) until it is focused,
    * and goes back to one line when focus leaves it still empty.
@@ -493,6 +521,11 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
+  // #2508: pictures. Guests, outsiders and signed-out visitors get no button.
+  const pics = usePictureDrawer(api.artifactId);
+  const attach =
+    pictures && !guest && !api.outsider && !capped && api.canComment;
+  const [dragging, setDragging] = useState(false);
   const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [grown, setGrown] = useState(false);
@@ -568,13 +601,55 @@ function Composer({
     )
       void agentsQ.refetch();
   };
-  const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
-  const found =
-    query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
+  // People join the agents in one list. The server
+  // answers only for the owner and editors (everyone else gets none).
+  const peopleOn = mentionable && api.canMention && api.canComment;
+  const [picked, setPicked] = useState<CommentAuthor[]>([]);
+  const query =
+    agents?.length || peopleOn ? mentionQuery(text.slice(0, caret)) : null;
+  const candidates = useMentionCandidates(
+    api.artifactId,
+    peopleOn && !menuOff ? query : null,
+    peopleOn,
+  );
+  // The agents and the picked people: what the @names in the text can mean.
+  const pool = useMemo(
+    () => [...(agents ?? []), ...picked.map(personAsAgent)],
+    [agents, picked],
+  );
+  const mentionedNow = mentionedKeys(text, pool);
+  const atCap = mentionedNow.length >= MENTIONS_MAX;
+  const found = (() => {
+    if (query === null || menuOff) return null;
+    // A finished mention ("@OA Design ") closes the list.
+    if (matchAgents(pool, query) === null) return null;
+    const list = [
+      ...(matchAgents(agents ?? [], query) ?? []),
+      ...candidates
+        .map(personAsAgent)
+        .filter((p) => !mentionedNow.includes(p.key)),
+    ];
+    return list.length > 0 || agents?.length ? list : null;
+  })();
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
+  // #2577: the active row is never an agent whose person turned asking off (a reset to 0 lands on the first pickable row).
+  const firstOk = matches.findIndex((a) => a.askState !== "off");
+  const activeIdx =
+    matches[activeOpt]?.askState === "off" ? Math.max(firstOk, 0) : activeOpt;
   const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
+    // #2577: its person turned asking off; a mention would be refused.
+    if (a.askState === "off") return;
+    // Over the cap nothing more is added (the note under the list says so).
+    if (atCap) return;
+    if (isPersonKey(a.key)) {
+      const who = candidates.find((p) => personAsAgent(p).key === a.key);
+      if (who)
+        setPicked((cur) =>
+          cur.some((p) => personAsAgent(p).key === a.key) ? cur : [...cur, who],
+        );
+    }
     const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
     setText(`${before}@${a.name} ${text.slice(caret)}`);
     const at = before.length + a.name.length + 2;
@@ -632,6 +707,15 @@ function Composer({
     keepCardClear(ref.current);
   }, [text]);
   const body = text.trim();
+  // #2508: a picture-only comment is fine unless it mentions an agent: then
+  // it needs words, because a picture alone isn't a request.
+  const withPictures = attach && pics.items.length > 0;
+  const words = pool.reduce((t, a) => removeMention(t, a.name, pool), body);
+  const needWords =
+    withPictures && mentionedKeys(body, pool).length > 0 && words.trim() === "";
+  const canSend = withPictures
+    ? (body !== "" || pics.refs.length > 0) && pics.ready && !needWords
+    : body !== "";
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
@@ -642,14 +726,19 @@ function Composer({
     return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
-    if (!body || once.current) return;
+    if (!canSend || once.current) return;
     once.current = true;
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
-      const keys = mentionedKeys(body, agents ?? []);
+      const keys = mentionedKeys(body, pool);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
-      const mentions = keys.map((key) => ({ key }));
+      const mentions = keys
+        .filter((k) => !isPersonKey(k))
+        .map((key) => ({ key }));
+      // People go by id, apart from agents.
+      const people = peopleIds(keys);
+      const pictureRefs = withPictures ? pics.refs : [];
       if (instant) {
         // Clear now; the empty box is what stops a double submit, so the next
         // post can start while this one is on its way.
@@ -658,12 +747,18 @@ function Composer({
         setTimeout(() => {
           once.current = false;
         }, 0);
+        const was = withPictures ? pics.take() : [];
         try {
-          await onSubmit(body, { mentions });
+          await onSubmit(body, {
+            mentions,
+            ...(people.length ? { people } : {}),
+            ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+          });
         } catch (e) {
           // Never lose typed text: it goes back in front of anything typed since.
           if (mounted.current) {
             setText((cur) => (cur.trim() ? `${body}\n${cur}` : body));
+            if (was.length) pics.restore(was);
             setError(e);
           } else onLost?.({ text: body, error: e });
         }
@@ -672,8 +767,11 @@ function Composer({
       setBusy(true);
       await onSubmit(body, {
         mentions,
+        ...(people.length ? { people } : {}),
+        ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
       });
       setText("");
+      if (withPictures) pics.take();
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
       setError(e);
@@ -685,7 +783,12 @@ function Composer({
     }
   };
   // Words, an error or a seed keep the box grown.
-  const shut = collapse && !grown && text === "" && error == null;
+  const shut =
+    collapse &&
+    !grown &&
+    text === "" &&
+    error == null &&
+    pics.items.length === 0;
   // Focus leaving the box (field, hint, button) for somewhere else shrinks it.
   const wrap = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -704,6 +807,7 @@ function Composer({
     onCancel?.();
   };
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: #2508 drop target; the picture button is the keyboard way in.
     <div
       className={
         card && !shut
@@ -713,6 +817,44 @@ function Composer({
       ref={wrap}
       data-oa-composing={composing ? "" : undefined}
       data-collapsed={collapse ? (shut ? "" : undefined) : undefined}
+      onDragEnter={
+        attach
+          ? (e) => {
+              if (hasFiles(e.dataTransfer)) setDragging(true);
+            }
+          : undefined
+      }
+      onDragOver={
+        attach
+          ? (e) => {
+              if (!hasFiles(e.dataTransfer)) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "copy";
+              setDragging(true);
+            }
+          : undefined
+      }
+      onDragLeave={
+        attach
+          ? (e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                setDragging(false);
+            }
+          : undefined
+      }
+      onDrop={
+        attach
+          ? (e) => {
+              const f = filesOf(e.dataTransfer);
+              setDragging(false);
+              if (!f.length) return;
+              e.preventDefault();
+              setOpen(true);
+              setGrown(true);
+              void pics.add(f);
+            }
+          : undefined
+      }
     >
       {quote}
       <div className="relative rounded-md bg-card">
@@ -729,6 +871,16 @@ function Composer({
           rows={1}
           data-oa-field=""
           className={`${CTXT} ${FIELD} relative z-[1] bg-transparent`}
+          onPaste={
+            attach
+              ? (e) => {
+                  const f = filesOf(e.clipboardData);
+                  if (!f.length) return;
+                  e.preventDefault();
+                  void pics.add(f);
+                }
+              : undefined
+          }
           onFocus={() => {
             setOpen(true);
             setGrown(true);
@@ -743,7 +895,7 @@ function Composer({
           aria-describedby={card && !coarse && !shut ? hintId : undefined}
           aria-controls={menuOpen ? menuId : undefined}
           aria-activedescendant={
-            menuOpen ? `${menuId}-${activeOpt}` : undefined
+            menuOpen ? `${menuId}-${activeIdx}` : undefined
           }
           onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
           onKeyDown={(e) => {
@@ -754,15 +906,14 @@ function Composer({
               !e.metaKey &&
               !e.ctrlKey &&
               !e.altKey &&
-              agents &&
-              agents.length > 0
+              pool.length > 0
             ) {
               const t = e.currentTarget;
               const cut = atomicBackspace(
                 t.value,
                 t.selectionStart,
                 t.selectionEnd,
-                agents,
+                pool,
               );
               // Select the name and let the native delete remove it: the
               // edit stays in the browser's undo stack.
@@ -772,9 +923,15 @@ function Composer({
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const n = matches.length;
-                setActiveOpt(
-                  (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
-                );
+                // #2577: an agent whose person turned asking off can't be picked: skip it.
+                const step = e.key === "ArrowDown" ? 1 : n - 1;
+                setActiveOpt(() => {
+                  for (let k = 1; k <= n; k++) {
+                    const j = (activeIdx + step * k) % n;
+                    if (matches[j]?.askState !== "off") return j;
+                  }
+                  return activeIdx;
+                });
                 return;
               }
               if (
@@ -785,7 +942,7 @@ function Composer({
                 !e.ctrlKey
               ) {
                 e.preventDefault();
-                const a = matches[activeOpt];
+                const a = matches[activeIdx];
                 if (a) pick(a);
                 return;
               }
@@ -815,10 +972,20 @@ function Composer({
             }
           }}
         />
-        {agents && agents.length > 0 && (
-          <MentionMirror field={ref} text={text} agents={agents} />
+        {pool.length > 0 && (
+          <MentionMirror field={ref} text={text} agents={pool} />
+        )}
+        {dragging && (
+          <div
+            data-drop-target=""
+            className={`pointer-events-none absolute inset-0 z-[2] grid place-items-center rounded-md border-2 border-dashed border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] ${CTXT}`}
+          >
+            {PICTURE_WORDS.drop}
+          </div>
         )}
       </div>
+      {attach && <AttachedThumbs d={pics} />}
+      {attach && <PictureNotes d={pics} needWords={needWords} />}
       {!canMention &&
         !guest &&
         !capped &&
@@ -834,15 +1001,21 @@ function Composer({
           id={menuId}
           matches={matches}
           all={agents}
-          active={activeOpt}
+          active={activeIdx}
           onPick={pick}
         />
       )}
-      {agents && agents.length > 0 && (
+      {found && atCap && (
+        <p role="status" className={`${TXT} text-muted-foreground`}>
+          You can mention up to {MENTIONS_MAX} agents or people in one comment.
+          Remove one to add another.
+        </p>
+      )}
+      {pool.length > 0 && (
         <MentionChips
           text={text}
-          agents={agents}
-          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
+          agents={pool}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, pool))}
         />
       )}
       {error != null && (
@@ -868,15 +1041,19 @@ function Composer({
               className={`flex flex-col gap-2 ${surface}`}
             >
               <div className="flex flex-wrap items-center gap-2">
+                {attach && <AttachButton d={pics} />}
                 {lead}
-                {card && <SendHint id={hintId} />}
+                {attach && <UploadStatus d={pics} />}
+                {card && !(attach && pics.uploading > 0) && (
+                  <SendHint id={hintId} />
+                )}
                 <div className="ml-auto flex items-center gap-2">
                   {extra}
                   {cancelBtn}
                   <Button
                     size="xs"
                     className={`bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]${card ? " h-8 px-4" : ""}`}
-                    disabled={!body || busy}
+                    disabled={!canSend || busy}
                     onClick={() => void go()}
                   >
                     {submit}
@@ -889,9 +1066,11 @@ function Composer({
               data-oa-actions=""
               className={`flex flex-wrap items-center gap-2 ${surface}`}
             >
+              {attach && <AttachButton d={pics} />}
+              {attach && <UploadStatus d={pics} />}
               <Button
                 size="xs"
-                disabled={!body || busy}
+                disabled={!canSend || busy}
                 onClick={() => void go()}
               >
                 {submit}
@@ -1192,7 +1371,7 @@ function CommentRow({
                 >
                   <MentionedText
                     body={c.body}
-                    mentions={c.mentions}
+                    mentions={mentionsWithPeople(c)}
                     guest={api.guest}
                     marks={marks}
                     createdAt={c.createdAt}
@@ -1202,15 +1381,24 @@ function CommentRow({
             }
           />
         ) : (
-          <div className={`break-words ${CTXT}`} {...roving}>
-            <MentionedText
-              body={c.body}
-              mentions={c.mentions}
-              guest={api.guest}
-              marks={marks}
-              createdAt={c.createdAt}
+          <>
+            {c.body !== "" && (
+              <div className={`break-words ${CTXT}`} {...roving}>
+                <MentionedText
+                  body={c.body}
+                  mentions={mentionsWithPeople(c)}
+                  guest={api.guest}
+                  marks={marks}
+                  createdAt={c.createdAt}
+                />
+              </div>
+            )}
+            <CommentPictures
+              artifactId={api.artifactId}
+              c={c}
+              who={{ name: c.author.name, when: versionDate(c.createdAt) }}
             />
-          </div>
+          </>
         )}
         <Delivery
           c={c}
@@ -1593,9 +1781,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               label="Reply"
               actions={ACTIONS_PLAIN}
               placeholder="Reply"
-              mentionPlaceholder="Reply. Type @ to mention an agent."
+              mentionPlaceholder="Reply. Type @ to mention an agent or a person."
               submit="Reply"
               mentionable
+              pictures
               float
               instant
               seed={lostReply.lost}
@@ -1707,6 +1896,130 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   );
 }
 
+/** How long the card beside a mark takes no pick after it appears. */
+export const ASK_BESIDE_HOLD_MS = 700;
+
+/**
+ * #2426: an unanswered ask the reader clicked in the page opens its card right
+ * beside the mark, over the page, drawn here and not in the sandboxed frame. It
+ * is the pane's own AskBlock, so the pick goes the same way (the server records
+ * it). Esc or a click outside closes it.
+ */
+export function AskBeside({ frame }: { frame: HTMLElement | null }) {
+  const api = useCommentsApi();
+  const at = api.askBeside;
+  const ref = useRef<HTMLElement>(null);
+  const [h, setH] = useState(200);
+  const { closeAsk } = api;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the card mounts when an ask is opened (`at?.id`)
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => el.offsetHeight && setH(el.offsetHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [at?.id]);
+  const open = !!at;
+  // #2426 review: page script can place this card, so for a moment after it
+  // appears (or moves, or opens again) it takes no pick: a click the reader
+  // meant for the page cannot land on an option. `at` is a new object on every
+  // open, so every open starts the delay over.
+  const [armed, setArmed] = useState(false);
+  useEffect(() => {
+    setArmed(false);
+    if (!at) return;
+    const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [at]);
+  useEffect(() => {
+    if (!open) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented) return;
+      const t = e.target;
+      if (t instanceof HTMLElement && t.closest(MODAL_OR_FIELD) !== null)
+        return;
+      closeAsk();
+    };
+    const down = (e: PointerEvent) => {
+      const t = e.target;
+      if (
+        t instanceof Element &&
+        (ref.current?.contains(t) ||
+          t.closest("[role='menu'],[role='dialog'],[role='alertdialog']"))
+      )
+        return;
+      closeAsk();
+    };
+    document.addEventListener("keydown", key);
+    document.addEventListener("pointerdown", down, true);
+    return () => {
+      document.removeEventListener("keydown", key);
+      document.removeEventListener("pointerdown", down, true);
+    };
+  }, [open, closeAsk]);
+  const thread = at ? api.threads.find((t) => t.id === at.id) : undefined;
+  const c =
+    thread?.comments.find((k) => k.ask && needsMe(k.ask)) ??
+    thread?.comments.find((k) => k.ask);
+  if (!at || !frame || !thread || !c?.ask) return null;
+  const w = besideWidth(frame.clientWidth);
+  const { left, top } = placeBesideRect(
+    at.rect,
+    { w: frame.clientWidth, h: frame.clientHeight },
+    { w, h },
+  );
+  const nextAsk = nextAskFor(api, thread.id);
+  return (
+    <section
+      ref={ref}
+      aria-label="Ask"
+      data-oa-keep-selection=""
+      data-ask-beside=""
+      style={{
+        left: frame.offsetLeft + left,
+        top: frame.offsetTop + top,
+        width: w,
+      }}
+      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-xl"
+    >
+      <AskBlock
+        artifactId={api.artifactId}
+        thread={thread}
+        c={c}
+        next={
+          nextAsk
+            ? () => {
+                closeAsk();
+                api.reveal(nextAsk);
+              }
+            : undefined
+        }
+        reply={
+          api.canComment
+            ? () => {
+                closeAsk();
+                api.select(thread.id, true);
+              }
+            : undefined
+        }
+        guest={api.guest}
+        boxed={false}
+        holdPicks={!armed}
+        body={
+          showsAskBody(c.body, c.ask.question) ? (
+            <div className={`break-words ${CTXT}`} data-ask-body="">
+              <Markdown body={c.body} />
+            </div>
+          ) : undefined
+        }
+      />
+    </section>
+  );
+}
+
 function NewThread({
   api,
   flat = false,
@@ -1733,13 +2046,14 @@ function NewThread({
       <Composer
         label="Add a comment"
         placeholder="Add a comment"
-        mentionPlaceholder="Add a comment. Type @ to mention an agent."
+        mentionPlaceholder="Add a comment. Type @ to mention an agent or a person."
         submit="Comment"
         autoFocus
         buttonsRight
         card
         flat={flat}
         actions={ACTIONS_PLAIN}
+        pictures
         quote={
           "pin" in draft ? (
             <p className={`${TXT} font-medium ${MUTED}`}>New comment</p>
@@ -1842,11 +2156,12 @@ function NoteComposer({ api }: { api: CommentsApi }) {
       <Composer
         label="Comment on the whole page"
         placeholder="Comment on the whole page"
-        mentionPlaceholder="Add a comment. Type @ to mention an agent."
+        mentionPlaceholder="Add a comment. Type @ to mention an agent or a person."
         submit="Comment"
         buttonsRight
         card
         keepOnEsc
+        pictures
         actions={ACTIONS_PLAIN}
         lead={
           api.guest ? (

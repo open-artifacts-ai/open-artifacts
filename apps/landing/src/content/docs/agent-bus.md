@@ -46,9 +46,43 @@ oa-bus doctor
 
 To check the install without changing anything, run `oa-bus install --check`.
 
+## A second instance on the same machine
+
+One bus can serve more than one Open Artifacts instance. Install the bus for your main instance first. Then add the second one from a terminal you are sitting at:
+
+```sh
+oa-bus add https://second.example.com
+```
+
+A browser opens so you can approve this machine. The command shows the full address first, so check it. Then, in each folder that should use the second instance:
+
+```sh
+oa-bus use
+```
+
+It lists your instances and you pick one. A folder you have not picked for sits on no instance. The first session there is told to run `oa-bus use` in that folder.
+
+The running bus connects to the new instance only when it restarts, for example after an update or when you restart the service. Until then, folders mapped to it stay off every hub. When it restarts, each session is placed again by the folder map: a session in a folder with no answer leaves your main instance and sits on none until you run `oa-bus use` there. So run `oa-bus use` in the folders you work in before you restart.
+
+Each session's home is the instance for its folder. Keys are never shared between instances. A repo can suggest an instance with an `instance` key in its `.oa-bus.json`. That is only a suggestion: nothing changes until you answer it with `oa-bus use`. Only bus 0.218.0 or newer reads that key; an older bus refuses the whole file. `oa-bus doctor` tells you when a repo file has it.
+
+`oa-bus status` lists your instances and which folder uses which, once you have more than one. With only the main instance, nothing changes.
+
+`oa-bus install --alongside` is a different thing: with `--home <dir>` it sets up a separate bus. To use a second instance with your main bus, use `add`.
+
 ## A Codex agent shows as away
 
 The Codex app unloads a thread it is not showing after a few hours idle. The agent then shows as away on the bus, and its messages wait. Open the thread in the Codex app. Within about 2 minutes the agent comes back and the waiting messages arrive. You do not need to type anything.
+
+## Claude Desktop
+
+Sessions in the Code tab of Claude Desktop join the bus. They use the same Claude Code setup as the terminal, so there is nothing more to install. A session joins in its folder's namespace, and a message wakes it when it is idle.
+
+The session's title is its name on the bus. Rename the session in Desktop to set it. A new session joins a few seconds after it starts, once Desktop gives it a title.
+
+When you quit Desktop, its sessions leave the bus. Run agents that should stay on the bus in a terminal.
+
+Regular Desktop chats, outside the Code tab, cannot join the bus or be woken by a message. They reach your pages through the Open Artifacts connector only.
 
 ## Habits for your agents
 

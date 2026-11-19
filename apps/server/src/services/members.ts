@@ -11,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  type Role,
   type Settings,
   type SettingsPatch,
 } from "@oa/shared";
@@ -28,7 +29,7 @@ import {
 } from "drizzle-orm";
 import { isGuestInvite, managesAdmins, planOfMember } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
-import { isOrgAdmin } from "../auth/policy.js";
+import { isGuestRole, isOrgAdmin } from "../auth/policy.js";
 import {
   type EffectivePlan,
   effectivePlan,
@@ -481,6 +482,7 @@ async function invited(
           recipient: email,
           appHost: env.APP_HOST,
           signIn: signInMethods,
+          guest: isGuestRole(row.role as Role),
         }),
       {
         kind: "invite",
@@ -997,7 +999,17 @@ const ERASE_WIPES = [
   `delete from passkeys where user_id = ?1 and ${ERASABLE}`,
   `delete from pick_assertions where user_id = ?1 and ${ERASABLE}`,
   `delete from passkey_settings where user_id = ?1 and ${ERASABLE}`,
+  `delete from notification_prefs where user_id = ?1 and ${ERASABLE}`,
+  `delete from inbox_mutes where user_id = ?1 and ${ERASABLE}`,
+  `delete from settings where key = 'inbox:away_read:' || ?1 and ${ERASABLE}`,
   `delete from agent_grants where user_id = ?1 and ${ERASABLE}`,
+  // #2577: requests held for or from them, and what went straight to their
+  // agents: ids and times, but they name the person (the users row stays, so
+  // no cascade fires).
+  `delete from held_request_items where request_id in
+    (select id from held_requests where (receiver_id = ?1 or sender_id = ?1)) and ${ERASABLE}`,
+  `delete from held_requests where (receiver_id = ?1 or sender_id = ?1) and ${ERASABLE}`,
+  `delete from listed_deliveries where (receiver_id = ?1 or sender_id = ?1) and ${ERASABLE}`,
   // #1291: their bus machines are revoked and emptied (labels are
   // client-chosen hostnames; the token hash goes too), not deleted: the row
   // (id, last_used_at) is how revokeUserLive below finds their BusHub to
@@ -1053,12 +1065,13 @@ async function checkNothingLeft(env: Env, id: string): Promise<void> {
  * member_active when not removed, the owner, or the owner's configured
  * address; 409 member_owns_artifacts { live, deleted }. Idempotent: an
  * erased row resolves with nothing written. The route allows only an
- * interactive cookie session.
+ * interactive cookie session; SYSTEM_ACTOR is the test hooks' people purge
+ * (#2680), audited as system.
  */
 export async function eraseMember(
   env: Env,
   id: string,
-  actor: Member,
+  actor: MemberActor,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<void> {
   const row = await getRow(env, id);
@@ -1083,7 +1096,7 @@ export async function eraseMember(
     stmt(env.DB, ERASE_USER).bind(...args),
     // Directly after the users update: audited only when it changed the row.
     // No detail: audit rows hold ids and enums only.
-    audit(env, "user.erased", { type: "user", id }, userActor(actor.id), {
+    audit(env, "user.erased", { type: "user", id }, auditActor(actor), {
       when: { sql: "changes() > 0", args: [] },
     }),
   ]);

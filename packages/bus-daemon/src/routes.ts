@@ -212,7 +212,7 @@ export type RouteCtx = {
    * hello_ok did not list `follow`) or `down` (no link, or no hello_ok yet).
    * Without it, refused as `down`.
    */
-  followSupport?: () => "ok" | "old_hub" | "down";
+  followSupport?: (ref: string) => "ok" | "old_hub" | "down";
   /**
    * Asks the hub, over HTTP with the machine's token, that `ref`'s role reach
    * `namespaces` (#1346). `ref` is always the attested connection's, never
@@ -228,6 +228,11 @@ export type RouteCtx = {
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
   configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
+  /**
+   * When the owner's quiet hours end, while they last (#2759). Every agent on
+   * this daemon is its member's own, so `self` may say it.
+   */
+  ownerAwayUntil?: () => string | undefined;
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -309,6 +314,7 @@ export function routeLocal(
             hello.caps?.includes(ADAPTER_CAPS.pending),
           ) ?? [])
         : [];
+      const away = ctx.ownerAwayUntil?.();
       const self = {
         type: "agent",
         agent: {
@@ -321,6 +327,7 @@ export function routeLocal(
           live: agent.live,
           global: agent.global,
           ...(files.length > 0 ? { config_files: files } : {}),
+          ...(away === undefined ? {} : { owner_away_until: away }),
         },
       } as const;
       // The status is the hub's: asked for only by the self tool.
@@ -395,7 +402,7 @@ export function routeLocal(
       const cap = ctx.limited?.(ref);
       if (cap)
         return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
-      const support = ctx.followSupport?.() ?? "down";
+      const support = ctx.followSupport?.(ref) ?? "down";
       if (support !== "ok")
         return {
           type: "error",

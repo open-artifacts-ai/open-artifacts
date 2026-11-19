@@ -5,6 +5,17 @@
 html {
   background: var(--oa-bg);
 }
+/* #2753: viewport-fit=cover (index.html) draws under the status bar and, in
+   landscape, the notch. Every screen keeps clear of them: the sides on body,
+   the top on the main region (the viewer's .oa-bare adds its own, with a cap).
+   All env() values are 0 where there is no inset. */
+body {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+#oa-main:not(.oa-bare) {
+  padding-top: env(safe-area-inset-top, 0px);
+}
 body {
   margin: 0;
   background: var(--oa-bg);

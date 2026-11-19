@@ -99,6 +99,7 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
+import { createAgentAsksMock } from "./agent-asks.js";
 import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import {
@@ -140,6 +141,8 @@ export type MockOptions = {
   commentMarkdown?: boolean;
   /** #2512: For you's inbox (R.meInbox) with Design's examples, and Me.inbox counts; unset, no inbox (no bell). */
   forYou?: ForYouVariant;
+  /** #2577: asking someone else's agent: a held request, the switch and the "listens to" list (R.agentAskHeld, R.agentRequests, R.agentListens). */
+  agentAsks?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
   /**
@@ -176,6 +179,11 @@ export type MockOptions = {
         mentionStalled?: boolean;
         askAnswered?: boolean;
         opened?: boolean;
+        /** #2632: the optional sixth step, and who added the caller. */
+        teamStep?: boolean;
+        invitedBy?: string;
+        /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
+        bus?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -443,6 +451,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     mentionReplied: !opts.welcome,
     mentionStalled: false,
     askAnswered: !opts.welcome,
+    busConnected: true,
   };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
@@ -463,6 +472,9 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       mentionReplied: w.mentionReplied ?? false,
       mentionStalled: w.mentionStalled ?? false,
       askAnswered: w.askAnswered ?? false,
+      teamStep: w.teamStep ?? false,
+      invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
+      busConnected: w.bus ?? true,
     });
   }
   if (opts.bus) {
@@ -763,6 +775,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
   const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
+  const landingId = artifacts.find((a) => a.title === "Landing page")?.id ?? "";
+  const agentAsksMock = opts.agentAsks
+    ? createAgentAsksMock({
+        landingId,
+        err,
+        memberName: (id) => members.find((m) => m.id === id)?.name ?? undefined,
+      })
+    : undefined;
   const forYouMock = createForYouMock({
     variant: opts.forYou,
     landingId: artifacts.find((a) => a.title === "Landing page")?.id ?? "",
@@ -773,6 +793,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   return [
     ...pre,
     ...forYouMock.handlers,
+    ...(agentAsksMock?.handlers ?? []),
     ...(h?.handlers ?? []),
     ...passkeyMock.handlers,
     ...commentMock.handlers,

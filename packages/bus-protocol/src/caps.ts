@@ -119,11 +119,47 @@ export const BUS_CAPS = {
    * hub confirmed it, and sends it again on a new link otherwise.
    */
   ackConfirm: "ack_confirm",
+  /**
+   * The instance names the version (#2552): `hello_ok.run_version`, the
+   * `run_version` push, the fieldless `install_now` push and the `update_ack`
+   * answer go only to a socket whose hello listed it, and a daemon sends
+   * `update_report` only to a hub that listed it in `hello_ok.caps`. Either
+   * side without it sees none of these frames.
+   */
+  runVersion: "run_version",
+  /**
+   * Notice fields (#2768): a deliver frame from the reserved sender may carry
+   * `meta` (kind, ids, user id, `until`) as data beside its text. The hub sends
+   * it only to a socket whose hello listed this cap and lists it in
+   * `hello_ok.caps`: Deliver is a strict object, so an older daemon would refuse
+   * the whole frame. A daemon without it gets the text alone.
+   */
+  noticeMeta: "notice_meta",
+  /**
+   * Owner away (#2759): `hello_ok.owner_away_until` and the `owner_away` push
+   * tell a person's own agents when their quiet hours end. The hub sends the
+   * field and the frame only to a socket whose hello listed it, and lists it
+   * in `hello_ok.caps`; a strict older decoder would refuse either.
+   */
+  ownerAway: "owner_away",
+  /**
+   * Guests (#2793 S3b): the hub may send `proof_seen` (a call carried a proof
+   * it does not know) and a guest's deliveries (a notice's `meta.guest`), and
+   * the client may send `guest_up` and `guest_down`. The hub sends them only
+   * to a socket whose hello listed it and lists it in `hello_ok.caps`; a
+   * client sends them only when it did (an older hub's strict decoder would
+   * refuse them).
+   */
+  guest: "guest",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
-/** Most tokens one hello may list. */
-export const MAX_CAPS = 16;
+/**
+ * Most tokens one hello may list. BUS_CAPS outgrew 16 (#2759), so this is 32.
+ * A daemon's own hello list stays at 16 or fewer, since an older hub refuses a
+ * longer one.
+ */
+export const MAX_CAPS = 32;
 
 /** One capability token: lowercase, starts with a letter, at most 32 chars. */
 export const CapTokenSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/);

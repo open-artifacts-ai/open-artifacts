@@ -544,6 +544,8 @@ export const artifactAsks = sqliteTable(
     askedAt: text("asked_at"),
     // 1 when the ask needs a passkey or names a risky action (#2263).
     confirm: integer("confirm"),
+    // 1 while the ask is held for the addressed agent's person to allow (#2577): no question, no inbox row.
+    held: integer("held").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),
@@ -551,6 +553,188 @@ export const artifactAsks = sqliteTable(
     index("artifact_asks_open_idx")
       .on(t.addressee, t.artifactId)
       .where(sql`${t.open} = 1`),
+  ],
+);
+
+// #2577: someone else's agent was asked. The comment posts; its delivery to the
+// receiver's agents is held until the receiver allows it. One row per
+// (receiver, sender, artifact); the DO holds the facts (the held targets and
+// the words). D1 keeps ids, counts and times only, never the words.
+export const heldRequests = sqliteTable(
+  "held_requests",
+  {
+    id: text("id").primaryKey(),
+    receiverId: text("receiver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    senderId: text("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    createdAt: integer("created_at").notNull(),
+    lastAt: integer("last_at").notNull(),
+    // "Not now": the receiver hears of this sender's requests again after this (ms).
+    quietUntil: integer("quiet_until"),
+  },
+  (t) => [
+    uniqueIndex("held_requests_pair_idx").on(
+      t.receiverId,
+      t.senderId,
+      t.artifactId,
+    ),
+    index("held_requests_receiver_idx").on(t.receiverId, t.lastAt),
+  ],
+);
+
+// One row per held comment and agent of the receiver. `way` is how it got in.
+export const heldRequestItems = sqliteTable(
+  "held_request_items",
+  {
+    id: text("id").primaryKey(),
+    requestId: text("request_id")
+      .notNull()
+      .references(() => heldRequests.id, { onDelete: "cascade" }),
+    threadId: text("thread_id").notNull(),
+    commentId: text("comment_id").notNull(),
+    agentKey: text("agent_key").notNull(),
+    way: text("way").notNull(),
+    // held | allowed | lapsed | withdrawn
+    state: text("state").notNull().default("held"),
+    createdAt: integer("created_at").notNull(),
+    expiresAt: integer("expires_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("held_items_comment_idx").on(t.commentId, t.agentKey),
+    index("held_items_request_idx").on(t.requestId, t.state),
+    index("held_items_expiry_idx").on(t.state, t.expiresAt),
+    check("held_items_way", inList("way", ["mention", "reply", "ask", "page"])),
+    check(
+      "held_items_state",
+      inList("state", ["held", "allowed", "lapsed", "withdrawn"]),
+    ),
+  ],
+);
+
+// #2577: a request that went straight to the receiver's agent because the
+// sender is on their list. Ids and a time only, never words; it feeds "Who
+// asked what" and nothing else (not the held list, the inbox or an allow).
+// Swept after 30 days by the lapse cron.
+export const listedDeliveries = sqliteTable(
+  "listed_deliveries",
+  {
+    id: text("id").primaryKey(),
+    receiverId: text("receiver_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    senderId: text("sender_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    commentId: text("comment_id").notNull(),
+    agentKey: text("agent_key").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("listed_deliveries_comment_idx").on(t.commentId, t.agentKey),
+    index("listed_deliveries_receiver_idx").on(t.receiverId, t.createdAt),
+  ],
+);
+
+// #2577: whose requests a person's agents take without asking (the "listens
+// to" list). Never trusted from the row alone: every use re-checks that the
+// member is still on the team, can still edit the page, and that the page is
+// not open to guests or to anyone with the link (services/agent-requests.ts).
+export const agentListens = sqliteTable(
+  "agent_listens",
+  {
+    id: text("id").primaryKey(),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    memberId: text("member_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    artifactId: text("artifact_id").references(() => artifacts.id, {
+      onDelete: "cascade",
+    }),
+    // scope "space": the shared space whose pages it covers (while a page is in it).
+    spaceId: text("space_id").references(() => spaces.id, {
+      onDelete: "cascade",
+    }),
+    until: integer("until").notNull(),
+    createdVia: text("created_via").notNull(),
+    createdAt: integer("created_at").notNull(),
+    removedAt: integer("removed_at"),
+  },
+  (t) => [
+    index("agent_listens_owner_idx").on(t.ownerId, t.memberId),
+    check("agent_listens_scope", inList("scope", ["page", "space", "all"])),
+  ],
+);
+
+// #2512 S2: the For you inbox's stored items (mentions and updates). Asks are
+// not here: they come from artifact_asks. `key` makes a write idempotent: one
+// row per (user, key), e.g. "reply:<comment id>", "share:<created at>".
+export const inboxItems = sqliteTable(
+  "inbox_items",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    level: text("level").notNull(),
+    key: text("key").notNull(),
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id"),
+    commentId: text("comment_id"),
+    // The actor's StoredActor (or a guest/user stub), as JSON.
+    actor: text("actor").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // A mention's agent ("{author} mentioned {agent} on {page}"); null otherwise.
+    agentName: text("agent_name"),
+    createdAt: integer("created_at").notNull(),
+    readAt: integer("read_at"),
+  },
+  (t) => [
+    uniqueIndex("inbox_items_key_idx").on(t.userId, t.key),
+    index("inbox_items_read_idx").on(t.userId, t.readAt),
+    index("inbox_items_created_idx").on(t.userId, t.createdAt),
+    check(
+      "inbox_items_kind",
+      inList("kind", ["mention", "reply", "comment", "share", "decision"]),
+    ),
+    check("inbox_items_level", inList("level", ["needs_you", "update"])),
+  ],
+);
+
+// #2762 "Later": a needs-you item the person put off once. One row per (user,
+// item id: "ask:<comment id>" or "request:<id>"); it exists once used, so a
+// second put-off is refused. Until `until` the item sits in Later; after it,
+// back on top of Needs you. The daily sweep drops rows for items that are gone.
+export const inboxLater = sqliteTable(
+  "inbox_later",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    until: integer("until").notNull(),
+    used: integer("used").notNull().default(1),
+    createdAt: integer("created_at").notNull(),
+    // #2512 S5: when its return was queued for push (null: not yet).
+    pushedAt: integer("pushed_at"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.itemId] }),
+    index("inbox_later_due_idx").on(t.until),
   ],
 );
 
@@ -609,6 +793,102 @@ export const pickAssertions = sqliteTable(
   ],
 );
 
+// #2512 S4: a member's notification choices. No row: the defaults (browser
+// off, quiet hours off, time zone UTC, lock screen hides details). quiet_*
+// are both set or both null; time_zone is an IANA name (checked on write).
+export const notificationPrefs = sqliteTable("notification_prefs", {
+  userId: text("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  updatesBrowser: integer("updates_browser").notNull().default(0),
+  browserAllAsks: integer("browser_all_asks").notNull().default(0),
+  quietStart: text("quiet_start"),
+  quietEnd: text("quiet_end"),
+  timeZone: text("time_zone").notNull().default("UTC"),
+  lockDetail: integer("lock_detail").notNull().default(0),
+  // #2577 S2: 1 = the member's agents hear nobody outside (no holds, mentions refused).
+  agentRequestsOff: integer("agent_requests_off").notNull().default(0),
+  // #2577: 1 = a request held for the member also sends a browser push (default: inbox only).
+  phonePush: integer("phone_push").notNull().default(0),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+// #2512 S4: what a member muted from browser notifications. A mute stops push
+// only; the items stay in the list. kind "agent": target_id is the agent's bus
+// identity id and name its name when muted; kind "page": target_id is the
+// artifact id (its name is read live).
+export const inboxMutes = sqliteTable(
+  "inbox_mutes",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(),
+    targetId: text("target_id").notNull(),
+    name: text("name"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.userId, t.kind, t.targetId] }),
+    check("inbox_mutes_kind", inList("kind", ["agent", "page"])),
+  ],
+);
+
+// #2512 S5: one row per browser a member turned notifications on in. An
+// endpoint belongs to one member at a time (registering it again for another
+// member removes the first's row). The rows go with the member's sessions
+// (the users_end_push trigger in the migration).
+export const pushSubscriptions = sqliteTable(
+  "push_subscriptions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull().unique(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    label: text("label"),
+    // This browser's own switches (design v10): Needs-you and Updates on it.
+    needsYou: integer("needs_you").notNull().default(1),
+    updates: integer("updates").notNull().default(0),
+    createdAt: integer("created_at").notNull(),
+    lastSentAt: integer("last_sent_at"),
+  },
+  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+);
+
+// #2512 S5: Needs-you items waiting to be pushed. One row per (member, key);
+// send_after holds them for the 10-minute bundle and for quiet hours. The
+// cron tick drains it; a row is deleted as it is claimed.
+export const pushPending = sqliteTable(
+  "push_pending",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    kind: text("kind").notNull(),
+    artifactId: text("artifact_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    // Plain text, control characters stripped, only shown with lockScreenDetail.
+    askerName: text("asker_name").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Set when the asker is the member's own agent: who waits on whom.
+    askerRef: text("asker_ref"),
+    agentKey: text("agent_key"),
+    sendAfter: integer("send_after").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("push_pending_key_idx").on(t.userId, t.key),
+    index("push_pending_due_idx").on(t.sendAfter),
+    check("push_pending_kind", inList("kind", ["ask", "later", "update"])),
+  ],
+);
+
 // #2263 a member's "ask for a passkey to approve" switches. No row: the
 // defaults (every action on, every pick off). ask_command is always 1.
 export const passkeySettings = sqliteTable("passkey_settings", {
@@ -658,6 +938,27 @@ export const busMachines = sqliteTable(
   },
   (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
 );
+
+// #2552 the latest update report of each machine (BUS_CAPS.runVersion): one
+// row, replaced by the next report. The bus hub writes it; Settings > Machines
+// reads it later. switching_at / last_hello_at / stopped_at carry "the bus
+// stopped": a machine whose latest report is `switching` and that has not said
+// hello for 5 minutes gets stopped_at (no notice yet).
+export const busMachineUpdates = sqliteTable("bus_machine_updates", {
+  machineId: text("machine_id")
+    .primaryKey()
+    .references(() => busMachines.id, { onDelete: "cascade" }),
+  event: text("event").notNull(),
+  fromVersion: text("from_version").notNull(),
+  toVersion: text("to_version").notNull(),
+  reason: text("reason").notNull(),
+  detail: text("detail"),
+  rescueVersion: integer("rescue_version").notNull().default(0),
+  reportedAt: integer("reported_at").notNull(),
+  switchingAt: integer("switching_at"),
+  lastHelloAt: integer("last_hello_at"),
+  stoppedAt: integer("stopped_at"),
+});
 
 // #1291 pending device-flow codes, 10 minutes each. device_code_hash is the
 // sha256 of the CLI's polling secret; user_code is the short code the person
@@ -738,6 +1039,46 @@ export const reservedArtifacts = sqliteTable("reserved_artifacts", {
   userId: text("user_id")
     .notNull()
     .references(() => users.id),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * Outside share emails by the sending message id (#2650), so a bounce or
+ * complaint event can be traced to the member who sent it. Never the address.
+ * Old rows are swept after 30 days.
+ */
+export const shareEmailMessages = sqliteTable("share_email_messages", {
+  messageId: text("message_id").primaryKey(),
+  userId: text("user_id").notNull(),
+  createdAt: integer("created_at").notNull(),
+  /** When a terminal bounce on this message was reported (#2650): three in 7 days pause the sender. */
+  bouncedAt: integer("bounced_at"),
+});
+
+/**
+ * The platform's event ids this install has already processed (#2650), so an
+ * event served again (an ack that failed) is a no-op. Swept after 30 days; the
+ * platform keeps unacknowledged events 14.
+ */
+export const shareEmailEventsSeen = sqliteTable("share_email_events_seen", {
+  eventId: text("event_id").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/**
+ * "Don't email me again" (#2590): an address that opted out of outside share
+ * emails, by the SHA-256 of its normalized form (never the address itself).
+ */
+export const emailOptouts = sqliteTable("email_optouts", {
+  addressHash: text("address_hash").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+});
+
+/** A member whose outside share emails are paused until `untilAt` (ms): a bounce or complaint on one of them (#2650). */
+export const shareEmailPauses = sqliteTable("share_email_pauses", {
+  userId: text("user_id").primaryKey(),
+  untilAt: integer("until_at").notNull(),
+  reason: text("reason").notNull(),
   createdAt: integer("created_at").notNull(),
 });
 
@@ -896,3 +1237,37 @@ export const dataWritesTotal = sqliteTable("data_writes_total", {
   day: integer("day").notNull(),
   n: integer("n").notNull(),
 });
+
+/**
+ * Pictures on comments (#2508). A row is a reservation (received_at null), then
+ * an uploaded picture, then attached to a comment (comment_id set). The bytes
+ * are in R2 under r2_key, private: only the artifact-authorized route serves
+ * them. thread_id lets a deleted thread take its pictures with it.
+ */
+export const commentPictures = sqliteTable(
+  "comment_pictures",
+  {
+    id: text("id").primaryKey(),
+    artifactId: text("artifact_id").notNull(),
+    userId: text("user_id").notNull(),
+    /** The type the reservation asked for, then the checked one. */
+    type: text("type").notNull(),
+    r2Key: text("r2_key").notNull(),
+    /** Declared at reserve; the stored size after the PUT. */
+    bytes: integer("bytes").notNull(),
+    w: integer("w").notNull().default(0),
+    h: integer("h").notNull().default(0),
+    expectedSha256: text("expected_sha256"),
+    alt: text("alt"),
+    commentId: text("comment_id"),
+    threadId: text("thread_id"),
+    createdAt: integer("created_at").notNull(),
+    /** Null until the PUT stored the bytes; -1 while one is in flight. */
+    receivedAt: integer("received_at"),
+  },
+  (t) => [
+    index("comment_pictures_artifact_idx").on(t.artifactId, t.commentId),
+    index("comment_pictures_user_idx").on(t.userId, t.createdAt),
+    index("comment_pictures_thread_idx").on(t.threadId),
+  ],
+);

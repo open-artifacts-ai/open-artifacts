@@ -26,7 +26,12 @@ import {
   SquareCode,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { trackViewportVar, useKeyboardOpen } from "../comments/viewport";
+import {
+  phoneToolbarHidden,
+  TOOLBAR_EDGE,
+  trackViewportVar,
+  useKeyboardOpen,
+} from "../comments/viewport";
 import { LINK_REFUSED, toAllowedHref } from "./extensions";
 
 /** A shortcut as Tiptap binds it: "Mod" is Cmd on a Mac and Ctrl elsewhere. */
@@ -349,6 +354,8 @@ export function Toolbar({ editor }: { editor: Editor }) {
         className="oa-doc-toolbar"
         data-more={more ? "" : undefined}
         data-keyboard={keyboard ? "" : undefined}
+        data-edge={TOOLBAR_EDGE}
+        data-hidden={phoneToolbarHidden(keyboard) ? "" : undefined}
         role="toolbar"
         aria-label="Formatting"
         aria-orientation="horizontal"

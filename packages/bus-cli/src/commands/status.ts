@@ -1,3 +1,4 @@
+import { canonicalAddress, listInstances, readFolders } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { semverGte } from "@oa/bus-protocol";
 import {
@@ -7,11 +8,13 @@ import {
   say,
   sayErr,
   socketFolderLines,
+  tilde,
 } from "../context.ts";
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
 import { readRecord as readClaudePluginsRecord } from "../steps/claude-plugins.ts";
-import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
+import { claudeProofChecks } from "../steps/claude-proof-check.ts";
+import { sessionChecks } from "../steps/claude-sessions.ts";
 import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
 import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
@@ -48,6 +51,8 @@ const core = (v: string): string | undefined => {
 };
 
 const UPDATE_PROBE_MS = 1500;
+// Control, format and line-separator characters: never shown.
+const HIDDEN = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 
 /** What `/healthz` says: the hub's version and, when it has one, a problem. */
 export type Healthz = { version?: string; problem?: string };
@@ -121,30 +126,80 @@ export const updateTarget = async (
 };
 
 /**
- * #1822: whether this machine's Claude entry for the instance has the proof
- * helper, so it is set up to show as the session on pages (the daemon
- * supporting link is not proof that a session is bound). Nothing when there is no
- * such entry.
+ * #1822, #2688: whether the instance's Claude entries have the proof helper,
+ * so they show as this session on pages. The same check as doctor's; nothing
+ * when there is no entry (doctor warns about that).
  */
-const proofLine = (
+const proofLines = (ctx: Ctx, hub: string, daemonKnows: boolean): string[] =>
+  claudeProofChecks(ctx, hub)
+    .filter((c) => c.level !== "info")
+    .flatMap((c) =>
+      c.level === "pass" && !daemonKnows
+        ? [
+            "Claude Code: update the daemon so these entries can show as this session on pages.",
+          ]
+        : c.lines,
+    );
+
+const FOLDERS_SHOWN = 50;
+
+/**
+ * #2793: with two or more instances, which hub each is and which folders use
+ * which. With one, nothing: the output stays as it was.
+ */
+export function instanceBlocks(
   ctx: Ctx,
-  hub: string,
-  daemonKnows: boolean,
-): string | undefined => {
-  let origin: string;
-  try {
-    origin = new URL(hub).origin;
-  } catch {
-    return undefined;
-  }
-  const state = proofState(claudeConfigFile(ctx.userHome, ctx.env), origin);
-  if (state === "none") return undefined;
-  if (state === "missing")
-    return `Claude Code: run ${ctx.busCmd} install to set this entry up to show as this session on pages.`;
-  return daemonKnows
-    ? "Claude Code: this entry is set up to show as this session on pages."
-    : "Claude Code: update the daemon so this entry can show as this session on pages.";
-};
+  rows: readonly {
+    name: string;
+    link: "connected" | "not_connected";
+    revoked: boolean;
+    agents: number;
+    guests?: readonly { name: string }[];
+  }[],
+): string[][] {
+  const list = listInstances(ctx.home);
+  if (list.length < 2) return [];
+  const clean = (t: string) => stripTerminalControls(t).replace(HIDDEN, "");
+  const inst = [
+    "Instances",
+    ...list.flatMap((i) => {
+      const r = rows.find((x) => x.name === i.name);
+      const state = r?.revoked
+        ? "revoked"
+        : r?.link === "connected"
+          ? "connected"
+          : "not connected";
+      const addr = clean(canonicalAddress(i.hub) ?? "(address unreadable)");
+      const n = r?.agents ?? 0;
+      return [
+        `  ${clean(i.name)}${i.main ? " (main)" : ""}  ${addr}  ${state}  ${n} ${n === 1 ? "agent" : "agents"}`,
+        // #2793 S3b: sessions homed elsewhere that used this instance's tools.
+        ...(r?.guests ?? []).map((g) => `    guest session: ${clean(g.name)}`),
+      ];
+    }),
+  ];
+  const map = Object.entries(readFolders(ctx.home).map).sort(([a], [b]) =>
+    a < b ? -1 : 1,
+  );
+  const folders =
+    map.length === 0
+      ? []
+      : [
+          [
+            "Folders",
+            ...map
+              .slice(0, FOLDERS_SHOWN)
+              .map(
+                ([dir, name]) =>
+                  `  ${clean(tilde(ctx, dir))} -> ${clean(name)}`,
+              ),
+            ...(map.length > FOLDERS_SHOWN
+              ? [`  and ${map.length - FOLDERS_SHOWN} more`]
+              : []),
+          ],
+        ];
+  return [inst, ...folders];
+}
 
 /**
  * Transcript state 7. Read-only; never prints the token. Exit 0 only when
@@ -189,14 +244,14 @@ export async function status(ctx: Ctx): Promise<number> {
     st,
     async () => (await health).version,
   );
-  if (update) say(ctx, c.updateAvailable(update, st.version));
+  if (update) say(ctx, c.updateAvailable(update, st.version, m.hub));
   const habits = habitsLine(ctx);
   if (habits) say(ctx, habits);
   // From the install record only: status never starts Claude Code.
   if (readClaudePluginsRecord(ctx.home)?.plugins?.length)
     say(ctx, c.pluginsStatus());
-  const proof = proofLine(ctx, m.hub, st.link === true);
-  if (proof) say(ctx, proof);
+  const proof = [...new Set(proofLines(ctx, m.hub, st.link === true))];
+  if (proof.length) say(ctx, proof);
   // Static text, only where the plugin is installed: nothing in OpenClaw's config is read.
   const ocState = openclawPluginState(
     openclawPluginDir(ctx.userHome, ctx.env),
@@ -206,12 +261,20 @@ export async function status(ctx: Ctx): Promise<number> {
     say(ctx, c.openclawDmNote());
   // Before the hub check: a refused file explains a missing config either way.
   if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
+  for (const block of instanceBlocks(ctx, st.instances ?? []))
+    say(ctx, "", block);
   if (st.hub !== "connected") {
     // Without the hub, no row's state can be known.
     sayErr(ctx, c.hubNotReachable(host, st.hub_error, "status"));
     return 1;
   }
   if (st.namespaces.length > 0) say(ctx, "", rosters(ctx, st.namespaces));
+  // #2688: live Claude sessions with no link, each with its likely cause.
+  for (const chk of sessionChecks(ctx, st, m.hub)) {
+    const ls = c.check(chk.level, chk.head, chk.notes);
+    if (chk.level === "fail") sayErr(ctx, ls);
+    else if (chk.level !== "warn") say(ctx, ls);
+  }
   const late = [...(st.late ?? [])].sort((a, b) => b.at - a.at);
   if (late.length > 0)
     say(ctx, "", [

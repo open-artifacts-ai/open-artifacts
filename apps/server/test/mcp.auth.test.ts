@@ -585,7 +585,7 @@ describe("MCP auth: OAuth", () => {
     expect(page.r.status).toBe(200);
     expect(page.body).toContain("<b>Delete and share as you</b>");
     expect(page.body).toContain(
-      "<small>Delete artifacts, make them public, and share them with others.</small>",
+      "<small>Delete artifacts and share them, including with anyone with the link.</small>",
     );
     expect(page.body).not.toContain("\u2014");
   });
@@ -816,9 +816,15 @@ describe("MCP auth: fix round 1", () => {
       );
     const net = `2001:db8:${Math.floor(Math.random() * 0xffff).toString(16)}:7`;
     let limitedAt = 0;
-    for (let i = 1; i <= 40 && !limitedAt; i++)
-      if ((await reg(`${net}::${i.toString(16)}`)).status === 429)
-        limitedAt = i;
+    // A frozen clock: a window boundary mid-loop would reset the count.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    try {
+      for (let i = 1; i <= 40 && !limitedAt; i++)
+        if ((await reg(`${net}::${i.toString(16)}`)).status === 429)
+          limitedAt = i;
+    } finally {
+      vi.useRealTimers();
+    }
     // Different hosts in one /64 share the key; another IP is unaffected.
     expect(limitedAt).toBe(31);
     expect((await reg(nextIp())).status).toBe(201);

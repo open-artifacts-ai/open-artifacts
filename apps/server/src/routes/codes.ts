@@ -17,6 +17,7 @@ import {
   deliverCode,
   emailKey,
   errorClass,
+  logCodeRefused,
   logCodeSend,
   takeRequestSlot,
   verifyCode,
@@ -28,10 +29,10 @@ import { requireTurnstile } from "../auth/turnstile.js";
 import { stmt } from "../db/stmt.js";
 import { ApiError, appOrigin, errorJson } from "../http/errors.js";
 import { type AppEnv, CSRF_HEADER, execCtx } from "../http/middleware.js";
+import { seedWelcomeAfter } from "../http/seed-welcome.js";
 import { inviteAcceptAudit, signInAudit } from "../services/audit.js";
 import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
-import { seedWelcome } from "../services/onboarding.js";
 import {
   getUserWithEpoch,
   googleLinkStmts,
@@ -315,6 +316,7 @@ async function authLimit(c: Context<AppEnv>, installKey: string, ip: string) {
   const rl = c.env.RL_AUTH;
   if (!rl) {
     if (c.env.ENVIRONMENT === "dev") return true;
+    logCodeRefused("limiter_unbound");
     throw new ApiError(
       "code_unavailable",
       "Code login is unavailable on this install",
@@ -406,7 +408,7 @@ async function verifyLink(
     stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
   ]);
   // #2632: a member's own Welcome, once; never throws.
-  await seedWelcome(c.env, user);
+  await seedWelcomeAfter(c, user);
   logAuth({ provider: "google", outcome: "ok", uid: user.id });
   const cap = capOfCaller(callerOf(user));
   const res = c.json({
@@ -458,19 +460,37 @@ export function mountCodes(app: AppType): void {
     // Turnstile is the bound on distributed attackers (the per-network caps
     // can't stop many networks), so hosted installs never run codes without it.
     // Self-hosted installs without Turnstile are weaker (docs/self-hosting).
-    if (c.env.HOSTED === "1" && !cfg.turnstile)
+    if (c.env.HOSTED === "1" && !cfg.turnstile) {
+      logCodeRefused("turnstile_off_hosted");
       throw new ApiError("code_unavailable", "Login by code is unavailable");
-    await requireTurnstile(
-      cfg,
-      parsed.data.turnstileToken,
-      ip,
-      c.env.APP_HOST ?? new URL(c.req.url).hostname,
-      c.env,
-    );
-    if (!(await authLimit(c, cfg.installKey, ip))) return rateLimited(60, "ip");
+    }
+    try {
+      await requireTurnstile(
+        cfg,
+        parsed.data.turnstileToken,
+        ip,
+        c.env.APP_HOST ?? new URL(c.req.url).hostname,
+        c.env,
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.code === "turnstile_required")
+        logCodeRefused("turnstile_required");
+      else if (e instanceof ApiError && e.code === "turnstile_failed")
+        logCodeRefused("turnstile_failed");
+      throw e;
+    }
+    if (!(await authLimit(c, cfg.installKey, ip))) {
+      logCodeRefused("ip_limit");
+      return rateLimited(60, "ip");
+    }
     const ek = await emailKey(c.env, email);
     const slot = await takeRequestSlot(c.env, cfg, ek, ip);
-    if (!slot.ok) return rateLimited(slot.retryAfter, slot.scope);
+    if (!slot.ok) {
+      logCodeRefused(
+        slot.scope === "ip" ? "request_slot_ip" : "request_slot_email",
+      );
+      return rateLimited(slot.retryAfter, slot.scope);
+    }
 
     // Review item 13: a pending request for this same address keeps its id,
     // so a re-request that sends nothing (resend_wait, capped, pool_full,
@@ -624,7 +644,7 @@ export function mountCodes(app: AppType): void {
       stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     // #2632: a member's own Welcome, once (the email code path too); never throws.
-    await seedWelcome(c.env, user);
+    await seedWelcomeAfter(c, user);
     logAuth({
       provider: "code",
       outcome: "ok",

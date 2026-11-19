@@ -408,11 +408,18 @@ export function copy(
     ],
     // Status and doctor, when the hub runs a newer release (C26h). Each
     // version is cut to 19, so the line stays within 80 columns.
-    updateAvailable: (hub: string, mine: string) => [
+    // The update goes through the instance's checked install step, never an
+    // unchecked npx download.
+    updateAvailable: (hub: string, mine: string, origin: string) => [
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Run ${BUS_CMD}@latest install.`),
+      next(`Ask your agent to follow "Install the bus" in`),
+      next(
+        origin
+          ? `${origin.replace(/\/+$/, "")}/llms.txt.`
+          : "your instance's llms.txt.",
+      ),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
@@ -563,6 +570,9 @@ export function copy(
       "Commands",
       "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
       "  login        Approve this machine again",
+      "  add          <address> [--name <name>]: connect a second instance from a terminal",
+      "  use          [name] or --none: tie this folder to one of your instances",
+      "  skill        Save this instance's skill for your harnesses (--check only reports)",
       "  uninstall    Remove what install added",
       "  status       Who is on the bus, from this folder",
       "  logs         The daemon log",
@@ -573,6 +583,7 @@ export function copy(
       "  link         <dir> <dir> or list; unlink <dir> <dir>",
       "  leads        check [name]",
       "  auto-update  off, on or status: whether the bus keeps itself up to date",
+      "  upgrade      [x.y.z] Install a newer bus, after checking its release proof",
       "  update       Install the update that is waiting",
       "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
       "  version      Print the version",
@@ -584,12 +595,16 @@ export function copy(
       "               --habits | --no-habits | --show-habits",
       "                                  add, decline or show the always-on habit lines",
       "               --no-service       skip the launchd or systemd step",
-      "               --alongside        with --home <dir>: set up this bus next to your main one,",
-      "                                  and leave every harness setting alone",
+      "               --alongside        with --home <dir>: set up a separate bus next to your main one,",
+      "                                  and leave every harness setting alone. To use a second",
+      "                                  instance with your main bus, run add <address>, then use in a folder",
       "               --no-open          do not open a browser for approval",
       "               --json             the result as one JSON line on stdout",
       "               --yes, -y          answer yes where install asks",
       "  login        --instance <url>, --no-open",
+      "  add          --name <name>      the local name for the instance (default: from its address)",
+      "               --no-open          do not open a browser for approval",
+      "  use          --none             turn down the instance this repo suggests",
       "  daemon       --instance <url>",
       "  uninstall    --purge            also delete the bus home and what install made",
       "  namespace    --yes, -y          approve without asking (namespace approve)",
@@ -770,6 +785,21 @@ export function copy(
           ? `${HARNESS_LABEL[h]} ${clip(version, 40)} wired`
           : `${HARNESS_LABEL[h]} wired`,
       ),
+    /** #2688: one doctor or status line with its glyph, then its notes indented 3. */
+    check: (
+      level: "pass" | "warn" | "fail" | "info",
+      head: string,
+      notes: string[] = [],
+    ) => [
+      level === "pass"
+        ? done(head)
+        : level === "warn"
+          ? warn(head)
+          : level === "fail"
+            ? fail(head)
+            : head,
+      ...notes.map(next),
+    ],
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
       next(`Run ${bus} to wire it.`),
@@ -933,7 +963,7 @@ export function copy(
     shimForeign: (where: string) => [
       warn(`Left ${clip(where, 30)} alone: it isn't from Open Artifacts.`),
       next(
-        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${BUS_CMD}\`.`,
+        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${bus}\`.`,
       ),
     ],
     shimOtherHome: (where: string, home: string) => [
@@ -941,7 +971,7 @@ export function copy(
         `Left ${clip(where, 30)} alone: it belongs to the install in ${clip(home, 30)}.`,
       ),
       next(
-        `Typing \`oa-bus\` runs that install, not this one. Use \`${BUS_CMD}\` for this one.`,
+        `Typing \`oa-bus\` runs that install, not this one. Use \`${bus}\` for this one.`,
       ),
     ],
     shimRemoved: (where: string) =>
@@ -955,12 +985,12 @@ export function copy(
     shimDoctorOther: (where: string) => [
       warn(`oa-bus on your PATH is not this install's (${clip(where, 30)})`),
       next(
-        `Remove it, or put this install's first. Re-run ${BUS_CMD} install to refresh ours.`,
+        `Remove it, or put this install's first. Re-run ${bus} install to refresh ours.`,
       ),
     ],
     shimDoctorMissing: () => [
       warn("oa-bus is not on your PATH"),
-      next(`Run ${BUS_CMD} install to add it.`),
+      next(`Run ${bus} install to add it.`),
     ],
     codexSkill: (where: string) =>
       done(`Codex skill installed in ${clip(where, 20)}`),
@@ -1128,6 +1158,30 @@ export function copy(
       `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",
     updateDone: (v: string) => `Installed ${v}.`,
+    // `upgrade` (#2543): a hand upgrade through the installed bus. New strings, for Product.
+    upgradeUsage: () => `usage: ${bus} upgrade [x.y.z] [--allow-failed]`,
+    upgradeFailedVersion: (v: string) =>
+      `${v} failed on this machine before. To try it anyway, run ${bus} upgrade ${v} --allow-failed.`,
+    upgradeStaleStage: (v: string) =>
+      `The unpacked ${v} went missing before it could install. Nothing was installed; run ${bus} upgrade again.`,
+    upgradeNotInstalled: () =>
+      'There is no bus on this machine to upgrade. Run the "Install the bus" step of your instance\'s llms.txt.',
+    upgradeNoServerVersion: () =>
+      "Couldn't read the instance's version, so the bus can't tell which release to install. Try again when the instance is reachable.",
+    upgradePreRelease: (server: string) =>
+      `This instance runs a pre-release (${server}). Name the release: ${bus} upgrade x.y.z`,
+    upgradeAhead: (v: string, server: string) =>
+      `${v} is newer than the instance (${server}), so it won't be installed.`,
+    upgradeCurrent: (v: string) => `The bus is already at ${v}.`,
+    upgradeNotForward: (v: string, running: string) =>
+      `${v} is older than this bus (${running}), so it won't be installed.`,
+    upgradeChecking: (v: string) =>
+      `Checking the bus ${v} against its release proof...`,
+    upgradeRefused: (v: string, code: string) =>
+      `The bus ${v} did not pass its release proof (${code}), so nothing was installed.`,
+    upgradeInstalling: (v: string) => `The proof passed. Installing ${v}...`,
+    upgradeInstallFailed: (v: string, code: number) =>
+      `The installer for ${v} stopped with exit code ${code}.`,
     // New in PR 4, not in the issue's copy: for Product.
     updateBusy: () =>
       "A login or an approval is in progress. Try again when it is done.",

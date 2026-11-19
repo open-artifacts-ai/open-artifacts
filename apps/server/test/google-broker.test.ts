@@ -195,8 +195,20 @@ describe("Google through the broker", () => {
         brokerEnv,
       );
       const u = new URL(loc(back));
-      const r = await get(e, `${AUTH.callbackGoogle}${u.search}`, b.cookie);
+      // The Welcome is seeded after the redirect (waitUntil): wait for that work.
+      const waits: Promise<unknown>[] = [];
+      const r = await app.fetch(
+        new Request(`${APP}${AUTH.callbackGoogle}${u.search}`, {
+          headers: { cookie: b.cookie },
+        }),
+        e,
+        {
+          waitUntil: (p: Promise<unknown>) => waits.push(p),
+          passThroughOnException() {},
+        } as never,
+      );
       expect(loc(r)).toBe("/a/x");
+      await Promise.all(waits);
       expect((await rows()).results).toHaveLength(1);
     }
   });

@@ -1,6 +1,5 @@
 import {
   ANON_ID_HEADER,
-  AnswerChallengeSchema,
   type ArtifactAgent,
   ArtifactAgentSchema,
   COMMENT_BODY_MAX,
@@ -24,13 +23,13 @@ import {
 } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 import { z } from "zod";
-import { getAssertion } from "../auth/webauthn";
 import {
   isAnonToken,
   loadAnonToken,
   saveAnonToken,
   withMintLock,
 } from "../viewer/anonId";
+import { ownWordsRefusal } from "../viewer/comments/ownWords";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -201,7 +200,7 @@ type Patch<V> = {
  * result at once, an error puts the snapshot back, and the settle refetch makes
  * the server's record the truth. Used only for actions whose outcome is
  * predictable. Never for answering an ask (it must show the server's record:
- * who answered, a 409 for a closed ask), a confirm or passkey step (#2263), or
+ * who answered, a 409 for a closed ask), a confirm step (#2263), or
  * an edit the server may refuse for rights the client cannot see.
  */
 const useRefetching = <V, T>(
@@ -439,7 +438,7 @@ export const useCreateThread = (id: string, guest = false) =>
     },
   );
 export const useReply = (id: string, guest = false) =>
-  usePost<ReplyBody & { thread: string }>(
+  usePost<ReplyBody & { thread: string; people?: string[] }>(
     id,
     guest,
     (v) => v.mentions,
@@ -453,7 +452,9 @@ export const useReply = (id: string, guest = false) =>
           body: v.body,
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+          ...(v.people?.length ? { people: v.people } : {}),
           ...(v.toAsker ? { toAsker: true } : {}),
+          ...(v.pictures?.length ? { pictures: v.pictures } : {}),
         },
         CommentSchema,
         undefined,
@@ -519,20 +520,26 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
  * record on the refetch. The card only marks the picked option as sending
  * until then (never "You picked"). A refusal, a 409 included, rolls it back to
  * unanswered, and the settle refetch then shows whoever answered first.
- * Never for an ask with `confirm` (the passkey asks of #2263): a yes that needs
- * the server's verification must not appear before it. The optimistic answer is
- * never a person's yes (`yes: false`), whatever the server later says.
+ * The optimistic answer is never a person's yes (`yes: false`), whatever the server later says.
  */
 export const useAnswerAsk = (id: string) =>
   useRefetching(
     id,
     false,
     false,
-    (v: { thread: string; comment: string; optionId: string }, x) =>
+    (
+      v: {
+        thread: string;
+        comment: string;
+        optionId?: string;
+        ownWords?: { text: string };
+      },
+      x,
+    ) =>
       api.send(
         "POST",
         R.commentAnswer(id, v.thread, v.comment),
-        { optionId: v.optionId },
+        v.ownWords ? { ownWords: v.ownWords } : { optionId: v.optionId },
         CommentSchema,
         undefined,
         x,
@@ -546,8 +553,7 @@ export const useAnswerAsk = (id: string) =>
             !c.ask ||
             c.ask.closed ||
             // #2381: a weigh-in is not the decision; it shows when the server confirms.
-            c.ask.role === "weigh" ||
-            (c.ask as { confirm?: unknown }).confirm
+            c.ask.role === "weigh"
               ? c
               : {
                   ...c,
@@ -558,6 +564,7 @@ export const useAnswerAsk = (id: string) =>
                       by: me,
                       at: new Date().toISOString(),
                       typed: true,
+                      ...(v.ownWords ? { ownWords: v.ownWords } : {}),
                       yes: false,
                       // Not answered until the server confirms: the card keeps its
                       // "needs you" border and the header keeps counting it.
@@ -594,39 +601,6 @@ export const useTakeBackAsk = (id: string) =>
       undefined,
       x,
     ),
-  );
-
-/**
- * #2263: pick an option on a `confirm: "passkey"` ask. Challenge, then the passkey
- * prompt, then the answer; nothing is answered until the server verifies it.
- */
-export const usePasskeyAnswer = (id: string) =>
-  useRefetching(
-    id,
-    false,
-    false,
-    async (v: { thread: string; comment: string; optionId: string }, x) => {
-      const ch = await api.send(
-        "POST",
-        R.commentAnswerChallenge(id, v.thread, v.comment),
-        { optionId: v.optionId },
-        AnswerChallengeSchema,
-        undefined,
-        x,
-      );
-      const assertion = await getAssertion(ch.options);
-      return api.send(
-        "POST",
-        R.commentAnswer(id, v.thread, v.comment),
-        {
-          optionId: v.optionId,
-          assertion,
-        },
-        CommentSchema,
-        undefined,
-        x,
-      );
-    },
   );
 
 export const useSetThreadStatus = (id: string, guest = false) =>
@@ -778,7 +752,7 @@ export function commentError(
   ctx?: ErrorContext,
 ): string {
   if (e instanceof TooManyMentions)
-    return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
+    return `Mention at most ${MENTIONS_MAX} agents or people in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.
@@ -831,6 +805,12 @@ export function answerError(e: unknown, ctx?: ErrorContext): string {
     return planOutsider(ctx)
       ? cappedCopy("answer")
       : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
+  // the typed words were refused.
+  const words = ownWordsRefusal(e);
+  if (words) return words;
+  // #2864: no ask needs a passkey. An old server's passkey_required is a plain error.
+  if (e instanceof ApiClientError && e.code === "passkey_required")
+    return "Couldn't send your answer. Reload the page and try again.";
   const status = e instanceof ApiClientError ? e.status : 0;
   if (e instanceof ApiClientError && e.code === "not_decider")
     return "You can't decide this any more: you can't edit this page. The person who asked can take it back.";

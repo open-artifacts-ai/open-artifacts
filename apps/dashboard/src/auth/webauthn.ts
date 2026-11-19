@@ -104,42 +104,6 @@ export function credentialToJSON(c: PublicKeyCredential): Json {
   };
 }
 
-/** The member dismissed or timed out the browser's passkey prompt. */
-export class PasskeyCancelled extends Error {
-  constructor() {
-    super("cancelled");
-    this.name = "PasskeyCancelled";
-  }
-}
-
-const wrap = async (run: () => Promise<Credential | null>) => {
-  let c: Credential | null;
-  try {
-    c = await run();
-  } catch (e) {
-    if (
-      e instanceof DOMException &&
-      ["NotAllowedError", "AbortError"].includes(e.name)
-    )
-      throw new PasskeyCancelled();
-    throw e;
-  }
-  if (!c) throw new PasskeyCancelled();
-  return credentialToJSON(c as PublicKeyCredential);
-};
-
-/** Create a passkey from the server's creation options (JSON). */
-export const createCredential = (options: Json) =>
-  wrap(() =>
-    navigator.credentials.create({ publicKey: decodeCreationOptions(options) }),
-  );
-
-/** Get an assertion for the server's request options (JSON). */
-export const getAssertion = (options: Json) =>
-  wrap(() =>
-    navigator.credentials.get({ publicKey: decodeRequestOptions(options) }),
-  );
-
 /** The URL only if it stays on this site (relative, or this origin); else null. */
 export function sameOriginUrl(url: unknown): string | null {
   if (typeof url !== "string" || !url || url.startsWith("//")) return null;
@@ -150,14 +114,3 @@ export function sameOriginUrl(url: unknown): string | null {
     return null;
   }
 }
-
-/** Leave this page for a same-origin URL (a seam for tests). */
-export const redirectTo = (url: string) => location.assign(url);
-
-/** "Fri 3:04 PM": a time in the member's own zone, with its weekday. */
-export const coolingTime = (iso: string | number | Date) =>
-  new Date(iso).toLocaleString(undefined, {
-    weekday: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });

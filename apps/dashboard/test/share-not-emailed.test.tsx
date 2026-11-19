@@ -44,6 +44,8 @@ describe("the lines (OA Product, #2620)", () => {
       "member_limit",
       "instance_limit",
       "limit",
+      "skipped",
+      "sender_paused",
     ]);
     const base = {
       email: "a@b.co",
@@ -78,6 +80,23 @@ describe("the lines (OA Product, #2620)", () => {
       "We didn't email them this time. Copy the link and send it yourself.",
     );
     expect(LIMIT_LINE).toBe(notEmailedLine("limit", "Acme"));
+  });
+  it("#2649 skipped: the neutral line, word for word, and never why", () => {
+    expect(notEmailedLine("skipped", "Acme")).toBe(
+      "We didn't email them this time. Copy the link and send it yourself.",
+    );
+    expect(notEmailedLine("skipped", "Acme", 20)).toBe(LIMIT_LINE);
+  });
+  it("#2649 skipped parses with the shared schema", () => {
+    expect(
+      ShareResultSchema.safeParse({
+        email: "a@b.co",
+        role: "viewer",
+        createdAt: "x",
+        emailed: false,
+        notEmailed: "skipped",
+      }).success,
+    ).toBe(true);
   });
   it("instance_limit", () => {
     const line =
@@ -144,6 +163,10 @@ describe("in the Share panel, after saving", () => {
     ],
     [
       "limit",
+      /^We didn't email them this time\. Copy the link and send it yourself\.$/,
+    ],
+    [
+      "skipped",
       /^We didn't email them this time\. Copy the link and send it yourself\.$/,
     ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {
