@@ -151,6 +151,9 @@ export const CANT_LINE =
 export const WORKSPACE_ONLY_LINE =
   "Logs in with Google, if their address is a Google Workspace account. Otherwise they can't log in while email codes are off.";
 
+/** A codes-only instance: the address logs in with an email code. */
+export const EMAIL_CODE_LINE = "Logs in with an email code.";
+
 const GMAIL = new Set(["gmail.com", "googlemail.com"]);
 
 /**
@@ -178,6 +181,7 @@ export const reachLine = (email: string, ways: readonly LoginWay[]) => {
     return ways.includes("google_after_code")
       ? "Outside your domain. Logs in with their own Google account or an email code."
       : WORKSPACE_ONLY_LINE;
+  if (code) return EMAIL_CODE_LINE;
   return null;
 };
 
