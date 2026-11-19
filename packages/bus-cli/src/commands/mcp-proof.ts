@@ -111,6 +111,7 @@ export async function mcpProof(
   const token = tokenOf(opts.tokenFile);
   if (token) headers.Authorization = `Bearer ${token}`;
   let why: string | undefined;
+  let detail: string | undefined;
   let claude: number | undefined;
   try {
     claude = findClaude(deps.ppid, deps.proc);
@@ -126,15 +127,27 @@ export async function mcpProof(
       // record by start time (it holds a proof that has no record yet).
       if (await deps.link(claude, hash)) headers[LINK_PROOF_HEADER] = proof;
       else why = "process_not_matched";
-    } catch {
+    } catch (e) {
       why = "daemon_unreachable";
+      // The class only (never a message or a path): why the daemon was not reached.
+      const code = (e as { code?: unknown })?.code;
+      const msg = e instanceof Error ? e.message : "";
+      detail =
+        code === "ENOENT" || code === "ECONNREFUSED"
+          ? code
+          : /did not answer|time/i.test(msg)
+            ? "timeout"
+            : "other";
     }
   // Claude's connect comes first: the headers go out before the log is touched.
   say(ctx, JSON.stringify(headers));
   if (why !== undefined)
     try {
       const events = createEventLog(join(ctx.home, "logs", "events.log"));
-      events(UNBOUND_EVENT, { reason: why });
+      events(UNBOUND_EVENT, {
+        reason: why,
+        ...(detail !== undefined ? { code: detail } : {}),
+      });
       // Bounded: a slow disk never holds the helper up.
       await Promise.race([
         events.flush(),
