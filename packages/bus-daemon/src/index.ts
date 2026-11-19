@@ -43,7 +43,12 @@ import {
   type UpdateReason,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
-import { type AgentRecord, AgentTable, withLinkHash } from "./agents.ts";
+import {
+  type AgentRecord,
+  AgentTable,
+  LINK_HASHES_MAX,
+  withLinkHash,
+} from "./agents.ts";
 import {
   type Attest,
   attest,
@@ -773,30 +778,46 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (e) => sameProc(e.pid, e.procStart),
   );
   let linksWritten: string | undefined = JSON.stringify(saved);
-  const seedLinks = (rec: AgentRecord) => {
-    if (rec.linkHashes !== undefined || rec.pid === undefined) return;
-    // A proof for another instance than the one the session is homed on is never replayed.
+  /**
+   * Merges the saved hashes of this pid + procStart under the record's own
+   * (#2861: also when the record already has some, or learned its procStart
+   * after it was created). Returns whether it added any. #2793 S4: only an
+   * entry of the record's own instance (lane) is seeded, so one proof is never
+   * offered to two hubs.
+   */
+  const seedLinks = (rec: AgentRecord): boolean => {
+    if (rec.pid === undefined || rec.procStart === undefined) return false;
     const hit = saved.find(
       (e) =>
         e.pid === rec.pid &&
         e.procStart === rec.procStart &&
         (e.instance ?? MAIN_INSTANCE) === homedOf(rec),
     );
-    if (!hit) return;
-    rec.linkHashes = [...hit.hashes];
+    if (!hit) return false;
     saved = saved.filter((e) => e !== hit);
+    const own = rec.linkHashes ?? [];
+    const add = hit.hashes.filter((h) => !own.includes(h));
+    if (add.length === 0) return false;
+    const all = [...add, ...own];
+    rec.linkHashes =
+      all.length > LINK_HASHES_MAX
+        ? [all[0] as string, ...all.slice(-(LINK_HASHES_MAX - 1))]
+        : all;
+    return true;
   };
   const persistLinks = () => {
     const rows: ClaudeLink[] = [];
     for (const a of agents.all()) {
       if (
         a.kind !== "claude-code" ||
-        !a.live ||
         a.pid === undefined ||
         a.procStart === undefined ||
         !a.linkHashes?.length
       )
         continue;
+      // #2861: a record closed by one missed read keeps its hashes while its
+      // process still runs.
+      if (!a.live && !sameProc(a.pid, a.procStart)) continue;
       rows.push({
         pid: a.pid,
         procStart: a.procStart,
@@ -1304,7 +1325,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     {
       pid: number;
       procStart: string;
-      hash: string;
+      hashes: string[];
       at: number;
       instance: string;
     }
@@ -1437,7 +1458,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (p.pid !== pid || p.procStart !== rec.procStart) continue;
         pendingProofs.delete(key);
         if (homedOf(rec) === undefined) {
-          holdProof(p.instance, rec, p.hash);
+          for (const h of p.hashes) holdProof(p.instance, rec, h);
           continue;
         }
         if (p.instance !== homedOf(rec)) {
@@ -1445,9 +1466,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           continue;
         }
         proofIssues.delete(pid);
-        rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
+        for (const hash of p.hashes) {
+          rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+          sendLink(rec, hash);
+        }
         persistLinks();
-        sendLink(rec, p.hash);
       }
     }
   };
@@ -1466,7 +1489,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
-  const syncClaude = () => {
+  const syncClaude = (adoptPid?: number) => {
     const scan = liveClaudeScan(
       claudeSessions,
       (ref) => agents.byRef(ref)?.pid,
@@ -1493,9 +1516,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Only the default home adopts one it has not met; a second home keeps
       // to the sessions its own adapter said hello for, so it never announces
       // another bus's sessions to its hub or delivers into them.
-      if (!prev && !discoverClaude) continue;
-      // The default home also leaves a session started for another home alone,
-      // where it can read the process's OA_BUS_HOME.
+      // #2861: a pid whose helper just reached THIS home's socket skips only
+      // the discover gate; the OA_BUS_HOME check below still applies to it.
+      const adopt = !prev && s.pid === adoptPid;
+      if (!prev && !discoverClaude && !adopt) continue;
+      // A session started for another home is left alone, where the process's
+      // OA_BUS_HOME can be read (an undefined home still adopts).
       if (!prev) {
         const h = claudeHomeOf(s.pid);
         if (typeof h === "string" && h !== home()) continue;
@@ -1503,14 +1529,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Admitted before its session file existed: learn the process start
       // now (live or already closed by a tick that could not see the file),
       // so a later /clear in this process is recognised (#1295).
-      if (prev && prev.procStart === undefined && prev.pid === s.pid)
+      if (prev && prev.procStart === undefined && prev.pid === s.pid) {
         prev.procStart = s.procStart;
+        // #2861: saved hashes waiting for this pid + start time.
+        if (seedLinks(prev)) {
+          persistLinks();
+          sendLink(prev);
+        }
+      }
       if (prev?.live) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
         if (!livePid(s.ref, prev.pid)) {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
+          if (seedLinks(prev)) {
+            persistLinks();
+            sendLink(prev);
+          }
         }
         renameIfChanged(prev, s.name, s.pid, s.nameChosen === true);
         continue;
@@ -1590,6 +1626,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const since = unknownSince.get(a.ref) ?? now;
         unknownSince.set(a.ref, since);
         if (now - since <= UNKNOWN_GRACE_MS) continue;
+      }
+      // #2861: another record of the same process (a resume's hello can
+      // register the new ref before the file switches) takes the hashes the
+      // proof in use was bound under, and binds them on its own ref first: the
+      // hub drops this ref's proofs when it goes down. #2793 S4: only a sibling
+      // homed on the same instance (lane), so one proof is never offered to two hubs.
+      if (a.linkHashes?.length && a.procStart !== undefined) {
+        const next = agents
+          .all()
+          .filter(
+            (b) =>
+              b.kind === "claude-code" &&
+              b.live &&
+              b.ref !== a.ref &&
+              b.instance === a.instance &&
+              b.pid === a.pid &&
+              b.procStart === a.procStart &&
+              liveRefs.has(b.ref),
+          )
+          .sort(
+            (x, y) => (seenAt.get(y.ref) ?? 0) - (seenAt.get(x.ref) ?? 0),
+          )[0];
+        if (next) {
+          for (const hash of a.linkHashes)
+            next.linkHashes = withLinkHash(next.linkHashes, hash);
+          sendLink(next);
+        }
       }
       a.live = false;
       a.closedBy = "liveness";
@@ -2202,7 +2265,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       let rec = find();
       // The helper can beat the session file: look now, not at the next tick.
       if (!rec || rec.procStart === undefined) {
-        syncClaude();
+        syncClaude(req.pid);
         rec = find();
       }
       if (rec && rec.procStart !== undefined) {
@@ -2228,12 +2291,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       // Still no record: hold it for the one that may appear (same pid and
       // start time only). Bounded, and a proof nobody claims expires.
+      // #2861: keep the first hash and the newest (Claude sends the first).
       const key = pendingKey(req.pid, want);
+      const held = pendingProofs.get(key);
+      const prior = held?.procStart === start ? held.hashes : [];
       pendingProofs.delete(key);
       pendingProofs.set(key, {
         pid: req.pid,
         procStart: start,
-        hash: req.hash,
+        hashes:
+          prior.length === 0 || prior[0] === req.hash
+            ? [req.hash]
+            : [prior[0] as string, req.hash],
         at: Date.now(),
         instance: want,
       });
@@ -2594,7 +2663,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           ...(instance !== undefined ? { instance } : {}),
           pid,
-          ...(mine ? { procStart: mine.procStart } : {}),
+          // #2861: a lookup that misses keeps the start time the record had.
+          ...(mine
+            ? { procStart: mine.procStart }
+            : prev?.pid === pid && prev.procStart !== undefined
+              ? { procStart: prev.procStart }
+              : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.

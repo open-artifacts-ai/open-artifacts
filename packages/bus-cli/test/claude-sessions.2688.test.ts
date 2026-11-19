@@ -425,6 +425,7 @@ describe("oa-bus mcp-proof logs why it linked nothing", () => {
       ),
     ).toBe(0);
     expect(log(b)).toContain("reason=daemon_unreachable");
+    expect(log(b)).toContain("code=timeout");
     // A process-table error is not the daemon's.
     const c = fakeCtx();
     expect(
