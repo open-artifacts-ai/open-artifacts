@@ -60,6 +60,7 @@ import {
 } from "./attest.ts";
 import {
   CLAUDE_GUESTS_MAX,
+  CLAUDE_STASH_MAX,
   type ClaudeGuest,
   claudeConfigFile,
   claudeProjectsDir,
@@ -74,7 +75,6 @@ import {
 } from "./claude-guests.ts";
 import {
   CLAUDE_LINKS_MAX,
-  CLAUDE_STASH_MAX,
   type ClaudeLink,
   readClaudeLinks,
   writeClaudeLinks,
@@ -386,6 +386,8 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
     linksFile?: string;
+    /** #2793 S3b: hashes held for another instance than the session's home; default ~/.oa-bus/claude-stash.json. */
+    stashFile?: string;
     /** #2793 S3b: the guests kept across a restart; default ~/.oa-bus/claude-guests.json. */
     guestsFile?: string;
     /** #2793 S3b: Claude's transcripts (`<project>/<session id>.jsonl`); default under the Claude config dir. */
@@ -878,10 +880,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (e) => sameProc(e.pid, e.procStart),
   );
   let linksWritten: string | undefined = JSON.stringify(saved);
-  // A stash for an instance this daemon no longer has (removed) is not kept.
-  saved = saved.filter(
-    (e) => !e.stash || lanes.get(e.instance ?? MAIN_INSTANCE) !== undefined,
+  /**
+   * #2793 S3b: proofs a session holds for ANOTHER instance than its home, kept
+   * only to match a later proof_seen. Their own file (claude-stash.json) and
+   * cap, so claude-links.json stays exactly what an older daemon reads and a
+   * stash can never push out an unmapped session's hold. Same entry shape;
+   * the instance is always named. A stash for an instance this daemon no longer
+   * has (removed) is not kept.
+   */
+  const stashFile = cl.stashFile ?? join(home(), "claude-stash.json");
+  const stashLoaded = readClaudeLinks(stashFile, undefined, log).filter((e) =>
+    sameProc(e.pid, e.procStart),
   );
+  let stashed: ClaudeLink[] = stashLoaded.filter(
+    (e) => e.instance !== undefined && lanes.get(e.instance) !== undefined,
+  );
+  let stashWritten: string | undefined = JSON.stringify(stashLoaded);
+  const persistStash = () => {
+    stashed = stashed.filter((e) => sameProc(e.pid, e.procStart));
+    const text = JSON.stringify(stashed);
+    if (text === stashWritten) return;
+    try {
+      writeClaudeLinks(stashFile, stashed);
+      stashWritten = text;
+    } catch (e) {
+      log(`could not save ${stashFile}: ${e instanceof Error ? e.message : e}`);
+    }
+  };
   const seedLinks = (rec: AgentRecord) => {
     if (rec.linkHashes !== undefined || rec.pid === undefined) return;
     // A proof for another instance than the one the session is homed on is never replayed.
@@ -916,11 +941,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       });
     }
     saved = saved.filter((e) => sameProc(e.pid, e.procStart));
-    // Holds and live rows share one cap, stashes have their own: a stash never evicts a hold.
-    const all = [
-      ...[...rows, ...saved.filter((e) => !e.stash)].slice(0, CLAUDE_LINKS_MAX),
-      ...saved.filter((e) => e.stash).slice(0, CLAUDE_STASH_MAX),
-    ];
+    const all = [...rows, ...saved].slice(0, CLAUDE_LINKS_MAX);
     const text = JSON.stringify(all);
     if (text === linksWritten) return;
     try {
@@ -1436,45 +1457,53 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * so dropping it would lose it for good. No frame goes out now. Kept in
    * claude-links.json with the instance, so a restart keeps it too.
    */
-  const stashProof = (
+  const stashHold = (
     want: string,
     pid: number,
     procStart: string,
     hash: string,
-    stash = false,
   ) => {
     const same = (e: ClaudeLink) =>
       e.pid === pid &&
       e.procStart === procStart &&
       (e.instance ?? MAIN_INSTANCE) === want;
     const hit = saved.find(same);
-    const fresh: ClaudeLink = {
-      pid,
-      procStart,
-      hashes: withLinkHash(hit?.hashes, hash),
-      ...(want !== MAIN_INSTANCE ? { instance: want } : {}),
-      ...(stash ? { stash: true as const } : {}),
-    };
-    const rest = saved.filter((e) => !same(e));
-    // A hold (#2050) and a stash are capped apart: a stash can only push out the oldest stash.
-    saved = stash
-      ? [
-          ...rest.filter((e) => !e.stash),
-          ...[fresh, ...rest.filter((e) => e.stash)].slice(0, CLAUDE_STASH_MAX),
-        ]
-      : [
-          ...[fresh, ...rest.filter((e) => !e.stash)].slice(
-            0,
-            CLAUDE_LINKS_MAX,
-          ),
-          ...rest.filter((e) => e.stash),
-        ];
+    saved = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        ...(want !== MAIN_INSTANCE ? { instance: want } : {}),
+      },
+      ...saved.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_LINKS_MAX);
     persistLinks();
+  };
+  /** A proof for another instance than the session's home: its own file and cap. */
+  const stashProof = (
+    want: string,
+    pid: number,
+    procStart: string,
+    hash: string,
+  ) => {
+    const same = (e: ClaudeLink) =>
+      e.pid === pid && e.procStart === procStart && e.instance === want;
+    const hit = stashed.find(same);
+    stashed = [
+      {
+        pid,
+        procStart,
+        hashes: withLinkHash(hit?.hashes, hash),
+        instance: want,
+      },
+      ...stashed.filter((e) => !same(e)),
+    ].slice(0, CLAUDE_STASH_MAX);
+    persistStash();
   };
   const holdProof = (want: string, rec: AgentRecord, hash: string) => {
     const { pid, procStart } = rec;
     if (pid === undefined || procStart === undefined) return;
-    stashProof(want, pid, procStart, hash);
+    stashHold(want, pid, procStart, hash);
     log(
       `held a proof for the instance ${want}: session ${rec.ref} has no instance yet`,
     );
@@ -1517,7 +1546,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       rec.procStart !== undefined &&
       lanes.get(want) !== undefined
     )
-      stashProof(want, rec.pid, rec.procStart, hash, true);
+      stashProof(want, rec.pid, rec.procStart, hash);
   };
   /** The hashes a replacing record keeps: only those of a record homed on the same instance. */
   const carryLinks = (
@@ -1726,10 +1755,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** The link of `lane` is revoked or dropped for good: its guests go, nothing at home. */
   const dropGuestsOf = (name: string) => {
     // Its stashed hashes go too: nothing of a revoked or removed instance is kept.
-    saved = saved.filter(
-      (e) => !(e.stash && (e.instance ?? MAIN_INSTANCE) === name),
-    );
-    persistLinks();
+    stashed = stashed.filter((e) => e.instance !== name);
+    persistStash();
     for (const g of [...guestSet.values()])
       if (g.instance === name) {
         guestSet.delete(guestKey(g));
@@ -1754,7 +1781,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     }
     // Only hashes held for THIS instance, never home's or another's.
-    const held = saved.find(
+    const held = stashed.find(
       (e) =>
         (e.instance ?? MAIN_INSTANCE) === lane.name && e.hashes.includes(hash),
     );

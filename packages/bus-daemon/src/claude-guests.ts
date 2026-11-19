@@ -22,6 +22,8 @@ import { readOwnFile } from "./own-file.ts";
  * derives a guest from the proofs it holds.
  */
 export const CLAUDE_GUESTS_MAX = 64;
+/** The most hashes held for another instance than a session's home (claude-stash.json). Apart from the holds of claude-links.json. */
+export const CLAUDE_STASH_MAX = 64;
 
 const EntrySchema = z.strictObject({
   pid: z.number().int().positive(),

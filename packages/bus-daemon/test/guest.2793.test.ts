@@ -13,11 +13,12 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { daemonLinkProof, daemonStatus } from "@oa/bus-ipc";
 import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
+import { readClaudeLinks } from "../src/claude-links.ts";
 import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -99,7 +100,7 @@ type Opts = {
   instances?: string[];
   homeLookup?: (cwd: string) => { instance: string } | { unmapped: true };
   ratePerMin?: number;
-  files?: { links: string; guests: string };
+  files?: { links: string; guests: string; stash?: string };
   existing?: {
     home: string;
     sessions: string;
@@ -149,6 +150,9 @@ async function setup(o: Opts = {}) {
     }),
   );
   const tmp = mkdtempSync(join(tmpdir(), "ob-g-f-"));
+  const stashPath =
+    o.files?.stash ??
+    join(o.files ? dirname(o.files.links) : tmp, "claude-stash.json");
   const files = o.files ?? {
     links: join(tmp, "claude-links.json"),
     guests: join(tmp, "claude-guests.json"),
@@ -182,6 +186,7 @@ async function setup(o: Opts = {}) {
       socketsDir: join(sessions, "r"),
       linksFile: files.links,
       guestsFile: files.guests,
+      stashFile: stashPath,
       projectsDir: projects,
       mcpConfigFile: config,
       syncMs: 20,
@@ -208,7 +213,7 @@ async function setup(o: Opts = {}) {
     sessions,
     projects,
     config,
-    files,
+    files: { ...files, stash: stashPath },
     told,
     logs,
     gone,
@@ -585,7 +590,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     expect(second.hubB.of("link_bind")).toEqual([]);
     // The held hash of the second session is still held, and made no guest.
     expect(
-      JSON.parse(readFileSync(s.files.links, "utf8")).links.length,
+      JSON.parse(readFileSync(s.files.stash as string, "utf8")).links.length,
     ).toBeGreaterThan(0);
   });
 
@@ -600,7 +605,9 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     const first = await setup({ files });
     await holdAndUse(first);
     await vi.waitFor(() =>
-      expect(readFileSync(files.links, "utf8")).toContain(HASH_B),
+      expect(
+        readFileSync(join(dirname(files.links), "claude-stash.json"), "utf8"),
+      ).toContain(HASH_B),
     );
     await first.h.daemon.stop();
     expect(existsSync(files.guests)).toBe(false);
@@ -666,10 +673,10 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
   });
 });
 
-const linksOf = (s: Scene) =>
+const stashOf = (s: Scene) =>
   (
-    JSON.parse(readFileSync(s.files.links, "utf8")) as {
-      links: { hashes: string[]; stash?: true; instance?: string }[];
+    JSON.parse(readFileSync(s.files.stash as string, "utf8")) as {
+      links: { hashes: string[]; instance?: string }[];
     }
   ).links;
 
@@ -735,6 +742,7 @@ describe("review fixes (#2893 Axe-3)", () => {
         sessionsDir: sessions,
         socketsDir: join(sessions, "r"),
         linksFile: files.links,
+        stashFile: join(dirname(files.links), "claude-stash.json"),
         syncMs: 20,
         procStart: () => "t0",
         isRunning: () => true,
@@ -759,15 +767,30 @@ describe("review fixes (#2893 Axe-3)", () => {
         "b",
       );
     }
+    const stashFile = join(dirname(files.links), "claude-stash.json");
     await vi.waitFor(() => {
-      const rows = (
-        JSON.parse(readFileSync(files.links, "utf8")) as {
-          links: { pid: number; stash?: true }[];
+      const stash = (
+        JSON.parse(readFileSync(stashFile, "utf8")) as {
+          links: { pid: number }[];
         }
       ).links;
-      expect(rows.filter((r) => r.stash)).toHaveLength(64);
-      expect(rows.filter((r) => r.pid === 6000 && !r.stash)).toHaveLength(1);
+      expect(stash).toHaveLength(64);
+      expect(stash.some((r) => r.pid === 6000)).toBe(false);
     });
+    // The hold is in claude-links.json, which holds no stash and parses with main's strict entry shape.
+    const raw = JSON.parse(readFileSync(files.links, "utf8")) as {
+      v: number;
+      links: Record<string, unknown>[];
+    };
+    expect(Object.keys(raw).sort()).toEqual(["links", "v"]);
+    expect(raw.links.filter((r) => r.pid === 6000)).toHaveLength(1);
+    expect(raw.links.every((r) => r.pid === 6000)).toBe(true);
+    for (const r of raw.links)
+      for (const k of Object.keys(r))
+        expect(["pid", "procStart", "hashes", "instance"]).toContain(k);
+    // main's reader (strict per entry) keeps every entry: none was refused.
+    expect(readClaudeLinks(files.links)).toHaveLength(raw.links.length);
+    expect(readFileSync(files.links, "utf8")).not.toContain("stash");
   });
 
   it("L1: the same session has a different opaque ref on each instance", async () => {
@@ -791,12 +814,14 @@ describe("review fixes (#2893 Axe-3)", () => {
   it("L2: a revoke on B drops the hashes stashed for B", async () => {
     const s = await setup();
     await holdAndUse(s);
-    expect(linksOf(s).some((l) => l.stash && l.instance === "b")).toBe(true);
+    await vi.waitFor(() =>
+      expect(stashOf(s).some((l) => l.instance === "b")).toBe(true),
+    );
     s.hubB.close(4403);
     await vi.waitFor(() =>
-      expect(linksOf(s).some((l) => l.instance === "b")).toBe(false),
+      expect(stashOf(s).some((l) => l.instance === "b")).toBe(false),
     );
-    expect(readFileSync(s.files.links, "utf8")).not.toContain(HASH_B);
+    expect(readFileSync(s.files.stash as string, "utf8")).not.toContain(HASH_B);
   });
 
   it("L2: stashes for an instance that was removed are not kept after a restart", async () => {
@@ -820,9 +845,11 @@ describe("review fixes (#2893 Axe-3)", () => {
     // Any save rewrites the file.
     expect(await proof(second.h, 4242, M("d").repeat(4), "c")).toBe(false);
     await vi.waitFor(() =>
-      expect(readFileSync(first.files.links, "utf8")).not.toContain(HASH_B),
+      expect(readFileSync(first.files.stash as string, "utf8")).not.toContain(
+        HASH_B,
+      ),
     );
-    expect(readFileSync(first.files.links, "utf8")).toContain(HASH_C);
+    expect(readFileSync(first.files.stash as string, "utf8")).toContain(HASH_C);
   });
 
   it("L5: an entry named <entry>__x does not count as <entry>", async () => {

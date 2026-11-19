@@ -11,13 +11,6 @@ import { readOwnFile } from "./own-file.ts";
  * is the daemon's: 0600 in its home, written whole through a rename.
  */
 export const CLAUDE_LINKS_MAX = 64;
-/**
- * #2793 S3b: hashes kept for ANOTHER instance than the session's home (the
- * guest match). Their own cap, so they can never push out an unmapped home
- * session's held proof (#2050), which counts against CLAUDE_LINKS_MAX.
- */
-export const CLAUDE_STASH_MAX = 64;
-export const CLAUDE_LINKS_FILE_MAX = CLAUDE_LINKS_MAX + CLAUDE_STASH_MAX;
 
 const EntrySchema = z.strictObject({
   pid: z.number().int().positive(),
@@ -28,8 +21,6 @@ const EntrySchema = z.strictObject({
     .string()
     .regex(/^[a-z0-9-]{1,32}$/)
     .optional(),
-  /** #2793 S3b: kept only to match a later proof_seen from `instance`; binds nothing. */
-  stash: z.literal(true).optional(),
 });
 export type ClaudeLink = z.infer<typeof EntrySchema>;
 
@@ -55,7 +46,7 @@ export function readClaudeLinks(
     }
     const out: ClaudeLink[] = [];
     for (const raw of top.data.links) {
-      if (out.length >= CLAUDE_LINKS_FILE_MAX) break;
+      if (out.length >= CLAUDE_LINKS_MAX) break;
       const one = EntrySchema.safeParse(raw);
       if (one.success)
         out.push({
@@ -78,7 +69,7 @@ export function writeClaudeLinks(file: string, links: ClaudeLink[]): void {
   try {
     writeFileSync(
       tmp,
-      JSON.stringify({ v: 1, links: links.slice(0, CLAUDE_LINKS_FILE_MAX) }),
+      JSON.stringify({ v: 1, links: links.slice(0, CLAUDE_LINKS_MAX) }),
       { mode: 0o600, flag: "wx" },
     );
     renameSync(tmp, file);

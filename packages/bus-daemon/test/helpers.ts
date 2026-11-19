@@ -121,6 +121,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         mkdtempSync(join(tmpdir(), "ob-cg-")),
         "claude-guests.json",
       ),
+      stashFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cs2-")),
+        "claude-stash.json",
+      ),
       projectsDir: mkdtempSync(join(tmpdir(), "ob-cp-")),
       mcpConfigFile: join(
         mkdtempSync(join(tmpdir(), "ob-cm-")),
