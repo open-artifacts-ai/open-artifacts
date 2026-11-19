@@ -438,7 +438,7 @@ describe("waking an away Codex thread (#2029)", () => {
 
   it("the wake text names the tool by its literal name", () => {
     expect(CODEX_WAKE_TEXT).toBe(
-      "Open Artifacts bus: messages are waiting for this thread. Call the tool mcp__oa_bus__self once, by that literal name (do not look it up from a tool list), to receive them.",
+      "Open Artifacts bus: messages are waiting for this thread. Call the tool mcp__oa_bus__self once, by that literal name (do not look it up from a tool list), to register this thread. The messages arrive separately as chat turns.",
     );
   });
 
@@ -803,6 +803,35 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     expect(w.runs()).toHaveLength(0);
     expect(evs.some((e) => e.startsWith("codex_wake "))).toBe(false);
     stop();
+  });
+
+  it("wakes a reloaded thread with known waiting mail before the next hub poll", async () => {
+    const w = world();
+    let loaded = false;
+    let observed = false;
+    const { two } = await restarted(
+      w,
+      {
+        wakeCheckMs: 300_000,
+        holdersOf: (files: string[]) =>
+          loaded
+            ? w.codex.holdersOf(files)
+            : new Map(files.map((f) => [f, []])),
+      },
+      {
+        events: (event: string) => {
+          if (event === "codex_wake_skipped") observed = true;
+        },
+      },
+    );
+    const stop = answerQueries(two, () => ({ [THREAD]: 2 }));
+    try {
+      await waitFor(() => expect(observed).toBe(true));
+      loaded = true;
+      await waitFor(() => expect(w.runs()).toHaveLength(1));
+    } finally {
+      stop();
+    }
   });
 
   it("a machine with no other live agent: one frame by its own away refs wakes the thread", async () => {

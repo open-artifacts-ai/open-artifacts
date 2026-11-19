@@ -152,6 +152,18 @@ const QUEUED = { ok: false, reason: "queued" } as const;
 const RETRY = { ok: false, reason: "timeout" } as const;
 
 describe("codex queue transport (C26d)", () => {
+  it("counts only this chat's unconfirmed local mail, excluding wake notices", () => {
+    const { watch } = transport(undefined);
+    watch.attempt("first", "one", "first header");
+    watch.queued("first");
+    watch.attempt("second", "two", "second header");
+    watch.attempt("wake", "one");
+    expect(watch.size("one")).toBe(1);
+    expect(watch.size("two")).toBe(1);
+    expect(watch.size("three")).toBe(0);
+    expect(watch.size()).toBe(2);
+  });
+
   it("runs `codex queue --thread=<id> --message=<text>` with CODEX_HOME, and a live thread is delivered", async () => {
     const f = fakeCodex();
     const { t, home } = transport({ path: f.bin, from: "path" });

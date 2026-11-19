@@ -364,6 +364,8 @@ export const AgentInfo = z.object({
   namespace: z.string(),
   /** `self` only (#1570). */
   namespace_source: NamespaceSource.optional(),
+  /** Codex self: local delivery attempts awaiting a turn; excludes mail still at the hub. */
+  codex_pending_local: z.number().int().nonnegative().optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),

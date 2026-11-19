@@ -3334,6 +3334,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           if (rec) renameFromAdapter(rec, name);
         },
         ownerAwayUntil: awayUntil,
+        codexPendingLocal: (ref) => codexTaken.size(ref),
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);
@@ -3617,6 +3618,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const wakeUnloadedLogged = new Map<string, number>();
   let waking = false;
   let wakeCheckedAt: number | undefined;
+  const waitingForLoad = new Set<string>();
   /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
   const wakeSent = new Map<
     string,
@@ -3656,13 +3658,23 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const m of [wakeAsked, wakeWaiting])
         for (const k of m.keys())
           if (!away.has(k.split(":")[1] ?? "")) m.delete(k);
-      if (!rows.length) return;
+      for (const ref of waitingForLoad)
+        if (!away.has(ref)) waitingForLoad.delete(ref);
+      if (!rows.length || !main.hub.open || main.version === undefined) return;
       // The checks cost an lsof, a ps and rollout reads: not on every tick.
       if (
         wakeCheckedAt !== undefined &&
         now - wakeCheckedAt < (cx.wakeCheckMs ?? 300_000)
-      )
-        return;
+      ) {
+        // Mail was already observed. When Codex reloads its chat, recheck
+        // the hub on this lock sweep instead of waiting for another poll.
+        if (
+          !waitingForLoad.size ||
+          !codexCheck.holders([...waitingForLoad])?.size
+        )
+          return;
+      }
+      waitingForLoad.clear();
       wakeCheckedAt = now;
       const held = codexCheck.holders(rows.map((r) => r.ref));
       if (!held) return;
@@ -3691,6 +3703,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       for (const r of rows) {
         const h = held.get(r.ref);
         if (!h) {
+          if (counts?.[r.ref]) waitingForLoad.add(r.ref);
           const last = wakeUnloadedLogged.get(r.ref);
           if (
             counts?.[r.ref] &&
