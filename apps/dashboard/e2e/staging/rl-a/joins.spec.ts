@@ -207,7 +207,9 @@ test("an outside guest logs in by code, sees only Shared with me, and is read-on
   await expect(
     page.getByRole("heading", { level: 1, name: title }),
   ).toBeVisible();
-  await expect(page.getByText("View only", { exact: true })).toBeVisible();
+  // #2932: one access label; a read-only one is the focusable chip that
+  // carries "you can't change its data" (it reads "View only" off a space).
+  await expect(page.locator('[data-access-label][tabindex="0"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Share" })).toHaveCount(0);
 
   // The API agrees: a guest role, and no data writes.
