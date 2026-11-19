@@ -892,7 +892,7 @@ async function startMocks() {
     ...pics,
   );
   // PROVISIONAL (#2895): ?mock=own-words, "Something else" with a typed answer.
-  if (params.get("mock") === "own-words")
+  if (params.get("mock") === "own-words" || params.get("ownwords") === "1")
     extra.unshift(
       ...(await import("./mockOwnWords")).ownWordsHandlers([
         ...pics,

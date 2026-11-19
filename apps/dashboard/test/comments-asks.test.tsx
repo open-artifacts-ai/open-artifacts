@@ -3230,6 +3230,40 @@ describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", 
     );
   });
 
+  it("the decided card: the words, who decided, 'own words, not one of the options', options folded", async () => {
+    const answer = (me: boolean) => ({
+      by: { kind: "user", id: me ? "me" : "sam", name: me ? "Me" : "Sam", me },
+      at: "2026-11-05T10:05:00Z",
+      typed: true,
+      yes: false,
+      ownWords: { text: "Ideas 1 + 3 + 5" },
+    });
+    serveThreads(() => [askThread({}, { answer: answer(true) })]);
+    const c = await open();
+    const card = await waitFor(() => {
+      const el = c.querySelector("[data-own-decided]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(card).toHaveTextContent("Ideas 1 + 3 + 5");
+    expect(card).toHaveTextContent("✓ You decided");
+    expect(card).toHaveTextContent("Your own words, not one of the options.");
+    expect(c.querySelector("[data-unpicked] summary")).toHaveTextContent(
+      "2 options not picked",
+    );
+    expect(
+      within(c).getByRole("button", { name: "Change" }),
+    ).toBeInTheDocument();
+    cleanup();
+    serveThreads(() => [askThread({}, { answer: answer(false) })]);
+    const d = await open();
+    await waitFor(() =>
+      expect(d.querySelector("[data-own-decided]")).toHaveTextContent(
+        "Sam's own words, not one of the options.",
+      ),
+    );
+  });
+
   it("others see it with the person's name", async () => {
     serveThreads(() => [
       askThread(
@@ -3279,6 +3313,17 @@ describe("#2895 own words: Something else on every ask (PROVISIONAL contract)", 
       return r as HTMLElement;
     });
     expect(row).toHaveTextContent("Ideas 1 + 3 + 5");
+    // The question above the words; then who decided, Own words, then the time.
+    const text = row.textContent ?? "";
+    expect(text.indexOf("Which team case first?")).toBeLessThan(
+      text.indexOf("Ideas 1 + 3 + 5"),
+    );
+    expect(
+      (row.querySelector("[data-decision-meta]")?.textContent ?? "").replace(
+        /\s+/g,
+        " ",
+      ),
+    ).toMatch(/You decided · Own words · /);
     expect(row.querySelector('[data-chip="own-words"]')).toHaveTextContent(
       "Own words",
     );

@@ -1,7 +1,7 @@
 // PROVISIONAL (#2895): mock-only "Something else" with a typed answer, over the
 // shared mocks (which do not know `ownWords` yet). Delete with
 // src/viewer/comments/ownWords.ts once the shared mocks serve it.
-// ?mock=own-words: a pick with { ownWords: { text } } (trimmed, 1 to 1000, no
+// ?mock=own-words (or &ownwords=1 beside another mock): a pick with { ownWords: { text } } (trimmed, 1 to 1000, no
 // optionId) is recorded, and the list then shows the answer with its words.
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 
@@ -31,10 +31,14 @@ export function ownWordsHandlers(next: HttpHandler[]): HttpHandler[] {
       for (const c of t.comments) {
         if (!c.ask) continue;
         const text = own.get(c.id);
-        if (text && c.ask.answer) {
-          const { optionId: _o, ...rest } = c.ask.answer;
-          c.ask.answer = { ...rest, ownWords: { text } };
-        }
+        if (text)
+          c.ask.answer = {
+            by: { kind: "user", name: "You", me: true },
+            at: new Date().toISOString(),
+            typed: true,
+            yes: false,
+            ownWords: { text },
+          };
       }
   };
   return [
@@ -61,7 +65,7 @@ export function ownWordsHandlers(next: HttpHandler[]): HttpHandler[] {
         const text = (body.ownWords.text ?? "").trim();
         if (text === "") return bad("empty");
         if (text.length > 1000) return bad("too_long");
-        // The shared mock knows no "other": record the first option, then show the words.
+        // Recorded here, never as a pick of one of the options: the list shows it as the answer.
         const list = (await (
           await getResponse(
             next,
@@ -70,24 +74,12 @@ export function ownWordsHandlers(next: HttpHandler[]): HttpHandler[] {
             ),
           )
         )?.json()) as { threads: Thread[] };
-        const first = list.threads
+        const c = list.threads
           .flatMap((t) => t.comments)
-          .find((c) => c.id === params.comment)?.ask?.options[0]?.id;
-        const res = await getResponse(
-          next,
-          new Request(request.url, {
-            method: "POST",
-            headers: request.headers,
-            body: JSON.stringify({ optionId: first }),
-          }),
-        );
-        if (!res?.ok) return res;
+          .find((x) => x.id === params.comment);
+        if (!c?.ask) return bad("empty");
         own.set(String(params.comment), text);
-        const c = (await res.json()) as { ask?: Ask };
-        if (c.ask?.answer) {
-          const { optionId: _o, ...rest } = c.ask.answer;
-          c.ask.answer = { ...rest, ownWords: { text } };
-        }
+        mark(list);
         return HttpResponse.json(c);
       },
     ),

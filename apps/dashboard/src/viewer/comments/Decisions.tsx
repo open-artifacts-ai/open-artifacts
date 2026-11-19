@@ -121,14 +121,17 @@ export function CommentsTabs({
 const Pill = ({
   children,
   tone = "neutral",
+  mono = false,
   ...rest
 }: {
   children: ReactNode;
   tone?: "neutral" | "ok";
+  /** The small mono chip of the design ("Own words"). */
+  mono?: boolean;
 } & Record<string, unknown>) => (
   <span
     {...rest}
-    className={`inline-flex w-fit items-center gap-1 rounded px-1.5 ${TXT} font-semibold ${
+    className={`inline-flex w-fit items-center gap-1 rounded px-1.5 ${TXT} ${mono ? "font-[family-name:var(--oa-font-mono)] font-normal" : "font-semibold"} ${
       tone === "ok"
         ? "bg-[var(--oa-success-soft)] text-[var(--oa-success-fg)]"
         : "bg-muted text-muted-foreground"
@@ -203,7 +206,11 @@ function Row({
       ? [
           {
             key: "own",
-            el: <Pill data-chip="own-words">Own words</Pill>,
+            el: (
+              <Pill data-chip="own-words" mono>
+                Own words
+              </Pill>
+            ),
           },
         ]
       : []),

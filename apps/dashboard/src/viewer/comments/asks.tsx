@@ -641,6 +641,27 @@ function OptionViews({
   );
 }
 
+/** The options of a decided own-words card, folded behind "N options not picked". */
+function Fold({
+  on,
+  n,
+  children,
+}: {
+  on: boolean;
+  n: number;
+  children: React.ReactNode;
+}) {
+  if (!on) return <>{children}</>;
+  return (
+    <details data-unpicked="" className={`${TXT} ${MUTED}`}>
+      <summary className="cursor-pointer">
+        {n} {n === 1 ? "option" : "options"} not picked
+      </summary>
+      <div className="mt-1">{children}</div>
+    </details>
+  );
+}
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
@@ -838,6 +859,15 @@ export function AskBlock({
   const bars = people >= 4;
   const recIdx = options.findIndex((o) => o.id === ask.recommended?.optionId);
   const letters = showLetters(ask.options);
+  // PROVISIONAL (#2895): the decider's own words are the decision: one green card, the options folded.
+  const ownDecided =
+    !weighing &&
+    !!ask.answer &&
+    ask.answer.optionId === ownId &&
+    !!answerWords &&
+    !isSendingAnswer(ask.answer) &&
+    !answer.isPending &&
+    !changing;
   const sendOwn = () => {
     if (holdPicks) return;
     const words = ownText.trim();
@@ -982,160 +1012,183 @@ export function AskBlock({
               {views.length} of {people} weighed in. The tally decides nothing.
             </p>
           )}
-          <ul
-            ref={opts}
-            aria-labelledby={qid}
-            aria-busy={answer.isPending || undefined}
-            data-sending={answer.isPending ? "" : undefined}
-            className="m-0 flex list-none flex-col gap-1 p-0"
-          >
-            {options.map((o, i) => {
-              const isOwn = o.id === ownId;
-              const rec = ask.recommended?.optionId === o.id;
-              const sel = picked === o.id;
-              // The decision keeps full strength in green; only unpicked options fade.
-              const isDecision =
-                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
-              return (
-                <li key={o.id}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      isDecision
-                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
-                        : sel
-                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
-                          : ""
-                    }`}
-                    disabled={
-                      !canAnswer ||
-                      holdPicks ||
-                      answer.isPending ||
-                      // Own words can be sent again once Change reopens the options.
-                      (isOwn ? locked : sel || (locked && !sel))
-                    }
-                    aria-pressed={sel}
-                    aria-expanded={isOwn ? ownOpen : undefined}
-                    data-option={o.id}
-                    data-own-words={isOwn ? "" : undefined}
-                    onClick={() => {
-                      if (holdPicks) return;
-                      // "Something else" opens its box; Send records it.
-                      if (isOwn) {
-                        if (!ownOpen && ownText === "" && sel && answerWords)
-                          setOwnText(answerWords);
-                        setOwnOpen((v) => !v);
-                        return;
+          {ownDecided && ask.answer && (
+            <div
+              data-own-decided=""
+              className={`flex flex-col gap-0.5 rounded-md bg-[var(--oa-success-soft)] p-2 ring-2 ring-[var(--oa-success-fg)] ${TXT}`}
+            >
+              <span
+                data-own-words-text=""
+                className="font-semibold break-words whitespace-pre-wrap"
+              >
+                {answerWords}
+              </span>
+              <span className="font-medium text-[var(--oa-success-fg)]">
+                ✓ {actor(ask.answer.by, "You")} decided
+              </span>
+              <span className={MUTED}>
+                {ask.answer.by.me
+                  ? "Your own words, not one of the options."
+                  : `${ask.answer.by.name}'s own words, not one of the options.`}
+              </span>
+            </div>
+          )}
+          <Fold on={ownDecided} n={ask.options.length}>
+            <ul
+              ref={opts}
+              aria-labelledby={qid}
+              aria-busy={answer.isPending || undefined}
+              data-sending={answer.isPending ? "" : undefined}
+              className="m-0 flex list-none flex-col gap-1 p-0"
+            >
+              {options.map((o, i) => {
+                const isOwn = o.id === ownId;
+                const rec = ask.recommended?.optionId === o.id;
+                const sel = picked === o.id;
+                // The decision keeps full strength in green; only unpicked options fade.
+                const isDecision =
+                  ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
+                return (
+                  <li key={o.id}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
+                        isDecision
+                          ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                          : sel
+                            ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                            : ""
+                      }`}
+                      disabled={
+                        !canAnswer ||
+                        holdPicks ||
+                        answer.isPending ||
+                        // Own words can be sent again once Change reopens the options.
+                        (isOwn ? locked : sel || (locked && !sel))
                       }
-                      setErr(null);
-                      const v = {
-                        thread: thread.id,
-                        comment: c.id,
-                        optionId: o.id,
-                      };
-                      const failed = (e: unknown) => {
-                        setErr(e);
-                        // Back to unanswered: focus returns to the option.
-                        setRefocus(o.id);
-                      };
-                      answer.mutate(v, { onError: failed });
-                    }}
-                  >
-                    {letters && !isOwn && i < ask.options.length && (
-                      <span
-                        data-option-key=""
-                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                      >
-                        {letter(i)}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 break-words">
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <b>{o.label}</b>
-                        {rec && (
-                          <span
-                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                          >
-                            Recommended
-                          </span>
-                        )}
-                      </span>
-                      {o.detail && (
-                        <span className={`block font-normal ${MUTED}`}>
-                          <MarkdownInline body={o.detail} links={false} />
-                        </span>
-                      )}
-                    </span>
-                  </Button>
-                  {isOwn && ownOpen && canAnswer && (
-                    <form
-                      data-own-words-box=""
-                      className="mt-1 flex flex-col gap-1 px-2"
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        sendOwn();
+                      aria-pressed={sel}
+                      aria-expanded={isOwn ? ownOpen : undefined}
+                      data-option={o.id}
+                      data-own-words={isOwn ? "" : undefined}
+                      onClick={() => {
+                        if (holdPicks) return;
+                        // "Something else" opens its box; Send records it.
+                        if (isOwn) {
+                          if (!ownOpen && ownText === "" && sel && answerWords)
+                            setOwnText(answerWords);
+                          setOwnOpen((v) => !v);
+                          return;
+                        }
+                        setErr(null);
+                        const v = {
+                          thread: thread.id,
+                          comment: c.id,
+                          optionId: o.id,
+                        };
+                        const failed = (e: unknown) => {
+                          setErr(e);
+                          // Back to unanswered: focus returns to the option.
+                          setRefocus(o.id);
+                        };
+                        answer.mutate(v, { onError: failed });
                       }}
                     >
-                      <textarea
-                        // biome-ignore lint/a11y/noAutofocus: the box opens on the person's own click
-                        autoFocus
-                        aria-label={OWN_PLACEHOLDER}
-                        placeholder={OWN_PLACEHOLDER}
-                        maxLength={OWN_WORDS_MAX}
-                        rows={3}
-                        value={ownText}
-                        disabled={answer.isPending}
-                        onChange={(e) => setOwnText(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Escape") {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setOwnOpen(false);
-                            setRefocus(o.id);
-                          }
-                        }}
-                        className={`w-full resize-y rounded-md border border-border bg-background px-2 py-1 ${TXT}`}
-                      />
-                      <span className="flex items-center gap-2">
-                        <Button
-                          type="submit"
-                          size="xs"
-                          disabled={!ownText.trim() || answer.isPending}
+                      {letters && !isOwn && i < ask.options.length && (
+                        <span
+                          data-option-key=""
+                          className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
                         >
-                          Send
-                        </Button>
-                        {ownText.length >= OWN_WORDS_COUNT_FROM && (
-                          <span
-                            data-own-words-count=""
-                            className={`${TXT} ${MUTED}`}
-                          >
-                            {ownText.length} / {OWN_WORDS_MAX}
+                          {letter(i)}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 break-words">
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <b>{o.label}</b>
+                          {rec && (
+                            <span
+                              className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                            >
+                              Recommended
+                            </span>
+                          )}
+                        </span>
+                        {o.detail && (
+                          <span className={`block font-normal ${MUTED}`}>
+                            <MarkdownInline body={o.detail} links={false} />
                           </span>
                         )}
                       </span>
-                    </form>
-                  )}
-                  {(!isOwn ||
-                    views.some((p) => p.optionId === o.id) ||
-                    ask.answer?.optionId === o.id) && (
-                    <OptionViews
-                      views={views.filter((p) => p.optionId === o.id)}
-                      total={views.length}
-                      bars={bars}
-                      decided={
-                        !risky &&
-                        ask.answer?.optionId === o.id &&
-                        !isSendingAnswer(ask.answer)
-                          ? actor(ask.answer.by, "You")
-                          : null
-                      }
-                    />
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                    </Button>
+                    {isOwn && ownOpen && canAnswer && (
+                      <form
+                        data-own-words-box=""
+                        className="mt-1 flex flex-col gap-1 px-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          sendOwn();
+                        }}
+                      >
+                        <textarea
+                          // biome-ignore lint/a11y/noAutofocus: the box opens on the person's own click
+                          autoFocus
+                          aria-label={OWN_PLACEHOLDER}
+                          placeholder={OWN_PLACEHOLDER}
+                          maxLength={OWN_WORDS_MAX}
+                          rows={3}
+                          value={ownText}
+                          disabled={answer.isPending}
+                          onChange={(e) => setOwnText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setOwnOpen(false);
+                              setRefocus(o.id);
+                            }
+                          }}
+                          className={`w-full resize-y rounded-md border border-border bg-background px-2 py-1 ${TXT}`}
+                        />
+                        <span className="flex items-center gap-2">
+                          <Button
+                            type="submit"
+                            size="xs"
+                            disabled={!ownText.trim() || answer.isPending}
+                          >
+                            Send
+                          </Button>
+                          {ownText.length >= OWN_WORDS_COUNT_FROM && (
+                            <span
+                              data-own-words-count=""
+                              className={`${TXT} ${MUTED}`}
+                            >
+                              {ownText.length} / {OWN_WORDS_MAX}
+                            </span>
+                          )}
+                        </span>
+                      </form>
+                    )}
+                    {(!isOwn ||
+                      views.some((p) => p.optionId === o.id) ||
+                      ask.answer?.optionId === o.id) && (
+                      <OptionViews
+                        views={views.filter((p) => p.optionId === o.id)}
+                        total={views.length}
+                        bars={bars}
+                        decided={
+                          !risky &&
+                          ask.answer?.optionId === o.id &&
+                          !isSendingAnswer(ask.answer)
+                            ? actor(ask.answer.by, "You")
+                            : null
+                        }
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </Fold>
           {ask.recommended?.why && (
             <p className={`${TXT} ${MUTED} break-words`}>
               Why{recIdx >= 0 && letters ? ` ${letter(recIdx)}` : ""}:{" "}
@@ -1190,14 +1243,6 @@ export function AskBlock({
                     </>
                   )}
                 </p>
-                {answerWords && ask.answer.optionId === ownId && (
-                  <q
-                    data-own-words-text=""
-                    className={`block w-fit max-w-full whitespace-pre-wrap break-words ${TXT}`}
-                  >
-                    {answerWords}
-                  </q>
-                )}
                 {ask.answer.verified === "passkey" && (
                   <span
                     data-ask-verified=""
