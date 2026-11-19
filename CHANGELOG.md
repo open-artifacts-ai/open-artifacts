@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.231.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.231.0...v0.231.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **wording:** people read "sharing by link" in spaces and settings, not "public" ([#2509](https://github.com/open-artifacts-ai/open-artifacts/issues/2509) slice 2) ([#2910](https://github.com/open-artifacts-ai/open-artifacts/issues/2910)) ([edff3d8](https://github.com/open-artifacts-ai/open-artifacts/commit/edff3d8166ec8f4c9aa0e5b6881f1ce45244b675))
+
 ## [0.231.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.230.0...v0.231.0) (2026-11-19)
 
 
