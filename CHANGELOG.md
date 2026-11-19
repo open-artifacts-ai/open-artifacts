@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.226.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.225.0...v0.226.0) (2026-11-19)
+
+
+### Features
+
+* **bus:** a Claude session joins another instance as a guest, only after using its tools ([#2793](https://github.com/open-artifacts-ai/open-artifacts/issues/2793) S3b) ([#2892](https://github.com/open-artifacts-ai/open-artifacts/issues/2892)) ([88dc188](https://github.com/open-artifacts-ai/open-artifacts/commit/88dc188a02805dd0b8e4d5eff40c2c0368ec5a6c))
+
 ## [0.225.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.224.0...v0.225.0) (2026-11-19)
 
 
