@@ -29,7 +29,8 @@ const TOKEN = `oa_machine_${"a".repeat(32)}`;
 /** A machine approved on HUB, whose instance says it runs `server`. */
 function world(server: string, running = "0.185.0") {
   const ctx = fakeCtx({ version: running });
-  mkdirSync(ctx.home, { recursive: true });
+  mkdirSync(ctx.home, { recursive: true, mode: 0o700 });
+  chmodSync(ctx.home, 0o700);
   const f = join(ctx.home, "machine.json");
   writeFileSync(
     f,
@@ -97,7 +98,8 @@ describe("oa-bus upgrade", () => {
     expect(ran[0]?.args).not.toContain("--home");
     const other = world(GOLDEN_VERSION);
     other.home = join(other.userHome, "elsewhere");
-    mkdirSync(other.home, { recursive: true });
+    mkdirSync(other.home, { recursive: true, mode: 0o700 });
+    chmodSync(other.home, 0o700);
     writeFileSync(
       join(other.home, "machine.json"),
       JSON.stringify({
@@ -262,11 +264,13 @@ describe("no npx advice to install or update (#2543)", () => {
     expect(src("steps/service.ts")).not.toMatch(/\$\{BUS_CMD\}\s+install/);
   });
 
-  it("Update available points at upgrade, with the printed command", () => {
+  it("Update available keeps main's checked-install pointer, never npx (#2803)", () => {
     for (const bus of ["oa-bus", "/h/bin/node /h/bin/dist/index.js"]) {
       const c = fakeCtx({ copy: copy(TAGS, bus) });
-      const lines = JSON.stringify(c.copy.updateAvailable("0.2.0", "0.1.0"));
-      expect(lines).toContain(`Run ${bus} upgrade.`);
+      const lines = JSON.stringify(
+        c.copy.updateAvailable("0.2.0", "0.1.0", ""),
+      );
+      expect(lines).toContain("Install the bus");
       expect(lines).not.toContain("@latest");
       expect(lines).not.toContain("npx");
     }
