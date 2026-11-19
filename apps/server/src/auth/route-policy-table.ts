@@ -233,6 +233,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The first-run checklist's install-wide state: the uncapped org owner.
   "GET /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/onboarding": { org: "onboarding.own" },
+  // #2577: the team picker and the "listens to" asked flag: members, uncapped; the flag also a browser session.
+  "GET /api/v1/me/teammates": { org: "teammates.read" },
+  "POST /api/v1/me/onboarding/listens-asked": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },

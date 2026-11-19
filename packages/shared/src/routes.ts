@@ -27,6 +27,10 @@ export const R = {
     `/api/v1/me/inbox/mutes/${seg(kind)}/${seg(id)}`,
   /** GET -> NotificationPrefs; PUT NotificationPrefs -> NotificationPrefs. */
   meNotificationPrefs: "/api/v1/me/notification-prefs",
+  /** GET -> Teammates (#2577): the other team members, id, name and initials only (never an email). Members only; a guest gets 403. */
+  meTeammates: "/api/v1/me/teammates",
+  /** POST -> Onboarding (#2577): the caller was asked about "listens to" (once; idempotent). A person in a browser only. */
+  meOnboardingListensAsked: "/api/v1/me/onboarding/listens-asked",
   /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */
   mePushKey: "/api/v1/me/push/key",
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
