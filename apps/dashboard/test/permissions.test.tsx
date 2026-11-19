@@ -283,3 +283,33 @@ it("accessLabel", () => {
     (["owner", "manager", "editor", "viewer"] as const).map(accessLabel),
   ).toEqual(["Owner", "Manager", "Editor", "Viewer"]);
 });
+
+// #2932: one access label in the title bar, never "Viewer" beside "View only".
+const eng = {
+  id: "SpEngNpQrSt2uVwX",
+  kind: "shared",
+  name: "Engineering",
+  publicLinks: true,
+};
+it("in a space, a viewer who can't write data sees one label: Viewer, with the data note", async () => {
+  mountHosted(`/a/${arts[0].id}`, true, undefined, [
+    handler({
+      access: "viewer",
+      can: guestCan,
+      capabilities: live,
+      space: eng,
+    }),
+  ]);
+  const chip = await screen.findByText("Viewer");
+  expect(chip).toHaveAttribute("tabindex", "0");
+  expect(screen.queryByText("View only")).toBeNull();
+  expect(document.querySelectorAll("[data-access-label]")).toHaveLength(1);
+  act(() => chip.focus());
+  expect(
+    (
+      await screen.findAllByText(
+        "You can view this, but you can't change its data.",
+      )
+    )[0],
+  ).toBeInTheDocument();
+});
