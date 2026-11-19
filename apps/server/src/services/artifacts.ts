@@ -926,14 +926,24 @@ export const lastPublisherSql = sql<string | null>`(select json_array(
     and lv.version = "artifacts"."current_version")`;
 
 /**
+ * #2610: a signed-out visitor, a guest-role member or a guest or restricted
+ * cap sees the person who published, never the agent: no name, no face. The
+ * server decides it here, whatever the client does.
+ */
+export const hidesAgents = (caller: Caller): boolean =>
+  caller.kind !== "user" ||
+  isGuestRole(caller.user.role) ||
+  capsReads(capOfCaller(caller));
+
+/**
  * `lastAgent` as `caller` sees it (agentFor), from lastPublisherSql's value
- * alone. A missing version row hides the name.
+ * alone. A missing version row hides the name; an outsider gets none (#2610).
  */
 export function shownLastAgent(
   pub: string | null | undefined,
   caller: Caller,
 ): AgentRef | null {
-  if (!pub) return null;
+  if (!pub || hidesAgents(caller)) return null;
   const [via, by, email, name, displayName, agentName, agentVersion] =
     JSON.parse(pub) as (string | null)[];
   if (agentName == null) return null;
@@ -1508,6 +1518,9 @@ function docSaveField(
   const by = d.by;
   const u = by?.userId ? people.get(by.userId) : undefined;
   if (!by || !u) return { docSave: { kind: d.kind } };
+  // #2610: an outsider sees no agent's name, not even as a save's author.
+  if (by.kind === "agent" && hidesAgents(caller))
+    return { docSave: { kind: d.kind } };
   if (by.kind === "agent")
     return {
       docSave: {
@@ -1593,8 +1606,9 @@ export async function listVersions(
     version: v.version,
     message: v.message,
     ...docSaveField(saves.get(v.version), people, caller, viewerId),
+    // #2610: an outsider gets the person (createdBy) only, never the agent.
     agent:
-      v.agent_name == null
+      v.agent_name == null || outsider
         ? null
         : {
             ...agentFor(

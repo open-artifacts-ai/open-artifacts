@@ -1573,6 +1573,37 @@ async function pagePublisher(
   };
 }
 
+/**
+ * #2610: the agent that published the page's current version, as GET
+ * R.artifact shows it to a member: its roster key and name, the person it
+ * acts for by public name, and whether it is the viewer's own. Null for a page
+ * a person published, an agent that is gone (see pagePublisher), or a viewer
+ * who may not see agents. Never throws.
+ */
+export async function pageAgentFor(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  viewerId: string,
+): Promise<{ key: string; name: string; for: string; me: boolean } | null> {
+  try {
+    const p = await pagePublisher(env, a, {
+      kind: "user",
+      id: viewerId,
+      typed: true,
+    });
+    if (!p) return null;
+    const owner = await getUser(env, p.userId);
+    return {
+      key: p.key,
+      name: p.name,
+      for: (owner && shownName(owner)) || "Member",
+      me: p.userId === viewerId,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** The key of a roster agent (comment-agents.ts agentKey). */
 const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
 
@@ -2015,7 +2046,11 @@ async function addThreadInner(
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   who: CommentWho,
   viewer: CommentViewer,
-  raw: { anchor: unknown; body: unknown } & CommentExtras,
+  raw: {
+    anchor: unknown;
+    body: unknown;
+    notifyPageAgent?: boolean;
+  } & CommentExtras,
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const pics = raw.pictures ?? [];
@@ -2042,7 +2077,8 @@ async function addThreadInner(
   if (!taken) await take();
   const page0 =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
-    anchor.kind === "note" &&
+    // #2610: a note, a comment on selected text and a pin alike, unless the chip was removed.
+    raw.notifyPageAgent !== false &&
     body !== "" &&
     r0.mentions.length === 0 &&
     r0.agents.length === 0 &&

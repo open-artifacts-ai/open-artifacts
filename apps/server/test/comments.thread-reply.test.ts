@@ -594,11 +594,18 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
     expect(names()).toEqual(["Claude"]);
   });
 
-  it("text-anchored threads add nobody", async () => {
+  it("text-anchored threads add the publisher too (#2610), unless notifyPageAgent is false", async () => {
     const s = await setup({}, LINKED);
     const r = await post(s.id, viewer, { anchor: TEXT });
     expect(r.status).toBe(201);
-    const t = (await r.json()) as Thread;
+    expect(toNames()).toEqual(["Claude"]);
+    bus.clear();
+    const off = await post(s.id, viewer, {
+      anchor: TEXT,
+      notifyPageAgent: false,
+    });
+    expect(off.status).toBe(201);
+    const t = (await off.json()) as Thread;
     await reply(s.id, t.id, viewer);
     expect(bus.sent).toHaveLength(0);
   });

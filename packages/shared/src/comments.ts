@@ -474,6 +474,13 @@ export const NewThreadBodySchema = z
     ...extras,
     /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
     pictures: pictureRefs,
+    /**
+     * #2610: `false` means this thread does not notify the page's publishing
+     * agent (and does not add it as a participant). Left out, a note, a comment
+     * on selected text and a pin all notify it (R.artifact's `pageAgent`).
+     * An @mention still works.
+     */
+    notifyPageAgent: z.boolean().optional(),
   })
   .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
     path: ["body"],

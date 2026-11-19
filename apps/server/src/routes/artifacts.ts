@@ -27,6 +27,7 @@ import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AgentAttr } from "../services/agent-usage.js";
 import {
   getSummary,
+  hidesAgents,
   list,
   listVersions,
   patch,
@@ -38,6 +39,7 @@ import {
   softDelete,
   undelete,
 } from "../services/artifacts.js";
+import { pageAgentFor } from "../services/comments.js";
 import {
   editDoc,
   restoreDocVersion,
@@ -171,9 +173,14 @@ export function mountArtifacts(app: AppType): void {
     return c.json(await listTrash(c.env, callerOf(user), q.data));
   });
 
-  app.get(ARTIFACT, async (c) =>
-    c.json(await getSummary(c.env, caller(c), idParam(c))),
-  );
+  app.get(ARTIFACT, async (c) => {
+    const who = caller(c);
+    const s = await getSummary(c.env, who, idParam(c));
+    // #2610: the page's publishing agent, members only; a guest or a signed-out visitor gets none.
+    if (who.kind !== "user" || hidesAgents(who)) return c.json(s);
+    const pageAgent = await pageAgentFor(c.env, s, who.user.id);
+    return c.json(pageAgent ? { ...s, pageAgent } : s);
+  });
 
   app.patch(ARTIFACT, async (c) => {
     const user = requireUser(c);
