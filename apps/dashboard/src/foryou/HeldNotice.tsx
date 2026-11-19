@@ -84,7 +84,7 @@ export function HeldCard({
     if (stale) {
       setWide(null);
       setSnap(null);
-      setNote("These changed. Read them again.");
+      setNote("The words changed. Read them again before you allow.");
     }
   }, [stale]);
   // Only what is on screen goes: the snapshot in the confirm step, else the notice's own words.
@@ -157,7 +157,7 @@ export function HeldCard({
       <div data-held-confirm="" className="grid gap-2.5">
         <h3 className="m-0 text-[14px] font-semibold">{title}</h3>
         <p className={NOTE}>
-          {`Allows these ${plural(n)} from ${who} now, and the later ones below.`}
+          {`Allows ${who}'s ${n} waiting ${n === 1 ? "request" : "requests"} now, and later ones ${space ? `on pages in "${r.space?.name}"` : "on every page"} until the date you pick.`}
         </p>
         <p className={NOTE}>
           {space

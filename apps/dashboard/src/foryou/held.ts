@@ -65,9 +65,9 @@ export function leftoverText(r: Pick<AllowResult, "changed" | "waiting">) {
   const out: string[] = [];
   if (r.changed > 0)
     out.push(
-      `${plural(r.changed, "request", "requests")} changed while you looked, so ${r.changed === 1 ? "it is" : "they are"} held again at the new words.`,
+      `${plural(r.changed, "request", "requests")} changed while you were reading, so ${r.changed === 1 ? "it's" : "they're"} held again with the new words.`,
     );
-  if (r.waiting > 0) out.push(`${r.waiting} still waiting (hourly limit).`);
+  if (r.waiting > 0) out.push(`${r.waiting} ${r.waiting === 1 ? "is" : "are"} still waiting because of the hourly limit.`);
   return out.join(" ");
 }
 

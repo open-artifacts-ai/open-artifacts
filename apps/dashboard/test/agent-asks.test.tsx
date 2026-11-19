@@ -156,7 +156,7 @@ describe("the held-request notice", () => {
     );
     fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
     expect(
-      await screen.findByText(/1 request changed while you looked/),
+      await screen.findByText(/1 request changed while you were reading/),
     ).toBeInTheDocument();
     expect(
       within(panel).getByRole("button", { name: "Allow once" }),
@@ -171,7 +171,7 @@ describe("the held-request notice", () => {
     );
     fireEvent.click(within(panel).getByRole("button", { name: "Allow once" }));
     expect(
-      await screen.findByText(/1 still waiting \(hourly limit\)/),
+      await screen.findByText(/1 is still waiting because of the hourly limit/),
     ).toBeInTheDocument();
     expect(
       within(panel).getByRole("button", { name: "Allow once" }),
@@ -195,14 +195,14 @@ describe("the held-request notice", () => {
     expect(
       await within(panel).findByText("Allow Dev on all pages?"),
     ).toBeInTheDocument();
-    expect(panel).toHaveTextContent("Allows these 3 requests from Dev now");
+    expect(panel).toHaveTextContent("Allows Dev's 3 waiting requests now, and later ones on every page until the date you pick.");
     hash = "f".repeat(64);
     act(() => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
     expect(
-      await within(panel).findByText("These changed. Read them again."),
+      await within(panel).findByText("The words changed. Read them again before you allow."),
     ).toBeInTheDocument();
     expect(
       within(panel).getByRole("button", { name: "Allow once" }),
@@ -378,7 +378,7 @@ describe("the held-request notice", () => {
     expect(endDate(now + 30 * 86_400_000, now)).toBe("15 December");
     expect(endDate(now + 365 * 86_400_000, now)).toBe("15 November next year");
     expect(leftoverText({ changed: 1, waiting: 2 })).toBe(
-      "1 request changed while you looked, so it is held again at the new words. 2 still waiting (hourly limit).",
+      "1 request changed while you were reading, so it's held again with the new words. 2 are still waiting because of the hourly limit.",
     );
     expect(
       allowedText({
@@ -457,7 +457,7 @@ describe("Settings: who can ask my agents", () => {
   it("the switch hint shows on and off, and the fine print sits under the list", async () => {
     await settings();
     expect(
-      await screen.findByText(/^On: anyone not on your list waits for you/),
+      await screen.findByText(/^On: anyone not on your list waits until you allow them/),
     ).toBeInTheDocument();
     expect(
       await screen.findByText(

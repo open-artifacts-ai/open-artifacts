@@ -21,7 +21,7 @@ import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 export const REQUESTS_OFF =
   "Off: your agents only answer you, and teammates are told so.";
 export const REQUESTS_ON =
-  "On: anyone not on your list waits for you to allow them.";
+  "On: anyone not on your list waits until you allow them.";
 export const LISTENS_FINE_PRINT =
   "Your agents are told to bring merging, deploying, deleting, sharing and making a page public back to you, and those need your own answer on an ask. The list doesn't apply on pages open to guests or to anyone with the link.";
 export const LISTENS_EMPTY =
