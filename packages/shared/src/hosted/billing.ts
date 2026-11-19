@@ -237,7 +237,14 @@ export const BillingSeatsSchema = z.object({
   members: z.number().int().nonnegative(),
   /** An outcome string (billing's own vocabulary); logged, never branched on. */
   applied: z.string().max(64),
-  /** True when billing wants the count sent again soon (held, stale, failed); absent from older billing = false. */
+  /** True when billing wants the count sent again soon (stale or failed); absent from older billing = false. */
   retry: z.boolean().optional(),
+  /** #2588: set only when this report was a big jump that billing billed at once: the count before and after. The owner is emailed. Absent from older billing. */
+  jump: z
+    .object({
+      from: z.number().int().nonnegative(),
+      to: z.number().int().positive(),
+    })
+    .optional(),
 });
 export type BillingSeats = z.infer<typeof BillingSeatsSchema>;

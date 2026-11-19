@@ -2,7 +2,15 @@
 // /seats after every write that can move the count, and the daily tick.
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
 import { ROUTE_POLICY } from "../src/auth/route-policy-table.js";
 import {
@@ -318,5 +326,102 @@ describe("daily reconcile", () => {
     await scheduled({ cron: DIRECTORY_SYNC_CRON }, H, ctx);
     await Promise.all(pending);
     expect(seatCalls().length).toBe(1);
+  });
+});
+
+describe("a big jump billed at once emails the owner (#2588)", () => {
+  const sends: { to: string; subject: string; text: string; html: string }[] =
+    [];
+  let failSend = false;
+  const HE = () =>
+    ({
+      ...(H as object),
+      EMAIL: {
+        send: vi.fn(async (m: (typeof sends)[number]) => {
+          if (failSend) throw new Error("boom");
+          sends.push(m);
+          return { messageId: `m${sends.length}` };
+        }),
+      },
+      EMAIL_FROM: "noreply@x.com",
+    }) as unknown as typeof H;
+  const run = (e: typeof H, at: number) =>
+    withBrokerProps({ props }, () => reportSeats(e, at, true));
+  const jumpKeys = () =>
+    env.DB.prepare(
+      "select key from settings where key like 'billing.seats.jump:%'",
+    )
+      .all<{ key: string }>()
+      .then((r) => r.results);
+  beforeEach(async () => {
+    sends.length = 0;
+    failSend = false;
+    fake.seatsJump = undefined;
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.seats.jump:%'",
+    ).run();
+    await env.DB.prepare("delete from counters where key like 'email:%'").run();
+  });
+  afterEach(() => {
+    fake.seatsJump = undefined;
+    fake.seatsRetry = undefined;
+  });
+
+  it("a jump sends one email to the owner with Product's copy", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    await run(HE(), Date.now());
+    expect(sends).toHaveLength(1);
+    const m = sends[0] as (typeof sends)[number];
+    expect(m.to).toBe(`own-${tag}@x.com`);
+    expect(m.subject).toMatch(/^.+: 14 members now, billed today$/);
+    expect(m.text).toContain(
+      "grew from 3 to 14 members today. Because that's a big jump, we billed the 11 new members right away, prorated for the rest of your billing period.",
+    );
+    expect(m.text).toContain(
+      `Settings, Members: https://${(H as { APP_HOST: string }).APP_HOST}/settings/members`,
+    );
+    expect(m.text).toContain("Settings, Plan and billing: https://");
+    expect(m.text).toContain("/settings/plan");
+    expect(m.text).not.toContain("\u2014");
+    expect(m.html).toContain("/settings/members");
+  });
+
+  it("a repeat report of the same jump sends none", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    // retry: billing asks for the count again soon, and answers the jump again.
+    fake.seatsRetry = true;
+    const e = HE();
+    const t = Date.now();
+    await run(e, t);
+    await run(e, t + 120_000);
+    expect(seatCalls().length).toBe(2);
+    expect(sends).toHaveLength(1);
+    expect(await jumpKeys()).toHaveLength(1);
+  });
+
+  it("no jump, no email", async () => {
+    await run(HE(), Date.now());
+    expect(sends).toHaveLength(0);
+    expect(await jumpKeys()).toHaveLength(0);
+  });
+
+  it("a send failure does not break the report, and a later report retries", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    failSend = true;
+    const e = HE();
+    const t = Date.now();
+    await expect(run(e, t)).resolves.toBeUndefined();
+    expect(seatCalls().length).toBeGreaterThan(0);
+    expect(sends).toHaveLength(0);
+    expect(await jumpKeys()).toHaveLength(0);
+    failSend = false;
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(sends).toHaveLength(1);
+  });
+
+  it("an install that can't send email does not fail either", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    await expect(run(H, Date.now())).resolves.toBeUndefined();
+    expect(await jumpKeys()).toHaveLength(0);
   });
 });

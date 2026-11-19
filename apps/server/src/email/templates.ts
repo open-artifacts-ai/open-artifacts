@@ -644,3 +644,59 @@ export function directoryAlertEmail(p: {
     },
   );
 }
+
+// #2588: a big member jump was billed at once (OA Product-2's copy).
+const SEAT_JUMP_TXT = `{{instanceName}}: {{to}} {{toNoun}} now, billed today
+
+Your team on {{instanceName}} grew from {{from}} to {{to}} {{toNoun}} today. Because that's a big jump, we billed the {{added}} new {{addedNoun}} right away, prorated for the rest of your billing period{{amountPart}}.
+
+See who joined, or remove anyone who shouldn't be there, in Settings, Members: {{membersUrl}}
+Your invoice is in Settings, Plan and billing: {{billingUrl}}
+
+{{appHost}}
+`;
+
+const SEAT_JUMP_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{to}} {{toNoun}} now, billed today</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>Your team on {{instanceName}} grew from {{from}} to {{to}} {{toNoun}} today. Because that's a big jump, we billed the {{added}} new {{addedNoun}} right away, prorated for the rest of your billing period{{amountPart}}.</p>
+<p>See who joined, or remove anyone who shouldn't be there, in <a href="{{membersUrl}}">Settings, Members</a>.<br>Your invoice is in <a href="{{billingUrl}}">Settings, Plan and billing</a>.</p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+const noun = (n: number) => (n === 1 ? "member" : "members");
+
+/**
+ * To the instance owner(s) when billing billed a big member jump at once
+ * (#2588). `amount` is shown only when known (already formatted, e.g.
+ * "$120.00"); without it the sentence ends at "billing period".
+ */
+export function seatJumpEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  from: number;
+  to: number;
+  amount?: string;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  const added = Math.max(0, p.to - p.from);
+  const amount = p.amount ? oneLine(p.amount, 40) : "";
+  return render(
+    SEAT_JUMP_HTML,
+    SEAT_JUMP_TXT,
+    "{{instanceName}}: {{to}} {{toNoun}} now, billed today",
+    {
+      ...values,
+      from: String(p.from),
+      to: String(p.to),
+      toNoun: noun(p.to),
+      added: String(added),
+      addedNoun: noun(added),
+      amountPart: amount ? ` (${amount})` : "",
+      membersUrl: linkOn(origin, "/settings/members"),
+      billingUrl: linkOn(origin, "/settings/plan"),
+    },
+  );
+}

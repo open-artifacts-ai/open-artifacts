@@ -165,6 +165,7 @@ export type EmailKind =
   | "directory"
   | "comment"
   | "passkey"
+  | "seat_jump"
   | "setup_reminder";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
