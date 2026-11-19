@@ -399,7 +399,9 @@ describe("First setup: one question", () => {
       () => new HttpResponse(null, { status: 204 }),
     ),
     http.post(`*${R.agentListens}`, () => HttpResponse.json({ entries: [] })),
-    http.put(`*${R.agentRequests}`, () => HttpResponse.json({ on: false })),
+    http.put(`*${R.agentRequests}`, () =>
+      HttpResponse.json({ on: false, phonePush: false }),
+    ),
   ];
   const card = () => document.querySelector("section[data-first-setup]");
   const mountIt = (over: object = {}, people = PEOPLE) =>

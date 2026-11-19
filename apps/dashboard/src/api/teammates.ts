@@ -1,61 +1,45 @@
-// PROVISIONAL (#2577 s2): the shapes of OA Backend-3's next routes, mirrored
-// here until packages/shared carries them. When it does, delete this file and
-// import the same names from @oa/shared.
-//   - GET R.meTeammates -> { members: [{ id, name, initials }] }: the team's
-//     members for any signed-in member (never emails, never the caller).
-//   - Share rows and PUT share responses gain `memberId: string | null`.
-//   - R.onboarding gains `listensAsked: boolean`; POST LISTENS_ASKED sets it
-//     (browser session, idempotent).
-import { OnboardingSchema, ShareResultSchema, ShareSchema } from "@oa/shared";
+/** #2577: the team's members (R.meTeammates) and the first-setup question's flag (R.meOnboardingListensAsked). */
+import {
+  type Onboarding,
+  OnboardingSchema,
+  R,
+  type Teammates,
+  TeammatesSchema,
+} from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { z } from "zod";
 import { api } from "./client";
+import { qk } from "./queries";
 
-export const ME_TEAMMATES = "/api/v1/me/teammates";
-export const LISTENS_ASKED = "/api/v1/me/onboarding/listens-asked";
+export type MyTeammate = Teammates["members"][number];
 
-export const TeammateSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  initials: z.string(),
-});
-export type MyTeammate = z.infer<typeof TeammateSchema>;
-export const TeammatesSchema = z.object({ members: z.array(TeammateSchema) });
-
-/** The team's members. An older server answers 404: this query errors and callers fall back. */
+/**
+ * The team's other members. A guest or restricted caller is refused (403, or
+ * 404 on an older server): the query errors and callers show their own
+ * fallback or an empty state.
+ */
 export const useMyTeammates = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: ["me", "teammates"],
     retry: false,
     staleTime: 60_000,
-    queryFn: ({ signal }) => api.get(ME_TEAMMATES, TeammatesSchema, signal),
+    queryFn: ({ signal }) => api.get(R.meTeammates, TeammatesSchema, signal),
   });
 
-export const OnboardingWithListens = OnboardingSchema.extend({
-  listensAsked: z.boolean().optional(),
-});
-export type OnboardingWithListens = z.infer<typeof OnboardingWithListens>;
-
 /** Whether the first-setup question was answered; absent on an old server. */
-export const listensAskedOf = (o: object | undefined): boolean | undefined =>
-  (o as { listensAsked?: boolean } | undefined)?.listensAsked;
-
-export const ShareRowWithMember = ShareSchema.extend({
-  memberId: z.string().nullable().optional(),
-});
-export const ShareResultWithMember = ShareResultSchema.extend({
-  memberId: z.string().nullable().optional(),
-});
+export const listensAskedOf = (o: Onboarding | undefined) => o?.listensAsked;
 
 /** Marks the first-setup question as asked (idempotent). */
 export const useMarkListensAsked = () => {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.send("POST", LISTENS_ASKED, undefined),
-    onSuccess: () =>
-      qc.setQueryData<object | undefined>(["onboarding"], (o) =>
-        o ? { ...o, listensAsked: true } : o,
-      ),
+    mutationFn: () =>
+      api.send("POST", R.meOnboardingListensAsked, undefined, OnboardingSchema),
+    onSuccess: (o) =>
+      o
+        ? qc.setQueryData(qk.onboarding, o)
+        : qc.setQueryData<Onboarding | undefined>(qk.onboarding, (cur) =>
+            cur ? { ...cur, listensAsked: true } : cur,
+          ),
   });
 };

@@ -1,8 +1,8 @@
-// PROVISIONAL (#2577 s2): mock-only teammates, `memberId` on shares and
-// `listensAsked` on onboarding, over the shared mocks. Delete with
-// src/api/teammates.ts once the shared mocks serve them.
+// Mock-only teammates, `memberId` on shares and `listensAsked` on onboarding,
+// over the shared mocks (which do not serve them yet).
+
+import { R } from "@oa/shared";
 import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
-import { LISTENS_ASKED, ME_TEAMMATES } from "./api/teammates";
 
 type M = { id: string; name: string | null; email: string; role: string };
 
@@ -30,7 +30,7 @@ export function teammatesHandlers(
     return res?.ok ? ((await res.json()) as M[]) : [];
   };
   return [
-    http.get(`*${ME_TEAMMATES}`, async ({ request }) => {
+    http.get(`*${R.meTeammates}`, async ({ request }) => {
       const list = (await members(request)).filter(
         (m) => m.role === "member" || m.role === "admin",
       );
@@ -41,9 +41,20 @@ export function teammatesHandlers(
         }),
       });
     }),
-    http.post(`*${LISTENS_ASKED}`, () => {
+    http.post(`*${R.meOnboardingListensAsked}`, async ({ request }) => {
       asked = true;
-      return new HttpResponse(null, { status: 204 });
+      const res = await getResponse(
+        next,
+        new Request(new URL(R.onboarding, request.url), {
+          headers: request.headers,
+        }),
+      );
+      const o = res?.ok ? ((await res.json()) as object) : {};
+      return HttpResponse.json({
+        ...o,
+        agentConnected: true,
+        listensAsked: true,
+      });
     }),
     http.get("*/api/v1/onboarding", async ({ request }) => {
       const res = await getResponse(next, request);
