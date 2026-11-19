@@ -299,6 +299,8 @@ export function mountMe(app: AppType): void {
     const user = requireUser(c);
     if (!orgCan(user, "teammates.read", { cap: capOfCaller(caller(c)) }))
       throw new ApiError("members_only", "The team list is for members");
+    // A person in a browser only: never a token, a grant or an agent.
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
     return c.json(await listTeammates(c.env, user.id));
   });
   // #2577: the caller was asked about "listens to". Once; a repeat changes

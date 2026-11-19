@@ -103,6 +103,11 @@ describe("GET R.meTeammates", () => {
     expect(m?.initials).toBe("S");
   });
 
+  it("refuses a token (404): a browser session only", async () => {
+    const pat = (await createPat(env, caller.userId, "agent")).token;
+    expect((await teammates(pat)).status).toBe(404);
+  });
+
   it("refuses a guest (404, the route gate hides it) and anonymous (401)", async () => {
     expect((await teammates(guest.cookie)).status).toBe(404);
     expect((await teammates(null)).status).toBe(401);
