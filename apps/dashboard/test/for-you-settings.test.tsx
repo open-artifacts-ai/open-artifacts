@@ -4,7 +4,7 @@
 import { type NotificationPrefs, NotificationPrefsSchema, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { muteErrorCopy } from "../src/foryou/prefsContract";
 import {
@@ -488,12 +488,12 @@ describe("this browser's notifications (slice 3, S5)", () => {
     ]) {
       expect(el).toHaveAttribute("aria-checked", "false");
       expect(el).toBeDisabled();
-      expect(el).toHaveAccessibleDescription("Not turned on yet");
+      expect(el).toHaveAccessibleDescription("Off for this site");
     }
     // An owner step, in plain words, once, under the table.
     expect(
       screen.getByText(
-        /^Browser notifications aren't turned on for .+ yet\. The owner turns them on by upgrading the instance\.$/,
+        /^Browser notifications aren't turned on for .+ yet\. Upgrading the instance turns them on: it adds the keys they need\. Everything else on this page works now\.$/,
       ),
     ).toBeInTheDocument();
     expect(
@@ -507,6 +507,34 @@ describe("this browser's notifications (slice 3, S5)", () => {
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  });
+
+  it("no push key, a member: says who can turn it on, by the owner's name", async () => {
+    server.use(
+      http.get(`*${R.mePushKey}`, () => err("push_unavailable", 404)),
+      http.get("*/api/v1/me", async ({ request }) => {
+        const res = await getResponse(
+          createHandlers({ events, forYou: "mixed" }),
+          request,
+        );
+        const me = (await res?.json()) as Record<string, any>;
+        return HttpResponse.json({
+          ...me,
+          user: { ...me.user, role: "member" },
+          instanceOwner: { name: "Leo Urbina" },
+        });
+      }),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    fakePush("default");
+    mount("/settings/notifications");
+    expect(
+      await screen.findByText(
+        /^Browser notifications aren't turned on for .+ yet\. Leo Urbina, who runs this site, can turn them on\. Everything else on this page works now\.$/,
+        {},
+        { timeout: FIRST_LOAD_MS },
+      ),
+    ).toBeInTheDocument();
   });
 
   it("no push key: the interrupts box still saves", async () => {
@@ -577,7 +605,7 @@ describe("iPhone and iPad (#2943)", () => {
       ),
     ).toBeInTheDocument();
     expect(document.querySelector("[data-push-note]")?.textContent).toMatch(
-      /^On iPhone, notifications work once you add .+ to your Home Screen: tap Share, then Add to Home Screen, then open it from there\.$/,
+      /^On iPhone and iPad, notifications work only once this site is on your Home Screen\. Tap Share, then Add to Home Screen, and open it from there\.$/,
     );
     expect(
       screen.queryByText("This browser can't show notifications."),
@@ -588,6 +616,31 @@ describe("iPhone and iPad (#2943)", () => {
     expect(
       screen.getByText("These apply as soon as notifications reach a browser."),
     ).toBeInTheDocument();
+  });
+
+  it("an iPad that reports a Mac is treated as iOS too", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    });
+    Object.defineProperty(navigator, "maxTouchPoints", {
+      configurable: true,
+      value: 5,
+    });
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/settings/notifications");
+    expect(
+      await screen.findByText(
+        "Add to Home Screen first",
+        {},
+        { timeout: FIRST_LOAD_MS },
+      ),
+    ).toBeInTheDocument();
+    Object.defineProperty(navigator, "maxTouchPoints", {
+      configurable: true,
+      value: 0,
+    });
   });
 
   it("from the Home Screen it is the normal case: a switch, no iOS line", async () => {
@@ -621,7 +674,7 @@ describe("iPhone and iPad (#2943)", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(note).toHaveTextContent("tap Share, then Add to Home Screen");
+    expect(note).toHaveTextContent("Tap Share, then Add to Home Screen");
   });
 });
 

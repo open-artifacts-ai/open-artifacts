@@ -15,6 +15,8 @@ type PushSubscriptionItem = PushSubscriptions["items"][number];
 import { Button } from "@oa/ui/shadcn";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { useOwnerName } from "../api/myOnboarding";
+import { useMe } from "../auth/useMe";
 import {
   browserTimeZone,
   useMutes,
@@ -42,6 +44,7 @@ import {
 import { toast } from "../layout/toast";
 import { useInstanceName } from "../layout/useDocumentTitle";
 import { OptionSelect } from "./OptionSelect";
+import { isOrgAdmin } from "./spaces/access";
 import { Switch } from "./spaces/Switch";
 import { muted } from "./ui";
 
@@ -61,6 +64,17 @@ const BOX =
   "rounded-[12px] border border-[var(--oa-divider)] bg-[var(--oa-surface)] px-3.5 py-3 text-[length:var(--oa-text-sm)]";
 const ROW =
   "flex items-center justify-between gap-[var(--oa-space-3)] border-t border-[var(--oa-divider)] py-2 first:border-t-0 max-[600px]:flex-wrap";
+
+/** The no-push-keys line for this viewer: an owner or admin can fix it, anyone else is told who can. */
+export function useNoKeyLine(): string {
+  const site = useInstanceName();
+  const state = useMe();
+  const owner = useOwnerName();
+  const admin = state.status === "authed" && isOrgAdmin(state.me);
+  return admin
+    ? NOTIF_WORDS.noKeyAdmin(site)
+    : NOTIF_WORDS.noKeyOther(site, owner.name);
+}
 
 /** Shown only when the server has For you (Me.inbox). */
 export function ForYouPrefs() {
@@ -118,7 +132,7 @@ function Levels({
   setPerm: (p: NotificationPermission) => void;
 }) {
   const supported = pushSupported();
-  const site = useInstanceName();
+  const noKeyLine = useNoKeyLine();
   // The cell says it short, the row under it says it in full.
   const blocked = supported && perm === "denied";
   // iPhone or iPad in a Safari tab: a person step, not "can't".
@@ -129,9 +143,9 @@ function Levels({
   const mine = thisSubscription(subs.data, userId);
   const note =
     pushKey === null
-      ? NOTIF_WORDS.noKey(site)
+      ? noKeyLine
       : ios
-        ? NOTIF_WORDS.iosHome(site)
+        ? NOTIF_WORDS.iosHome
         : !supported
           ? PUSH_WORDS.cant
           : blocked

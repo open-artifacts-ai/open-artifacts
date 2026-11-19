@@ -33,7 +33,6 @@ import { useHeld } from "../api/agentAsks";
 import { useThreads } from "../api/comments";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
-import { useInstanceName } from "../layout/useDocumentTitle";
 import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { AskBlock, asksForMe, showsAskBody } from "../viewer/comments/asks";
 import { Markdown } from "../viewer/comments/Markdown";
@@ -599,7 +598,6 @@ function ForYouPanel({
  * phone). Once something needs the person; "Not now" hides it as the nudge's does.
  */
 function IosNote({ needsYou }: { needsYou: InboxItem[] }) {
-  const site = useInstanceName();
   const [gone, setGone] = useState(nudgeDismissed);
   if (gone || needsYou.length === 0 || !iosNeedsHomeScreen()) return null;
   return (
@@ -607,7 +605,7 @@ function IosNote({ needsYou }: { needsYou: InboxItem[] }) {
       data-push-ios=""
       className="mx-3 my-2.5 flex items-center gap-2.5 rounded-[10px] bg-[var(--oa-accent-soft)] px-3 py-2.5 text-[13.5px]"
     >
-      <span className="min-w-0 flex-1">{NOTIF_WORDS.iosHome(site)}</span>
+      <span className="min-w-0 flex-1">{NOTIF_WORDS.iosHome}</span>
       <button
         type="button"
         className="flex-none cursor-pointer border-0 bg-transparent p-0 text-[13px] text-[var(--oa-accent-fg)] underline"

@@ -88,30 +88,35 @@ export const PUSH_WORDS = {
 
 /**
  * #2942, #2943: the Settings → Notifications words that say what to do and who
- * does it. PROVISIONAL until OA Product-2 answers: every string is here so it
- * can be swapped in one place.
+ * does it (OA Product-2's final copy). Every string is here, in one place.
  */
 export const NOTIF_WORDS = {
   /** The matrix column for the inbox (#2942: there is no app, only the browser). */
   inOA: "In Open Artifacts",
   /** Under the account settings when push can't reach this browser (#2943). */
   applyLater: "These apply as soon as notifications reach a browser.",
-  /** The server has no push key: an owner step. */
-  noKey: (site: string) =>
-    `Browser notifications aren't turned on for ${site || "this site"} yet. The owner turns them on by upgrading the instance.`,
-  noKeyCell: "Not turned on yet",
+  /** The server has no push keys, for an owner or admin: they can fix it. */
+  noKeyAdmin: (site: string) =>
+    `Browser notifications aren't turned on for ${site || "this site"} yet. Upgrading the instance turns them on: it adds the keys they need. Everything else on this page works now.`,
+  /** The same, for everyone else: who can turn them on (the owner, by name when known). */
+  noKeyOther: (site: string, owner: string | null) =>
+    `Browser notifications aren't turned on for ${site || "this site"} yet. ${owner ? `${owner}, who runs this site, can turn them on.` : "The person who runs this site can turn them on."} Everything else on this page works now.`,
+  /** The This-browser cell with no keys. */
+  noKeyCell: "Off for this site",
   /** iPhone or iPad Safari, not added to the Home Screen: a person step. */
-  iosHome: (site: string) =>
-    `On iPhone, notifications work once you add ${site || "this site"} to your Home Screen: tap Share, then Add to Home Screen, then open it from there.`,
+  iosHome:
+    "On iPhone and iPad, notifications work only once this site is on your Home Screen. Tap Share, then Add to Home Screen, and open it from there.",
   iosCell: "Add to Home Screen first",
 } as const;
 
-/** iPhone, iPad or iPod, including an iPad that says it is a Mac. */
+/** iPhone, iPad or iPod, including an iPad that reports a Mac ("Macintosh" with touch points). */
 export const isIos = (
   ua = navigator.userAgent,
   platform = navigator.platform,
   touch = navigator.maxTouchPoints,
-) => /iPhone|iPad|iPod/.test(ua) || (platform === "MacIntel" && touch > 1);
+) =>
+  /iPhone|iPad|iPod/.test(ua) ||
+  ((/Macintosh/.test(ua) || platform === "MacIntel") && touch > 1);
 
 /** Opened from the Home Screen (iOS `navigator.standalone`, or display-mode standalone). */
 export const isStandalone = () =>

@@ -13,8 +13,8 @@ import {
   usePushKey,
 } from "../foryou/push";
 import { toast } from "../layout/toast";
-import { useInstanceName } from "../layout/useDocumentTitle";
 import { AppLink } from "../library/AppLink";
+import { useNoKeyLine } from "./ForYouPrefs";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 
@@ -27,18 +27,18 @@ export function HeldRequests() {
   const sw = useAgentRequests();
   const save = useSetPhonePush();
   const key = usePushKey(true);
-  const site = useInstanceName();
+  const noKeyLine = useNoKeyLine();
   const on = save.isPending ? save.variables : (sw.data?.phonePush ?? false);
   const perm = permission();
   // Browser notifications can't reach anyone here: say so, and where to fix it.
   const blocked =
     key.isSuccess && !key.data
-      ? NOTIF_WORDS.noKey(site)
+      ? noKeyLine
       : perm === "denied"
         ? PUSH_WORDS.blocked
         : perm === "unsupported"
           ? iosNeedsHomeScreen()
-            ? NOTIF_WORDS.iosHome(site)
+            ? NOTIF_WORDS.iosHome
             : PUSH_WORDS.cant
           : null;
   return (
