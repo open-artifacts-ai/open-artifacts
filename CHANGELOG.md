@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.224.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.223.0...v0.224.0) (2026-11-19)
+
+
+### Features
+
+* **asks:** no passkey on asks for now; no passkey UI in Settings ([#2864](https://github.com/open-artifacts-ai/open-artifacts/issues/2864)) ([#2881](https://github.com/open-artifacts-ai/open-artifacts/issues/2881)) ([c72a67a](https://github.com/open-artifacts-ai/open-artifacts/commit/c72a67a4053a730b73d5931415c442933b5ae054))
+
+
+### Bug Fixes
+
+* **asks:** an agent's pick never replaces a person's typed decision ([#2886](https://github.com/open-artifacts-ai/open-artifacts/issues/2886)) ([#2891](https://github.com/open-artifacts-ai/open-artifacts/issues/2891)) ([ed3aa7c](https://github.com/open-artifacts-ai/open-artifacts/commit/ed3aa7c00beb9deb9a94482969baabaf4b7e4cae))
+
 ## [0.223.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.222.0...v0.223.0) (2026-11-19)
 
 
