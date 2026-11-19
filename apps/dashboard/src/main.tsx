@@ -740,7 +740,10 @@ async function startMocks() {
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
     // &asks=1: the same asks with another mock (e.g. ?mock=doc, #1100).
-    commentAsks: params.get("mock") === "asks" || params.get("asks") === "1",
+    commentAsks:
+      params.get("mock") === "asks" ||
+      params.get("mock") === "own-words" ||
+      params.get("asks") === "1",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
@@ -868,6 +871,14 @@ async function startMocks() {
     ]),
     ...pics,
   );
+  // ?mock=own-words, "Something else" with a typed answer.
+  if (params.get("mock") === "own-words" || params.get("ownwords") === "1")
+    extra.unshift(
+      ...(await import("./mockOwnWords")).ownWordsHandlers([
+        ...pics,
+        ...mainHandlers,
+      ]),
+    );
   // #2577 s2 (mock): teammates, memberId on shares, the first-setup question (&asked=1: already answered).
   if (agentAsksOn(params))
     extra.unshift(

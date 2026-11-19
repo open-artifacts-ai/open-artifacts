@@ -1,4 +1,5 @@
 import type { Comment, CommentThread } from "@oa/shared";
+import { optionIdOf } from "./ownWords";
 
 /** #2381 S2: one decided ask on the page, as the Decisions tab lists it. */
 export type Decision = {
@@ -33,6 +34,7 @@ export function weighIns(d: Decision): { n: number; differed: number } {
   const views = (d.ask.picks ?? []).filter((p) => p.by.id !== d.answer.by.id);
   return {
     n: views.length,
-    differed: views.filter((p) => p.optionId !== d.answer.optionId).length,
+    differed: views.filter((p) => optionIdOf(p) !== optionIdOf(d.answer))
+      .length,
   };
 }
