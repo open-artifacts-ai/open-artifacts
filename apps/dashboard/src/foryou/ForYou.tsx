@@ -64,6 +64,7 @@ import {
   unread,
   waitMs,
 } from "./model";
+import { useMuteToggle } from "./muteToggle";
 import { muteErrorCopy } from "./prefsContract";
 import {
   dismissNudge,
@@ -917,7 +918,7 @@ function Row({
                 onSelect={() =>
                   muteWith(
                     { kind: "agent", id: agent.id },
-                    `Muted ${agent.name}. Asks for you still come through.`,
+                    `Muted ${agent.name}. Its asks to you still show in For you.`,
                   )
                 }
               >
@@ -968,6 +969,11 @@ function AskView({
   }, [waits, gone, drop, item.id, back]);
   useEffect(() => backRef.current?.focus(), []);
   const href = safePath(item.href);
+  // #2860: mute the asking agent right where its ask is.
+  const agentMute = useMuteToggle(
+    item.agentKey ? { kind: "agent", id: item.agentKey } : null,
+    item.actor?.name ?? "this agent",
+  );
   return (
     <section data-for-you-ask="" aria-labelledby="oa-for-you-title">
       <Header phone={phone} close={close}>
@@ -981,6 +987,20 @@ function AskView({
         >
           <span aria-hidden="true">← </span>For you
         </button>
+        {agentMute.available && agentMute.loaded && (
+          <button
+            type="button"
+            data-ask-mute=""
+            className={LINK}
+            onClick={agentMute.toggle}
+          >
+            {agentMute.muted
+              ? "Muted \u00b7 Unmute"
+              : item.actor?.name
+                ? `Mute ${item.actor.name}`
+                : "Mute this agent"}
+          </button>
+        )}
         {href && (
           <a href={href} className={LINK} onClick={(e) => go(e, href)}>
             Open the page
