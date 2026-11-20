@@ -4,6 +4,7 @@ import {
   LIMITS,
   PROTOCOL_VERSION,
   R,
+  ShellToArtifactSchema,
 } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -150,6 +151,29 @@ describe("bridge message gating", () => {
 });
 
 describe("hello / welcome", () => {
+  it("#2644: the welcome and viewer.get carry exactly { email, name }, whatever else the caller passed", async () => {
+    const b = createBridge({
+      iframe,
+      url: URL_,
+      artifact: ART,
+      version: 1,
+      viewer: { ...VIEWER, id: "u-1" } as typeof VIEWER,
+      theme: "light",
+      onPdfText: vi.fn(),
+      onThumb: vi.fn(),
+    });
+    live.push(b);
+    send({ oa: 1, type: "hello", protocol: 1, kind: "html" });
+    const welcome = post.mock.calls.find((c) => c[0].type === "welcome")?.[0];
+    expect(ShellToArtifactSchema.safeParse(welcome).success).toBe(true);
+    expect(welcome.viewer).toEqual(VIEWER);
+    call("viewer.get", {}, "v");
+    await flush();
+    expect(post.mock.calls.find((c) => c[0].id === "v")?.[0].value).toEqual(
+      VIEWER,
+    );
+  });
+
   it("sends viewer when capability set, targeting '*'", () => {
     mk();
     send({ oa: 1, type: "hello", protocol: 1, kind: "html" });

@@ -105,6 +105,35 @@ async function startMocks() {
         }),
       ),
     );
+  // &publisher=person (#2610): every version was published by a person (no agent).
+  if (params.get("publisher") === "person")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id/versions", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const list = (await res.json()) as object[];
+        return HttpResponse.json(list.map((v) => ({ ...v, agent: null })));
+      }),
+    );
+  // &publisher=noname (#2644, OA Axe): the publisher has no name, only an email.
+  if (params.get("publisher") === "noname")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id/versions", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const list = (await res.json()) as { createdBy: object }[];
+        return HttpResponse.json(
+          list.map((v) => ({
+            ...v,
+            createdBy: {
+              ...v.createdBy,
+              name: null,
+              email: "ada@example.com",
+            },
+          })),
+        );
+      }),
+    );
   // &push=off (#2512 slice 3): the server has no push key (404 push_unavailable).
   if (params.get("push") === "off")
     extra.push(

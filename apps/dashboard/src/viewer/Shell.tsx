@@ -180,6 +180,7 @@ function Viewer({
   anonymous,
   readOnly = false,
   viewer,
+  meId,
   role,
   hosted,
   plan,
@@ -238,6 +239,8 @@ function Viewer({
   /** A capped (guest or restricted) member: the server refuses their comment writes. */
   readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
+  /** The signed-in viewer's id ("your agent"); never sent to the frame. */
+  meId?: string | null;
 }) {
   const content = useContentUrl(artifact.id, version, gone !== null);
   const url = safeContentUrl(content.url);
@@ -812,6 +815,7 @@ function Viewer({
               <Crumbs title={artifact.title} />
             )}
             <TitleBar
+              meId={meId ?? null}
               org={org}
               outsider={authed && role === "guest"}
               artifact={artifact}
@@ -1227,6 +1231,7 @@ function ArtifactShell({
                   ? { email: me.me.user.email, name: me.me.user.name }
                   : null
               }
+              meId={authed ? me.me.user.id : null}
               shown={shown}
               slot={shown ? slot : undefined}
               newer={shown && newer}

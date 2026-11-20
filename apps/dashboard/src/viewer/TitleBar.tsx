@@ -40,8 +40,14 @@ import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { useNarrow } from "./comments/surfaces";
 import { VersionsDot } from "./LiveChip";
+import {
+  PublisherLine,
+  usePictureOnly,
+  usePublisherStage,
+} from "./PublisherLine";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
+import { publisherFor } from "./publisher";
 import { BAR, ICON, TXT, VisibilityBadge } from "./ui";
 import { useOfferUndo } from "./useOfferUndo";
 import { versionDate } from "./versionDate";
@@ -254,7 +260,10 @@ export function TitleBar({
   asks,
   org = "",
   outsider = false,
+  meId = null,
 }: {
+  /** #2610: the signed-in viewer's id ("your agent"); null signed out. */
+  meId?: string | null;
   /** #2509: the instance's name, which a team badge shows. */
   org?: string;
   /** #2590: a signed-in guest, outside the team: no Share. */
@@ -328,7 +337,41 @@ export function TitleBar({
   const viewOnly = artifact.capabilities.db && !can.dataWrite;
   const go = (to: string) => void navigate({ to: to as string });
 
-  const info = useVersionInfo(artifact.id, version, authed).data;
+  // #2610: every viewer reads who published the version on screen (a
+  // signed-out visitor too, on a page they may open).
+  const info = useVersionInfo(artifact.id, version).data;
+  const publisher = info
+    ? publisherFor(
+        info,
+        // Guests and signed-out visitors: the person only, never the agent.
+        // Signed out: the real name or nothing, never an email (OA Axe).
+        { outsider: outsider || !authed, meId, signedOut: !authed },
+        artifact.currentVersion,
+      )
+    : null;
+  const pictureOnly = usePictureOnly();
+  const left = useRef<HTMLDivElement>(null);
+  const right = useRef<HTMLDivElement>(null);
+  const [sheet, setSheet] = useState(false);
+  const pStage = usePublisherStage(
+    bar,
+    left,
+    right,
+    pictureOnly,
+    [
+      artifact.title,
+      artifact.visibility,
+      org,
+      version,
+      publisher?.agent?.name ?? publisher?.person.id ?? "",
+      pill ? asks.count : "",
+      comments?.open,
+      !!live,
+      authed,
+    ].join("|"),
+  );
+  // Under 900px the picture alone: the title and the access chip open its sheet too.
+  const opensSheet = pictureOnly && authed && publisher !== null;
   const entry = info?.entry;
   const iconFormat =
     info?.format ??
@@ -417,7 +460,10 @@ export function TitleBar({
       data-bar-stage={inBetween ? stage : undefined}
       className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
     >
-      <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
+      <div
+        ref={left}
+        className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]"
+      >
         {iconFormat && <FormatIcon format={iconFormat} />}
         {titleInDoc ? (
           // #2756: the doc shows (and edits) its title in the page; the bar
@@ -427,14 +473,40 @@ export function TitleBar({
           </h1>
         ) : canEdit ? (
           <EditableTitle artifact={artifact} />
+        ) : opensSheet ? (
+          <h1 className={H1}>
+            <button
+              type="button"
+              data-title-opens-sheet=""
+              onClick={() => setSheet(true)}
+              className="max-w-full cursor-pointer truncate border-0 bg-transparent p-0 text-left text-inherit outline-none focus-visible:ring-2 focus-visible:ring-[var(--oa-focus)]"
+            >
+              {artifact.title}
+            </button>
+          </h1>
         ) : (
           <h1 className={H1}>{artifact.title}</h1>
         )}
-        <VisibilityBadge
-          visibility={artifact.visibility}
-          iconOnly={stage >= 2}
-          org={org}
-        />
+        {opensSheet ? (
+          <button
+            type="button"
+            data-chip-opens-sheet=""
+            onClick={() => setSheet(true)}
+            className="flex-none cursor-pointer rounded-sm border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-[var(--oa-focus)]"
+          >
+            <VisibilityBadge
+              visibility={artifact.visibility}
+              iconOnly={stage >= 2}
+              org={org}
+            />
+          </button>
+        ) : (
+          <VisibilityBadge
+            visibility={artifact.visibility}
+            iconOnly={stage >= 2}
+            org={org}
+          />
+        )}
         {/* #2932: one access label. A signed-in person sees their access named
             (Viewer, Can comment, Editor…), in a space or on a page shared with
             them; the owner off a space sees none. "View only" is only for a
@@ -474,8 +546,26 @@ export function TitleBar({
             </span>
           );
         })()}
+        {publisher && (
+          <PublisherLine
+            p={publisher}
+            stage={pStage}
+            signedIn={authed}
+            artifact={artifact}
+            org={org}
+            open={sheet}
+            onOpenChange={setSheet}
+            canSeeVersions={authed && !outsider}
+            onVersions={() => {
+              if (!versionsOpen) onVersions();
+            }}
+          />
+        )}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
+      <div
+        ref={right}
+        className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap"
+      >
         {pill && (
           <ShButton
             variant="outline"
