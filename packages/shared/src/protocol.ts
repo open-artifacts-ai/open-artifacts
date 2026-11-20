@@ -679,3 +679,19 @@ export const RUNTIME_RESULTS = {
 export type RuntimeResult<M extends RuntimeMethod> = z.output<
   (typeof RUNTIME_RESULTS)[M]
 >;
+
+/**
+ * The content host's expiry page, shown in the artifact frame when its signed
+ * URL has expired, tells the viewer's shell so (#2959). Not a runtime message:
+ * it carries no nonce, and the shell accepts it only from the artifact frame.
+ * An artifact can post the same shape from its own frame, which buys it a
+ * reload of itself and nothing else.
+ */
+export const EXPIRED_MESSAGE = { oa: 1, type: "expired" } as const;
+
+/** Whether a window message is the expiry page's announce. */
+export const isExpiredMessage = (d: unknown): boolean =>
+  typeof d === "object" &&
+  d !== null &&
+  (d as { oa?: unknown }).oa === EXPIRED_MESSAGE.oa &&
+  (d as { type?: unknown }).type === EXPIRED_MESSAGE.type;

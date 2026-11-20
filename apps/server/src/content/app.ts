@@ -1,4 +1,5 @@
 import {
+  EXPIRED_MESSAGE,
   type Format,
   IMAGE_CONTENT_TYPES,
   imageKind,
@@ -396,10 +397,20 @@ async function serveFile(
   return new Response(obj.body, { headers });
 }
 
-/** A frame whose signed URL expired: plain words, no script, never cached. */
+/**
+ * A frame whose signed URL expired: plain words, and one message to the shell.
+ * Never cached.
+ *
+ * #2959: the viewer heals an expired frame only when it recognises a load it
+ * didn't start, which a tab restored from Chrome's discard (or from the
+ * back/forward cache) needn't give it. So the page says so itself, and the
+ * shell reloads the frame from a fresh signed URL. An artifact can post the
+ * same shape from its own frame: the worst it buys is a reload of itself.
+ */
 function expiredPage(): Response {
+  const announce = `<script>parent.postMessage(${JSON.stringify(EXPIRED_MESSAGE)},"*")</script>`;
   return new Response(
-    '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Expired</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px/1.5 system-ui,sans-serif;padding:2rem;color:#444"><p>This view has expired. Reload the page to see it again.</p></body></html>',
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Expired</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="font:16px/1.5 system-ui,sans-serif;padding:2rem;color:#444"><p>This view has expired. Reload the page to see it again.</p>${announce}</body></html>`,
     {
       status: 410,
       headers: {

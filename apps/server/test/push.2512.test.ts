@@ -1613,7 +1613,7 @@ describe("a person's @-mention of the member (#2781)", () => {
       await queuePush(E, [u.userId], item("ask:pm9c"), T0);
       await mention(E, u.userId, "pm9", { name: "Ann" });
       await env.DB.prepare("update push_pending set send_after = 0").run();
-      await drainPush(E, Date.now());
+      await drainPush(E, T0);
       expect(mineOf(sent, b)).toHaveLength(1);
       const p = await bodyOf(sent, b);
       expect(p.title).toBe("4 things need you");
@@ -1630,7 +1630,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     await queuePush(E, [u.userId], item("ask:pm10a"), T0);
     await mention(E, u.userId, "pm10");
     await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now());
+    await drainPush(E, T0);
     let p = await bodyOf(sent, b, 0);
     expect([p.title, p.body]).toEqual([
       "2 things need you",
@@ -1639,14 +1639,14 @@ describe("a person's @-mention of the member (#2781)", () => {
     await mention(E, u.userId, "pm11");
     await mention(E, u.userId, "pm12");
     await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now() + BUNDLE_MS);
+    await drainPush(E, T0 + BUNDLE_MS);
     p = await bodyOf(sent, b, 1);
     expect([p.title, p.body]).toEqual(["2 things need you", "2 mentions"]);
     // Asks alone are as before.
     await queuePush(E, [u.userId], item("ask:pm13a"), T0);
     await queuePush(E, [u.userId], item("ask:pm13b"), T0);
     await env.DB.prepare("update push_pending set send_after = 0").run();
-    await drainPush(E, Date.now() + 2 * BUNDLE_MS);
+    await drainPush(E, T0 + 2 * BUNDLE_MS);
     p = await bodyOf(sent, b, 2);
     expect([p.title, p.body]).toEqual(["2 things need you", "2 asks"]);
   });

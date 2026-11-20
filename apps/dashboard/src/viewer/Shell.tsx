@@ -1,4 +1,9 @@
-import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  isExpiredMessage,
+  type Me,
+  viewerPath,
+} from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -142,6 +147,13 @@ const onArtifactOpen = createOpener({
 
 /** No hello this long after the frame loaded: hint that it may be stuck. */
 export const SLOW_MS = 8_000;
+
+/**
+ * At most one expiry announce reloads the frame in this window (#2959): an
+ * artifact can post the shape from its own frame, and all it may buy is a
+ * reload of itself. Real announces come one per expired frame document.
+ */
+export const ANNOUNCE_HEAL_MS = 10_000;
 
 function ErrorPanel({ onRetry }: { onRetry?: () => void }) {
   return (
@@ -410,6 +422,8 @@ function Viewer({
   const goneRef = useRef(gone);
   goneRef.current = gone;
   const srcRef = useRef<string | null>(null);
+  const elRef = useRef<HTMLIFrameElement | null>(null);
+  elRef.current = el;
   const reloadRef = useRef<(force: boolean) => void>(() => {});
   const urlStaleRef = useRef(content.urlStale);
   urlStaleRef.current = content.urlStale;
@@ -585,6 +599,36 @@ function Viewer({
   // Read by onFrameLoad (declared earlier); set each render.
   srcRef.current = src;
   reloadRef.current = reloadWith;
+  // #2959: the content host answers a frame navigation on an expired signed
+  // URL with its expiry page, and that page now says so itself. The recovery
+  // in onFrameLoad needs the shell to own the load bookkeeping; a tab restored
+  // from Chrome's discard (or from the back/forward cache) can bring the frame
+  // back on that page without giving the shell a load it can recognise, so the
+  // reader sat on "This view has expired" until they reloaded the whole tab.
+  // Nothing else in the shell needs a load event: this message is enough.
+  //
+  // No staleness test on our own URL (review of #2960): after a tab discard
+  // the shell loads from scratch and holds a freshly minted URL, while Chrome
+  // can restore the frame from session history on the URL it held before. The
+  // announce then arrives under a fresh shell URL, which is exactly the case
+  // #2686's load check misses. Bound it instead: an artifact can post the same
+  // shape from its own frame, and all that may buy it is one reload of itself.
+  useEffect(() => {
+    let lastHeal = 0;
+    const onMessage = (e: MessageEvent) => {
+      // Only our artifact frame (sandboxed, so an opaque origin), and only the
+      // expiry page's own shape.
+      if (e.source !== elRef.current?.contentWindow) return;
+      if (e.origin !== "null" || !isExpiredMessage(e.data)) return;
+      if (goneRef.current || reloading.current) return;
+      const now = Date.now();
+      if (now - lastHeal < ANNOUNCE_HEAL_MS) return;
+      lastHeal = now;
+      reloadRef.current(true);
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
   useEffect(() => {
     if (!el || !src || gone) return;
     const b = createBridge({

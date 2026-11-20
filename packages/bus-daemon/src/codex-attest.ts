@@ -343,7 +343,15 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       return no(CODEX_REFUSALS.restarted);
     }
     const key = `${p}\0${proc.start}\0${thread}`;
+    const row = threadRow(home, thread);
     let proof = proofs.get(key);
+    // Codex can rotate the rollout while keeping both the host and thread.
+    // Re-prove the new file; replay history belongs to the thread and survives.
+    if (proof && row?.rollout_path && row.rollout_path !== proof.rollout) {
+      proofs.delete(key);
+      lapsed.delete(key);
+      proof = undefined;
+    }
     if (proof && lapsed.has(key)) {
       // Kept after a lock miss: the lock must be held again, as at a first hello.
       const lock = lockOf(home, thread);
@@ -357,7 +365,6 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       if (!plainFile(lock) || !holding([{ pid: p, file: lock }])?.[0])
         return no(CODEX_REFUSALS.notLoaded);
       // 4. Not a subagent: the db decides; the rollout's session_meta when it can't.
-      const row = threadRow(home, thread);
       const rollout = row?.rollout_path ?? globRollout(home, thread);
       if (!rollout || !plainFile(rollout))
         return no(CODEX_REFUSALS.callNotFound);
@@ -450,6 +457,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     spend(thread, cx.call_id);
     const sc = scan;
     return sleep(retryMs).then(() => {
+      if (proofs.get(key) !== proof) return no(CODEX_REFUSALS.callNotFound);
       advance(sc, ns);
       if (isOpen(sc)) return okFor(sc);
       if (itemUsed()) return no(CODEX_REFUSALS.oneExec);

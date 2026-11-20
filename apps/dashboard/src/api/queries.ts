@@ -1,11 +1,13 @@
 import {
   type ArtifactPatch,
   ArtifactSummarySchema,
+  BUS_MACHINES_PAUSED_HEADER,
   type BusAddress,
   BusAgentsSchema,
   type BusLinkPut,
   BusLinkSchema,
   BusLinksSchema,
+  type BusMachines,
   BusMachinesSchema,
   type BusRolePut,
   BusRoleSchema,
@@ -301,9 +303,38 @@ export const useBusMachines = (enabled = true) =>
   useQuery({
     enabled,
     queryKey: qk.busMachines,
-    queryFn: ({ signal }) => api.get(R.busMachines, BusMachinesSchema, signal),
+    // #2552: ask for the owner's pause state; a build without this header gets
+    // the plain `{ machines }` answer it can parse.
+    queryFn: ({ signal }) =>
+      api.get(R.busMachines, BusMachinesSchema, signal, {
+        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+      }),
     refetchInterval: BUS_POLL_MS,
   });
+/**
+ * #2552: the owner's pause switch (PUT R.busUpdatesPaused, 204). Optimistic:
+ * the cached machines read shows the new value at once; a failure restores it
+ * and toasts, and the read reloads either way.
+ */
+export const useSetBusUpdatesPaused = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (paused: boolean) =>
+      api.send("PUT", R.busUpdatesPaused, { paused }),
+    onMutate: async (paused: boolean) => {
+      await qc.cancelQueries({ queryKey: qk.busMachines });
+      const prev = qc.getQueryData<BusMachines>(qk.busMachines);
+      if (prev)
+        qc.setQueryData(qk.busMachines, { ...prev, updatesPaused: paused });
+      return { prev };
+    },
+    onError: (e, _paused, ctx) => {
+      if (ctx?.prev) qc.setQueryData(qk.busMachines, ctx.prev);
+      failToast(e, "Couldn't change updates. Try again.");
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.busMachines }),
+  });
+};
 /**
  * Revoke a machine: 204, idempotent; its agents leave, so both lists reload,
  * failed or not (a 500 can mean revoked but its connection didn't close).

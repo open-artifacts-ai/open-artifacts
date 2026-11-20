@@ -1099,6 +1099,13 @@ export type BusMachine = z.infer<typeof BusMachineSchema>;
 /** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
 export const BusMachinesSchema = z.strictObject({
   machines: z.array(BusMachineSchema).max(100),
+  /**
+   * #2552: whether the owner paused every instance-driven machine update.
+   * Sent only when the request asks for it (BUS_MACHINES_PAUSED_HEADER) and
+   * the caller may change it (the owner, in a cookie session); absent
+   * otherwise, so a client from before #2552 still parses this read.
+   */
+  updatesPaused: z.boolean().optional(),
 });
 export type BusMachines = z.infer<typeof BusMachinesSchema>;
 
