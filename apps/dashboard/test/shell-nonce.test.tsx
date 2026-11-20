@@ -4,6 +4,7 @@ import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_HEAL_MS } from "../src/viewer/Shell";
 import { installHarness, mount } from "./harness";
 
 installHarness();
@@ -131,6 +132,108 @@ describe("viewer shell: per-load nonce", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(document.querySelector("iframe")).toBe(second);
     expect(hello(second, nonceOf(second))).toContain("welcome");
+  });
+
+  it("a restored frame's announce reloads even while the shell's own URL is fresh (#2959)", async () => {
+    // The discard case (review of #2960): the shell loads from scratch and
+    // holds a freshly minted URL, while Chrome restores the frame on the URL it
+    // held before, so the announce arrives under a fresh shell URL. No clock
+    // trick: this is a fresh mount within the URL's lifetime.
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    const n1 = nonceOf(first);
+    loaded(first);
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    const second = await reloaded(first);
+    expect(nonceOf(second)).toBeDefined();
+    expect(nonceOf(second)).not.toBe(n1);
+    loaded(second);
+    expect(hello(second, nonceOf(second))).toContain("welcome");
+  });
+
+  it("an expiry announce from another window reloads nothing (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    act(() => {
+      // Not the artifact frame: another window cannot ask for a reload.
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: window,
+        }),
+      );
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(first);
+  });
+
+  it("a second announce inside the bound is dropped, and one past it heals (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    const announce = (f: HTMLIFrameElement) =>
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { oa: 1, type: "expired" },
+            origin: "null",
+            source: f.contentWindow,
+          }),
+        );
+      });
+    announce(first);
+    const second = await reloaded(first);
+    // The load of the replacement frame ends the reload (#2686): the bound, not
+    // a reload in flight, is what has to stop the next announce.
+    loaded(second);
+    announce(second);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(second);
+    // Past the bound it heals again (a tab restored twice in one session).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + ANNOUNCE_HEAL_MS + 1_000);
+    announce(second);
+    vi.useRealTimers();
+    const third = await reloaded(second);
+    loaded(third);
+    expect(hello(third, nonceOf(third))).toContain("welcome");
+  });
+
+  it("a burst of announces in one tick reloads the frame once (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const send = () =>
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    act(() => {
+      send();
+      send();
+      send();
+    });
+    vi.useRealTimers();
+    const second = await reloaded(first);
+    loaded(second);
+    // The burst was one heal: the replacement frame is the one we then hold,
+    // and the shell did not start a second reload for it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(second);
   });
 
   it("a second renavigation after expiry, with the bridge already disposed, reloads too (#2686)", async () => {
