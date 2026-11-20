@@ -16,12 +16,14 @@ import {
   useBusAgents,
   useBusMachines,
   useRevokeBusMachine,
+  useSetBusUpdatesPaused,
 } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
+import { Switch } from "../settings/spaces/Switch";
 import { muted, SettingsCard, STACK } from "../settings/ui";
 import { dayTime, shortDate } from "./format";
 import {
@@ -178,12 +180,55 @@ export const revokeFailedLine = (label: string) =>
 export const REVOKE_ONLY_LINE =
   "You can't connect new machines. You can revoke these.";
 
+/** The owner's Updates card, in one place (#2552). */
+export const UPDATES_COPY = {
+  title: "Updates",
+  label: "Pause updates",
+  off: "Machines update the bus by themselves, 24 hours after this instance gets a new release. If this instance names a version, they move to that one instead. Anyone can still turn updates off on their own machine.",
+  on: "Paused. Every machine on this instance stays on the version it has now, until you turn this off.",
+} as const;
+
+/** Only the owner is told the state (the read omits it for everyone else), so only the owner sees this. */
+function UpdatesCard({
+  paused,
+  onChange,
+  saving,
+}: {
+  paused: boolean;
+  onChange: (next: boolean) => void;
+  saving: boolean;
+}) {
+  return (
+    <SettingsCard id="oa-updates-h" title={UPDATES_COPY.title}>
+      <div className="flex items-start justify-between gap-[var(--oa-space-3)]">
+        <div className="grid gap-[2px]">
+          <p id="oa-updates-label" className="m-0 font-medium">
+            {UPDATES_COPY.label}
+          </p>
+          <p id="oa-updates-state" className={`m-0 ${muted}`}>
+            {paused ? UPDATES_COPY.on : UPDATES_COPY.off}
+          </p>
+        </div>
+        <Switch
+          label={UPDATES_COPY.label}
+          labelledBy="oa-updates-label"
+          checked={paused}
+          disabled={saving}
+          describedBy="oa-updates-state"
+          onChange={onChange}
+        />
+      </div>
+    </SettingsCard>
+  );
+}
+
 export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
   useDocumentTitle("Machines");
   const q = useBusMachines();
   // GET bus/agents is 404 without canConnect: revoke-only never asks.
   const agents = useBusAgents(!revokeOnly);
   const revoke = useRevokeBusMachine();
+  const pause = useSetBusUpdatesPaused();
   const stacked = useIsMobile();
   const [pick, setPick] = useState<BusMachine | null>(null);
   /**
@@ -320,6 +365,13 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
           </p>
         )}
       </SettingsCard>
+      {q.data?.updatesPaused !== undefined && (
+        <UpdatesCard
+          paused={q.data.updatesPaused}
+          saving={pause.isPending}
+          onChange={(next) => pause.mutate(next)}
+        />
+      )}
       {pick && (
         <ConfirmDialog
           open

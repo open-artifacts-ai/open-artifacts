@@ -113,6 +113,14 @@ export async function readUpdateState(
   };
 }
 
+/** The owner's pause switch alone (#2552): any value in the row pauses, as readUpdateState reads it. */
+export async function busUpdatesPaused(env: Pick<Env, "DB">): Promise<boolean> {
+  const row = await stmt(env.DB, "select 1 as x from settings where key = ?")
+    .bind(UPDATES_PAUSED_KEY)
+    .first();
+  return row !== null;
+}
+
 /** When the default release finishes its soak (ms), or null: no default is waiting on one. */
 export function soakEnds(s: UpdateState, serverVersion: string): number | null {
   const release = releaseOf(serverVersion);
