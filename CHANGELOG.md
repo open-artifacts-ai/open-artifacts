@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.236.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.2...v0.236.0) (2026-11-20)
+
+
+### Features
+
+* **viewer:** the page bar on a phone is two rows, with asks waiting on Comments ([#2622](https://github.com/open-artifacts-ai/open-artifacts/issues/2622)) ([#2951](https://github.com/open-artifacts-ai/open-artifacts/issues/2951)) ([67a0491](https://github.com/open-artifacts-ai/open-artifacts/commit/67a0491002c7a1fdfde763d81d4bdf158438e1a8))
+
+
+### Bug Fixes
+
+* **notifications:** settings work without browser push, and say who turns it on ([#2943](https://github.com/open-artifacts-ai/open-artifacts/issues/2943), [#2942](https://github.com/open-artifacts-ai/open-artifacts/issues/2942)) ([#2944](https://github.com/open-artifacts-ai/open-artifacts/issues/2944)) ([51627ae](https://github.com/open-artifacts-ai/open-artifacts/commit/51627ae8d06ac9bd281ea2327768c1c320328b01))
+
 ## [0.235.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.1...v0.235.2) (2026-11-20)
 
 
