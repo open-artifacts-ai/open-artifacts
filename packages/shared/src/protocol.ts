@@ -94,6 +94,14 @@ export const OnboardingProgressSchema = z.strictObject({
   mentionReplied: z.boolean().optional(),
   mentionStalled: z.boolean().optional(),
   askAnswered: z.boolean().optional(),
+  /** #2953: the first typed comment's page title; null when none. Absent from an older shell or server: no comment step. */
+  firstComment: z
+    .strictObject({
+      artifactId: z.string().max(64),
+      title: z.string().max(500),
+    })
+    .nullable()
+    .optional(),
   /** #2890: false hides "named" and "mention" (three steps). Absent from an older shell: five. */
   busConnected: z.boolean().optional(),
   /**
@@ -108,7 +116,7 @@ export const OnboardingProgressSchema = z.strictObject({
       inviter: z.string().max(200).nullable(),
       teammateCommented: z.boolean(),
       /** setupSteps(onboarding).done: the page shows the shared count. */
-      done: z.number().int().min(0).max(5).optional(),
+      done: z.number().int().min(0).max(6).optional(),
     })
     .optional(),
 });

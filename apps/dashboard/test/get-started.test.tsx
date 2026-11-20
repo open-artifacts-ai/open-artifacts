@@ -239,6 +239,35 @@ describe("Get started checklist", () => {
       );
     });
 
+    it("an owner sees 'Comment on a page' with firstComment: six steps, or four without the bus (#2953)", async () => {
+      withOnboarding({ busConnected: true, firstComment: null });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 6")).toBeInTheDocument();
+      expect(screen.getByText("Comment on a page")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.",
+        ),
+      ).toBeInTheDocument();
+      cleanup();
+      withOnboarding({ busConnected: false, firstComment: null });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 4")).toBeInTheDocument();
+      expect(screen.queryByText("Mention your agent")).toBeNull();
+    });
+
+    it("the owner's done comment step names the page (#2953)", async () => {
+      withOnboarding({
+        busConnected: true,
+        firstComment: { artifactId: "a", title: "Roadmap" },
+      });
+      mount("/");
+      await heading();
+      expect(screen.getByText("You commented on Roadmap.")).toBeInTheDocument();
+    });
+
     it("with the bus connected the five and no bus line", async () => {
       withOnboarding({ busConnected: true });
       mount("/");

@@ -2,14 +2,16 @@
 // the owner, not a guest). The same five steps as the owner's, private to
 // them, with "Hide". Hidden isn't done. Words are the design's ("The words
 // on each screen", artifact wcL5Qbdtme52odvV), word for word.
-import { SETUP_STEPS, setupSteps } from "@oa/shared";
+import { type SetupStep, setupSteps } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 import {
   BUS_LINE,
+  COMMENT_STEP,
   fiveOf,
   mySteps,
+  onByStep,
   useOwnerName,
   withLocal,
 } from "../api/myOnboarding";
@@ -120,7 +122,7 @@ export function MemberGetStarted() {
   // A refused save (today's server) still holds for this session.
   const merged = withLocal(onboarding.data, userId);
   const s = mySteps(merged);
-  const five = fiveOf(s);
+  const on = onByStep(s);
   // The one count (packages/shared setupSteps): card, Welcome and Members agree.
   // #2890: chat-only (never connected the bus), three steps: no name, no mention.
   const sum = setupSteps(merged);
@@ -171,9 +173,9 @@ export function MemberGetStarted() {
   const o = onboarding.data;
   const nm = o?.agentName || "your agent";
   const { done: count, total, stalled } = sum;
-  const cur = stalled ? SETUP_STEPS.indexOf(stalled) : -1;
-  const st = (i: number) => (five[i] ? "done" : cur === i ? "cur" : "todo");
-  const no = (k: (typeof SETUP_STEPS)[number]) => sum.steps.indexOf(k) + 1;
+  const st = (k: SetupStep) =>
+    on[k] ? "done" : stalled === k ? "cur" : "todo";
+  const no = (k: SetupStep) => sum.steps.indexOf(k) + 1;
 
   return (
     <section aria-labelledby="oa-get-started-h" data-member="" className={CARD}>
@@ -197,7 +199,7 @@ export function MemberGetStarted() {
         </Button>
       </div>
       <ol className="m-0 list-none p-0">
-        <Step n={no("agent")} state={st(0)} title={MEMBER_STEPS.connect}>
+        <Step n={no("agent")} state={st("agent")} title={MEMBER_STEPS.connect}>
           {s.connected ? (
             <p className="m-0">Agent connected</p>
           ) : (
@@ -208,21 +210,42 @@ export function MemberGetStarted() {
           )}
         </Step>
         {s.bus && (
-          <Step n={no("named")} state={st(1)} title={MEMBER_STEPS.name}>
+          <Step n={no("named")} state={st("named")} title={MEMBER_STEPS.name}>
             <p className="m-0">
               {s.named ? `Named: ${nm}` : MEMBER_STEPS.nameHint}
             </p>
           </Step>
         )}
-        <Step n={no("artifact")} state={st(2)} title={MEMBER_STEPS.publish}>
+        <Step
+          n={no("artifact")}
+          state={st("artifact")}
+          title={MEMBER_STEPS.publish}
+        >
           <p className="m-0">
             {s.published
               ? `Published: ${o?.firstArtifact?.title ?? "your first artifact"}`
               : MEMBER_STEPS.publishHint}
           </p>
         </Step>
+        {s.comment && (
+          <Step
+            n={no("comment")}
+            state={st("comment")}
+            title={COMMENT_STEP.title}
+          >
+            <p className="m-0">
+              {o?.firstComment
+                ? COMMENT_STEP.done(o.firstComment.title)
+                : COMMENT_STEP.line}
+            </p>
+          </Step>
+        )}
         {s.bus && (
-          <Step n={no("mention")} state={st(3)} title={MEMBER_STEPS.mention}>
+          <Step
+            n={no("mention")}
+            state={st("mention")}
+            title={MEMBER_STEPS.mention}
+          >
             {s.replied ? (
               <p className="m-0">{o?.agentName || "Your agent"} replied</p>
             ) : (
@@ -233,7 +256,7 @@ export function MemberGetStarted() {
             )}
           </Step>
         )}
-        <Step n={no("ask")} state={st(4)} title={MEMBER_STEPS.ask}>
+        <Step n={no("ask")} state={st("ask")} title={MEMBER_STEPS.ask}>
           <p className="m-0">
             {s.answered ? "Answered" : MEMBER_STEPS.askHint}
           </p>

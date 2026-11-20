@@ -95,3 +95,21 @@ test("a member who never connected the bus sees three steps: 0 of 3 (#2890)", as
   await expect(f.locator('[data-step="mention"]')).toBeHidden();
   await expect(f.locator('[data-step="connect"]')).toBeVisible();
 });
+
+test("with the comment step (#2953) a member sees six steps: 0 of 6", async ({
+  page,
+}) => {
+  await page.goto("/?mock=welcome&role=member&commentstep=1");
+  await page.waitForURL(`**/a/${ID}**`);
+  const f = frame(page);
+  await expect(f.getByRole("heading", { name: "Welcome, Ada" })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(f.getByText("0 of 6 done")).toBeVisible();
+  await expect(
+    f.getByText(
+      "Bob Builder added you to Acme Artifacts. Six steps and your agent is working here with you.",
+    ),
+  ).toBeVisible();
+  await expect(f.locator('[data-step="comment"]')).toBeVisible();
+});

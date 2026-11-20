@@ -484,6 +484,10 @@ export function createBridge(opts: BridgeOptions) {
           ...(o.busConnected === undefined
             ? {}
             : { busConnected: o.busConnected }),
+          // #2953: absent from an older server: the page shows no comment step.
+          ...(o.firstComment === undefined
+            ? {}
+            : { firstComment: o.firstComment }),
         };
       }
       case "viewer.anonId":

@@ -736,6 +736,8 @@ async function startMocks() {
             invitedBy: "Bob Builder",
             // #2890: &bus=0 is a chat-only person (never connected the bus): three steps.
             bus: params.get("bus") !== "0",
+            // #2953: &commentstep=1: the server sends firstComment, so "Comment on a page" shows (done with ticks=comment).
+            commentStep: params.get("commentstep") === "1",
           }
         : false,
     // ?mock=asks (#1535): the "Landing page" artifact carries two asks.

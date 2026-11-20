@@ -15,6 +15,7 @@ type Progress = {
   mentionStalled?: boolean;
   askAnswered?: boolean;
   busConnected?: boolean;
+  firstComment?: { artifactId: string; title: string } | null;
   who?: {
     member: true;
     firstName: string | null;
@@ -341,6 +342,83 @@ describe("a member's Welcome", () => {
     expect(document.getElementById("count")?.textContent).toBe("1 of 3 done");
     expect(document.getElementById("lead")?.textContent).toBe(
       "Sam added you to Acme. Three steps and your agent is working here with you.",
+    );
+  });
+
+  it("the comment step (#2953): hidden from an older shell, shown with firstComment, done line names the page", async () => {
+    progress = { agentConnected: false, firstArtifact: null, commented: false };
+    await load();
+    expect(step("comment").hidden).toBe(true);
+    progress = { ...progress, firstComment: null };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("comment").hidden).toBe(false);
+    expect(step("comment").dataset.done).toBe("false");
+    expect(step("comment").textContent).toContain("Comment on a page");
+    expect(step("comment").textContent).toContain(
+      "Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.",
+    );
+    progress = {
+      ...progress,
+      firstComment: { artifactId: "Cd5fGhJkLm6nPqRs", title: "Q4 <b>plan</b>" },
+    };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(step("comment").dataset.done).toBe("true");
+    expect(step("comment").textContent).toBe(
+      "You commented on Q4 <b>plan</b>.",
+    );
+    expect(step("comment").querySelector("b b")).toBeNull();
+  });
+
+  it("the done line waits for the comment step when the shell sends it (#2953)", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: { id: "Cd5fGhJkLm6nPqRs", title: "Q" },
+      commented: false,
+      askAnswered: true,
+      busConnected: false,
+      firstComment: null,
+    };
+    await load();
+    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
+      true,
+    );
+    progress = {
+      ...progress,
+      firstComment: { artifactId: "Cd5fGhJkLm6nPqRs", title: "Q" },
+    };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((document.getElementById("all-done") as HTMLElement).hidden).toBe(
+      false,
+    );
+  });
+
+  it("a member's lead and count read Four (no bus) or Six (bus) with the comment step (#2953)", async () => {
+    const who = {
+      member: true as const,
+      firstName: "Ada",
+      org: "Acme",
+      inviter: "Sam",
+      teammateCommented: false,
+      done: 1,
+    };
+    progress = {
+      agentConnected: true,
+      firstArtifact: null,
+      commented: false,
+      busConnected: false,
+      firstComment: null,
+      who,
+    };
+    await load();
+    expect(document.getElementById("count")?.textContent).toBe("1 of 4 done");
+    expect(document.getElementById("lead")?.textContent).toBe(
+      "Sam added you to Acme. Four steps and your agent is working here with you.",
+    );
+    progress = { ...progress, busConnected: true };
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(document.getElementById("count")?.textContent).toBe("1 of 6 done");
+    expect(document.getElementById("lead")?.textContent).toBe(
+      "Sam added you to Acme. Six steps and your agent is working here with you.",
     );
   });
 
