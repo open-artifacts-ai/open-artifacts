@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.235.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.1...v0.235.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **viewer:** the expiry page announces itself, so a restored frame heals ([#2959](https://github.com/open-artifacts-ai/open-artifacts/issues/2959)) ([#2960](https://github.com/open-artifacts-ai/open-artifacts/issues/2960)) ([9424222](https://github.com/open-artifacts-ai/open-artifacts/commit/942422242e22651e1fad00b074db2c1a34e45b2a))
+
 ## [0.235.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.0...v0.235.1) (2026-11-19)
 
 
