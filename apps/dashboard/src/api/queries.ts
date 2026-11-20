@@ -82,6 +82,7 @@ import {
   errorLink,
 } from "./errorCopy";
 import { keepLocal } from "./myOnboarding";
+import { pageAgentField } from "./pageAgent";
 
 const failToast = (e: unknown, fallback: string) =>
   toast({
@@ -159,6 +160,8 @@ export const useArtifacts = (q: ListQueryInput) =>
 export const ArtifactViewSchema = ArtifactSummarySchema.extend({
   /** Who shared it with this guest viewer; null or absent otherwise. */
   sharedBy: z.object({ name: z.string() }).nullable().optional(),
+  /** #2610 (PROVISIONAL, api/pageAgent.ts): the page's agent, members only. */
+  ...pageAgentField,
 });
 export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
 

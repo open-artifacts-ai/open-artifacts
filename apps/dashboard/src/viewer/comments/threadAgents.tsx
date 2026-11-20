@@ -5,6 +5,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@oa/ui/shadcn";
+import { X } from "lucide-react";
 import {
   type RefObject,
   useEffect,
@@ -23,7 +24,7 @@ import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
 const GAP = 6;
-const CHIP =
+export const CHIP =
   "inline-flex h-6 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border border-border bg-background pl-1 text-foreground";
 
 /** What a chip says: face, name, and (when the caller may remove) the ×. */
@@ -89,7 +90,7 @@ const Ghost = ({ a }: { a: ThreadAgent }) => (
   <span className={`${CHIP} ${chipPad(a)}`}>
     <PartyFace p={a} />
     {a.name}
-    {a.canRemove && <span className="inline-block size-[18px]" />}
+    {a.canRemove && <span className="inline-block size-6" />}
   </span>
 );
 
@@ -297,7 +298,7 @@ export function ThreadAgents({
                   <button
                     type="button"
                     aria-label={`Stop notifying ${a.name}`}
-                    className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="inline-flex size-6 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
                     data-agent-x={a.key}
                     aria-disabled={
                       (set.isPending && set.variables?.key === a.key) ||
@@ -308,7 +309,7 @@ export function ThreadAgents({
                         run(a, true);
                     }}
                   >
-                    ×
+                    <X className="size-3" aria-hidden="true" />
                   </button>
                 </Tip>
               </span>

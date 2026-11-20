@@ -359,6 +359,8 @@ const knownIds = (list: CommentList | undefined) => {
 type NewThreadVars = NewThreadBody & {
   /** The shown version's hash, for a pin's temp anchor. Not sent. */
   contentHash?: string | null;
+  /** #2610 (PROVISIONAL, api/pageAgent.ts): opt out of notifying the page's agent. */
+  notifyPageAgent?: false;
 };
 
 /**

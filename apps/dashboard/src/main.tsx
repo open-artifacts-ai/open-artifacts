@@ -143,6 +143,27 @@ async function startMocks() {
         });
       }),
     );
+  // ?pageagent=own|teammate (#2610, PROVISIONAL api/pageAgent.ts): the page
+  // was published by the caller's own agent or a teammate's. Members only:
+  // a guest never gets it, as on the server.
+  const pageAgent = params.get("pageagent");
+  if ((pageAgent === "own" || pageAgent === "teammate") && role !== "guest")
+    extra.push(
+      http.get("*/api/v1/artifacts/:id", async ({ request }) => {
+        const res = await getResponse(mainHandlers, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as object;
+        return HttpResponse.json({
+          ...body,
+          pageAgent: {
+            key: "agent:0123456789abcdef0123456789abcdef",
+            name: "OA Design",
+            for: pageAgent === "own" ? "Ada Lovelace" : "Leo Urbina",
+            me: pageAgent === "own",
+          },
+        });
+      }),
+    );
   if (role === "admin" || role === "member" || role === "guest")
     extra.push(
       http.get("*/api/v1/me", () =>

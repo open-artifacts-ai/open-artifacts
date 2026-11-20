@@ -83,6 +83,7 @@ import { Markdown } from "./Markdown";
 import { MentionMirror } from "./MentionMirror";
 import { numbering, pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
+import { NotifyChip, usePageAgentChip } from "./notifyChip";
 import {
   isPersonKey,
   mentionsWithPeople,
@@ -496,8 +497,13 @@ function Composer({
   float?: boolean;
   /** The new-comment layout: Cancel and the accent submit at the right. */
   buttonsRight?: boolean;
-  /** Shown at the left of the button row (a guest's Sign in link). */
-  lead?: React.ReactNode;
+  /**
+   * Shown at the left of the button row (a guest's Sign in link). A function
+   * is told whether an agent is @mentioned in the box (people don't count).
+   */
+  lead?:
+    | React.ReactNode
+    | ((s: { agentMentioned: boolean }) => React.ReactNode);
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
@@ -1041,7 +1047,11 @@ function Composer({
             >
               <div className="flex flex-wrap items-center gap-2">
                 {attach && <AttachButton d={pics} />}
-                {lead}
+                {typeof lead === "function"
+                  ? lead({
+                      agentMentioned: mentionedNow.some((k) => !isPersonKey(k)),
+                    })
+                  : lead}
                 {attach && <UploadStatus d={pics} />}
                 {card && !(attach && pics.uploading > 0) && (
                   <SendHint id={hintId} />
@@ -2027,6 +2037,8 @@ function NewThread({
   flat?: boolean;
 }) {
   const create = useCreateThread(api.artifactId, api.guest);
+  // #2610: the page's agent this thread will notify, removable.
+  const notify = usePageAgentChip(api);
   const last = useRef("");
   const lastDraft = useRef<NonNullable<typeof api.draft> | null>(null);
   const draft = api.draft;
@@ -2058,7 +2070,14 @@ function NewThread({
             <QuoteBar>{draft.anchor.exact}</QuoteBar>
           )
         }
-        lead={api.guest ? <SignInLink /> : undefined}
+        // The server adds the page agent only when no other agent is named.
+        lead={({ agentMentioned }) =>
+          api.guest ? (
+            <SignInLink />
+          ) : notify.shown && !agentMentioned ? (
+            <NotifyChip agent={notify.shown} onRemove={notify.remove} />
+          ) : undefined
+        }
         mentionable
         instant
         seed={api.draftSeed}
@@ -2081,6 +2100,7 @@ function NewThread({
             body,
             ...extrasBody(x),
             ...guest,
+            ...notify.bodyFor(x),
             contentHash: api.contentHash,
           });
           // The thread shows at once, so the draft closes now. Keep the quote
@@ -2102,6 +2122,7 @@ function NewThread({
                       anchor: { kind: "note" },
                       body: last.current || api.draftSeed?.text || "",
                       ...guest,
+                      ...notify.bodyFor(),
                     })
                     .then(
                       () => api.cancelDraft(true),
@@ -2137,6 +2158,8 @@ function NoteComposer({ api }: { api: CommentsApi }) {
     [quote, api.artifactId],
   );
   const compact = useContext(Compact);
+  // #2610: the page's agent this thread will notify, removable.
+  const notify = usePageAgentChip(api);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -2150,7 +2173,14 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         keepOnEsc
         pictures
         actions={ACTIONS_PLAIN}
-        lead={api.guest ? <SignInLink /> : undefined}
+        // The server adds the page agent only when no other agent is named.
+        lead={({ agentMentioned }) =>
+          api.guest ? (
+            <SignInLink />
+          ) : notify.shown && !agentMentioned ? (
+            <NotifyChip agent={notify.shown} onRemove={notify.remove} />
+          ) : undefined
+        }
         mentionable
         instant
         collapse={compact}
@@ -2158,11 +2188,15 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
+          const optOut = notify.bodyFor(x);
+          // The next thread starts with the chip again.
+          notify.reset();
           return create.mutateAsync({
             anchor: { kind: "note" },
             body,
             ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+            ...optOut,
           });
         }}
       />
