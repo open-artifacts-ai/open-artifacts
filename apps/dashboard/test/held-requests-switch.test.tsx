@@ -104,7 +104,9 @@ describe("Held requests", () => {
       expect(el).not.toBeNull();
       return el as HTMLElement;
     });
-    expect(line).toHaveTextContent("Browser notifications aren't set up for");
+    expect(line).toHaveTextContent(
+      "Browser notifications aren't turned on for",
+    );
     expect(line.querySelector("a")).toHaveAttribute(
       "href",
       "/settings/notifications",
