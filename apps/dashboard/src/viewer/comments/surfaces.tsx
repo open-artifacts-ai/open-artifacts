@@ -29,6 +29,9 @@ const narrow = media("(max-width: 599.98px)");
 /** Touch input (#1732). */
 export const useCoarsePointer = () =>
   useSyncExternalStore(coarse.subscribe, coarse.get, () => false);
+/** Up to 600px (the CSS `max-[600px]` breakpoint): the phone page bar (#2622). */
+export const usePhone = () =>
+  useSyncExternalStore(phone.subscribe, phone.get, () => false);
 /** Below 600px: the header button's short label. */
 export const useNarrow = () =>
   useSyncExternalStore(narrow.subscribe, narrow.get, () => false);
