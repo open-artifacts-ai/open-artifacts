@@ -4,6 +4,7 @@ import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_HEAL_MS } from "../src/viewer/Shell";
 import { installHarness, mount } from "./harness";
 
 installHarness();
@@ -176,7 +177,39 @@ describe("viewer shell: per-load nonce", () => {
     expect(document.querySelector("iframe")).toBe(first);
   });
 
-  it("an announce burst reloads the frame once (#2959)", async () => {
+  it("a second announce inside the bound is dropped, and one past it heals (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    const announce = (f: HTMLIFrameElement) =>
+      act(() => {
+        window.dispatchEvent(
+          new MessageEvent("message", {
+            data: { oa: 1, type: "expired" },
+            origin: "null",
+            source: f.contentWindow,
+          }),
+        );
+      });
+    announce(first);
+    const second = await reloaded(first);
+    // The load of the replacement frame ends the reload (#2686): the bound, not
+    // a reload in flight, is what has to stop the next announce.
+    loaded(second);
+    announce(second);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(second);
+    // Past the bound it heals again (a tab restored twice in one session).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + ANNOUNCE_HEAL_MS + 1_000);
+    announce(second);
+    vi.useRealTimers();
+    const third = await reloaded(second);
+    loaded(third);
+    expect(hello(third, nonceOf(third))).toContain("welcome");
+  });
+
+  it("a burst of announces in one tick reloads the frame once (#2959)", async () => {
     mount(viewerPath(OWNED));
     const first = await frame();
     loaded(first);
