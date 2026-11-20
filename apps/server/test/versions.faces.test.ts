@@ -130,18 +130,19 @@ describe("version faces (REST)", () => {
     ["logged out", () => null],
     ["guest role", () => guestV],
     ["restricted", () => restrictedV],
-  ])("%s: no linked, product or animal; id never leaves", async (_n, who) => {
-    const l = await rest(who());
-    expect(byV(l, 3)?.agent).toBeTruthy();
-    for (const v of l)
-      for (const k of FACE) expect(v.agent ?? {}).not.toHaveProperty(k);
-    expect(JSON.stringify(l)).not.toContain("animal");
-    expect(JSON.stringify(l)).not.toContain("id-run-0001");
-    // The masked v4 stays masked and gets no face either.
-    const m = byV(l, 4)?.agent;
-    expect(m?.masked).toBe(true);
-    for (const k of FACE) expect(m ?? {}).not.toHaveProperty(k);
-  });
+  ])(
+    "%s: no agent at all (#2610); the person only; id never leaves",
+    async (_n, who) => {
+      const l = await rest(who());
+      expect(l.length).toBeGreaterThan(0);
+      // Not the face, and not the name: the server sends the publisher (createdBy) only.
+      for (const v of l) expect(v.agent).toBeNull();
+      expect(JSON.stringify(l)).not.toContain("animal");
+      expect(JSON.stringify(l)).not.toContain("id-run-0001");
+      expect(JSON.stringify(l)).not.toContain("Claude Code");
+      expect(JSON.stringify(l)).not.toContain("Secret label");
+    },
+  );
 
   it("a guest cap and a restricted cap on a member row get none (service)", async () => {
     for (const [role, cap] of [

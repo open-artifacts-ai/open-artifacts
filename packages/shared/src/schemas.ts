@@ -361,6 +361,23 @@ export const PublishResultSchema = z.object({
 });
 export type PublishResult = z.infer<typeof PublishResultSchema>;
 
+/**
+ * #2610: the agent that published the page's current version, as GET
+ * R.artifact shows it to a member. Never sent to a guest or a signed-out
+ * visitor; absent for a page a person published or when that agent is gone.
+ */
+export const PageAgentSchema = z.object({
+  /** The roster key (R.artifactAgents), what @mentions use. */
+  key: z.string(),
+  /** The agent's own name. */
+  name: z.string(),
+  /** The person it acts for, by public name (never an email). */
+  for: z.string(),
+  /** The caller's own agent. */
+  me: z.boolean(),
+});
+export type PageAgent = z.infer<typeof PageAgentSchema>;
+
 export const ArtifactSummarySchema = z.object({
   id: z.string(),
   title: z.string().min(1).max(200),
@@ -373,6 +390,8 @@ export const ArtifactSummarySchema = z.object({
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
   lastAgent: AgentRefSchema.nullable(),
+  /** #2610: the page's publishing agent, GET R.artifact only and members only. */
+  pageAgent: PageAgentSchema.optional(),
   thumbnailUrl: z.string().nullable(),
   /**
    * The version the thumbnail depicts (server capture or client upload);
