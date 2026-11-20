@@ -2,7 +2,15 @@
 // /seats after every write that can move the count, and the daily tick.
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
 import { ROUTE_POLICY } from "../src/auth/route-policy-table.js";
 import {
@@ -11,6 +19,7 @@ import {
   SEAT_ROUTES,
   SEAT_ROUTES_EXEMPT,
   SEATS_DAILY_MS,
+  SEATS_JUMP_ACK_KEY,
   SEATS_SENT_KEY,
 } from "../src/billing/seats.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
@@ -318,5 +327,246 @@ describe("daily reconcile", () => {
     await scheduled({ cron: DIRECTORY_SYNC_CRON }, H, ctx);
     await Promise.all(pending);
     expect(seatCalls().length).toBe(1);
+  });
+});
+
+describe("a big jump billed at once emails the owner (#2588)", () => {
+  const sends: { to: string; subject: string; text: string; html: string }[] =
+    [];
+  let failSend = false;
+  const HE = () =>
+    ({
+      ...(H as object),
+      EMAIL: {
+        send: vi.fn(async (m: (typeof sends)[number]) => {
+          if (failSend) throw new Error("boom");
+          sends.push(m);
+          return { messageId: `m${sends.length}` };
+        }),
+      },
+      EMAIL_FROM: "noreply@x.com",
+    }) as unknown as typeof H;
+  const run = (e: typeof H, at: number) =>
+    withBrokerProps({ props }, () => reportSeats(e, at, true));
+  const jumpKeys = () =>
+    env.DB.prepare(
+      "select key from settings where key like 'billing.seats.jump:%'",
+    )
+      .all<{ key: string }>()
+      .then((r) => r.results);
+  beforeEach(async () => {
+    sends.length = 0;
+    failSend = false;
+    fake.seatsJump = undefined;
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.seats.jump:%'",
+    ).run();
+    await env.DB.prepare("delete from counters where key like 'email:%'").run();
+  });
+  afterEach(() => {
+    fake.seatsJump = undefined;
+    fake.seatsRetry = undefined;
+  });
+
+  it("a jump sends one email to the owner with Product's copy", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    await run(HE(), Date.now());
+    expect(sends).toHaveLength(1);
+    const m = sends[0] as (typeof sends)[number];
+    expect(m.to).toBe(`own-${tag}@x.com`);
+    expect(m.subject).toMatch(/^.+: 14 members now, billed today$/);
+    expect(m.text).toContain(
+      "grew from 3 to 14 members today. Because that's a big jump, we billed the 11 new members right away, prorated for the rest of your billing period.",
+    );
+    expect(m.text).toContain(
+      `Settings, Members: https://${(H as { APP_HOST: string }).APP_HOST}/settings/members`,
+    );
+    expect(m.text).toContain("Settings, Plan and billing: https://");
+    expect(m.text).toContain("/settings/plan");
+    expect(m.text).not.toContain("\u2014");
+    expect(m.html).toContain("/settings/members");
+  });
+
+  it("a repeat report of the same jump sends none", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    // retry: billing asks for the count again soon, and answers the jump again.
+    fake.seatsRetry = true;
+    const e = HE();
+    const t = Date.now();
+    await run(e, t);
+    await run(e, t + 120_000);
+    expect(seatCalls().length).toBe(2);
+    expect(sends).toHaveLength(1);
+    expect(await jumpKeys()).toHaveLength(1);
+  });
+
+  it("with billing's `at`, a redelivery on another day is still one email, and a new jump is another", async () => {
+    const e = HE();
+    const t = Date.now();
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t);
+    // The next day's daily report gets the same jump again: no second email.
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(seatCalls().length).toBe(2);
+    expect(sends).toHaveLength(1);
+    expect((await jumpKeys()).map((k) => k.key)).toEqual([
+      `billing.seats.jump:${t - 5_000}`,
+    ]);
+    // A different jump (another `at`), even to the same count, is its own email.
+    fake.seatsJump = { from: 3, to: 14, at: t + 1 };
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(sends).toHaveLength(2);
+  });
+
+  it("a handled jump is acknowledged in the next report (jumpAck = its `at`), and never before one", async () => {
+    const e = HE();
+    const t = Date.now();
+    await run(e, t);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(sends).toHaveLength(1);
+    // The report that carried the jump did not ack it; the next one does.
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    // The same jump delivered again is acknowledged again, with no second email.
+    await run(e, t + 3 * SEATS_DAILY_MS + 3_000);
+    expect(sends).toHaveLength(1);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    // A newer jump moves the ack on (the newest wins).
+    fake.seatsJump = { from: 3, to: 40, at: t + 7_000 };
+    await run(e, t + 4 * SEATS_DAILY_MS + 4_000);
+    await run(e, t + 5 * SEATS_DAILY_MS + 5_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t + 7_000 });
+  });
+
+  it("the ack stops riding reports once a report that carried it was accepted", async () => {
+    const e = HE();
+    const t = Date.now();
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t + 1_000);
+    // Billing cleared the jump on the ack: it no longer carries it.
+    fake.seatsJump = undefined;
+    await run(e, t + SEATS_DAILY_MS + 2_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: t - 5_000 });
+    await run(e, t + 2 * SEATS_DAILY_MS + 3_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    expect(
+      await env.DB.prepare("select 1 as x from settings where key = ?1")
+        .bind(SEATS_JUMP_ACK_KEY)
+        .first(),
+    ).toBeNull();
+  });
+
+  it("billing from before the ack answers 400 bad_body to jumpAck: resent once without it, not 'no /seats', and the ack is dropped", async () => {
+    const e = HE();
+    const t = Date.now();
+    await env.DB.prepare(
+      "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
+    )
+      .bind(SEATS_JUMP_ACK_KEY, String(t - 5_000))
+      .run();
+    fake.rejectAck = true;
+    try {
+      await run(e, t);
+      const calls = seatCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.body).toMatchObject({ jumpAck: t - 5_000 });
+      expect(calls[1]?.body).not.toHaveProperty("jumpAck");
+      // Accepted: the report was recorded as accepted (not the unsupported path).
+      const sent = JSON.parse(
+        (
+          (await env.DB.prepare("select value from settings where key = ?1")
+            .bind(SEATS_SENT_KEY)
+            .first<{ value: string }>()) as { value: string }
+        ).value,
+      );
+      expect(sent).toMatchObject({ ok: true });
+      expect(
+        await env.DB.prepare("select 1 as x from settings where key = ?1")
+          .bind(SEATS_JUMP_ACK_KEY)
+          .first(),
+      ).toBeNull();
+      // Later reports are not stuck: a count change is sent, with no jumpAck.
+      await person("late", "member");
+      await run(e, t + SEATS_DAILY_MS + 1_000);
+      expect(seatCalls().length).toBe(3);
+      expect(lastSeats()).not.toHaveProperty("jumpAck");
+    } finally {
+      fake.rejectAck = false;
+    }
+  });
+
+  it("a concurrent report does not acknowledge a claim whose email has not gone out; it does once it has", async () => {
+    const e = HE();
+    const t = Date.now();
+    const at = t - 5_000;
+    const claim = (sent: boolean) =>
+      env.DB.prepare(
+        "insert into settings (key, value) values (?1, ?2) on conflict (key) do update set value = excluded.value",
+      )
+        .bind(
+          `billing.seats.jump:${at}`,
+          JSON.stringify({ from: 3, to: 14, at: t, sent }),
+        )
+        .run();
+    // A holds the claim (its send in flight, then failing).
+    await claim(false);
+    fake.seatsJump = { from: 3, to: 14, at };
+    await run(e, t);
+    expect(sends).toHaveLength(0);
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+    // A's send failed and released the claim: the next report sends, and acks.
+    await env.DB.prepare("delete from settings where key = ?1")
+      .bind(`billing.seats.jump:${at}`)
+      .run();
+    await run(e, t + 2 * SEATS_DAILY_MS + 2_000);
+    expect(sends).toHaveLength(1);
+    // A claim that says sent is acknowledged by a report that finds it.
+    await env.DB.prepare("delete from settings where key = ?1")
+      .bind(SEATS_JUMP_ACK_KEY)
+      .run();
+    await run(e, t + 3 * SEATS_DAILY_MS + 3_000);
+    await run(e, t + 4 * SEATS_DAILY_MS + 4_000);
+    expect(lastSeats()).toMatchObject({ jumpAck: at });
+    expect(sends).toHaveLength(1);
+  });
+
+  it("a jump whose email could not be sent is not acknowledged", async () => {
+    const e = HE();
+    const t = Date.now();
+    failSend = true;
+    fake.seatsJump = { from: 3, to: 14, at: t - 5_000 };
+    await run(e, t);
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(lastSeats()).not.toHaveProperty("jumpAck");
+  });
+
+  it("no jump, no email", async () => {
+    await run(HE(), Date.now());
+    expect(sends).toHaveLength(0);
+    expect(await jumpKeys()).toHaveLength(0);
+  });
+
+  it("a send failure does not break the report, and a later report retries", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    failSend = true;
+    const e = HE();
+    const t = Date.now();
+    await expect(run(e, t)).resolves.toBeUndefined();
+    expect(seatCalls().length).toBeGreaterThan(0);
+    expect(sends).toHaveLength(0);
+    expect(await jumpKeys()).toHaveLength(0);
+    failSend = false;
+    await run(e, t + SEATS_DAILY_MS + 1_000);
+    expect(sends).toHaveLength(1);
+  });
+
+  it("an install that can't send email does not fail either", async () => {
+    fake.seatsJump = { from: 3, to: 14 };
+    await expect(run(H, Date.now())).resolves.toBeUndefined();
+    expect(await jumpKeys()).toHaveLength(0);
   });
 });

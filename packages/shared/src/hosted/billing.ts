@@ -232,12 +232,28 @@ export const BillingUsageSchema = z.object({
 });
 export type BillingUsage = z.infer<typeof BillingUsageSchema>;
 
+/** POST /seats body (#2580): the member count, and (#2940) the `at` of the last jump this instance handled, so billing can stop carrying it. Sent only once a jump with an `at` was handled, so billing from before it never sees the key. */
+export const BillingSeatsRequestSchema = z.object({
+  members: z.number().int().nonnegative(),
+  jumpAck: z.number().int().positive().optional(),
+});
+export type BillingSeatsRequest = z.infer<typeof BillingSeatsRequestSchema>;
+
 /** POST /seats answer (#2580): the member count billing stored, and what it did with it. */
 export const BillingSeatsSchema = z.object({
   members: z.number().int().nonnegative(),
   /** An outcome string (billing's own vocabulary); logged, never branched on. */
   applied: z.string().max(64),
-  /** True when billing wants the count sent again soon (held, stale, failed); absent from older billing = false. */
+  /** True when billing wants the count sent again soon (stale or failed); absent from older billing = false. */
   retry: z.boolean().optional(),
+  /** #2588: set only when this report was a big jump that billing billed at once: the count before and after. The owner is emailed. Absent from older billing. */
+  jump: z
+    .object({
+      from: z.number().int().nonnegative(),
+      to: z.number().int().positive(),
+      /** When billing billed the jump (ms). Names the jump: the instance keys its email on it. Absent from older billing. */
+      at: z.number().int().positive().optional(),
+    })
+    .optional(),
 });
 export type BillingSeats = z.infer<typeof BillingSeatsSchema>;

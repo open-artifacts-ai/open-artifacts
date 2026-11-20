@@ -50,8 +50,13 @@ export function fakeBilling(install = INSTALL) {
     down: false,
     seatsApplied: "applied",
     seatsRetry: undefined as boolean | undefined,
+    seatsJump: undefined as
+      | { from: number; to: number; at?: number }
+      | undefined,
     /** Billing from before #2580: no /seats, and an unknown body key is 400 bad_body. */
     legacy: false,
+    /** Billing from before the jump ack (#2940): /seats answers 400 bad_body to a `jumpAck` key. */
+    rejectAck: false,
   };
   let x: Promise<string> | null = null;
   const answer = (
@@ -122,6 +127,12 @@ export function fakeBilling(install = INSTALL) {
         );
       if (s.legacy && path === "/seats")
         return answer(path, body, new Response("nf", { status: 404 }));
+      if (s.rejectAck && path === "/seats" && "jumpAck" in body)
+        return answer(
+          path,
+          body,
+          Response.json({ error: "bad_body" }, { status: 400 }),
+        );
       if (s.legacy && path === "/checkout" && "members" in body)
         return answer(
           path,
@@ -136,6 +147,7 @@ export function fakeBilling(install = INSTALL) {
             members: body.members,
             applied: s.seatsApplied,
             ...(s.seatsRetry === undefined ? {} : { retry: s.seatsRetry }),
+            ...(s.seatsJump ? { jump: s.seatsJump } : {}),
           }),
         );
       if (path === "/checkout")
