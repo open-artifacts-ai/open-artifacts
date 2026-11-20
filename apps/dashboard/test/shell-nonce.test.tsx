@@ -133,16 +133,15 @@ describe("viewer shell: per-load nonce", () => {
     expect(hello(second, nonceOf(second))).toContain("welcome");
   });
 
-  it("the content host's expiry page reloads the frame from a fresh URL, with no load event of ours (#2959)", async () => {
+  it("a restored frame's announce reloads even while the shell's own URL is fresh (#2959)", async () => {
+    // The discard case (review of #2960): the shell loads from scratch and
+    // holds a freshly minted URL, while Chrome restores the frame on the URL it
+    // held before, so the announce arrives under a fresh shell URL. No clock
+    // trick: this is a fresh mount within the URL's lifetime.
     mount(viewerPath(OWNED));
     const first = await frame();
     const n1 = nonceOf(first);
-    loaded(first); // the frame's src is frozen to the URL it loaded with
-    // A restored tab brings the frame back on that URL and the content host
-    // answers with its expiry page, which announces itself. The shell never got
-    // a load it could call unexpected, so it heals from the message alone.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + 700_000);
+    loaded(first);
     act(() => {
       window.dispatchEvent(
         new MessageEvent("message", {
@@ -152,7 +151,6 @@ describe("viewer shell: per-load nonce", () => {
         }),
       );
     });
-    vi.useRealTimers();
     const second = await reloaded(first);
     expect(nonceOf(second)).toBeDefined();
     expect(nonceOf(second)).not.toBe(n1);
@@ -160,7 +158,7 @@ describe("viewer shell: per-load nonce", () => {
     expect(hello(second, nonceOf(second))).toContain("welcome");
   });
 
-  it("an expiry announce from another window, or while our URL is fresh, reloads nothing (#2959)", async () => {
+  it("an expiry announce from another window reloads nothing (#2959)", async () => {
     mount(viewerPath(OWNED));
     const first = await frame();
     loaded(first);
@@ -173,7 +171,17 @@ describe("viewer shell: per-load nonce", () => {
           source: window,
         }),
       );
-      // The frame, but the URL we hold is fresh: a 410 cannot be real.
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(document.querySelector("iframe")).toBe(first);
+  });
+
+  it("an announce burst reloads the frame once (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const send = () =>
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { oa: 1, type: "expired" },
@@ -181,9 +189,18 @@ describe("viewer shell: per-load nonce", () => {
           source: first.contentWindow,
         }),
       );
+    act(() => {
+      send();
+      send();
+      send();
     });
+    vi.useRealTimers();
+    const second = await reloaded(first);
+    loaded(second);
+    // The burst was one heal: the replacement frame is the one we then hold,
+    // and the shell did not start a second reload for it.
     await new Promise((r) => setTimeout(r, 50));
-    expect(document.querySelector("iframe")).toBe(first);
+    expect(document.querySelector("iframe")).toBe(second);
   });
 
   it("a second renavigation after expiry, with the bridge already disposed, reloads too (#2686)", async () => {
