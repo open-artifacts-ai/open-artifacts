@@ -2,8 +2,8 @@
 // --habits / --no-habits / --show-habits commands. The block itself, and the
 // files it goes in, are steps/habits.ts.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -28,6 +28,7 @@ import {
   type ProjectIo,
   pluginHabitsState,
   removeHabits,
+  removeProjectHabits,
   setHabitsOptOut,
   setPluginHabits,
   writeHabits,
@@ -40,7 +41,7 @@ export const pluginOn = (p: PluginHarness) =>
 export const pluginOff = (p: PluginHarness) =>
   `Habits off in the ${p.label} plugin.`;
 
-export type HabitsMode = "yes" | "no" | "show" | "project";
+export type HabitsMode = "yes" | "no" | "show" | "project" | "project-off";
 /** What the step decided, for `--json`. */
 export type HabitsOutcome = {
   state: "on" | "off" | "undecided" | "changed" | "none";
@@ -283,6 +284,36 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
   };
 }
 
+/**
+ * #2966: turns the habits off in this folder only, and leaves every other
+ * project and the global files as they are. The precondition for flipping the
+ * install default to per project: without it the only way out is uninstall.
+ */
+export function habitsProjectOff(ctx: Ctx): number {
+  // Real paths on both sides: the same folder through a symlinked path
+  // (/tmp vs /private/tmp) is the same folder, and install recorded the other.
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  const cwd = real(ctx.cwd);
+  const r = removeProjectHabits(
+    { home: ctx.userHome, env: ctx.env, busHome: ctx.home },
+    (path) => dirname(real(path)) === cwd,
+  );
+  if (r.files.length === 0 && r.notes.length === 0) {
+    say(ctx, `No bus habits here to remove in ${tilde(ctx, cwd)}.`);
+    return 0;
+  }
+  if (r.files.length > 0)
+    say(ctx, `Habits off in this folder: ${shown(ctx, r.files)}`);
+  for (const n of r.notes) say(ctx, n);
+  return 0;
+}
+
 export async function habitsAfterInstall(
   ctx: Ctx,
   json: boolean,
@@ -404,6 +435,7 @@ export async function habitsCommand(
 ): Promise<number> {
   say(ctx, ctx.copy.header(ctx.version), "");
   if (mode === "show") return show(ctx);
+  if (mode === "project-off") return habitsProjectOff(ctx);
   if (mode === "project") {
     // #2966: the per-folder install. Awaited, so its work cannot be cut off
     // and a failure is not reported as success.

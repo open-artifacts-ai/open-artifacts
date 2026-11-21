@@ -895,11 +895,161 @@ describe("per-project habits (#2966)", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it("a later uninstall still takes the other project's block and line (#2966)", () => {
+    const a = project();
+    const b = project();
+    const shared = depsFor(a);
+    const gb = fakeGit({});
+    writeProjectHabits({ ...shared, cwd: a }, ["codex"], fakeGit({}).io);
+    writeProjectHabits({ ...shared, cwd: b }, ["codex"], gb.io);
+    removeProjectHabits(shared);
+    expect(existsSync(join(b, "AGENTS.md"))).toBe(false);
+    expect(readFileSync(gb.excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("says so when this folder has no bus habits", async () => {
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: project() });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(ctx.out().join("\n")).toMatch(/No bus habits here/);
+  });
+
+  it("parses --no-habits-project, and only one habits flag at a time", () => {
+    expect(parse(["install", "--no-habits-project"])).toMatchObject({
+      habits: "project-off",
+    });
+    expect(() =>
+      parse(["install", "--habits-project", "--no-habits-project"]),
+    ).toThrow(/one of/);
+  });
+
   it("removal keeps a file that was already ours, dropping only our block", () => {
     const cwd = project();
     const d = depsFor(cwd);
     writeProjectHabits(d, ["codex"]);
     removeProjectHabits(d);
     expect(existsSync(join(cwd, "AGENTS.md"))).toBe(false);
+  });
+});
+
+describe("per-project off switch (#2966)", () => {
+  const project = () => mkdtempSync(join(tmpdir(), "ob-off-"));
+  const depsFor = (cwd: string) => {
+    const home = project();
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    writeFileSync(join(busHome, "install.json"), "{}");
+    return { home, busHome, cwd };
+  };
+  const git = (excludeFile: string) => ({
+    written: [] as string[],
+    excludeFile,
+    io: {
+      rel: (n: string) => n,
+      tracked: () => false,
+      excludeFile,
+      exclude: (line: string) => {
+        let cur: string[] = [];
+        try {
+          cur = readFileSync(excludeFile, "utf8").split("\n");
+        } catch {
+          mkdirSync(join(excludeFile, ".."), { recursive: true });
+        }
+        if (cur.includes(line)) return false;
+        writeFileSync(excludeFile, `${cur.join("\n")}${line}\n`);
+        return true;
+      },
+    },
+  });
+
+  it("off in this folder keeps the other project's exclude line and record", async () => {
+    const a = project();
+    const b = project();
+    const shared = depsFor(a);
+    const ga = git(join(project(), "info", "exclude"));
+    const gb = git(join(project(), "info", "exclude"));
+    writeProjectHabits({ ...shared, cwd: a }, ["codex"], ga.io);
+    writeProjectHabits({ ...shared, cwd: b }, ["codex"], gb.io);
+    expect(readFileSync(gb.excludeFile, "utf8")).toContain("/AGENTS.md");
+
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: a, userHome: shared.home, home: shared.busHome });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+
+    expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
+    expect(readFileSync(ga.excludeFile, "utf8").trim()).toBe("");
+    expect(readFileSync(join(b, "AGENTS.md"), "utf8")).toContain(HABITS_BEGIN);
+    expect(readFileSync(gb.excludeFile, "utf8")).toContain("/AGENTS.md");
+  });
+
+  it("a later uninstall still takes that project's block and line", () => {
+    const a = project();
+    const b = project();
+    const shared = depsFor(a);
+    const gb = git(join(project(), "info", "exclude"));
+    writeProjectHabits(
+      { ...shared, cwd: a },
+      ["codex"],
+      git(join(project(), "info", "exclude")).io,
+    );
+    writeProjectHabits({ ...shared, cwd: b }, ["codex"], gb.io);
+    removeProjectHabits(shared);
+    expect(existsSync(join(b, "AGENTS.md"))).toBe(false);
+    expect(readFileSync(gb.excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("leaves an older exclude line with no `for` to uninstall", async () => {
+    // What #2998 wrote: { file, line } with no idea which project it was for.
+    const a = project();
+    const home = project();
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    const excludeFile = join(project(), "info", "exclude");
+    mkdirSync(join(excludeFile, ".."), { recursive: true });
+    writeFileSync(excludeFile, "/AGENTS.md\n");
+    const file = join(a, "AGENTS.md");
+    writeFileSync(file, `${habitsBlock().join("\n")}\n`);
+    writeFileSync(
+      join(busHome, "install.json"),
+      JSON.stringify({
+        habits: {
+          files: {},
+          project: {
+            files: { [file]: { added: "", created: true } },
+            exclude: [{ file: excludeFile, line: "/AGENTS.md" }],
+          },
+        },
+      }),
+    );
+    const shared = { home, busHome, cwd: a };
+
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: a, userHome: home, home: busHome });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    // The old line cannot be attributed, so only uninstall takes it.
+    expect(readFileSync(excludeFile, "utf8")).toContain("/AGENTS.md");
+    removeProjectHabits(shared);
+    expect(readFileSync(excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("finds the folder through a symlinked path", async () => {
+    const a = project();
+    const shared = depsFor(a);
+    writeProjectHabits(
+      { ...shared, cwd: a },
+      ["codex"],
+      git(join(project(), "info", "exclude")).io,
+    );
+    const link = join(project(), "via-link");
+    symlinkSync(a, link);
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, {
+      cwd: link,
+      userHome: shared.home,
+      home: shared.busHome,
+    });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
   });
 });

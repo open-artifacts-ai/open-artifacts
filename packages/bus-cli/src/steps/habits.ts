@@ -322,7 +322,12 @@ export const projectHabitsTarget = (cwd: string, h: HabitsHarness): string =>
   join(cwd, PROJECT_HABITS_FILE[h]);
 
 /** One line this install added to a repository's exclude file. */
-export type ExcludeEntry = { file: string; line: string };
+export type ExcludeEntry = {
+  file: string;
+  line: string;
+  /** The project file it was added for, so one project can be turned off alone. */
+  for?: string;
+};
 
 /**
  * What the project mode needs from git, injected so tests can fake it. All
@@ -363,7 +368,13 @@ const projectOf = (v: unknown): ProjectRecord => {
         typeof (e as ExcludeEntry).file === "string" &&
         typeof (e as ExcludeEntry).line === "string"
       )
-        exclude.push(e as ExcludeEntry);
+        exclude.push({
+          file: (e as ExcludeEntry).file,
+          line: (e as ExcludeEntry).line,
+          ...(typeof (e as ExcludeEntry).for === "string"
+            ? { for: (e as ExcludeEntry).for }
+            : {}),
+        });
   return { files: p.files ?? {}, exclude };
 };
 
@@ -425,7 +436,8 @@ export function writeProjectHabits(
       // Only a file we created is ours to ignore, and only when we added the line.
       if (!exists && io.excludeFile !== undefined && io.exclude !== undefined) {
         const line = `/${rel}`;
-        if (io.exclude(line)) exclude.push({ file: io.excludeFile, line });
+        if (io.exclude(line))
+          exclude.push({ file: io.excludeFile, line, for: path });
       }
     } catch (e) {
       notes.push(
@@ -444,13 +456,18 @@ export function writeProjectHabits(
  * install ever ran in: our block, a file we created, and the exclude lines we
  * added. Nothing else, and nothing that is not recorded.
  */
-export function removeProjectHabits(deps: HabitsDeps): HabitsResult {
+export function removeProjectHabits(
+  deps: HabitsDeps,
+  /** Only these paths (the per-project off switch); all recorded ones by default. */
+  only?: (path: string) => boolean,
+): HabitsResult {
   const files: string[] = [];
   const notes: string[] = [];
   const cur = record(deps.busHome).project;
   const kept = { ...cur.files };
   const exclude = [...cur.exclude];
   for (const [path, rec] of Object.entries(cur.files)) {
+    if (only !== undefined && !only(path)) continue;
     try {
       if (brokenLink(path) || !existsSync(path)) {
         delete kept[path];
@@ -480,8 +497,11 @@ export function removeProjectHabits(deps: HabitsDeps): HabitsResult {
       );
     }
   }
-  // The exclude lines last: only the exact ones we recorded, from their own files.
+  // The exclude lines last: only the exact ones we recorded, from their own
+  // files, and only for the files this call is about. An entry with no `for`
+  // predates that field, so only an unfiltered call (uninstall) takes it.
   for (const e of [...exclude]) {
+    if (only !== undefined && (e.for === undefined || !only(e.for))) continue;
     try {
       const text = readFileSync(e.file, "utf8");
       const lines = text.split("\n");
