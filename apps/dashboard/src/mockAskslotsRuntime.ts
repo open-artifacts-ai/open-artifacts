@@ -10,4 +10,5 @@ const [{ createRuntime }, schemas] = await Promise.all([
 w.openArtifacts = createRuntime({
   loadSchemas: () => Promise.resolve(schemas),
 });
+
 export {};
