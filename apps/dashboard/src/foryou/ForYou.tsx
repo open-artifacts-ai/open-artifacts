@@ -68,6 +68,8 @@ import { useMuteToggle } from "./muteToggle";
 import { muteErrorCopy } from "./prefsContract";
 import {
   dismissNudge,
+  iosNeedsHomeScreen,
+  NOTIF_WORDS,
   nudgeDismissed,
   PermissionRefused,
   PUSH_WORDS,
@@ -504,6 +506,7 @@ function ForYouPanel({
     <div data-for-you-panel="" ref={root}>
       {header}
       {!phone && <PushNudge needsYou={needsYou} />}
+      <IosNote needsYou={needsYou} />
       <section aria-labelledby="oa-fy-needs">
         <h3
           id="oa-fy-needs-heading"
@@ -585,6 +588,34 @@ function ForYouPanel({
           {showLater && later.map((x) => row(x, true))}
         </ul>
       </section>
+    </div>
+  );
+}
+
+/**
+ * #2943: iPhone or iPad Safari, not added to the Home Screen, has no web push.
+ * Say what to do instead of hiding the ask silently (the nudge never shows on a
+ * phone). Once something needs the person; "Not now" hides it as the nudge's does.
+ */
+function IosNote({ needsYou }: { needsYou: InboxItem[] }) {
+  const [gone, setGone] = useState(nudgeDismissed);
+  if (gone || needsYou.length === 0 || !iosNeedsHomeScreen()) return null;
+  return (
+    <div
+      data-push-ios=""
+      className="mx-3 my-2.5 flex items-center gap-2.5 rounded-[10px] bg-[var(--oa-accent-soft)] px-3 py-2.5 text-[13.5px]"
+    >
+      <span className="min-w-0 flex-1">{NOTIF_WORDS.iosHome}</span>
+      <button
+        type="button"
+        className="flex-none cursor-pointer border-0 bg-transparent p-0 text-[13px] text-[var(--oa-accent-fg)] underline"
+        onClick={() => {
+          dismissNudge();
+          setGone(true);
+        }}
+      >
+        {PUSH_WORDS.notNow}
+      </button>
     </div>
   );
 }

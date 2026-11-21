@@ -271,8 +271,11 @@ describe("content host serving", () => {
     expect(body).toContain(
       "This view has expired. Reload the page to see it again.",
     );
-    expect(body).not.toContain("<script");
     expect(body).not.toContain("hi</body>");
+    // #2959: one inline script, ours, which tells the shell to load a fresh URL
+    // (a restored tab needn't give the shell a load it can recognise).
+    expect(body.match(/<script/g)).toHaveLength(1);
+    expect(body).toContain('parent.postMessage({"oa":1,"type":"expired"},"*")');
   });
 
   it("expired tokens keep the plain 404 outside a frame, when forged or when a download", async () => {

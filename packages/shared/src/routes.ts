@@ -168,7 +168,11 @@ export const R = {
   oauthClients: "/api/v1/oauth-clients",
   /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
-  /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
+  /**
+   * GET -> BusMachines: the caller's own bus machines (#1291). Never a token.
+   * Send BUS_MACHINES_PAUSED_HEADER: 1 (#2552) to also receive `updatesPaused`;
+   * without it the answer is exactly `{ machines }`.
+   */
   busMachines: "/api/v1/bus/machines",
   busPing: "/api/v1/bus/ping",
   /**
@@ -563,6 +567,13 @@ export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 export const AUDIT_TEAM_WINDOW_DAYS = 30;
 /** R.audit and R.auditExport response header: the window in days, present only when the plan limits it (Team). */
 export const AUDIT_WINDOW_HEADER = "X-OA-Audit-Window-Days";
+
+/**
+ * R.busMachines request header (#2552). A client that understands
+ * `updatesPaused` sends `1` and gets it; a build from before #2552 parses this
+ * read with a strict schema, so the field must stay absent from its answer.
+ */
+export const BUS_MACHINES_PAUSED_HEADER = "X-OA-Wants-Updates-Paused";
 
 export const AUTH = {
   login: "/auth/login",

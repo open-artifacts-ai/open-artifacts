@@ -17,6 +17,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  BUS_MACHINES_PAUSED_HEADER,
   BusLinkProposeSchema,
   BusLinkPutSchema,
   BusReachProposeSchema,
@@ -29,7 +30,13 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import { interactiveSession, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
+import { orgCan } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
@@ -83,6 +90,7 @@ import {
   MACHINE_ID_HEADER,
   MACHINE_LABEL_HEADER,
 } from "./hub.js";
+import { busUpdatesPaused } from "./updates.js";
 
 // The bus's Worker routes (#1291, design "Contracts: Local client to
 // instance"). Every /bus route answers 404 while the bus is off (BUS_HUB
@@ -761,7 +769,21 @@ export function mountBus(app: AppType): void {
 
   app.get(R.busMachines, async (c) => {
     const user = requireUser(c);
-    return c.json({ machines: await listBusMachines(c.env, user.id) });
+    const machines = await listBusMachines(c.env, user.id);
+    // #2552: the pause switch's state, for whoever may set it (the owner, in a
+    // cookie session), and only when the client asks for it: a dashboard build
+    // from before #2552 parses this read with a strict schema, so the field
+    // stays out of its answer (or its whole Machines list fails to load).
+    if (
+      c.req.header(BUS_MACHINES_PAUSED_HEADER) === "1" &&
+      interactiveSession(c) &&
+      orgCan(user, "bus.updates_paused", { cap: capOfCaller(caller(c)) })
+    )
+      return c.json({
+        machines,
+        updatesPaused: await busUpdatesPaused(c.env),
+      });
+    return c.json({ machines });
   });
   // In CAPPED_ALLOWED: cutting off a credential never sits behind a cap.
   app.delete(`${R.busMachines}/:id`, async (c) => {

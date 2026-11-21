@@ -75,9 +75,6 @@ export const PUSH_WORDS = {
   /** The "This browser" cell, short (Design and OA Product). */
   blockedHere: "Blocked in this browser",
   notAvailable: "Not available",
-  /** Product: over the account settings when the server has no push key. */
-  notSetUp: (site: string) =>
-    `Browser notifications aren't set up for ${site || "this site"} yet.`,
   failed: "Couldn't turn on notifications. Try again.",
   turnOn: "Turn on",
   notNow: "Not now",
@@ -85,11 +82,54 @@ export const PUSH_WORDS = {
   waited: (d: string) =>
     `An agent waited ${d} for you today. Get told the moment one is waiting?`,
   onFor: (browser: string) => `On for ${browser}`,
-  /** The server has no push key: both switches stay off. */
-  noKey: "Not set up here yet",
   /** Updates needs this browser subscribed first. */
   turnOnFirst: "Turn on Needs you here first",
 } as const;
+
+/**
+ * #2942, #2943: the Settings → Notifications words that say what to do and who
+ * does it (OA Product-2's final copy). Every string is here, in one place.
+ */
+export const NOTIF_WORDS = {
+  /** The matrix column for the inbox (#2942: there is no app, only the browser). */
+  inOA: "In Open Artifacts",
+  /** Under the account settings when push can't reach this browser (#2943). */
+  applyLater: "These apply as soon as notifications reach a browser.",
+  /** The server has no push keys, for an owner or admin: they can fix it. */
+  noKeyAdmin: (site: string) =>
+    `Browser notifications aren't turned on for ${site || "this site"} yet. Upgrading the instance turns them on: it adds the keys they need. Everything else on this page works now.`,
+  /** The same, for everyone else: who can turn them on (the owner, by name when known). */
+  noKeyOther: (site: string, owner: string | null) =>
+    `Browser notifications aren't turned on for ${site || "this site"} yet. ${owner ? `${owner}, who runs this site, can turn them on.` : "The person who runs this site can turn them on."} Everything else on this page works now.`,
+  /** The This-browser cell with no keys. */
+  noKeyCell: "Off for this site",
+  /** iPhone or iPad Safari, not added to the Home Screen: a person step. */
+  iosHome:
+    "On iPhone and iPad, notifications work only once this site is on your Home Screen. Tap Share, then Add to Home Screen, and open it from there.",
+  iosCell: "Add to Home Screen first",
+} as const;
+
+/** iPhone, iPad or iPod, including an iPad that reports a Mac ("Macintosh" with touch points). */
+export const isIos = (
+  ua = navigator.userAgent,
+  platform = navigator.platform,
+  touch = navigator.maxTouchPoints,
+) =>
+  /iPhone|iPad|iPod/.test(ua) ||
+  ((/Macintosh/.test(ua) || platform === "MacIntel") && touch > 1);
+
+/** Opened from the Home Screen (iOS `navigator.standalone`, or display-mode standalone). */
+export const isStandalone = () =>
+  (navigator as { standalone?: boolean }).standalone === true ||
+  (typeof matchMedia === "function" &&
+    matchMedia("(display-mode: standalone)").matches);
+
+/**
+ * iOS web push exists only for a site added to the Home Screen: in a Safari tab
+ * there is no PushManager. So: iOS, not standalone, and no push support here.
+ */
+export const iosNeedsHomeScreen = () =>
+  isIos() && !isStandalone() && !pushSupported();
 
 /** "Chrome on this Mac": this browser, for the browser column's "On for …" (slice 3). */
 export function thisBrowser(ua = navigator.userAgent): string {

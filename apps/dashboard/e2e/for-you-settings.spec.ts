@@ -73,7 +73,7 @@ test("notification settings at 1280 light", async ({ page }) => {
   const levels = page.locator("[data-notification-levels]");
   await expect(levels).toBeVisible();
   await expect(levels.getByRole("columnheader")).toHaveText([
-    "In the app",
+    "In Open Artifacts",
     "This browser",
   ]);
   await expect(levels).toContainText("Asks for you, and an agent that's stuck");

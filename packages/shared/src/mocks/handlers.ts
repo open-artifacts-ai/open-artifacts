@@ -31,6 +31,7 @@ import {
   BusLinkPutSchema,
   type BusRole,
   BusRolePutSchema,
+  BusUpdatesPausedPutSchema,
   ShareNoticeAgentsSchema,
 } from "../bus-notices.js";
 import {
@@ -52,7 +53,7 @@ import {
   usageLimit,
   VERSIONS_PAGE_SIZE,
 } from "../limits.js";
-import { R, viewerPath } from "../routes.js";
+import { BUS_MACHINES_PAUSED_HEADER, R, viewerPath } from "../routes.js";
 import {
   AgentViaSchema,
   ArtifactPatchSchema,
@@ -494,6 +495,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       ]),
     ) as T;
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
+  let busUpdatesPaused = false;
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
@@ -833,8 +835,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json({ agents: shareNoticeAgents });
     }),
     // #1291/#1293: the caller's bus machines; active newest first, then revoked.
-    http.get(`*${R.busMachines}`, () =>
+    http.get(`*${R.busMachines}`, ({ request }) =>
       HttpResponse.json({
+        // #2552: the mock caller is the owner, who is told the pause state when
+        // the client asks for it (as the server's route does).
+        ...(request.headers.get(BUS_MACHINES_PAUSED_HEADER) === "1"
+          ? { updatesPaused: busUpdatesPaused }
+          : {}),
         machines: [...busMachines].sort(
           (a, b) =>
             Number(a.revokedAt !== null) - Number(b.revokedAt !== null) ||
@@ -844,6 +851,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         ),
       }),
     ),
+    // #2552: the owner's pause switch.
+    http.put(`*${R.busUpdatesPaused}`, async ({ request }) => {
+      const r = await body(request, BusUpdatesPausedPutSchema);
+      if (r.error) return r.error;
+      busUpdatesPaused = r.data.paused;
+      return new HttpResponse(null, { status: 204 });
+    }),
     // Idempotent: a second revoke is 204 too; an unknown id is 404. Its agents close.
     http.delete(`*${R.busMachines}/:id`, ({ params: p }) => {
       const m = busMachines.find((x) => x.id === p.id);
