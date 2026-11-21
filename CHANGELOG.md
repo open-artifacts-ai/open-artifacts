@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.238.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.237.0...v0.238.0) (2026-11-21)
+
+
+### Features
+
+* **share:** show the sharer's own pause in the share panel ([#2741](https://github.com/open-artifacts-ai/open-artifacts/issues/2741)) ([#2967](https://github.com/open-artifacts-ai/open-artifacts/issues/2967)) ([3d2cdd9](https://github.com/open-artifacts-ai/open-artifacts/commit/3d2cdd989b84bf0ab17b754c468d889f5d8599f1))
+
 ## [0.237.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.236.0...v0.237.0) (2026-11-21)
 
 
