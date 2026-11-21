@@ -26,7 +26,11 @@ export const LIMIT_LINE =
 const SENDER_PAUSED_WHY =
   "because some earlier ones bounced or were reported. Copy the link and send it yourself.";
 
-/** The pause's last day as OA Product writes it ("18 Nov"); null when unknown. */
+/**
+ * The pause's last day as OA Product writes it ("18 Nov"); null when unknown.
+ * UTC, so the day is the one the server's pause ends on and the same line
+ * everywhere: it is a day, not an hour, and the pause itself ends when it ends.
+ */
 export function pausedOn(iso: string | undefined): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -34,6 +38,7 @@ export function pausedOn(iso: string | undefined): string | null {
   return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     month: "short",
+    timeZone: "UTC",
   }).format(d);
 }
 
