@@ -1,5 +1,11 @@
 import { AgentViaSchema, FormatSchema, type Role } from "@oa/shared";
 import {
+  PostHogErrorBoundary,
+  PostHogProvider,
+  usePostHog,
+} from "@posthog/react";
+import { useEffect, useRef } from "react";
+import {
   createRootRoute,
   createRoute,
   createRouter,
@@ -58,8 +64,77 @@ const stringifySearch = (o: Record<string, unknown>) => {
   return s ? `?${s}` : "";
 };
 
+const posthogKey = import.meta.env.VITE_POSTHOG_KEY;
+const posthogHost = import.meta.env.VITE_POSTHOG_HOST;
+
+function PostHogIdentity() {
+  const posthog = usePostHog();
+  const state = useMe();
+  const identifiedUserId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (state.status === "authed") {
+      const { user } = state.me;
+      if (identifiedUserId.current === user.id) return;
+      if (identifiedUserId.current !== null) posthog.reset();
+      posthog.identify(user.id, {
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      });
+      identifiedUserId.current = user.id;
+    } else if (
+      state.status === "anonymous" &&
+      identifiedUserId.current !== null
+    ) {
+      posthog.reset();
+      identifiedUserId.current = null;
+    }
+  }, [posthog, state]);
+
+  return null;
+}
+
+function RootLayout() {
+  if (!posthogKey) {
+    if (import.meta.env.DEV)
+      throw new Error(
+        "VITE_POSTHOG_KEY variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_KEY is configured",
+      );
+    return <AppLayout />;
+  }
+
+  if (!posthogHost) {
+    if (import.meta.env.DEV)
+      throw new Error(
+        "VITE_POSTHOG_HOST variable required by PostHog is missing or un-configured, this causes events to be silently missed. This error stops appearing once VITE_POSTHOG_HOST is configured",
+      );
+    return <AppLayout />;
+  }
+
+  return (
+    <PostHogProvider
+      apiKey={posthogKey}
+      options={{
+        api_host: posthogHost,
+        capture_exceptions: true,
+        debug: import.meta.env.DEV,
+        logs: {
+          serviceName: "open-artifacts-dashboard",
+          environment: import.meta.env.MODE,
+        },
+      }}
+    >
+      <PostHogErrorBoundary fallback={<RenderError />}>
+        <PostHogIdentity />
+        <AppLayout />
+      </PostHogErrorBoundary>
+    </PostHogProvider>
+  );
+}
+
 const root = createRootRoute({
-  component: AppLayout,
+  component: RootLayout,
   notFoundComponent: NotFound,
 });
 const route = (path: string, component: () => React.ReactNode) =>

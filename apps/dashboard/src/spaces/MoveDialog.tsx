@@ -5,6 +5,7 @@
 // first, and the server makes it Team in the same step.
 import type { ArtifactSummary, MySpace } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
+import { usePostHog } from "@posthog/react";
 import { useState } from "react";
 import { errorCopy } from "../api/errorCopy";
 import { useMoveArtifact, useSpaces } from "../api/queries";
@@ -41,6 +42,7 @@ export function MoveDialog({
   onClose: () => void;
 }) {
   const targets = useMoveTargets(a);
+  const posthog = usePostHog();
   const move = useMoveArtifact(a.id, true);
   const shared = useSpaces({ kind: "shared" });
   const me = useMe();
@@ -71,6 +73,10 @@ export function MoveDialog({
     move
       .mutateAsync(target.id)
       .then(() => {
+        posthog.capture("artifact_moved", {
+          source_space_type: fromPersonal ? "personal" : "shared",
+          destination_space_type: "shared",
+        });
         toast({ title: `Moved to ${target.name}.`, tone: "success" });
         onClose();
       })

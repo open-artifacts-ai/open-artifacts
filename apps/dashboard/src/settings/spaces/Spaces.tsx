@@ -5,6 +5,7 @@
 // spaces and only what SPACE_MANAGER_FIELDS lets them change.
 import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { usePostHog } from "@posthog/react";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
@@ -83,6 +84,7 @@ function NewSpace({
   onClose: () => void;
 }) {
   const create = useCreateSpace();
+  const posthog = usePostHog();
   const state = useMe();
   const [name, setName] = useState("");
   const [allMembersRole, setAll] = useState<SpaceRole | null>(null);
@@ -111,7 +113,14 @@ function NewSpace({
     create.mutate(
       { name: clean, allMembersRole, publicLinks, addMe },
       {
-        onSuccess: onClose,
+        onSuccess: () => {
+          posthog.capture("space_created", {
+            has_all_members_role: allMembersRole !== null,
+            public_links_enabled: publicLinks,
+            creator_added_as_manager: addMe,
+          });
+          onClose();
+        },
         onError: (e) => {
           if (e instanceof ApiClientError && e.code === "plan_required") {
             const ctx = billingContext(

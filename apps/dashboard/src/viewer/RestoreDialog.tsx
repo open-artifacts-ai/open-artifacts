@@ -1,5 +1,6 @@
 import { viewerPath } from "@oa/shared";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { usePostHog } from "@posthog/react";
 import { ApiClientError } from "../api/client";
 import { useRestoreVersion } from "../api/queries";
 import { useSingleFlight } from "../api/useSingleFlight";
@@ -21,6 +22,7 @@ export function RestoreDialog({
   onClose: () => void;
 }) {
   const navigate = useNavigate();
+  const posthog = usePostHog();
   const search = useSearch({ strict: false }) as Record<string, unknown>;
   const restore = useRestoreVersion(id);
   const once = useSingleFlight();
@@ -42,6 +44,9 @@ export function RestoreDialog({
         once((done) =>
           restore.mutate(version, {
             onSuccess: (r) => {
+              posthog.capture("artifact_version_restored", {
+                restored_version: version,
+              });
               onClose();
               void navigate({
                 to: viewerPath(id, r.version) as string,

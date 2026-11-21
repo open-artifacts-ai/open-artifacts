@@ -7,6 +7,7 @@ import {
 import { Button, Input, Textarea } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { usePostHog } from "@posthog/react";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
@@ -69,6 +70,7 @@ export function UploadDialog({
   const submitButton = useRef<HTMLButtonElement>(null);
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const posthog = usePostHog();
   const busy = progress !== null;
   const needsEntry = auto === undefined;
   const invalid = !title.trim() || (needsEntry && !entry);
@@ -99,6 +101,16 @@ export function UploadDialog({
       qc.invalidateQueries({ queryKey: qk.artifact(r.id) }),
     ]);
     if (!alive.current) return;
+    posthog.capture("artifact_uploaded", {
+      file_count: files.length,
+      has_message: Boolean(message.trim()),
+      has_shared_space: Boolean(space && space !== personalSpaceId),
+    });
+    posthog.logger.info("artifact upload completed", {
+      event: "artifact_upload_completed",
+      file_count: files.length,
+      has_shared_space: Boolean(space && space !== personalSpaceId),
+    });
     toast({ title: "Artifact created" });
     onClose();
     void navigate({ to: viewerPath(r.id, r.version) as never });
@@ -209,12 +221,32 @@ export function UploadDialog({
       }
       if (!alive.current) return;
       if (down || lookupFailed) {
+        posthog.logger.warn("artifact upload retry required", {
+          event: "artifact_upload_retry_required",
+          failure_reason: lookupFailed
+            ? "recovery_lookup_failed"
+            : timedOut
+              ? "create_timed_out"
+              : "service_unavailable",
+          file_count: files.length,
+        });
         setRetryTitle(title);
         setError(
           `Couldn't create the artifact: the server didn't answer. Your ${files.length === 1 ? "file is" : "files are"} still here.`,
         );
         return;
       }
+      posthog.logger.error("artifact upload failed", {
+        event: "artifact_upload_failed",
+        failure_kind:
+          e instanceof ApiClientError
+            ? "api_error"
+            : e instanceof UploadValidationError
+              ? "validation_error"
+              : "unexpected_error",
+        ...(e instanceof ApiClientError && { http_status: e.status }),
+        file_count: files.length,
+      });
       setError(
         e instanceof ApiClientError
           ? errorCopy(e, e.message)

@@ -21,6 +21,7 @@ import {
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
+import { usePostHog } from "@posthog/react";
 import { useId, useState } from "react";
 import { useAddListens } from "../../api/agentAsks";
 import { useAuthProviders } from "../../api/auth";
@@ -232,6 +233,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     space?.publicLinks === false && artifact.visibility !== "public";
   const shares = useShares(id, people);
   const qc = useQueryClient();
+  const posthog = usePostHog();
   const patch = usePatchArtifact(id);
   const put = usePutShare(id);
   const del = useDeleteShare(id);
@@ -331,7 +333,10 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         { visibility: v },
         {
           onSettled: done,
-          onSuccess: () => setConflict(false),
+          onSuccess: () => {
+            posthog.capture("artifact_visibility_changed", { visibility: v });
+            setConflict(false);
+          },
           onError: (e) => {
             setPending(null);
             if (isConflict(e)) return setConflict(true);
@@ -355,6 +360,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         {
           onSettled: done,
           onSuccess: (r) => {
+            posthog.capture("artifact_shared", {
+              role: r.role,
+              delivery: r.emailed ? "email" : "manual",
+              recipient_type: r.guest ? "guest" : "member",
+            });
             setEmail("");
             setAskTick(false);
             if (listen) {

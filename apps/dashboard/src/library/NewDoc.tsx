@@ -2,6 +2,7 @@ import { PublishResultSchema, R } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { usePostHog } from "@posthog/react";
 import { useRef, useState } from "react";
 import { api } from "../api/client";
 import { isSoloPaused } from "../auth/permissions";
@@ -87,6 +88,7 @@ export function NewDocButton({
   variant?: "outline";
 }) {
   const navigate = useNavigate();
+  const posthog = usePostHog();
   const qc = useQueryClient();
   const [busy, setBusy] = useState(false);
   const create = async () => {
@@ -111,6 +113,10 @@ export function NewDocButton({
         },
         PublishResultSchema,
       );
+      posthog.capture("artifact_created", {
+        format: "doc",
+        has_shared_space: Boolean(spaceId),
+      });
       void qc.invalidateQueries({ queryKey: ["artifacts"] });
       markFresh(made.id);
       await navigate({ to: `/a/${made.id}` } as never);
