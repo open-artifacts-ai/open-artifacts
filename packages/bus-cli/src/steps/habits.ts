@@ -971,13 +971,23 @@ export type HabitsQuestion = {
 /** The last line of the question: omp gets no habit lines. */
 export const OMP_NOTE = "omp: not supported yet";
 
+/**
+ * #2966: the one place the install question is worded, so Product can reword it
+ * without touching the flow. `{count}` habits, `{files}` where they go.
+ */
+export const HABITS_QUESTION_TEXT =
+  "The bus would add {count} habits to this project only, in {files}:";
+
 export const habitsQuestion = (
   shownFiles: string[],
   bus: string = BUS_CMD,
 ): HabitsQuestion => {
   const yes = `${bus} install --habits-project`;
   const no = `${bus} install --no-habits`;
-  const text = `The bus would add ${HABITS_LINES.length} habits to this project only, in ${shownFiles.join(" and ")}:`;
+  const text = HABITS_QUESTION_TEXT.replace(
+    "{count}",
+    String(HABITS_LINES.length),
+  ).replace("{files}", shownFiles.join(" and "));
   return {
     text,
     lines: HABITS_LINES.slice(),

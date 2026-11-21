@@ -328,8 +328,8 @@ describe("install: disclosure", () => {
     const yes = fakeCtx(claudeOnly());
     Object.assign(yes, { userHome: ctx.userHome, home: ctx.home });
     expect(await install({ habits: "yes" }, yes)).toBe(0);
-    expect(readFileSync(projectMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
-    expect(yes.out().join("\n")).toContain(`Habits on in this folder: ${projectMd(ctx)}`);
+    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    expect(yes.out().join("\n")).toContain("Habits on in ~/.claude/CLAUDE.md");
     // Nothing else reran: no daemon call.
     expect(yes.service.ensure).not.toHaveBeenCalled();
     const shown = fakeCtx(claudeOnly());
@@ -344,14 +344,18 @@ describe("install: disclosure", () => {
   it("a reinstall with a changed block shows the difference and asks again", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
-    await install({ habits: "yes" }, ctx);
+    await install({ habits: "project" }, ctx);
     writeFileSync(
-      claudeMd(ctx),
-      readFileSync(claudeMd(ctx), "utf8").replace("under 140", "under 100"),
+      projectMd(ctx),
+      readFileSync(projectMd(ctx), "utf8").replace("under 140", "under 100"),
     );
     const readLine = vi.fn(async () => "y");
     const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    Object.assign(again, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
     await install({ hub: HUB }, again);
     const out = again.out().join("\n");
     expect(out).toContain("changed in this release");
@@ -362,10 +366,14 @@ describe("install: disclosure", () => {
   it("a current block is left alone without asking", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
-    await install({ habits: "yes" }, ctx);
+    await install({ habits: "project" }, ctx);
     const readLine = vi.fn(async () => "n");
     const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    Object.assign(again, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
     await install({ hub: HUB }, again);
     expect(readLine).not.toHaveBeenCalled();
     expect(again.out().join("\n")).not.toContain("QUESTION");
@@ -393,7 +401,7 @@ describe("uninstall, status and doctor", () => {
     await install({ hub: HUB }, ctx);
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     await install({ habits: "yes" }, ctx);
-    expect(habitsLine(ctx)).toBe(`Habits: on in ${projectMd(ctx)}`);
+    expect(habitsLine(ctx)).toBe("Habits: on in ~/.claude/CLAUDE.md");
     await install({ habits: "no" }, ctx);
     expect(habitsLine(ctx)).toBe("Habits: off (you opted out)");
   });
@@ -404,7 +412,7 @@ describe("uninstall, status and doctor", () => {
     const s = fakeCtx(claudeOnly());
     Object.assign(s, { userHome: ctx.userHome, home: ctx.home });
     await statusCmd(s);
-    expect(s.all().join("\n")).toContain(`Habits: on in ${projectMd(ctx)}`);
+    expect(s.all().join("\n")).toContain("Habits: on in ~/.claude/CLAUDE.md");
     const d = fakeCtx(claudeOnly());
     Object.assign(d, { userHome: ctx.userHome, home: ctx.home });
     await doctor(d);
@@ -524,8 +532,8 @@ describe("review fixes (#1638)", () => {
     symlinkSync(join(home, "dot.md"), claude(home));
     expect(writeHabits(deps, ["claude"]).files).toHaveLength(1);
   });
-  it("disclosure and status name the symlink target; TTY Enter does not write an outside one", async () => {
-    const ctx = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "") });
+  it("the explicit global --habits names an outside symlink and writes through it, while a plain install leaves it alone", async () => {
+    const ctx = setup();
     await install({ hub: HUB }, ctx);
     const outside = tmp();
     const real = join(outside, "CLAUDE.md");
@@ -533,23 +541,32 @@ describe("review fixes (#1638)", () => {
     rmSync(claudeMd(ctx), { force: true });
     mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
     symlinkSync(real, claudeMd(ctx));
-    const readLine = vi.fn(async () => "");
-    const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
-    await install({ hub: HUB }, again);
-    const out = again.out().join("\n");
-    expect(out).toContain(`(symlink to ${real}, outside your home)`);
-    expect(readLine.mock.calls.length).toBe(1);
+
+    // #2966: the default install writes this folder's file, not the global one.
+    const plain = fakeCtx(claudeOnly());
+    Object.assign(plain, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
+    await install({ hub: HUB }, plain);
     expect(readFileSync(real, "utf8")).toBe("repo\n");
-    const yes = fakeCtx(
-      claudeOnly({ stdinIsTTY: true, readLine: vi.fn(async () => "y") }),
+
+    // The explicit choice still goes global, names the target and writes through.
+    const yes = fakeCtx(claudeOnly());
+    Object.assign(yes, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
+    await install({ habits: "yes" }, yes);
+    expect(yes.out().join("\n")).toContain(
+      `(symlink to ${real}, outside your home)`,
     );
-    Object.assign(yes, { userHome: ctx.userHome, home: ctx.home });
-    await install({ hub: HUB }, yes);
     expect(readFileSync(real, "utf8")).toContain(HABITS_END);
     expect(habitsLine(yes)).toContain(`(symlink to ${real}`);
   });
-  it("no TTY: the question names an outside symlink", async () => {
+  it("no TTY: the question names this project's file, and a global symlink is untouched", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     const outside = tmp();
@@ -558,9 +575,16 @@ describe("review fixes (#1638)", () => {
     mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
     symlinkSync(real, claudeMd(ctx));
     const again = fakeCtx(claudeOnly());
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    Object.assign(again, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
     await install({ hub: HUB }, again);
-    expect(again.out().join("\n")).toContain("outside your home");
+    // #2966: the question is about this folder now, and the global file is
+    // never written by the default install.
+    expect(again.out().join("\n")).toContain(projectMd(ctx));
+    expect(again.out().join("\n")).not.toContain("outside your home");
     expect(readFileSync(real, "utf8")).toBe("repo\n");
   });
 });
@@ -608,8 +632,10 @@ describe("install: the printed command (#1998)", () => {
     const { ctx } = withShim();
     expect(await install({ hub: HUB, json: true }, ctx)).toBe(0);
     const j = JSON.parse(ctx.out()[0] as string);
-    expect(j.question.yes).toBe(`${BUS_CMD} install --habits`);
+    // #2966: yes is per project; global is its own opt-in line.
+    expect(j.question.yes).toBe(`${BUS_CMD} install --habits-project`);
     expect(j.question.no).toBe(`${BUS_CMD} install --no-habits`);
+    expect(j.question.global).toBe(`${BUS_CMD} install --habits`);
   });
 
   it("daemon and mcp keep npx when the shim is ours", async () => {
