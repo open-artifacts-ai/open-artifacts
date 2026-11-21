@@ -34,9 +34,15 @@ import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { isMember } from "../library/MemberGetStarted";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
+import {
+  type AskSlotRect,
+  createBridge,
+  type ScrollPos,
+  type WelcomeGreet,
+} from "./bridge";
 import { Crumbs } from "./Crumbs";
 import { asksForMe, nextAskFor } from "./comments/asks";
+import { AskSlots } from "./comments/AskSlots";
 import {
   AskBeside,
   CommentsBody,
@@ -274,6 +280,14 @@ function Viewer({
       })) as never,
     });
   const bridge = useRef<Bridge | null>(null);
+  // #2426 B: where the page's `[data-oa-ask]` slots are, as the frame last said.
+  const [askSlots, setAskSlots] = useState<
+    { key: string; rect: AskSlotRect }[]
+  >([]);
+  const setAskSlotSize = useCallback(
+    (key: string, h: number) => bridge.current?.setAskSlotSize(key, h),
+    [],
+  );
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
@@ -659,6 +673,7 @@ function Viewer({
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onCommentAway: () => cmtRef.current.onAway(),
+      onAskSlots: setAskSlots,
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -672,6 +687,8 @@ function Viewer({
     return () => {
       b.dispose();
       bridge.current = null;
+      // A new frame reports its own slots.
+      setAskSlots([]);
     };
   }, [el, src, version, onHello, onRenavigated, touch, gone]);
 
@@ -1011,6 +1028,13 @@ function Viewer({
               />
               {commentsOn && <PinBeside frame={el} />}
               {commentsOn && <AskBeside frame={el} />}
+              <AskSlots
+                frame={el}
+                artifactId={artifact.id}
+                reported={askSlots}
+                setSize={setAskSlotSize}
+                enabled={authed}
+              />
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||

@@ -496,7 +496,7 @@ export const actor = (
 ) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
 
 /** Who an ask is for: " you", else the addressees as the API names them (masked ones stay masked). */
-const askedWho = (to: { name: string }[], mine: boolean) => {
+export const askedWho = (to: { name: string }[], mine: boolean) => {
   if (mine) return " you";
   const [a, b] = to;
   if (!a) return "";
