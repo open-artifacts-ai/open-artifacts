@@ -118,6 +118,8 @@ describe("install: transcript state 1, first run", () => {
       ...(first as string[]).slice(0, waiting),
       "Waiting for approval (up to 10 minutes)…",
       ...(after as string[]),
+      // #2966: no repository here, so the habits step says why it wrote nothing.
+      "This folder is not inside a git repository, so there is no project to write the habits to.",
     ]);
     expect(ctx.err()).toEqual([]);
     // The browser got the URL; the token never reached stdout.
@@ -250,12 +252,13 @@ describe("install: transcript state 1, first run", () => {
       ...allHarnesses({ status: vi.fn(async () => withAgents([])) }),
     });
     await run(ctx);
-    expect(withoutHabitsQuestion(ctx.out()).slice(-5)).toEqual([
+    expect(withoutHabitsQuestion(ctx.out()).slice(-6)).toEqual([
       `No agents in namespace [[accent]]${NS}[[/accent]] yet.`,
       "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
       "in this folder. It joins.",
       "",
       "[[muted]]Check this machine anytime with npx @open-artifacts/bus status.[[/muted]]",
+      "This folder is not inside a git repository, so there is no project to write the habits to.",
     ]);
   });
 
