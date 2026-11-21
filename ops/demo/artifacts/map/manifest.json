@@ -1,10 +1,9 @@
 {
-  "title": "Where are you from",
+  "title": "Open Artifacts stargazers",
   "visibility": "public",
-  "allowAnonymousWrites": true,
+  "allowAnonymousWrites": false,
   "capabilities": {
-    "db": true,
-    "viewer": true
+    "db": true
   },
-  "description": "Pick your country, and a pin lands on the world map in every open window. A fresh map every day."
+  "description": "Where the people who starred Open Artifacts on GitHub are. New stars land on the map in every open window."
 }
