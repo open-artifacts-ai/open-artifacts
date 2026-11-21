@@ -3,6 +3,7 @@ import {
   AnonViewerSchema,
   type ArtifactSummary,
   type ArtifactToShell,
+  ASK_SLOTS_MAX,
   DataChangeSchema,
   DataDocSchema,
   type ErrorCode,
@@ -12,7 +13,6 @@ import {
   OnboardingSchema,
   PageSchema,
   PROTOCOL_ASK_MARK,
-  ASK_SLOTS_MAX,
   PROTOCOL_ASK_SLOTS,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
@@ -51,7 +51,12 @@ import { clampRetryHint } from "./liveEvents";
 export type WelcomeGreet = { firstName: string | null; org: string };
 
 /** A slot's box in frame-viewport pixels (#2426 B). */
-export type AskSlotRect = { x: number; y: number; width: number; height: number };
+export type AskSlotRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
 
@@ -122,9 +127,7 @@ export interface BridgeOptions {
   /** A pointer went down in the frame (outside the runtime's own button). */
   onCommentAway?: () => void;
   /** #2426 B: where the page's `[data-oa-ask]` slots are, in frame-viewport pixels (a frame that said protocol 8 or more). */
-  onAskSlots?: (
-    slots: { key: string; rect: AskSlotRect }[],
-  ) => void;
+  onAskSlots?: (slots: { key: string; rect: AskSlotRect }[]) => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
     /** #2019: where the click landed, in frame-viewport pixels. */

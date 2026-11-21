@@ -80,7 +80,9 @@ const report = (keys: string[]) =>
     opts.at(-1)?.onHello();
     opts
       .at(-1)
-      ?.onAskSlots?.(keys.map((key, i) => ({ key, rect: { ...R1, y: 100 + i * 200 } })));
+      ?.onAskSlots?.(
+        keys.map((key, i) => ({ key, rect: { ...R1, y: 100 + i * 200 } })),
+      );
   });
 const card = (key: string) =>
   document.querySelector<HTMLElement>(`[data-ask-slot="${key}"]`);
@@ -113,12 +115,19 @@ describe("ask cards in page slots (#2426 B)", () => {
     serve(404);
     mount(viewerPath(OWNED));
     await report(["a", "b"]);
-    await waitFor(() => expect(sizes()).toEqual([["a", 0], ["b", 0]]));
+    await waitFor(() =>
+      expect(sizes()).toEqual([
+        ["a", 0],
+        ["b", 0],
+      ]),
+    );
     expect(document.querySelector("[data-ask-slot]")).toBeNull();
   });
 
   it("a withdrawn ask shows nothing and its slot closes", async () => {
-    serve([slot("old", { ask: ask({ withdrawn: { at: "2026-11-05T10:00:00Z" } }) })]);
+    serve([
+      slot("old", { ask: ask({ withdrawn: { at: "2026-11-05T10:00:00Z" } }) }),
+    ]);
     mount(viewerPath(OWNED));
     await report(["old"]);
     await waitFor(() => expect(sizes()).toContainEqual(["old", 0]));
@@ -162,7 +171,9 @@ describe("ask cards in page slots (#2426 B)", () => {
     await wait(ASK_BESIDE_HOLD_MS + 150);
     expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
     await act(async () =>
-      opts.at(-1)?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 260 } }]),
+      opts
+        .at(-1)
+        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 260 } }]),
     );
     expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
   });
@@ -174,7 +185,9 @@ describe("ask cards in page slots (#2426 B)", () => {
     await waitFor(() => expect(card("launch-day")).not.toBeNull());
     expect(card("launch-day")?.style.visibility).toBe("visible");
     await act(async () =>
-      opts.at(-1)?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 5000 } }]),
+      opts
+        .at(-1)
+        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 5000 } }]),
     );
     expect(card("launch-day")?.style.visibility).toBe("hidden");
   });

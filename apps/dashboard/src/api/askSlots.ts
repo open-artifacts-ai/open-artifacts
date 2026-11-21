@@ -36,7 +36,8 @@ export const useAskSlots = (artifactId: string, enabled = true) =>
   useQuery({
     enabled,
     queryKey: askSlotsKey(artifactId),
-    retry: (n, e) => !(e instanceof ApiClientError && e.status === 404) && n < 1,
+    retry: (n, e) =>
+      !(e instanceof ApiClientError && e.status === 404) && n < 1,
     queryFn: async ({ signal }): Promise<AskSlot[]> => {
       try {
         return await api.get(path(artifactId), ListSchema, signal);

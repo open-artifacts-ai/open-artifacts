@@ -45,7 +45,10 @@ export function createAskSlots(
   // Inline and important: the page's own styles cannot collapse a slot the
   // shell sized, or stretch one it closed.
   const set = (el: HTMLElement, p: string, v: string) => {
-    if (el.style.getPropertyValue(p) !== v || el.style.getPropertyPriority(p) !== "important")
+    if (
+      el.style.getPropertyValue(p) !== v ||
+      el.style.getPropertyPriority(p) !== "important"
+    )
       el.style.setProperty(p, v, "important");
   };
   const size = (el: HTMLElement, h: number) => {

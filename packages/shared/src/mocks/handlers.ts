@@ -138,6 +138,8 @@ export type MockOptions = {
   commentAgents?: boolean;
   /** #2019: the "Landing page" artifact is an image (or a pdf) with pins on it. */
   commentPins?: "image" | "pdf";
+  /** #2426 B: ?mock=askslots (with commentAsks): GET ask-slots for "Landing page", one own ask and one placed from "Meeting notes". */
+  askSlots?: boolean;
   /** #2338: agent comments with markdown, a hostile body and a markdown ask. */
   commentMarkdown?: boolean;
   /** #2512: For you's inbox (R.meInbox) with Design's examples, and Me.inbox counts; unset, no inbox (no bell). */
@@ -772,6 +774,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     seedAgents: opts.commentAgents,
     seedMarkdown: opts.commentMarkdown,
     seedPins: opts.commentPins,
+    seedSlots: opts.askSlots,
     seedForYou: opts.forYou === "mixed" || opts.forYou === "error",
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,

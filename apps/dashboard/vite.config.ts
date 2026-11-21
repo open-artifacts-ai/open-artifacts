@@ -40,6 +40,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // ?mock=askslots (#2426 B): a sandboxed frame (origin "null") loads the runtime module from the dev server.
+    cors: { origin: "null" },
     proxy: {
       "/api": target,
       "/auth": target,

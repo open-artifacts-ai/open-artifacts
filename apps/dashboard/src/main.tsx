@@ -801,7 +801,10 @@ async function startMocks() {
     commentAsks:
       params.get("mock") === "asks" ||
       params.get("mock") === "own-words" ||
+      params.get("mock") === "askslots" ||
       params.get("asks") === "1",
+    // ?mock=askslots (#2426 B): asks in the page's data-oa-ask slots (the page is public/mock-askslots.html).
+    askSlots: params.get("mock") === "askslots",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",
     // ?mock=decisions (#2381 S2): decided asks for the Decisions tab.
@@ -948,6 +951,22 @@ async function startMocks() {
   extra.unshift(
     ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),
   );
+  // ?mock=askslots (#2426 B): the Landing page loads a real page from this dev server, with the runtime and three data-oa-ask slots.
+  // A frame must be on another origin, so the page is served from the other loopback name (localhost <-> 127.0.0.1).
+  if (params.get("mock") === "askslots") {
+    const other = location.origin.includes("localhost")
+      ? location.origin.replace("localhost", "127.0.0.1")
+      : location.origin.replace("127.0.0.1", "localhost");
+    extra.push(
+      http.get("*/api/v1/artifacts/:id/content-url", ({ params: p }) =>
+        HttpResponse.json({
+          url: `${other}/mock-askslots.html?id=${String(p.id)}`,
+          version: 1,
+          expiresAt: null,
+        }),
+      ),
+    );
+  }
   await setupWorker(
     ...extra,
     ...mainHandlers,

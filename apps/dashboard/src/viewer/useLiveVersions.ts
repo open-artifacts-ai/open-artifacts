@@ -1,8 +1,8 @@
 import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiClientError, api } from "../api/client";
 import { ASK_SLOTS_KEY } from "../api/askSlots";
+import { ApiClientError, api } from "../api/client";
 import { commentsKey } from "../api/comments";
 import { qk } from "../api/queries";
 import { connectArtifactEvents, type GoneReason, onWake } from "./liveEvents";

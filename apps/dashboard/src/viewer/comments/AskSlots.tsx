@@ -1,4 +1,9 @@
-import { ASK_SLOT_H_MAX, type Comment, type CommentThread, viewerPath } from "@oa/shared";
+import {
+  ASK_SLOT_H_MAX,
+  type Comment,
+  type CommentThread,
+  viewerPath,
+} from "@oa/shared";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type AskSlot, useAskSlots } from "../../api/askSlots";
 import type { AskSlotRect } from "../bridge";
