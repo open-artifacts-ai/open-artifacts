@@ -1,0 +1,241 @@
+{
+  "bundleBytes": 85746,
+  "coldWake": {
+    "heavy 0.25MB": {
+      "loadMs": 16,
+      "loadSqlMs": 1,
+      "wallMs": 27.91,
+      "warmStatsWallMs": 6.1,
+      "stateBytes": 282801,
+      "sqlBytes": 339968
+    },
+    "heavy 0.25MB compacted": {
+      "loadMs": 12,
+      "loadSqlMs": 0,
+      "wallMs": 19.3,
+      "warmStatsWallMs": 18.15,
+      "stateBytes": 282801,
+      "sqlBytes": 299008
+    },
+    "heavy 0.5MB": {
+      "loadMs": 39,
+      "loadSqlMs": 1,
+      "wallMs": 51.15,
+      "warmStatsWallMs": 9.28,
+      "stateBytes": 523366,
+      "sqlBytes": 581632
+    },
+    "heavy 0.5MB compacted": {
+      "loadMs": 24,
+      "loadSqlMs": 0,
+      "wallMs": 46.64,
+      "warmStatsWallMs": 9.84,
+      "stateBytes": 523366,
+      "sqlBytes": 536576
+    },
+    "heavy 1MB": {
+      "loadMs": 74,
+      "loadSqlMs": 1,
+      "wallMs": 109.73,
+      "warmStatsWallMs": 34.88,
+      "stateBytes": 1013809,
+      "sqlBytes": 1077248
+    },
+    "heavy 1MB compacted": {
+      "loadMs": 70,
+      "loadSqlMs": 0,
+      "wallMs": 89.9,
+      "warmStatsWallMs": 18.92,
+      "stateBytes": 1013809,
+      "sqlBytes": 1028096
+    },
+    "heavy 2MB": {
+      "loadMs": 156,
+      "loadSqlMs": 1,
+      "wallMs": 204.33,
+      "warmStatsWallMs": 47.11,
+      "stateBytes": 2013354,
+      "sqlBytes": 2076672
+    },
+    "heavy 2MB compacted": {
+      "loadMs": 151,
+      "loadSqlMs": 1,
+      "wallMs": 210.42,
+      "warmStatsWallMs": 41.52,
+      "stateBytes": 2013354,
+      "sqlBytes": 2031616
+    },
+    "typing 0.25MB": {
+      "loadMs": 10,
+      "loadSqlMs": 1,
+      "wallMs": 16.01,
+      "warmStatsWallMs": 5.5,
+      "stateBytes": 266725,
+      "sqlBytes": 331776
+    },
+    "typing 0.25MB compacted": {
+      "loadMs": 7,
+      "loadSqlMs": 0,
+      "wallMs": 12.28,
+      "warmStatsWallMs": 4.27,
+      "stateBytes": 266725,
+      "sqlBytes": 282624
+    },
+    "typing 0.5MB": {
+      "loadMs": 16,
+      "loadSqlMs": 1,
+      "wallMs": 25.32,
+      "warmStatsWallMs": 7.74,
+      "stateBytes": 505672,
+      "sqlBytes": 569344
+    },
+    "typing 0.5MB compacted": {
+      "loadMs": 14,
+      "loadSqlMs": 0,
+      "wallMs": 22.2,
+      "warmStatsWallMs": 6.76,
+      "stateBytes": 505672,
+      "sqlBytes": 520192
+    },
+    "typing 1MB": {
+      "loadMs": 46,
+      "loadSqlMs": 1,
+      "wallMs": 59.38,
+      "warmStatsWallMs": 11.8,
+      "stateBytes": 1020058,
+      "sqlBytes": 1089536
+    },
+    "typing 1MB compacted": {
+      "loadMs": 29,
+      "loadSqlMs": 0,
+      "wallMs": 53.22,
+      "warmStatsWallMs": 11.47,
+      "stateBytes": 1020058,
+      "sqlBytes": 1036288
+    },
+    "typing 2MB": {
+      "loadMs": 80,
+      "loadSqlMs": 1,
+      "wallMs": 119.82,
+      "warmStatsWallMs": 27.79,
+      "stateBytes": 2020195,
+      "sqlBytes": 2093056
+    },
+    "typing 2MB compacted": {
+      "loadMs": 79,
+      "loadSqlMs": 1,
+      "wallMs": 114.48,
+      "warmStatsWallMs": 24.29,
+      "stateBytes": 2020195,
+      "sqlBytes": 2035712
+    },
+    "empty": {
+      "loadMs": 0,
+      "loadSqlMs": 0,
+      "wallMs": 1.72,
+      "warmStatsWallMs": 0.91,
+      "stateBytes": 2,
+      "sqlBytes": 16384
+    }
+  },
+  "editors": {
+    "heavy 1MB, row per update": {
+      "flushMs": 0,
+      "joinAllMs": 1895.01,
+      "joinMsgMaxMs": 18,
+      "joinMsgMeanMs": 4.88,
+      "pacedMsgs": 720,
+      "pacedMsgMeanMs": 0.1,
+      "pacedLatencyP50Ms": 1582.56,
+      "pacedLatencyP99Ms": 1674.59,
+      "pacedLatencySamples": 130,
+      "burstMsgs": 2000,
+      "burstMsgMeanMs": 0.07,
+      "burstWallMs": 1762.3,
+      "burstMsgsPerSec": 1135,
+      "msgMsMaxOverall": 18,
+      "rowsWritten": 2600,
+      "updateRowsAtEnd": 4600,
+      "compactMs": 16,
+      "compactBytes": 1043806
+    },
+    "heavy 1MB, flush 1000ms": {
+      "flushMs": 1000,
+      "joinAllMs": 2095.2,
+      "joinMsgMaxMs": 17,
+      "joinMsgMeanMs": 4.88,
+      "pacedMsgs": 720,
+      "pacedMsgMeanMs": 0.07,
+      "pacedLatencyP50Ms": 1535.07,
+      "pacedLatencyP99Ms": 1670.94,
+      "pacedLatencySamples": 130,
+      "burstMsgs": 2000,
+      "burstMsgMeanMs": 0.06,
+      "burstWallMs": 1749.24,
+      "burstMsgsPerSec": 1143,
+      "msgMsMaxOverall": 39,
+      "rowsWritten": 9,
+      "updateRowsAtEnd": 2009,
+      "compactMs": 17,
+      "compactBytes": 1043806
+    },
+    "typing 1MB, row per update": {
+      "flushMs": 0,
+      "joinAllMs": 1321.98,
+      "joinMsgMaxMs": 13,
+      "joinMsgMeanMs": 3.62,
+      "pacedMsgs": 720,
+      "pacedMsgMeanMs": 0.13,
+      "pacedLatencyP50Ms": 204.93,
+      "pacedLatencyP99Ms": 456.49,
+      "pacedLatencySamples": 130,
+      "burstMsgs": 2000,
+      "burstMsgMeanMs": 0.07,
+      "burstWallMs": 1773.38,
+      "burstMsgsPerSec": 1128,
+      "msgMsMaxOverall": 13,
+      "rowsWritten": 2600,
+      "updateRowsAtEnd": 4600,
+      "compactMs": 11,
+      "compactBytes": 1051464
+    }
+  },
+  "editDoc": {
+    "heavy 2MB": {
+      "warm1OpsInDoMs": 13,
+      "warm1OpsWallMs": 15.17,
+      "cold1OpsWallMs": 209.63,
+      "warm10OpsInDoMs": 17,
+      "warm10OpsWallMs": 24.45,
+      "cold10OpsWallMs": 229.08,
+      "warm50OpsInDoMs": 24,
+      "warm50OpsWallMs": 26.29,
+      "cold50OpsWallMs": 199.55,
+      "compactMs": 76
+    },
+    "typing 2MB": {
+      "warm1OpsInDoMs": 8,
+      "warm1OpsWallMs": 10.54,
+      "cold1OpsWallMs": 122.32,
+      "warm10OpsInDoMs": 11,
+      "warm10OpsWallMs": 14.32,
+      "cold10OpsWallMs": 126.92,
+      "warm50OpsInDoMs": 28,
+      "warm50OpsWallMs": 31.62,
+      "cold50OpsWallMs": 139.34,
+      "compactMs": 31
+    },
+    "heavy 1MB": {
+      "warm1OpsInDoMs": 6,
+      "warm1OpsWallMs": 9.15,
+      "cold1OpsWallMs": 95.47,
+      "warm10OpsInDoMs": 7,
+      "warm10OpsWallMs": 9.27,
+      "cold10OpsWallMs": 109.92,
+      "warm50OpsInDoMs": 13,
+      "warm50OpsWallMs": 15.25,
+      "cold50OpsWallMs": 104.73,
+      "compactMs": 24
+    }
+  }
+}
