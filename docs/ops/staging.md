@@ -128,9 +128,11 @@ Manual redeploy, only for the latest stable tag:
 gh workflow run release-please.yml -f tag=vX.Y.Z
 ```
 
-**Never rerun a failed release-please push run** (`gh run rerun`), not even the whole workflow. A rerun creates no release, so `release_created` is false and every job after `release-please` is skipped: the run goes green and deploys nothing. The hosted mirror (`hosted-release.yml` in open-artifacts-cloud) then reads that push run's latest attempt, finds `verify-release` skipped, and refuses the tag for good (cloud #410). To recover from a failed `deploy-prod` or `verify-release`, use the dispatch below with the tag, or let the next release carry the change.
-
 (The same `tag` input also redeploys the landing site.) The job checks out the tag and runs `scripts/ci/prod-setup.sh` in three steps, each with the PROD token scoped to that step:
+
+**Never rerun the whole push run once its release exists.** If anything after the `release-please` job fails (`deploy-prod`, `verify-release`, and so on), a whole-workflow rerun gives `release_created` false, so every later job is skipped and the run ends green with nothing deployed. The hosted mirror (`hosted-release.yml` in open-artifacts-cloud) reads that push run's latest attempt with `filter=latest`, finds `verify-release` skipped, and refuses the tag (cloud #410). The one case for a whole rerun is the `release-please` job's own "created no release" failure, where no release exists yet and the job's error says to rerun.
+
+To recover from a failure after the release exists, use the manual redeploy above with the tag. It fixes this instance only: the mirror looks only at the push run, so hosted takes the change with the next release (or whatever cloud #410 decides). A failed-jobs-only rerun (`gh run rerun --failed`) should keep the first attempt's outputs, but it has not been tested here.
 
 1. `preflight`: `oa:setup --check --strict --upgrade`. Read-only; fails if the instance is not installed (missing D1/R2/KV, Worker secrets, Access app, Worker never deployed) or has drifted (Worker vars differ from the flags, Access app not linked to its policy). Deploy and selftest always run, so they never count as drift.
 2. `upgrade`: `oa:setup --ci --upgrade`. Deploys and runs selftest with a CI token. `--upgrade` never creates resources, secrets or Access config, and keeps the owner token.
