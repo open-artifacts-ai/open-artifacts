@@ -115,8 +115,10 @@ export const OnboardingProgressSchema = z.strictObject({
       org: z.string().max(200),
       inviter: z.string().max(200).nullable(),
       teammateCommented: z.boolean(),
-      /** setupSteps(onboarding).done: the page shows the shared count. */
+      /** The count without the comment step (#2953): Welcome pages published before it show this over 5 or 3. */
       done: z.number().int().min(0).max(6).optional(),
+      /** setupSteps(onboarding).done, comment step included: the page shows the shared count. */
+      doneAll: z.number().int().min(0).max(6).optional(),
     })
     .optional(),
 });

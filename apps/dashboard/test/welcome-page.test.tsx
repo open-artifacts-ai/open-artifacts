@@ -23,6 +23,7 @@ type Progress = {
     inviter: string | null;
     teammateCommented: boolean;
     done?: number;
+    doneAll?: number;
   };
 };
 let progress: Progress;
@@ -290,6 +291,26 @@ describe("a member's Welcome", () => {
     };
     await load();
     expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
+  });
+
+  it("reads the full count first when the comment step is there (#2953)", async () => {
+    progress = {
+      agentConnected: true,
+      firstArtifact: null,
+      commented: false,
+      firstComment: { artifactId: "Cd5fGhJkLm6nPqRs", title: "Q" },
+      who: {
+        member: true,
+        firstName: "Ada",
+        org: "Acme",
+        inviter: null,
+        teammateCommented: false,
+        done: 1,
+        doneAll: 2,
+      },
+    };
+    await load();
+    expect(document.getElementById("count")?.textContent).toBe("2 of 6 done");
   });
 
   it("a person who never connected the bus sees three steps and the done line at three (#2890)", async () => {

@@ -257,7 +257,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     if (w) {
       memberDone.hidden = !done;
       // The shell's setupSteps count (one count everywhere); an older shell's answer counts here.
-      var n = typeof w.done === "number" ? w.done : (bus ? [p.agentConnected, p.agentNamed, p.firstArtifact, cm && p.firstComment, p.mentionReplied, p.askAnswered] : [p.agentConnected, p.firstArtifact, cm && p.firstComment, p.askAnswered]).filter(Boolean).length;
+      var n = typeof w.doneAll === "number" ? w.doneAll : typeof w.done === "number" && !cm ? w.done : (bus ? [p.agentConnected, p.agentNamed, p.firstArtifact, cm && p.firstComment, p.mentionReplied, p.askAnswered] : [p.agentConnected, p.firstArtifact, cm && p.firstComment, p.askAnswered]).filter(Boolean).length;
       countLine.textContent = M.count.replace("{n}", function(){ return String(n); }).replace("{t}", String((bus ? 5 : 3) + (cm ? 1 : 0)));
     }
     // A member keeps polling for the optional sixth step until it's done too.
