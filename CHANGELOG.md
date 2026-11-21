@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.239.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.0...v0.239.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **bus:** a Codex entry that signs in another way still links ([#2954](https://github.com/open-artifacts-ai/open-artifacts/issues/2954)) ([#2983](https://github.com/open-artifacts-ai/open-artifacts/issues/2983)) ([a78c5ce](https://github.com/open-artifacts-ai/open-artifacts/commit/a78c5ce6986cab034a58fb572f87083a2195a989))
+
 ## [0.239.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.238.0...v0.239.0) (2026-11-21)
 
 
