@@ -201,9 +201,13 @@ describe("daemon start re-applies the helper", () => {
       doc.projects[PROJ_B].mcpServers.unrelated,
     );
     const logFile = join(ctx.home, "logs/events.log");
-    await vi.waitFor(() =>
-      expect(readFileSync(logFile, "utf8")).toContain("late2"),
-    );
+    // The event log writes through its own promise chain (#2969/#2984), so one
+    // line landing says nothing about the next: wait for both, then assert.
+    await vi.waitFor(() => {
+      const seen = readFileSync(logFile, "utf8");
+      expect(seen).toContain("claude_proof_applied name=late kind=local");
+      expect(seen).toContain("claude_proof_applied name=late2 kind=user");
+    });
     const log = readFileSync(logFile, "utf8");
     expect(log).toMatch(/claude_proof_applied name=late kind=local/);
     expect(log).toMatch(/claude_proof_applied name=late2 kind=user/);
