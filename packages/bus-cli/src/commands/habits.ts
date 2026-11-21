@@ -2,7 +2,8 @@
 // --habits / --no-habits / --show-habits commands. The block itself, and the
 // files it goes in, are steps/habits.ts.
 
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -23,11 +24,14 @@ import {
   PLUGIN_HARNESSES,
   type PluginHabitsState,
   type PluginHarness,
+  PROJECT_HABITS_FILE,
+  type ProjectIo,
   pluginHabitsState,
   removeHabits,
   setHabitsOptOut,
   setPluginHabits,
   writeHabits,
+  writeProjectHabits,
 } from "../steps/habits.ts";
 
 /** What a person reads once a plugin's habits are on or off. */
@@ -36,7 +40,7 @@ export const pluginOn = (p: PluginHarness) =>
 export const pluginOff = (p: PluginHarness) =>
   `Habits off in the ${p.label} plugin.`;
 
-export type HabitsMode = "yes" | "no" | "show";
+export type HabitsMode = "yes" | "no" | "show" | "project";
 /** What the step decided, for `--json`. */
 export type HabitsOutcome = {
   state: "on" | "off" | "undecided" | "changed" | "none";
@@ -147,7 +151,7 @@ function turnOff(ctx: Ctx): number {
 }
 
 /** Each plugin harness's habits state, by name. */
-const pluginStates = (ctx: Ctx): Record<string, PluginHabitsState> =>
+export const pluginStates = (ctx: Ctx): Record<string, PluginHabitsState> =>
   Object.fromEntries(
     PLUGIN_HARNESSES.map((p) => [p.name, pluginHabitsState(deps(ctx), p)]),
   );
@@ -180,6 +184,105 @@ function disclosure(
  * with no terminal (an agent ran it) nothing is written and the question is
  * printed for the agent to put to its user.
  */
+/**
+ * #2966: what the project mode needs from git. Undefined when git is missing or
+ * the folder is not a work tree: then nothing is ignored (and nothing is
+ * created that would need it, since a tracked file cannot be told apart either,
+ * so a git-less folder writes its AGENTS.md and says so).
+ */
+export async function projectIo(ctx: Ctx): Promise<ProjectIo> {
+  if (!ctx.which("git")) return {};
+  const git = (args: string[]) =>
+    ctx.exec("git", ["-C", ctx.cwd, ...args], { timeoutMs: 5000 });
+  const inside = await git(["rev-parse", "--is-inside-work-tree"]).catch(
+    () => undefined,
+  );
+  if (inside?.code !== 0 || inside.stdout.trim() !== "true") return {};
+  // The path from the repo root to this folder, so the exclude line matches
+  // wherever the command runs (a `/AGENTS.md` line does not cover apps/x).
+  const prefixOut = await git(["rev-parse", "--show-prefix"]).catch(
+    () => undefined,
+  );
+  if (prefixOut?.code !== 0) return {};
+  const prefix = prefixOut.stdout.trim();
+  // The exclude file git actually reads: the common dir, so a linked worktree
+  // works too, and info/ may not exist yet.
+  const pathOut = await git(["rev-parse", "--git-path", "info/exclude"]).catch(
+    () => undefined,
+  );
+  if (pathOut?.code !== 0) return {};
+  const raw = pathOut.stdout.trim();
+  const excludeFile = raw.startsWith("/") ? raw : join(ctx.cwd, raw);
+  const tracked = new Map<string, boolean>();
+  for (const name of new Set(Object.values(PROJECT_HABITS_FILE))) {
+    const rel = `${prefix}${name}`;
+    const r = await git(["ls-files", "--error-unmatch", "--", rel]).catch(
+      () => undefined,
+    );
+    tracked.set(rel, r?.code === 0);
+  }
+  return {
+    rel: (name) => `${prefix}${name}`,
+    tracked: (rel) => tracked.get(rel) === true,
+    excludeFile,
+    exclude: (line) => {
+      let text = "";
+      try {
+        text = readFileSync(excludeFile, "utf8");
+      } catch {
+        mkdirSync(dirname(excludeFile), { recursive: true });
+      }
+      const lines = text.split("\n");
+      if (lines.includes(line)) return false;
+      const sep = text === "" || text.endsWith("\n") ? "" : "\n";
+      writeFileSync(excludeFile, `${text}${sep}${line}\n`);
+      return true;
+    },
+    unexclude: (line) => {
+      try {
+        const lines = readFileSync(excludeFile, "utf8").split("\n");
+        writeFileSync(excludeFile, lines.filter((l) => l !== line).join("\n"));
+      } catch {
+        // Nothing to take back.
+      }
+    },
+  };
+}
+
+/** #2966: writes the habits into this folder's own files, nothing global. */
+export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
+  const { targets, plugins } = wired(ctx);
+  const none: HabitsOutcome = {
+    state: "none",
+    files: [],
+    question: null,
+    plugins: pluginStates(ctx),
+  };
+  if (targets.length === 0 && plugins.length === 0) return none;
+  const io = await projectIo(ctx);
+  const r = writeProjectHabits(
+    { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
+    targets,
+    io,
+  );
+  // #2998 review: plugin habits are machine-wide, which is what #2966 moves
+  // away from, so this command never turns them on and never clears the
+  // person's own opt-out. It says so when a plugin harness is wired.
+  if (plugins.length > 0)
+    r.notes.push(
+      `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide, so this command leaves it alone. Turn those on or off with ${ctx.busCmd} install --habits and --no-habits.`,
+    );
+  if (r.files.length > 0)
+    say(ctx, `Habits on in this folder: ${shown(ctx, r.files)}`);
+  for (const n of r.notes) say(ctx, n);
+  return {
+    ...none,
+    state: r.files.length > 0 ? "on" : "off",
+    files: r.files,
+    plugins: pluginStates(ctx),
+  };
+}
+
 export async function habitsAfterInstall(
   ctx: Ctx,
   json: boolean,
@@ -295,13 +398,24 @@ export async function habitsAfterInstall(
 }
 
 /** `install --habits | --no-habits | --show-habits`: only the block, nothing else reruns. */
-export function habitsCommand(mode: HabitsMode, ctx: Ctx): number {
+export async function habitsCommand(
+  mode: HabitsMode,
+  ctx: Ctx,
+): Promise<number> {
   say(ctx, ctx.copy.header(ctx.version), "");
-  return mode === "show"
-    ? show(ctx)
-    : mode === "yes"
-      ? turnOn(ctx)
-      : turnOff(ctx);
+  if (mode === "show") return show(ctx);
+  if (mode === "project") {
+    // #2966: the per-folder install. Awaited, so its work cannot be cut off
+    // and a failure is not reported as success.
+    try {
+      const r = await habitsProject(ctx);
+      return r.files.length > 0 || r.state === "on" ? 0 : 1;
+    } catch (e) {
+      sayErr(ctx, `Could not set up the habits here: ${String(e)}`);
+      return 1;
+    }
+  }
+  return mode === "yes" ? turnOn(ctx) : turnOff(ctx);
 }
 
 /** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
