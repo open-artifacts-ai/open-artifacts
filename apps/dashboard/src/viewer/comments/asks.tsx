@@ -1607,6 +1607,24 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * dot when the name stem repeats among their own agents. Another member's
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
+/** #2577: the line under the box once a held agent is mentioned: its person decides first. */
+export const heldLine = (owner: string) =>
+  `${owner}'s agent answers once ${owner} allows it.`;
+
+/** The people whose held agents the draft names (each once, in order). */
+export function heldOwners(
+  agents: readonly ArtifactAgent[],
+  keys: readonly string[],
+): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    const a = agents.find((x) => x.key === k);
+    if (a?.owner && a.askState === "held" && !out.includes(a.owner))
+      out.push(a.owner);
+  }
+  return out;
+}
+
 /** #2577: what asking another person's agent does, in three plain states. */
 export function askLine(a: ArtifactAgent): string | null {
   if (!a.owner || !a.askState) return null;
@@ -1645,6 +1663,7 @@ export function MentionMenu({
   all = matches,
   active,
   onPick,
+  onMentionOwner,
 }: {
   id: string;
   matches: readonly ArtifactAgent[];
@@ -1652,6 +1671,8 @@ export function MentionMenu({
   all?: readonly ArtifactAgent[];
   active: number;
   onPick: (a: ArtifactAgent) => void;
+  /** #2577: an agent whose person turned asking off offers "Mention {owner} instead". */
+  onMentionOwner?: (a: ArtifactAgent) => void;
 }) {
   // #2577: with teammates' agents in the list, two labelled groups say whose is whose.
   const grouped = matches.some((a) => a.owner && a.askState);
@@ -1696,6 +1717,21 @@ export function MentionMenu({
               ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
               : stateText(a, all)}
         </span>
+        {a.askState === "off" && a.owner && onMentionOwner && (
+          <button
+            type="button"
+            data-mention-owner=""
+            tabIndex={-1}
+            className="cursor-pointer border-0 bg-transparent p-0 text-left font-medium text-[var(--oa-accent-fg)] underline"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onMentionOwner(a);
+            }}
+          >
+            Mention {a.owner} instead
+          </button>
+        )}
       </span>
     </div>
   );

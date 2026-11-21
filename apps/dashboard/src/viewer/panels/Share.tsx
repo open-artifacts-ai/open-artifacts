@@ -285,7 +285,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   // With no login domains, an address is outside unless it's a known member
   // (#2590). Only owners and admins can list members.
   const listMembers = isOrgAdmin(me) && domainList.length === 0;
-  const memberList = useMembers(undefined, listMembers).data;
+  // #2577: a member's name for the tick box; admins can list them even with login domains set.
+  const typedAddress = parseEmail(email);
+  const memberList = useMembers(
+    undefined,
+    listMembers || (isOrgAdmin(me) && !!typedAddress),
+  ).data;
   const known = memberList
     ? new Set(
         memberList
@@ -306,18 +311,44 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
   const [askTick, setAskTick] = useState(false);
   const typed = parseEmail(email);
   // Only when the tick could show: Editor picked and an address typed.
-  const hasListens = useMyTeammates(
-    people && pick === "editor" && !!typed && !typedOutside,
-  ).isSuccess;
+  // The three "No tick box" lines need the same server, so any address typed asks.
+  const teammates = useMyTeammates(people && !!typed);
+  const hasListens = teammates.isSuccess;
+  // The person's first name, when a member name is known; else the address.
+  const knownName =
+    memberList?.find((m) => m.email.toLowerCase() === typed?.toLowerCase())
+      ?.name ??
+    (() => {
+      const id = shares.data?.find(
+        (x) => x.email.toLowerCase() === typed?.toLowerCase(),
+      )?.memberId;
+      return id
+        ? teammates.data?.members.find((m) => m.id === id)?.name
+        : undefined;
+    })();
+  const tickName = knownName?.trim().split(/\s+/)[0] || typed;
+  // The server refuses a list entry on a public page, or one with a guest on it.
+  const openToGuests =
+    artifact.visibility === "public" ||
+    !!shares.data?.some((x) => x.guest === true);
   const showTick =
     people &&
     hasListens &&
     pick === "editor" &&
     !typedOutside &&
     !!typed &&
-    artifact.visibility !== "public" &&
-    // The server refuses a list entry on a page with a guest on it too.
-    !shares.data?.some((x) => x.guest === true);
+    !openToGuests;
+  // #2577: why there is no tick box, in the design's words (tab 4, "Not offered").
+  const noTick =
+    !people || !hasListens || !typed
+      ? null
+      : typedOutside
+        ? "No tick box: people outside your team can't ask your agents."
+        : pick === "viewer" || pick === "commenter"
+          ? "No tick box: viewers can't mention agents."
+          : openToGuests
+            ? "No tick box while the page is open to guests or to anyone with the link. Requests there always ask you first."
+            : null;
 
   const save = (p: ArtifactPatch) =>
     patch.mutate(p, { onError: (e) => fail(e, "Couldn't save") });
@@ -590,16 +621,24 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               <LabelledCheckbox
                 id="oa-ask-tick"
                 describedBy="oa-ask-tick-hint"
-                label={`${typed} can ask my agents about this page`}
+                label={`${tickName} can ask my agents about this page`}
                 checked={askTick}
                 onCheckedChange={setAskTick}
               />
               <small id="oa-ask-tick-hint" className="oa-muted">
                 {askTick
                   ? `Until ${endDate(Date.now() + 30 * 24 * 3600_000)}. Change or remove it in Settings, Connections.`
-                  : `Without asking me each time, for 30 days. My agents treat their words as a teammate's, not mine.`}
+                  : `Without asking me each time, for 30 days. They treat ${knownName ? `${tickName}'s` : "their"} words as a teammate's, not mine.`}
               </small>
             </div>
+          )}
+          {noTick && (
+            <p
+              data-ask-no-tick=""
+              className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}
+            >
+              {noTick}
+            </p>
           )}
           {outsideNote && (
             <p className={`mt-[var(--oa-space-3)] mb-0 ${MUTED}`}>

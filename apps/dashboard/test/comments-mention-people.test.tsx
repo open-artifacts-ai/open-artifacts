@@ -184,6 +184,98 @@ describe("@ lists people with the agents (#2770)", () => {
     expect((b as HTMLTextAreaElement).value).toBe("@Web (Sam) ");
   });
 
+  const THEIRS: ArtifactAgent[] = [
+    {
+      key: "a:pay",
+      name: "Payroll (Ana)",
+      online: true,
+      state: "online",
+      owner: "Ana",
+      askState: "off",
+    },
+    {
+      key: "a:web",
+      name: "Web (Sam)",
+      online: true,
+      state: "online",
+      owner: "Sam",
+      askState: "held",
+    },
+  ];
+
+  it("a held agent's mention shows who decides, under the box (#2577)", async () => {
+    serve(THEIRS);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@Web");
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect(
+      await within(c).findByText("Sam's agent answers once Sam allows it."),
+    ).toBeTruthy();
+    // Taking the mention out takes the line with it.
+    type(b, "hello");
+    expect(within(c).queryByText(/answers once Sam allows it/)).toBeNull();
+  });
+
+  it("an agent that is off offers 'Mention {owner} instead', which puts the person's name in the box (#2577)", async () => {
+    serve(THEIRS);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@Pay");
+    await within(c).findByRole("listbox");
+    fireEvent.mouseDown(await within(c).findByText("Mention Ana instead"));
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
+  });
+
+  it("'Mention {owner} instead' is reachable by the arrow keys and Enter (#2577)", async () => {
+    serve(THEIRS);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@");
+    await within(c).findByRole("listbox");
+    // The default row is the first pickable one; ArrowUp moves onto the off row.
+    expect(b.getAttribute("aria-activedescendant")).toMatch(/-1$/);
+    fireEvent.keyDown(b, { key: "ArrowUp" });
+    expect(b.getAttribute("aria-activedescendant")).toMatch(/-0$/);
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
+  });
+
+  it("after the keyboard swap to the person, Enter picks the person, not the off agent again (#2577)", async () => {
+    serve([
+      {
+        key: "a:ana",
+        name: "Ana Bot",
+        online: true,
+        state: "online",
+        owner: "Ana",
+        askState: "off",
+      },
+      THEIRS[1] as ArtifactAgent,
+    ]);
+    server.use(
+      http.post(CAND, () =>
+        HttpResponse.json({
+          items: [{ kind: "user", id: "usr_ana", name: "Ana", me: false }],
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@");
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(b, { key: "ArrowUp" });
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
+    await within(c).findByRole("option", { name: /^Ana(?! Bot)/ });
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana ");
+  });
+
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(
