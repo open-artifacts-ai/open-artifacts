@@ -36,9 +36,12 @@ import { utf8Exceeds } from "./utf8.js";
  * shell drops unknown keys from a frame message instead of the whole message.
  * #2426: 7 adds `ask` on `comments.set` threads (the shell leaves it out for a
  * runtime that said less) and `rect` on `comment.open` (the runtime leaves it
- * out for a shell that announced less).
+ * out for a shell that announced less). #2426 B: 8 adds `ask.slots` (frame to
+ * shell) and `ask.slotSize` (shell to frame); the runtime sends the first only
+ * to a shell that announced 8, and the shell sends the second only to a frame
+ * that said 8.
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 /** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
 export const PROTOCOL_SHELL_ANNOUNCES = 6;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
@@ -51,6 +54,12 @@ export const PROTOCOL_COMMENT_CLEAR = 4;
 export const PROTOCOL_PIN_BADGE = 5;
 /** The first protocol whose runtime marks an unanswered ask (`ask`), and whose shell reads `rect` on `comment.open` (#2426). */
 export const PROTOCOL_ASK_MARK = 7;
+/** The first protocol whose runtime reports `[data-oa-ask]` slots and sizes them on `ask.slotSize` (#2426 B). */
+export const PROTOCOL_ASK_SLOTS = 8;
+/** #2426 B: a slot key, chosen by the agent's page; never an ask id. */
+export const ASK_SLOT_KEY = /^[a-z0-9-]{1,64}$/;
+export const ASK_SLOTS_MAX = 20;
+export const ASK_SLOT_H_MAX = 2000;
 
 /**
  * #2019: what a pin's bubble shows, drawn by the shell's choice: one or two
@@ -330,6 +339,30 @@ export const ArtifactToShellSchema = z.union([
       .optional(),
   }),
   /**
+   * #2426 B: where each `[data-oa-ask]` slot is, in frame-viewport pixels. A
+   * key is the page's own name for a place; the shell maps it to an ask it
+   * knows and draws the card over the frame. Sent only to a shell that
+   * announced protocol 8.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("ask.slots"),
+    slots: z
+      .array(
+        z.strictObject({
+          key: z.string().regex(ASK_SLOT_KEY),
+          rect: z.strictObject({
+            x: z.number().finite().min(-100_000).max(100_000),
+            y: z.number().finite().min(-100_000).max(100_000),
+            width: z.number().finite().min(0).max(100_000),
+            height: z.number().finite().min(0).max(100_000),
+          }),
+        }),
+      )
+      .max(ASK_SLOTS_MAX),
+  }),
+  /**
    * Esc pressed in the frame while in pin mode: leave pin mode. Carries no
    * data; the shell acts only when it is in pin mode.
    */
@@ -505,6 +538,13 @@ export const ShellToArtifactSchema = z.union([
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
   /** Clear the frame's live text selection (the reader clicked elsewhere in the shell). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.clear") }),
+  /** #2426 B: the height the shell's card for slot `key` needs; 0 closes the slot up. */
+  z.strictObject({
+    oa: z.literal(1),
+    type: z.literal("ask.slotSize"),
+    key: z.string().regex(ASK_SLOT_KEY),
+    h: z.number().finite().min(0).max(ASK_SLOT_H_MAX),
+  }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({
     oa: z.literal(1),

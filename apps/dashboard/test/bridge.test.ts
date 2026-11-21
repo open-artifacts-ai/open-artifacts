@@ -607,6 +607,76 @@ describe("comments (#682)", () => {
     expect(o.onCommentOpen).toHaveBeenLastCalledWith("t2");
   });
 
+  describe("ask slots (#2426 B, protocol 8)", () => {
+    const rect = { x: 1, y: 2, width: 300, height: 40 };
+    const slots = [{ key: "launch-day", rect }];
+    const withSlots = () => {
+      const onAskSlots = vi.fn();
+      const b = createBridge({
+        iframe,
+        url: URL_,
+        artifact: ART,
+        version: 1,
+        viewer: null,
+        theme: "light",
+        onPdfText: vi.fn(),
+        onThumb: vi.fn(),
+        onAskSlots,
+      });
+      live.push(b);
+      return { b, onAskSlots };
+    };
+
+    it("takes ask.slots only from a frame that said protocol 8", () => {
+      const { onAskSlots } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots });
+      expect(onAskSlots).not.toHaveBeenCalled();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots });
+      expect(onAskSlots).toHaveBeenCalledWith(slots);
+    });
+
+    it("sends ask.slotSize only to a frame that said protocol 8", () => {
+      const { b } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+      post.mockClear();
+      b.setAskSlotSize("launch-day", 120);
+      expect(post).not.toHaveBeenCalled();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      post.mockClear();
+      b.setAskSlotSize("launch-day", 120);
+      expect(post).toHaveBeenCalledWith(
+        { oa: 1, type: "ask.slotSize", key: "launch-day", h: 120 },
+        "*",
+      );
+    });
+
+    it("drops a malformed ask.slots whole: bad key, bad rect, too many, extra field", () => {
+      const { onAskSlots } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots: [{ key: "Bad Key", rect }] });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: [{ key: "a", rect: { ...rect, width: -1 } }],
+      });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: [{ key: "a", rect: { ...rect, x: Number.NaN } }],
+      });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: Array.from({ length: 21 }, (_, i) => ({ key: `k${i}`, rect })),
+      });
+      send({ oa: 1, type: "ask.slots", slots: [{ key: "a", rect, id: "x" }] });
+      send({ oa: 1, type: "ask.slots", slots: "no" });
+      expect(onAskSlots).not.toHaveBeenCalled();
+    });
+  });
+
   it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
     // A frame loaded from here says nothing until its runtime is up: until
     // then the shell cannot know its protocol, so it sends core fields only.
@@ -1420,6 +1490,7 @@ describe("the frame can't change the bridge's artifact", () => {
         "focusComment",
         "requestThumbnail",
         "scrollTo",
+        "setAskSlotSize",
         "setArtifact",
         "setComments",
         "setCommentsMode",
