@@ -803,7 +803,7 @@ async function startMocks() {
       params.get("mock") === "own-words" ||
       params.get("mock") === "askslots" ||
       params.get("asks") === "1",
-    // ?mock=askslots (#2426 B): asks in the page's data-oa-ask slots (the page is public/mock-askslots.html).
+    // ?mock=askslots (#2426 B): asks in the page's data-oa-ask slots (the page is dev/mock-askslots.html).
     askSlots: params.get("mock") === "askslots",
     // ?mock=deciders (#2381): asks in each decider state.
     commentDeciders: params.get("mock") === "deciders",

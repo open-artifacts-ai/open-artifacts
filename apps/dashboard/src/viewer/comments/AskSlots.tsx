@@ -33,7 +33,9 @@ export function slotPlace(
   const x = Math.min(Math.max(0, rect.x), Math.max(0, frame.w - w));
   // Only a card with no part in the visible frame is hidden.
   const visible = rect.y + cardH > 0 && rect.y < frame.h && frame.w > 0;
-  return { x, y: rect.y, w, visible };
+  // The card's top must be in view too: a page that scrolls its slot so only
+  // the options show, beside its own text, gets no pick until it is back.
+  return { x, y: rect.y, w, visible, topIn: visible && rect.y >= 0 };
 }
 
 /** The ask's slot as the pane's thread and comment, so AskBlock draws it unchanged. */
@@ -115,10 +117,10 @@ function AskSlotCard({
   // biome-ignore lint/correctness/useExhaustiveDependencies: a new place starts the delay over
   useEffect(() => {
     setArmed(false);
-    if (!place.visible) return;
+    if (!place.topIn) return;
     const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
     return () => clearTimeout(t);
-  }, [px, py, pw, place.visible]);
+  }, [px, py, pw, place.topIn]);
   const { thread, c } = asComment(slot);
   const decided = decisionText(slot);
   const home = slot.home;

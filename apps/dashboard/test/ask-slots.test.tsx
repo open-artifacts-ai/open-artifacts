@@ -178,6 +178,32 @@ describe("ask cards in page slots (#2426 B)", () => {
     expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
   });
 
+  it("holds picks while the card's top is above the frame, and starts over when it returns", async () => {
+    serve([slot("launch-day")]);
+    mount(viewerPath(OWNED));
+    await report(["launch-day"]);
+    await waitFor(() => expect(card("launch-day")).not.toBeNull());
+    await wait(ASK_BESIDE_HOLD_MS + 150);
+    expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
+    // Top 40px above the frame, the card (120px) still partly in view.
+    await act(async () =>
+      opts
+        .at(-1)
+        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: -40 } }]),
+    );
+    expect(card("launch-day")?.style.visibility).toBe("visible");
+    await wait(ASK_BESIDE_HOLD_MS + 150);
+    expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
+    await act(async () =>
+      opts
+        .at(-1)
+        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 10 } }]),
+    );
+    expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
+    await wait(ASK_BESIDE_HOLD_MS + 150);
+    expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
+  });
+
   it("hides a card whose slot is out of the visible frame", async () => {
     serve([slot("launch-day")]);
     mount(viewerPath(OWNED));
