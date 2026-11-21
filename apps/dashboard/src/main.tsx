@@ -890,16 +890,23 @@ async function startMocks() {
         });
       }),
     );
-  // &notEmailed=member_limit|instance_limit|limit|skipped (#2620, #2649): every share is
-  // saved without an email, for that reason.
+  // &notEmailed=member_limit|instance_limit|limit|skipped|sender_paused
+  // (#2620, #2649, #2741): every share is saved without an email, for that
+  // reason. &pausedUntil=<ISO> goes with sender_paused.
   const notEmailed = params.get("notEmailed");
+  const pausedUntil = params.get("pausedUntil");
   if (notEmailed)
     extra.push(
       http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
         const res = await getResponse(mainHandlers, request);
         if (!res?.ok) return res;
         const body = (await res.json()) as Record<string, unknown>;
-        return HttpResponse.json({ ...body, emailed: false, notEmailed });
+        return HttpResponse.json({
+          ...body,
+          emailed: false,
+          notEmailed,
+          ...(pausedUntil ? { pausedUntil } : {}),
+        });
       }),
     );
   // #2590 G2 (PROVISIONAL): ?glink=1 stands for the oa_glink cookie of a

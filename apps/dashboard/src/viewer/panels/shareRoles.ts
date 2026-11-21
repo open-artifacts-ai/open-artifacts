@@ -19,14 +19,39 @@ export const instanceLimitLine = (org: string) =>
  */
 export const LIMIT_LINE =
   "We didn't email them this time. Copy the link and send it yourself.";
+/**
+ * OA Product (#2741): the sharer's own pause, from #2662's sender_paused and
+ * pausedUntil. Never names the recipient: the pause is about their emails.
+ */
+const SENDER_PAUSED_WHY =
+  "because some earlier ones bounced or were reported. Copy the link and send it yourself.";
+
+/** The pause's last day as OA Product writes it ("18 Nov"); null when unknown. */
+export function pausedOn(iso: string | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+  }).format(d);
+}
+
+export function senderPausedLine(org: string, pausedUntil?: string): string {
+  const until = pausedOn(pausedUntil);
+  return `We didn't email them. Your share emails to people outside ${org} are paused ${until ? `until ${until}` : "for now"}, ${SENDER_PAUSED_WHY}`;
+}
+
 /** The line for a share that sent no email, by the server's reason. */
 export function notEmailedLine(
   reason: NotEmailed,
   org: string,
   limit?: number,
+  pausedUntil?: string,
 ): string {
   if (reason === "member_limit") return memberLimitLine(org, limit);
   if (reason === "instance_limit") return instanceLimitLine(org);
+  if (reason === "sender_paused") return senderPausedLine(org, pausedUntil);
   // "limit" and "skipped": the neutral line.
   return LIMIT_LINE;
 }
