@@ -41,6 +41,11 @@ import {
   writeHabits,
   writeProjectHabits,
 } from "../src/steps/habits.ts";
+import {
+  HERMES_HABITS_MARKER,
+  HERMES_MARKER,
+  hermesPluginDir,
+} from "../src/steps/hermes.ts";
 import { installShim } from "../src/steps/path-shim.ts";
 import { writeAtomic } from "../src/steps/skill.ts";
 import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
@@ -862,13 +867,32 @@ describe("per-project habits (#2966)", () => {
   });
 
   it("the command never turns on the machine-wide plugin habits (#2998 C)", async () => {
-    // A wired Hermes plugin folder, its marker absent.
-    const ctx = fakeCtx(claudeOnly({}), false);
+    // A real install with only Hermes wired: the plugin is configured (files
+    // match the shipped copy) and its habits marker is absent.
+    const ctx = fakeCtx(
+      {
+        which: (c: string) => c === "hermes",
+        exec: vi.fn(async (_c: string, args: string[]) =>
+          args[1] === "list"
+            ? {
+                code: 0,
+                stdout: JSON.stringify([{ name: "oa-bus", status: "enabled" }]),
+                stderr: "",
+              }
+            : { code: 0, stdout: "", stderr: "" },
+        ),
+      },
+      false,
+    );
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
     Object.assign(ctx, { cwd: project() });
-    const before = pluginStates(ctx);
-    const code = await habitsCommand("project", ctx);
-    expect([0, 1]).toContain(code);
-    expect(pluginStates(ctx)).toEqual(before);
+    const dir = hermesPluginDir(ctx.userHome, ctx.env);
+    const marker = join(dir, HERMES_HABITS_MARKER);
+    expect(pluginStates(ctx).hermes).toBe("off");
+    await habitsCommand("project", ctx);
+    expect(pluginStates(ctx).hermes).toBe("off");
+    expect(existsSync(marker)).toBe(false);
   });
 
   it("removal keeps a file that was already ours, dropping only our block", () => {
