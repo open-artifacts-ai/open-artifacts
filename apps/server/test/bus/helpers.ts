@@ -99,7 +99,8 @@ export async function workerFetch(
 /**
  * How long `next` waits for a frame before failing the test: a ceiling for
  * a missing frame, never a delay (OpenBus's 2 s timed out under full-suite
- * load on the flood tests).
+ * load on the flood tests). A test whose phase legitimately takes longer
+ * passes its own derived ceiling instead (#1533, hub.mailbox's churn).
  */
 const FRAME_WAIT_MS = 15_000;
 
@@ -107,7 +108,8 @@ export type Daemon = {
   ws: WebSocket;
   /** Every raw text message received, in order (frames and PONGs). */
   raw: string[];
-  next: () => Promise<ServerFrame>;
+  /** The next frame; `withinMs` overrides FRAME_WAIT_MS as its ceiling. */
+  next: (withinMs?: number) => Promise<ServerFrame>;
   send: (f: ClientFrame) => void;
   close: () => void;
   closed: Promise<{ code: number; reason: string }>;
@@ -296,13 +298,13 @@ export async function daemon(
       resolve({ code: ev.code, reason: ev.reason }),
     ),
   );
-  const next = () => {
+  const next = (withinMs = FRAME_WAIT_MS) => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
     return new Promise<ServerFrame>((resolve, reject) => {
       const t = setTimeout(
         () => reject(new Error("timed out waiting for a frame")),
-        FRAME_WAIT_MS,
+        withinMs,
       );
       waiting.push((frame) => {
         clearTimeout(t);
@@ -324,11 +326,12 @@ export async function daemon(
 
 /** Consumes frames until one matches `type` (roster broadcasts may interleave). */
 export async function waitFor<T extends ServerFrame["type"]>(
-  conn: { next: () => Promise<ServerFrame> },
+  conn: { next: (withinMs?: number) => Promise<ServerFrame> },
   type: T,
+  withinMs?: number,
 ): Promise<Extract<ServerFrame, { type: T }>> {
   for (let i = 0; i < 5000; i++) {
-    const f = await conn.next();
+    const f = await conn.next(withinMs);
     if (f.type === type) return f as Extract<ServerFrame, { type: T }>;
   }
   throw new Error(`no ${type} frame`);
