@@ -252,7 +252,7 @@ async function run(
       return text(
         r.agent?.kind === "codex"
           ? entry +
-              "\n\nBus messages arrive as separate chat turns. This response does not count mail still at the hub."
+              "\n\nBus messages arrive in this chat. This response does not count mail still at the hub."
           : entry,
       );
     }

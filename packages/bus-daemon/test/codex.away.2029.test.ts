@@ -438,7 +438,7 @@ describe("waking an away Codex thread (#2029)", () => {
 
   it("the wake text names the tool by its literal name", () => {
     expect(CODEX_WAKE_TEXT).toBe(
-      "Open Artifacts bus: messages are waiting for this thread. Call the tool mcp__oa_bus__self once, by that literal name (do not look it up from a tool list), to register this thread. The messages arrive separately as chat turns.",
+      "Open Artifacts bus: messages are waiting for this thread. Call the tool mcp__oa_bus__self once, by that literal name (do not look it up from a tool list), to register this thread. The messages then arrive in this chat.",
     );
   });
 

@@ -3662,7 +3662,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!away.has(ref)) waitingForLoad.delete(ref);
       if (!rows.length || !main.hub.open || main.version === undefined) return;
       if (!main.waitingQuery) waitingForLoad.clear();
-      // The checks cost an lsof, a ps and rollout reads: not on every tick.
+      // The checks cost an lsof, a ps and rollout reads: not on every sync. A
+      // known waiting ref that Codex has since loaded is rechecked on each
+      // relock tick (~30 s) instead, so a reload does not wait out this bound.
       if (
         wakeCheckedAt !== undefined &&
         now - wakeCheckedAt < (cx.wakeCheckMs ?? 300_000)

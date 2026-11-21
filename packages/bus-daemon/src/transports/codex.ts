@@ -542,4 +542,4 @@ export const codexHostWakes = async (pid: number): Promise<boolean> => {
 };
 
 /** #2029: the one text a bus wake queues into a thread; nothing is added to it. */
-export const CODEX_WAKE_TEXT = `Open Artifacts bus: messages are waiting for this thread. Call the tool ${CODEX_TOOL_NAMESPACE}__self once, by that literal name (do not look it up from a tool list), to register this thread. The messages arrive separately as chat turns.`;
+export const CODEX_WAKE_TEXT = `Open Artifacts bus: messages are waiting for this thread. Call the tool ${CODEX_TOOL_NAMESPACE}__self once, by that literal name (do not look it up from a tool list), to register this thread. The messages then arrive in this chat.`;
