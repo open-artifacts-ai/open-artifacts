@@ -1065,6 +1065,14 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/comments`],
     read((id) => `${A(id)}/comments`, 200),
   ),
+  // #2426 B, #2536: the asks a viewer may see in a page's slots. It reads like
+  // the comments (the handler then filters by access to each ask's home page).
+  rest(
+    "ask slots",
+    "comments.read",
+    [`GET ${ARTS}/ask-slots`],
+    read((id) => `${A(id)}/ask-slots`, 200),
+  ),
   rest(
     "comments post",
     "comments.write",

@@ -2,6 +2,8 @@ import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
   AnswerBodySchema,
+  ASK_SLOT_HOMES_MAX,
+  type AskSlot,
   COMMENT_KEY_RE,
   isId,
   MentionCandidatesBodySchema,
@@ -36,6 +38,7 @@ import type { AppEnv } from "../http/middleware.js";
 import { readAnonId, resolveAnonId } from "../runtime/anon-id.js";
 import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
+import { pageTitles, slotsOfPage } from "../services/ask-slots.js";
 import {
   addReply,
   addThread,
@@ -73,6 +76,7 @@ const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
 const ASK_DECIDER = `${COMMENT}/ask/decider`;
 const WITHDRAW = `${COMMENT}/withdraw`;
+const ASK_SLOTS = `${ART}/ask-slots`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -299,6 +303,79 @@ export function mountComments(app: AppType): void {
         ...(compact ? { compact } : {}),
       }),
     );
+  });
+
+  // #2426 B, #2536: the asks this viewer may see in the page's [data-oa-ask]
+  // slots (the contract, jp3RtzkygV1sijvM, section 2). Per viewer and
+  // server-filtered: a slot whose home page this viewer cannot open is left
+  // out, never masked, and so is every slot of a signed-out visitor's page.
+  app.get(ASK_SLOTS, async (c) => {
+    const { id, who } = await open(c, "comments.read");
+    if (!c.var.user) return c.json([]);
+    const slots = await slotsOfPage(c.env, id);
+    if (!slots.length) return c.json([]);
+    // The page's slots grouped by the page each ask lives on, in key order.
+    const byHome = new Map<string, typeof slots>();
+    for (const s of slots) {
+      const group = byHome.get(s.homeArtifactId) ?? [];
+      group.push(s);
+      byHome.set(s.homeArtifactId, group);
+    }
+    const out: AskSlot[] = [];
+    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
+    // twenty slots from twenty pages must not fan out over the instance. Only
+    // homes this viewer may read count, so slots they cannot open can never
+    // use up the budget of the ones they can (the authorize calls themselves
+    // are bounded by ASK_SLOTS_MAX).
+    let read = 0;
+    for (const [homeId, rows] of byHome) {
+      if (read >= ASK_SLOT_HOMES_MAX) break;
+      // This viewer cannot open the home, or it is deleted: nothing, not a mask.
+      const home = await authorize(c.env, who, homeId, "comments.read", {
+        allowDeleted: true,
+      }).catch(() => null);
+      if (!home || home.artifact.deletedAt != null) continue;
+      // Comments off at home: there is no ask to read there either.
+      if (home.artifact.comments !== 1) continue;
+      // Only now, for a home this viewer may read, is its title read.
+      const title = (await pageTitles(c.env, [homeId])).get(homeId);
+      if (title === undefined) continue;
+      read += 1;
+      const moderator = modOf(who, home.level, home.artifact);
+      const { viewer } = await identity(c, homeId, false, moderator);
+      const list = await listComments(c.env, homeId, "all", {
+        ...viewer,
+        owner: meetsLevel(home.level, "owner"),
+      });
+      for (const row of rows) {
+        const thread = list.threads.find((t) => t.id === row.threadId);
+        const comment = thread?.comments.find((x) => x.id === row.commentId);
+        // A withdrawn, deleted or replaced ask is gone from the thread: the
+        // slot is left out, never a stale open card. A decision stays, so the
+        // card can show "Decided".
+        if (!comment?.ask || comment.ask.withdrawn) continue;
+        out.push({
+          key: row.key,
+          home: { artifactId: homeId, title },
+          threadId: row.threadId,
+          commentId: row.commentId,
+          ask: comment.ask,
+          author: comment.author,
+          ...(row.note ? { note: row.note } : {}),
+          ...(row.placedBy || row.placedAgent
+            ? {
+                placer: {
+                  ...(row.placedBy ? { id: row.placedBy } : {}),
+                  ...(row.placedAgent ? { agent: row.placedAgent } : {}),
+                },
+              }
+            : {}),
+        });
+      }
+    }
+    // Key order, so a page's slots read the same way every time.
+    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return c.json(out);
   });
 
   app.post(COMMENTS, async (c) => {
