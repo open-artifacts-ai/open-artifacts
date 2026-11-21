@@ -236,10 +236,7 @@ type Cred =
     };
 
 /** Our own entry: a stdio server running `mcp-proxy --for codex` for this instance. */
-function ourEntry(
-  e: Doc,
-  origin: string,
-): { tokenEnv: string } | { tokenFile: string } | undefined {
+function ourEntry(e: Doc, origin: string): Cred | undefined {
   if (typeof e.command !== "string" || !Array.isArray(e.args)) return undefined;
   const a = e.args as unknown[];
   const i = a.lastIndexOf(PROXY_CMD);
@@ -257,7 +254,17 @@ function plan(doc: Doc, origin: string, patFile?: string): Plan {
   for (const [name, e] of Object.entries(servers(doc))) {
     if (name === CODEX_ENTRY || !isRecord(e)) continue;
     const ours = ourEntry(e, origin);
-    if (ours) return { kind: "ours", name, entry: e };
+    if (ours) {
+      // #2954: a token-file entry whose PAT is gone has no credential at all,
+      // and the proxy keeps starting. Say so on every install and doctor run:
+      // the fix is to save the PAT again, or uninstall to get the entry back.
+      if (ours.tokenFile !== undefined && !existsSync(ours.tokenFile))
+        return {
+          kind: "note",
+          note: `the ${name} entry in the Codex config reaches Open Artifacts through oa-bus, but its PAT file ${ours.tokenFile} is gone, so Codex has no token and its tools fail. Save a PAT there again, or run ${BUS_CMD} uninstall to put your own entry back.`,
+        };
+      return { kind: "ours", name, entry: e };
+    }
     if (!isInstance(e, origin) || e.enabled === false) continue;
     const left = (why: string): Plan => ({
       kind: "note",
@@ -431,7 +438,11 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
   io.write(next);
   return {
     notes: [
-      `Codex now reaches Open Artifacts through oa-bus (the ${p.name} entry in ${io.file}). To undo, run ${BUS_CMD} uninstall: it puts your entry back.`,
+      `Codex now reaches Open Artifacts through oa-bus (the ${p.name} entry in ${io.file}). ${
+        p.cred.tokenEnv !== undefined
+          ? `It sends the token in ${p.cred.tokenEnv}.`
+          : `Codex's Pages calls now go out with the PAT in ${p.cred.tokenFile}, not with the sign-in this entry had; that sign-in stays where it is, unused.`
+      } To undo, run ${BUS_CMD} uninstall: it puts your entry back.`,
     ],
   };
 }
