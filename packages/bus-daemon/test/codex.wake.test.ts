@@ -102,6 +102,7 @@ const mail = (body: string, msg_id = "mmmmmmmmmmmmmmm1"): Mail => ({
 function transport(
   bin: CodexBin | undefined,
   over: {
+    steer?: CodexTransportOptions["steer"];
     run?: ReturnType<typeof execCodex>;
     wakes?: (pid: number) => Promise<boolean>;
     /** Built after the watch exists: a run that acts while `codex queue` is running. */
@@ -137,6 +138,7 @@ function transport(
     home,
     wakes: over.wakes ?? (async () => true),
     taken: watch,
+    ...(over.steer ? { steer: over.steer } : {}),
     log,
     ...(over.event ? { event: over.event } : {}),
     ...(over.queueStore ? { queueStore: over.queueStore } : {}),
@@ -152,6 +154,25 @@ const QUEUED = { ok: false, reason: "queued" } as const;
 const RETRY = { ok: false, reason: "timeout" } as const;
 
 describe("codex queue transport (C26d)", () => {
+  it.each(["accepted", "uncertain", "fallback"] as const)(
+    "steers mail before queueing (%s)",
+    async (result) => {
+      const steer = vi.fn(async () => result);
+      const run = vi.fn(async () => ({ code: 0, stderr: "" }));
+      const { t, watch, home } = transport(
+        { path: "/test/codex", from: "path" },
+        { steer, run },
+      );
+      const m = mail("still working?");
+      expect(await t.deliver(agent(), m)).toEqual(QUEUED);
+      expect(steer).toHaveBeenCalledWith(home, THREAD, codexText(agent(), m));
+      expect(run).toHaveBeenCalledTimes(result === "fallback" ? 1 : 0);
+      expect(watch.state(m.msg_id)).toBe("queued");
+      expect(await t.deliver(agent(), m)).toEqual(QUEUED);
+      expect(steer).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("runs `codex queue --thread=<id> --message=<text>` with CODEX_HOME, and a live thread is delivered", async () => {
     const f = fakeCodex();
     const { t, home } = transport({ path: f.bin, from: "path" });
