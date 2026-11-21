@@ -2599,8 +2599,9 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me/notification-prefs", U, [200]],
   ["PUT /api/v1/me/notification-prefs", U],
   // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
-  ["GET /api/v1/me/push/key", U, [404]],
-  ["GET /api/v1/me/push/subscriptions", U, [404]],
+  // A live install with keys (cloud mints them since #390) answers the two reads 200, so both count as allowed.
+  ["GET /api/v1/me/push/key", U, [200, 404]],
+  ["GET /api/v1/me/push/subscriptions", U, [200, 404]],
   ["POST /api/v1/me/push/subscriptions", U, [404]],
   ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
   ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
