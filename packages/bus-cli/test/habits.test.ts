@@ -257,6 +257,7 @@ const asRepo = (
   ctx: ReturnType<typeof fakeCtx>,
   cwd?: string,
   top?: string | "no",
+  trackedFiles: string[] = [],
 ) => {
   Object.assign(ctx, { cwd: cwd ?? mkdtempSync(join(tmpdir(), "ob-proj-")) });
   const base = ctx.which;
@@ -1195,5 +1196,55 @@ describe("per-project habits: the product calls (#2966)", () => {
     expect(existsSync(join(home, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(home, "CLAUDE.local.md"))).toBe(false);
     expect(ctx.out().join("\n")).toMatch(/home folder, not a project/);
+  });
+});
+
+describe("per-project habits: the question's own rules (#2966 review)", () => {
+  const project = () => mkdtempSync(join(tmpdir(), "ob-q-"));
+  const withHarnesses = (names: string[]) =>
+    fakeCtx(
+      claudeOnly({
+        which: (c: string) => names.includes(c),
+        exec: vi.fn(async (cmd: string) =>
+          cmd === "claude" || cmd === "hermes"
+            ? { code: 1, stdout: "", stderr: "no" }
+            : { code: 0, stdout: "", stderr: "" },
+        ),
+      }),
+      false,
+    );
+
+  it("treats current global habits as decided, and asks about a changed one", async () => {
+    // Nothing to do: no question at all.
+    const quiet = asRepo(withHarnesses(["claude"]));
+    approvedHome(quiet);
+    await install({ hub: HUB }, quiet);
+    await install({ habits: "yes" }, quiet);
+    const settled = asRepo(withHarnesses(["claude"]));
+    Object.assign(settled, { userHome: quiet.userHome, home: quiet.home });
+    await install({ hub: HUB }, settled);
+    expect(settled.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
+
+    // A changed global block is still asked about, and a no leaves it as it is.
+    const changed = `${BLOCK.replace("under 140", "under 100")}\n`;
+    writeFileSync(claudeMd(quiet), changed);
+    const asked = asRepo(withHarnesses(["claude"]));
+    Object.assign(asked, { userHome: quiet.userHome, home: quiet.home });
+    Object.assign(asked, {
+      stdinIsTTY: true,
+      readLine: vi.fn(async () => "n"),
+    });
+    await install({ hub: HUB }, asked);
+    expect(asked.out().join("\n")).toContain("changed in this release");
+    expect(readFileSync(claudeMd(quiet), "utf8")).toBe(changed);
+  });
+
+  it("keeps the plugin out of the per-project question but names it", async () => {
+    const ctx = asRepo(withHarnesses(["claude", "hermes"]));
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    const out = ctx.out().join("\n");
+    expect(out).toContain("machine-wide");
+    expect(out).not.toContain("the Hermes plugin:");
   });
 });

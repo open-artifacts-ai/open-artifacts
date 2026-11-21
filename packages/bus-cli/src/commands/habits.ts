@@ -213,20 +213,37 @@ async function isRepoTop(ctx: Ctx): Promise<{ root: string } | "home" | "no"> {
 }
 
 /** The harnesses already told "per project is not possible here", per bus home. */
-const readBlocked = (busHome: string): string[] => {
+/** Per repository root, the harnesses already told "per project is not possible here". */
+const readBlocked = (busHome: string): Record<string, string[]> => {
   const raw = (readInstallFile(join(busHome, "install.json")).habits ?? {}) as {
     projectBlocked?: unknown;
   };
-  return Array.isArray(raw.projectBlocked)
-    ? raw.projectBlocked.filter((h): h is string => typeof h === "string")
-    : [];
+  const out: Record<string, string[]> = {};
+  if (typeof raw.projectBlocked === "object" && raw.projectBlocked !== null)
+    for (const [root, list] of Object.entries(
+      raw.projectBlocked as Record<string, unknown>,
+    ))
+      if (Array.isArray(list))
+        out[root] = list.filter((h): h is string => typeof h === "string");
+  return out;
 };
-const saveBlocked = (busHome: string, list: string[]): void => {
+const saveBlocked = (busHome: string, map: Record<string, string[]>): void => {
   updateInstallFile(join(busHome, "install.json"), {
-    habits: {
-      ...(readInstallFile(join(busHome, "install.json")).habits ?? {}),
-      projectBlocked: list,
-    },
+    habits: { ...habitsRecord(busHome), projectBlocked: map },
+  });
+};
+
+/** #2966: the "move them into projects" line is offered once per bus home. */
+const habitsRecord = (busHome: string): Record<string, unknown> =>
+  (readInstallFile(join(busHome, "install.json")).habits ?? {}) as Record<
+    string,
+    unknown
+  >;
+const moveOffered = (busHome: string): boolean =>
+  habitsRecord(busHome).projectMoveOffered === true;
+const markMoveOffered = (busHome: string): void => {
+  updateInstallFile(join(busHome, "install.json"), {
+    habits: { ...habitsRecord(busHome), projectMoveOffered: true },
   });
 };
 
@@ -392,6 +409,13 @@ export async function habitsAfterInstall(
   if (habitsOptedOut(ctx.home))
     return { ...none, state: "off", question: null };
   if (targets.length === 0 && plugins.length === 0) return none;
+  // #2966 (Product): a plugin's habits are machine-wide, so they are never part
+  // of a per-project question. Said once, where to change them.
+  if (plugins.length > 0 && !json)
+    say(
+      ctx,
+      `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide; change that with install --habits and --no-habits.`,
+    );
   // #2966: ~ is not a project. Writing AGENTS.md there would reach every
   // project under home through pi and the others that walk parent folders.
   const repoTop = await isRepoTop(ctx);
@@ -407,22 +431,60 @@ export async function habitsAfterInstall(
   // #2966 (Product's call): someone whose global block is already on has
   // decided. Do not ask again in every folder, keep that block fresh, and
   // offer the move to per project once, in words.
-  const globalOn = targets
-    .map((h) => habitsFileState(deps(ctx), h))
-    .filter((st) => st.state === "current" || st.state === "changed");
-  if (globalOn.length > 0) {
-    const stale = targets.filter(
-      (h) => habitsFileState(deps(ctx), h).state === "changed",
-    );
-    if (stale.length > 0) writeHabits(deps(ctx), stale, { explicit: true });
-    say(
-      ctx,
-      "Habits are on for every project on this machine. To keep them here only, run install --habits-project in this folder and install --no-habits for the global ones.",
-    );
+  const globalStates = targets.map((h) => habitsFileState(deps(ctx), h));
+  const globalPending = globalStates.filter(
+    (st) => st.state === "changed" || st.state === "broken",
+  );
+  const globalOn = globalStates.filter((st) => st.state === "current");
+  if (globalOn.length > 0 && globalPending.length === 0) {
+    // Decided, on this machine. Offered once, never as part of --json.
+    if (!json && !moveOffered(ctx.home)) {
+      say(
+        ctx,
+        "Habits are on for every project on this machine. To keep them in projects only, run install --habits-project in a project and install --no-habits for these global ones.",
+      );
+      markMoveOffered(ctx.home);
+    }
     return {
       ...none,
       state: "on",
-      files: targets.map((h) => habitsFileState(deps(ctx), h).path),
+      files: globalStates.map((st) => st.path),
+      question: null,
+    };
+  }
+  if (globalPending.length > 0) {
+    // A changed global block is asked about exactly as before (#2966: keep
+    // today's ask), and only a typed yes rewrites it.
+    const changedGlobals = targets.filter(
+      (h) => habitsFileState(deps(ctx), h).state === "changed",
+    );
+    if (ctx.stdinIsTTY && ctx.readLine && !json) {
+      say(
+        ctx,
+        "",
+        disclosure(
+          ctx,
+          globalPending.map((st) => ({ path: st.path, s: st as BlockState })),
+        ),
+      );
+      const a = (await ctx.readLine("Update them? [Y/n] "))
+        .trim()
+        .toLowerCase();
+      if (a === "" || a === "y" || a === "yes") {
+        writeHabits(deps(ctx), changedGlobals, { explicit: a !== "" });
+        say(ctx, "Habits updated for every project on this machine.");
+      }
+      return {
+        ...none,
+        state: "changed",
+        files: globalStates.map((st) => st.path),
+        question: null,
+      };
+    }
+    return {
+      ...none,
+      state: "changed",
+      files: globalStates.map((st) => st.path),
       question: null,
     };
   }
@@ -431,19 +493,18 @@ export async function habitsAfterInstall(
       const st = projectHabitsFileState(folder, h);
       return { path: st.path, s: st as BlockState };
     }),
-    // A plugin has no block to compare: its marker is there ("current") or not.
-    ...plugins.map((p) => ({
-      path: join(p.dir(ctx.userHome, ctx.env), p.marker),
-      label: `the ${p.label} plugin`,
-      s: {
-        state: pluginHabitsState(deps(ctx), p) === "on" ? "current" : "absent",
-      } as BlockState,
-    })),
   ];
+  const whyBlocked = (list: HabitsHarness[]) =>
+    `${list.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`;
   const pending = states.filter((p) => p.s.state !== "current");
   const have = states.filter((p) => p.s.state === "current").map((p) => p.path);
-  if (pending.length === 0)
+  if (pending.length === 0) {
+    if (writable.length === 0 && blocked.length > 0) {
+      say(ctx, whyBlocked(blocked));
+      return { ...none, state: "undecided", files: have, question: null };
+    }
     return { ...none, state: "on", files: have, question: null };
+  }
   const changed = pending.some((p) => p.s.state === "changed");
   const state = changed ? "changed" : "undecided";
   // #2966 (Product's call): only at the top of a git work tree, never $HOME.
@@ -473,12 +534,14 @@ export async function habitsAfterInstall(
   );
   if (blocked.length > 0) {
     const said = readBlocked(ctx.home);
-    const fresh = blocked.filter((h) => !said.includes(h));
+    const root = folder;
+    const fresh = blocked.filter((h) => !(said[root] ?? []).includes(h));
     if (fresh.length > 0) {
-      question.note = `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. ${
-        question.note
-      }`;
-      saveBlocked(ctx.home, [...said, ...fresh]);
+      question.note = `${whyBlocked(fresh)} ${question.note}`;
+      saveBlocked(ctx.home, {
+        ...said,
+        [root]: [...(said[root] ?? []), ...fresh],
+      });
     }
   }
   if (plugins.length > 0)

@@ -279,13 +279,14 @@ const marker = (ctx: ReturnType<typeof fakeCtx>) =>
   join(hermesPluginDir(ctx.userHome, ctx.env), HERMES_HABITS_MARKER);
 
 describe("install and uninstall with Hermes", () => {
-  it("no yes, no marker; the question names the Hermes plugin", async () => {
+  it("a Hermes-only machine is not asked about project habits", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
-    expect(ctx.out().join("\n")).toContain(
-      "The bus would add 6 habits to this project only, in the Hermes plugin:",
-    );
+    // #2966 (Product): the plugin is machine-wide, so it is not part of the
+    // "this project only" question at all.
+    expect(ctx.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
+    expect(ctx.out().join("\n")).toContain("machine-wide");
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     expect(habitsLine(ctx)).toContain("Hermes plugin: off");
   });
@@ -353,14 +354,15 @@ describe("install and uninstall with Hermes", () => {
     expect(code).toBe(0);
     expect(ctx.out().join("\n")).toContain("Habits off");
   });
-  it("TTY yes writes the project, not the machine-wide plugin; no opts out", async () => {
+  it("a project yes never touches the machine-wide plugin, and --no-habits opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
     await install({ hub: HUB }, yes);
-    // #2966 (Product): the plugin is machine-wide, so a per-project yes leaves it.
+    // #2966 (Product): the plugin is machine-wide, so a per-project yes leaves
+    // it alone; it is not even asked about.
     expect(existsSync(marker(yes))).toBe(false);
     expect(yes.out().join("\n")).toContain("machine-wide");
-    const no = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
-    await install({ hub: HUB }, no);
+    const no = setup();
+    await install({ habits: "no" }, no);
     expect(existsSync(marker(no))).toBe(false);
     expect(habitsLine(no)).toBe("Habits: off (you opted out)");
   });
