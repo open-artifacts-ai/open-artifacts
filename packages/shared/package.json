@@ -21,6 +21,11 @@
     "./mocks": {
       "types": "./dist/mocks/index.d.ts",
       "import": "./dist/mocks/index.js"
+    },
+    "./secrets": {
+      "types": "./dist/secrets.d.ts",
+      "import": "./dist/secrets.js",
+      "default": "./dist/secrets.js"
     }
   },
   "files": [
