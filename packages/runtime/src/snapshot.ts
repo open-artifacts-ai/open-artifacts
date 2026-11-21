@@ -13,17 +13,66 @@ export function base64Bytes(dataUrl: string): number {
   return (b64.length / 4) * 3 - pad;
 }
 
+/** How long the page must load nothing new before the snapshot, and the cap on waiting. */
+export const SETTLE = { quietMs: 500, maxMs: 5_000, stepMs: 100 } as const;
+
+export type SettleProbe = {
+  /** The document's load event has fired. */
+  loaded(): boolean;
+  /** Every <img> has finished (loaded or failed). */
+  imagesDone(): boolean;
+  /** How many resources the page has fetched so far. */
+  resources(): number;
+  now(): number;
+  sleep(ms: number): Promise<void>;
+};
+
+const domProbe: SettleProbe = {
+  loaded: () => document.readyState === "complete",
+  imagesDone: () => Array.from(document.images).every((i) => i.complete),
+  resources: () => performance.getEntriesByType?.("resource").length ?? 0,
+  now: () => performance.now(),
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+};
+
 /**
- * The page (document.documentElement) at 1200×750 as a webp data URL no larger
+ * Waits until the page has loaded what it shows: the load event, every image
+ * done and no new resource for SETTLE.quietMs. Never longer than SETTLE.maxMs.
+ * The thumbnail is asked for when the runtime starts, before a page that adds
+ * images later (map tiles, avatars) has drawn them.
+ */
+export async function settle(p: SettleProbe = domProbe): Promise<void> {
+  const end = p.now() + SETTLE.maxMs;
+  let count = -1;
+  let quietSince = p.now();
+  while (p.now() < end) {
+    const n = p.resources();
+    if (n !== count) {
+      count = n;
+      quietSince = p.now();
+    }
+    if (p.loaded() && p.imagesDone() && p.now() - quietSince >= SETTLE.quietMs)
+      return;
+    await p.sleep(SETTLE.stepMs);
+  }
+}
+
+/**
+ * The page (document.documentElement) as a 1200×750 webp data URL no larger
  * than LIMITS.thumbnailBytes, lowering quality until it fits; null otherwise.
+ * It waits for the page to settle first. A viewport wider than 1200 is drawn
+ * at its own width and scaled down, so the thumbnail shows what a viewer sees.
  */
 export async function snapshot(): Promise<string | null> {
+  await settle();
   const bg = getComputedStyle(
     document.body ?? document.documentElement,
   ).backgroundColor;
+  const width = Math.max(WIDTH, document.documentElement.clientWidth || 0);
+  const height = Math.round((width * HEIGHT) / WIDTH);
   const canvas = await toCanvas(document.documentElement, {
-    width: WIDTH,
-    height: HEIGHT,
+    width,
+    height,
     canvasWidth: WIDTH,
     canvasHeight: HEIGHT,
     pixelRatio: 1,
