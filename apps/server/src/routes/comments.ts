@@ -336,7 +336,7 @@ export function mountComments(app: AppType): void {
       }).catch(() => null);
       if (!home || home.artifact.deletedAt != null) continue;
       if (home.artifact.comments !== 1) continue;
-      const owner = home.level === "owner";
+      const owner = meetsLevel(home.level, "owner");
       const { viewer } = await identity(c, homeId, false, owner);
       const list = await listComments(c.env, homeId, "all", {
         ...viewer,
