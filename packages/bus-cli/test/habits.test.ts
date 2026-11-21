@@ -895,6 +895,41 @@ describe("per-project habits (#2966)", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it("turns the habits off in one folder only (#2966 off switch)", async () => {
+    const a = project();
+    const b = project();
+    const shared = depsFor(a); // one bus home for both projects
+    writeProjectHabits({ ...shared, cwd: a }, ["codex"]);
+    writeProjectHabits({ ...shared, cwd: b }, ["codex"]);
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: a, userHome: shared.home, home: shared.busHome });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
+    // The other project keeps its block, and its record.
+    expect(readFileSync(join(b, "AGENTS.md"), "utf8")).toContain(HABITS_BEGIN);
+    const again = await habitsCommand(
+      "project-off",
+      fakeCtx(claudeOnly({}), false),
+    );
+    expect(again).toBe(0);
+  });
+
+  it("says so when this folder has no bus habits", async () => {
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: project() });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(ctx.out().join("\n")).toMatch(/No bus habits here/);
+  });
+
+  it("parses --no-habits-project, and only one habits flag at a time", () => {
+    expect(parse(["install", "--no-habits-project"])).toMatchObject({
+      habits: "project-off",
+    });
+    expect(() =>
+      parse(["install", "--habits-project", "--no-habits-project"]),
+    ).toThrow(/one of/);
+  });
+
   it("removal keeps a file that was already ours, dropping only our block", () => {
     const cwd = project();
     const d = depsFor(cwd);

@@ -444,13 +444,18 @@ export function writeProjectHabits(
  * install ever ran in: our block, a file we created, and the exclude lines we
  * added. Nothing else, and nothing that is not recorded.
  */
-export function removeProjectHabits(deps: HabitsDeps): HabitsResult {
+export function removeProjectHabits(
+  deps: HabitsDeps,
+  /** Only these paths (the per-project off switch); all recorded ones by default. */
+  only?: (path: string) => boolean,
+): HabitsResult {
   const files: string[] = [];
   const notes: string[] = [];
   const cur = record(deps.busHome).project;
   const kept = { ...cur.files };
   const exclude = [...cur.exclude];
   for (const [path, rec] of Object.entries(cur.files)) {
+    if (only !== undefined && !only(path)) continue;
     try {
       if (brokenLink(path) || !existsSync(path)) {
         delete kept[path];
