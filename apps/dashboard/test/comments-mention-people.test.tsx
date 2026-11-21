@@ -230,50 +230,19 @@ describe("@ lists people with the agents (#2770)", () => {
     expect((b as HTMLTextAreaElement).value).toBe("@Ana");
   });
 
-  it("the hourly-limit notice becomes the design's line, and goes on typing (#2559)", async () => {
+  it("'Mention {owner} instead' is reachable by the arrow keys and Enter (#2577)", async () => {
     serve(THEIRS);
-    server.use(
-      http.post(CAND, () => HttpResponse.json({ items: [] })),
-      http.post(`*${R.comments(OWNED)}`, async ({ request }) => {
-        const { body } = (await request.json()) as { body: string };
-        const now = new Date().toISOString();
-        return HttpResponse.json({
-          id: "t_lim",
-          anchor: { kind: "note" },
-          version: 1,
-          status: "open",
-          resolvedBy: null,
-          resolvedAt: null,
-          createdAt: now,
-          comments: [
-            {
-              id: "c_lim",
-              body,
-              createdAt: now,
-              editedAt: null,
-              typed: true,
-              author: { kind: "user", name: "Ada", me: true },
-              can: { edit: true, delete: true },
-              notice: "That's a lot of mentions. Try again in a few minutes.",
-            },
-          ],
-        });
-      }),
-    );
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
     mount(viewerPath(OWNED));
     const { c, b } = await box();
-    type(b, "@Web");
+    type(b, "@");
     await within(c).findByRole("listbox");
+    // The default row is the first pickable one; ArrowUp moves onto the off row.
+    expect(b.getAttribute("aria-activedescendant")).toMatch(/-1$/);
+    fireEvent.keyDown(b, { key: "ArrowUp" });
+    expect(b.getAttribute("aria-activedescendant")).toMatch(/-0$/);
     fireEvent.keyDown(b, { key: "Enter" });
-    type(b, "@Web (Sam) one more thing");
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
-    expect(
-      await within(c).findByText(
-        /^You've asked Sam's agents 10 times this hour\. Try again at \d\d:\d\d, or mention Sam\.$/,
-      ),
-    ).toBeTruthy();
-    type(b, "x");
-    expect(within(c).queryByText(/You've asked Sam's agents/)).toBeNull();
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
   });
 
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {

@@ -944,11 +944,6 @@ async function startMocks() {
         asked: params.get("asked") === "1",
       }),
     );
-  // #2577 (mock): &asker=1 adds an agent whose person turned asking off, and the hourly-limit notice.
-  if (agentAsksOn(params) && params.get("asker") === "1")
-    extra.unshift(
-      ...(await import("./mockAskerLines")).askerLinesHandlers(mainHandlers),
-    );
   // #1910: &waiting=1 carries the waiting fields.
   extra.unshift(
     ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),

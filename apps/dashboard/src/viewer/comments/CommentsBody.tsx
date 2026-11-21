@@ -61,8 +61,6 @@ import {
   needsMe,
   newProblems,
   nextAskFor,
-  noticeOf,
-  rateLimitLine,
   removeMention,
   showsAskBody,
 } from "./asks";
@@ -533,8 +531,6 @@ function Composer({
   const [open, setOpen] = useState(alwaysOpen);
   const [grown, setGrown] = useState(false);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
-  // #2559: the sender's hourly limit held a request back; the comment itself posted.
-  const [limit, setLimit] = useState<string | null>(null);
   const mounted = useRef(true);
   // A seed is used up when a box takes it: at mount it is the starting text; a
   // later one (the post failed while this box was already on screen again)
@@ -581,6 +577,8 @@ function Composer({
   const [caret, setCaret] = useState(0);
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
+  // #2577: the arrow keys can rest on an agent that is off (to reach "Mention {owner} instead"); the default row never is one.
+  const [arrowed, setArrowed] = useState(false);
   const menuId = useId();
   const hintId = useId();
   const coarse = isCoarse();
@@ -638,10 +636,12 @@ function Composer({
   })();
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
-  // #2577: the active row is never an agent whose person turned asking off (a reset to 0 lands on the first pickable row).
+  // #2577: the default active row is never an agent whose person turned asking off (it lands on the first pickable row); the arrows may move onto one.
   const firstOk = matches.findIndex((a) => a.askState !== "off");
   const activeIdx =
-    matches[activeOpt]?.askState === "off" ? Math.max(firstOk, 0) : activeOpt;
+    !arrowed && matches[activeOpt]?.askState === "off"
+      ? Math.max(firstOk, 0)
+      : activeOpt;
   const pickedAt = useRef<number | null>(null);
   // #2577: "Mention {owner} instead": the typed @ becomes the person's name, whose row then shows in the list.
   const mentionOwner = (a: ArtifactAgent) => {
@@ -745,7 +745,6 @@ function Composer({
     if (!canSend || once.current) return;
     once.current = true;
     setError(null);
-    setLimit(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
       const keys = mentionedKeys(body, pool);
@@ -756,11 +755,6 @@ function Composer({
       // People go by id, apart from agents.
       const people = peopleIds(keys);
       const pictureRefs = withPictures ? pics.refs : [];
-      const owners = heldOwners(pool, keys);
-      const told = (r: unknown) => {
-        const line = rateLimitLine(noticeOf(r), owners[0]);
-        if (line && mounted.current) setLimit(line);
-      };
       if (instant) {
         // Clear now; the empty box is what stops a double submit, so the next
         // post can start while this one is on its way.
@@ -771,13 +765,11 @@ function Composer({
         }, 0);
         const was = withPictures ? pics.take() : [];
         try {
-          told(
-            await onSubmit(body, {
-              mentions,
-              ...(people.length ? { people } : {}),
-              ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
-            }),
-          );
+          await onSubmit(body, {
+            mentions,
+            ...(people.length ? { people } : {}),
+            ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+          });
         } catch (e) {
           // Never lose typed text: it goes back in front of anything typed since.
           if (mounted.current) {
@@ -789,13 +781,11 @@ function Composer({
         return;
       }
       setBusy(true);
-      told(
-        await onSubmit(body, {
-          mentions,
-          ...(people.length ? { people } : {}),
-          ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
-        }),
-      );
+      await onSubmit(body, {
+        mentions,
+        ...(people.length ? { people } : {}),
+        ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+      });
       setText("");
       if (withPictures) pics.take();
       if (!alwaysOpen) setOpen(false);
@@ -914,7 +904,7 @@ function Composer({
           }}
           onChange={(e) => {
             setText(e.target.value);
-            setLimit(null);
+            setArrowed(false);
             setCaret(e.target.selectionStart);
             setMenuOff(false);
             setActiveOpt(0);
@@ -950,15 +940,9 @@ function Composer({
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
                 const n = matches.length;
-                // #2577: an agent whose person turned asking off can't be picked: skip it.
                 const step = e.key === "ArrowDown" ? 1 : n - 1;
-                setActiveOpt(() => {
-                  for (let k = 1; k <= n; k++) {
-                    const j = (activeIdx + step * k) % n;
-                    if (matches[j]?.askState !== "off") return j;
-                  }
-                  return activeIdx;
-                });
+                setArrowed(true);
+                setActiveOpt((activeIdx + step) % n);
                 return;
               }
               if (
@@ -970,7 +954,9 @@ function Composer({
               ) {
                 e.preventDefault();
                 const a = matches[activeIdx];
-                if (a) pick(a);
+                // #2577: Enter on an agent that is off does its one action.
+                if (a?.askState === "off") mentionOwner(a);
+                else if (a) pick(a);
                 return;
               }
               if (e.key === "Escape") {
@@ -1051,15 +1037,6 @@ function Composer({
           {heldLine(o)}
         </p>
       ))}
-      {limit && (
-        <p
-          role="status"
-          data-rate-limit=""
-          className={`${TXT} text-muted-foreground`}
-        >
-          {limit}
-        </p>
-      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped, errCtx)}
