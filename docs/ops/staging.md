@@ -128,6 +128,8 @@ Manual redeploy, only for the latest stable tag:
 gh workflow run release-please.yml -f tag=vX.Y.Z
 ```
 
+**Never rerun a failed release-please push run** (`gh run rerun`), not even the whole workflow. A rerun creates no release, so `release_created` is false and every job after `release-please` is skipped: the run goes green and deploys nothing. The hosted mirror (`hosted-release.yml` in open-artifacts-cloud) then reads that push run's latest attempt, finds `verify-release` skipped, and refuses the tag for good (cloud #410). To recover from a failed `deploy-prod` or `verify-release`, use the dispatch below with the tag, or let the next release carry the change.
+
 (The same `tag` input also redeploys the landing site.) The job checks out the tag and runs `scripts/ci/prod-setup.sh` in three steps, each with the PROD token scoped to that step:
 
 1. `preflight`: `oa:setup --check --strict --upgrade`. Read-only; fails if the instance is not installed (missing D1/R2/KV, Worker secrets, Access app, Worker never deployed) or has drifted (Worker vars differ from the flags, Access app not linked to its policy). Deploy and selftest always run, so they never count as drift.
