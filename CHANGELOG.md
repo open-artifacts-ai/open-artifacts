@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.239.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.238.0...v0.239.0) (2026-11-21)
+
+
+### Features
+
+* **asks:** the read route for a page's ask slots ([#2426](https://github.com/open-artifacts-ai/open-artifacts/issues/2426) B, [#2536](https://github.com/open-artifacts-ai/open-artifacts/issues/2536)), slice (a) ([#2974](https://github.com/open-artifacts-ai/open-artifacts/issues/2974)) ([0ee23a2](https://github.com/open-artifacts-ai/open-artifacts/commit/0ee23a20c7ed7c00c5f9f4ffa5ceab4a124b9457))
+
 ## [0.238.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.237.0...v0.238.0) (2026-11-21)
 
 
