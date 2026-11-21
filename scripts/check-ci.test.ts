@@ -568,7 +568,12 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
+      // #2994: the packed bus joins the gate, so a missing bundle alias fails a PR.
+      expect(job.needs).toEqual([
+        "test-shard",
+        "released-migrations-frozen",
+        "pack-bus",
+      ]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -582,8 +587,10 @@ describe("ci.yml", () => {
       expect(gate.env.FROZEN).toBe(
         "${{ needs.released-migrations-frozen.result }}",
       );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.PACKED).toBe("${{ needs.pack-bus.result }}");
       expect(gate.run).toMatch(
-        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \] && \[ "\$PACKED" = success \]$/m,
       );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
