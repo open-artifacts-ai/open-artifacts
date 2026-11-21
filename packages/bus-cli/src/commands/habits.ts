@@ -9,6 +9,7 @@ import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
 import {
   type BlockState,
+  HABITS_GLOBAL_UPDATE_TEXT,
   HABITS_HARNESSES,
   HABITS_LINES,
   type HabitsHarness,
@@ -51,6 +52,8 @@ export type HabitsOutcome = {
   question: HabitsQuestion | null;
   /** Each plugin harness's habits state (Hermes: on, off, not installed). */
   plugins: Record<string, PluginHabitsState>;
+  /** Why nothing was asked or written, for an agent reading --json. */
+  note?: string;
 };
 
 const deps = (ctx: Ctx) => ({
@@ -252,18 +255,18 @@ const noteBlocked = (
   ctx: Ctx,
   folder: string,
   blocked: HabitsHarness[],
-): void => {
+  json: boolean,
+): string => {
   const said = readBlocked(ctx.home);
   const fresh = blocked.filter((h) => !(said[folder] ?? []).includes(h));
-  if (fresh.length === 0) return;
+  if (fresh.length === 0) return "";
+  const why = `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so habits cannot go there. \`--habits\` adds them for all projects.`;
   saveBlocked(ctx.home, {
     ...said,
     [folder]: [...(said[folder] ?? []), ...fresh],
   });
-  say(
-    ctx,
-    `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`,
-  );
+  if (!json) say(ctx, why);
+  return why;
 };
 
 /** #2966: a "no" is this repository's, so another project is still asked. */
@@ -381,8 +384,8 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     say(
       ctx,
       repo === "home"
-        ? "This is your home folder, not a project: habits written here would reach every project under it. Run this at the top of a project instead."
-        : "This folder is not inside a git repository, so there is no project to write to. Run this inside a project.",
+        ? "This is your home folder, not a project: habits here would reach every project under it. Run this inside a project."
+        : "This folder is not inside a git repo, so there is no project to write to.",
     );
     return none;
   }
@@ -416,7 +419,7 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
  * project and the global files as they are. The precondition for flipping the
  * install default to per project: without it the only way out is uninstall.
  */
-export function habitsProjectOff(ctx: Ctx): number {
+export async function habitsProjectOff(ctx: Ctx): Promise<number> {
   // Real paths on both sides: the same folder through a symlinked path
   // (/tmp vs /private/tmp) is the same folder, and install recorded the other.
   const real = (p: string): string => {
@@ -431,6 +434,9 @@ export function habitsProjectOff(ctx: Ctx): number {
     { home: ctx.userHome, env: ctx.env, busHome: ctx.home },
     (path) => dirname(real(path)) === cwd,
   );
+  // #2966: turning them off here is this project's answer, so it is not asked
+  // again. The machine-wide switch stays the explicit `--no-habits`.
+  setDeclined(ctx.home, cwd, true);
   if (r.files.length === 0 && r.notes.length === 0) {
     say(ctx, `No bus habits here to remove in ${tilde(ctx, cwd)}.`);
     return 0;
@@ -529,13 +535,17 @@ export async function habitsAfterInstall(
         question: null,
       };
     }
-    // No terminal: hand the agent today's hand-off, the global files with the
-    // "changed in this release" line, never silence.
-    const q = habitsQuestion(
-      globalStates.map((st) => one(ctx, st.path)),
-      json ? BUS_CMD : ctx.busCmd,
-    );
-    q.note = `These are for every project on this machine. ${q.note}`;
+    // No terminal: hand the agent today's hand-off. It is the global block,
+    // so its Yes is `--habits`, never the per-project command.
+    const bus = json ? BUS_CMD : ctx.busCmd;
+    const files = globalStates.map((st) => one(ctx, st.path)).join(" and ");
+    const q: HabitsQuestion = {
+      ...habitsQuestion([files], bus),
+      text: HABITS_GLOBAL_UPDATE_TEXT.replace("{files}", files),
+      yes: `${bus} install --habits`,
+      note: `These are for every project on this machine. ${OMP_NOTE}`,
+    };
+    q.global = undefined;
     return {
       ...none,
       state: "changed",
@@ -557,13 +567,19 @@ export async function habitsAfterInstall(
     }),
   ];
   const whyBlocked = (list: HabitsHarness[]) =>
-    `${list.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`;
+    `${list.join(", ")} read this project's AGENTS.md, but git tracks it, so habits cannot go there. \`--habits\` adds them for all projects.`;
   const pending = states.filter((p) => p.s.state !== "current");
   const have = states.filter((p) => p.s.state === "current").map((p) => p.path);
   if (pending.length === 0) {
     if (writable.length === 0 && blocked.length > 0) {
-      noteBlocked(ctx, folder, blocked);
-      return { ...none, state: "undecided", files: have, question: null };
+      const whyBlockedNow = noteBlocked(ctx, folder, blocked, json);
+      return {
+        ...none,
+        state: "undecided",
+        files: have,
+        question: null,
+        ...(whyBlockedNow ? { note: whyBlockedNow } : {}),
+      };
     }
     return { ...none, state: "on", files: have, question: null };
   }
@@ -573,16 +589,15 @@ export async function habitsAfterInstall(
   if (repoTop === "home" || repoTop === "no") {
     const why =
       repoTop === "home"
-        ? "This is your home folder, not a project: habits written here would reach every project under it. Run the install at the top of a project instead."
-        : "This folder is not inside a git repository, so there is no project to write the habits to.";
+        ? "This is your home folder, not a project: habits here would reach every project under it. Run this inside a project."
+        : "This folder is not inside a git repo, so there is nowhere to write the habits.";
     if (ctx.stdinIsTTY && ctx.readLine && !json) {
       say(ctx, why);
       return { ...none, state, files: have, question: null };
     }
-    // No terminal: say why, and hand out no question, since a Yes here would
-    // only refuse.
-    say(ctx, why);
-    return { ...none, state, files: have, question: null };
+    // No terminal: the reason goes in the outcome, so an agent still gets it.
+    if (!json) say(ctx, why);
+    return { ...none, state, files: have, question: null, note: why };
   }
   const asked = pending.map((p) => p.path);
   const question = habitsQuestion(
@@ -688,7 +703,7 @@ export async function habitsCommand(
 ): Promise<number> {
   say(ctx, ctx.copy.header(ctx.version), "");
   if (mode === "show") return show(ctx);
-  if (mode === "project-off") return habitsProjectOff(ctx);
+  if (mode === "project-off") return await habitsProjectOff(ctx);
   if (mode === "project") {
     // #2966: the per-folder install. Awaited, so its work cannot be cut off
     // and a failure is not reported as success.

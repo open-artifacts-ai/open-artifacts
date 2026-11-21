@@ -977,6 +977,10 @@ export const OMP_NOTE = "omp: not supported yet";
  * #2966: the one place the install question is worded, so Product can reword it
  * without touching the flow. `{count}` habits, `{files}` where they go.
  */
+/** The hand-off for a global block that changed in this release: it is not a project question. */
+export const HABITS_GLOBAL_UPDATE_TEXT =
+  "The habits for every project on this machine changed in this release, in {files}:";
+
 export const HABITS_QUESTION_TEXT =
   "The bus would add {count} habits to this project only, in {files}:";
 
@@ -985,7 +989,9 @@ export const habitsQuestion = (
   bus: string = BUS_CMD,
 ): HabitsQuestion => {
   const yes = `${bus} install --habits-project`;
-  const no = `${bus} install --no-habits`;
+  // #2966 (Product): No answers for this project; turning them off everywhere
+  // is the separate line below.
+  const no = `${bus} install --no-habits-project`;
   const text = HABITS_QUESTION_TEXT.replace(
     "{count}",
     String(HABITS_LINES.length),

@@ -663,7 +663,9 @@ describe("install: the printed command (#1998)", () => {
     const j = JSON.parse(ctx.out()[0] as string);
     // #2966: yes is per project; global is its own opt-in line.
     expect(j.question.yes).toBe(`${BUS_CMD} install --habits-project`);
-    expect(j.question.no).toBe(`${BUS_CMD} install --no-habits`);
+    // #2966 (Product): No is this project; the machine-wide off is its own line.
+    expect(j.question.no).toBe(`${BUS_CMD} install --no-habits-project`);
+    expect(j.question.never).toBe(`${BUS_CMD} install --no-habits`);
     expect(j.question.global).toBe(`${BUS_CMD} install --habits`);
   });
 
@@ -1187,7 +1189,7 @@ describe("per-project habits: the product calls (#2966)", () => {
     approvedHome(outside);
     await install({ hub: HUB }, outside);
     expect(await habitsCommand("project", outside)).toBe(1);
-    expect(outside.out().join("\n")).toMatch(/not inside a git repository/);
+    expect(outside.out().join("\n")).toMatch(/not inside a git repo/);
   });
 
   it("never writes in the home folder", async () => {
