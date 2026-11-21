@@ -251,8 +251,12 @@ const claudeOnly = (over = {}) => ({
 const setup = (over = {}, tty = false) => {
   const ctx = fakeCtx(claudeOnly(over), tty);
   approvedHome(ctx);
+  // #2966: the habits land in the project, so every ctx needs a real folder.
+  Object.assign(ctx, { cwd: mkdtempSync(join(tmpdir(), "ob-proj-")) });
   return ctx;
 };
+const projectMd = (ctx: ReturnType<typeof fakeCtx>) =>
+  join(ctx.cwd, "CLAUDE.local.md");
 const claudeMd = (ctx: ReturnType<typeof fakeCtx>) =>
   join(ctx.userHome, ".claude", "CLAUDE.md");
 
@@ -266,9 +270,14 @@ describe("install: disclosure", () => {
       "QUESTION FOR YOUR USER (ask them; don't answer it yourself)",
     );
     for (const l of HABITS_LINES) expect(out).toContain(l);
-    expect(out).toContain("Yes:  npx @open-artifacts/bus install --habits");
+    expect(out).toContain(
+      "Yes:  npx @open-artifacts/bus install --habits-project",
+    );
+    expect(out).toContain(
+      "All projects (invasive): npx @open-artifacts/bus install --habits",
+    );
     expect(out).toContain("No:   npx @open-artifacts/bus install --no-habits");
-    expect(out).toContain("~/.claude/CLAUDE.md");
+    expect(out).toContain(projectMd(ctx));
   });
   it("--json: one JSON line on stdout with the question, the rest on stderr", async () => {
     const ctx = setup();
@@ -280,7 +289,7 @@ describe("install: disclosure", () => {
     expect(j.question.lines).toEqual(HABITS_LINES);
     expect(j.question.yes).toContain("install --habits");
     expect(j.question.no).toContain("install --no-habits");
-    expect(j.question.text).toContain("~/.claude/CLAUDE.md");
+    expect(j.question.text).toContain(projectMd(ctx));
     expect(existsSync(claudeMd(ctx))).toBe(false);
     expect(ctx.err().join("\n")).toContain("Daemon");
   });
@@ -298,7 +307,7 @@ describe("install: disclosure", () => {
       "Add them? [Y/n]",
     );
     expect(ctx.out().join("\n")).toContain(HABITS_LINES[0] as string);
-    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    expect(readFileSync(projectMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
   });
   it("TTY: n writes nothing and the opt-out survives a reinstall", async () => {
     const ctx = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
@@ -319,8 +328,8 @@ describe("install: disclosure", () => {
     const yes = fakeCtx(claudeOnly());
     Object.assign(yes, { userHome: ctx.userHome, home: ctx.home });
     expect(await install({ habits: "yes" }, yes)).toBe(0);
-    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
-    expect(yes.out().join("\n")).toContain("Habits on in ~/.claude/CLAUDE.md");
+    expect(readFileSync(projectMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    expect(yes.out().join("\n")).toContain(`Habits on in this folder: ${projectMd(ctx)}`);
     // Nothing else reran: no daemon call.
     expect(yes.service.ensure).not.toHaveBeenCalled();
     const shown = fakeCtx(claudeOnly());
@@ -348,7 +357,7 @@ describe("install: disclosure", () => {
     expect(out).toContain("changed in this release");
     expect(out).toContain("under 100");
     expect(readLine).toHaveBeenCalledTimes(1);
-    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    expect(readFileSync(projectMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
   });
   it("a current block is left alone without asking", async () => {
     const ctx = setup();
@@ -384,7 +393,7 @@ describe("uninstall, status and doctor", () => {
     await install({ hub: HUB }, ctx);
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     await install({ habits: "yes" }, ctx);
-    expect(habitsLine(ctx)).toBe("Habits: on in ~/.claude/CLAUDE.md");
+    expect(habitsLine(ctx)).toBe(`Habits: on in ${projectMd(ctx)}`);
     await install({ habits: "no" }, ctx);
     expect(habitsLine(ctx)).toBe("Habits: off (you opted out)");
   });
@@ -395,7 +404,7 @@ describe("uninstall, status and doctor", () => {
     const s = fakeCtx(claudeOnly());
     Object.assign(s, { userHome: ctx.userHome, home: ctx.home });
     await statusCmd(s);
-    expect(s.all().join("\n")).toContain("Habits: on in ~/.claude/CLAUDE.md");
+    expect(s.all().join("\n")).toContain(`Habits: on in ${projectMd(ctx)}`);
     const d = fakeCtx(claudeOnly());
     Object.assign(d, { userHome: ctx.userHome, home: ctx.home });
     await doctor(d);

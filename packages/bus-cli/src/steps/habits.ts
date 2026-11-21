@@ -321,6 +321,13 @@ export const PROJECT_HABITS_FILE: Record<HabitsHarness, string> = {
 export const projectHabitsTarget = (cwd: string, h: HabitsHarness): string =>
   join(cwd, PROJECT_HABITS_FILE[h]);
 
+/**
+ * A path as a literal gitignore pattern: metacharacters escaped, so a folder
+ * called `[x]` or `a*b` matches the file and not something else.
+ */
+export const gitignoreLiteral = (path: string): string =>
+  path.replace(/[\\*?[\]!]/g, (c) => `\\${c}`);
+
 /** One line this install added to a repository's exclude file. */
 export type ExcludeEntry = {
   file: string;
@@ -377,6 +384,21 @@ const projectOf = (v: unknown): ProjectRecord => {
         });
   return { files: p.files ?? {}, exclude };
 };
+
+/** The state of the project file the flow would write for `h` (#2966). */
+export function projectHabitsFileState(
+  cwd: string,
+  h: HabitsHarness,
+): BlockState & { path: string } {
+  const path = projectHabitsTarget(cwd, h);
+  try {
+    if (brokenLink(path)) return { state: "broken", path };
+    if (!existsSync(path)) return { state: "absent", path };
+    return { ...blockState(readFileSync(path, "utf8")), path };
+  } catch {
+    return { state: "broken", path };
+  }
+}
 
 /**
  * #2966: writes the block into each harness's per-project file. Never touches
@@ -435,7 +457,7 @@ export function writeProjectHabits(
       files.push(path);
       // Only a file we created is ours to ignore, and only when we added the line.
       if (!exists && io.excludeFile !== undefined && io.exclude !== undefined) {
-        const line = `/${rel}`;
+        const line = `/${gitignoreLiteral(rel)}`;
         if (io.exclude(line))
           exclude.push({ file: io.excludeFile, line, for: path });
       }
@@ -466,6 +488,8 @@ export function removeProjectHabits(
   const cur = record(deps.busHome).project;
   const kept = { ...cur.files };
   const exclude = [...cur.exclude];
+  /** The files whose block actually came out: only their exclude line goes. */
+  const cleaned = new Set<string>();
   for (const [path, rec] of Object.entries(cur.files)) {
     if (only !== undefined && !only(path)) continue;
     try {
@@ -488,6 +512,7 @@ export function removeProjectHabits(
       if (rec?.created && after.trim() === "") rmSync(path, { force: true });
       else writeAtomic(path, after);
       delete kept[path];
+      cleaned.add(path);
       files.push(path);
     } catch (e) {
       notes.push(
@@ -502,6 +527,9 @@ export function removeProjectHabits(
   // predates that field, so only an unfiltered call (uninstall) takes it.
   for (const e of [...exclude]) {
     if (only !== undefined && (e.for === undefined || !only(e.for))) continue;
+    // A block left alone (no END marker, unreadable) keeps its line: the file
+    // still holds habits, so it must stay out of git's way.
+    if (e.for !== undefined && !cleaned.has(e.for)) continue;
     try {
       const text = readFileSync(e.file, "utf8");
       const lines = text.split("\n");
@@ -936,6 +964,8 @@ export type HabitsQuestion = {
   note: string;
   yes: string;
   no: string;
+  /** For every session in every project on this machine: opt-in only. */
+  global?: string;
 };
 
 /** The last line of the question: omp gets no habit lines. */
@@ -945,10 +975,17 @@ export const habitsQuestion = (
   shownFiles: string[],
   bus: string = BUS_CMD,
 ): HabitsQuestion => {
-  const yes = `${bus} install --habits`;
+  const yes = `${bus} install --habits-project`;
   const no = `${bus} install --no-habits`;
-  const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
-  return { text, lines: HABITS_LINES.slice(), note: OMP_NOTE, yes, no };
+  const text = `The bus would add ${HABITS_LINES.length} habits to this project only, in ${shownFiles.join(" and ")}:`;
+  return {
+    text,
+    lines: HABITS_LINES.slice(),
+    note: OMP_NOTE,
+    yes,
+    no,
+    global: `${bus} install --habits`,
+  };
 };
 
 /** What a person sees in the terminal and the agent prints for its user. */
@@ -961,4 +998,5 @@ export const habitsQuestionLines = (q: HabitsQuestion): string[] => [
   `  ${q.note}`,
   `Yes:  ${q.yes}`,
   `No:   ${q.no}`,
+  ...(q.global ? [`All projects (invasive): ${q.global}`] : []),
 ];

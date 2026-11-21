@@ -16,6 +16,7 @@ import {
   habitsBlock,
   habitsFileState,
   habitsOn,
+  projectHabitsFileState,
   habitsOptedOut,
   habitsQuestion,
   habitsQuestionLines,
@@ -259,7 +260,13 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     question: null,
     plugins: pluginStates(ctx),
   };
-  if (targets.length === 0 && plugins.length === 0) return none;
+  if (targets.length === 0) {
+    say(
+      ctx,
+      "No harness here has a project instruction file to put the habits in, so nothing was written. Install a harness first (Claude Code, Codex, pi or OpenCode), then run this again.",
+    );
+    return none;
+  }
   const io = await projectIo(ctx);
   const r = writeProjectHabits(
     { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
@@ -329,10 +336,10 @@ export async function habitsAfterInstall(
     return { ...none, state: "off", question: null };
   if (targets.length === 0 && plugins.length === 0) return none;
   const states: { path: string; label?: string; s: BlockState }[] = [
-    ...targets.map((h) => ({
-      path: habitsFileState(deps(ctx), h).path,
-      s: habitsFileState(deps(ctx), h) as BlockState,
-    })),
+    ...targets.map((h) => {
+      const st = projectHabitsFileState(ctx.cwd, h);
+      return { path: st.path, s: st as BlockState };
+    }),
     // A plugin has no block to compare: its marker is there ("current") or not.
     ...plugins.map((p) => ({
       path: join(p.dir(ctx.userHome, ctx.env), p.marker),
@@ -375,12 +382,12 @@ export async function habitsAfterInstall(
       return { ...none, state, files: have, question };
     }
     if (a === "" || a === "y" || a === "yes") {
-      const r = writeHabits(
-        deps(ctx),
+      const r = writeProjectHabits(
+        { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
         targets.filter((h) =>
-          asked.includes(habitsFileState(deps(ctx), h).path),
+          asked.includes(projectHabitsFileState(ctx.cwd, h).path),
         ),
-        { explicit: a !== "" },
+        await projectIo(ctx),
       );
       const pl = setPluginHabits(
         deps(ctx),
