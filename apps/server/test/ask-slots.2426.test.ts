@@ -2,8 +2,13 @@
 // keys to asks, and leaves out every slot whose home page the caller cannot
 // open (the contract, jp3RtzkygV1sijvM, section 2).
 import { env } from "cloudflare:workers";
-import type { AskSlot, Member } from "@oa/shared";
-import { R, viewerPath } from "@oa/shared";
+import {
+  ASK_SLOT_HOMES_MAX,
+  type AskSlot,
+  type Member,
+  R,
+  viewerPath,
+} from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
@@ -219,6 +224,65 @@ describe("ask slots: the read route", () => {
     expect(w.status, await w.text()).toBeLessThan(300);
     const after = (await (await slots(shown, owner)).json()) as AskSlot[];
     expect(after).toEqual([]);
+  });
+
+  it("leaves every slot out for a signed-out visitor, even on a public page (rule 1)", async () => {
+    const home = await page(owner, "Open home", "public");
+    const shown = await page(owner, "Open board", "public");
+    const a = await ask(owner, home);
+    await slot(shown, "public", { id: home, ...a });
+    // The owner sees it; the same page, signed out, shows nothing at all.
+    expect(
+      ((await (await slots(shown, owner)).json()) as AskSlot[]).length,
+    ).toBe(1);
+    const anon = await slots(shown, null);
+    expect(anon.status).toBe(200);
+    expect((await anon.json()) as AskSlot[]).toEqual([]);
+  });
+
+  it("leaves out a home whose comments are off", async () => {
+    const home = await page(owner, "No comments here");
+    const shown = await page(owner, "Board 3");
+    const a = await ask(owner, home);
+    await slot(shown, "quiet", { id: home, ...a });
+    expect(
+      ((await (await slots(shown, owner)).json()) as AskSlot[]).length,
+    ).toBe(1);
+    // Comments off at home: the ask cannot be read or answered there, so the
+    // card is not shown anywhere.
+    await api(app, R.artifact(home), owner.cookie, {
+      method: "PATCH",
+      body: { comments: false },
+    });
+    expect((await (await slots(shown, owner)).json()) as AskSlot[]).toEqual([]);
+  });
+
+  it("reads at most ASK_SLOT_HOMES_MAX homes, and unchecked homes never use that budget", async () => {
+    // Public, so a viewer can read the page itself; the homes are private.
+    const shown = await page(owner, "Busy board", "public");
+    const homes: string[] = [];
+    for (let i = 1; i <= 11; i++) {
+      const home = await page(owner, `Home ${i}`);
+      const a = await ask(owner, home);
+      homes.push(home);
+      await slot(shown, `h${String(i).padStart(2, "0")}`, { id: home, ...a });
+    }
+    const all = (await (await slots(shown, owner)).json()) as AskSlot[];
+    expect(all.length).toBe(ASK_SLOT_HOMES_MAX);
+    expect(all.map((s) => s.key)).toEqual(
+      Array.from(
+        { length: ASK_SLOT_HOMES_MAX },
+        (_, i) => `h${String(i + 1).padStart(2, "0")}`,
+      ),
+    );
+    // Homes this viewer cannot open do not spend the budget: a stranger to the
+    // first ten still gets the eleventh, which they can read.
+    await api(app, R.shares(homes[10] as string), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "viewer" },
+    });
+    const theirs = (await (await slots(shown, viewer)).json()) as AskSlot[];
+    expect(theirs.map((s) => s.key)).toEqual(["h11"]);
   });
 
   it("is the viewer's own page that decides the floor, not the ask's home", async () => {

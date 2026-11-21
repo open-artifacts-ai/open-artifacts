@@ -314,33 +314,38 @@ export function mountComments(app: AppType): void {
     if (!c.var.user) return c.json([]);
     const slots = await slotsOfPage(c.env, id);
     if (!slots.length) return c.json([]);
-    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
-    // twenty slots from twenty pages must not fan out over the instance.
+    // The page's slots grouped by the page each ask lives on, in key order.
     const byHome = new Map<string, typeof slots>();
     for (const s of slots) {
-      if (!byHome.has(s.homeArtifactId) && byHome.size >= ASK_SLOT_HOMES_MAX)
-        continue;
-      const list = byHome.get(s.homeArtifactId) ?? [];
-      list.push(s);
-      byHome.set(s.homeArtifactId, list);
+      const group = byHome.get(s.homeArtifactId) ?? [];
+      group.push(s);
+      byHome.set(s.homeArtifactId, group);
     }
-    const titles = await pageTitles(c.env, [...byHome.keys()]);
     const out: AskSlot[] = [];
+    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
+    // twenty slots from twenty pages must not fan out over the instance. Only
+    // homes this viewer may read count, so slots they cannot open can never
+    // use up the budget of the ones they can (the authorize calls themselves
+    // are bounded by ASK_SLOTS_MAX).
+    let read = 0;
     for (const [homeId, rows] of byHome) {
-      const title = titles.get(homeId);
-      // A page row is gone: nothing to show, and nothing to leak.
-      if (title === undefined) continue;
+      if (read >= ASK_SLOT_HOMES_MAX) break;
       // This viewer cannot open the home, or it is deleted: nothing, not a mask.
       const home = await authorize(c.env, who, homeId, "comments.read", {
         allowDeleted: true,
       }).catch(() => null);
       if (!home || home.artifact.deletedAt != null) continue;
+      // Comments off at home: there is no ask to read there either.
       if (home.artifact.comments !== 1) continue;
-      const owner = meetsLevel(home.level, "owner");
-      const { viewer } = await identity(c, homeId, false, owner);
+      // Only now, for a home this viewer may read, is its title read.
+      const title = (await pageTitles(c.env, [homeId])).get(homeId);
+      if (title === undefined) continue;
+      read += 1;
+      const moderator = modOf(who, home.level, home.artifact);
+      const { viewer } = await identity(c, homeId, false, moderator);
       const list = await listComments(c.env, homeId, "all", {
         ...viewer,
-        owner,
+        owner: meetsLevel(home.level, "owner"),
       });
       for (const row of rows) {
         const thread = list.threads.find((t) => t.id === row.threadId);
