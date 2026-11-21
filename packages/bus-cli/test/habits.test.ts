@@ -17,6 +17,7 @@ import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
 import {
+  habitsAfterInstall,
   habitsCommand,
   habitsLine,
   pluginStates,
@@ -267,6 +268,8 @@ const asRepo = (
     exec: vi.fn(async (cmd: string, args: string[], opts?: unknown) => {
       if (cmd !== "git") return prev(cmd, args, opts as never);
       if (top === "no") return { code: 1, stdout: "", stderr: "" };
+      if (args.includes("--is-inside-work-tree"))
+        return { code: 0, stdout: "true\n", stderr: "" };
       const root = top ?? ctx.cwd;
       if (args.includes("--show-toplevel"))
         return { code: 0, stdout: `${root}\n`, stderr: "" };
@@ -282,7 +285,12 @@ const asRepo = (
           stdout: join(root, ".git", "info", "exclude"),
           stderr: "",
         };
-      if (args.includes("ls-files")) return { code: 1, stdout: "", stderr: "" };
+      if (args.includes("ls-files"))
+        return {
+          code: trackedFiles.includes(String(args.at(-1))) ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        };
       return { code: 0, stdout: "", stderr: "" };
     }),
   });
@@ -1318,5 +1326,59 @@ describe("per-project habits: the remaining calls (#2966)", () => {
     Object.assign(b, { userHome: first.userHome, home: first.home });
     await install({ hub: HUB }, b);
     expect(b.out().join("\n")).not.toContain("To keep them in projects only");
+  });
+});
+
+describe("per-project habits: the two owed cases (#2966)", () => {
+  it("does not ask for a tracked target, and says so once per repository", async () => {
+    // Only Claude is wired, and its own target is the tracked one: the same
+    // writable/blocked split as a committed AGENTS.md for Codex.
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), undefined, undefined, [
+      "CLAUDE.local.md",
+    ]);
+    approvedHome(ctx);
+    // Wire the harness the way install does, then ask the habits step itself.
+    await install({ hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).toMatch(/git tracks it/);
+    expect(existsSync(join(ctx.cwd, "CLAUDE.local.md"))).toBe(false);
+
+    const said = ctx.out().length;
+    const first = await habitsAfterInstall(ctx, false);
+    expect(first.question).toBe(null);
+    expect(first.state).not.toBe("on");
+    await habitsAfterInstall(ctx, false);
+    expect(ctx.out().slice(said).join("\n")).not.toMatch(/git tracks it/);
+  });
+
+  it("a declined repository is not asked again, and a second one is", async () => {
+    const repoA = mkdtempSync(join(tmpdir(), "ob-a-"));
+    const repoB = mkdtempSync(join(tmpdir(), "ob-b-"));
+    const ctx = asRepo(
+      fakeCtx(
+        claudeOnly({ readLine: vi.fn(async () => "n"), stdinIsTTY: true }),
+        true,
+      ),
+      repoA,
+    );
+    approvedHome(ctx);
+    // The install asks in A and is answered No, which is A's answer only.
+    await install({ hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).toMatch(/stay off in this project/);
+    expect(habitsOptedOut(ctx.home)).toBe(false);
+
+    // B: a different repository, still asked.
+    asRepo(ctx, repoB);
+    const askedB = vi.fn(async () => "n");
+    Object.assign(ctx, { readLine: askedB });
+    await habitsAfterInstall(ctx, false);
+    expect(askedB).toHaveBeenCalled();
+
+    // Back to A: not asked again.
+    asRepo(ctx, repoA);
+    const askedA = vi.fn(async () => "n");
+    Object.assign(ctx, { readLine: askedA });
+    const again = await habitsAfterInstall(ctx, false);
+    expect(askedA).not.toHaveBeenCalled();
+    expect(again.question).toBe(null);
   });
 });
