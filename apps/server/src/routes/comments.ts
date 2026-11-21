@@ -2,6 +2,8 @@ import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
   AnswerBodySchema,
+  ASK_SLOT_HOMES_MAX,
+  type AskSlot,
   COMMENT_KEY_RE,
   isId,
   MentionCandidatesBodySchema,
@@ -36,6 +38,7 @@ import type { AppEnv } from "../http/middleware.js";
 import { readAnonId, resolveAnonId } from "../runtime/anon-id.js";
 import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
+import { pageTitles, slotsOfPage } from "../services/ask-slots.js";
 import {
   addReply,
   addThread,
@@ -73,6 +76,7 @@ const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
 const ASK_DECIDER = `${COMMENT}/ask/decider`;
 const WITHDRAW = `${COMMENT}/withdraw`;
+const ASK_SLOTS = `${ART}/ask-slots`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -299,6 +303,74 @@ export function mountComments(app: AppType): void {
         ...(compact ? { compact } : {}),
       }),
     );
+  });
+
+  // #2426 B, #2536: the asks this viewer may see in the page's [data-oa-ask]
+  // slots (the contract, jp3RtzkygV1sijvM, section 2). Per viewer and
+  // server-filtered: a slot whose home page this viewer cannot open is left
+  // out, never masked, and so is every slot of a signed-out visitor's page.
+  app.get(ASK_SLOTS, async (c) => {
+    const { id, who } = await open(c, "comments.read");
+    if (!c.var.user) return c.json([]);
+    const slots = await slotsOfPage(c.env, id);
+    if (!slots.length) return c.json([]);
+    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
+    // twenty slots from twenty pages must not fan out over the instance.
+    const byHome = new Map<string, typeof slots>();
+    for (const s of slots) {
+      if (!byHome.has(s.homeArtifactId) && byHome.size >= ASK_SLOT_HOMES_MAX)
+        continue;
+      const list = byHome.get(s.homeArtifactId) ?? [];
+      list.push(s);
+      byHome.set(s.homeArtifactId, list);
+    }
+    const titles = await pageTitles(c.env, [...byHome.keys()]);
+    const out: AskSlot[] = [];
+    for (const [homeId, rows] of byHome) {
+      const title = titles.get(homeId);
+      // A page row is gone: nothing to show, and nothing to leak.
+      if (title === undefined) continue;
+      // This viewer cannot open the home, or it is deleted: nothing, not a mask.
+      const home = await authorize(c.env, who, homeId, "comments.read", {
+        allowDeleted: true,
+      }).catch(() => null);
+      if (!home || home.artifact.deletedAt != null) continue;
+      if (home.artifact.comments !== 1) continue;
+      const owner = home.level === "owner";
+      const { viewer } = await identity(c, homeId, false, owner);
+      const list = await listComments(c.env, homeId, "all", {
+        ...viewer,
+        owner,
+      });
+      for (const row of rows) {
+        const thread = list.threads.find((t) => t.id === row.threadId);
+        const comment = thread?.comments.find((x) => x.id === row.commentId);
+        // A withdrawn, deleted or replaced ask is gone from the thread: the
+        // slot is left out, never a stale open card. A decision stays, so the
+        // card can show "Decided".
+        if (!comment?.ask || comment.ask.withdrawn) continue;
+        out.push({
+          key: row.key,
+          home: { artifactId: homeId, title },
+          threadId: row.threadId,
+          commentId: row.commentId,
+          ask: comment.ask,
+          author: comment.author,
+          ...(row.note ? { note: row.note } : {}),
+          ...(row.placedBy || row.placedAgent
+            ? {
+                placer: {
+                  ...(row.placedBy ? { id: row.placedBy } : {}),
+                  ...(row.placedAgent ? { agent: row.placedAgent } : {}),
+                },
+              }
+            : {}),
+        });
+      }
+    }
+    // Key order, so a page's slots read the same way every time.
+    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    return c.json(out);
   });
 
   app.post(COMMENTS, async (c) => {
