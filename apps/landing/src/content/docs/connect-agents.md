@@ -96,6 +96,8 @@ codex mcp login open-artifacts
 
 Log in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT is needed. If an existing config sets `bearer_token_env_var` or `http_headers_helper`, remove that setting before using OAuth.
 
+If the oa-bus bus is installed on this machine and a PAT is saved at `~/.open-artifacts/<your instance host>-pat-token`, `oa-bus install` swaps this entry for its local proxy, so this chat shows as its own session on pages. Codex then sends that PAT rather than the browser sign-in you just made; the sign-in stays saved and unused. `oa-bus uninstall` puts the entry back.
+
 ### Token fallback
 
 If OAuth is unavailable, use the token file. This needs Codex 0.163 or later. In `~/.codex/config.toml`:
