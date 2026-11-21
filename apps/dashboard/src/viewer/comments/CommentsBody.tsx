@@ -652,11 +652,14 @@ function Composer({
     setCaret(next.length);
     setMenuOff(false);
     setActiveOpt(0);
+    // The default row skips off agents again, so Enter now picks the person.
+    setArrowed(false);
     pickedAt.current = next.length;
   };
   const pick = (a: ArtifactAgent) => {
     // #2577: its person turned asking off; a mention would be refused.
     if (a.askState === "off") return;
+    setArrowed(false);
     // Over the cap nothing more is added (the note under the list says so).
     if (atCap) return;
     if (isPersonKey(a.key)) {

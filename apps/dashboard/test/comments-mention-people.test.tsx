@@ -245,6 +245,37 @@ describe("@ lists people with the agents (#2770)", () => {
     expect((b as HTMLTextAreaElement).value).toBe("@Ana");
   });
 
+  it("after the keyboard swap to the person, Enter picks the person, not the off agent again (#2577)", async () => {
+    serve([
+      {
+        key: "a:ana",
+        name: "Ana Bot",
+        online: true,
+        state: "online",
+        owner: "Ana",
+        askState: "off",
+      },
+      THEIRS[1] as ArtifactAgent,
+    ]);
+    server.use(
+      http.post(CAND, () =>
+        HttpResponse.json({
+          items: [{ kind: "user", id: "usr_ana", name: "Ana", me: false }],
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@");
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(b, { key: "ArrowUp" });
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
+    await within(c).findByRole("option", { name: /^Ana(?! Bot)/ });
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana ");
+  });
+
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(
