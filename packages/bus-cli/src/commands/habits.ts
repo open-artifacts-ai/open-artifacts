@@ -239,6 +239,51 @@ const habitsRecord = (busHome: string): Record<string, unknown> =>
     string,
     unknown
   >;
+const pluginLineSaid = (busHome: string): boolean =>
+  habitsRecord(busHome).pluginLineSaid === true;
+const markPluginLineSaid = (busHome: string): void => {
+  updateInstallFile(join(busHome, "install.json"), {
+    habits: { ...habitsRecord(busHome), pluginLineSaid: true },
+  });
+};
+
+/** A harness whose project file git tracks: said once per repository. */
+const noteBlocked = (
+  ctx: Ctx,
+  folder: string,
+  blocked: HabitsHarness[],
+): void => {
+  const said = readBlocked(ctx.home);
+  const fresh = blocked.filter((h) => !(said[folder] ?? []).includes(h));
+  if (fresh.length === 0) return;
+  saveBlocked(ctx.home, {
+    ...said,
+    [folder]: [...(said[folder] ?? []), ...fresh],
+  });
+  say(
+    ctx,
+    `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`,
+  );
+};
+
+/** #2966: a "no" is this repository's, so another project is still asked. */
+const readDeclined = (busHome: string): Record<string, boolean> => {
+  const raw = habitsRecord(busHome).projectDeclined;
+  const out: Record<string, boolean> = {};
+  if (typeof raw === "object" && raw !== null)
+    for (const [root, v] of Object.entries(raw as Record<string, unknown>))
+      if (v === true) out[root] = true;
+  return out;
+};
+const setDeclined = (busHome: string, root: string, off: boolean): void => {
+  const cur = readDeclined(busHome);
+  if (off) cur[root] = true;
+  else delete cur[root];
+  updateInstallFile(join(busHome, "install.json"), {
+    habits: { ...habitsRecord(busHome), projectDeclined: cur },
+  });
+};
+
 const moveOffered = (busHome: string): boolean =>
   habitsRecord(busHome).projectMoveOffered === true;
 const markMoveOffered = (busHome: string): void => {
@@ -354,6 +399,7 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     r.notes.push(
       `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide, so this command leaves it alone. Turn those on or off with ${ctx.busCmd} install --habits and --no-habits.`,
     );
+  setDeclined(ctx.home, repo.root, false);
   if (r.files.length > 0)
     say(ctx, `Habits on in this folder: ${shown(ctx, r.files)}`);
   for (const n of r.notes) say(ctx, n);
@@ -411,11 +457,13 @@ export async function habitsAfterInstall(
   if (targets.length === 0 && plugins.length === 0) return none;
   // #2966 (Product): a plugin's habits are machine-wide, so they are never part
   // of a per-project question. Said once, where to change them.
-  if (plugins.length > 0 && !json)
+  if (plugins.length > 0 && !json && !pluginLineSaid(ctx.home)) {
     say(
       ctx,
       `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide; change that with install --habits and --no-habits.`,
     );
+    markPluginLineSaid(ctx.home);
+  }
   // #2966: ~ is not a project. Writing AGENTS.md there would reach every
   // project under home through pi and the others that walk parent folders.
   const repoTop = await isRepoTop(ctx);
@@ -481,12 +529,26 @@ export async function habitsAfterInstall(
         question: null,
       };
     }
+    // No terminal: hand the agent today's hand-off, the global files with the
+    // "changed in this release" line, never silence.
+    const q = habitsQuestion(
+      globalStates.map((st) => one(ctx, st.path)),
+      json ? BUS_CMD : ctx.busCmd,
+    );
+    q.note = `These are for every project on this machine. ${q.note}`;
     return {
       ...none,
       state: "changed",
       files: globalStates.map((st) => st.path),
-      question: null,
+      question: q,
     };
+  }
+  if (
+    repoTop !== "home" &&
+    repoTop !== "no" &&
+    readDeclined(ctx.home)[folder]
+  ) {
+    return { ...none, state: "off", files: [], question: null };
   }
   const states: { path: string; label?: string; s: BlockState }[] = [
     ...writable.map((h) => {
@@ -500,7 +562,7 @@ export async function habitsAfterInstall(
   const have = states.filter((p) => p.s.state === "current").map((p) => p.path);
   if (pending.length === 0) {
     if (writable.length === 0 && blocked.length > 0) {
-      say(ctx, whyBlocked(blocked));
+      noteBlocked(ctx, folder, blocked);
       return { ...none, state: "undecided", files: have, question: null };
     }
     return { ...none, state: "on", files: have, question: null };
@@ -517,14 +579,10 @@ export async function habitsAfterInstall(
       say(ctx, why);
       return { ...none, state, files: have, question: null };
     }
-    // No terminal: the reason rides in the question, so an install that writes
-    // nothing still says why.
-    const q = habitsQuestion(
-      pending.map((p) => p.label ?? one(ctx, p.path)),
-      json ? BUS_CMD : ctx.busCmd,
-    );
-    q.note = `${why} ${q.note}`;
-    return { ...none, state, files: have, question: q };
+    // No terminal: say why, and hand out no question, since a Yes here would
+    // only refuse.
+    say(ctx, why);
+    return { ...none, state, files: have, question: null };
   }
   const asked = pending.map((p) => p.path);
   const question = habitsQuestion(
@@ -581,7 +639,7 @@ export async function habitsAfterInstall(
       // #2966/#2998: plugin habits are machine-wide, so a yes to "this project
       // only" must not turn them on. Said, not done.
       const pl = { changed: [], notes: [], pluginFiles: [], incomplete: false };
-      if (!changed) setHabitsOptOut(ctx.home, false, stamp(ctx));
+      if (!changed) setDeclined(ctx.home, folder, false);
       if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
       // Product's call: the plugin harnesses are machine-wide, so a yes that
       // means "this project only" does not touch them.
@@ -601,19 +659,15 @@ export async function habitsAfterInstall(
       };
     }
     if (a === "n" || a === "no") {
-      // A first "no" is the user's choice; declining a changed block keeps the old one.
+      // #2966 (Product): No is this project's answer. Another project is still
+      // asked, and the plugins (machine-wide) are left alone; only
+      // `--no-habits` turns them off everywhere and stops the question.
       if (!changed) {
-        setHabitsOptOut(ctx.home, true, stamp(ctx));
-        const off = setPluginHabits(deps(ctx), plugins, false);
-        if (off.incomplete) {
-          say(
-            ctx,
-            "Habits are still on in some places (see below). Your opt-out is saved, so a reinstall won't add them back.",
-          );
-          for (const n of off.notes) say(ctx, n);
-          return { ...none, state: "on", plugins: pluginStates(ctx) };
-        }
-        say(ctx, "Habits off. A reinstall will not add them back.");
+        setDeclined(ctx.home, folder, true);
+        say(
+          ctx,
+          "Habits stay off in this project. Other projects will still be asked; install --no-habits turns them off everywhere and never asks again.",
+        );
         return { ...none, state: "off", plugins: pluginStates(ctx) };
       }
       say(ctx, "Left the habits as they were.");

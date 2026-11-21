@@ -966,6 +966,8 @@ export type HabitsQuestion = {
   no: string;
   /** For every session in every project on this machine: opt-in only. */
   global?: string;
+  /** Turning them off everywhere, and never being asked again. */
+  never?: string;
 };
 
 /** The last line of the question: omp gets no habit lines. */
@@ -995,6 +997,7 @@ export const habitsQuestion = (
     yes,
     no,
     global: `${bus} install --habits`,
+    never: `${bus} install --no-habits`,
   };
 };
 
@@ -1009,4 +1012,5 @@ export const habitsQuestionLines = (q: HabitsQuestion): string[] => [
   `Yes:  ${q.yes}`,
   `No:   ${q.no}`,
   ...(q.global ? [`All projects (invasive): ${q.global}`] : []),
+  ...(q.never ? [`Never ask again on this machine: ${q.never}`] : []),
 ];

@@ -347,18 +347,22 @@ describe("install: disclosure", () => {
     expect(ctx.out().join("\n")).toContain(HABITS_LINES[0] as string);
     expect(readFileSync(projectMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
   });
-  it("TTY: n writes nothing and the opt-out survives a reinstall", async () => {
+  it("TTY: n is this project's answer, so another project is still asked", async () => {
+    // #2966 (Product): No means "not in this project", not "off everywhere".
     const ctx = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
     await install({ hub: HUB }, ctx);
-    expect(existsSync(claudeMd(ctx))).toBe(false);
-    expect(habitsOptedOut(ctx.home)).toBe(true);
-    const readLine = vi.fn(async () => "y");
-    const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }), false);
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
-    await install({ hub: HUB }, again);
-    expect(readLine).not.toHaveBeenCalled();
-    expect(existsSync(claudeMd(ctx))).toBe(false);
-    expect(again.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
+    expect(existsSync(projectMd(ctx))).toBe(false);
+    expect(habitsOptedOut(ctx.home)).toBe(false);
+
+    // The same folder is not asked again.
+    const same = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
+    Object.assign(same, {
+      cwd: ctx.cwd,
+      userHome: ctx.userHome,
+      home: ctx.home,
+    });
+    await install({ hub: HUB }, same);
+    expect(same.out().join("\n")).not.toContain("Add them?");
   });
   it("--habits writes the block and only that; --no-habits removes it and opts out; --show-habits prints it", async () => {
     const ctx = setup();
