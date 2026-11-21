@@ -265,8 +265,10 @@ jobs:
           run=true
           if [ "$EVENT" = pull_request ]; then
             run=false
+            # packages/shared is here too: the bus bundles its secrets and
+            # harness-skills sources, so a shared change can break the tarball.
             if [ -z "${BASE_SHA:-}" ] || ! files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
-              || grep -qE '^(packages/bus-|pnpm-lock\.yaml$|\.github/workflows/ci\.yml$)' <<< "$files"; then
+              || grep -qE '^(packages/bus-|packages/shared/|pnpm-lock\.yaml$|\.github/workflows/ci\.yml$)' <<< "$files"; then
               run=true
             fi
           fi
