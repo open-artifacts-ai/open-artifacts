@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.236.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.2...v0.236.0) (2026-11-20)
+
+
+### Features
+
+* **viewer:** the page bar on a phone is two rows, with asks waiting on Comments ([#2622](https://github.com/open-artifacts-ai/open-artifacts/issues/2622)) ([#2951](https://github.com/open-artifacts-ai/open-artifacts/issues/2951)) ([67a0491](https://github.com/open-artifacts-ai/open-artifacts/commit/67a0491002c7a1fdfde763d81d4bdf158438e1a8))
+
+
+### Bug Fixes
+
+* **notifications:** settings work without browser push, and say who turns it on ([#2943](https://github.com/open-artifacts-ai/open-artifacts/issues/2943), [#2942](https://github.com/open-artifacts-ai/open-artifacts/issues/2942)) ([#2944](https://github.com/open-artifacts-ai/open-artifacts/issues/2944)) ([51627ae](https://github.com/open-artifacts-ai/open-artifacts/commit/51627ae8d06ac9bd281ea2327768c1c320328b01))
+
+## [0.235.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.1...v0.235.2) (2026-11-20)
+
+
+### Bug Fixes
+
+* **viewer:** the expiry page announces itself, so a restored frame heals ([#2959](https://github.com/open-artifacts-ai/open-artifacts/issues/2959)) ([#2960](https://github.com/open-artifacts-ai/open-artifacts/issues/2960)) ([9424222](https://github.com/open-artifacts-ai/open-artifacts/commit/942422242e22651e1fad00b074db2c1a34e45b2a))
+
+## [0.235.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.0...v0.235.1) (2026-11-19)
+
+
+### Bug Fixes
+
+* **bus:** revalidate Codex calls after a resumed thread rotates its transcript ([#2958](https://github.com/open-artifacts-ai/open-artifacts/issues/2958)) ([1a50a6b](https://github.com/open-artifacts-ai/open-artifacts/commit/1a50a6b460c5e6b5079c4905a6a1d2326ecaaaec))
+
+## [0.235.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.234.0...v0.235.0) (2026-11-19)
+
+
+### Features
+
+* **dashboard:** the owner can pause bus updates ([#2552](https://github.com/open-artifacts-ai/open-artifacts/issues/2552)) ([#2819](https://github.com/open-artifacts-ai/open-artifacts/issues/2819)) ([3870f19](https://github.com/open-artifacts-ai/open-artifacts/commit/3870f19518730d3de144729885d9b1a6844f4728))
+
 ## [0.234.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.233.0...v0.234.0) (2026-11-19)
 
 

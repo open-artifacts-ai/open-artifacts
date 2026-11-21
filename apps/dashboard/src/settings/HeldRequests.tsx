@@ -5,10 +5,16 @@
  */
 import { useAgentRequests, useSetPhonePush } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
-import { PUSH_WORDS, permission, usePushKey } from "../foryou/push";
+import {
+  iosNeedsHomeScreen,
+  NOTIF_WORDS,
+  PUSH_WORDS,
+  permission,
+  usePushKey,
+} from "../foryou/push";
 import { toast } from "../layout/toast";
-import { useInstanceName } from "../layout/useDocumentTitle";
 import { AppLink } from "../library/AppLink";
+import { useNoKeyLine } from "./ForYouPrefs";
 import { Switch } from "./spaces/Switch";
 import { errorText, muted, SettingsCard, WriteLock } from "./ui";
 
@@ -21,17 +27,19 @@ export function HeldRequests() {
   const sw = useAgentRequests();
   const save = useSetPhonePush();
   const key = usePushKey(true);
-  const site = useInstanceName();
+  const noKeyLine = useNoKeyLine();
   const on = save.isPending ? save.variables : (sw.data?.phonePush ?? false);
   const perm = permission();
   // Browser notifications can't reach anyone here: say so, and where to fix it.
   const blocked =
     key.isSuccess && !key.data
-      ? PUSH_WORDS.notSetUp(site)
+      ? noKeyLine
       : perm === "denied"
         ? PUSH_WORDS.blocked
         : perm === "unsupported"
-          ? PUSH_WORDS.cant
+          ? iosNeedsHomeScreen()
+            ? NOTIF_WORDS.iosHome
+            : PUSH_WORDS.cant
           : null;
   return (
     <SettingsCard id="oa-held-h" title="Held requests">
