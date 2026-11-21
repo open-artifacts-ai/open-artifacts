@@ -16,6 +16,7 @@ describe.skipIf(process.platform === "win32")(
       "overload",
       "unsafe",
       "disconnect",
+      "lost-reply",
     ] as const)("handles %s", async (mode) => {
       const home = mkdtempSync(join(tmpdir(), "ob-st-"));
       const dir = join(home, "app-server-control");
@@ -45,6 +46,9 @@ describe.skipIf(process.platform === "win32")(
               ],
             });
           if (m.method === "turn/steer") {
+            // Accepted, but the reply never arrives: the socket stays open and
+            // silent, so only the timer ends the wait.
+            if (mode === "lost-reply") return;
             if (mode === "disconnect") ws.terminate();
             else if (mode === "overload")
               ws.send(JSON.stringify({ id: m.id, error: { code: -32001 } }));
@@ -62,7 +66,7 @@ describe.skipIf(process.platform === "win32")(
         expect(result).toBe(
           mode === "active"
             ? "accepted"
-            : mode === "disconnect"
+            : mode === "disconnect" || mode === "lost-reply"
               ? "uncertain"
               : "fallback",
         );
