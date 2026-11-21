@@ -38,6 +38,7 @@ import {
   codexBinPin,
   listInstances,
 } from "@oa/bus-daemon";
+import { hostSlug } from "@oa/shared/secrets";
 import {
   claudeConfigFile,
   installProof,
@@ -546,7 +547,16 @@ const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
   writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+  // #2954: the PAT the connect guide tells people to save, so an entry that
+  // signs in another way (Codex's own OAuth) can still reach the proxy.
+  ...(deps.hub === undefined ? {} : { patFile: patTokenFile(deps) }),
 });
+
+/** `<home>/.open-artifacts/<host slug>-pat-token`, the path the guide names. */
+const patTokenFile = (deps: Pick<AdapterDeps, "home" | "hub">): string => {
+  const host = deps.hub === undefined ? "" : new URL(deps.hub).host;
+  return join(deps.home, ".open-artifacts", `${hostSlug(host)}-pat-token`);
+};
 
 /**
  * #1856: the instance's /mcp entry in Codex's config.toml becomes the local
