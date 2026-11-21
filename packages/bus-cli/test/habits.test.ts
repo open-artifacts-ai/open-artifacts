@@ -1254,3 +1254,69 @@ describe("per-project habits: the question's own rules (#2966 review)", () => {
     expect(out).not.toContain("the Hermes plugin:");
   });
 });
+
+describe("per-project habits: the remaining calls (#2966)", () => {
+  const { execFileSync } =
+    require("node:child_process") as typeof import("node:child_process");
+  const gitRepo = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-real-"));
+    const run = (args: string[]) =>
+      execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+    run(["init", "-q"]);
+    run(["config", "user.email", "t@x.com"]);
+    run(["config", "user.name", "t"]);
+    return dir;
+  };
+  const ctxIn = (cwd: string, over: Record<string, unknown> = {}) => {
+    const ctx = fakeCtx(
+      claudeOnly({
+        which: (c: string) => c === "claude" || c === "git",
+        ...over,
+      }),
+      false,
+    );
+    approvedHome(ctx);
+    Object.assign(ctx, { cwd });
+    return ctx;
+  };
+
+  it("a typed yes updates a changed global block, and a no leaves it", async () => {
+    const cwd = gitRepo();
+    const first = ctxIn(cwd);
+    await install({ hub: HUB }, first);
+    await install({ habits: "yes" }, first);
+    const changed = `${BLOCK.replace("under 140", "under 100")}\n`;
+    writeFileSync(claudeMd(first), changed);
+
+    const no = ctxIn(cwd, {
+      stdinIsTTY: true,
+      readLine: vi.fn(async () => "n"),
+    });
+    Object.assign(no, { userHome: first.userHome, home: first.home });
+    await install({ hub: HUB }, no);
+    expect(readFileSync(claudeMd(first), "utf8")).toBe(changed);
+
+    const yes = ctxIn(cwd, {
+      stdinIsTTY: true,
+      readLine: vi.fn(async () => ""),
+    });
+    Object.assign(yes, { userHome: first.userHome, home: first.home });
+    await install({ hub: HUB }, yes);
+    expect(readFileSync(claudeMd(first), "utf8")).toBe(`${BLOCK}\n`);
+  });
+
+  it("offers the move to per project once", async () => {
+    const cwd = gitRepo();
+    const first = ctxIn(cwd);
+    await install({ hub: HUB }, first);
+    await install({ habits: "yes" }, first);
+    const a = ctxIn(cwd);
+    Object.assign(a, { userHome: first.userHome, home: first.home });
+    await install({ hub: HUB }, a);
+    expect(a.out().join("\n")).toContain("To keep them in projects only");
+    const b = ctxIn(cwd);
+    Object.assign(b, { userHome: first.userHome, home: first.home });
+    await install({ hub: HUB }, b);
+    expect(b.out().join("\n")).not.toContain("To keep them in projects only");
+  });
+});
