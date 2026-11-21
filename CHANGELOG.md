@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.240.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.2...v0.240.0) (2026-11-21)
+
+
+### Features
+
+* **bus:** habits can live in the project, with the git guard ([#2966](https://github.com/open-artifacts-ai/open-artifacts/issues/2966)) ([#2998](https://github.com/open-artifacts-ai/open-artifacts/issues/2998)) ([5240eb2](https://github.com/open-artifacts-ai/open-artifacts/commit/5240eb2524c1cc8d01de334b5f9d6f02ecb64ca8))
+
 ## [0.239.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.1...v0.239.2) (2026-11-21)
 
 
