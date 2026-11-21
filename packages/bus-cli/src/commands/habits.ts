@@ -260,7 +260,7 @@ const noteBlocked = (
   const said = readBlocked(ctx.home);
   const fresh = blocked.filter((h) => !(said[folder] ?? []).includes(h));
   if (fresh.length === 0) return "";
-  const why = `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so habits cannot go there. \`--habits\` adds them for all projects.`;
+  const why = `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`;
   saveBlocked(ctx.home, {
     ...said,
     [folder]: [...(said[folder] ?? []), ...fresh],
@@ -384,8 +384,8 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     say(
       ctx,
       repo === "home"
-        ? "This is your home folder, not a project: habits here would reach every project under it. Run this inside a project."
-        : "This folder is not inside a git repo, so there is no project to write to.",
+        ? "This is your home folder, not a project: habits written here would reach every project under it. Run the install at the top of a project instead."
+        : "This folder is not inside a git repository, so there is no project to write the habits to.",
     );
     return none;
   }
@@ -429,7 +429,19 @@ export async function habitsProjectOff(ctx: Ctx): Promise<number> {
       return resolve(p);
     }
   };
-  const cwd = real(ctx.cwd);
+  // #2966: the habits live at the top of the work tree, so this resolves the
+  // same way the on switch does (a subfolder is not a project of its own).
+  const repo = await isRepoTop(ctx);
+  if (repo === "home" || repo === "no") {
+    say(
+      ctx,
+      repo === "home"
+        ? "This is your home folder, not a project, so there are no project habits to turn off here."
+        : "This folder is not inside a git repo, so there are no project habits to turn off here.",
+    );
+    return 0;
+  }
+  const cwd = repo.root;
   const r = removeProjectHabits(
     { home: ctx.userHome, env: ctx.env, busHome: ctx.home },
     (path) => dirname(real(path)) === cwd,
@@ -543,6 +555,10 @@ export async function habitsAfterInstall(
       ...habitsQuestion([files], bus),
       text: HABITS_GLOBAL_UPDATE_TEXT.replace("{files}", files),
       yes: `${bus} install --habits`,
+      // Declining a global update is not a project answer: nothing here may
+      // mark the current folder declined.
+      no: `${bus} install --no-habits`,
+      never: undefined,
       note: `These are for every project on this machine. ${OMP_NOTE}`,
     };
     q.global = undefined;
@@ -567,7 +583,7 @@ export async function habitsAfterInstall(
     }),
   ];
   const whyBlocked = (list: HabitsHarness[]) =>
-    `${list.join(", ")} read this project's AGENTS.md, but git tracks it, so habits cannot go there. \`--habits\` adds them for all projects.`;
+    `${list.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. \`--habits\` adds them for all projects.`;
   const pending = states.filter((p) => p.s.state !== "current");
   const have = states.filter((p) => p.s.state === "current").map((p) => p.path);
   if (pending.length === 0) {
@@ -589,8 +605,8 @@ export async function habitsAfterInstall(
   if (repoTop === "home" || repoTop === "no") {
     const why =
       repoTop === "home"
-        ? "This is your home folder, not a project: habits here would reach every project under it. Run this inside a project."
-        : "This folder is not inside a git repo, so there is nowhere to write the habits.";
+        ? "This is your home folder, not a project: habits written here would reach every project under it. Run the install at the top of a project instead."
+        : "This folder is not inside a git repository, so there is no project to write the habits to.";
     if (ctx.stdinIsTTY && ctx.readLine && !json) {
       say(ctx, why);
       return { ...none, state, files: have, question: null };

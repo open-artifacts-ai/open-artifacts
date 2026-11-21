@@ -1197,7 +1197,7 @@ describe("per-project habits: the product calls (#2966)", () => {
     approvedHome(outside);
     await install({ hub: HUB }, outside);
     expect(await habitsCommand("project", outside)).toBe(1);
-    expect(outside.out().join("\n")).toMatch(/not inside a git repo/);
+    expect(outside.out().join("\n")).toMatch(/not inside a git repository/);
   });
 
   it("never writes in the home folder", async () => {
