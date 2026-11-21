@@ -15,7 +15,12 @@ import { join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
-import { habitsLine } from "../src/commands/habits.ts";
+import {
+  habitsCommand,
+  habitsLine,
+  pluginStates,
+  projectIo,
+} from "../src/commands/habits.ts";
 import { install } from "../src/commands/install.ts";
 import { status as statusCmd } from "../src/commands/status.ts";
 import { uninstall } from "../src/commands/uninstall.ts";
@@ -741,8 +746,10 @@ describe("per-project habits (#2966)", () => {
     const g = fakeGit({});
     mkdirSync(join(g.excludeFile, ".."), { recursive: true });
     writeFileSync(g.excludeFile, "/AGENTS.md\n");
-    writeProjectHabits(depsFor(cwd), ["codex"], g.io);
-    // Written line stays, but removal must not take it away.
+    const d = depsFor(cwd);
+    writeProjectHabits(d, ["codex"], g.io);
+    // The line stays, and removal must not take the person's own line away.
+    removeProjectHabits(d);
     expect(readFileSync(g.excludeFile, "utf8")).toBe("/AGENTS.md\n");
   });
 
@@ -789,6 +796,79 @@ describe("per-project habits (#2966)", () => {
     expect(readFileSync(join(other, "AGENTS.md"), "utf8")).toContain(
       "their copy",
     );
+  });
+
+  it("real git: the exclude file is the common dir's, and the line carries the subfolder (#2998 A)", async () => {
+    // A main repo, a linked worktree, and a subfolder inside the worktree.
+    const main = project();
+    const git = async (cwd: string, args: string[]) => {
+      const { execFile } = await import("node:child_process");
+      return new Promise<{ code: number; stdout: string; stderr: string }>(
+        (resolve) =>
+          execFile("git", args, { cwd }, (err, stdout, stderr) =>
+            resolve({ code: err ? 1 : 0, stdout, stderr }),
+          ),
+      );
+    };
+    expect((await git(main, ["init", "-q"])).code).toBe(0);
+    await git(main, ["config", "user.email", "t@x.com"]);
+    await git(main, ["config", "user.name", "t"]);
+    writeFileSync(join(main, "README.md"), "# x\n");
+    await git(main, ["add", "."]);
+    await git(main, ["commit", "-qm", "one"]);
+    const wt = join(project(), "wt");
+    expect(
+      (await git(main, ["worktree", "add", "-q", wt, "-b", "b1"])).code,
+    ).toBe(0);
+    const sub = join(wt, "apps", "x");
+    mkdirSync(sub, { recursive: true });
+
+    const realExec = (cmd: string, args: string[]) => {
+      const { execFile } =
+        require("node:child_process") as typeof import("node:child_process");
+      return new Promise<{ code: number; stdout: string; stderr: string }>(
+        (resolve) =>
+          execFile(cmd, args, (err, stdout, stderr) =>
+            resolve({ code: err ? 1 : 0, stdout, stderr }),
+          ),
+      );
+    };
+    const ctx = {
+      cwd: sub,
+      which: (c: string) => c === "git",
+      exec: realExec,
+    } as unknown as Parameters<typeof projectIo>[0];
+
+    const io = await projectIo(ctx);
+    expect(io.excludeFile).toBe(join(main, ".git", "info", "exclude"));
+    expect(io.rel?.("AGENTS.md")).toBe("apps/x/AGENTS.md");
+
+    // A real write, then git itself agrees the file is ignored.
+    writeProjectHabits({ ...depsFor(sub, project()), cwd: sub }, ["codex"], io);
+    expect(readFileSync(io.excludeFile as string, "utf8")).toContain(
+      "/apps/x/AGENTS.md",
+    );
+    // From the folder itself, git agrees the file is ignored by that line.
+    const ignored = await git(sub, ["check-ignore", "-q", "AGENTS.md"]);
+    expect(ignored.code).toBe(0);
+  });
+
+  it("the command reports a failed run as exit 1 and writes nothing (#2998 C)", async () => {
+    const gone = join(project(), "does-not-exist");
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: gone });
+    expect(await habitsCommand("project", ctx)).toBe(1);
+    expect(existsSync(join(gone, "CLAUDE.local.md"))).toBe(false);
+  });
+
+  it("the command never turns on the machine-wide plugin habits (#2998 C)", async () => {
+    // A wired Hermes plugin folder, its marker absent.
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: project() });
+    const before = pluginStates(ctx);
+    const code = await habitsCommand("project", ctx);
+    expect([0, 1]).toContain(code);
+    expect(pluginStates(ctx)).toEqual(before);
   });
 
   it("removal keeps a file that was already ours, dropping only our block", () => {

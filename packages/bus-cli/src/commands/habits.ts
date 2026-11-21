@@ -151,7 +151,7 @@ function turnOff(ctx: Ctx): number {
 }
 
 /** Each plugin harness's habits state, by name. */
-const pluginStates = (ctx: Ctx): Record<string, PluginHabitsState> =>
+export const pluginStates = (ctx: Ctx): Record<string, PluginHabitsState> =>
   Object.fromEntries(
     PLUGIN_HARNESSES.map((p) => [p.name, pluginHabitsState(deps(ctx), p)]),
   );
