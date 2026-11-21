@@ -468,7 +468,9 @@ export function createBridge(opts: BridgeOptions) {
                 org: g.greet.org,
                 inviter: o.invitedBy?.name ?? null,
                 teammateCommented: o.teamStep === true,
-                done: setupSteps(o).done,
+                // Old Welcome pages show done over 5 or 3: keep that count without the comment step.
+                done: setupSteps({ ...o, firstComment: undefined }).done,
+                doneAll: setupSteps(o).done,
               }
             : undefined;
         return {
@@ -484,6 +486,10 @@ export function createBridge(opts: BridgeOptions) {
           ...(o.busConnected === undefined
             ? {}
             : { busConnected: o.busConnected }),
+          // #2953: absent from an older server: the page shows no comment step.
+          ...(o.firstComment === undefined
+            ? {}
+            : { firstComment: o.firstComment }),
         };
       }
       case "viewer.anonId":

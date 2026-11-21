@@ -148,6 +148,57 @@ describe("onboarding.get", () => {
     expect(r.value.who.done).toBe(setupSteps(PROGRESS).done);
   });
 
+  it("keeps the old pages' count without the comment step (#2953)", async () => {
+    // Everything done, comment included: a Welcome published before #2953
+    // shows `done` over 5, so it must never pass 5; the new page reads doneAll.
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...PROGRESS,
+            agentNamed: true,
+            mentionReplied: true,
+            askAnswered: true,
+            firstComment: {
+              artifactId: "Cd5fGhJkLm6nPqRs",
+              title: "Landing page",
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const r = await ask(art(WELCOME), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r.value.who).toMatchObject({ done: 5, doneAll: 6 });
+  });
+
+  it("a chat-only member's old page never reads 4 of 3 (#2953)", async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            ...PROGRESS,
+            busConnected: false,
+            askAnswered: true,
+            firstComment: {
+              artifactId: "Cd5fGhJkLm6nPqRs",
+              title: "Landing page",
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const r = await ask(art(WELCOME), {
+      owner: false,
+      member: true,
+      greet: { firstName: "Ada", org: "Acme Artifacts" },
+    });
+    expect(r.value.who).toMatchObject({ done: 3, doneAll: 4 });
+  });
+
   it("refuses a member on someone else's Welcome", async () => {
     const r = await ask(art("OtherArtifact0001"), {
       owner: false,

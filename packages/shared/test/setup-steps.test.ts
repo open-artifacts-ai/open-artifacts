@@ -134,4 +134,70 @@ describe("setupSteps (#2632)", () => {
       stalled: "named",
     });
   });
+
+  describe("the comment step (#2953)", () => {
+    it("is in the list only when the server sends firstComment, even null", () => {
+      expect(applicableSteps(true, false)).toHaveLength(5);
+      expect(applicableSteps(true, undefined)).toHaveLength(5);
+      expect(applicableSteps(true, true)).toEqual([
+        "agent",
+        "named",
+        "artifact",
+        "comment",
+        "mention",
+        "ask",
+      ]);
+      expect(applicableSteps(false, true)).toEqual([
+        "agent",
+        "artifact",
+        "comment",
+        "ask",
+      ]);
+    });
+
+    it("an older server (no field): today's counts, whatever else is sent", () => {
+      expect(setupSteps(all)).toEqual({ done: 5, total: 5 });
+      expect(setupSteps({ ...all, busConnected: false })).toEqual({
+        done: 3,
+        total: 3,
+      });
+    });
+
+    it("bus members count six, chat-only four", () => {
+      const c = { artifactId: "a", title: "A" };
+      expect(setupSteps({ ...all, firstComment: null })).toEqual({
+        done: 5,
+        total: 6,
+        stalled: "comment",
+      });
+      expect(setupSteps({ ...all, firstComment: c })).toEqual({
+        done: 6,
+        total: 6,
+      });
+      expect(
+        setupSteps({ ...all, busConnected: false, firstComment: null }),
+      ).toEqual({ done: 3, total: 4, stalled: "comment" });
+      expect(
+        setupSteps({ ...all, busConnected: false, firstComment: c }),
+      ).toEqual({ done: 4, total: 4 });
+    });
+
+    it("is held up in order: after publish, before mention", () => {
+      const o = {
+        agentConnected: true,
+        agentNamed: true,
+        firstArtifact: { id: "a" },
+        firstComment: null,
+        mentionReplied: true,
+        askAnswered: true,
+      };
+      expect(setupSteps(o).stalled).toBe("comment");
+      expect(setupSteps({ ...o, firstArtifact: null }).stalled).toBe(
+        "artifact",
+      );
+      expect(setupSteps({ ...o, mentionReplied: false }).stalled).toBe(
+        "comment",
+      );
+    });
+  });
 });
