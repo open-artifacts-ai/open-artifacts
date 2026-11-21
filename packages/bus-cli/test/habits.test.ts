@@ -982,8 +982,7 @@ describe("per-project habits (#2966)", () => {
   });
 
   it("says so when this folder has no bus habits", async () => {
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: project() });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false));
     expect(await habitsCommand("project-off", ctx)).toBe(0);
     expect(ctx.out().join("\n")).toMatch(/No bus habits here/);
   });
@@ -1046,8 +1045,8 @@ describe("per-project off switch (#2966)", () => {
     writeProjectHabits({ ...shared, cwd: b }, ["codex"], gb.io);
     expect(readFileSync(gb.excludeFile, "utf8")).toContain("/AGENTS.md");
 
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: a, userHome: shared.home, home: shared.busHome });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), a);
+    Object.assign(ctx, { userHome: shared.home, home: shared.busHome });
     expect(await habitsCommand("project-off", ctx)).toBe(0);
 
     expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
@@ -1097,8 +1096,8 @@ describe("per-project off switch (#2966)", () => {
     );
     const shared = { home, busHome, cwd: a };
 
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: a, userHome: home, home: busHome });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), a);
+    Object.assign(ctx, { userHome: home, home: busHome });
     expect(await habitsCommand("project-off", ctx)).toBe(0);
     expect(existsSync(file)).toBe(false);
     // The old line cannot be attributed, so only uninstall takes it.
@@ -1117,12 +1116,8 @@ describe("per-project off switch (#2966)", () => {
     );
     const link = join(project(), "via-link");
     symlinkSync(a, link);
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, {
-      cwd: link,
-      userHome: shared.home,
-      home: shared.busHome,
-    });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), link, a);
+    Object.assign(ctx, { userHome: shared.home, home: shared.busHome });
     expect(await habitsCommand("project-off", ctx)).toBe(0);
     expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
   });
@@ -1380,5 +1375,76 @@ describe("per-project habits: the two owed cases (#2966)", () => {
     const again = await habitsAfterInstall(ctx, false);
     expect(askedA).not.toHaveBeenCalled();
     expect(again.question).toBe(null);
+  });
+});
+
+describe("per-project habits: the last four (#2966)", () => {
+  it("the off switch records the decline for the repository, even from a subfolder", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "ob-off-rec-"));
+    const sub = join(repo, "apps", "x");
+    mkdirSync(sub, { recursive: true });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), repo, repo);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "project" }, ctx);
+    expect(existsSync(join(repo, "CLAUDE.local.md"))).toBe(true);
+
+    // Run the off switch from a subfolder: it must resolve the repo top.
+    const fromSub = asRepo(fakeCtx(claudeOnly({}), false), sub, repo);
+    Object.assign(fromSub, { userHome: ctx.userHome, home: ctx.home });
+    expect(await habitsCommand("project-off", fromSub)).toBe(0);
+    expect(existsSync(join(repo, "CLAUDE.local.md"))).toBe(false);
+
+    // And the repository is not asked again.
+    const asked = asRepo(
+      fakeCtx(
+        claudeOnly({ readLine: vi.fn(async () => "y"), stdinIsTTY: true }),
+        true,
+      ),
+      repo,
+    );
+    Object.assign(asked, { userHome: ctx.userHome, home: ctx.home });
+    const out = await habitsAfterInstall(asked, false);
+    expect(out.question).toBe(null);
+    expect(out.state).toBe("off");
+    expect(asked.out().join("\n")).not.toContain("Add them?");
+  });
+
+  it("asks nothing without a terminal in $HOME or outside a repository, and says why", async () => {
+    for (const where of ["home", "no"] as const) {
+      const home = mkdtempSync(join(tmpdir(), "ob-quiet-"));
+      const ctx = asRepo(
+        fakeCtx(claudeOnly({}), false),
+        where === "home" ? home : mkdtempSync(join(tmpdir(), "ob-plain-")),
+        where === "home" ? home : "no",
+      );
+      Object.assign(ctx, { userHome: home });
+      approvedHome(ctx);
+      await install({ hub: HUB }, ctx);
+      const out = await habitsAfterInstall(ctx, false);
+      expect(out.question, where).toBe(null);
+      expect(out.note, where).toMatch(
+        where === "home" ? /home folder/ : /not inside a git repository/,
+      );
+    }
+  });
+
+  it("the changed-global hand-off points at the machine-wide command, not a project answer", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "ob-glob-"));
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), repo, repo);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "yes" }, ctx);
+    writeFileSync(
+      claudeMd(ctx),
+      `${BLOCK.replace("under 140", "under 100")}\n`,
+    );
+    const asked = asRepo(fakeCtx(claudeOnly({}), false), repo, repo);
+    Object.assign(asked, { userHome: ctx.userHome, home: ctx.home });
+    const out = await habitsAfterInstall(asked, false);
+    expect(out.question?.yes).toContain("install --habits");
+    expect(out.question?.yes).not.toContain("--habits-project");
+    expect(out.question?.no).toContain("install --no-habits");
+    expect(out.question?.no).not.toContain("--no-habits-project");
   });
 });
