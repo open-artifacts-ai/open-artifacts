@@ -8,4 +8,5 @@ export {
   RUNTIME_RESULTS,
   sendToShell,
 } from "@oa/shared";
+export { createAskSlots } from "./askSlots.js";
 export { createComments } from "./comments.js";
