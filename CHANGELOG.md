@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.237.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.236.0...v0.237.0) (2026-11-21)
+
+
+### Features
+
+* **onboarding:** a "Comment on a page" step for every member ([#2953](https://github.com/open-artifacts-ai/open-artifacts/issues/2953)) ([#2964](https://github.com/open-artifacts-ai/open-artifacts/issues/2964)) ([6089dd9](https://github.com/open-artifacts-ai/open-artifacts/commit/6089dd9f82a5933b116bd5587ba907c86f869bdd))
+
 ## [0.236.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.235.2...v0.236.0) (2026-11-20)
 
 

@@ -15,6 +15,7 @@ export const SETUP = {
     agent: "no agent connected yet",
     named: "agent not named yet",
     artifact: "nothing published yet",
+    comment: "no comment yet",
     mention: "no agent reply yet",
     ask: "ask not answered yet",
   },

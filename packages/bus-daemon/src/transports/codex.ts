@@ -15,6 +15,7 @@ import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
 import { type QueueRead, readQueue } from "../codex-queue-store.ts";
 import { NOTICE_WATCH_MS, type TakenWatch } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
+import { steerCodex } from "./codex-steer.ts";
 
 /**
  * How long `codex queue` may run; it writes one sqlite row, but under heavy
@@ -281,6 +282,7 @@ export function codexText(agent: AgentRecord, mail: Mail): string {
 }
 
 export type CodexTransportOptions = {
+  steer?: typeof steerCodex;
   /** Finds the binary; called at start and again after a failure. */
   resolve: () => CodexBin | undefined;
   run: CodexRun;
@@ -486,6 +488,19 @@ export class CodexTransport {
     }
     this.#flight.add(id);
     try {
+      if (watch) {
+        const result = await (this.opts.steer ?? steerCodex)(
+          this.opts.home,
+          ref,
+          text,
+        );
+        if (result !== "fallback") {
+          this.opts.taken.queued(id, result === "uncertain");
+          return result === "accepted"
+            ? { ok: true, how: "spawned" }
+            : { ok: false, taken: "maybe" };
+        }
+      }
       let res: Awaited<ReturnType<CodexRun>>;
       try {
         res = await this.opts.run(bin.path, args, {

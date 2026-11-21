@@ -110,6 +110,43 @@ describe("the Setup column", () => {
     expect(cell(await row("Ada Lovelace"))?.textContent).toBe("Setup: Set up");
   });
 
+  it("counts of 6 and 4 with the comment step, held up on it (#2953)", async () => {
+    const rows = http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? []
+          : [
+              ROWS[0],
+              {
+                ...ROWS[1],
+                setup: {
+                  state: "partial",
+                  done: 3,
+                  total: 6,
+                  stalled: "comment",
+                },
+              },
+              {
+                ...ROWS[2],
+                setup: {
+                  state: "partial",
+                  done: 2,
+                  total: 4,
+                  stalled: "comment",
+                },
+              },
+            ],
+      ),
+    );
+    mountHosted("/settings/members", true, as("owner"), [rows]);
+    expect(cell(await row("Sam Ortiz"))?.textContent).toBe(
+      "Setup: 3 of 6no comment yet",
+    );
+    expect(cell(await row("Priya Shah"))?.textContent).toBe(
+      "Setup: 2 of 4no comment yet",
+    );
+  });
+
   it("an admin sees it", async () => {
     mountHosted("/settings/members", true, as("admin"), [members()]);
     expect(cell(await row("Sam Ortiz"))).not.toBeNull();
