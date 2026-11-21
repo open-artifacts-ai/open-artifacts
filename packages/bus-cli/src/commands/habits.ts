@@ -16,6 +16,7 @@ import {
   habitsBlock,
   habitsFileState,
   habitsOn,
+  projectHabitsFileState,
   habitsOptedOut,
   habitsQuestion,
   habitsQuestionLines,
@@ -282,10 +283,10 @@ export async function habitsAfterInstall(
     return { ...none, state: "off", question: null };
   if (targets.length === 0 && plugins.length === 0) return none;
   const states: { path: string; label?: string; s: BlockState }[] = [
-    ...targets.map((h) => ({
-      path: habitsFileState(deps(ctx), h).path,
-      s: habitsFileState(deps(ctx), h) as BlockState,
-    })),
+    ...targets.map((h) => {
+      const st = projectHabitsFileState(ctx.cwd, h);
+      return { path: st.path, s: st as BlockState };
+    }),
     // A plugin has no block to compare: its marker is there ("current") or not.
     ...plugins.map((p) => ({
       path: join(p.dir(ctx.userHome, ctx.env), p.marker),
@@ -328,12 +329,13 @@ export async function habitsAfterInstall(
       return { ...none, state, files: have, question };
     }
     if (a === "" || a === "y" || a === "yes") {
-      const r = writeHabits(
-        deps(ctx),
+      // #2966: yes means this folder, not the person's global instructions.
+      const r = writeProjectHabits(
+        { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
         targets.filter((h) =>
-          asked.includes(habitsFileState(deps(ctx), h).path),
+          asked.includes(projectHabitsFileState(ctx.cwd, h).path),
         ),
-        { explicit: a !== "" },
+        await projectIo(ctx),
       );
       const pl = setPluginHabits(
         deps(ctx),
@@ -343,7 +345,8 @@ export async function habitsAfterInstall(
         true,
       );
       if (!changed) setHabitsOptOut(ctx.home, false, stamp(ctx));
-      if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
+      if (r.files.length > 0)
+        say(ctx, `Habits on in this folder: ${shown(ctx, r.files)}`);
       for (const p of pl.changed) say(ctx, pluginOn(p));
       for (const n of [...r.notes, ...pl.notes]) say(ctx, n);
       return {

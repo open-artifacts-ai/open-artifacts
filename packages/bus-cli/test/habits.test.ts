@@ -256,7 +256,12 @@ describe("install: disclosure", () => {
       "QUESTION FOR YOUR USER (ask them; don't answer it yourself)",
     );
     for (const l of HABITS_LINES) expect(out).toContain(l);
-    expect(out).toContain("Yes:  npx @open-artifacts/bus install --habits");
+    expect(out).toContain(
+      "Yes:  npx @open-artifacts/bus install --habits-project",
+    );
+    expect(out).toContain(
+      "All projects (invasive): npx @open-artifacts/bus install --habits",
+    );
     expect(out).toContain("No:   npx @open-artifacts/bus install --no-habits");
     expect(out).toContain("~/.claude/CLAUDE.md");
   });
@@ -283,12 +288,17 @@ describe("install: disclosure", () => {
   it("TTY: shows the lines, asks, and Enter means yes", async () => {
     const readLine = vi.fn(async () => "");
     const ctx = setup({ stdinIsTTY: true, readLine });
+    Object.assign(ctx, { cwd: tmp() });
     await install({ hub: HUB }, ctx);
     expect((readLine.mock.calls as unknown as string[][])[0]?.[0]).toContain(
       "Add them? [Y/n]",
     );
     expect(ctx.out().join("\n")).toContain(HABITS_LINES[0] as string);
-    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    // #2966: yes is this folder, not the person's global instructions.
+    expect(existsSync(claudeMd(ctx))).toBe(false);
+    expect(readFileSync(join(ctx.cwd, "CLAUDE.local.md"), "utf8")).toBe(
+      `${BLOCK}\n`,
+    );
   });
   it("TTY: n writes nothing and the opt-out survives a reinstall", async () => {
     const ctx = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
@@ -324,21 +334,24 @@ describe("install: disclosure", () => {
   });
   it("a reinstall with a changed block shows the difference and asks again", async () => {
     const ctx = setup();
+    Object.assign(ctx, { cwd: tmp() });
     await install({ hub: HUB }, ctx);
-    await install({ habits: "yes" }, ctx);
-    writeFileSync(
-      claudeMd(ctx),
-      readFileSync(claudeMd(ctx), "utf8").replace("under 140", "under 100"),
-    );
+    await install({ habits: "project" }, ctx);
+    const mine = join(ctx.cwd, "CLAUDE.local.md");
+    writeFileSync(mine, readFileSync(mine, "utf8").replace("under 140", "under 100"));
     const readLine = vi.fn(async () => "y");
     const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
-    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    Object.assign(again, {
+      userHome: ctx.userHome,
+      home: ctx.home,
+      cwd: ctx.cwd,
+    });
     await install({ hub: HUB }, again);
     const out = again.out().join("\n");
     expect(out).toContain("changed in this release");
     expect(out).toContain("under 100");
     expect(readLine).toHaveBeenCalledTimes(1);
-    expect(readFileSync(claudeMd(ctx), "utf8")).toBe(`${BLOCK}\n`);
+    expect(readFileSync(mine, "utf8")).toBe(`${BLOCK}\n`);
   });
   it("a current block is left alone without asking", async () => {
     const ctx = setup();

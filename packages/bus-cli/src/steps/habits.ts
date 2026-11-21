@@ -343,6 +343,21 @@ export type ProjectIo = {
   unexclude?: (line: string) => void;
 };
 
+/** The state of the project file the flow would write for `h` (#2966). */
+export function projectHabitsFileState(
+  cwd: string,
+  h: HabitsHarness,
+): BlockState & { path: string } {
+  const path = projectHabitsTarget(cwd, h);
+  try {
+    if (brokenLink(path)) return { state: "broken", path };
+    if (!existsSync(path)) return { state: "absent", path };
+    return { ...blockState(readFileSync(path, "utf8")), path };
+  } catch {
+    return { state: "broken", path };
+  }
+}
+
 /**
  * #2966: writes the block into each harness's per-project file. Never touches
  * a file git tracks (that is the person's, and a committed habits block is
@@ -850,21 +865,36 @@ export type HabitsQuestion = {
   lines: string[];
   /** Said under the lines: which harness gets none. */
   note: string;
+  /** #2966: per project (the default answer), global (explicit), and no. */
   yes: string;
   no: string;
+  /** For every session in every project on this machine: opt-in only. */
+  global?: string;
 };
 
 /** The last line of the question: omp gets no habit lines. */
 export const OMP_NOTE = "omp: not supported yet";
 
+/**
+ * #2966: the one place the wording lives, so Product can reword it without
+ * touching the flow. `yes` is the per-project install; global is its own line
+ * because it is the invasive one (every session in every project).
+ */
 export const habitsQuestion = (
   shownFiles: string[],
   bus: string = BUS_CMD,
 ): HabitsQuestion => {
-  const yes = `${bus} install --habits`;
+  const yes = `${bus} install --habits-project`;
   const no = `${bus} install --no-habits`;
-  const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
-  return { text, lines: HABITS_LINES.slice(), note: OMP_NOTE, yes, no };
+  const text = `The bus would add ${HABITS_LINES.length} habits to this project only, in ${shownFiles.join(" and ")}:`;
+  return {
+    text,
+    lines: HABITS_LINES.slice(),
+    note: OMP_NOTE,
+    yes,
+    no,
+    global: `${bus} install --habits`,
+  };
 };
 
 /** What a person sees in the terminal and the agent prints for its user. */
@@ -877,4 +907,5 @@ export const habitsQuestionLines = (q: HabitsQuestion): string[] => [
   `  ${q.note}`,
   `Yes:  ${q.yes}`,
   `No:   ${q.no}`,
+  ...(q.global ? [`All projects (invasive): ${q.global}`] : []),
 ];
