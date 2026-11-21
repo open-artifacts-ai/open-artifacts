@@ -248,7 +248,13 @@ async function run(
     if (name === "self") {
       const r = await request({ type: "self", row: true });
       if (r.type !== "agent") return failed(r);
-      return text(selfText(r.agent));
+      const entry = selfText(r.agent);
+      return text(
+        r.agent?.kind === "codex"
+          ? entry +
+              "\n\nBus messages arrive in this chat. This response does not count mail still at the hub."
+          : entry,
+      );
     }
     return text(`oa-bus: unknown tool ${name}`, true);
   } catch (e) {
