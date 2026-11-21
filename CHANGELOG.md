@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.239.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.1...v0.239.2) (2026-11-21)
+
+
+### Bug Fixes
+
+* **bus:** bundle @oa/shared/secrets from source, so the release can pack oa-bus ([#2993](https://github.com/open-artifacts-ai/open-artifacts/issues/2993)) ([a154673](https://github.com/open-artifacts-ai/open-artifacts/commit/a15467377593c189cb6ba02c0122688e1c65904c))
+
 ## [0.239.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.0...v0.239.1) (2026-11-21)
 
 
