@@ -257,12 +257,12 @@ describe("Share: the tick box", () => {
     await screen.findByRole("combobox", { name: "Invite role" });
     await typeBob("Editor");
     const box = await screen.findByRole("checkbox", {
-      name: "bob@example.com can ask my agents about this page",
+      name: "Bob can ask my agents about this page",
     });
     expect(box).not.toBeChecked();
     expect(
       screen.getByText(
-        /Without asking me each time, for 30 days\. My agents treat their words as a teammate.s, not mine/,
+        /Without asking me each time, for 30 days\. They treat Bob.s words as a teammate.s, not mine/,
       ),
     ).toBeInTheDocument();
     fireEvent.click(box);
@@ -371,6 +371,11 @@ describe("Share: the tick box", () => {
     expect(
       screen.queryByRole("checkbox", { name: /can ask my agents/ }),
     ).toBeNull();
+    expect(
+      await screen.findByText(
+        "No tick box while the page is open to guests or to anyone with the link. Requests there always ask you first.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("is not offered to a viewer", async () => {
@@ -378,6 +383,9 @@ describe("Share: the tick box", () => {
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
     await typeBob("Viewer");
+    expect(
+      await screen.findByText("No tick box: viewers can't mention agents."),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("checkbox", { name: /can ask my agents/ }),
     ).toBeNull();
@@ -393,6 +401,11 @@ describe("Share: the tick box", () => {
     expect(
       screen.queryByRole("checkbox", { name: /can ask my agents/ }),
     ).toBeNull();
+    expect(
+      await screen.findByText(
+        "No tick box: people outside your team can't ask your agents.",
+      ),
+    ).toBeInTheDocument();
   });
 });
 

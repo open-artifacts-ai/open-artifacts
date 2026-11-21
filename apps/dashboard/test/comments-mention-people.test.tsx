@@ -184,6 +184,98 @@ describe("@ lists people with the agents (#2770)", () => {
     expect((b as HTMLTextAreaElement).value).toBe("@Web (Sam) ");
   });
 
+  const THEIRS: ArtifactAgent[] = [
+    {
+      key: "a:pay",
+      name: "Payroll (Ana)",
+      online: true,
+      state: "online",
+      owner: "Ana",
+      askState: "off",
+    },
+    {
+      key: "a:web",
+      name: "Web (Sam)",
+      online: true,
+      state: "online",
+      owner: "Sam",
+      askState: "held",
+    },
+  ];
+
+  it("a held agent's mention shows who decides, under the box (#2577)", async () => {
+    serve(THEIRS);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@Web");
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(b, { key: "Enter" });
+    expect(
+      await within(c).findByText("Sam's agent answers once Sam allows it."),
+    ).toBeTruthy();
+    // Taking the mention out takes the line with it.
+    type(b, "hello");
+    expect(within(c).queryByText(/answers once Sam allows it/)).toBeNull();
+  });
+
+  it("an agent that is off offers 'Mention {owner} instead', which puts the person's name in the box (#2577)", async () => {
+    serve(THEIRS);
+    server.use(http.post(CAND, () => HttpResponse.json({ items: [] })));
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@Pay");
+    await within(c).findByRole("listbox");
+    fireEvent.mouseDown(await within(c).findByText("Mention Ana instead"));
+    expect((b as HTMLTextAreaElement).value).toBe("@Ana");
+  });
+
+  it("the hourly-limit notice becomes the design's line, and goes on typing (#2559)", async () => {
+    serve(THEIRS);
+    server.use(
+      http.post(CAND, () => HttpResponse.json({ items: [] })),
+      http.post(`*${R.comments(OWNED)}`, async ({ request }) => {
+        const { body } = (await request.json()) as { body: string };
+        const now = new Date().toISOString();
+        return HttpResponse.json({
+          id: "t_lim",
+          anchor: { kind: "note" },
+          version: 1,
+          status: "open",
+          resolvedBy: null,
+          resolvedAt: null,
+          createdAt: now,
+          comments: [
+            {
+              id: "c_lim",
+              body,
+              createdAt: now,
+              editedAt: null,
+              typed: true,
+              author: { kind: "user", name: "Ada", me: true },
+              can: { edit: true, delete: true },
+              notice: "That's a lot of mentions. Try again in a few minutes.",
+            },
+          ],
+        });
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const { c, b } = await box();
+    type(b, "@Web");
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(b, { key: "Enter" });
+    type(b, "@Web (Sam) one more thing");
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    expect(
+      await within(c).findByText(
+        /^You've asked Sam's agents 10 times this hour\. Try again at \d\d:\d\d, or mention Sam\.$/,
+      ),
+    ).toBeTruthy();
+    type(b, "x");
+    expect(within(c).queryByText(/You've asked Sam's agents/)).toBeNull();
+  });
+
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(

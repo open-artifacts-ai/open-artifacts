@@ -382,7 +382,9 @@ export function Delivery({
           className="flex items-center gap-1"
         >
           <PartyFace p={m} guest={guest} />
-          {problemLine(m.name, m.delivery, notified)}
+          {agentAskedAgent(c, m, notified)
+            ? AGENT_ASKS_LINE
+            : problemLine(m.name, m.delivery, notified)}
         </li>
       ))}
     </ul>
@@ -1607,6 +1609,79 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * dot when the name stem repeats among their own agents. Another member's
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
+/** #2577: the plain-text line when an agent's own comment names another person's agent. */
+export const AGENT_ASKS_LINE = "Agents can't ask other people's agents";
+
+/**
+ * An agent wrote the mention of another person's agent: the server never wakes
+ * it and the mention reads "gone". Matched by the author and the mention's
+ * persons, as the server sets them.
+ */
+function agentAskedAgent(
+  c: CommentT,
+  m: CommentMention,
+  notified: boolean,
+): boolean {
+  return (
+    !notified &&
+    c.author?.kind === "agent" &&
+    m.delivery === "gone" &&
+    !!m.for &&
+    m.for !== c.author?.for
+  );
+}
+
+/** #2577: the line under the box once a held agent is mentioned: its person decides first. */
+export const heldLine = (owner: string) =>
+  `${owner}'s agent answers once ${owner} allows it.`;
+
+/** The people whose held agents the draft names (each once, in order). */
+export function heldOwners(
+  agents: readonly ArtifactAgent[],
+  keys: readonly string[],
+): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    const a = agents.find((x) => x.key === k);
+    if (a?.owner && a.askState === "held" && !out.includes(a.owner))
+      out.push(a.owner);
+  }
+  return out;
+}
+
+/**
+ * #2559: the server posts the comment and answers with this notice when the
+ * sender's hourly limit (10) or a receiver's keeps an agent from being told.
+ * The text is the server's (TOO_MANY_MENTIONS); no error code is sent.
+ */
+const SERVER_TOO_MANY = "That's a lot of mentions. Try again in a few minutes.";
+const ASKS_PER_HOUR = 10;
+
+/** The notice on a comment POST's answer (a thread's first comment or a reply), if any. */
+export function noticeOf(r: unknown): string | undefined {
+  const o = r as {
+    notice?: unknown;
+    comments?: { notice?: unknown }[];
+  } | null;
+  const n = o?.notice ?? o?.comments?.[0]?.notice;
+  return typeof n === "string" ? n : undefined;
+}
+
+/** The limit line for `owner`, with the next full hour in the reader's time; null for any other notice. */
+export function rateLimitLine(
+  notice: string | undefined,
+  owner: string | undefined,
+  now = Date.now(),
+): string | null {
+  if (notice !== SERVER_TOO_MANY || !owner) return null;
+  const next = new Date(Math.floor(now / 3600_000) * 3600_000 + 3600_000);
+  const at = next.toLocaleTimeString("en-GB", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `You've asked ${owner}'s agents ${ASKS_PER_HOUR} times this hour. Try again at ${at}, or mention ${owner}.`;
+}
+
 /** #2577: what asking another person's agent does, in three plain states. */
 export function askLine(a: ArtifactAgent): string | null {
   if (!a.owner || !a.askState) return null;
@@ -1645,6 +1720,7 @@ export function MentionMenu({
   all = matches,
   active,
   onPick,
+  onMentionOwner,
 }: {
   id: string;
   matches: readonly ArtifactAgent[];
@@ -1652,6 +1728,8 @@ export function MentionMenu({
   all?: readonly ArtifactAgent[];
   active: number;
   onPick: (a: ArtifactAgent) => void;
+  /** #2577: an agent whose person turned asking off offers "Mention {owner} instead". */
+  onMentionOwner?: (a: ArtifactAgent) => void;
 }) {
   // #2577: with teammates' agents in the list, two labelled groups say whose is whose.
   const grouped = matches.some((a) => a.owner && a.askState);
@@ -1696,6 +1774,21 @@ export function MentionMenu({
               ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
               : stateText(a, all)}
         </span>
+        {a.askState === "off" && a.owner && onMentionOwner && (
+          <button
+            type="button"
+            data-mention-owner=""
+            tabIndex={-1}
+            className="cursor-pointer border-0 bg-transparent p-0 text-left font-medium text-[var(--oa-accent-fg)] underline"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onMentionOwner(a);
+            }}
+          >
+            Mention {a.owner} instead
+          </button>
+        )}
       </span>
     </div>
   );

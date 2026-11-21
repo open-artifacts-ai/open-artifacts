@@ -14,7 +14,7 @@ import { getResponse, type HttpHandler, HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { allowedText, endDate, leftoverText } from "../src/foryou/held";
 import { agentAsksOn, forYouVariant } from "../src/mockForYou";
-import { MentionMenu } from "../src/viewer/comments/asks";
+import { Delivery, MentionMenu } from "../src/viewer/comments/asks";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -663,5 +663,58 @@ describe("the @ list", () => {
     expect(onPick).not.toHaveBeenCalled();
     fireEvent.mouseDown(screen.getByRole("option", { name: /Web/ }));
     expect(onPick).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("#2577 asker lines", () => {
+  it("heldLine, rateLimitLine and noticeOf use the design's words", async () => {
+    const m = await import("../src/viewer/comments/asks");
+    expect(m.heldLine("Sam")).toBe("Sam's agent answers once Sam allows it.");
+    const note = "That's a lot of mentions. Try again in a few minutes.";
+    expect(
+      m.rateLimitLine(note, "Sam", Date.parse("2026-11-20T10:20:00Z")),
+    ).toMatch(
+      /^You've asked Sam's agents 10 times this hour\. Try again at \d\d:\d\d, or mention Sam\.$/,
+    );
+    expect(m.rateLimitLine("something else", "Sam")).toBeNull();
+    expect(m.rateLimitLine(undefined, "Sam")).toBeNull();
+    expect(m.noticeOf({ comments: [{ notice: note }] })).toBe(note);
+    expect(m.noticeOf({ comments: [{}] })).toBeUndefined();
+    expect(m.AGENT_ASKS_LINE).toBe("Agents can't ask other people's agents");
+  });
+
+  it("an agent's mention of another person's agent reads as plain text with the line", () => {
+    const c = (author: object) =>
+      ({
+        id: "c1",
+        body: "@Web (Sam) hi",
+        createdAt: new Date().toISOString(),
+        editedAt: null,
+        typed: false,
+        can: { edit: false, delete: false },
+        author,
+        mentions: [
+          {
+            key: "agent:web",
+            name: "Web (Sam)",
+            for: "Sam",
+            delivery: "gone",
+          },
+        ],
+      }) as unknown as Parameters<typeof Delivery>[0]["c"];
+    const { unmount } = render(
+      <Delivery
+        c={c({ kind: "agent", name: "Docs", for: "Dev", me: false })}
+      />,
+    );
+    expect(
+      screen.getByText("Agents can't ask other people's agents"),
+    ).toBeInTheDocument();
+    unmount();
+    // A person's own mention keeps the old sentence.
+    render(<Delivery c={c({ kind: "user", name: "Dev", me: false })} />);
+    expect(
+      screen.queryByText("Agents can't ask other people's agents"),
+    ).toBeNull();
   });
 });

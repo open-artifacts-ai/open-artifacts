@@ -50,6 +50,8 @@ import {
   DeliveryFaces,
   type Extras,
   extrasBody,
+  heldLine,
+  heldOwners,
   MentionChips,
   MentionedText,
   MentionMenu,
@@ -59,6 +61,8 @@ import {
   needsMe,
   newProblems,
   nextAskFor,
+  noticeOf,
+  rateLimitLine,
   removeMention,
   showsAskBody,
 } from "./asks";
@@ -529,6 +533,8 @@ function Composer({
   const [open, setOpen] = useState(alwaysOpen);
   const [grown, setGrown] = useState(false);
   const [error, setError] = useState<unknown>(seed?.error ?? null);
+  // #2559: the sender's hourly limit held a request back; the comment itself posted.
+  const [limit, setLimit] = useState<string | null>(null);
   const mounted = useRef(true);
   // A seed is used up when a box takes it: at mount it is the starting text; a
   // later one (the post failed while this box was already on screen again)
@@ -637,6 +643,17 @@ function Composer({
   const activeIdx =
     matches[activeOpt]?.askState === "off" ? Math.max(firstOk, 0) : activeOpt;
   const pickedAt = useRef<number | null>(null);
+  // #2577: "Mention {owner} instead": the typed @ becomes the person's name, whose row then shows in the list.
+  const mentionOwner = (a: ArtifactAgent) => {
+    if (!a.owner) return;
+    const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
+    const next = `${before}@${a.owner}`;
+    setText(`${next}${text.slice(caret)}`);
+    setCaret(next.length);
+    setMenuOff(false);
+    setActiveOpt(0);
+    pickedAt.current = next.length;
+  };
   const pick = (a: ArtifactAgent) => {
     // #2577: its person turned asking off; a mention would be refused.
     if (a.askState === "off") return;
@@ -728,6 +745,7 @@ function Composer({
     if (!canSend || once.current) return;
     once.current = true;
     setError(null);
+    setLimit(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
       const keys = mentionedKeys(body, pool);
@@ -738,6 +756,11 @@ function Composer({
       // People go by id, apart from agents.
       const people = peopleIds(keys);
       const pictureRefs = withPictures ? pics.refs : [];
+      const owners = heldOwners(pool, keys);
+      const told = (r: unknown) => {
+        const line = rateLimitLine(noticeOf(r), owners[0]);
+        if (line && mounted.current) setLimit(line);
+      };
       if (instant) {
         // Clear now; the empty box is what stops a double submit, so the next
         // post can start while this one is on its way.
@@ -748,11 +771,13 @@ function Composer({
         }, 0);
         const was = withPictures ? pics.take() : [];
         try {
-          await onSubmit(body, {
-            mentions,
-            ...(people.length ? { people } : {}),
-            ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
-          });
+          told(
+            await onSubmit(body, {
+              mentions,
+              ...(people.length ? { people } : {}),
+              ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+            }),
+          );
         } catch (e) {
           // Never lose typed text: it goes back in front of anything typed since.
           if (mounted.current) {
@@ -764,11 +789,13 @@ function Composer({
         return;
       }
       setBusy(true);
-      await onSubmit(body, {
-        mentions,
-        ...(people.length ? { people } : {}),
-        ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
-      });
+      told(
+        await onSubmit(body, {
+          mentions,
+          ...(people.length ? { people } : {}),
+          ...(pictureRefs.length ? { pictures: pictureRefs } : {}),
+        }),
+      );
       setText("");
       if (withPictures) pics.take();
       if (!alwaysOpen) setOpen(false);
@@ -887,6 +914,7 @@ function Composer({
           }}
           onChange={(e) => {
             setText(e.target.value);
+            setLimit(null);
             setCaret(e.target.selectionStart);
             setMenuOff(false);
             setActiveOpt(0);
@@ -1002,6 +1030,7 @@ function Composer({
           all={agents}
           active={activeIdx}
           onPick={pick}
+          onMentionOwner={mentionOwner}
         />
       )}
       {found && atCap && (
@@ -1016,6 +1045,20 @@ function Composer({
           agents={pool}
           onRemove={(a) => setText((t) => removeMention(t, a.name, pool))}
         />
+      )}
+      {heldOwners(pool, mentionedNow).map((o) => (
+        <p key={o} data-held-line="" className={`${TXT} text-muted-foreground`}>
+          {heldLine(o)}
+        </p>
+      ))}
+      {limit && (
+        <p
+          role="status"
+          data-rate-limit=""
+          className={`${TXT} text-muted-foreground`}
+        >
+          {limit}
+        </p>
       )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
