@@ -35,6 +35,7 @@ import {
   writeHabits,
   writeProjectHabits,
 } from "../steps/habits.ts";
+import { readInstallFile, updateInstallFile } from "../steps/step.ts";
 
 /** What a person reads once a plugin's habits are on or off. */
 export const pluginOn = (p: PluginHarness) =>
@@ -192,6 +193,52 @@ function disclosure(
  * created that would need it, since a tracked file cannot be told apart either,
  * so a git-less folder writes its AGENTS.md and says so).
  */
+/**
+ * #2966 (Product's call): project habits belong at the top of a git work tree,
+ * never in $HOME and never in a folder that is not a repository.
+ */
+async function isRepoTop(ctx: Ctx): Promise<{ root: string } | "home" | "no"> {
+  if (!ctx.which("git")) return "no";
+  const r = await ctx
+    .exec("git", ["-C", ctx.cwd, "rev-parse", "--show-toplevel"], {
+      timeoutMs: 5000,
+    })
+    .catch(() => undefined);
+  if (r?.code !== 0) return "no";
+  const root = realpathOr(r.stdout.trim());
+  // Never $HOME, even when home is a repository: a block there reaches every
+  // project under it through the harnesses that walk parent folders.
+  if (root === realpathOr(ctx.userHome)) return "home";
+  return { root };
+}
+
+/** The harnesses already told "per project is not possible here", per bus home. */
+const readBlocked = (busHome: string): string[] => {
+  const raw = (readInstallFile(join(busHome, "install.json")).habits ?? {}) as {
+    projectBlocked?: unknown;
+  };
+  return Array.isArray(raw.projectBlocked)
+    ? raw.projectBlocked.filter((h): h is string => typeof h === "string")
+    : [];
+};
+const saveBlocked = (busHome: string, list: string[]): void => {
+  updateInstallFile(join(busHome, "install.json"), {
+    habits: {
+      ...(readInstallFile(join(busHome, "install.json")).habits ?? {}),
+      projectBlocked: list,
+    },
+  });
+};
+
+/** A path as the OS sees it, or as given when it does not exist. */
+const realpathOr = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
 export async function projectIo(ctx: Ctx): Promise<ProjectIo> {
   if (!ctx.which("git")) return {};
   const git = (args: string[]) =>
@@ -267,9 +314,19 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     );
     return none;
   }
-  const io = await projectIo(ctx);
+  const repo = await isRepoTop(ctx);
+  if (repo === "home" || repo === "no") {
+    say(
+      ctx,
+      repo === "home"
+        ? "This is your home folder, not a project: habits written here would reach every project under it. Run this at the top of a project instead."
+        : "This folder is not inside a git repository, so there is no project to write to. Run this inside a project.",
+    );
+    return none;
+  }
+  const io = await projectIo({ ...ctx, cwd: repo.root } as Ctx);
   const r = writeProjectHabits(
-    { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
+    { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: repo.root },
     targets,
     io,
   );
@@ -335,9 +392,43 @@ export async function habitsAfterInstall(
   if (habitsOptedOut(ctx.home))
     return { ...none, state: "off", question: null };
   if (targets.length === 0 && plugins.length === 0) return none;
+  // #2966: ~ is not a project. Writing AGENTS.md there would reach every
+  // project under home through pi and the others that walk parent folders.
+  const repoTop = await isRepoTop(ctx);
+  const folder =
+    repoTop === "home" || repoTop === "no" ? ctx.cwd : repoTop.root;
+  // A target git tracks is not ours to write; asking for it would be a Yes that
+  // does nothing, on every install.
+  const io = await projectIo({ ...ctx, cwd: folder } as Ctx);
+  const nameOf = (h: HabitsHarness) =>
+    io.rel?.(PROJECT_HABITS_FILE[h]) ?? PROJECT_HABITS_FILE[h];
+  const writable = targets.filter((h) => io.tracked?.(nameOf(h)) !== true);
+  const blocked = targets.filter((h) => io.tracked?.(nameOf(h)) === true);
+  // #2966 (Product's call): someone whose global block is already on has
+  // decided. Do not ask again in every folder, keep that block fresh, and
+  // offer the move to per project once, in words.
+  const globalOn = targets
+    .map((h) => habitsFileState(deps(ctx), h))
+    .filter((st) => st.state === "current" || st.state === "changed");
+  if (globalOn.length > 0) {
+    const stale = targets.filter(
+      (h) => habitsFileState(deps(ctx), h).state === "changed",
+    );
+    if (stale.length > 0) writeHabits(deps(ctx), stale, { explicit: true });
+    say(
+      ctx,
+      "Habits are on for every project on this machine. To keep them here only, run install --habits-project in this folder and install --no-habits for the global ones.",
+    );
+    return {
+      ...none,
+      state: "on",
+      files: targets.map((h) => habitsFileState(deps(ctx), h).path),
+      question: null,
+    };
+  }
   const states: { path: string; label?: string; s: BlockState }[] = [
-    ...targets.map((h) => {
-      const st = projectHabitsFileState(ctx.cwd, h);
+    ...writable.map((h) => {
+      const st = projectHabitsFileState(folder, h);
       return { path: st.path, s: st as BlockState };
     }),
     // A plugin has no block to compare: its marker is there ("current") or not.
@@ -355,12 +446,47 @@ export async function habitsAfterInstall(
     return { ...none, state: "on", files: have, question: null };
   const changed = pending.some((p) => p.s.state === "changed");
   const state = changed ? "changed" : "undecided";
+  // #2966 (Product's call): only at the top of a git work tree, never $HOME.
+  if (repoTop === "home" || repoTop === "no") {
+    const why =
+      repoTop === "home"
+        ? "This is your home folder, not a project: habits written here would reach every project under it. Run the install at the top of a project instead."
+        : "This folder is not inside a git repository, so there is no project to write the habits to.";
+    if (ctx.stdinIsTTY && ctx.readLine && !json) {
+      say(ctx, why);
+      return { ...none, state, files: have, question: null };
+    }
+    // No terminal: the reason rides in the question, so an install that writes
+    // nothing still says why.
+    const q = habitsQuestion(
+      pending.map((p) => p.label ?? one(ctx, p.path)),
+      json ? BUS_CMD : ctx.busCmd,
+    );
+    q.note = `${why} ${q.note}`;
+    return { ...none, state, files: have, question: q };
+  }
   const asked = pending.map((p) => p.path);
   const question = habitsQuestion(
     pending.map((p) => p.label ?? one(ctx, p.path)),
     // --json goes to an agent that may hand the commands to its user's own shell.
     json ? BUS_CMD : ctx.busCmd,
   );
+  if (blocked.length > 0) {
+    const said = readBlocked(ctx.home);
+    const fresh = blocked.filter((h) => !said.includes(h));
+    if (fresh.length > 0) {
+      question.note = `${fresh.join(", ")} read this project's AGENTS.md, but git tracks it, so the habits cannot go there without committing them. ${
+        question.note
+      }`;
+      saveBlocked(ctx.home, [...said, ...fresh]);
+    }
+  }
+  if (plugins.length > 0)
+    question.note = `${question.note} The ${plugins
+      .map((p) => p.label)
+      .join(
+        ", ",
+      )} plugin carries them machine-wide; change that with install --habits and --no-habits.`;
   if (ctx.stdinIsTTY && ctx.readLine && !json) {
     say(ctx, "", disclosure(ctx, pending));
     // A symlink out of the home (a dotfiles or repo file) needs a typed yes: Enter is no.
@@ -383,21 +509,24 @@ export async function habitsAfterInstall(
     }
     if (a === "" || a === "y" || a === "yes") {
       const r = writeProjectHabits(
-        { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: ctx.cwd },
-        targets.filter((h) =>
-          asked.includes(projectHabitsFileState(ctx.cwd, h).path),
+        { home: ctx.userHome, env: ctx.env, busHome: ctx.home, cwd: folder },
+        writable.filter((h) =>
+          asked.includes(projectHabitsFileState(folder, h).path),
         ),
-        await projectIo(ctx),
+        io,
       );
-      const pl = setPluginHabits(
-        deps(ctx),
-        plugins.filter((p) =>
-          asked.includes(join(p.dir(ctx.userHome, ctx.env), p.marker)),
-        ),
-        true,
-      );
+      // #2966/#2998: plugin habits are machine-wide, so a yes to "this project
+      // only" must not turn them on. Said, not done.
+      const pl = { changed: [], notes: [], pluginFiles: [], incomplete: false };
       if (!changed) setHabitsOptOut(ctx.home, false, stamp(ctx));
       if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
+      // Product's call: the plugin harnesses are machine-wide, so a yes that
+      // means "this project only" does not touch them.
+      if (plugins.length > 0)
+        say(
+          ctx,
+          `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide, so it was left as it is. Change it with install --habits and --no-habits.`,
+        );
       for (const p of pl.changed) say(ctx, pluginOn(p));
       for (const n of [...r.notes, ...pl.notes]) say(ctx, n);
       return {

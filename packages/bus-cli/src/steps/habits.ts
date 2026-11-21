@@ -326,7 +326,8 @@ export const projectHabitsTarget = (cwd: string, h: HabitsHarness): string =>
  * called `[x]` or `a*b` matches the file and not something else.
  */
 export const gitignoreLiteral = (path: string): string =>
-  path.replace(/[\\*?[\]!]/g, (c) => `\\${c}`);
+  // Spaces are escaped as well: git ignores a trailing one unless it is.
+  path.replace(/[\\*?[\]! ]/g, (c) => `\\${c}`);
 
 /** One line this install added to a repository's exclude file. */
 export type ExcludeEntry = {
@@ -493,19 +494,18 @@ export function removeProjectHabits(
   for (const [path, rec] of Object.entries(cur.files)) {
     if (only !== undefined && !only(path)) continue;
     try {
-      if (brokenLink(path) || !existsSync(path)) {
+      // Nothing of ours is in that file any more: the person removed it, or
+      // the block with it. Its exclude line goes too, or it would hide a file
+      // they create later.
+      if (brokenLink(path) || !existsSync(path) || isLink(path)) {
         delete kept[path];
-        continue;
-      }
-      // A path the person has since made a link is theirs now.
-      if (isLink(path)) {
-        notes.push(`Left ${path} alone: it is now a symlink.`);
-        delete kept[path];
+        cleaned.add(path);
         continue;
       }
       const before = readFileSync(path, "utf8");
       if (blockState(before).state === "absent") {
         delete kept[path];
+        cleaned.add(path);
         continue;
       }
       const after = withHabits(before, null, rec?.added);

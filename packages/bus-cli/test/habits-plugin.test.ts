@@ -235,8 +235,33 @@ const hermesOnly = (over = {}) => {
     ...over,
   };
 };
+/** #2966: project habits need a git work tree; this ctx's cwd is its root. */
+const asRepo = (ctx: ReturnType<typeof fakeCtx>) => {
+  Object.assign(ctx, { cwd: mkdtempSync(join(tmpdir(), "ob-hp-proj-")) });
+  const base = ctx.which;
+  Object.assign(ctx, { which: (c: string) => c === "git" || base(c) });
+  const prev = ctx.exec;
+  Object.assign(ctx, {
+    exec: vi.fn(async (cmd: string, args: string[], opts?: unknown) => {
+      if (cmd !== "git") return prev(cmd, args, opts as never);
+      if (args.includes("--show-toplevel"))
+        return { code: 0, stdout: `${ctx.cwd}\n`, stderr: "" };
+      if (args.includes("--show-prefix"))
+        return { code: 0, stdout: "", stderr: "" };
+      if (args.includes("--git-path"))
+        return {
+          code: 0,
+          stdout: join(ctx.cwd, ".git", "info", "exclude"),
+          stderr: "",
+        };
+      if (args.includes("ls-files")) return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    }),
+  });
+  return ctx;
+};
 const setup = (over = {}, tty = false) => {
-  const ctx = fakeCtx(hermesOnly(over), tty);
+  const ctx = asRepo(fakeCtx(hermesOnly(over), tty));
   mkdirSync(ctx.home, { recursive: true });
   writeFileSync(
     join(ctx.home, "machine.json"),
@@ -328,10 +353,12 @@ describe("install and uninstall with Hermes", () => {
     expect(code).toBe(0);
     expect(ctx.out().join("\n")).toContain("Habits off");
   });
-  it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
+  it("TTY yes writes the project, not the machine-wide plugin; no opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
     await install({ hub: HUB }, yes);
-    expect(existsSync(marker(yes))).toBe(true);
+    // #2966 (Product): the plugin is machine-wide, so a per-project yes leaves it.
+    expect(existsSync(marker(yes))).toBe(false);
+    expect(yes.out().join("\n")).toContain("machine-wide");
     const no = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
     await install({ hub: HUB }, no);
     expect(existsSync(marker(no))).toBe(false);

@@ -4,6 +4,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
@@ -248,12 +249,48 @@ const claudeOnly = (over = {}) => ({
   ),
   ...over,
 });
+/**
+ * #2966: project habits live at the top of a git work tree, so a test context
+ * has to answer git: its cwd is the repository root here.
+ */
+const asRepo = (
+  ctx: ReturnType<typeof fakeCtx>,
+  cwd?: string,
+  top?: string | "no",
+) => {
+  Object.assign(ctx, { cwd: cwd ?? mkdtempSync(join(tmpdir(), "ob-proj-")) });
+  const base = ctx.which;
+  Object.assign(ctx, { which: (c: string) => c === "git" || base(c) });
+  const prev = ctx.exec;
+  Object.assign(ctx, {
+    exec: vi.fn(async (cmd: string, args: string[], opts?: unknown) => {
+      if (cmd !== "git") return prev(cmd, args, opts as never);
+      if (top === "no") return { code: 1, stdout: "", stderr: "" };
+      const root = top ?? ctx.cwd;
+      if (args.includes("--show-toplevel"))
+        return { code: 0, stdout: `${root}\n`, stderr: "" };
+      if (args.includes("--show-prefix"))
+        return {
+          code: 0,
+          stdout: ctx.cwd === root ? "" : `${relative(root, ctx.cwd)}/`,
+          stderr: "",
+        };
+      if (args.includes("--git-path"))
+        return {
+          code: 0,
+          stdout: join(root, ".git", "info", "exclude"),
+          stderr: "",
+        };
+      if (args.includes("ls-files")) return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    }),
+  });
+  return ctx;
+};
 const setup = (over = {}, tty = false) => {
   const ctx = fakeCtx(claudeOnly(over), tty);
   approvedHome(ctx);
-  // #2966: the habits land in the project, so every ctx needs a real folder.
-  Object.assign(ctx, { cwd: mkdtempSync(join(tmpdir(), "ob-proj-")) });
-  return ctx;
+  return asRepo(ctx);
 };
 const projectMd = (ctx: ReturnType<typeof fakeCtx>) =>
   join(ctx.cwd, "CLAUDE.local.md");
@@ -350,12 +387,11 @@ describe("install: disclosure", () => {
       readFileSync(projectMd(ctx), "utf8").replace("under 140", "under 100"),
     );
     const readLine = vi.fn(async () => "y");
-    const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
-    Object.assign(again, {
-      userHome: ctx.userHome,
-      home: ctx.home,
-      cwd: ctx.cwd,
-    });
+    const again = asRepo(
+      fakeCtx(claudeOnly({ stdinIsTTY: true, readLine })),
+      ctx.cwd,
+    );
+    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
     await install({ hub: HUB }, again);
     const out = again.out().join("\n");
     expect(out).toContain("changed in this release");
@@ -543,22 +579,14 @@ describe("review fixes (#1638)", () => {
     symlinkSync(real, claudeMd(ctx));
 
     // #2966: the default install writes this folder's file, not the global one.
-    const plain = fakeCtx(claudeOnly());
-    Object.assign(plain, {
-      userHome: ctx.userHome,
-      home: ctx.home,
-      cwd: ctx.cwd,
-    });
+    const plain = asRepo(fakeCtx(claudeOnly()), ctx.cwd);
+    Object.assign(plain, { userHome: ctx.userHome, home: ctx.home });
     await install({ hub: HUB }, plain);
     expect(readFileSync(real, "utf8")).toBe("repo\n");
 
     // The explicit choice still goes global, names the target and writes through.
-    const yes = fakeCtx(claudeOnly());
-    Object.assign(yes, {
-      userHome: ctx.userHome,
-      home: ctx.home,
-      cwd: ctx.cwd,
-    });
+    const yes = asRepo(fakeCtx(claudeOnly()), ctx.cwd);
+    Object.assign(yes, { userHome: ctx.userHome, home: ctx.home });
     await install({ habits: "yes" }, yes);
     expect(yes.out().join("\n")).toContain(
       `(symlink to ${real}, outside your home)`,
@@ -574,12 +602,8 @@ describe("review fixes (#1638)", () => {
     writeFileSync(real, "repo\n");
     mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
     symlinkSync(real, claudeMd(ctx));
-    const again = fakeCtx(claudeOnly());
-    Object.assign(again, {
-      userHome: ctx.userHome,
-      home: ctx.home,
-      cwd: ctx.cwd,
-    });
+    const again = asRepo(fakeCtx(claudeOnly()), ctx.cwd);
+    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
     await install({ hub: HUB }, again);
     // #2966: the question is about this folder now, and the global file is
     // never written by the default install.
@@ -1086,5 +1110,90 @@ describe("per-project off switch (#2966)", () => {
     });
     expect(await habitsCommand("project-off", ctx)).toBe(0);
     expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
+  });
+});
+
+describe("per-project habits: the product calls (#2966)", () => {
+  const project = () => mkdtempSync(join(tmpdir(), "ob-call-"));
+  const depsFor = (cwd: string) => {
+    const home = project();
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    writeFileSync(join(busHome, "install.json"), "{}");
+    return { home, busHome, cwd };
+  };
+  const git = (top: string, excludeFile: string, tracked: string[] = []) => ({
+    excludeFile,
+    io: {
+      rel: (n: string) => n,
+      tracked: (rel: string) => tracked.includes(rel),
+      excludeFile,
+      exclude: (line: string) => {
+        let cur: string[] = [];
+        try {
+          cur = readFileSync(excludeFile, "utf8").split("\n");
+        } catch {
+          mkdirSync(join(excludeFile, ".."), { recursive: true });
+        }
+        if (cur.includes(line)) return false;
+        writeFileSync(excludeFile, `${cur.join("\n")}${line}\n`);
+        return true;
+      },
+    },
+    top,
+  });
+
+  it("releases the exclude line when the person deleted the habits file", () => {
+    const d = depsFor(project());
+    const g = git(d.cwd, join(project(), "info", "exclude"));
+    writeProjectHabits(d, ["codex"], g.io);
+    expect(readFileSync(g.excludeFile, "utf8")).toContain("/AGENTS.md");
+    rmSync(join(d.cwd, "AGENTS.md"));
+    removeProjectHabits(d);
+    // Gone from the record and from git's ignore list: a new AGENTS.md of
+    // theirs must not be hidden.
+    expect(readFileSync(g.excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("keeps the exclude line when the block could not be taken out", () => {
+    const d = depsFor(project());
+    const g = git(d.cwd, join(project(), "info", "exclude"));
+    writeProjectHabits(d, ["codex"], g.io);
+    // A block with no END marker: ours to leave alone, and still in the file.
+    writeFileSync(join(d.cwd, "AGENTS.md"), `${HABITS_BEGIN}\nhalf a block\n`);
+    const r = removeProjectHabits(d);
+    expect(r.notes.join("\n")).toMatch(/END marker/);
+    expect(readFileSync(g.excludeFile, "utf8")).toContain("/AGENTS.md");
+  });
+
+  it("writes at the repository top when run from a subfolder, and nothing outside one", async () => {
+    const top = project();
+    const sub = join(top, "apps", "x");
+    mkdirSync(sub, { recursive: true });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), sub, top);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    expect(await habitsCommand("project", ctx)).toBe(0);
+    expect(existsSync(join(top, "CLAUDE.local.md"))).toBe(true);
+    expect(existsSync(join(sub, "CLAUDE.local.md"))).toBe(false);
+
+    // Outside a repository: nothing written, and it says why.
+    const outside = asRepo(fakeCtx(claudeOnly({}), false), undefined, "no");
+    approvedHome(outside);
+    await install({ hub: HUB }, outside);
+    expect(await habitsCommand("project", outside)).toBe(1);
+    expect(outside.out().join("\n")).toMatch(/not inside a git repository/);
+  });
+
+  it("never writes in the home folder", async () => {
+    const home = project();
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), home, home);
+    Object.assign(ctx, { userHome: home });
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await habitsCommand("project", ctx);
+    expect(existsSync(join(home, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(home, "CLAUDE.local.md"))).toBe(false);
+    expect(ctx.out().join("\n")).toMatch(/home folder, not a project/);
   });
 });
