@@ -2,7 +2,7 @@
 // --habits / --no-habits / --show-habits commands. The block itself, and the
 // files it goes in, are steps/habits.ts.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
@@ -290,10 +290,19 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
  * install default to per project: without it the only way out is uninstall.
  */
 export function habitsProjectOff(ctx: Ctx): number {
-  const cwd = resolve(ctx.cwd);
+  // Real paths on both sides: the same folder through a symlinked path
+  // (/tmp vs /private/tmp) is the same folder, and install recorded the other.
+  const real = (p: string): string => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return resolve(p);
+    }
+  };
+  const cwd = real(ctx.cwd);
   const r = removeProjectHabits(
     { home: ctx.userHome, env: ctx.env, busHome: ctx.home },
-    (path) => dirname(path) === cwd,
+    (path) => dirname(real(path)) === cwd,
   );
   if (r.files.length === 0 && r.notes.length === 0) {
     say(ctx, `No bus habits here to remove in ${tilde(ctx, cwd)}.`);
