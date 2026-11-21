@@ -7,6 +7,7 @@ import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
+import { createPat } from "../../src/auth/pat.js";
 import { BusHub } from "../../src/bus/hub.js";
 import {
   RUN_VERSION_KEY,
@@ -319,5 +320,69 @@ describe("pause (#2552)", () => {
     expect((await read(owner.cookie, true)).updatesPaused).toBe(false);
     const other = await member("member");
     expect("updatesPaused" in (await read(other.cookie, true))).toBe(false);
+  });
+
+  it("PUT R.busUpdatesPaused refuses an admin, a member, a guest, a PAT and anonymous, writing nothing (#2980)", async () => {
+    const put = (auth: string | null, body: unknown) =>
+      api(app, R.busUpdatesPaused, auth, { method: "PUT", body });
+    const owner = await member("owner");
+    const since = Date.now();
+    for (const role of ["admin", "member", "guest"] as const) {
+      const who = await member(role);
+      expect((await put(who.cookie, { paused: true })).status, role).toBe(404);
+    }
+    const { token } = await createPat(e, owner.userId, "agent");
+    expect((await put(token, { paused: true })).status).toBe(404);
+    expect((await put(null, { paused: true })).status).toBe(401);
+    // A cookie that also carries a bearer is not a person in a browser.
+    const mixed = await api(app, R.busUpdatesPaused, owner.cookie, {
+      method: "PUT",
+      headers: { authorization: `Bearer ${token}` },
+      body: { paused: true },
+    });
+    expect([401, 404]).toContain(mixed.status);
+    expect(await getKey(UPDATES_PAUSED_KEY)).toBeNull();
+    const rows = (
+      await e.DB.prepare(
+        "select actor_id from audit_events where at >= ? and action = 'bus.updates_paused.set'",
+      )
+        .bind(since)
+        .all<{ actor_id: string }>()
+    ).results;
+    expect(rows).toEqual([]);
+  });
+
+  it("GET R.busMachines answers the owner's own PAT with the machines and no pause state (#2980)", async () => {
+    const owner = await member("owner");
+    const { token } = await createPat(e, owner.userId, "agent");
+    // The token reads the list; only the browser session is told the switch.
+    const viaToken = (await (
+      await api(app, R.busMachines, token, {
+        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+      })
+    ).json()) as { machines: unknown[]; updatesPaused?: boolean };
+    expect(Object.keys(viaToken)).toEqual(["machines"]);
+    expect(viaToken.updatesPaused).toBeUndefined();
+    // And with a pause on, the same token still sees no state.
+    await api(app, R.busUpdatesPaused, owner.cookie, {
+      method: "PUT",
+      body: { paused: true },
+    });
+    const again = (await (
+      await api(app, R.busMachines, token, {
+        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+      })
+    ).json()) as { updatesPaused?: boolean };
+    expect("updatesPaused" in again).toBe(false);
+    const mine = (await (
+      await api(app, R.busMachines, owner.cookie, {
+        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+      })
+    ).json()) as { updatesPaused?: boolean };
+    expect(mine.updatesPaused).toBe(true);
+    await api(app, R.busUpdatesPaused, owner.cookie, {
+      method: "PUT",
+      body: { paused: false },
+    });
   });
 });
