@@ -895,116 +895,6 @@ describe("per-project habits (#2966)", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it("removes only from recorded paths, never a teammate's committed block (#2998 review 7)", () => {
-    const cwd = project();
-    writeProjectHabits(depsFor(cwd), ["codex"]);
-    // Someone else's project elsewhere, with a block of its own.
-    const other = project();
-    writeFileSync(
-      join(other, "AGENTS.md"),
-      `${HABITS_BEGIN}\ntheir copy\n${HABITS_END}\n`,
-    );
-    removeProjectHabits({
-      home: project(),
-      busHome: join(project(), ".oa-bus"),
-    });
-    expect(readFileSync(join(other, "AGENTS.md"), "utf8")).toContain(
-      "their copy",
-    );
-  });
-
-  it("real git: the exclude file is the common dir's, and the line carries the subfolder (#2998 A)", async () => {
-    // A main repo, a linked worktree, and a subfolder inside the worktree.
-    const main = project();
-    const git = async (cwd: string, args: string[]) => {
-      const { execFile } = await import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile("git", args, { cwd }, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    expect((await git(main, ["init", "-q"])).code).toBe(0);
-    await git(main, ["config", "user.email", "t@x.com"]);
-    await git(main, ["config", "user.name", "t"]);
-    writeFileSync(join(main, "README.md"), "# x\n");
-    await git(main, ["add", "."]);
-    await git(main, ["commit", "-qm", "one"]);
-    const wt = join(project(), "wt");
-    expect(
-      (await git(main, ["worktree", "add", "-q", wt, "-b", "b1"])).code,
-    ).toBe(0);
-    const sub = join(wt, "apps", "x");
-    mkdirSync(sub, { recursive: true });
-
-    const realExec = (cmd: string, args: string[]) => {
-      const { execFile } =
-        require("node:child_process") as typeof import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile(cmd, args, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    const ctx = {
-      cwd: sub,
-      which: (c: string) => c === "git",
-      exec: realExec,
-    } as unknown as Parameters<typeof projectIo>[0];
-
-    const io = await projectIo(ctx);
-    expect(io.excludeFile).toBe(join(main, ".git", "info", "exclude"));
-    expect(io.rel?.("AGENTS.md")).toBe("apps/x/AGENTS.md");
-
-    // A real write, then git itself agrees the file is ignored.
-    writeProjectHabits({ ...depsFor(sub, project()), cwd: sub }, ["codex"], io);
-    expect(readFileSync(io.excludeFile as string, "utf8")).toContain(
-      "/apps/x/AGENTS.md",
-    );
-    // From the folder itself, git agrees the file is ignored by that line.
-    const ignored = await git(sub, ["check-ignore", "-q", "AGENTS.md"]);
-    expect(ignored.code).toBe(0);
-  });
-
-  it("the command reports a failed run as exit 1 and writes nothing (#2998 C)", async () => {
-    const gone = join(project(), "does-not-exist");
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: gone });
-    expect(await habitsCommand("project", ctx)).toBe(1);
-    expect(existsSync(join(gone, "CLAUDE.local.md"))).toBe(false);
-  });
-
-  it("the command never turns on the machine-wide plugin habits (#2998 C)", async () => {
-    // A real install with only Hermes wired: the plugin is configured (files
-    // match the shipped copy) and its habits marker is absent.
-    const ctx = fakeCtx(
-      {
-        which: (c: string) => c === "hermes",
-        exec: vi.fn(async (_c: string, args: string[]) =>
-          args[1] === "list"
-            ? {
-                code: 0,
-                stdout: JSON.stringify([{ name: "oa-bus", status: "enabled" }]),
-                stderr: "",
-              }
-            : { code: 0, stdout: "", stderr: "" },
-        ),
-      },
-      false,
-    );
-    approvedHome(ctx);
-    await install({ hub: HUB }, ctx);
-    Object.assign(ctx, { cwd: project() });
-    const dir = hermesPluginDir(ctx.userHome, ctx.env);
-    const marker = join(dir, HERMES_HABITS_MARKER);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    await habitsCommand("project", ctx);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    expect(existsSync(marker)).toBe(false);
-  });
-
   it("a later uninstall still takes the other project's block and line (#2966)", () => {
     const a = project();
     const b = project();
@@ -1015,226 +905,6 @@ describe("per-project habits (#2966)", () => {
     removeProjectHabits(shared);
     expect(existsSync(join(b, "AGENTS.md"))).toBe(false);
     expect(readFileSync(gb.excludeFile, "utf8").trim()).toBe("");
-  });
-
-  it("removes only from recorded paths, never a teammate's committed block (#2998 review 7)", () => {
-    const cwd = project();
-    writeProjectHabits(depsFor(cwd), ["codex"]);
-    // Someone else's project elsewhere, with a block of its own.
-    const other = project();
-    writeFileSync(
-      join(other, "AGENTS.md"),
-      `${HABITS_BEGIN}\ntheir copy\n${HABITS_END}\n`,
-    );
-    removeProjectHabits({
-      home: project(),
-      busHome: join(project(), ".oa-bus"),
-    });
-    expect(readFileSync(join(other, "AGENTS.md"), "utf8")).toContain(
-      "their copy",
-    );
-  });
-
-  it("real git: the exclude file is the common dir's, and the line carries the subfolder (#2998 A)", async () => {
-    // A main repo, a linked worktree, and a subfolder inside the worktree.
-    const main = project();
-    const git = async (cwd: string, args: string[]) => {
-      const { execFile } = await import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile("git", args, { cwd }, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    expect((await git(main, ["init", "-q"])).code).toBe(0);
-    await git(main, ["config", "user.email", "t@x.com"]);
-    await git(main, ["config", "user.name", "t"]);
-    writeFileSync(join(main, "README.md"), "# x\n");
-    await git(main, ["add", "."]);
-    await git(main, ["commit", "-qm", "one"]);
-    const wt = join(project(), "wt");
-    expect(
-      (await git(main, ["worktree", "add", "-q", wt, "-b", "b1"])).code,
-    ).toBe(0);
-    const sub = join(wt, "apps", "x");
-    mkdirSync(sub, { recursive: true });
-
-    const realExec = (cmd: string, args: string[]) => {
-      const { execFile } =
-        require("node:child_process") as typeof import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile(cmd, args, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    const ctx = {
-      cwd: sub,
-      which: (c: string) => c === "git",
-      exec: realExec,
-    } as unknown as Parameters<typeof projectIo>[0];
-
-    const io = await projectIo(ctx);
-    expect(io.excludeFile).toBe(join(main, ".git", "info", "exclude"));
-    expect(io.rel?.("AGENTS.md")).toBe("apps/x/AGENTS.md");
-
-    // A real write, then git itself agrees the file is ignored.
-    writeProjectHabits({ ...depsFor(sub, project()), cwd: sub }, ["codex"], io);
-    expect(readFileSync(io.excludeFile as string, "utf8")).toContain(
-      "/apps/x/AGENTS.md",
-    );
-    // From the folder itself, git agrees the file is ignored by that line.
-    const ignored = await git(sub, ["check-ignore", "-q", "AGENTS.md"]);
-    expect(ignored.code).toBe(0);
-  });
-
-  it("the command reports a failed run as exit 1 and writes nothing (#2998 C)", async () => {
-    const gone = join(project(), "does-not-exist");
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: gone });
-    expect(await habitsCommand("project", ctx)).toBe(1);
-    expect(existsSync(join(gone, "CLAUDE.local.md"))).toBe(false);
-  });
-
-  it("the command never turns on the machine-wide plugin habits (#2998 C)", async () => {
-    // A real install with only Hermes wired: the plugin is configured (files
-    // match the shipped copy) and its habits marker is absent.
-    const ctx = fakeCtx(
-      {
-        which: (c: string) => c === "hermes",
-        exec: vi.fn(async (_c: string, args: string[]) =>
-          args[1] === "list"
-            ? {
-                code: 0,
-                stdout: JSON.stringify([{ name: "oa-bus", status: "enabled" }]),
-                stderr: "",
-              }
-            : { code: 0, stdout: "", stderr: "" },
-        ),
-      },
-      false,
-    );
-    approvedHome(ctx);
-    await install({ hub: HUB }, ctx);
-    Object.assign(ctx, { cwd: project() });
-    const dir = hermesPluginDir(ctx.userHome, ctx.env);
-    const marker = join(dir, HERMES_HABITS_MARKER);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    await habitsCommand("project", ctx);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    expect(existsSync(marker)).toBe(false);
-  });
-
-  it("removes only from recorded paths, never a teammate's committed block (#2998 review 7)", () => {
-    const cwd = project();
-    writeProjectHabits(depsFor(cwd), ["codex"]);
-    // Someone else's project elsewhere, with a block of its own.
-    const other = project();
-    writeFileSync(
-      join(other, "AGENTS.md"),
-      `${HABITS_BEGIN}\ntheir copy\n${HABITS_END}\n`,
-    );
-    removeProjectHabits({
-      home: project(),
-      busHome: join(project(), ".oa-bus"),
-    });
-    expect(readFileSync(join(other, "AGENTS.md"), "utf8")).toContain(
-      "their copy",
-    );
-  });
-
-  it("real git: the exclude file is the common dir's, and the line carries the subfolder (#2998 A)", async () => {
-    // A main repo, a linked worktree, and a subfolder inside the worktree.
-    const main = project();
-    const git = async (cwd: string, args: string[]) => {
-      const { execFile } = await import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile("git", args, { cwd }, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    expect((await git(main, ["init", "-q"])).code).toBe(0);
-    await git(main, ["config", "user.email", "t@x.com"]);
-    await git(main, ["config", "user.name", "t"]);
-    writeFileSync(join(main, "README.md"), "# x\n");
-    await git(main, ["add", "."]);
-    await git(main, ["commit", "-qm", "one"]);
-    const wt = join(project(), "wt");
-    expect(
-      (await git(main, ["worktree", "add", "-q", wt, "-b", "b1"])).code,
-    ).toBe(0);
-    const sub = join(wt, "apps", "x");
-    mkdirSync(sub, { recursive: true });
-
-    const realExec = (cmd: string, args: string[]) => {
-      const { execFile } =
-        require("node:child_process") as typeof import("node:child_process");
-      return new Promise<{ code: number; stdout: string; stderr: string }>(
-        (resolve) =>
-          execFile(cmd, args, (err, stdout, stderr) =>
-            resolve({ code: err ? 1 : 0, stdout, stderr }),
-          ),
-      );
-    };
-    const ctx = {
-      cwd: sub,
-      which: (c: string) => c === "git",
-      exec: realExec,
-    } as unknown as Parameters<typeof projectIo>[0];
-
-    const io = await projectIo(ctx);
-    expect(io.excludeFile).toBe(join(main, ".git", "info", "exclude"));
-    expect(io.rel?.("AGENTS.md")).toBe("apps/x/AGENTS.md");
-
-    // A real write, then git itself agrees the file is ignored.
-    writeProjectHabits({ ...depsFor(sub, project()), cwd: sub }, ["codex"], io);
-    expect(readFileSync(io.excludeFile as string, "utf8")).toContain(
-      "/apps/x/AGENTS.md",
-    );
-    // From the folder itself, git agrees the file is ignored by that line.
-    const ignored = await git(sub, ["check-ignore", "-q", "AGENTS.md"]);
-    expect(ignored.code).toBe(0);
-  });
-
-  it("the command reports a failed run as exit 1 and writes nothing (#2998 C)", async () => {
-    const gone = join(project(), "does-not-exist");
-    const ctx = fakeCtx(claudeOnly({}), false);
-    Object.assign(ctx, { cwd: gone });
-    expect(await habitsCommand("project", ctx)).toBe(1);
-    expect(existsSync(join(gone, "CLAUDE.local.md"))).toBe(false);
-  });
-
-  it("the command never turns on the machine-wide plugin habits (#2998 C)", async () => {
-    // A real install with only Hermes wired: the plugin is configured (files
-    // match the shipped copy) and its habits marker is absent.
-    const ctx = fakeCtx(
-      {
-        which: (c: string) => c === "hermes",
-        exec: vi.fn(async (_c: string, args: string[]) =>
-          args[1] === "list"
-            ? {
-                code: 0,
-                stdout: JSON.stringify([{ name: "oa-bus", status: "enabled" }]),
-                stderr: "",
-              }
-            : { code: 0, stdout: "", stderr: "" },
-        ),
-      },
-      false,
-    );
-    approvedHome(ctx);
-    await install({ hub: HUB }, ctx);
-    Object.assign(ctx, { cwd: project() });
-    const dir = hermesPluginDir(ctx.userHome, ctx.env);
-    const marker = join(dir, HERMES_HABITS_MARKER);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    await habitsCommand("project", ctx);
-    expect(pluginStates(ctx).hermes).toBe("off");
-    expect(existsSync(marker)).toBe(false);
   });
 
   it("says so when this folder has no bus habits", async () => {
@@ -1326,6 +996,41 @@ describe("per-project off switch (#2966)", () => {
     removeProjectHabits(shared);
     expect(existsSync(join(b, "AGENTS.md"))).toBe(false);
     expect(readFileSync(gb.excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("leaves an older exclude line with no `for` to uninstall", async () => {
+    // What #2998 wrote: { file, line } with no idea which project it was for.
+    const a = project();
+    const home = project();
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    const excludeFile = join(project(), "info", "exclude");
+    mkdirSync(join(excludeFile, ".."), { recursive: true });
+    writeFileSync(excludeFile, "/AGENTS.md\n");
+    const file = join(a, "AGENTS.md");
+    writeFileSync(file, `${habitsBlock().join("\n")}\n`);
+    writeFileSync(
+      join(busHome, "install.json"),
+      JSON.stringify({
+        habits: {
+          files: {},
+          project: {
+            files: { [file]: { added: "", created: true } },
+            exclude: [{ file: excludeFile, line: "/AGENTS.md" }],
+          },
+        },
+      }),
+    );
+    const shared = { home, busHome, cwd: a };
+
+    const ctx = fakeCtx(claudeOnly({}), false);
+    Object.assign(ctx, { cwd: a, userHome: home, home: busHome });
+    expect(await habitsCommand("project-off", ctx)).toBe(0);
+    expect(existsSync(file)).toBe(false);
+    // The old line cannot be attributed, so only uninstall takes it.
+    expect(readFileSync(excludeFile, "utf8")).toContain("/AGENTS.md");
+    removeProjectHabits(shared);
+    expect(readFileSync(excludeFile, "utf8").trim()).toBe("");
   });
 
   it("finds the folder through a symlinked path", async () => {
