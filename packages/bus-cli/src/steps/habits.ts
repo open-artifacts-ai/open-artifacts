@@ -265,12 +265,23 @@ const record = (busHome: string | undefined) => {
     at?: string;
     files?: Record<string, FileRecord>;
     pluginDirs?: unknown;
+    project?: unknown;
   };
+  const p = (typeof h.project === "object" && h.project !== null
+    ? h.project
+    : {}) as { files?: Record<string, FileRecord>; exclude?: unknown };
   return {
     optedOut: h.optedOut === true,
     at: h.at,
     files: h.files ?? {},
     pluginDirs: pluginDirsOf(h.pluginDirs),
+    // #2966: the per-project blocks, and the .git/info/exclude lines added for them.
+    project: {
+      files: p.files ?? {},
+      exclude: Array.isArray(p.exclude)
+        ? p.exclude.filter((l): l is string => typeof l === "string")
+        : [],
+    },
   };
 };
 /** The plugin folders the marker was written into, by harness; an old or odd record has none. */
@@ -289,6 +300,7 @@ const saveRecord = (
     at?: string;
     files?: Record<string, FileRecord>;
     pluginDirs?: Record<string, string[]>;
+    project?: { files: Record<string, FileRecord>; exclude: string[] };
   },
 ) => {
   if (!busHome) return;
@@ -297,6 +309,134 @@ const saveRecord = (
     habits: { ...cur, ...patch },
   });
 };
+
+/**
+ * #2966: the per-project file each harness loads, from its own docs.
+ * - claude: CLAUDE.local.md, documented as the local-only project file.
+ * - codex: AGENTS.md. It reads AGENTS.override.md first, but that replaces the
+ *   project's own AGENTS.md instead of adding to it, so we never write it.
+ * - pi: AGENTS.md (context files from the working directory).
+ * - opencode: AGENTS.md, with CLAUDE.md only as a fallback.
+ */
+export const PROJECT_HABITS_FILE: Record<HabitsHarness, string> = {
+  claude: "CLAUDE.local.md",
+  codex: "AGENTS.md",
+  pi: "AGENTS.md",
+  opencode: "AGENTS.md",
+};
+
+/** The project's own file for `h`, under `cwd`. */
+export const projectHabitsTarget = (cwd: string, h: HabitsHarness): string =>
+  join(cwd, PROJECT_HABITS_FILE[h]);
+
+/**
+ * What the project mode needs from git, injected so tests can fake it. All
+ * undefined when the folder is not a git repository: then nothing is ignored
+ * and a tracked file cannot be told apart, so the caller skips the ignore step.
+ */
+export type ProjectIo = {
+  /** Whether git tracks this project-relative path. */
+  tracked?: (relPath: string) => boolean;
+  /** Add one line to <git-dir>/info/exclude (never .gitignore: that is theirs). */
+  exclude?: (line: string) => void;
+  /** Take that exact line out again. */
+  unexclude?: (line: string) => void;
+};
+
+/**
+ * #2966: writes the block into each harness's per-project file. Never touches
+ * a file git tracks (that is the person's, and a committed habits block is
+ * what this change removes), and puts one `/name` line in .git/info/exclude for
+ * a file it created, so nothing gets committed by accident.
+ */
+export function writeProjectHabits(
+  deps: HabitsDeps & { cwd: string },
+  harnesses: HabitsHarness[],
+  io: ProjectIo = {},
+): HabitsResult {
+  const files: string[] = [];
+  const notes: string[] = [];
+  const seen = new Set<string>();
+  const cur = record(deps.busHome).project;
+  const files_ = { ...cur.files };
+  const exclude = [...cur.exclude];
+  for (const h of harnesses) {
+    const name = PROJECT_HABITS_FILE[h];
+    const path = projectHabitsTarget(deps.cwd, h);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    if (io.tracked?.(name) === true) {
+      notes.push(
+        `Left ${path} alone: git tracks it, so a habits block there would be committed. Habits stay off for ${h} in this project.`,
+      );
+      continue;
+    }
+    try {
+      const exists = existsSync(path);
+      const before = exists ? readFileSync(path, "utf8") : "";
+      const fresh = blockState(before).state === "absent";
+      const after = withHabits(before, habitsBlock());
+      if (after !== before) writeAtomic(path, after);
+      if (fresh) files_[path] = { added: separatorFor(before), created: !exists };
+      files.push(path);
+      if (!exists && io.exclude !== undefined) {
+        const line = `/${name}`;
+        io.exclude(line);
+        if (!exclude.includes(line)) exclude.push(line);
+      }
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block, then rerun.`
+          : `Could not write ${path}: ${reason(e)}`,
+      );
+    }
+  }
+  saveRecord(deps.busHome, { project: { files: files_, exclude } });
+  return { files, notes };
+}
+
+/** #2966: takes the per-project blocks, and their exclude lines, back out. */
+export function removeProjectHabits(
+  deps: HabitsDeps & { cwd: string },
+  harnesses: HabitsHarness[] = HABITS_HARNESSES,
+  io: ProjectIo = {},
+): HabitsResult {
+  const files: string[] = [];
+  const notes: string[] = [];
+  const cur = record(deps.busHome).project;
+  const kept = { ...cur.files };
+  const exclude = [...cur.exclude];
+  for (const h of harnesses) {
+    const path = projectHabitsTarget(deps.cwd, h);
+    try {
+      if (brokenLink(path) || !existsSync(path)) continue;
+      const before = readFileSync(path, "utf8");
+      if (blockState(before).state === "absent") continue;
+      const rec = kept[path];
+      const after = withHabits(before, null, rec?.added);
+      if (rec?.created && !isLink(path) && after.trim() === "") {
+        rmSync(path, { force: true });
+        const line = `/${PROJECT_HABITS_FILE[h]}`;
+        if (exclude.includes(line)) {
+          io.unexclude?.(line);
+          exclude.splice(exclude.indexOf(line), 1);
+        }
+      } else writeAtomic(path, after);
+      delete kept[path];
+      files.push(path);
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
+          : `Could not update ${path}: ${reason(e)}`,
+      );
+    }
+  }
+  if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
+    saveRecord(deps.busHome, { project: { files: kept, exclude } });
+  return { files, notes };
+}
 
 /** The state of the file `h` would be written to. */
 export function habitsFileState(

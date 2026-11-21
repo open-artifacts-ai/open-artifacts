@@ -31,8 +31,10 @@ import {
   habitsFiles,
   habitsOptedOut,
   removeHabits,
+  removeProjectHabits,
   withHabits,
   writeHabits,
+  writeProjectHabits,
 } from "../src/steps/habits.ts";
 import { installShim } from "../src/steps/path-shim.ts";
 import { writeAtomic } from "../src/steps/skill.ts";
@@ -598,4 +600,105 @@ describe("install: the printed command (#1998)", () => {
       expect(ctx.busCmd).toBe(BUS_CMD);
     }
   });
+});
+
+// #2966: the per-project switch. Only Claude Code has a documented local-only
+// file (CLAUDE.local.md); the others read the project's AGENTS.md, so that is
+// what we write, and only while git does not track it.
+describe("per-project habits (#2966)", () => {
+  const project = () => mkdtempSync(join(tmpdir(), "ob-proj-"));
+  const depsFor = (cwd: string, home = project()) => ({
+    home,
+    busHome: join(home, ".oa-bus"),
+    cwd,
+  });
+
+  it("writes each harness's own project file, never a global one", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    mkdirSync(d.busHome, { recursive: true });
+    writeFileSync(join(d.busHome, "install.json"), "{}");
+    const r = writeProjectHabits(d, ["claude", "codex", "pi", "opencode"]);
+    expect(r.notes).toEqual([]);
+    expect(existsSync(join(cwd, "CLAUDE.local.md"))).toBe(true);
+    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(true);
+    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toContain(HABITS_BEGIN);
+    expect(readFileSync(join(cwd, "CLAUDE.local.md"), "utf8")).toContain(
+      HABITS_BEGIN,
+    );
+    // Nothing global: the home has no agent instruction files at all.
+    for (const f of [
+      join(d.home, ".claude", "CLAUDE.md"),
+      join(d.home, ".codex", "AGENTS.md"),
+      join(d.home, ".pi", "agent", "AGENTS.md"),
+    ])
+      expect(existsSync(f)).toBe(false);
+  });
+
+  it("never writes AGENTS.override.md, which would replace the project's own file", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    writeProjectHabits(d, ["codex", "pi", "opencode"]);
+    expect(existsSync(join(cwd, "AGENTS.override.md"))).toBe(false);
+  });
+
+  it("leaves a git-tracked AGENTS.md alone and says why", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    writeFileSync(join(cwd, "AGENTS.md"), "# the project's own rules\n");
+    const r = writeProjectHabits(d, ["codex"], {
+      tracked: (name) => name === "AGENTS.md",
+    });
+    expect(r.files).toEqual([]);
+    expect(notes(r)).toMatch(/git tracks it/);
+    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toBe(
+      "# the project's own rules\n",
+    );
+  });
+
+  it("ignores a file it created through .git/info/exclude, and un-ignores it on removal", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    const exclude: string[] = [];
+    const io = {
+      tracked: () => false,
+      exclude: (l: string) => exclude.push(l),
+      unexclude: (l: string) => exclude.splice(exclude.indexOf(l), 1),
+    };
+    writeProjectHabits(d, ["codex"], io);
+    expect(exclude).toEqual(["/AGENTS.md"]);
+    removeProjectHabits(d, ["codex"], io);
+    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(false);
+    expect(exclude).toEqual([]);
+  });
+
+  it("never edits the project's .gitignore", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    writeFileSync(join(cwd, ".gitignore"), "node_modules\n");
+    writeProjectHabits(d, ["codex"], {
+      tracked: () => false,
+      exclude: () => {},
+    });
+    expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe("node_modules\n");
+  });
+
+  it("skips the ignore step when there is no git, and still writes the file", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    const r = writeProjectHabits(d, ["pi"]);
+    expect(r.notes).toEqual([]);
+    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(true);
+  });
+
+  it("removal keeps a file that was already there, dropping only our block", () => {
+    const cwd = project();
+    const d = depsFor(cwd);
+    writeFileSync(join(cwd, "AGENTS.md"), "# theirs\n");
+    writeProjectHabits(d, ["codex"]);
+    removeProjectHabits(d, ["codex"]);
+    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toBe("# theirs\n");
+  });
+
+  const notes = (r: { notes: string[] }) => r.notes.join("\n");
 });
