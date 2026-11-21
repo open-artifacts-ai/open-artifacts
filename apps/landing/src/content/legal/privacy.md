@@ -56,7 +56,7 @@ We don't keep your IP address or full browser details for this. For personal acc
 
 ### Billing
 
-Payments are processed by Stripe. You type your card, billing email and address into Stripe's own checkout, so Stripe holds them and we never see your card. On our side we keep your plan and its dates, the ids Stripe gives us for your account and subscription, which accounts counted as creators each month (as internal ids, not names or emails), and whether each invoice was paid.
+Payments are processed by Stripe. You type your card, billing email and address into Stripe's own checkout, so Stripe holds them and we never see your card. On our side we keep your plan and its dates, the ids Stripe gives us for your account and subscription, which accounts are billed as members (as internal ids, not names or emails), and whether each invoice was paid.
 
 ### Setup events
 
