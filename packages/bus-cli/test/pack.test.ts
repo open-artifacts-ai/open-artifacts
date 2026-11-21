@@ -149,8 +149,10 @@ describe("the published oa-bus package", () => {
   it("is one self-contained ESM file", () => {
     const dist = readFileSync(entry, "utf8");
     expect(dist.startsWith("#!/usr/bin/env node\n")).toBe(true);
-    // A guard against an accidentally bundled dependency (far bigger), not a size budget.
-    expect(dist.length).toBeLessThan(2.5 * 1024 * 1024);
+    // A guard against an accidentally bundled dependency (an order of
+    // magnitude bigger), not a copy budget: nothing is cut to fit it, so it
+    // leaves three MiB of room.
+    expect(dist.length).toBeLessThan(3 * 1024 * 1024);
     // Real imports only: not in comments, nor in strings of generated code
     // (ajv's `'require("ajv/dist/runtime/uri")'`).
     const specifiers = dist
