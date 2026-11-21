@@ -604,29 +604,70 @@ describe("install: the printed command (#1998)", () => {
 
 // #2966: the per-project switch. Only Claude Code has a documented local-only
 // file (CLAUDE.local.md); the others read the project's AGENTS.md, so that is
-// what we write, and only while git does not track it.
+// what we write, and only while it is ours to write.
 describe("per-project habits (#2966)", () => {
   const project = () => mkdtempSync(join(tmpdir(), "ob-proj-"));
-  const depsFor = (cwd: string, home = project()) => ({
-    home,
-    busHome: join(home, ".oa-bus"),
-    cwd,
-  });
+  const depsFor = (cwd: string, home = project()) => {
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    writeFileSync(join(busHome, "install.json"), "{}");
+    return { home, busHome, cwd };
+  };
+  const fakeGit = (o: {
+    prefix?: string;
+    tracked?: string[];
+    excludeFile?: string;
+  }) => {
+    const written: string[] = [];
+    const excludeFile =
+      o.excludeFile ??
+      join(mkdtempSync(join(tmpdir(), "ob-git-")), "info", "exclude");
+    const lines = () => {
+      try {
+        return readFileSync(excludeFile, "utf8").split("\n");
+      } catch {
+        return [];
+      }
+    };
+    return {
+      written,
+      excludeFile,
+      io: {
+        rel: (name: string) => `${o.prefix ?? ""}${name}`,
+        tracked: (rel: string) => (o.tracked ?? []).includes(rel),
+        excludeFile,
+        exclude: (line: string) => {
+          const cur = lines();
+          if (cur.includes(line)) return false;
+          mkdirSync(join(excludeFile, ".."), { recursive: true });
+          writeFileSync(excludeFile, `${cur.join("\n")}${line}\n`);
+          written.push(line);
+          return true;
+        },
+        unexclude: (line: string) => {
+          writeFileSync(
+            excludeFile,
+            lines()
+              .filter((l) => l !== line)
+              .join("\n"),
+          );
+        },
+      },
+    };
+  };
+  const notes = (r: { notes: string[] }) => r.notes.join("\n");
 
   it("writes each harness's own project file, never a global one", () => {
     const cwd = project();
     const d = depsFor(cwd);
-    mkdirSync(d.busHome, { recursive: true });
-    writeFileSync(join(d.busHome, "install.json"), "{}");
     const r = writeProjectHabits(d, ["claude", "codex", "pi", "opencode"]);
     expect(r.notes).toEqual([]);
-    expect(existsSync(join(cwd, "CLAUDE.local.md"))).toBe(true);
-    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(true);
-    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toContain(HABITS_BEGIN);
     expect(readFileSync(join(cwd, "CLAUDE.local.md"), "utf8")).toContain(
       HABITS_BEGIN,
     );
-    // Nothing global: the home has no agent instruction files at all.
+    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toContain(
+      HABITS_BEGIN,
+    );
     for (const f of [
       join(d.home, ".claude", "CLAUDE.md"),
       join(d.home, ".codex", "AGENTS.md"),
@@ -637,17 +678,15 @@ describe("per-project habits (#2966)", () => {
 
   it("never writes AGENTS.override.md, which would replace the project's own file", () => {
     const cwd = project();
-    const d = depsFor(cwd);
-    writeProjectHabits(d, ["codex", "pi", "opencode"]);
+    writeProjectHabits(depsFor(cwd), ["codex", "pi", "opencode"]);
     expect(existsSync(join(cwd, "AGENTS.override.md"))).toBe(false);
   });
 
   it("leaves a git-tracked AGENTS.md alone and says why", () => {
     const cwd = project();
-    const d = depsFor(cwd);
     writeFileSync(join(cwd, "AGENTS.md"), "# the project's own rules\n");
-    const r = writeProjectHabits(d, ["codex"], {
-      tracked: (name) => name === "AGENTS.md",
+    const r = writeProjectHabits(depsFor(cwd), ["codex"], {
+      tracked: () => true,
     });
     expect(r.files).toEqual([]);
     expect(notes(r)).toMatch(/git tracks it/);
@@ -656,49 +695,107 @@ describe("per-project habits (#2966)", () => {
     );
   });
 
-  it("ignores a file it created through .git/info/exclude, and un-ignores it on removal", () => {
+  it("leaves an untracked file that was already here alone, so nothing becomes commit-ready (#2998 review 4)", () => {
     const cwd = project();
-    const d = depsFor(cwd);
-    const exclude: string[] = [];
-    const io = {
-      tracked: () => false,
-      exclude: (l: string) => exclude.push(l),
-      unexclude: (l: string) => exclude.splice(exclude.indexOf(l), 1),
-    };
-    writeProjectHabits(d, ["codex"], io);
-    expect(exclude).toEqual(["/AGENTS.md"]);
-    removeProjectHabits(d, ["codex"], io);
-    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(false);
-    expect(exclude).toEqual([]);
+    writeFileSync(join(cwd, "AGENTS.md"), "# theirs, not committed yet\n");
+    const g = fakeGit({});
+    const r = writeProjectHabits(depsFor(cwd), ["codex"], g.io);
+    expect(r.files).toEqual([]);
+    expect(notes(r)).toMatch(/already here/);
+    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toBe(
+      "# theirs, not committed yet\n",
+    );
+    expect(g.written).toEqual([]);
+  });
+
+  it("refuses a symlinked project file (#2998 review 5)", () => {
+    const cwd = project();
+    const real = join(cwd, "CLAUDE.md");
+    writeFileSync(real, "# theirs\n");
+    symlinkSync(real, join(cwd, "AGENTS.md"));
+    const r = writeProjectHabits(depsFor(cwd), ["codex"]);
+    expect(r.files).toEqual([]);
+    expect(notes(r)).toMatch(/symlink/);
+    expect(readFileSync(real, "utf8")).toBe("# theirs\n");
+  });
+
+  it("ignores a file it created through the repo's exclude file, from a subfolder (#2998 review 1)", () => {
+    const cwd = project();
+    const sub = join(cwd, "apps", "x");
+    mkdirSync(sub, { recursive: true });
+    const g = fakeGit({ prefix: "apps/x/" });
+    writeProjectHabits(depsFor(sub), ["codex"], g.io);
+    expect(g.written).toEqual(["/apps/x/AGENTS.md"]);
+    expect(readFileSync(g.excludeFile, "utf8")).toContain("/apps/x/AGENTS.md");
+  });
+
+  it("creates the exclude file's folder and uses the common dir (#2998 review 2)", () => {
+    const cwd = project();
+    const g = fakeGit({ excludeFile: join(project(), "info", "exclude") });
+    writeProjectHabits(depsFor(cwd), ["codex"], g.io);
+    expect(existsSync(g.excludeFile)).toBe(true);
+  });
+
+  it("never claims a line the person already had (#2998 review 3)", () => {
+    const cwd = project();
+    const g = fakeGit({});
+    mkdirSync(join(g.excludeFile, ".."), { recursive: true });
+    writeFileSync(g.excludeFile, "/AGENTS.md\n");
+    writeProjectHabits(depsFor(cwd), ["codex"], g.io);
+    // Written line stays, but removal must not take it away.
+    expect(readFileSync(g.excludeFile, "utf8")).toBe("/AGENTS.md\n");
   });
 
   it("never edits the project's .gitignore", () => {
     const cwd = project();
-    const d = depsFor(cwd);
     writeFileSync(join(cwd, ".gitignore"), "node_modules\n");
-    writeProjectHabits(d, ["codex"], {
-      tracked: () => false,
-      exclude: () => {},
+    writeProjectHabits(depsFor(cwd), ["codex"], fakeGit({}).io);
+    expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe(
+      "node_modules\n",
+    );
+  });
+
+  it("removes every recorded project, from anywhere (#2998 review 6)", () => {
+    const a = project();
+    const b = project();
+    const shared = depsFor(a); // one bus home for this test's two projects
+    const ga = fakeGit({});
+    const gb = fakeGit({});
+    writeProjectHabits({ ...shared, cwd: a }, ["codex"], ga.io);
+    writeProjectHabits({ ...shared, cwd: b }, ["codex"], gb.io);
+    const r = removeProjectHabits(shared);
+    expect(r.files.sort()).toEqual(
+      [join(a, "AGENTS.md"), join(b, "AGENTS.md")].sort(),
+    );
+    expect(existsSync(join(a, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(b, "AGENTS.md"))).toBe(false);
+    expect(readFileSync(ga.excludeFile, "utf8").trim()).toBe("");
+    expect(readFileSync(gb.excludeFile, "utf8").trim()).toBe("");
+  });
+
+  it("removes only from recorded paths, never a teammate's committed block (#2998 review 7)", () => {
+    const cwd = project();
+    writeProjectHabits(depsFor(cwd), ["codex"]);
+    // Someone else's project elsewhere, with a block of its own.
+    const other = project();
+    writeFileSync(
+      join(other, "AGENTS.md"),
+      `${HABITS_BEGIN}\ntheir copy\n${HABITS_END}\n`,
+    );
+    removeProjectHabits({
+      home: project(),
+      busHome: join(project(), ".oa-bus"),
     });
-    expect(readFileSync(join(cwd, ".gitignore"), "utf8")).toBe("node_modules\n");
+    expect(readFileSync(join(other, "AGENTS.md"), "utf8")).toContain(
+      "their copy",
+    );
   });
 
-  it("skips the ignore step when there is no git, and still writes the file", () => {
+  it("removal keeps a file that was already ours, dropping only our block", () => {
     const cwd = project();
     const d = depsFor(cwd);
-    const r = writeProjectHabits(d, ["pi"]);
-    expect(r.notes).toEqual([]);
-    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(true);
-  });
-
-  it("removal keeps a file that was already there, dropping only our block", () => {
-    const cwd = project();
-    const d = depsFor(cwd);
-    writeFileSync(join(cwd, "AGENTS.md"), "# theirs\n");
     writeProjectHabits(d, ["codex"]);
-    removeProjectHabits(d, ["codex"]);
-    expect(readFileSync(join(cwd, "AGENTS.md"), "utf8")).toBe("# theirs\n");
+    removeProjectHabits(d);
+    expect(existsSync(join(cwd, "AGENTS.md"))).toBe(false);
   });
-
-  const notes = (r: { notes: string[] }) => r.notes.join("\n");
 });

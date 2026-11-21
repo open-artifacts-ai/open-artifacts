@@ -2,8 +2,8 @@
 // --habits / --no-habits / --show-habits commands. The block itself, and the
 // files it goes in, are steps/habits.ts.
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -25,11 +25,9 @@ import {
   type PluginHabitsState,
   type PluginHarness,
   PROJECT_HABITS_FILE,
-  projectHabitsTarget,
   type ProjectIo,
   pluginHabitsState,
   removeHabits,
-  removeProjectHabits,
   setHabitsOptOut,
   setPluginHabits,
   writeHabits,
@@ -200,39 +198,53 @@ export async function projectIo(ctx: Ctx): Promise<ProjectIo> {
     () => undefined,
   );
   if (inside?.code !== 0 || inside.stdout.trim() !== "true") return {};
-  const dir = await git(["rev-parse", "--absolute-git-dir"]).catch(
+  // The path from the repo root to this folder, so the exclude line matches
+  // wherever the command runs (a `/AGENTS.md` line does not cover apps/x).
+  const prefixOut = await git(["rev-parse", "--show-prefix"]).catch(
     () => undefined,
   );
-  if (dir?.code !== 0) return {};
-  const excludeFile = join(dir.stdout.trim(), "info", "exclude");
-  // Prefetched per file name: `git ls-files --error-unmatch` exits non-zero for
-  // an untracked path, which is exactly the case we may write.
+  if (prefixOut?.code !== 0) return {};
+  const prefix = prefixOut.stdout.trim();
+  // The exclude file git actually reads: the common dir, so a linked worktree
+  // works too, and info/ may not exist yet.
+  const pathOut = await git(["rev-parse", "--git-path", "info/exclude"]).catch(
+    () => undefined,
+  );
+  if (pathOut?.code !== 0) return {};
+  const raw = pathOut.stdout.trim();
+  const excludeFile = raw.startsWith("/") ? raw : join(ctx.cwd, raw);
   const tracked = new Map<string, boolean>();
   for (const name of new Set(Object.values(PROJECT_HABITS_FILE))) {
-    const r = await git(["ls-files", "--error-unmatch", "--", name]).catch(
+    const rel = `${prefix}${name}`;
+    const r = await git(["ls-files", "--error-unmatch", "--", rel]).catch(
       () => undefined,
     );
-    tracked.set(name, r?.code === 0);
+    tracked.set(rel, r?.code === 0);
   }
-  const lines = (): string[] => {
-    try {
-      return readFileSync(excludeFile, "utf8").split("\n");
-    } catch {
-      return [];
-    }
-  };
   return {
-    tracked: (name) => tracked.get(name) === true,
+    rel: (name) => `${prefix}${name}`,
+    tracked: (rel) => tracked.get(rel) === true,
+    excludeFile,
     exclude: (line) => {
-      const cur = lines();
-      if (cur.includes(line)) return;
-      const text = cur.join("\n");
+      let text = "";
+      try {
+        text = readFileSync(excludeFile, "utf8");
+      } catch {
+        mkdirSync(dirname(excludeFile), { recursive: true });
+      }
+      const lines = text.split("\n");
+      if (lines.includes(line)) return false;
       const sep = text === "" || text.endsWith("\n") ? "" : "\n";
       writeFileSync(excludeFile, `${text}${sep}${line}\n`);
+      return true;
     },
     unexclude: (line) => {
-      const cur = lines().filter((l) => l !== line);
-      writeFileSync(excludeFile, `${cur.join("\n")}`);
+      try {
+        const lines = readFileSync(excludeFile, "utf8").split("\n");
+        writeFileSync(excludeFile, lines.filter((l) => l !== line).join("\n"));
+      } catch {
+        // Nothing to take back.
+      }
     },
   };
 }
@@ -253,12 +265,16 @@ export async function habitsProject(ctx: Ctx): Promise<HabitsOutcome> {
     targets,
     io,
   );
-  const pl = setPluginHabits(deps(ctx), plugins, true);
-  setHabitsOptOut(ctx.home, false, stamp(ctx));
+  // #2998 review: plugin habits are machine-wide, which is what #2966 moves
+  // away from, so this command never turns them on and never clears the
+  // person's own opt-out. It says so when a plugin harness is wired.
+  if (plugins.length > 0)
+    r.notes.push(
+      `The ${plugins.map((p) => p.label).join(", ")} plugin carries the habits machine-wide, so this command leaves it alone. Turn those on or off with ${ctx.busCmd} install --habits and --no-habits.`,
+    );
   if (r.files.length > 0)
     say(ctx, `Habits on in this folder: ${shown(ctx, r.files)}`);
-  for (const p of pl.changed) say(ctx, pluginOn(p));
-  for (const n of [...r.notes, ...pl.notes]) say(ctx, n);
+  for (const n of r.notes) say(ctx, n);
   return {
     ...none,
     state: r.files.length > 0 ? "on" : "off",
@@ -382,15 +398,22 @@ export async function habitsAfterInstall(
 }
 
 /** `install --habits | --no-habits | --show-habits`: only the block, nothing else reruns. */
-export function habitsCommand(mode: HabitsMode, ctx: Ctx): number {
+export async function habitsCommand(
+  mode: HabitsMode,
+  ctx: Ctx,
+): Promise<number> {
   say(ctx, ctx.copy.header(ctx.version), "");
   if (mode === "show") return show(ctx);
   if (mode === "project") {
-    // #2966: the per-folder install. Async (it asks git), so it reports here.
-    void habitsProject(ctx).catch((e: unknown) => {
+    // #2966: the per-folder install. Awaited, so its work cannot be cut off
+    // and a failure is not reported as success.
+    try {
+      const r = await habitsProject(ctx);
+      return r.files.length > 0 || r.state === "on" ? 0 : 1;
+    } catch (e) {
       sayErr(ctx, `Could not set up the habits here: ${String(e)}`);
-    });
-    return 0;
+      return 1;
+    }
   }
   return mode === "yes" ? turnOn(ctx) : turnOff(ctx);
 }
