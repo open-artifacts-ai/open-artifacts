@@ -808,7 +808,15 @@ describe("review fixes (#2893 Axe-3)", () => {
     const b = guestRef(s.hubB);
     const c = guestRef(s.hubs[1] as Hub);
     expect(b).not.toBe(c);
-    for (const r of [b, c]) expect(r).not.toContain("sa");
+    // Opaque on each instance: the shape of a guest ref and nothing of what the
+    // session brings with it. The old check was `not.toContain("sa")`, the
+    // 2-letter session id, which fires on random data about once in 250 (#2969).
+    // Eight characters of the bound hash cannot collide by chance.
+    for (const r of [b, c]) {
+      expect(r).toMatch(/^g-[A-Za-z0-9_-]{22}$/);
+      expect(r).not.toContain(HASH_B.slice(0, 8));
+      expect(r).not.toContain(HASH_C.slice(0, 8));
+    }
   });
 
   it("L2: a revoke on B drops the hashes stashed for B", async () => {
