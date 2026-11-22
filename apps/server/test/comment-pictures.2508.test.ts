@@ -604,6 +604,46 @@ describe("fetch", () => {
     }
   });
 
+  it.each(["missing comment", "missing thread id"] as const)(
+    "an attached picture with a %s is hidden from MCP and token REST reads",
+    async (missing) => {
+      const id = await pub({ visibility: "private" });
+      const { pic } = await upload(owner, id);
+      const posted = await thread(owner, id, [{ pictureId: pic.id }]);
+      expect(posted.status).toBe(201);
+      const attached = await stored(pic.id);
+      if (!attached?.thread_id || !attached.comment_id)
+        throw new Error("Expected the fixture to have an attached picture");
+      // The R2 object remains intact. Only its attachment metadata is stale.
+      await env.DB.prepare(
+        "update comment_pictures set thread_id = ?, comment_id = ? where id = ?",
+      )
+        .bind(
+          missing === "missing thread id" ? null : attached.thread_id,
+          missing === "missing comment" ? newId() : attached.comment_id,
+          pic.id,
+        )
+        .run();
+      const { token } = await createPat(env, owner.userId, "picture reader");
+      const client = await connect(token);
+      try {
+        const result = await tool(client, "get_comment_picture", {
+          id,
+          pictureId: pic.id,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([
+          { type: "text", text: "not_found: Not found" },
+        ]);
+        const response = await api(app, R.commentPicture(id, pic.id), token);
+        expect(response.status).toBe(404);
+        expect(await errOf(response)).toMatchObject({ code: "not_found" });
+      } finally {
+        await close(client);
+      }
+    },
+  );
+
   // A valid single-colour 32 by 3136 PNG, small on disk but tall in pixels.
   const portrait = Uint8Array.from(
     atob(
