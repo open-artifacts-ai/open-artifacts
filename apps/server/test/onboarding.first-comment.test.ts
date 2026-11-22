@@ -547,7 +547,9 @@ describe("upgrade: the historical scan", () => {
     await setting(commentedKey(member.userId), "1");
     await scanAll();
     expect(await row(commentedKey(member.userId))).toBe("1");
-    expect(parseFirstComment(await row(commentedKey(member.userId)))).toBeNull();
+    expect(
+      parseFirstComment(await row(commentedKey(member.userId))),
+    ).toBeNull();
     const s = await state(member);
     expect(s.firstComment).toBeNull();
     expect(s.commented).toBe(true);
