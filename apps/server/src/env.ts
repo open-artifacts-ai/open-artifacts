@@ -127,8 +127,8 @@ export interface Env {
   BROWSER?: Fetcher;
   /**
    * Workers Images, to downscale a large comment picture for an agent
-   * (services/comment-pictures.ts). Optional: a picture already small enough
-   * needs no binding; a large one answers a clear tool error without it.
+   * (services/comment-pictures.ts). Without this binding the tool serves the
+   * original up to its byte limit.
    */
   IMAGES?: ImagesBinding;
   /** Optional Email Service send binding; invite/share emails are off without it. */

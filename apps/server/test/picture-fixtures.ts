@@ -51,7 +51,12 @@ export function jpeg(w = 6, h = 4, withMeta = true): Uint8Array {
 const pngChunk = (name: string, data: Uint8Array) =>
   cat(be32(data.length), enc(name), data, be32(0));
 
-export function png(w = 6, h = 4, withMeta = true): Uint8Array {
+export function png(
+  w = 6,
+  h = 4,
+  withMeta = true,
+  pixels = Uint8Array.of(1, 2, 3, 4),
+): Uint8Array {
   return cat(
     Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a),
     pngChunk("IHDR", cat(be32(w), be32(h), Uint8Array.of(8, 2, 0, 0, 0))),
@@ -63,7 +68,7 @@ export function png(w = 6, h = 4, withMeta = true): Uint8Array {
           pngChunk("eXIf", enc(`MM\0*${SECRET}`)),
         ]
       : []),
-    pngChunk("IDAT", Uint8Array.of(1, 2, 3, 4)),
+    pngChunk("IDAT", pixels),
     pngChunk("IEND", new Uint8Array()),
   );
 }

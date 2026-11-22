@@ -464,20 +464,16 @@ const PREVIEW_SIDE = 1568;
 type PictureForAgent = { data: Uint8Array; mimeType: string };
 
 /**
- * What an agent is sent: the stored bytes when the picture is within the
- * preview side in both directions and the preview size, else a WebP downscaled
- * by Workers Images (never an external URL). Large with no IMAGES binding, or a
- * failed or oversize conversion: a clear error, nothing partial.
+ * Send the stored image within the byte budget. If Images is available,
+ * also fit its longest side to the preview limit. Images receives private bytes.
  */
 export async function previewForAgent(
   env: Env,
   hit: PictureHit,
 ): Promise<PictureForAgent> {
-  const small =
-    hit.w <= PREVIEW_SIDE &&
-    hit.h <= PREVIEW_SIDE &&
-    hit.bytes <= PREVIEW_MAX_BYTES;
-  if (small)
+  const images = env.IMAGES;
+  const fitsFrame = hit.w <= PREVIEW_SIDE && hit.h <= PREVIEW_SIDE;
+  if (hit.bytes <= PREVIEW_MAX_BYTES && (!images || fitsFrame))
     return {
       data: new Uint8Array(await new Response(hit.body).arrayBuffer()),
       mimeType: hit.type,
@@ -487,13 +483,17 @@ export async function previewForAgent(
       "too_large",
       "A smaller preview could not be made for this picture. You can open the original in the web app.",
     );
-  if (!env.IMAGES) {
+  if (!images) {
     await hit.body.cancel().catch(() => {});
-    throw unavailable();
+    throw new ApiError(
+      "too_large",
+      "This picture is too large to show. Open the original in the web app.",
+    );
   }
   try {
     const res = (
-      await env.IMAGES.input(hit.body)
+      await images
+        .input(hit.body)
         .transform({
           width: PREVIEW_SIDE,
           height: PREVIEW_SIDE,

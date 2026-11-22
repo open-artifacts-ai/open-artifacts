@@ -604,15 +604,56 @@ describe("fetch", () => {
     }
   });
 
+  // A valid single-colour 32 by 3136 PNG, small on disk but tall in pixels.
+  const portrait = Uint8Array.from(
+    atob(
+      "iVBORw0KGgoAAAANSUhEUgAAACAAAAxAAQAAAACUVSJ3AAAAJklEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAwIcBPUAAARircRgAAAAASUVORK5CYII=",
+    ),
+    (c) => c.charCodeAt(0),
+  );
+
+  it("without Images, serves the original within the byte limit and rejects larger files", async () => {
+    const id = await pub();
+    const { pic: tall } = await upload(owner, id, "image/png", portrait);
+    const { pic: large } = await upload(
+      owner,
+      id,
+      "image/png",
+      png(64, 32, false, new Uint8Array(3 * 1024 * 1024)),
+    );
+    expect(large.bytes).toBeGreaterThan(3 * 1024 * 1024);
+    await thread(owner, id, [{ pictureId: tall.id }, { pictureId: large.id }]);
+    const { IMAGES: _images, ...withoutImages } = env;
+    const client = await connect(
+      (await createPat(env, owner.userId, "without Images")).token,
+      { env: withoutImages },
+    );
+    try {
+      const read = (pictureId: string) =>
+        tool(client, "get_comment_picture", { id, pictureId });
+      expect((await read(tall.id)).content).toEqual([
+        {
+          type: "image",
+          mimeType: "image/png",
+          data: btoa(String.fromCharCode(...portrait)),
+        },
+      ]);
+      const error = await read(large.id);
+      expect(error.isError).toBe(true);
+      expect(error.content).toEqual([
+        {
+          type: "text",
+          text: "too_large: This picture is too large to show. Open the original in the web app.",
+        },
+      ]);
+    } finally {
+      await close(client);
+    }
+  });
+
   it("returns a scaled portrait over MCP and keeps the original for REST", async () => {
     const id = await pub();
-    // A valid single-colour 32 by 3136 PNG, small on disk but tall in pixels.
-    const raw = Uint8Array.from(
-      atob(
-        "iVBORw0KGgoAAAANSUhEUgAAACAAAAxAAQAAAACUVSJ3AAAAJklEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAwIcBPUAAARircRgAAAAASUVORK5CYII=",
-      ),
-      (c) => c.charCodeAt(0),
-    );
+    const raw = portrait;
     const { pic } = await upload(owner, id, "image/png", raw);
     await thread(owner, id, [{ pictureId: pic.id }]);
     const client = await connect(
