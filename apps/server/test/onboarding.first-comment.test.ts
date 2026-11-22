@@ -526,6 +526,33 @@ describe("upgrade: the historical scan", () => {
     expect(await row(commentedKey(guest.userId))).toBeNull();
   });
 
+  it("leaves a member's legacy flag alone when the only typed comment is from an agent", async () => {
+    const id = await page("team");
+    const stub = runtimeStub(env as Env, id);
+    // Seed the historic author shape directly through the page's storage API.
+    await stub.commentsAdd({
+      actor: {
+        kind: "user",
+        ref: member.userId,
+        typed: true,
+        agent: { name: "Claude", via: null },
+      },
+      rate: `u:${member.userId}`,
+      version: 1,
+      anchor: { kind: "note" },
+      body: WORDS,
+    });
+    expect(await stub.commentsTypedFirsts()).toEqual([]);
+    await forget();
+    await setting(commentedKey(member.userId), "1");
+    await scanAll();
+    expect(await row(commentedKey(member.userId))).toBe("1");
+    expect(parseFirstComment(await row(commentedKey(member.userId)))).toBeNull();
+    const s = await state(member);
+    expect(s.firstComment).toBeNull();
+    expect(s.commented).toBe(true);
+  });
+
   it("asks at most `batch` pages a run", async () => {
     for (let i = 0; i < 3; i++) await page("team", `Cap ${i} ${tag}`);
     let asked = 0;
