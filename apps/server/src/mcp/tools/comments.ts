@@ -120,6 +120,11 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           ...(t.exec ? { ctx: t.exec } : {}),
         },
       };
+      if (i.threadId === undefined && i.requestCommentId !== undefined)
+        throw new ApiError(
+          "bad_request",
+          "`requestCommentId` is for a reply: add `threadId`, or drop it.",
+        );
       if (i.threadId !== undefined) {
         if (i.anchor !== undefined)
           throw new ApiError(
@@ -134,7 +139,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             who,
             viewer,
             i.body,
-            i.ask ? { ask: i.ask } : {},
+            {
+              ...(i.ask ? { ask: i.ask } : {}),
+              ...(i.requestCommentId
+                ? { requestCommentId: i.requestCommentId }
+                : {}),
+            },
             opts,
           ),
         );

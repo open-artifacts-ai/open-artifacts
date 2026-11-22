@@ -166,6 +166,8 @@ async function identity(
         agent: interactiveSession(c) ? undefined : agentOf(c),
         // #2511: the request's own caller, for checks on another artifact.
         caller: callerOf(user),
+        // #2577: request facts are for an interactive browser session only.
+        interactive: interactiveSession(c),
       },
       issued: null,
     };
@@ -429,7 +431,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, people, toAsker } = raw.data;
+    const { mentions, people, toAsker, requestCommentId } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -437,7 +439,13 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, people, toAsker, pictures: raw.data.pictures },
+      {
+        mentions,
+        people,
+        toAsker,
+        pictures: raw.data.pictures,
+        requestCommentId,
+      },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
