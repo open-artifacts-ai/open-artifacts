@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.241.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.240.0...v0.241.0) (2026-11-22)
+
+
+### Features
+
+* **bus:** per-project habits by default ([#2966](https://github.com/open-artifacts-ai/open-artifacts/issues/2966)) ([#3003](https://github.com/open-artifacts-ai/open-artifacts/issues/3003)) ([5396944](https://github.com/open-artifacts-ai/open-artifacts/commit/5396944f604d2845e1622713ccb3e83888aedd78))
+
 ## [0.240.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.239.2...v0.240.0) (2026-11-21)
 
 
