@@ -567,7 +567,8 @@ function attachExtras(
       name: r.name,
       state: r.state,
       ...(r.owner ? { owner: r.owner } : {}),
-      ...(r.identity
+      // #2577: an asker row's identity is internal proof (askedByOf reads it from the table), never projected into the public mentions.
+      ...(r.identity && r.kind !== "asker"
         ? { identity: JSON.parse(r.identity) as StoredIdentity }
         : {}),
     };
