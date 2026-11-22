@@ -141,6 +141,7 @@ import {
   mentionedKey,
   mentionRepliedKey,
   noteAskAnswered,
+  noteFirstComment,
   noteMentioned,
   noteMentionReplied,
   pendingFirst,
@@ -3431,6 +3432,13 @@ export async function addThread(
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
     await noteCommented(args[0], args[2].id, args[1].id);
+  await noteTypedComment(
+    args[0],
+    args[2],
+    args[1].id,
+    written,
+    opts.after?.ctx,
+  );
   // An agent's new thread can never be a reply to a mention.
   if (args[2].kind === "user" && !args[2].agent)
     await noteMentionActivity(
@@ -3462,6 +3470,7 @@ export async function addReply(
   );
   if (args[3].kind === "user" && !args[3].agent)
     await noteCommented(args[0], args[3].id, args[1]);
+  await noteTypedComment(args[0], args[3], args[1], written, opts.after?.ctx);
   await noteMentionActivity(
     args[0],
     args[1],
@@ -3472,6 +3481,32 @@ export async function addReply(
     true,
   );
   return c;
+}
+
+/**
+ * #2953: the person's first comment typed in the web app, on any page (a new
+ * thread, a reply, a mention included): the checklist's "Comment on a page"
+ * and the first_comment event. A token, MCP, agent or anonymous comment never
+ * counts (typedByPerson reads the credential kind the route set, #1797), and a
+ * guest-role or inactive account earns nothing (the upsert checks the user:
+ * the checklist is for active non-guest members). Never throws.
+ */
+async function noteTypedComment(
+  env: Env,
+  who: CommentWho,
+  artifactId: string,
+  written: StoredComment | undefined,
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+): Promise<void> {
+  if (who.kind !== "user" || !typedByPerson(who)) return;
+  const at = written ? Date.parse(written.createdAt) : Number.NaN;
+  await noteFirstComment(
+    env,
+    who.id,
+    artifactId,
+    Number.isFinite(at) ? at : Date.now(),
+  );
+  await noteMemberFirst(env, who.id, "first_comment", ctx);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   type OnboardingPatch,
   setupSteps,
 } from "@oa/shared";
+import { accessLevel, callerOf } from "../auth/authz.js";
 import { isGuestRole, isInstanceOwner } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -27,12 +28,14 @@ import { publish, purgeNow } from "./artifacts.js";
 import { busView, hasConnectedMachine } from "./bus.js";
 import {
   askAnsweredKey,
+  commentedKey,
   MENTION_STALLED_MS,
   mentionedKey,
   mentionRepliedKey,
   namedKey,
+  parseFirstComment,
 } from "./onboarding-firsts.js";
-import { idpName } from "./users.js";
+import { getUser, idpName } from "./users.js";
 
 // #2632: every flag is per person, `onboarding:<flag>:<userId>`. The owner's
 // install-wide rows from before (the four below) still read as the owner's, so
@@ -72,9 +75,8 @@ export const NOT_A_WELCOME = `id not in (select coalesce(json_extract(value, '$.
 export const listensAskedKey = (userId: string) =>
   `onboarding:listens-asked:${userId}`;
 
-/** One row per user who has posted a comment (any thread or reply). */
-export const commentedKey = (userId: string) =>
-  `onboarding:commented:${userId}`;
+/** One row per user who has posted a comment (any thread or reply); see onboarding-firsts.ts. */
+export { commentedKey };
 
 const SET = `insert into settings (key, value) values (?1, ?2)
   on conflict (key) do nothing`;
@@ -92,10 +94,10 @@ export async function getOnboarding(
   const userId = user.id;
   // The owner's rows from before #2632 are install-wide: read as theirs.
   const legacy = isInstanceOwner(user);
-  const [flags, own, agent, first, commented, firsts] = await env.DB.batch([
+  const [flags, own, agent, first, firsts] = await env.DB.batch([
     stmt(
       env.DB,
-      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`,
+      `select key, value from settings where key in (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`,
     ).bind(
       dismissedKey(userId),
       completedKey(userId),
@@ -108,6 +110,8 @@ export async function getOnboarding(
       WELCOME_KEY,
       legacy ? WELCOME_OPENED_KEY : "",
       listensAskedKey(userId),
+      // The legacy flag and the typed first comment are one row (commentedKey).
+      commentedKey(userId),
     ),
     stmt(
       env.DB,
@@ -129,9 +133,6 @@ export async function getOnboarding(
        and ${NOT_A_WELCOME}
        order by created_at, id limit 1`,
     ).bind(userId),
-    stmt(env.DB, "select 1 as x from settings where key = ?1").bind(
-      commentedKey(userId),
-    ),
     // #2478: the first times of the three new steps, and of the first mention.
     stmt(
       env.DB,
@@ -189,7 +190,13 @@ export async function getOnboarding(
       (keys.has(welcomeOpenedKey(userId)) || keys.has(WELCOME_OPENED_KEY)),
     agentConnected: agent.results.length > 0,
     firstArtifact: f ? { id: f.id, title: f.title } : null,
-    commented: commented.results.length > 0,
+    // Legacy true for either shape of the row; the page only for typed metadata.
+    commented: keys.has(commentedKey(userId)),
+    firstComment: await firstCommentOf(
+      env,
+      userId,
+      parseFirstComment(val(commentedKey(userId))),
+    ),
     agentNamed,
     agentName: agentNamed && !completed ? await agentName(env, userId) : null,
     mentionReplied,
@@ -203,6 +210,35 @@ export async function getOnboarding(
     listensAsked: keys.has(listensAskedKey(userId)),
     invitedBy: inviter ? { name: await realName(env, inviter) } : null,
   };
+}
+
+/** What a first comment reads as once its page is out of reach: the step stays done, nothing of the page is named. */
+const FIRST_COMMENT_KEPT = { artifactId: "", title: "a page" } as const;
+
+/**
+ * #2953: the person's first typed comment for the checklist. The progress is
+ * earned for good, but the page's id and title are shown only while the
+ * person can still open it now (a removed share, a lost space seat, a delete
+ * or a purge keeps the step done and names no page). Null: none yet.
+ */
+async function firstCommentOf(
+  env: Env,
+  userId: string,
+  fc: { artifactId: string; at: number } | null,
+): Promise<{ artifactId: string; title: string } | null> {
+  if (!fc) return null;
+  try {
+    const me = await getUser(env, userId);
+    if (!me) return { ...FIRST_COMMENT_KEPT };
+    const access = await accessLevel(env, callerOf(me), fc.artifactId);
+    if (!access) return { ...FIRST_COMMENT_KEPT };
+    return { artifactId: access.artifact.id, title: access.artifact.title };
+  } catch (e) {
+    logWarn("onboarding_first_comment_read_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+    return { ...FIRST_COMMENT_KEPT };
+  }
 }
 
 /** #2632: the instance owner's real name for a guest's "ask {owner}"; null when there is none or it can't be read. */
@@ -604,6 +640,11 @@ export async function memberSetups(
       firstArtifact: published.has(m.id) ? true : null,
       mentionReplied: keys.has(mentionRepliedKey(m.id)),
       askAnswered: keys.has(askAnsweredKey(m.id)),
+      // #2953: only that it happened (earned for good); never a page here.
+      // A legacy timestamp is not it: only valid typed metadata.
+      firstComment: parseFirstComment(values.get(commentedKey(m.id)))
+        ? { artifactId: "", title: "" }
+        : null,
     });
     const set =
       keys.has(completedKey(m.id)) ||

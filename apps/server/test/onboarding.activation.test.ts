@@ -50,7 +50,7 @@ const row = (key: string) =>
   env.DB.prepare("select value from settings where key = ?1")
     .bind(key)
     .first<{ value: string }>();
-/** The activation rows (the older "commented" flag is not one). */
+/** The activation rows (the "commented" row, a timestamp or #2953's JSON, is not one). */
 const rows = async () =>
   (
     await env.DB.prepare(
@@ -232,6 +232,23 @@ describe("tick 4: an own agent replied to the owner's mention", () => {
     s = await state();
     expect(s.mentionReplied).toBe(true);
     expect(s.mentionStalled).toBe(false);
+  });
+
+  it("a typed comment that mentions an agent is also the first comment (#2953); a token's is not", async () => {
+    await addThread(
+      E,
+      art(),
+      personWho(owner.userId, false),
+      viewer(owner.userId),
+      { anchor: NOTE, body: "hi @Claude", mentions: [{ key: claude }] },
+      { moderator: true },
+    );
+    expect((await state()).firstComment).toBeNull();
+    await mention();
+    expect((await state()).firstComment).toEqual({
+      artifactId,
+      title: "doc",
+    });
   });
 
   it("is stalled after 2 minutes with no reply, and a reply clears it", async () => {
