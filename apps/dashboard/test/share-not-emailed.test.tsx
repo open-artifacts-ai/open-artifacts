@@ -11,6 +11,8 @@ import {
   LIMIT_LINE,
   memberLimitLine,
   notEmailedLine,
+  pausedOn,
+  senderPausedLine,
 } from "../src/viewer/panels/shareRoles";
 import { installHarness, mountHosted } from "./harness";
 
@@ -81,6 +83,49 @@ describe("the lines (OA Product, #2620)", () => {
     );
     expect(LIMIT_LINE).toBe(notEmailedLine("limit", "Acme"));
   });
+  it("#2649 skipped: the neutral line, word for word, and never why", () => {
+    expect(notEmailedLine("skipped", "Acme")).toBe(
+      "We didn't email them this time. Copy the link and send it yourself.",
+    );
+    expect(notEmailedLine("skipped", "Acme", 20)).toBe(LIMIT_LINE);
+  });
+  it("#2649 skipped parses with the shared schema", () => {
+    expect(
+      ShareResultSchema.safeParse({
+        email: "a@b.co",
+        role: "viewer",
+        createdAt: "x",
+        emailed: false,
+        notEmailed: "skipped",
+      }).success,
+    ).toBe(true);
+  });
+  it("sender_paused names the pause's last day, and never the recipient (#2741)", () => {
+    const line =
+      "We didn't email them. Your share emails to people outside Acme are paused until 18 Nov, because some earlier ones bounced or were reported. Copy the link and send it yourself.";
+    expect(senderPausedLine("Acme", "2026-11-18T09:00:00.000Z")).toBe(line);
+    expect(
+      notEmailedLine(
+        "sender_paused",
+        "Acme",
+        undefined,
+        "2026-11-18T09:00:00.000Z",
+      ),
+    ).toBe(line);
+    // No date from the server, or one we can't read: "for now", same reason.
+    for (const until of [undefined, "", "not a date"]) {
+      expect(senderPausedLine("Acme", until)).toBe(
+        "We didn't email them. Your share emails to people outside Acme are paused for now, because some earlier ones bounced or were reported. Copy the link and send it yourself.",
+      );
+    }
+    expect(line).not.toContain("sam@");
+  });
+  it("pausedOn writes the pause as OA Product does, else null", () => {
+    expect(pausedOn("2026-11-18T09:00:00.000Z")).toBe("18 Nov");
+    expect(pausedOn("2026-11-05T23:30:00.000Z")).toMatch(/^[0-9]{1,2} Nov$/);
+    expect(pausedOn(undefined)).toBeNull();
+    expect(pausedOn("whenever")).toBeNull();
+  });
   it("instance_limit", () => {
     const line =
       "We didn't email them: Acme has reached today's limit for new people outside. Copy the link and send it yourself.";
@@ -109,6 +154,32 @@ describe("in the Share panel, after saving", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     return screen.findByText(/Shared with sam@partner\.org/);
   };
+
+  it("the panel dates the sharer's own pause from pausedUntil (#2741)", async () => {
+    const base = createHandlers({ hosted: true });
+    mountHosted(panel, true, undefined, [
+      http.put("*/api/v1/artifacts/:id/shares", async ({ request }) => {
+        const res = await getResponse(base, request);
+        if (!res?.ok) return res;
+        const body = (await res.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          ...body,
+          emailed: false,
+          notEmailed: "sender_paused",
+          pausedUntil: "2026-11-18T09:00:00.000Z",
+        });
+      }),
+    ]);
+    fireEvent.change(await screen.findByLabelText("Email"), {
+      target: { value: "sam@partner.org" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await screen.findByText(/Shared with sam@partner\.org/);
+    expect(document.querySelector("[data-share-sent]")?.textContent).toMatch(
+      /^We didn't email them\. Your share emails to people outside .+ are paused until 18 Nov, because some earlier ones bounced or were reported\. Copy the link and send it yourself\.$/,
+    );
+    expect(screen.getByLabelText("Artifact link")).toBeInTheDocument();
+  });
 
   it("the panel names the server's member limit", async () => {
     const base = createHandlers({ hosted: true });
@@ -147,6 +218,14 @@ describe("in the Share panel, after saving", () => {
     [
       "limit",
       /^We didn't email them this time\. Copy the link and send it yourself\.$/,
+    ],
+    [
+      "skipped",
+      /^We didn't email them this time\. Copy the link and send it yourself\.$/,
+    ],
+    [
+      "sender_paused",
+      /^We didn't email them\. Your share emails to people outside .+ are paused for now, because some earlier ones bounced or were reported\. Copy the link and send it yourself\.$/,
     ],
   ])("%s says so, and the link to copy stays", async (reason, line) => {
     await share(reason);

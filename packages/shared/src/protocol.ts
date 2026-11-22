@@ -94,6 +94,16 @@ export const OnboardingProgressSchema = z.strictObject({
   mentionReplied: z.boolean().optional(),
   mentionStalled: z.boolean().optional(),
   askAnswered: z.boolean().optional(),
+  /** #2953: the first typed comment's page title; null when none. Absent from an older shell or server: no comment step. */
+  firstComment: z
+    .strictObject({
+      artifactId: z.string().max(64),
+      title: z.string().max(500),
+    })
+    .nullable()
+    .optional(),
+  /** #2890: false hides "named" and "mention" (three steps). Absent from an older shell: five. */
+  busConnected: z.boolean().optional(),
   /**
    * #2632: on a member's own Welcome (never the owner's): who it greets.
    * Absent from an older shell: the page reads as the owner's.
@@ -105,8 +115,10 @@ export const OnboardingProgressSchema = z.strictObject({
       org: z.string().max(200),
       inviter: z.string().max(200).nullable(),
       teammateCommented: z.boolean(),
-      /** setupSteps(onboarding).done: the page shows the shared count. */
-      done: z.number().int().min(0).max(5).optional(),
+      /** The count without the comment step (#2953): Welcome pages published before it show this over 5 or 3. */
+      done: z.number().int().min(0).max(6).optional(),
+      /** setupSteps(onboarding).done, comment step included: the page shows the shared count. */
+      doneAll: z.number().int().min(0).max(6).optional(),
     })
     .optional(),
 });
@@ -677,3 +689,19 @@ export const RUNTIME_RESULTS = {
 export type RuntimeResult<M extends RuntimeMethod> = z.output<
   (typeof RUNTIME_RESULTS)[M]
 >;
+
+/**
+ * The content host's expiry page, shown in the artifact frame when its signed
+ * URL has expired, tells the viewer's shell so (#2959). Not a runtime message:
+ * it carries no nonce, and the shell accepts it only from the artifact frame.
+ * An artifact can post the same shape from its own frame, which buys it a
+ * reload of itself and nothing else.
+ */
+export const EXPIRED_MESSAGE = { oa: 1, type: "expired" } as const;
+
+/** Whether a window message is the expiry page's announce. */
+export const isExpiredMessage = (d: unknown): boolean =>
+  typeof d === "object" &&
+  d !== null &&
+  (d as { oa?: unknown }).oa === EXPIRED_MESSAGE.oa &&
+  (d as { type?: unknown }).type === EXPIRED_MESSAGE.type;

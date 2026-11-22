@@ -94,10 +94,10 @@ it("an admin sees every shared space by name, never personal ones", async () => 
   expect(clients).toHaveAttribute("href", `/settings/spaces?space=${CLIENTS}`);
   expect(clients).toHaveTextContent("No role for you");
   const exec = within(list).getByRole("link", { name: /Exec/ });
-  expect(exec).toHaveTextContent("Public links off");
+  expect(exec).toHaveTextContent("Link sharing off");
   // A muted status chip with an icon, not the role badge's outline.
   const chip = within(exec)
-    .getByText("Public links off")
+    .getByText("Link sharing off")
     .closest("[data-status]");
   expect(chip).toHaveAttribute("data-status", "muted");
   expect(chip?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
@@ -425,36 +425,36 @@ it("renaming PATCHes the trimmed name", async () => {
   );
 });
 
-it("a space manager who isn't an admin can rename and toggle public links only", async () => {
+it("a space manager who isn't an admin can rename and toggle sharing by link only", async () => {
   mountHosted(`/settings/spaces?space=${ENG}`, true, asManager);
   expect(await screen.findByRole("textbox", { name: "Name" })).toBeEnabled();
-  expect(screen.getByRole("switch", { name: "Public links" })).toBeEnabled();
+  expect(screen.getByRole("switch", { name: "Sharing by link" })).toBeEnabled();
   expect(
     screen.queryByRole("combobox", { name: "Role for All members" }),
   ).toBeNull();
   expect(screen.queryByRole("button", { name: "Delete space" })).toBeNull();
 });
 
-it("turning public links off: Design's confirm, then PATCH", async () => {
+it("turning sharing by link off: Design's confirm, then PATCH", async () => {
   const seen = calls("PATCH");
   mountHosted(`/settings/spaces?space=${ENG}`);
-  const sw = await screen.findByRole("switch", { name: "Public links" });
+  const sw = await screen.findByRole("switch", { name: "Sharing by link" });
   expect(sw).toHaveAttribute("aria-checked", "true");
   fireEvent.click(sw);
   const d = screen.getByRole("alertdialog");
   expect(
     within(d).getByRole("heading", {
-      name: "Turn off public links in Engineering?",
+      name: "Turn off sharing by link in Engineering?",
     }),
   ).toBeVisible();
   const lines = [...d.querySelectorAll("p")].map((p) => p.textContent);
   expect(lines).toEqual([
-    "No one can make new public links in Engineering. Public links already here keep working.",
-    "To stop an existing link, open the artifact and make it private.",
+    "No one can share by link from Engineering any more. Links already shared keep working.",
+    "To stop a link already shared, open the artifact and change “Anyone with the link” to Restricted.",
   ]);
   expect(d).not.toHaveTextContent("visible to the team only");
   fireEvent.click(
-    within(d).getByRole("button", { name: "Turn off public links" }),
+    within(d).getByRole("button", { name: "Turn off sharing by link" }),
   );
   await waitFor(() =>
     expect(seen.at(-1)).toEqual(
@@ -463,10 +463,12 @@ it("turning public links off: Design's confirm, then PATCH", async () => {
   );
 });
 
-it("turning public links on needs no confirm", async () => {
+it("turning sharing by link on needs no confirm", async () => {
   const seen = calls("PATCH");
   mountHosted("/settings/spaces?space=SpExcNpQrSt3uVwX");
-  fireEvent.click(await screen.findByRole("switch", { name: "Public links" }));
+  fireEvent.click(
+    await screen.findByRole("switch", { name: "Sharing by link" }),
+  );
   expect(screen.queryByRole("alertdialog")).toBeNull();
   await waitFor(() =>
     expect(seen.at(-1)).toEqual(

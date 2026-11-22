@@ -14,6 +14,7 @@ import {
   FALLBACK_BUS_NAME,
   type FormerName,
   frameId,
+  type GuestDeliveryKind,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
   impersonates,
@@ -57,7 +58,7 @@ import { logError, logInfo } from "../log.js";
 import { runtimeStub } from "../runtime/do.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
-import { activation } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import {
   type BusCloseKind,
   busCloseKind,
@@ -163,9 +164,12 @@ import {
 import {
   markStopped,
   noteHello,
-  readRunVersion,
+  readUpdateState,
   recordReport,
   STOPPED_AFTER_MS,
+  soakEnds,
+  targetFor,
+  type UpdateState,
 } from "./updates.js";
 
 // BusHub (#1291): OpenBus 0.63.0's hub DO (apps/server/src/hub/do.ts), one per
@@ -222,6 +226,8 @@ const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 const REVOKED_AT_KEY = "revoked_at";
 /** meta key: when the earliest `switching` report's 5 minutes end (ms); absent: none waits (#2552). */
 const UPDATE_DUE_KEY = "update_due";
+/** meta: when the default release's 24 h soak ends (#2552): the alarm then re-tells the sockets. */
+const SOAK_DUE_KEY = "update_soak_due";
 /**
  * Latest alarm time ever asked of workerd, which throws past year 2189. A
  * later deadline is clamped here (and re-checked when this alarm fires).
@@ -321,6 +327,8 @@ type Attachment = {
    * the attachment so they survive hibernation. Absent: no hello with caps.
    */
   caps?: string[];
+  /** The `client_version` of the socket's latest hello (#2552): the default target is only ever forward of it. */
+  clientVersion?: string;
 };
 
 function attachmentOf(ws: WebSocket): Attachment | null {
@@ -368,7 +376,14 @@ const HUB_CAPS = [
   BUS_CAPS.runVersion,
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
+  BUS_CAPS.guest,
 ];
+
+/** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
+const guestGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.guest);
+};
 
 /** #2759: `owner_away` goes only to a socket whose hello listed BUS_CAPS.ownerAway. */
 const ownerAwayGated = (ws: WebSocket): boolean => {
@@ -961,6 +976,9 @@ export const PROOFS_PER_SESSION = 16;
  */
 export const PROOF_AWAY_GRACE_MS = 120_000;
 
+/** #2793 S3b: the namespace a guest shows where it acted: it has none. */
+export const GUEST_NAMESPACE = "guest";
+
 /** #2110: drops every proof of the agents in `ids` (a JSON array of ids). */
 function dropProofs(sql: SqlStorage, ids: string): void {
   sql.exec(
@@ -1011,6 +1029,57 @@ function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
       "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
       id,
     );
+}
+
+/** #2793 S3b: the guest a machine registered under `ref`, or null. */
+function guestRow(
+  sql: SqlStorage,
+  machineId: string,
+  ref: string,
+): { id: string; name: string } | null {
+  return one<{ id: string; name: string }>(
+    sql,
+    "select id, name from guests where machine_id = ? and native_ref = ?",
+    machineId,
+    ref,
+  );
+}
+
+/** #2793 S3b: most guests one machine keeps; the least recently registered go first. */
+export const GUESTS_PER_MACHINE = 32;
+
+/**
+ * #2793 S3b: a guest's proof binds as an agent's does (a hash names one
+ * session, at most PROOFS_PER_SESSION per session, the identity minted at the
+ * first bind), against the `guests` row.
+ */
+function bindGuestProof(sql: SqlStorage, guestId: string, hash: string): void {
+  sql.exec(
+    "delete from agent_proofs where hash = ? and agent_id != ?",
+    hash,
+    guestId,
+  );
+  sql.exec(
+    `insert into agent_proofs (hash, agent_id, seq)
+     values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
+     on conflict (hash) do update set agent_id = excluded.agent_id,
+       seq = case when agent_proofs.agent_id = excluded.agent_id
+                  then agent_proofs.seq else excluded.seq end`,
+    hash,
+    guestId,
+  );
+  sql.exec(
+    `delete from agent_proofs where agent_id = ? and hash not in
+       (select hash from agent_proofs where agent_id = ? order by seq desc limit ?)`,
+    guestId,
+    guestId,
+    PROOFS_PER_SESSION,
+  );
+  sql.exec(
+    "update guests set identity_id = coalesce(identity_id, ?) where id = ?",
+    randomHex(32),
+    guestId,
+  );
 }
 
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
@@ -4610,16 +4679,46 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       this.#now() - PROOF_AWAY_GRACE_MS,
     );
+    // #2793 S3b: a guest's proof names it where it acted. Its namespace is a
+    // fixed word: a guest has none.
+    const asGuest = found
+      ? null
+      : one<AgentIdentity>(
+          this.ctx.storage.sql,
+          `select g.identity_id as identityId, '${GUEST_NAMESPACE}' as namespace, g.name, g.kind
+            from agent_proofs p join guests g on g.id = p.agent_id
+           where p.hash = ? and g.identity_id is not null
+             and not exists (select 1 from machines m where m.id = g.machine_id and m.revoked_at is not null)`,
+          hash,
+        );
     // The proof in use becomes its session's newest, so no later bind or
     // replay evicts it. A no-op when it already is.
-    if (found)
+    if (found ?? asGuest)
       this.ctx.storage.sql.exec(
         `update agent_proofs set seq = (select max(seq) + 1 from agent_proofs)
           where hash = ?1 and seq < (select max(seq) from agent_proofs
             where agent_id = (select agent_id from agent_proofs where hash = ?1))`,
         hash,
       );
-    return found;
+    return found ?? asGuest;
+  }
+
+  /**
+   * #2793 S3b: a tools/call by this member carried a proof that resolved to no
+   * session. Tells this member's own daemons (this hub is theirs alone, so no
+   * other member's daemon is ever reached), and only those whose hello listed
+   * the guest cap, the hash and nothing else. The daemon rate-limits what it
+   * acts on. Worker only.
+   */
+  async proofSeen(hash: string): Promise<number> {
+    if (!LinkProofHashSchema.safeParse(hash).success) return 0;
+    let n = 0;
+    for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
+      if (ws.readyState !== OPEN || isReplaced(ws) || !guestGated(ws)) continue;
+      if (trySendFrame(ws, { v: 1, id: frameId(), type: "proof_seen", hash }))
+        n++;
+    }
+    return n;
   }
 
   /**
@@ -5222,6 +5321,8 @@ export class BusHub extends DurableObject<Env> {
       "delete from agent_proofs where agent_id in (select p.agent_id from agent_proofs p cross join agents a on a.id = p.agent_id where a.machine_id = ?)",
       id,
     );
+    // #2793 S3b: its guests go with it (their proofs by the table's trigger).
+    sql.exec("delete from guests where machine_id = ?", id);
     sql.exec(
       "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do nothing",
       OWNER_ORG_ID,
@@ -5565,6 +5666,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #2793 S3b: as unknown as it is to an older hub without the cap.
+    if ((f.type === "guest_up" || f.type === "guest_down") && !guestGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // #2552: as unknown as it is to an older hub without the cap.
     if (f.type === "update_report" && !runVersionGated(ws)) {
       reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
@@ -5579,8 +5686,12 @@ export class BusHub extends DurableObject<Env> {
 
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
-    const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
-    if (ref !== null && !sender) {
+    // #2793 S3b: a guest binds its own proof; it is no agent and sends nothing else.
+    const guest =
+      f.type === "link_bind" ? guestRow(sql, machineId, f.agent_ref) : null;
+    const sender =
+      ref === null || guest ? null : registeredAgent(sql, machineId, ref);
+    if (ref !== null && !sender && !guest) {
       reject(
         ws,
         machineId,
@@ -5601,6 +5712,7 @@ export class BusHub extends DurableObject<Env> {
           ws.serializeAttachment({
             ...rest,
             ...(f.caps === undefined ? {} : { caps: [...f.caps] }),
+            clientVersion: f.client_version,
           } satisfies Attachment);
         }
         // #2759: a cap'd hello is told when the owner's quiet hours end when
@@ -5630,13 +5742,16 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.ackConfirm) ||
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
-          hasCap(f, BUS_CAPS.ownerAway)
+          hasCap(f, BUS_CAPS.ownerAway) ||
+          hasCap(f, BUS_CAPS.guest)
             ? // Everything the hub always listed, plus owner_away only to a
               // daemon that listed it: an older daemon decodes at most 16
               // caps, and HUB_CAPS outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
-                  (c) => c !== BUS_CAPS.ownerAway || hasCap(f, c),
+                  (c) =>
+                    (c !== BUS_CAPS.ownerAway && c !== BUS_CAPS.guest) ||
+                    hasCap(f, c),
                 ),
               }
             : {}),
@@ -5651,8 +5766,9 @@ export class BusHub extends DurableObject<Env> {
           // #2552: only when the instance names one, and only to a socket
           // that listed the cap. Unknown yet (cold cache): the push below.
           // null: it names none (cleared, #2719).
+          // The machine's own target (named, default or cleared), see #targetFor.
           ...(hasCap(f, BUS_CAPS.runVersion) && this.#runVersionFresh()
-            ? { run_version: this.#runVersion }
+            ? { run_version: this.#targetFor(ws) }
             : {}),
         });
         {
@@ -5693,6 +5809,12 @@ export class BusHub extends DurableObject<Env> {
         return;
       }
       case "agent_up": {
+        // #2793 S3b: "guest" is what a guest shows where it acted; no real
+        // agent may hold it, so no lookup by namespace can reach the wrong one.
+        if (f.namespace === GUEST_NAMESPACE) {
+          sendError(ws, f.id, "bad_frame", "Reserved namespace");
+          return;
+        }
         const cap = capRefusal(sql, machineId, f.agent_ref);
         if (cap !== null) {
           logEvent("cap_refused", { kind: cap, machineId });
@@ -5829,7 +5951,53 @@ export class BusHub extends DurableObject<Env> {
           counts: waitingByRef(sql, machineId, f.agent_refs),
         });
         return;
+      case "guest_up": {
+        // #2793 S3b: the name and the kind only. A row of its own, on no roster.
+        const name = candidateName(f.proposed_name, { harness: true });
+        const now = this.#now();
+        const known = guestRow(sql, machineId, f.agent_ref);
+        const gid = known?.id ?? newId();
+        sql.exec(
+          `insert into guests (id, machine_id, native_ref, name, kind, updated_at)
+           values (?, ?, ?, ?, ?, ?)
+           on conflict (machine_id, native_ref) do update set name = excluded.name, updated_at = excluded.updated_at`,
+          gid,
+          machineId,
+          f.agent_ref,
+          name,
+          f.kind,
+          now,
+        );
+        // Over the cap, the oldest of this machine's guests go (their proofs with them).
+        sql.exec(
+          `delete from guests where machine_id = ? and id not in
+             (select id from guests where machine_id = ? order by updated_at desc, rowid desc limit ?)`,
+          machineId,
+          machineId,
+          GUESTS_PER_MACHINE,
+        );
+        sendFrame(ws, {
+          v: 1,
+          id: f.id,
+          type: "agent_ok",
+          agent_ref: f.agent_ref,
+          bus_name: name,
+        });
+        return;
+      }
+      case "guest_down":
+        sql.exec(
+          "delete from guests where machine_id = ? and native_ref = ?",
+          machineId,
+          f.agent_ref,
+        );
+        return;
       case "link_bind":
+        if (guest) {
+          bindGuestProof(sql, guest.id, f.hash);
+          sendFrame(ws, { v: 1, id: f.id, type: "link_bound" });
+          return;
+        }
         // Only an agent this socket registered (the check above): a machine
         // can bind a proof only for a session it hosts.
         if (sender) {
@@ -5990,9 +6158,33 @@ export class BusHub extends DurableObject<Env> {
 
   // ----------------------------------------------------- #2552 updates
 
-  /** The instance's named version as last read; null: none. Stale after RUN_VERSION_TTL_MS. */
-  #runVersion: string | null = null;
+  /** The update settings as last read. Stale after RUN_VERSION_TTL_MS. */
+  #updState: UpdateState = { named: null, paused: false, since: null };
   #runVersionAt = -Infinity;
+  /** The release this hub vouches for as the default; tests swap it. */
+  #serverVersion: string = VERSION;
+
+  /** Tests only, inside `runInDurableObject`: the server's own VERSION (null: the built-in). */
+  static setTestServerVersion(hub: BusHub, v: string | null): void {
+    hub.#serverVersion = v ?? VERSION;
+  }
+
+  /**
+   * What `ws` is told (#2552): paused or nothing to follow: null (clear);
+   * the named version; else the soaked default if newer than the machine.
+   * null is what a cleared setting always sent, and the daemon treats it as
+   * "nothing the instance names": it drops the version it last heard and
+   * swaps nothing in. It never moves a machine; "send nothing" would instead
+   * leave a stale named version armed on the machine.
+   */
+  #targetFor(ws: WebSocket): string | null {
+    return targetFor(
+      this.#updState,
+      this.#serverVersion,
+      attachmentOf(ws)?.clientVersion,
+      this.#now(),
+    );
+  }
   #runVersionFresh(): boolean {
     return this.#now() - this.#runVersionAt < RUN_VERSION_TTL_MS;
   }
@@ -6014,14 +6206,16 @@ export class BusHub extends DurableObject<Env> {
     this.indexInFlight++;
     try {
       const fresh = this.#runVersionFresh();
-      const sent = fresh ? this.#runVersion : undefined;
+      const sent = fresh ? this.#targetFor(ws) : undefined;
       await Promise.race([
         noteHello(this.env, machineId, this.#now()),
         new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
       ]).catch((e) => logError("bus_update_hello_failed", e));
       // #2719: a failed read leaves the cache stale; push nothing then.
       if (!fresh && !(await this.#refreshRunVersion())) return;
-      if (this.#runVersion !== sent) this.#pushRunVersion(ws);
+      if (this.#targetFor(ws) !== sent) this.#pushRunVersion(ws);
+      // The soak's alarm was armed by the read above, after this turn's commit.
+      await this.#commitArm();
     } finally {
       this.indexInFlight--;
     }
@@ -6029,8 +6223,13 @@ export class BusHub extends DurableObject<Env> {
 
   async #refreshRunVersion(): Promise<boolean> {
     try {
-      this.#runVersion = await readRunVersion(this.env);
+      this.#updState = await readUpdateState(
+        this.env,
+        this.#serverVersion,
+        this.#now(),
+      );
       this.#runVersionAt = this.#now();
+      this.#armSoak();
       return true;
     } catch (e) {
       // Keep what we had; a later hello asks again.
@@ -6045,7 +6244,7 @@ export class BusHub extends DurableObject<Env> {
       v: 1,
       id: frameId(),
       type: "run_version",
-      run_version: this.#runVersion,
+      run_version: this.#targetFor(ws),
     });
   }
 
@@ -6064,6 +6263,11 @@ export class BusHub extends DurableObject<Env> {
     // fresh, not from the cache; a failed read is a no. A step back (`to`
     // below `from`) and the person's own request pass.
     if (f.event === "switching") {
+      // Allowed: the person's own request (reason "requested"); a step back
+      // (`to` below `from`, e.g. the bus's own after a failed start); else
+      // only what the instance says now, read fresh: the named version, or
+      // (not paused, soaked, forward of `from`) the default. Paused refuses
+      // every instance-driven switch.
       let allowed =
         f.reason === "requested" ||
         (f.to !== "" &&
@@ -6072,7 +6276,16 @@ export class BusHub extends DurableObject<Env> {
           semverGte(f.from, f.to));
       if (!allowed) {
         try {
-          allowed = (await readRunVersion(this.env)) === f.to;
+          const st = await readUpdateState(
+            this.env,
+            this.#serverVersion,
+            this.#now(),
+          );
+          this.#updState = st;
+          this.#runVersionAt = this.#now();
+          allowed =
+            f.to !== "" &&
+            targetFor(st, this.#serverVersion, f.from, this.#now()) === f.to;
         } catch (e) {
           logError("bus_run_version_read_failed", e);
         }
@@ -6140,6 +6353,51 @@ export class BusHub extends DurableObject<Env> {
     await this.#refreshRunVersion();
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
       this.#pushRunVersion(ws);
+    await this.#commitArm();
+  }
+
+  /** Remembers (meta, so an eviction forgets nothing) and arms the alarm for the end of the soak. */
+  #armSoak(): void {
+    const end = soakEnds(this.#updState, this.#serverVersion);
+    if (end === null || end <= this.#now()) return;
+    this.ctx.storage.sql.exec(
+      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+      OWNER_ORG_ID,
+      SOAK_DUE_KEY,
+      String(end),
+    );
+    this.#arm(end);
+  }
+
+  #soakDue(): number | null {
+    const v = one<{ value: string }>(
+      this.ctx.storage.sql,
+      "select value from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      SOAK_DUE_KEY,
+    )?.value;
+    const n = v === undefined ? Number.NaN : Number(v);
+    return Number.isSafeInteger(n) ? n : null;
+  }
+
+  /** The alarm's part: the soak ended, so every connected machine is told its target again. */
+  async #soakEdge(now: number): Promise<void> {
+    const due = this.#soakDue();
+    if (due === null) return;
+    if (due > now) {
+      this.#arm(due);
+      return;
+    }
+    this.ctx.storage.sql.exec(
+      "delete from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      SOAK_DUE_KEY,
+    );
+    try {
+      await this.runVersionChanged();
+    } catch (e) {
+      logError("bus_update_soak_failed", e);
+    }
   }
 
   #updateDue(): number | null {
@@ -6246,7 +6504,7 @@ export class BusHub extends DurableObject<Env> {
         if (await noteAgentNamed(this.env, userId)) {
           this.#namedKnown = true;
           // #2479: the first time only; best effort, never fails the frame.
-          await activation(this.env, "agent_named", this.ctx);
+          await noteMemberFirst(this.env, userId, "agent_named", this.ctx);
         } else if (await namedRecorded(this.env, userId))
           this.#namedKnown = true;
       })().catch(() => {}),
@@ -7985,6 +8243,56 @@ export class BusHub extends DurableObject<Env> {
     }
   }
 
+  /**
+   * #2793 S3b: a notice addressed to a GUEST's identity. Null when no guest
+   * holds it (the caller drops as before). A guest gets a reply, an @mention or
+   * the answer to its own ask and nothing else (by the notice's structured
+   * kind and target, never its text); it is sent at once to a socket that
+   * listed the guest and notice_meta caps, and never held.
+   */
+  #guestNotice(n: BusNotice): DeliveryOutcome | null {
+    if (n.toIdentity === undefined) return null;
+    const sql = this.ctx.storage.sql;
+    const g = one<{ machineId: string; nativeRef: string }>(
+      sql,
+      "select machine_id as machineId, native_ref as nativeRef from guests where identity_id = ?",
+      n.toIdentity,
+    );
+    if (!g) return null;
+    const kind: GuestDeliveryKind | null =
+      n.kind === "ask_answered"
+        ? "answer"
+        : n.kind === "comment" && n.target?.kind === "mention"
+          ? "mention"
+          : n.kind === "comment" &&
+              (n.target?.kind === "asker" || n.target?.kind === "reply")
+            ? "reply"
+            : null;
+    if (kind === null) {
+      logEvent("notice_dropped", { reason: "guest_kind" });
+      return "dropped";
+    }
+    const live = liveSocket(this.ctx, g.machineId);
+    if (!live || !guestGated(live) || !noticeMetaGated(live)) return "dropped";
+    const base = parseNoticeMeta(noticeMetaOf(n));
+    if (!base) return "dropped";
+    const meta = JSON.stringify({ ...base, guest: kind });
+    const ack = noticeAckOf(n);
+    const sent = this.#sendNotice(
+      live,
+      {
+        machineId: g.machineId,
+        nativeRef: g.nativeRef,
+        namespace: GUEST_NAMESPACE,
+      } as AgentRow,
+      n.text,
+      ack,
+      meta,
+    );
+    if (!sent) return "dropped";
+    return ack !== null && noticeAckGated(live) ? "held" : "delivered";
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -8002,6 +8310,10 @@ export class BusHub extends DurableObject<Env> {
       // waiting row: the agent at the name is not who it was meant for.
       const at = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
       if (!at) {
+        // #2793 S3b: no agent holds it, but a guest of this member may: only
+        // the three structured kinds reach it, now or never (nothing is held).
+        const viaGuest = this.#guestNotice(n);
+        if (viaGuest !== null) return viaGuest;
         logEvent("notice_dropped", { reason: "identity" });
         return "dropped";
       }
@@ -8493,6 +8805,7 @@ export class BusHub extends DurableObject<Env> {
 
     // 7. #2552: a machine that reported `switching` and never said hello again.
     await this.#stoppedMachines(now);
+    await this.#soakEdge(now);
     // 8. #2759: the owner's quiet hours began or ended.
     await this.#ownerAwayEdge(now);
 
@@ -8518,6 +8831,7 @@ export class BusHub extends DurableObject<Env> {
     const ts = [
       want,
       this.#ownerAwayDue(),
+      this.#soakDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       min(
         "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",

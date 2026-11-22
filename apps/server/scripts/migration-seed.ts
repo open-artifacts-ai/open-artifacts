@@ -46,9 +46,11 @@ export const SHAPE = {
   reserved_artifacts: 1_000,
   uploads: 100_000,
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
+  artifact_ask_slots: 3_000, // #2426 B, #2536: a slot for most asks
   held_requests: 500, // #2577: requests to someone else's agent, held for their person
   held_request_items: 800,
   agent_listens: 300,
+  listed_deliveries: 1_000, // #2577: requests that went straight to a listed sender's receiver
   inbox_later: 2_000, // #2762: needs-you items put off once
   inbox_items: 20_000, // #2512 S2: mentions and updates, a few per active member
   data_writes_total: 1, // the install-wide write counter: one row
@@ -567,6 +569,27 @@ export const RULES: Record<string, Rule> = {
   },
   // #1623: the open-asks index. An ask names one or two people; most are
   // still open.
+  // #2426 B, #2536: an ask shown in one of a page's [data-oa-ask] slots.
+  artifact_ask_slots: {
+    rows: (c) => c.count("artifact_ask_slots"),
+    row(i, c) {
+      const page = c.artifacts[(i * 89) % c.artifacts.length];
+      const home = c.artifacts[(i * 971) % c.artifacts.length];
+      const u = c.users[(i * 48271) % c.users.length];
+      if (!page || !home || !u) return null;
+      return {
+        artifact_id: page.id,
+        slot_key: `slot-${i}`,
+        home_artifact_id: home.id,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        note: c.rand() < 0.3 ? "Gates the landing." : null,
+        placed_by: u.id,
+        placed_agent: c.rand() < 0.5 ? "OA Manager" : null,
+        created_at: c.time(),
+      };
+    },
+  },
   artifact_asks: {
     rows: (c) => c.count("artifact_asks"),
     row(i, c) {
@@ -639,6 +662,24 @@ export const RULES: Record<string, Rule> = {
         created_via: "allow_page",
         created_at: Date.now(),
         removed_at: null,
+      };
+    },
+  },
+  listed_deliveries: {
+    rows: (c) => c.count("listed_deliveries"),
+    row(i, c) {
+      const a = c.artifacts[(i * 61) % c.artifacts.length];
+      const r = c.users[(i * 5009) % c.users.length];
+      const u = c.users[(i * 3989 + 1) % c.users.length];
+      if (!a || !r || !u || r.id === u.id) return null;
+      return {
+        id: c.id("ld"),
+        receiver_id: r.id,
+        sender_id: u.id,
+        artifact_id: a.id,
+        comment_id: c.id("cm"),
+        agent_key: `agent:seed${i}`,
+        created_at: Date.now() - c.int(30 * 86_400_000),
       };
     },
   },

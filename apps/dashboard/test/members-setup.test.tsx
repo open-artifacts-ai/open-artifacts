@@ -50,6 +50,15 @@ const ROWS = [
     setup: { state: "set", done: 5 },
   },
   {
+    id: "m_chat",
+    email: "chat@example.com",
+    name: "Chet Chat",
+    role: "member",
+    lastSeenAt: null,
+    // #2890: never connected the bus: of 3, never held up on named or mention.
+    setup: { state: "partial", done: 2, total: 3, stalled: "ask" },
+  },
+  {
     id: "m_dana",
     email: "dana@example.com",
     name: null,
@@ -88,6 +97,10 @@ describe("the Setup column", () => {
     expect(priya?.textContent).toBe(
       "Setup: 0 of 5no agent connected yetReminded 15 Nov",
     );
+    // #2890: the count of three, with the step that really holds it up.
+    expect(cell(await row("Chet Chat"))?.textContent).toBe(
+      "Setup: 2 of 3ask not answered yet",
+    );
     expect(cell(await row("Jon Lee"))?.textContent).toBe("Setup: Set up");
     expect(cell(await row("dana@example.com"))?.textContent).toBe(
       "Setup: Invited",
@@ -95,6 +108,43 @@ describe("the Setup column", () => {
     expect(cell(await row("ana@venue.example"))?.textContent).toBe("Setup: –");
     // The owner's row carries setup too (the amended contract).
     expect(cell(await row("Ada Lovelace"))?.textContent).toBe("Setup: Set up");
+  });
+
+  it("counts of 6 and 4 with the comment step, held up on it (#2953)", async () => {
+    const rows = http.get(`*${R.members}`, ({ request }) =>
+      HttpResponse.json(
+        new URL(request.url).searchParams.get("status")
+          ? []
+          : [
+              ROWS[0],
+              {
+                ...ROWS[1],
+                setup: {
+                  state: "partial",
+                  done: 3,
+                  total: 6,
+                  stalled: "comment",
+                },
+              },
+              {
+                ...ROWS[2],
+                setup: {
+                  state: "partial",
+                  done: 2,
+                  total: 4,
+                  stalled: "comment",
+                },
+              },
+            ],
+      ),
+    );
+    mountHosted("/settings/members", true, as("owner"), [rows]);
+    expect(cell(await row("Sam Ortiz"))?.textContent).toBe(
+      "Setup: 3 of 6no comment yet",
+    );
+    expect(cell(await row("Priya Shah"))?.textContent).toBe(
+      "Setup: 2 of 4no comment yet",
+    );
   });
 
   it("an admin sees it", async () => {
@@ -153,7 +203,12 @@ describe("Copy the setup line", () => {
 describe("memberSetup (#2639's MemberSchema)", () => {
   it("parses a row with and without setup", () => {
     expect(MemberSchema.parse(ROWS[1]).setup?.stalled).toBe("mention");
-    expect(MemberSchema.parse(ROWS[5]).setup).toBeUndefined();
+    expect(
+      MemberSchema.parse(ROWS.find((r) => r.role === "guest")).setup,
+    ).toBeUndefined();
+    expect(
+      MemberSchema.parse(ROWS.find((r) => r.id === "m_chat")).setup?.total,
+    ).toBe(3);
   });
   it("dates read as the screens do", () => {
     expect(shortDate("2026-11-15T10:00:00.000Z")).toBe("15 Nov");

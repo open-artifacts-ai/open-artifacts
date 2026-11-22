@@ -154,22 +154,28 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
   };
 }
 
+/** Bound on the once-only sets, so a long-lived daemon does not grow them without end. */
+const SEEN_MAX = 1000;
 const noted = new Set<string>();
 
 /**
  * The line the daemon says once per folder for a session that has no
  * instance yet, or undefined (already said, or the folder is mapped).
- * Slice S3 calls this; it writes nothing.
+ * The daemon calls this for a session that starts in an unmapped folder; it
+ * writes nothing.
  */
 export function unmappedFolderNote(
   cwd: string,
   h: string = home(),
+  /** The folder's key, when the caller already has it (it runs git). */
+  known?: string,
 ): string | undefined {
   if (!("unmapped" in folderHomeLookup(h)(cwd))) return undefined;
-  const key = `${h}\0${folderKey(cwd)}`;
+  const key = `${h}\0${known ?? folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
+  if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
-  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use here.`;
+  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use in this folder.`;
 }
 
 /**
@@ -214,4 +220,38 @@ export function instanceAt(
   list: Instance[],
 ): Instance | undefined {
   return list.find((i) => canonicalAddress(i.hub) === address);
+}
+
+const suggested = new Set<string>();
+const ADDRESS_SHOWN_MAX = 120;
+
+/**
+ * The line the daemon says once per folder and suggestion when the repo
+ * suggests an instance that differs from what the folder last saw, after the
+ * folder was already answered (yes or no). It never moves the session and
+ * writes nothing: `use` is what records the new suggestion. The address is
+ * the canonical (ASCII, xn--) form.
+ */
+export function changedSuggestionNote(
+  cwd: string,
+  h: string = home(),
+  /** The folder's key, when the caller already has it (it runs git). */
+  known?: string,
+): string | undefined {
+  const { folders: f, unusable } = inspectFolders(h);
+  if (unusable) return undefined;
+  const key = known ?? folderKey(cwd);
+  const covering = coveringEntry(f, key);
+  if (covering === undefined && f.no[key] === undefined) return undefined;
+  const found = readSuggestion(cwd, covering ? { below: covering.dir } : {});
+  if (found === undefined || found === f.seen[key]) return undefined;
+  // Characters a terminal could act on are never shown.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: strips controls
+  const shown = found.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
+  if (shown !== found || shown.length > ADDRESS_SHOWN_MAX) return undefined;
+  const once = `${h}\0${key}\0${found}`;
+  if (suggested.has(once)) return undefined;
+  if (suggested.size >= SEEN_MAX) suggested.clear();
+  suggested.add(once);
+  return `This repo now suggests ${shown}. Nothing changed: this folder keeps its answer.`;
 }

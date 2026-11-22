@@ -1,7 +1,8 @@
 import {
-  AgentRequestsSwitchSchema,
+  AgentRequestsSwitchBodySchema,
   AllowBodySchema,
   AllowChallengeBodySchema,
+  ListenAddBodySchema,
   ListenShortenBodySchema,
   R,
 } from "@oa/shared";
@@ -11,14 +12,18 @@ import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import type { AppEnv } from "../http/middleware.js";
 import {
+  addListens,
   agentRequestsOn,
   allow,
   allowChallenge,
+  askHistory,
   listHeld,
   listListens,
   notNow,
+  phonePushOn,
   removeListen,
   setAgentRequests,
+  setPhonePush,
   shortenListen,
 } from "../services/agent-requests.js";
 import type { AppType } from "./index.js";
@@ -75,18 +80,36 @@ export function mountAgentRequests(app: AppType): void {
   // #2577 S2: the switch. Reading is any signed-in person's; saving is a browser session only.
   app.get(R.agentRequests, async (c) => {
     const user = requireUser(c);
-    return c.json({ on: await agentRequestsOn(c.env, user.id) });
+    return c.json({
+      on: await agentRequestsOn(c.env, user.id),
+      phonePush: await phonePushOn(c.env, user.id),
+    });
   });
   app.put(R.agentRequests, async (c) => {
     const user = member(c);
-    const body = await jsonBody(c, AgentRequestsSwitchSchema);
-    return c.json({ on: await setAgentRequests(c.env, user.id, body.on) });
+    const body = await jsonBody(c, AgentRequestsSwitchBodySchema);
+    if (body.on !== undefined) await setAgentRequests(c.env, user.id, body.on);
+    if (body.phonePush !== undefined)
+      await setPhonePush(c.env, user.id, body.phonePush);
+    return c.json({
+      on: await agentRequestsOn(c.env, user.id),
+      phonePush: await phonePushOn(c.env, user.id),
+    });
   });
 
   // #2577 S2: the "listens to" list.
   app.get(R.agentListens, async (c) => {
     const user = member(c);
     return c.json(await listListens(c.env, user.id));
+  });
+  app.post(R.agentListens, async (c) => {
+    const user = member(c);
+    const body = await jsonBody(c, ListenAddBodySchema);
+    return c.json(await addListens(c.env, user.id, body));
+  });
+  app.get(R.agentAskHistory, async (c) => {
+    const user = member(c);
+    return c.json(await askHistory(c.env, user.id));
   });
   app.patch(`${R.agentListens}/:id`, async (c) => {
     const user = member(c);

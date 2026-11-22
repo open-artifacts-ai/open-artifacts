@@ -220,6 +220,35 @@ describe("ci.yml", () => {
         "public-only",
       );
   });
+  // #2568: the updater's tests on the lowest Node the bus allows. Informational:
+  // nothing waits on it, and it decides its path filter inside.
+  it("bus-lowest-node runs the updater tests on the sigstore Node floor, and nothing needs it", () => {
+    const job = w.jobs["bus-lowest-node"];
+    expect(job).toBeDefined();
+    expect(job.if).toBeUndefined();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    const setup = steps.find((s) => String(s.uses).includes("setup-node"));
+    const floor = /"\^(22\.\d+\.\d+) /.exec(
+      read("packages/bus-daemon/src/update/verify.ts"),
+    )?.[1];
+    expect(floor).toBeDefined();
+    expect(setup.with["node-version"]).toBe(floor);
+    expect(setup.with).not.toHaveProperty("node-version-file");
+    // The bus allows the floor: packages/bus-cli engines is ">=22".
+    const engines = JSON.parse(read("packages/bus-cli/package.json")).engines
+      .node as string;
+    expect(engines).toMatch(/^>=22(\.\d+)*$/);
+    const run = steps.find((s) => String(s.run).includes("vitest"));
+    expect(run["working-directory"]).toBe("packages/bus-daemon");
+    expect(run.run).toContain("test/update-*.test.ts");
+    for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
+      w.jobs,
+    ))
+      expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
+        "bus-lowest-node",
+      );
+  });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
     // Four shards on every event but a pull request, which runs the one-shard
@@ -539,7 +568,12 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
+      // #2994: the packed bus joins the gate, so a missing bundle alias fails a PR.
+      expect(job.needs).toEqual([
+        "test-shard",
+        "released-migrations-frozen",
+        "pack-bus",
+      ]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -553,8 +587,10 @@ describe("ci.yml", () => {
       expect(gate.env.FROZEN).toBe(
         "${{ needs.released-migrations-frozen.result }}",
       );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.PACKED).toBe("${{ needs.pack-bus.result }}");
       expect(gate.run).toMatch(
-        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \] && \[ "\$PACKED" = success \]$/m,
       );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });

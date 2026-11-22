@@ -1,6 +1,7 @@
 export * from "./agent-asks.js";
 export * from "./agent-clients.js";
 export * from "./anchor.js";
+export * from "./ask-slots.js";
 export * from "./bus-notices.js";
 export * from "./comment-email-copy.js";
 export * from "./comments.js";

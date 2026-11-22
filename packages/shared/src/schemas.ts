@@ -559,6 +559,8 @@ export const ShareSchema = z.object({
   guest: z.boolean().optional(),
   /** GET R.shares: the recipient can only view, whatever role says (a guest, or a member who can only view). Never why. Absent with no user row, or when they can do what role says. */
   viewOnly: z.boolean().optional(),
+  /** #2577: the user id when the address belongs to an existing team member (never an outsider or guest); null otherwise. Absent from older servers. */
+  memberId: z.string().nullable().optional(),
 });
 export type Share = z.infer<typeof ShareSchema>;
 
@@ -668,10 +670,14 @@ export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
 export const MemberSetupSchema = z.object({
   /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
   state: z.enum(["set", "partial", "invited"]),
-  /** Of 5. */
-  done: z.number().int().min(0).max(5),
+  /** Of `total`. */
+  done: z.number().int().min(0).max(6),
+  /** #2890, #2953: 3 to 6 (no bus: 3, or 4 with the comment step; bus: 5, or 6). Absent on older servers: 5. */
+  total: z.number().int().min(3).max(6).optional(),
   /** The first step not done. */
-  stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
+  stalled: z
+    .enum(["agent", "named", "artifact", "comment", "mention", "ask"])
+    .optional(),
   /** When the one reminder went out (ISO). */
   remindedAt: z.string().optional(),
 });
@@ -1095,6 +1101,13 @@ export type BusMachine = z.infer<typeof BusMachineSchema>;
 /** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
 export const BusMachinesSchema = z.strictObject({
   machines: z.array(BusMachineSchema).max(100),
+  /**
+   * #2552: whether the owner paused every instance-driven machine update.
+   * Sent only when the request asks for it (BUS_MACHINES_PAUSED_HEADER) and
+   * the caller may change it (the owner, in a cookie session); absent
+   * otherwise, so a client from before #2552 still parses this read.
+   */
+  updatesPaused: z.boolean().optional(),
 });
 export type BusMachines = z.infer<typeof BusMachinesSchema>;
 
@@ -1205,8 +1218,17 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** #2953 (PROVISIONAL until OA Backend confirms): the caller's first typed comment, on any page; null if none. Absent on older servers: no comment step. */
+  firstComment: z
+    .strictObject({ artifactId: z.string(), title: z.string() })
+    .nullable()
+    .optional(),
+  /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
+  busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */
   teamStep: z.boolean().optional(),
+  /** #2577: the caller was asked about "listens to" (POST R.meOnboardingListensAsked). Absent on older servers: read as false. */
+  listensAsked: z.boolean().optional(),
   /** #2632: who added the caller (their name; null when none or unreadable); null when nobody did. */
   invitedBy: z
     .strictObject({ name: z.string().nullable() })
@@ -1214,6 +1236,18 @@ export const OnboardingSchema = z.strictObject({
     .optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** GET R.meTeammates (#2577): the other team members. Never an email. */
+export const TeammatesSchema = z.strictObject({
+  members: z.array(
+    z.strictObject({
+      id: z.string(),
+      name: z.string(),
+      initials: z.string(),
+    }),
+  ),
+});
+export type Teammates = z.infer<typeof TeammatesSchema>;
 
 /** PUT R.onboarding: a flag only turns on (true), never off. */
 export const OnboardingPatchSchema = z.strictObject({

@@ -8,13 +8,14 @@
 export const SETUP = {
   heading: "Setup",
   set: "Set up",
-  of: (n: number) => `${n} of 5`,
+  of: (n: number, total = 5) => `${n} of ${total}`,
   invited: "Invited",
   guest: "–",
   stalled: {
     agent: "no agent connected yet",
     named: "agent not named yet",
     artifact: "nothing published yet",
+    comment: "no comment yet",
     mention: "no agent reply yet",
     ask: "ask not answered yet",
   },

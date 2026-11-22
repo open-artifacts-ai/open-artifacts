@@ -29,6 +29,7 @@ export const home = () => busHome();
  * #2806: whether `h` is the default home (~/.oa-bus). Only that daemon may
  * adopt Claude sessions it finds in the machine-wide ~/.claude/sessions; a
  * second home (--alongside) admits a session only on its own adapter's hello.
+ * #2552: only the default home takes instance-driven updates.
  */
 export const isDefaultHome = (h: string = home()): boolean => h === busHome({});
 
@@ -174,7 +175,11 @@ export const revokedMarker = (token: string, at = new Date()): string =>
  * older daemon's) or cannot be read still holds.
  */
 export function revokedFor(token: string, h = home()): boolean {
-  const file = join(h, "revoked");
+  return markerHolds(join(h, "revoked"), token);
+}
+
+/** Whether the revoked marker at `file` holds for `token` (same rules as `revokedFor`). */
+export function markerHolds(file: string, token: string): boolean {
   if (!existsSync(file)) return false;
   try {
     const m = JSON.parse(readFileSync(file, "utf8")) as {

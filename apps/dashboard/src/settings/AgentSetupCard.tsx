@@ -1,6 +1,7 @@
 import type { Me } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
+import { useHeld, useListens } from "../api/agentAsks";
 import { useOAuthClients, useTokens } from "../api/queries";
 import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
@@ -41,7 +42,7 @@ export function useRevokeOnly() {
   return state.status === "authed" && !canConnectAgents(state.me);
 }
 
-/** Revoke-only with nothing to revoke: no Connections page. Guests never reach it. */
+/** Revoke-only with nothing to revoke, no listens-to entries and no held requests: no Connections page. Guests never reach it. */
 export function useNoAgentsPage() {
   const state = useMe();
   const revokeOnly =
@@ -50,7 +51,16 @@ export function useNoAgentsPage() {
     state.me.user.role !== "guest";
   const tokens = useTokens(revokeOnly);
   const agents = useOAuthClients(revokeOnly);
-  return revokeOnly && tokens.data?.length === 0 && agents.data?.length === 0;
+  const empty =
+    revokeOnly && tokens.data?.length === 0 && agents.data?.length === 0;
+  // #2577: people the caller's agents listen to, or requests held for them, keep the page.
+  const listens = useListens(empty);
+  const held = useHeld(empty);
+  return (
+    empty &&
+    listens.data?.entries.length === 0 &&
+    held.data?.requests.length === 0
+  );
 }
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,

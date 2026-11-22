@@ -29,6 +29,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import { useHeld } from "../api/agentAsks";
 import { useThreads } from "../api/comments";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
@@ -50,6 +51,8 @@ import {
   useUnmute,
 } from "./api";
 import type { List as Inbox, Item as InboxItem } from "./contract";
+import { HeldCard } from "./HeldNotice";
+import { heldRequestId } from "./held";
 import {
   askComment,
   backText,
@@ -61,9 +64,12 @@ import {
   unread,
   waitMs,
 } from "./model";
+import { useMuteToggle } from "./muteToggle";
 import { muteErrorCopy } from "./prefsContract";
 import {
   dismissNudge,
+  iosNeedsHomeScreen,
+  NOTIF_WORDS,
   nudgeDismissed,
   PermissionRefused,
   PUSH_WORDS,
@@ -404,7 +410,7 @@ function ForYouPanel({
   const [showLater, setShowLater] = useState(false);
   const readAll = useReadAll();
   const opened = [...data.needsYou, ...data.updates, ...data.later].find(
-    (x) => x.id === openId && askComment(x),
+    (x) => x.id === openId && (askComment(x) || heldRequestId(x)),
   );
   // The opened ask went away (answered elsewhere): back to the list.
   // biome-ignore lint/correctness/useExhaustiveDependencies: closeCard is stable in effect
@@ -457,7 +463,9 @@ function ForYouPanel({
     setOpenId(null);
   };
   if (opened)
-    return (
+    return heldRequestId(opened) ? (
+      <HeldView item={opened} phone={phone} close={close} back={closeCard} />
+    ) : (
       <AskView item={opened} phone={phone} close={close} back={closeCard} />
     );
   const { needsYou, later } = data;
@@ -498,6 +506,7 @@ function ForYouPanel({
     <div data-for-you-panel="" ref={root}>
       {header}
       {!phone && <PushNudge needsYou={needsYou} />}
+      <IosNote needsYou={needsYou} />
       <section aria-labelledby="oa-fy-needs">
         <h3
           id="oa-fy-needs-heading"
@@ -579,6 +588,34 @@ function ForYouPanel({
           {showLater && later.map((x) => row(x, true))}
         </ul>
       </section>
+    </div>
+  );
+}
+
+/**
+ * #2943: iPhone or iPad Safari, not added to the Home Screen, has no web push.
+ * Say what to do instead of hiding the ask silently (the nudge never shows on a
+ * phone). Once something needs the person; "Not now" hides it as the nudge's does.
+ */
+function IosNote({ needsYou }: { needsYou: InboxItem[] }) {
+  const [gone, setGone] = useState(nudgeDismissed);
+  if (gone || needsYou.length === 0 || !iosNeedsHomeScreen()) return null;
+  return (
+    <div
+      data-push-ios=""
+      className="mx-3 my-2.5 flex items-center gap-2.5 rounded-[10px] bg-[var(--oa-accent-soft)] px-3 py-2.5 text-[13.5px]"
+    >
+      <span className="min-w-0 flex-1">{NOTIF_WORDS.iosHome}</span>
+      <button
+        type="button"
+        className="flex-none cursor-pointer border-0 bg-transparent p-0 text-[13px] text-[var(--oa-accent-fg)] underline"
+        onClick={() => {
+          dismissNudge();
+          setGone(true);
+        }}
+      >
+        {PUSH_WORDS.notNow}
+      </button>
     </div>
   );
 }
@@ -742,7 +779,7 @@ function Row({
     });
   const needs = x.level === "needs_you";
   const isUnread = unread(x);
-  const isAsk = askComment(x) !== null;
+  const isAsk = askComment(x) !== null || heldRequestId(x) !== null;
   const away = x.kind === "away";
   const agent =
     x.actor?.kind === "agent" && x.agentKey
@@ -912,7 +949,7 @@ function Row({
                 onSelect={() =>
                   muteWith(
                     { kind: "agent", id: agent.id },
-                    `Muted ${agent.name}. Asks for you still come through.`,
+                    `Muted ${agent.name}. Its asks to you still show in For you.`,
                   )
                 }
               >
@@ -963,6 +1000,11 @@ function AskView({
   }, [waits, gone, drop, item.id, back]);
   useEffect(() => backRef.current?.focus(), []);
   const href = safePath(item.href);
+  // #2860: mute the asking agent right where its ask is.
+  const agentMute = useMuteToggle(
+    item.agentKey ? { kind: "agent", id: item.agentKey } : null,
+    item.actor?.name ?? "this agent",
+  );
   return (
     <section data-for-you-ask="" aria-labelledby="oa-for-you-title">
       <Header phone={phone} close={close}>
@@ -976,6 +1018,20 @@ function AskView({
         >
           <span aria-hidden="true">← </span>For you
         </button>
+        {agentMute.available && agentMute.loaded && (
+          <button
+            type="button"
+            data-ask-mute=""
+            className={LINK}
+            onClick={agentMute.toggle}
+          >
+            {agentMute.muted
+              ? "Muted \u00b7 Unmute"
+              : item.actor?.name
+                ? `Mute ${item.actor.name}`
+                : "Mute this agent"}
+          </button>
+        )}
         {href && (
           <a href={href} className={LINK} onClick={(e) => go(e, href)}>
             Open the page
@@ -1014,6 +1070,87 @@ function AskView({
             <button
               type="button"
               onClick={() => void threads.refetch()}
+              className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
+            >
+              Try again
+            </button>
+          </div>
+        ) : (
+          <div
+            aria-hidden="true"
+            className="h-40 animate-pulse rounded-md bg-[var(--oa-sunken)] motion-reduce:animate-none"
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** A held request opened (#2577): the notice, read from R.agentAskHeld so it shows the current words. */
+function HeldView({
+  item,
+  phone,
+  close,
+  back,
+}: {
+  item: InboxItem;
+  phone: boolean;
+  close: () => void;
+  back: (gone: boolean) => void;
+}) {
+  const id = heldRequestId(item);
+  const held = useHeld();
+  const drop = useDropItem();
+  const go = useGo(close);
+  const backRef = useRef<HTMLButtonElement>(null);
+  const req = held.data?.requests.find((r) => r.id === id);
+  // Allowed elsewhere, lapsed or quieted: it is no longer held, so the row goes.
+  const gone = held.isSuccess && !req;
+  useEffect(() => {
+    if (gone) {
+      drop(item.id);
+      back(true);
+    }
+  }, [gone, drop, item.id, back]);
+  useEffect(() => backRef.current?.focus(), []);
+  const href = safePath(item.href);
+  return (
+    <section data-for-you-held="" aria-labelledby="oa-for-you-title">
+      <Header phone={phone} close={close}>
+        {phone && <DialogTitle className="sr-only">For you</DialogTitle>}
+        <button
+          ref={backRef}
+          id="oa-for-you-title"
+          type="button"
+          onClick={() => back(false)}
+          className="flex-1 cursor-pointer border-0 bg-transparent p-0 text-left text-[length:var(--oa-text-md)] font-semibold text-[var(--oa-text)] outline-none focus-visible:underline"
+        >
+          <span aria-hidden="true">{"\u2190 "}</span>For you
+        </button>
+        {href && (
+          <a href={href} className={LINK} onClick={(e) => go(e, href)}>
+            Open the page
+          </a>
+        )}
+      </Header>
+      <div className="flex flex-col gap-2 px-3 pt-2 pb-3">
+        {req ? (
+          <HeldCard
+            request={req}
+            onGone={() => {
+              drop(item.id);
+              back(true);
+            }}
+          />
+        ) : held.isError ? (
+          <div
+            role="alert"
+            className="py-4 text-center text-[var(--oa-text-2)]"
+          >
+            <p className="m-0 mb-2">Couldn't open this request.</p>
+            <button
+              type="button"
+              onClick={() => void held.refetch()}
               className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
             >
               Try again

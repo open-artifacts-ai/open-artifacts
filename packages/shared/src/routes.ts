@@ -27,6 +27,10 @@ export const R = {
     `/api/v1/me/inbox/mutes/${seg(kind)}/${seg(id)}`,
   /** GET -> NotificationPrefs; PUT NotificationPrefs -> NotificationPrefs. */
   meNotificationPrefs: "/api/v1/me/notification-prefs",
+  /** GET -> Teammates (#2577): the other team members, id, name and initials only (never an email). Members only; a guest gets 403. */
+  meTeammates: "/api/v1/me/teammates",
+  /** POST -> Onboarding (#2577): the caller was asked about "listens to" (once; idempotent). A person in a browser only. */
+  meOnboardingListensAsked: "/api/v1/me/onboarding/listens-asked",
   /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */
   mePushKey: "/api/v1/me/push/key",
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
@@ -91,6 +95,8 @@ export const R = {
   /** GET -> ContentUrl */
   contentUrl: (id: string, v?: number) =>
     `${A}/${seg(id)}/content-url${v !== undefined ? `?v=${v}` : ""}`,
+  /** GET -> AskSlot[]; the asks this viewer may see in the page's slots (#2426 B, #2536). */
+  askSlots: (id: string) => `${A}/${seg(id)}/ask-slots`,
   /** GET -> Share[]; PUT ShareInput -> Share */
   shares: (id: string) => `${A}/${seg(id)}/shares`,
   /** DELETE -> 204 */
@@ -151,6 +157,9 @@ export const R = {
   agentRequests: "/api/v1/me/agent-requests",
   /** #2577 S2: GET -> ListensList: the caller's live "listens to" entries (people whose requests their agents take without holding). Browser session only. */
   agentListens: "/api/v1/me/agent-listens",
+  /** #2577: POST ListenAddBody -> ListenAddResult on R.agentListens: adds teammates to the list directly ({ memberId } or { memberIds }, at most 50, all-or-nothing). A live entry is extended, not duplicated. Browser session only, no passkey. 400 for an outsider, a non-member, yourself, a page open to guests or the link, a space you are not in. */
+  /** #2577: GET -> AskHistory: "Who asked what", the last 30 days, newest first, for the caller as receiver. No words. Browser session only. */
+  agentAskHistory: "/api/v1/me/agent-asks/history",
   /** PATCH ListenShortenBody { until } -> ListenEntry: ends the entry sooner (never later: a longer one is a new allow). DELETE -> 204: removes it. Both affect future requests only; what was delivered or is held stays. Own entries only (else 404); browser session only. */
   agentListen: (id: string) => `/api/v1/me/agent-listens/${seg(id)}`,
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
@@ -161,7 +170,11 @@ export const R = {
   oauthClients: "/api/v1/oauth-clients",
   /** PATCH OAuthClientPatch -> OAuthClient; DELETE -> 204. Own grants only (else 404). */
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
-  /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
+  /**
+   * GET -> BusMachines: the caller's own bus machines (#1291). Never a token.
+   * Send BUS_MACHINES_PAUSED_HEADER: 1 (#2552) to also receive `updatesPaused`;
+   * without it the answer is exactly `{ machines }`.
+   */
   busMachines: "/api/v1/bus/machines",
   busPing: "/api/v1/bus/ping",
   /**
@@ -174,6 +187,14 @@ export const R = {
    * than this server).
    */
   busRunVersion: "/api/v1/bus/run-version",
+  /**
+   * PUT { paused: boolean } -> 204 (#2552): pause (or resume) every
+   * instance-driven machine update, the named version and the default alike.
+   * Owner only, in an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404); audited bus.updates_paused.set. A person's own
+   * `oa-bus update` is not affected.
+   */
+  busUpdatesPaused: "/api/v1/bus/updates-paused",
   /**
    * POST -> 204 (#2552): "Install now" for one of the caller's own machines.
    * No body: it names no version. The machine installs only the version it
@@ -333,7 +354,7 @@ export const R = {
   /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
   comment: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
-  /** POST AnswerBody { optionId, assertion? } -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
+  /** POST AnswerBody { optionId } or { ownWords: { text } } (#2895: 1 to 1,000 characters after trimming; both -> 400 bad_request with details { path: "ownWords.text", reason: "empty" | "too_long" }; stored as answer.ownWords with no optionId, never a yes), assertion? -> Comment (#1535). A `confirm: "passkey"` ask needs the assertion (#2263): 400 passkey_failed, 410 challenge_expired, 403 passkey_required. Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
   commentAnswer: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
   /**
@@ -548,6 +569,13 @@ export const AUDIT_NEXT_CURSOR_HEADER = "X-OA-Next-Cursor";
 export const AUDIT_TEAM_WINDOW_DAYS = 30;
 /** R.audit and R.auditExport response header: the window in days, present only when the plan limits it (Team). */
 export const AUDIT_WINDOW_HEADER = "X-OA-Audit-Window-Days";
+
+/**
+ * R.busMachines request header (#2552). A client that understands
+ * `updatesPaused` sends `1` and gets it; a build from before #2552 parses this
+ * read with a strict schema, so the field must stay absent from its answer.
+ */
+export const BUS_MACHINES_PAUSED_HEADER = "X-OA-Wants-Updates-Paused";
 
 export const AUTH = {
   login: "/auth/login",

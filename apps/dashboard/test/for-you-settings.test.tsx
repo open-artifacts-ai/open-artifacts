@@ -4,7 +4,7 @@
 import { type NotificationPrefs, NotificationPrefsSchema, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { getResponse, HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { muteErrorCopy } from "../src/foryou/prefsContract";
 import {
@@ -131,7 +131,12 @@ describe("For you settings", () => {
       "aria-checked",
       "true",
     );
-    expect(screen.queryByText(/away until/)).toBeNull();
+    // Quiet hours are on: agents are told, with the real end time.
+    expect(
+      screen.getByText(
+        /Your own agents see "away until 07:30" and can plan around it\./,
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toHaveTextContent("Waiting asks and approvals");
@@ -158,6 +163,23 @@ describe("For you settings", () => {
     ])
       expect(screen.getByRole("combobox", { name })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  });
+
+  it("the away line follows the end time, and is gone with quiet hours off", async () => {
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    await page();
+    fireEvent.keyDown(
+      screen.getByRole("combobox", { name: "Quiet hours end" }),
+      {
+        key: "Enter",
+      },
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "06:00" }));
+    expect(
+      await screen.findByText(/"away until 06:00" and can plan around it/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
+    await waitFor(() => expect(screen.queryByText(/away until/)).toBeNull());
   });
 
   it("a change saves the whole prefs with the browser's zone", async () => {
@@ -441,6 +463,9 @@ describe("this browser's notifications (slice 3, S5)", () => {
     for (const name of ["Interrupt me for", "On lock screens"])
       expect(screen.getByRole("combobox", { name })).toBeEnabled();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+    expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
   });
 
   it("no push key on the server: both switches off and disabled, in plain words", async () => {
@@ -463,15 +488,200 @@ describe("this browser's notifications (slice 3, S5)", () => {
     ]) {
       expect(el).toHaveAttribute("aria-checked", "false");
       expect(el).toBeDisabled();
-      expect(el).toHaveAccessibleDescription("Not set up here yet");
+      expect(el).toHaveAccessibleDescription("Off for this site");
     }
+    // An owner step, in plain words, once, under the table.
     expect(
-      screen.getByText(/^Browser notifications aren't set up for .+ yet\.$/),
+      screen.getByText(
+        /^Browser notifications aren't turned on for .+ yet\. Upgrading the instance turns them on: it adds the keys they need\. Everything else on this page works now\.$/,
+      ),
     ).toBeInTheDocument();
     expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
+    // The account settings never wait on push (#2943).
+    expect(
       screen.getByRole("combobox", { name: "On lock screens" }),
-    ).toBeDisabled();
-    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeDisabled();
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("combobox", { name: "Interrupt me for" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("switch", { name: "Quiet hours" })).toBeEnabled();
+  });
+
+  it("no push key, a member: says who can turn it on, by the owner's name", async () => {
+    server.use(
+      http.get(`*${R.mePushKey}`, () => err("push_unavailable", 404)),
+      http.get("*/api/v1/me", async ({ request }) => {
+        const res = await getResponse(
+          createHandlers({ events, forYou: "mixed" }),
+          request,
+        );
+        const me = (await res?.json()) as Record<string, any>;
+        return HttpResponse.json({
+          ...me,
+          user: { ...me.user, role: "member" },
+          instanceOwner: { name: "Leo Urbina" },
+        });
+      }),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    fakePush("default");
+    mount("/settings/notifications");
+    expect(
+      await screen.findByText(
+        /^Browser notifications aren't turned on for .+ yet\. Leo Urbina, who runs this site, can turn them on\. Everything else on this page works now\.$/,
+        {},
+        { timeout: FIRST_LOAD_MS },
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("no push key: the interrupts box still saves", async () => {
+    server.use(
+      http.get(`*${R.mePushKey}`, () => err("push_unavailable", 404)),
+      ...createHandlers({ events, forYou: "mixed" }),
+    );
+    fakePush("default");
+    mount("/settings/notifications");
+    const puts = calls("PUT");
+    fireEvent.keyDown(
+      await screen.findByRole(
+        "combobox",
+        { name: "On lock screens" },
+        { timeout: FIRST_LOAD_MS },
+      ),
+      { key: "Enter" },
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Show details" }),
+    );
+    await waitFor(() =>
+      expect(
+        puts.find((c) => c.path === R.meNotificationPrefs)?.body,
+      ).toMatchObject({
+        lockScreenDetail: true,
+      }),
+    );
+  });
+});
+
+/** An iPhone or iPad, in a Safari tab or opened from the Home Screen. */
+function ios(standalone: boolean) {
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+  });
+  Object.defineProperty(navigator, "standalone", {
+    configurable: true,
+    value: standalone,
+  });
+}
+const realUa = navigator.userAgent;
+const resetIos = () => {
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: realUa,
+  });
+  Object.defineProperty(navigator, "standalone", {
+    configurable: true,
+    value: undefined,
+  });
+};
+
+describe("iPhone and iPad (#2943)", () => {
+  afterEach(resetIos);
+
+  it("in a Safari tab: says to add it to the Home Screen, not 'can't show notifications'", async () => {
+    ios(false);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/settings/notifications");
+    expect(
+      (
+        await screen.findAllByText(
+          "Add to Home Screen first",
+          {},
+          { timeout: FIRST_LOAD_MS },
+        )
+      )[0],
+    ).toBeInTheDocument();
+    expect(document.querySelector("[data-push-note]")?.textContent).toMatch(
+      /^On iPhone and iPad, notifications work only once this site is on your Home Screen\. Tap Share, then Add to Home Screen, and open it from there\.$/,
+    );
+    expect(
+      screen.queryByText("This browser can't show notifications."),
+    ).toBeNull();
+    // OA Product-2: the Updates cell says the same, not "Turn on Needs you here first".
+    expect(screen.getAllByText("Add to Home Screen first")).toHaveLength(2);
+    expect(screen.queryByText("Turn on Needs you here first")).toBeNull();
+    expect(
+      screen.getByRole("combobox", { name: "On lock screens" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByText("These apply as soon as notifications reach a browser."),
+    ).toBeInTheDocument();
+  });
+
+  it("an iPad that reports a Mac is treated as iOS too", async () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    });
+    Object.defineProperty(navigator, "maxTouchPoints", {
+      configurable: true,
+      value: 5,
+    });
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/settings/notifications");
+    expect(
+      (
+        await screen.findAllByText(
+          "Add to Home Screen first",
+          {},
+          { timeout: FIRST_LOAD_MS },
+        )
+      )[0],
+    ).toBeInTheDocument();
+    Object.defineProperty(navigator, "maxTouchPoints", {
+      configurable: true,
+      value: 0,
+    });
+  });
+
+  it("from the Home Screen it is the normal case: a switch, no iOS line", async () => {
+    ios(true);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    const sw = await page();
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(document.querySelector("[data-push-note]")).toBeNull();
+    expect(screen.queryByText(/Add to Home Screen/)).toBeNull();
+    expect(
+      screen.queryByText(
+        "These apply as soon as notifications reach a browser.",
+      ),
+    ).toBeNull();
+  });
+
+  it("For you says it instead of hiding the ask silently", async () => {
+    ios(false);
+    server.use(...createHandlers({ events, forYou: "mixed" }));
+    mount("/");
+    fireEvent.click(
+      await screen.findByRole(
+        "button",
+        { name: /^For you/ },
+        { timeout: FIRST_LOAD_MS },
+      ),
+    );
+    const panel = await screen.findByRole("dialog", { name: "For you" });
+    const note = await waitFor(() => {
+      const el = panel.querySelector("[data-push-ios]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(note).toHaveTextContent("Tap Share, then Add to Home Screen");
   });
 });
 

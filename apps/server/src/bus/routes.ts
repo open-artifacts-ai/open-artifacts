@@ -17,18 +17,26 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  BUS_MACHINES_PAUSED_HEADER,
   BusLinkProposeSchema,
   BusLinkPutSchema,
   BusReachProposeSchema,
   BusReachPutSchema,
   BusRolePutSchema,
   BusRunVersionPutSchema,
+  BusUpdatesPausedPutSchema,
   type Member,
   R,
 } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import { interactiveSession, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  interactiveSession,
+  requireUser,
+} from "../auth/authz.js";
+import { orgCan } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
@@ -44,7 +52,7 @@ import {
 import { logError, logInfo, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
-import { noteInstanceFirst } from "../services/analytics.js";
+import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
@@ -66,6 +74,7 @@ import {
   putBusRole,
   revokeBusMachine,
   setBusRunVersion,
+  setBusUpdatesPaused,
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
@@ -81,6 +90,7 @@ import {
   MACHINE_ID_HEADER,
   MACHINE_LABEL_HEADER,
 } from "./hub.js";
+import { busUpdatesPaused } from "./updates.js";
 
 // The bus's Worker routes (#1291, design "Contracts: Local client to
 // instance"). Every /bus route answers 404 while the bus is off (BUS_HUB
@@ -726,7 +736,7 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
     const first = await stmt(env.DB, FIRST_TOUCH).bind(m.id, now).run();
     if (first.meta.changes !== 1) return unauthorized();
     // #2479: a machine's first connect (no-op unless analytics is on).
-    await noteInstanceFirst(env, "agent_connected", c.executionCtx);
+    await noteMemberFirst(env, m.userId, "agent_connected", c.executionCtx);
   } else if (m.lastUsedAt <= now - LAST_USED_MS)
     c.executionCtx.waitUntil(
       stmt(env.DB, TOUCH_MACHINE)
@@ -759,7 +769,21 @@ export function mountBus(app: AppType): void {
 
   app.get(R.busMachines, async (c) => {
     const user = requireUser(c);
-    return c.json({ machines: await listBusMachines(c.env, user.id) });
+    const machines = await listBusMachines(c.env, user.id);
+    // #2552: the pause switch's state, for whoever may set it (the owner, in a
+    // cookie session), and only when the client asks for it: a dashboard build
+    // from before #2552 parses this read with a strict schema, so the field
+    // stays out of its answer (or its whole Machines list fails to load).
+    if (
+      c.req.header(BUS_MACHINES_PAUSED_HEADER) === "1" &&
+      interactiveSession(c) &&
+      orgCan(user, "bus.updates_paused", { cap: capOfCaller(caller(c)) })
+    )
+      return c.json({
+        machines,
+        updatesPaused: await busUpdatesPaused(c.env),
+      });
+    return c.json({ machines });
   });
   // In CAPPED_ALLOWED: cutting off a credential never sits behind a cap.
   app.delete(`${R.busMachines}/:id`, async (c) => {
@@ -783,6 +807,17 @@ export function mountBus(app: AppType): void {
       body.version,
       body.stepBack === true,
     );
+    return c.body(null, 204);
+  });
+  // #2552: the owner pauses or resumes every instance-driven update. Same
+  // gate as run-version: owner, interactive cookie session only.
+  app.put(R.busUpdatesPaused, async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw notFound();
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const body = await jsonBody(c, BusUpdatesPausedPutSchema);
+    await setBusUpdatesPaused(c.env, user.id, body.paused);
     return c.body(null, 204);
   });
   // #2552 "Install now": the machine's own member, in a browser session.

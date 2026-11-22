@@ -2,10 +2,13 @@ import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
   AnswerBodySchema,
+  ASK_SLOT_HOMES_MAX,
+  type AskSlot,
   COMMENT_KEY_RE,
   isId,
   MentionCandidatesBodySchema,
   NewThreadBodySchema,
+  OWN_WORDS_MAX,
   ReplyBodySchema,
   TakeBackBodySchema,
   WithdrawBodySchema,
@@ -35,6 +38,7 @@ import type { AppEnv } from "../http/middleware.js";
 import { readAnonId, resolveAnonId } from "../runtime/anon-id.js";
 import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
+import { pageTitles, slotsOfPage } from "../services/ask-slots.js";
 import {
   addReply,
   addThread,
@@ -72,6 +76,7 @@ const ANSWER = `${COMMENT}/answer`;
 const ANSWER_CHALLENGE = `${ANSWER}/challenge`;
 const ASK_DECIDER = `${COMMENT}/ask/decider`;
 const WITHDRAW = `${COMMENT}/withdraw`;
+const ASK_SLOTS = `${ART}/ask-slots`;
 const AGENTS = `${ART}/agents`;
 const THREAD_AGENT = `${THREAD}/agents/:key`;
 
@@ -200,12 +205,50 @@ function withAnon(issued: string | null, res: Response): Response {
 
 const StatusQuery = z.object({
   status: z.enum(["open", "resolved", "all"]).default("all"),
+  // #2688: the catch-up read, as on the MCP list_comments.
+  answeredSince: z.string().datetime({ offset: true }).optional(),
+  mentionedSince: z.string().datetime({ offset: true }).optional(),
+  compact: z.enum(["true", "false"]).optional(),
 });
 const StatusPatch = z.strictObject({ status: z.enum(["open", "resolved"]) });
 const EditBody = z.strictObject({ body: z.string() });
 const ChallengeBodySchema = z.strictObject({
   optionId: z.string().regex(COMMENT_KEY_RE),
 });
+
+/**
+ * #2895: the pick in an answer body: an option, or the person's own words
+ * (trimmed, 1 to 1,000 characters). Both, or neither, is a 400; so is
+ * `ownWords.text` empty or too long, with the path and the reason in details.
+ */
+function pickOf(b: {
+  optionId?: string;
+  ownWords?: { text: string };
+}): string | { ownWords: string } {
+  if (b.ownWords === undefined) {
+    if (b.optionId === undefined)
+      throw new ApiError(
+        "bad_request",
+        "Pick an option or answer in your own words",
+      );
+    return b.optionId;
+  }
+  if (b.optionId !== undefined)
+    throw new ApiError("bad_request", "Send optionId or ownWords, not both");
+  const text = b.ownWords.text.trim();
+  if (text.length === 0)
+    throw new ApiError("bad_request", "Say what you'd like instead", {
+      path: "ownWords.text",
+      reason: "empty",
+    });
+  if (text.length > OWN_WORDS_MAX)
+    throw new ApiError(
+      "bad_request",
+      `Your own words are at most ${OWN_WORDS_MAX} characters`,
+      { path: "ownWords.text", reason: "too_long" },
+    );
+  return { ownWords: text };
+}
 
 /** A body that failed its schema: the anchor's issues are invalid_anchor, the body's invalid_body. */
 const bad = (issues: { path: PropertyKey[] }[]): never => {
@@ -230,16 +273,108 @@ export function mountComments(app: AppType): void {
     } = await open(c, "comments.read");
     const q = StatusQuery.safeParse({
       status: c.req.query("status") ?? undefined,
+      answeredSince: c.req.query("answeredSince") ?? undefined,
+      mentionedSince: c.req.query("mentionedSince") ?? undefined,
+      compact: c.req.query("compact") ?? undefined,
     });
-    if (!q.success) throw new ApiError("bad_request", "Invalid status");
+    if (!q.success)
+      throw new ApiError(
+        "bad_request",
+        "Invalid status, answeredSince, mentionedSince or compact",
+      );
+    const { answeredSince, mentionedSince } = q.data;
+    const compact = q.data.compact === "true";
+    if (compact && answeredSince === undefined && mentionedSince === undefined)
+      throw new ApiError(
+        "bad_request",
+        "compact needs answeredSince or mentionedSince.",
+      );
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
     // #2080: a signed-out viewer under signed-in-only may edit and delete nothing.
     if (art.commentAccess === "signed-in" && !c.var.user)
       viewer.readOnly = true;
-    const out = await listComments(c.env, id, q.data.status, {
-      ...viewer,
-      owner: level === "owner",
-    });
+    const v = { ...viewer, owner: level === "owner" };
+    if (answeredSince === undefined && mentionedSince === undefined)
+      return c.json(await listComments(c.env, id, q.data.status, v));
+    return c.json(
+      await listComments(c.env, id, q.data.status, v, {
+        ...(answeredSince !== undefined ? { answeredSince } : {}),
+        ...(mentionedSince !== undefined ? { mentionedSince } : {}),
+        ...(compact ? { compact } : {}),
+      }),
+    );
+  });
+
+  // #2426 B, #2536: the asks this viewer may see in the page's [data-oa-ask]
+  // slots (the contract, jp3RtzkygV1sijvM, section 2). Per viewer and
+  // server-filtered: a slot whose home page this viewer cannot open is left
+  // out, never masked, and so is every slot of a signed-out visitor's page.
+  app.get(ASK_SLOTS, async (c) => {
+    const { id, who } = await open(c, "comments.read");
+    if (!c.var.user) return c.json([]);
+    const slots = await slotsOfPage(c.env, id);
+    if (!slots.length) return c.json([]);
+    // The page's slots grouped by the page each ask lives on, in key order.
+    const byHome = new Map<string, typeof slots>();
+    for (const s of slots) {
+      const group = byHome.get(s.homeArtifactId) ?? [];
+      group.push(s);
+      byHome.set(s.homeArtifactId, group);
+    }
+    const out: AskSlot[] = [];
+    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
+    // twenty slots from twenty pages must not fan out over the instance. Only
+    // homes this viewer may read count, so slots they cannot open can never
+    // use up the budget of the ones they can (the authorize calls themselves
+    // are bounded by ASK_SLOTS_MAX).
+    let read = 0;
+    for (const [homeId, rows] of byHome) {
+      if (read >= ASK_SLOT_HOMES_MAX) break;
+      // This viewer cannot open the home, or it is deleted: nothing, not a mask.
+      const home = await authorize(c.env, who, homeId, "comments.read", {
+        allowDeleted: true,
+      }).catch(() => null);
+      if (!home || home.artifact.deletedAt != null) continue;
+      // Comments off at home: there is no ask to read there either.
+      if (home.artifact.comments !== 1) continue;
+      // Only now, for a home this viewer may read, is its title read.
+      const title = (await pageTitles(c.env, [homeId])).get(homeId);
+      if (title === undefined) continue;
+      read += 1;
+      const moderator = modOf(who, home.level, home.artifact);
+      const { viewer } = await identity(c, homeId, false, moderator);
+      const list = await listComments(c.env, homeId, "all", {
+        ...viewer,
+        owner: meetsLevel(home.level, "owner"),
+      });
+      for (const row of rows) {
+        const thread = list.threads.find((t) => t.id === row.threadId);
+        const comment = thread?.comments.find((x) => x.id === row.commentId);
+        // A withdrawn, deleted or replaced ask is gone from the thread: the
+        // slot is left out, never a stale open card. A decision stays, so the
+        // card can show "Decided".
+        if (!comment?.ask || comment.ask.withdrawn) continue;
+        out.push({
+          key: row.key,
+          home: { artifactId: homeId, title },
+          threadId: row.threadId,
+          commentId: row.commentId,
+          ask: comment.ask,
+          author: comment.author,
+          ...(row.note ? { note: row.note } : {}),
+          ...(row.placedBy || row.placedAgent
+            ? {
+                placer: {
+                  ...(row.placedBy ? { id: row.placedBy } : {}),
+                  ...(row.placedAgent ? { agent: row.placedAgent } : {}),
+                },
+              }
+            : {}),
+        });
+      }
+    }
+    // Key order, so a page's slots read the same way every time.
+    out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return c.json(out);
   });
 
@@ -378,6 +513,7 @@ export function mountComments(app: AppType): void {
     const commentId = idParam(c, "commentId");
     const raw = AnswerBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
+    const pick = pickOf(raw.data);
     // Never minted: a guest has no key, so is never one of the people asked
     // (the DO answers 403 after 404, as for a signed-in stranger).
     const { who: signed, viewer } = await identity(
@@ -398,7 +534,7 @@ export function mountComments(app: AppType): void {
       commentId,
       who,
       viewer,
-      raw.data.optionId,
+      pick,
       { version: artifact.currentVersion, ctx: execCtx(c) },
       // #2263: only a browser session can carry a passkey assertion.
       { interactive: interactiveSession(c), assertion: raw.data.assertion },

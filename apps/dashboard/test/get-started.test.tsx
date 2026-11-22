@@ -223,6 +223,60 @@ describe("Get started checklist", () => {
         ),
       );
 
+    it("an owner who never connected the bus sees three steps, the invite, '0 of 3' and the bus line (#2890)", async () => {
+      withOnboarding({ busConnected: false });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 3")).toBeInTheDocument();
+      expect(screen.queryByText("Name your agent")).toBeNull();
+      expect(screen.queryByText("Mention your agent")).toBeNull();
+      expect(
+        screen.getByText("Publish your first artifact"),
+      ).toBeInTheDocument();
+      expect(screen.getByText("Answer your agent's ask")).toBeInTheDocument();
+      expect(document.querySelector("[data-bus-line]")?.textContent).toBe(
+        "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.",
+      );
+    });
+
+    it("an owner sees 'Comment on a page' with firstComment: six steps, or four without the bus (#2953)", async () => {
+      withOnboarding({ busConnected: true, firstComment: null });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 6")).toBeInTheDocument();
+      expect(screen.getByText("Comment on a page")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.",
+        ),
+      ).toBeInTheDocument();
+      cleanup();
+      withOnboarding({ busConnected: false, firstComment: null });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 4")).toBeInTheDocument();
+      expect(screen.queryByText("Mention your agent")).toBeNull();
+    });
+
+    it("the owner's done comment step names the page (#2953)", async () => {
+      withOnboarding({
+        busConnected: true,
+        firstComment: { artifactId: "a", title: "Roadmap" },
+      });
+      mount("/");
+      await heading();
+      expect(screen.getByText("You commented on Roadmap.")).toBeInTheDocument();
+    });
+
+    it("with the bus connected the five and no bus line", async () => {
+      withOnboarding({ busConnected: true });
+      mount("/");
+      await heading();
+      expect(screen.getByText("0 of 5")).toBeInTheDocument();
+      expect(screen.getByText("Name your agent")).toBeInTheDocument();
+      expect(document.querySelector("[data-bus-line]")).toBeNull();
+    });
+
     it("lists the five in order, then the optional invite, with Product's strings", async () => {
       withOnboarding({});
       mount("/");

@@ -31,6 +31,7 @@ import {
   BusLinkPutSchema,
   type BusRole,
   BusRolePutSchema,
+  BusUpdatesPausedPutSchema,
   ShareNoticeAgentsSchema,
 } from "../bus-notices.js";
 import {
@@ -52,7 +53,7 @@ import {
   usageLimit,
   VERSIONS_PAGE_SIZE,
 } from "../limits.js";
-import { R, viewerPath } from "../routes.js";
+import { BUS_MACHINES_PAUSED_HEADER, R, viewerPath } from "../routes.js";
 import {
   AgentViaSchema,
   ArtifactPatchSchema,
@@ -99,6 +100,7 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
+import { createAgentAsksMock } from "./agent-asks.js";
 import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import {
@@ -140,6 +142,8 @@ export type MockOptions = {
   commentMarkdown?: boolean;
   /** #2512: For you's inbox (R.meInbox) with Design's examples, and Me.inbox counts; unset, no inbox (no bell). */
   forYou?: ForYouVariant;
+  /** #2577: asking someone else's agent: a held request, the switch and the "listens to" list (R.agentAskHeld, R.agentRequests, R.agentListens). */
+  agentAsks?: boolean;
   /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
   commentersSignedIn?: boolean;
   /**
@@ -179,6 +183,10 @@ export type MockOptions = {
         /** #2632: the optional sixth step, and who added the caller. */
         teamStep?: boolean;
         invitedBy?: string;
+        /** #2953 (PROVISIONAL): the server sends `firstComment`, so the comment step shows. Done with `commented`. */
+        commentStep?: boolean;
+        /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
+        bus?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -446,6 +454,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     mentionReplied: !opts.welcome,
     mentionStalled: false,
     askAnswered: !opts.welcome,
+    busConnected: true,
   };
   if (opts.welcome) {
     const w = opts.welcome === true ? {} : opts.welcome;
@@ -468,6 +477,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       askAnswered: w.askAnswered ?? false,
       teamStep: w.teamStep ?? false,
       invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
+      busConnected: w.bus ?? true,
+      ...(w.commentStep
+        ? {
+            firstComment: w.commented
+              ? { artifactId: wf.artifact.id, title: "Landing page" }
+              : null,
+          }
+        : {}),
     });
   }
   if (opts.bus) {
@@ -487,6 +504,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       ]),
     ) as T;
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
+  let busUpdatesPaused = false;
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
@@ -768,6 +786,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });
   const passkeyMock = createPasskeyMock(opts.passkeys ?? "none", { err, body });
+  const landingId = artifacts.find((a) => a.title === "Landing page")?.id ?? "";
+  const agentAsksMock = opts.agentAsks
+    ? createAgentAsksMock({
+        landingId,
+        err,
+        memberName: (id) => members.find((m) => m.id === id)?.name ?? undefined,
+      })
+    : undefined;
   const forYouMock = createForYouMock({
     variant: opts.forYou,
     landingId: artifacts.find((a) => a.title === "Landing page")?.id ?? "",
@@ -778,6 +804,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   return [
     ...pre,
     ...forYouMock.handlers,
+    ...(agentAsksMock?.handlers ?? []),
     ...(h?.handlers ?? []),
     ...passkeyMock.handlers,
     ...commentMock.handlers,
@@ -817,8 +844,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       return HttpResponse.json({ agents: shareNoticeAgents });
     }),
     // #1291/#1293: the caller's bus machines; active newest first, then revoked.
-    http.get(`*${R.busMachines}`, () =>
+    http.get(`*${R.busMachines}`, ({ request }) =>
       HttpResponse.json({
+        // #2552: the mock caller is the owner, who is told the pause state when
+        // the client asks for it (as the server's route does).
+        ...(request.headers.get(BUS_MACHINES_PAUSED_HEADER) === "1"
+          ? { updatesPaused: busUpdatesPaused }
+          : {}),
         machines: [...busMachines].sort(
           (a, b) =>
             Number(a.revokedAt !== null) - Number(b.revokedAt !== null) ||
@@ -828,6 +860,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         ),
       }),
     ),
+    // #2552: the owner's pause switch.
+    http.put(`*${R.busUpdatesPaused}`, async ({ request }) => {
+      const r = await body(request, BusUpdatesPausedPutSchema);
+      if (r.error) return r.error;
+      busUpdatesPaused = r.data.paused;
+      return new HttpResponse(null, { status: 204 });
+    }),
     // Idempotent: a second revoke is 204 too; an unknown id is 404. Its agents close.
     http.delete(`*${R.busMachines}/:id`, ({ params: p }) => {
       const m = busMachines.find((x) => x.id === p.id);

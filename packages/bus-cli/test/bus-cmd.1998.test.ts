@@ -89,14 +89,14 @@ describe("printed commands (#1998)", () => {
     expect(ctx.copy.usage("x").join("\n")).not.toContain("npx");
   });
 
-  it("doctor's shim fix hints keep npx even when oa-bus is ours", () => {
+  it("doctor's shim fix hints use the printed command, never a different one", () => {
     const w = world();
     install(w);
     const ctx = ctxFor(w);
     useBusCmd(ctx);
-    expect(ctx.copy.shimDoctorMissing().join("\n")).toContain(BUS_CMD);
-    expect(ctx.copy.shimDoctorOther("/x").join("\n")).toContain(BUS_CMD);
-    expect(ctx.copy.shimForeign("/x").join("\n")).toContain(BUS_CMD);
+    expect(ctx.copy.shimDoctorMissing().join("\n")).toContain(ctx.busCmd);
+    expect(ctx.copy.shimDoctorOther("/x").join("\n")).toContain(ctx.busCmd);
+    expect(ctx.copy.shimForeign("/x").join("\n")).toContain(ctx.busCmd);
   });
 
   it("main: --habits names oa-bus when ours is on PATH; a usage error keeps npx", async () => {

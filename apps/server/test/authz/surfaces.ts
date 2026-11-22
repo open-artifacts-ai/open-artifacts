@@ -1065,6 +1065,14 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/comments`],
     read((id) => `${A(id)}/comments`, 200),
   ),
+  // #2426 B, #2536: the asks a viewer may see in a page's slots. It reads like
+  // the comments (the handler then filters by access to each ask's home page).
+  rest(
+    "ask slots",
+    "comments.read",
+    [`GET ${ARTS}/ask-slots`],
+    read((id) => `${A(id)}/ask-slots`, 200),
+  ),
   rest(
     "comments post",
     "comments.write",
@@ -1785,6 +1793,11 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("bad_request"),
     },
   },
+  // #2577: the "listens to" asked flag: once, idempotent; a probe of a live install only sets the caller's own flag.
+  "POST /api/v1/me/onboarding/listens-asked": {
+    refuse: { req: async () => ({ path: "" }), allow: ok(200) },
+    real: { req: () => ({ path: "" }), allow: ok(200) },
+  },
   "POST /api/v1/me/inbox/read-all": {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
@@ -2289,6 +2302,21 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(200),
     },
   },
+  // A matrix caller names nobody who is a teammate: the add is refused (400) before anything is written; a denied caller is refused before that.
+  "POST /api/v1/me/agent-listens": {
+    real: {
+      req: () => ({
+        path: "/api/v1/me/agent-listens",
+        body: {
+          memberId: "probe",
+          scope: "all",
+          until: 30,
+          via: "settings",
+        },
+      }),
+      allow: code("bad_request"),
+    },
+  },
   "PATCH /api/v1/me/agent-listens/:id": {
     real: {
       req: () => ({
@@ -2411,6 +2439,15 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: invalid(),
     real: {
       req: () => ({ path: "", body: { version: null } }),
+      allow: ok(204),
+    },
+  },
+  // #2552: the owner's pause switch. Refusal mode sends an invalid body (400
+  // after the owner check); real mode sets it off (204), the default.
+  "PUT /api/v1/bus/updates-paused": {
+    refuse: invalid(),
+    real: {
+      req: () => ({ path: "", body: { paused: false } }),
       allow: ok(204),
     },
   },
@@ -2562,8 +2599,9 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me/notification-prefs", U, [200]],
   ["PUT /api/v1/me/notification-prefs", U],
   // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
-  ["GET /api/v1/me/push/key", U, [404]],
-  ["GET /api/v1/me/push/subscriptions", U, [404]],
+  // A live install with keys (cloud mints them since #390) answers the two reads 200, so both count as allowed.
+  ["GET /api/v1/me/push/key", U, [200, 404]],
+  ["GET /api/v1/me/push/subscriptions", U, [200, 404]],
   ["POST /api/v1/me/push/subscriptions", U, [404]],
   ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
   ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
@@ -2590,6 +2628,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["PATCH /api/v1/settings", org("settings.manage")],
   ["GET /api/v1/onboarding", org("onboarding.own"), [200]],
   ["PUT /api/v1/onboarding", org("onboarding.own")],
+  ["GET /api/v1/me/teammates", org("teammates.read"), [200]],
+  ["POST /api/v1/me/onboarding/listens-asked", org("onboarding.own"), [200]],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -2653,6 +2693,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me/agent-requests", U, [200]],
   ["PUT /api/v1/me/agent-requests", U],
   ["GET /api/v1/me/agent-listens", U, [200]],
+  ["POST /api/v1/me/agent-listens", U],
+  ["GET /api/v1/me/agent-asks/history", U, [200]],
   ["PATCH /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/me/agent-listens/:id", U],
   ["DELETE /api/v1/passkeys/:id", U],
@@ -2708,6 +2750,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/run-version", org("bus.run_version")],
+  ["PUT /api/v1/bus/updates-paused", org("bus.updates_paused")],
   ["POST /api/v1/bus/machines/:id/install-now", org("mcp.connect")],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],

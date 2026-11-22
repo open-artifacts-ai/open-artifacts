@@ -8,6 +8,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -93,6 +94,10 @@ function setup(
       },
   };
 }
+
+/** #2954: `<home>/.open-artifacts/<host slug>-pat-token`, as the guide names it. */
+const patFile = (t: { h: string }): string =>
+  join(t.h, ".open-artifacts", "oa-example-com-pat-token");
 
 const PROXY_ARGS = [
   "mcp-proxy",
@@ -262,6 +267,120 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
       )
         expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
     });
+
+  it("swaps an entry that signs in another way when a PAT file is there, and keeps its own sign-in (#2954)", async () => {
+    // Codex's own OAuth: a plain remote entry, nothing for the proxy to pass on.
+    const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
+    const t = setup(original);
+    const pat = patFile(t);
+    mkdirSync(join(t.h, ".open-artifacts"), { recursive: true });
+    writeFileSync(pat, "oa_pat_test\n", { mode: 0o600 });
+    const out = await installAdapters(t.deps);
+    const e = t.toml().mcp_servers["open-artifacts"];
+    expect(e).toMatchObject({
+      command: BIN[0],
+      args: [
+        "mcp-proxy",
+        "--instance",
+        HUB,
+        "--for",
+        "codex",
+        "--token-file",
+        pat,
+      ],
+    });
+    expect(e).not.toHaveProperty("url");
+    expect(e).not.toHaveProperty("env_vars");
+    expect(out.notes.join("\n")).toMatch(/Codex now reaches Open Artifacts/);
+    // The moved file holds the url line, and the PAT is never copied into it.
+    const moved = readFileSync(t.moved, "utf8");
+    expect(moved).toContain(`${HUB}/mcp`);
+    expect(moved).not.toContain("oa_pat_test");
+    expect(statSync(t.moved).mode & 0o777).toBe(0o600);
+    await uninstallAdapters(t.deps);
+    expect(t.read()).toBe(original);
+    // The PAT file is the person's, and uninstall leaves it alone.
+    expect(existsSync(pat)).toBe(true);
+  });
+
+  const BLOCKERS_WITH_PAT: [string, string][] = [
+    ["static headers", `http_headers = { A = "b" }`],
+    ["env headers", `env_http_headers = { Authorization = "OA_AUTH" }`],
+    ["a header helper", `http_headers_helper = "get-it"`],
+    ["a literal bearer token", `bearer_token = "x"`],
+    ["an oauth block", `oauth_resource = "r"`],
+    ["an auth block", `auth = { type = "x" }`],
+  ];
+  for (const [kind, extra] of BLOCKERS_WITH_PAT)
+    it(`a PAT file does not unlock ${kind}: the entry stays as it is (#2954)`, async () => {
+      const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${extra}\n${SUFFIX}`;
+      const t = setup(original);
+      mkdirSync(join(t.h, ".open-artifacts"), { recursive: true });
+      writeFileSync(patFile(t), "oa_pat_test\n", { mode: 0o600 });
+      const out = await installAdapters(t.deps);
+      expect(t.toml().mcp_servers["open-artifacts"]).toEqual(
+        (parse(original) as { mcp_servers: Record<string, unknown> })
+          .mcp_servers["open-artifacts"],
+      );
+      expect(existsSync(t.moved)).toBe(false);
+      expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
+    });
+
+  it("keeps a token-variable entry on its variable when a PAT file is also there (#2954)", async () => {
+    const t = setup(ORIGINAL);
+    mkdirSync(join(t.h, ".open-artifacts"), { recursive: true });
+    writeFileSync(patFile(t), "oa_pat_test\n", { mode: 0o600 });
+    await installAdapters(t.deps);
+    const e = t.toml().mcp_servers["open-artifacts"];
+    expect(e?.args).toEqual(PROXY_ARGS);
+    expect(e).toMatchObject({ env_vars: ["OA_TOKEN"] });
+    expect(JSON.stringify(e)).not.toContain("--token-file");
+    expect(JSON.stringify(e)).not.toContain(patFile(t));
+  });
+
+  it("says which credential Codex now sends, naming the PAT file (#2954)", async () => {
+    const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
+    const t = setup(original);
+    mkdirSync(join(t.h, ".open-artifacts"), { recursive: true });
+    writeFileSync(patFile(t), "oa_pat_test\n", { mode: 0o600 });
+    const out = await installAdapters(t.deps);
+    const notes = out.notes.join("\n");
+    expect(notes).toContain(patFile(t));
+    expect(notes).toMatch(/not with the sign-in this entry had/);
+    expect(notes).not.toContain("oa_pat_test");
+  });
+
+  it("tells the person when the PAT file is gone after a swap, and leaves the entry alone (#2954)", async () => {
+    const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
+    const t = setup(original);
+    const pat = patFile(t);
+    mkdirSync(join(t.h, ".open-artifacts"), { recursive: true });
+    writeFileSync(pat, "oa_pat_test\n", { mode: 0o600 });
+    await installAdapters(t.deps);
+    const swapped = t.read();
+    rmSync(pat);
+    const out = await installAdapters(t.deps);
+    expect(t.read()).toBe(swapped);
+    expect(out.notes.join("\n")).toContain(pat);
+    expect(out.notes.join("\n")).toMatch(/no token and its tools fail/);
+    // The entry is still ours, so uninstall is the way back and it works.
+    await uninstallAdapters(t.deps);
+    expect(t.read()).toBe(original);
+  });
+
+  it("leaves an entry that signs in another way alone when there is no PAT file, and says what to do (#2954)", async () => {
+    const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
+    const t = setup(original);
+    const out = await installAdapters(t.deps);
+    // install adds oa-bus's own entry; the instance's stays exactly as it was.
+    expect(t.toml().mcp_servers["open-artifacts"]).toEqual(
+      (parse(original) as { mcp_servers: Record<string, unknown> }).mcp_servers[
+        "open-artifacts"
+      ],
+    );
+    expect(existsSync(t.moved)).toBe(false);
+    expect(out.notes.join("\n")).toContain(patFile(t));
+  });
 
   it("swaps an entry whose environment_id is local", async () => {
     const t = setup(

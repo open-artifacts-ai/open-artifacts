@@ -233,6 +233,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // The first-run checklist's install-wide state: the uncapped org owner.
   "GET /api/v1/onboarding": { org: "onboarding.own" },
   "PUT /api/v1/onboarding": { org: "onboarding.own" },
+  // #2577: the team picker and the "listens to" asked flag: members, uncapped; the flag also a browser session.
+  "GET /api/v1/me/teammates": { org: "teammates.read" },
+  "POST /api/v1/me/onboarding/listens-asked": { org: "onboarding.own" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -306,6 +309,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`DELETE ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
+  // #2426 B, #2536: the asks a viewer may see in a page's slots. Read access to
+  // the page is the floor; the handler filters by access to each ask's home.
+  [`GET ${ARTS}/ask-slots`]: art("comments.read"),
   // #682 comments: the floor is read access; the handler applies comments_off,
   // the embed refusal and who may edit or delete (the author, or an editor).
   [`GET ${ARTS}/comments`]: art("comments.read"),
@@ -383,6 +389,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/me/agent-requests": { user: "the caller's own switch" },
   "PUT /api/v1/me/agent-requests": { user: "the caller's own switch" },
   "GET /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "POST /api/v1/me/agent-listens": { user: "the caller's listens-to list" },
+  "GET /api/v1/me/agent-asks/history": { user: "the caller's request history" },
   "PATCH /api/v1/me/agent-listens/:id": {
     user: "the caller's listens-to list",
   },
@@ -449,6 +457,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // #2552 the version the instance names: owner only, cookie session only (handler).
   "PUT /api/v1/bus/run-version": { org: "bus.run_version" },
+  "PUT /api/v1/bus/updates-paused": { org: "bus.updates_paused" },
   // #2552 "Install now" for the caller's own machine: browser session only (handler).
   "POST /api/v1/bus/machines/:id/install-now": { org: "mcp.connect" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.

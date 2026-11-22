@@ -23,11 +23,13 @@ describe("instance settings", () => {
     mount("/settings/instance");
     expect((await nameInput()).value).toBe(fixtures.me.instance.name);
     const radio = screen.getByRole("radio", {
-      name: /private|team/i,
+      name: /restricted|anyone at/i,
       checked: true,
     });
-    expect(radio.textContent?.toLowerCase()).toContain(
-      fixtures.me.instance.defaultVisibility,
+    expect(radio.textContent).toMatch(
+      fixtures.me.instance.defaultVisibility === "team"
+        ? /^Anyone at /
+        : /^Restricted$/,
     );
   });
 
@@ -45,11 +47,19 @@ describe("instance settings", () => {
     mount("/settings/instance");
     await nameInput();
     const other =
-      fixtures.me.instance.defaultVisibility === "team" ? "Private" : "Team";
-    fireEvent.click(screen.getByRole("radio", { name: other }));
+      fixtures.me.instance.defaultVisibility === "team"
+        ? "Restricted"
+        : "Anyone at";
+    fireEvent.click(
+      screen.getByRole("radio", {
+        name: other === "Restricted" ? other : /^Anyone at /,
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() =>
-      expect(sent).toEqual([{ defaultVisibility: other.toLowerCase() }]),
+      expect(sent).toEqual([
+        { defaultVisibility: other === "Restricted" ? "private" : "team" },
+      ]),
     );
   });
 
@@ -101,7 +111,7 @@ describe("instance settings", () => {
     await waitFor(() =>
       expect(
         screen
-          .getByRole("radio", { name: "Team" })
+          .getByRole("radio", { name: "Anyone at Renamed" })
           .getAttribute("aria-checked"),
       ).toBe("true"),
     );

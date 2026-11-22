@@ -47,6 +47,10 @@ export const ASK_DETAIL_MAX = 500;
 export const ASK_WHY_MAX = 500;
 export const ASK_OPTIONS_MIN = 2;
 export const ASK_OPTIONS_MAX = 6;
+/** #2895: the option id an agent may not use; "Something else" is the server's and the card's. */
+export const OWN_WORDS_OPTION_ID = "other";
+/** #2895: an answer in the person's own words is 1 to 1,000 characters after trimming. */
+export const OWN_WORDS_MAX = 1000;
 export const ASK_TO_MAX = 10;
 export const MENTIONS_MAX = 10;
 
@@ -118,7 +122,10 @@ export type ReplacesRef = z.infer<typeof ReplacesRefSchema>;
 /** #2381: one person's current pick on an ask: a weigh-in, or the decision when `by` is the decider. */
 export const AskPickSchema = z.object({
   by: CommentAuthorSchema,
-  optionId: key,
+  /** Absent on an answer in the person's own words (`ownWords`). */
+  optionId: key.optional(),
+  /** #2895: the pick is the person's own words, not an option. */
+  ownWords: z.object({ text: z.string() }).optional(),
   at: z.string(),
   /** Picked in the web app (a browser session). */
   typed: z.boolean(),
@@ -173,7 +180,10 @@ export const CommentAskSchema = z
     /** The decision: the decider's pick (before #2381, the last pick of anyone asked). */
     answer: z
       .object({
-        optionId: key,
+        /** Absent on an answer in the person's own words (`ownWords`). */
+        optionId: key.optional(),
+        /** #2895: the decider answered in their own words, a typed message about this ask. Never a yes: `yes` is false. */
+        ownWords: z.object({ text: z.string() }).optional(),
         by: CommentAuthorSchema,
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
@@ -356,6 +366,39 @@ export const CommentListSchema = z.object({
 });
 export type CommentList = z.infer<typeof CommentListSchema>;
 
+/** #2688: one answer to an ask of yours, in the compact catch-up read. */
+export const CompactAnswerSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  question: z.string(),
+  /** Absent on an answer in the person's own words: `ownWords` holds the text. */
+  optionId: z.string().optional(),
+  label: z.string().optional(),
+  ownWords: z.string().optional(),
+  at: z.string(),
+  by: z.string(),
+  yes: z.boolean(),
+});
+export type CompactAnswer = z.infer<typeof CompactAnswerSchema>;
+
+/** #2688: one comment that mentions you, in the compact catch-up read. */
+export const CompactMentionSchema = z.object({
+  threadId: z.string(),
+  commentId: z.string(),
+  at: z.string(),
+  by: z.string(),
+  excerpt: z.string(),
+});
+export type CompactMention = z.infer<typeof CompactMentionSchema>;
+
+/** #2688: `list_comments` with `compact: true`. Each list is present when its `...Since` was asked. */
+export const CompactCommentListSchema = z.object({
+  answers: z.array(CompactAnswerSchema).optional(),
+  mentions: z.array(CompactMentionSchema).optional(),
+  truncated: z.boolean(),
+});
+export type CompactCommentList = z.infer<typeof CompactCommentListSchema>;
+
 export type CommentStatusFilter = "open" | "resolved" | "all";
 
 /** An anchor as a client sends it: `version` is optional on text and pin (the current version). */
@@ -387,7 +430,12 @@ const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 export const AskInputSchema = z
   .object({
     question: z.string().trim().min(1).max(ASK_QUESTION_MAX),
-    options: optionRules(AskInputOptionSchema),
+    options: optionRules(AskInputOptionSchema).refine(
+      (o) => !o.some((x) => x.id === OWN_WORDS_OPTION_ID),
+      {
+        message: `The option id "${OWN_WORDS_OPTION_ID}" is reserved: every ask already offers "Something else"`,
+      },
+    ),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
     /** #2381: a person (member who can edit the page) who decides. Default: the asker's own user. Never on an ask that names an action. */
@@ -457,7 +505,10 @@ export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
 /** POST R.commentAnswer body. */
 export const AnswerBodySchema = z.object({
-  optionId: key,
+  /** Either `optionId` or `ownWords`, never both (#2895). */
+  optionId: key.optional(),
+  /** #2895: "Something else": the person's own words, 1 to 1,000 characters after trimming. */
+  ownWords: z.object({ text: z.string() }).optional(),
   /** #2263: the WebAuthn assertion (PublicKeyCredential.toJSON()) for the challenge of R.commentAnswerChallenge; required on an ask with confirm "passkey". */
   assertion: PasskeyAssertionSchema.optional(),
 });
@@ -508,9 +559,18 @@ export const MentionCandidatesSchema = z.object({
 export type MentionCandidates = z.infer<typeof MentionCandidatesSchema>;
 
 /** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
+const SinceIso = z.string().datetime({ offset: true });
+
+/** #2688: the catch-up read. Timestamps are ISO 8601 with a zone (for example 2026-11-19T10:00:00Z). */
 export const ListCommentsInputSchema = z.strictObject({
   id: IdSchema,
   status: z.enum(["open", "resolved", "all"]).optional(),
+  /** Only threads with an ask of yours whose answer came after this time. */
+  answeredSince: SinceIso.optional(),
+  /** Only comments after this time that mention you. */
+  mentionedSince: SinceIso.optional(),
+  /** With answeredSince or mentionedSince: a small list instead of full threads. */
+  compact: z.boolean().optional(),
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 

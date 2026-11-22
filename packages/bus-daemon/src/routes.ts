@@ -212,7 +212,7 @@ export type RouteCtx = {
    * hello_ok did not list `follow`) or `down` (no link, or no hello_ok yet).
    * Without it, refused as `down`.
    */
-  followSupport?: () => "ok" | "old_hub" | "down";
+  followSupport?: (ref: string) => "ok" | "old_hub" | "down";
   /**
    * Asks the hub, over HTTP with the machine's token, that `ref`'s role reach
    * `namespaces` (#1346). `ref` is always the attested connection's, never
@@ -233,6 +233,7 @@ export type RouteCtx = {
    * this daemon is its member's own, so `self` may say it.
    */
   ownerAwayUntil?: () => string | undefined;
+  codexPendingLocal?: (ref: string) => number;
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -315,6 +316,10 @@ export function routeLocal(
           ) ?? [])
         : [];
       const away = ctx.ownerAwayUntil?.();
+      const localQueue = () =>
+        frame.row && agent.kind === "codex" && ctx.codexPendingLocal
+          ? { codex_pending_local: ctx.codexPendingLocal(ref) }
+          : {};
       const self = {
         type: "agent",
         agent: {
@@ -332,11 +337,11 @@ export function routeLocal(
       } as const;
       // The status is the hub's: asked for only by the self tool.
       const own = frame.row ? ctx.ownRow?.(ref) : undefined;
-      if (!own) return self;
+      if (!own) return { ...self, agent: { ...self.agent, ...localQueue() } };
       const answer = (row: StatusRow | undefined) =>
         reply({
           ...self,
-          agent: { ...self.agent, ...statusOf(row) },
+          agent: { ...self.agent, ...statusOf(row), ...localQueue() },
           v: 1,
           id: frame.id,
         });
@@ -402,7 +407,7 @@ export function routeLocal(
       const cap = ctx.limited?.(ref);
       if (cap)
         return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
-      const support = ctx.followSupport?.() ?? "down";
+      const support = ctx.followSupport?.(ref) ?? "down";
       if (support !== "ok")
         return {
           type: "error",

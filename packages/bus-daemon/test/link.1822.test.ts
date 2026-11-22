@@ -140,7 +140,7 @@ describe("link_proof to link_bind (#1822)", () => {
     ]);
   });
 
-  it("keeps at most LINK_HASHES_MAX hashes, the newest (#1984)", async () => {
+  it("keeps at most LINK_HASHES_MAX hashes: the first and the newest (#1984, #2861)", async () => {
     const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
     const n = LINK_HASHES_MAX + 1;
     const hs = Array.from({ length: n }, (_, i) =>
@@ -150,7 +150,7 @@ describe("link_proof to link_bind (#1822)", () => {
     // One frame per proof, never a replay of the held ones.
     await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(n));
     expect(h.of("link_bind").map((f) => f.hash)).toEqual(hs);
-    // A reconnect replays the newest LINK_HASHES_MAX, oldest first.
+    // A reconnect replays the first plus the newest LINK_HASHES_MAX - 1.
     h.hubSock()?.close();
     await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
     helloOk();
@@ -163,7 +163,7 @@ describe("link_proof to link_bind (#1822)", () => {
         .of("link_bind")
         .slice(n)
         .map((f) => f.hash),
-    ).toEqual(hs.slice(1));
+    ).toEqual([hs[0], ...hs.slice(2)]);
   });
 
   describe("a proof before the record", () => {

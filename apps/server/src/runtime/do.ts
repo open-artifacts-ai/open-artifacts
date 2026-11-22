@@ -20,6 +20,7 @@ import {
   dataResetDocLimit,
   ERROR_CODES,
   type ErrorCode,
+  HELD_LAPSE_MS,
   LIMITS,
   type Page,
   planOf,
@@ -32,7 +33,7 @@ import {
 import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError } from "../log.js";
+import { logError, logWarn } from "../log.js";
 import {
   ASKER_NOTICE_WINDOW_MS,
   ASKER_NOTICES_MAX,
@@ -63,8 +64,10 @@ import {
   getComment,
   getThread,
   type HeldAgent,
+  type HeldScanCursor,
   heldCanon,
   heldOf,
+  heldScan,
   heldTargets,
   insertComment,
   insertExtras,
@@ -191,6 +194,12 @@ const MAX_ANON_EVENTS_PER_ACTOR = 3;
 const MAX_SOCKETS_PER_ACTOR = 20;
 /** Max socket lifetime: a revocation the server missed can't outlive a signed URL. */
 export const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
+/** #2851: the hold retry's first try, its target read per run, and its backoff (3 min doubling, at most 6 h). */
+const HELD_RETRY_FIRST_MS = 3 * 60_000;
+const HELD_RETRY_TARGETS = 200;
+const heldRetryBackoffMs = (attempts: number): number =>
+  Math.min(HELD_RETRY_FIRST_MS * 2 ** attempts, 6 * 3_600_000);
+
 /** The alarm also closes sockets this close to their TTL, batching alarms (≤1/min). */
 export const SOCKET_TTL_SLACK_MS = 60_000;
 /**
@@ -446,6 +455,11 @@ create table if not exists index_job (
   version integer not null, attempts integer not null, due integer not null,
   seq integer not null
 );
+create table if not exists held_retry (
+  id integer primary key check (id = 1), since integer not null,
+  attempts integer not null, due integer not null,
+  cursor text, failed integer not null default 0
+);
 create table if not exists thumb_job (
   id integer primary key check (id = 1), artifact_id text not null,
   version integer not null, attempts integer not null, due integer not null,
@@ -536,6 +550,23 @@ export class ArtifactRuntime extends DurableObject<Env> {
     artifactId: string,
     version: number,
   ) => Promise<void> = indexVersionOrThrow;
+
+  /**
+   * #2851: writes the D1 rows of held targets that have none (the alarm's
+   * hold retry); overridable in tests. Dynamic import: the service imports this file.
+   */
+  heldReconciler: (
+    env: Env,
+    artifactId: string,
+    targets: ReturnType<typeof heldScan>,
+    now: number,
+  ) => Promise<{ complete: boolean }> = async (env, artifactId, targets, now) =>
+    (await import("../services/agent-requests.js")).reconcileTargets(
+      env,
+      artifactId,
+      targets,
+      now,
+    );
 
   /** The thumbnail capture the alarm runs; overridable in tests. */
   thumbnailer: (
@@ -637,6 +668,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           (select a.decider from comment_asks a where a.comment_id = comment_ask_picks.comment_id),
           (select json_extract(c.author, '$.ref') from comments c where c.id = comment_ask_picks.comment_id))`);
       }
+      // #2895: comment_ask_picks.own_words, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_ask_picks')",
+          )
+          .toArray()
+          .some((c) => c.name === "own_words")
+      )
+        sql.exec("alter table comment_ask_picks add column own_words text");
       // #2323: comment_asks.replaces, for DOs created before it.
       if (
         !sql
@@ -1822,7 +1863,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // on stays dormant, unread and unattempted).
     const thumbs = serverThumbnails(this.env);
     const thumb = thumbs ? this.pendingThumbnail() : null;
-    if (!job && !thumb && sockets.length === 0) return;
+    const heldJob = this.pendingHeldRetry();
+    if (!job && !thumb && !heldJob && sockets.length === 0) return;
     const now = this.now();
     let next = Number.POSITIVE_INFINITY;
     for (const ws of sockets) {
@@ -1863,6 +1905,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
     if (!indexDue && thumb && (thumb.attempts === 0 || thumb.due <= now))
       await this.runThumbnail(thumb);
+    // #2851: the hold retry shares this alarm; it never waits on or delays the other work.
+    if (heldJob && heldJob.due <= now) await this.runHeldRetry(heldJob, now);
+    const pendingHeld = this.pendingHeldRetry();
+    if (pendingHeld) next = Math.min(next, pendingHeld.due);
     const pending = this.pendingIndex();
     if (pending) next = Math.min(next, pending.due);
     const pendingThumb = thumbs ? this.pendingThumbnail() : null;
@@ -2277,12 +2323,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     commentId: string;
     by: StoredActor;
+    /** The option picked; "" with `ownWords` (#2895). */
     optionId: string;
+    /** #2895: "Something else": the person's own words, trimmed, 1 to 1,000 characters (the service checked). */
+    ownWords?: string;
     rate: string;
     /** #2263: the service verified a passkey assertion for this pick (required on a confirm ask). */
     verified?: "passkey";
-    /** #2381: the caller's own switches ask for a passkey on this ask though it carries no `confirm` (an older ask, or a switch turned on later): a decider's pick needs one. */
-    needsPasskey?: boolean;
     /** #2381: the caller may edit the page (a decider must still). */
     canDecide: boolean;
     /** #2381: the caller is a guest-role member (marked on a weigh-in). */
@@ -2309,11 +2356,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
         fail("replaced", "A newer ask replaced this one: pick on that");
       // #2511: a withdrawn ask takes no picks.
       if (r.ask.withdrawn) fail("withdrawn", "This ask was withdrawn");
-      if (!r.ask.options.some((o) => o.id === a.optionId))
+      if (
+        a.ownWords === undefined &&
+        !r.ask.options.some((o) => o.id === a.optionId)
+      )
         fail("bad_request", "Unknown option");
       // #2381: a risky ask has no one to weigh in: only its decider (the asker's own user) picks.
-      const risky =
-        r.ask.confirm === "passkey" || r.ask.options.some((o) => o.action);
+      const risky = r.ask.options.some((o) => o.action);
       if (risky && !isDecider)
         fail(
           "forbidden",
@@ -2324,13 +2373,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "not_decider",
           "You can no longer decide this: you cannot edit the page",
         );
-      // #2263: a confirm ask takes an answer only with a verified passkey, a change included.
-      if (r.ask.confirm === "passkey" || (isDecider && a.needsPasskey)) {
-        if (a.verified !== "passkey")
-          fail("passkey_required", "This pick needs your passkey");
-        if (r.ask.answer?.optionId === a.optionId)
-          fail("already_answered", "This ask is answered with that option");
-      }
       // The same option again (a retry, a double click) changes nothing the asker needs to hear.
       const mine = [...(r.ask.history ?? [])]
         .reverse()
@@ -2341,16 +2383,26 @@ export class ArtifactRuntime extends DurableObject<Env> {
       // nor the decision (same option, same typed and verified): else both are written.
       const unchanged = isDecider
         ? mine?.optionId === a.optionId &&
+          mine?.ownWords === a.ownWords &&
           r.ask.answer?.optionId === a.optionId &&
+          r.ask.answer?.ownWords === a.ownWords &&
           (r.ask.answer.by.kind === "user" &&
             r.ask.answer.by.typed === true) === typedNow &&
           (r.ask.answer.verified ?? null) === (a.verified ?? null)
-        : mine?.optionId === a.optionId;
+        : mine?.optionId === a.optionId && mine?.ownWords === a.ownWords;
+      // #2886: on an action ask an untyped pick (a token, an agent) by the
+      // decider is data in `picks`; it never replaces a typed decision.
+      const keepTyped =
+        isDecider &&
+        risky &&
+        !typedNow &&
+        r.ask.answer?.by.kind === "user" &&
+        r.ask.answer.by.typed === true;
       const now = this.iso();
-      // The cap is for weigh-ins: a decision is never refused by it.
+      // The cap is for weigh-ins and for untyped picks kept beside a typed decision: a decision is never refused by it.
       if (
         !unchanged &&
-        !isDecider &&
+        (!isDecider || keepTyped) &&
         a.by.kind === "user" &&
         pickCount(this.sql, a.commentId, a.by.ref) >= PICKS_PER_PERSON_MAX
       )
@@ -2364,15 +2416,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
           addPick(this.sql, a.commentId, r.ask.history[0]);
         addPick(this.sql, a.commentId, {
           optionId: a.optionId,
+          ...(a.ownWords !== undefined ? { ownWords: a.ownWords } : {}),
           by: a.by,
           at: now,
           ...(a.verified === "passkey" ? { verified: "passkey" as const } : {}),
           ...(a.guest ? { guest: true } : {}),
-          ...(isDecider ? { decision: true as const } : {}),
+          ...(isDecider && !keepTyped ? { decision: true as const } : {}),
         });
-        if (isDecider)
+        if (isDecider && !keepTyped)
           setAnswer(this.sql, a.commentId, {
             optionId: a.optionId,
+            ...(a.ownWords !== undefined ? { ownWords: a.ownWords } : {}),
             by: a.by,
             at: now,
             ...(a.verified === "passkey"
@@ -2384,7 +2438,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return {
         comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
         unchanged,
-        decided: isDecider,
+        decided: isDecider && !keepTyped,
       };
     });
     this.broadcastComments();
@@ -2644,6 +2698,114 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.broadcastComments();
   }
 
+  /**
+   * #2851: a hold's D1 write failed: retry from this DO's own alarm in a few
+   * minutes, however D1 is doing (the settings note and the nightly sweep are
+   * the fast path). One job per page; a second failure keeps the first's clock.
+   */
+  async commentsHeldRetryArm(): Promise<void> {
+    this.ensureSchema();
+    const now = this.now();
+    const due = now + HELD_RETRY_FIRST_MS;
+    this.sql.exec(
+      "insert or ignore into held_retry (id, since, attempts, due) values (1, ?, 0, ?)",
+      now,
+      due,
+    );
+    await this.armAt(this.pendingHeldRetry()?.due ?? due);
+  }
+
+  /** The pending hold retry, if any (tests and the alarm). */
+  pendingHeldRetry(): {
+    since: number;
+    attempts: number;
+    due: number;
+    cursor: HeldScanCursor | null;
+    failed: boolean;
+  } | null {
+    const r = this.sql
+      .exec<{
+        since: number;
+        attempts: number;
+        due: number;
+        cursor: string | null;
+        failed: number;
+      }>(
+        "select since, attempts, due, cursor, failed from held_retry where id = 1",
+      )
+      .toArray()[0];
+    return r
+      ? {
+          since: r.since,
+          attempts: r.attempts,
+          due: r.due,
+          cursor: r.cursor ? (JSON.parse(r.cursor) as HeldScanCursor) : null,
+          failed: r.failed === 1,
+        }
+      : null;
+  }
+
+  /**
+   * #2851: one alarm run of the hold retry reads ONE page of held targets
+   * (oldest first, after the cursor) and writes their missing rows. A full
+   * page moves the cursor and runs again in a minute; a pass that reaches the
+   * end with every target recorded deletes the job; one that saw any failure
+   * starts over from the beginning after a backoff. After the 7-day window it
+   * gives up.
+   */
+  private async runHeldRetry(
+    j: NonNullable<ReturnType<ArtifactRuntime["pendingHeldRetry"]>>,
+    now: number,
+  ): Promise<void> {
+    if (now - j.since >= HELD_LAPSE_MS) {
+      this.sql.exec("delete from held_retry where id = 1");
+      return;
+    }
+    let page: ReturnType<typeof heldScan> = [];
+    let complete = false;
+    try {
+      page = heldScan(this.sql, HELD_RETRY_TARGETS, j.cursor);
+      complete = (
+        await this.heldReconciler(this.env, this.artifactId(), page, now)
+      ).complete;
+    } catch (e) {
+      logWarn("held_retry_failed", {
+        code: e instanceof Error ? e.name : "error",
+      });
+    }
+    const failed = j.failed || !complete;
+    const last = page[page.length - 1];
+    if (page.length >= HELD_RETRY_TARGETS && last && complete)
+      // More to read: the next page in a minute.
+      this.sql.exec(
+        "update held_retry set cursor = ?, failed = ?, due = ? where id = 1",
+        JSON.stringify({
+          at: last.at,
+          commentId: last.commentId,
+          key: last.key,
+        }),
+        failed ? 1 : 0,
+        now + 60_000,
+      );
+    else if (!failed) this.sql.exec("delete from held_retry where id = 1");
+    // The end of a pass that saw a failure (or a failed page): back off, and read from the start again.
+    else
+      this.sql.exec(
+        "update held_retry set attempts = ?, due = ?, cursor = null, failed = 0 where id = 1",
+        j.attempts + 1,
+        now + heldRetryBackoffMs(j.attempts + 1),
+      );
+  }
+
+  /** #2851: the targets still held on this page (newest comments first), for the reconcile sweep. */
+  commentsHeldScan(a: {
+    limit: number;
+    after?: HeldScanCursor | null;
+  }): ReturnType<typeof heldScan> {
+    this.ensureSchema();
+    return heldScan(this.sql, a.limit, a.after);
+  }
+
   /** #2577: the words a held request carries as one string (the service hashes it), and what is held for `owner`. */
   commentsHeldCanon(a: {
     threadId: string;
@@ -2812,10 +2974,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "already_answered",
           "This card already has an answer, so it can't be edited. Post a new card, and withdraw this one first if it has no decision yet.",
         );
-      if (
-        ask &&
-        (ask.ask.confirm === "passkey" || ask.ask.options.some((o) => o.action))
-      )
+      if (ask?.ask.options.some((o) => o.action))
         fail(
           "conflict",
           "A card that approves an action can't be edited. Withdraw it and post a new card.",
@@ -2971,6 +3130,8 @@ type RpcMethods =
   | "commentsReplyTargets"
   | "commentsUnhold"
   | "commentsHeldCanon"
+  | "commentsHeldScan"
+  | "commentsHeldRetryArm"
   | "commentsRelease"
   | "commentsFinishHeld"
   | "commentsStatus"

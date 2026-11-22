@@ -1,5 +1,6 @@
 import type {
   ArtifactAgent,
+  CommentAuthor,
   CommentMention,
   CommentNotified,
   Comment as CommentT,
@@ -10,21 +11,12 @@ import type {
 } from "@oa/shared";
 import { viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import {
-  CheckCheck,
-  Clock,
-  KeyRound,
-  Loader2,
-  Minus,
-  ShieldCheck,
-} from "lucide-react";
+import { CheckCheck, Clock, Minus, ShieldCheck } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { ApiClientError } from "../../api/client";
 import {
   answerError,
   useAnswerAsk,
   useCommentErrorCtx,
-  usePasskeyAnswer,
   useTakeBackAsk,
 } from "../../api/comments";
 import { AskWaiting, askWaitingSince } from "../../foryou/waiting";
@@ -35,20 +27,31 @@ import { AuthorFace, PartyFace } from "./AuthorFace";
 import { type Face, FaceStack } from "./FaceStack";
 import { lastWasTouch, useInputKind } from "./inputKind";
 import { Markdown, MarkdownInline } from "./Markdown";
-import { PasskeyBlocked } from "./PasskeyParts";
-import { passkeyFailure, passkeyLine } from "./passkey";
+import {
+  OWN_ID,
+  OWN_PLACEHOLDER,
+  OWN_WORDS_COUNT_FROM,
+  OWN_WORDS_MAX,
+  optionIdOf,
+  optionsWithOwn,
+  textOf,
+} from "./ownWords";
+import { isPersonKey } from "./people";
 
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
 export type Extras = {
   mentions: KeyRef[];
+  /** The people @mentioned, by user id. */
+  people?: string[];
   /** #2508: the pictures attached in the box. */
   pictures?: PictureRef[];
 };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
+  ...(x.people?.length ? { people: x.people } : {}),
   ...(x.pictures?.length ? { pictures: x.pictures } : {}),
 });
 
@@ -72,9 +75,9 @@ export const needsMe = (ask: AskT): boolean => {
   );
 };
 
-/** A risky ask: a passkey-confirm ask, or any option with an `action`. It is only answered in the pane. */
+/** A risky ask: any option with an `action`. It is only answered in the pane. A passkey is never asked for (#2864). */
 export const isRiskyAsk = (ask: AskT): boolean =>
-  ask.confirm === "passkey" || ask.options.some((o) => !!o.action);
+  ask.options.some((o) => !!o.action);
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
@@ -627,10 +630,36 @@ function OptionViews({
             />
             {p.by.me ? "You" : p.by.name}
             {p.guest ? " (guest)" : ""} weighed in
+            {textOf(p) && (
+              <q data-own-words-text="" className="whitespace-pre-wrap">
+                {textOf(p)}
+              </q>
+            )}
           </span>
         ))
       )}
     </div>
+  );
+}
+
+/** The options of a decided own-words card, folded behind "N options not picked". */
+function Fold({
+  on,
+  n,
+  children,
+}: {
+  on: boolean;
+  n: number;
+  children: React.ReactNode;
+}) {
+  if (!on) return <>{children}</>;
+  return (
+    <details data-unpicked="" className={`${TXT} ${MUTED}`}>
+      <summary className="cursor-pointer">
+        {n} {n === 1 ? "option" : "options"} not picked
+      </summary>
+      <div className="mt-1">{children}</div>
+    </details>
   );
 }
 
@@ -680,26 +709,22 @@ export function AskBlock({
 }) {
   const ask = c.ask;
   const plain = useAnswerAsk(artifactId);
-  const passkey = usePasskeyAnswer(artifactId);
   const takeBack = useTakeBackAsk(artifactId);
-  // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
-  // #2381: an ask with no `confirm` mark can still need the decider's own passkey at pick
-  // time (their switches changed after it was posted): a plain pick that comes back
-  // passkey_required switches this ask to the passkey path and asks to pick again, so
-  // the passkey prompt starts from a click (Safari needs the gesture).
-  const [viaPasskey, setViaPasskey] = useState(false);
-  const [repick, setRepick] = useState(false);
-  const answer = ask?.confirm === "passkey" || viaPasskey ? passkey : plain;
-  const [lastPick, setLastPick] = useState<string | null>(null);
+  // #2864: no ask needs a passkey. A pick is one plain answer, even when an old
+  // server still marks the ask `confirm: "passkey"`.
+  const answer = plain;
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
+  // the own-words box under "Something else".
+  const [ownOpen, setOwnOpen] = useState(false);
+  const [ownText, setOwnText] = useState("");
   const qid = useId();
   // #2381: what the viewer's own controls show: their weigh-in, or the decision.
   const myPick = ask ? myPickOf(ask) : undefined;
   const picked =
-    ask?.role === "weigh" ? myPick?.optionId : ask?.answer?.optionId;
+    ask?.role === "weigh" ? optionIdOf(myPick) : optionIdOf(ask?.answer);
   const opts = useRef<HTMLUListElement>(null);
   const [refocus, setRefocus] = useState<string | null>(null);
   // Once the failed pick is rolled back and its option is enabled again.
@@ -785,27 +810,24 @@ export function AskBlock({
     );
   }
   const mine = ask.to.some((a) => a.me) || ask.role !== undefined;
-  // #2263: a passkey ask is never optimistic; its states live in one slot above the options.
-  const pk = ask.confirm === "passkey" || viaPasskey;
-  const pkErr = pk && err != null ? passkeyFailure(err) : null;
-  const pkLine = pkErr ? passkeyLine(pkErr) : null;
-  const blocked = pkErr?.kind === "no_passkey" || pkErr?.kind === "cooling";
   // Addressed agents with identity fields; legacy ones add no line, and the
   // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
     (a) => a.kind === "agent" && a.linked !== undefined,
   );
   const canAnswer = mine && !ask.closed;
-  const pickedIdx = ask.options.findIndex((o) => o.id === picked);
-  const pickedOpt = ask.options[pickedIdx];
+  // "Something else", always drawn last; an agent's own "Other" stays a normal option.
+  const ownId = OWN_ID;
+  const options = optionsWithOwn(ask);
+  const pickedIdx = options.findIndex((o) => o.id === picked);
+  const pickedOpt = options[pickedIdx];
   // The decision itself (the decider's pick), for the closed line and the tick.
-  const decisionIdx = ask.options.findIndex(
-    (o) => o.id === ask.answer?.optionId,
-  );
-  const decisionOpt = ask.options[decisionIdx];
+  const decisionIdx = options.findIndex((o) => o.id === optionIdOf(ask.answer));
+  const decisionOpt = options[decisionIdx];
+  const answerWords = textOf(ask.answer);
   const weighing = ask.role === "weigh";
   const decider = ask.decider;
-  // A risky ask (an action option or a passkey) shows no one else: no who-line,
+  // A risky ask (an action option) shows no one else: no who-line,
   // weigh-ins or take back. It is the asker's own user's call.
   const risky = isRiskyAsk(ask);
   const deciderLine =
@@ -836,30 +858,30 @@ export function AskBlock({
     views.length,
   );
   const bars = people >= 4;
-  const slot = answer.isPending ? (
-    <p role="status" data-passkey-verifying="" className={`m-0 ${MUTED}`}>
-      Waiting for your passkey…
-    </p>
-  ) : pkErr && (pkLine || pkErr.kind === "other") ? (
-    <p
-      role="alert"
-      data-passkey-error={pkErr.kind}
-      className={`m-0 ${pkLine?.danger || !pkLine ? "text-destructive" : MUTED}`}
-    >
-      {pkLine?.text ?? answerError(err, errCtx)}
-    </p>
-  ) : !pickedOpt && !blocked ? (
-    <p className={`m-0 flex items-center gap-1.5 ${MUTED}`}>
-      <KeyRound aria-hidden="true" className="size-3.5" />
-      {repick
-        ? "This now needs your passkey. Pick again."
-        : "Approving this needs your passkey."}
-    </p>
-  ) : null;
-  const recIdx = ask.options.findIndex(
-    (o) => o.id === ask.recommended?.optionId,
-  );
+  const recIdx = options.findIndex((o) => o.id === ask.recommended?.optionId);
   const letters = showLetters(ask.options);
+  // the decider's own words are the decision: one green card, the options folded.
+  const ownDecided =
+    !weighing &&
+    !!ask.answer &&
+    optionIdOf(ask.answer) === ownId &&
+    !!answerWords &&
+    !isSendingAnswer(ask.answer) &&
+    !answer.isPending &&
+    !changing;
+  const sendOwn = () => {
+    if (holdPicks) return;
+    const words = ownText.trim();
+    if (!words) return;
+    setErr(null);
+    answer.mutate(
+      { thread: thread.id, comment: c.id, ownWords: { text: words } },
+      {
+        onError: (e) => setErr(e),
+        onSuccess: () => setOwnOpen(false),
+      },
+    );
+  };
   const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   // Amber while it waits for this reader, as asksForMe counts it: a weigh-in
@@ -879,8 +901,10 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {letters ? `${letter(decisionIdx)}, ` : ""}
-          {decisionOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
+          {answerWords
+            ? `"${answerWords}"`
+            : `${letters && decisionIdx < ask.options.length ? `${letter(decisionIdx)}, ` : ""}${decisionOpt.label}`}{" "}
+          · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -989,143 +1013,185 @@ export function AskBlock({
               {views.length} of {people} weighed in. The tally decides nothing.
             </p>
           )}
-          {pk && slot && (
-            // One slot for the idle line, the wait and the failure; absent when empty.
-            <div className={`min-h-5 ${TXT}`} data-passkey-slot="">
-              {slot}
+          {ownDecided && ask.answer && (
+            <div
+              data-own-decided=""
+              className={`flex flex-col gap-0.5 rounded-md bg-[var(--oa-success-soft)] p-2 ring-2 ring-[var(--oa-success-fg)] ${TXT}`}
+            >
+              <span
+                data-own-words-text=""
+                className="font-semibold break-words whitespace-pre-wrap"
+              >
+                {answerWords}
+              </span>
+              <span className="font-medium text-[var(--oa-success-fg)]">
+                ✓ {actor(ask.answer.by, "You")} decided
+              </span>
+              <span className={MUTED}>
+                {ask.answer.by.me
+                  ? "Your own words, not one of the options."
+                  : `${ask.answer.by.name}'s own words, not one of the options.`}
+              </span>
             </div>
           )}
-          {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
-          <ul
-            ref={opts}
-            aria-labelledby={qid}
-            aria-busy={answer.isPending || undefined}
-            data-sending={answer.isPending ? "" : undefined}
-            className="m-0 flex list-none flex-col gap-1 p-0"
-          >
-            {ask.options.map((o, i) => {
-              const rec = ask.recommended?.optionId === o.id;
-              const sel = picked === o.id;
-              // The decision keeps full strength in green; only unpicked options fade.
-              const isDecision =
-                ask.answer?.optionId === o.id && !isSendingAnswer(ask.answer);
-              return (
-                <li key={o.id}>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
-                      isDecision
-                        ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
-                        : sel
-                          ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
-                          : ""
-                    } ${pk && answer.isPending ? "opacity-60" : ""}`}
-                    disabled={
-                      !canAnswer ||
-                      holdPicks ||
-                      answer.isPending ||
-                      sel ||
-                      (locked && !sel) ||
-                      blocked
-                    }
-                    aria-pressed={sel}
-                    data-option={o.id}
-                    onClick={() => {
-                      if (holdPicks) return;
-                      setErr(null);
-                      setLastPick(o.id);
-                      const v = {
-                        thread: thread.id,
-                        comment: c.id,
-                        optionId: o.id,
-                      };
-                      const failed = (e: unknown) => {
-                        setErr(e);
-                        // Back to unanswered: focus returns to the option.
-                        setRefocus(o.id);
-                      };
-                      setRepick(false);
-                      answer.mutate(v, {
-                        onError: (e) => {
-                          if (
-                            answer === plain &&
-                            e instanceof ApiClientError &&
-                            e.code === "passkey_required"
-                          ) {
-                            setErr(null);
-                            setViaPasskey(true);
-                            setRepick(true);
-                            return;
-                          }
-                          failed(e);
-                        },
-                      });
-                    }}
-                  >
-                    {letters && (
-                      <span
-                        data-option-key=""
-                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                      >
-                        {letter(i)}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1 break-words">
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                        <b>{o.label}</b>
-                        {rec && (
-                          <span
-                            className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                          >
-                            Recommended
+          <Fold on={ownDecided} n={ask.options.length}>
+            <ul
+              ref={opts}
+              aria-labelledby={qid}
+              aria-busy={answer.isPending || undefined}
+              data-sending={answer.isPending ? "" : undefined}
+              className="m-0 flex list-none flex-col gap-1 p-0"
+            >
+              {options.map((o, i) => {
+                const isOwn = o.id === ownId;
+                const rec = ask.recommended?.optionId === o.id;
+                const sel = picked === o.id;
+                // The decision keeps full strength in green; only unpicked options fade.
+                const isDecision =
+                  optionIdOf(ask.answer) === o.id &&
+                  !isSendingAnswer(ask.answer);
+                return (
+                  <li key={o.id}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
+                        isDecision
+                          ? "bg-[var(--oa-success-soft)] ring-2 ring-[var(--oa-success-fg)] disabled:opacity-100"
+                          : sel
+                            ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
+                            : ""
+                      }`}
+                      disabled={
+                        !canAnswer ||
+                        holdPicks ||
+                        answer.isPending ||
+                        // Own words can be sent again once Change reopens the options.
+                        (isOwn ? locked : sel || (locked && !sel))
+                      }
+                      aria-pressed={sel}
+                      aria-expanded={isOwn ? ownOpen : undefined}
+                      data-option={o.id}
+                      data-own-words={isOwn ? "" : undefined}
+                      onClick={() => {
+                        if (holdPicks) return;
+                        // "Something else" opens its box; Send records it.
+                        if (isOwn) {
+                          if (!ownOpen && ownText === "" && sel && answerWords)
+                            setOwnText(answerWords);
+                          setOwnOpen((v) => !v);
+                          return;
+                        }
+                        setErr(null);
+                        const v = {
+                          thread: thread.id,
+                          comment: c.id,
+                          optionId: o.id,
+                        };
+                        const failed = (e: unknown) => {
+                          setErr(e);
+                          // Back to unanswered: focus returns to the option.
+                          setRefocus(o.id);
+                        };
+                        answer.mutate(v, { onError: failed });
+                      }}
+                    >
+                      {letters && !isOwn && i < ask.options.length && (
+                        <span
+                          data-option-key=""
+                          className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                        >
+                          {letter(i)}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1 break-words">
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <b>{o.label}</b>
+                          {rec && (
+                            <span
+                              className={`shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                            >
+                              Recommended
+                            </span>
+                          )}
+                        </span>
+                        {o.detail && (
+                          <span className={`block font-normal ${MUTED}`}>
+                            <MarkdownInline body={o.detail} links={false} />
                           </span>
                         )}
                       </span>
-                      {o.detail && (
-                        <span className={`block font-normal ${MUTED}`}>
-                          <MarkdownInline body={o.detail} links={false} />
-                        </span>
-                      )}
-                    </span>
-                    {pk && !sel && (
-                      <span
-                        data-passkey-hint=""
-                        role="img"
-                        aria-label={
-                          answer.isPending && lastPick === o.id
-                            ? "Waiting for your passkey"
-                            : "Needs a passkey"
-                        }
-                        className={`ml-auto shrink-0 ${MUTED}`}
+                    </Button>
+                    {isOwn && ownOpen && canAnswer && (
+                      <form
+                        data-own-words-box=""
+                        className="mt-1 flex flex-col gap-1 px-2"
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          sendOwn();
+                        }}
                       >
-                        {answer.isPending && lastPick === o.id ? (
-                          <Loader2
-                            aria-hidden="true"
-                            className="size-3.5 animate-spin motion-reduce:animate-none"
-                          />
-                        ) : (
-                          <KeyRound aria-hidden="true" className="size-3.5" />
-                        )}
-                      </span>
+                        <textarea
+                          // biome-ignore lint/a11y/noAutofocus: the box opens on the person's own click
+                          autoFocus
+                          aria-label={OWN_PLACEHOLDER}
+                          placeholder={OWN_PLACEHOLDER}
+                          maxLength={OWN_WORDS_MAX}
+                          rows={3}
+                          value={ownText}
+                          disabled={answer.isPending}
+                          onChange={(e) => setOwnText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setOwnOpen(false);
+                              setRefocus(o.id);
+                            }
+                          }}
+                          className={`w-full resize-y rounded-md border border-border bg-background px-2 py-1 ${TXT}`}
+                        />
+                        <span className="flex items-center gap-2">
+                          <Button
+                            type="submit"
+                            size="xs"
+                            disabled={!ownText.trim() || answer.isPending}
+                          >
+                            Send
+                          </Button>
+                          {ownText.length >= OWN_WORDS_COUNT_FROM && (
+                            <span
+                              data-own-words-count=""
+                              className={`${TXT} ${MUTED}`}
+                            >
+                              {ownText.length} / {OWN_WORDS_MAX}
+                            </span>
+                          )}
+                        </span>
+                      </form>
                     )}
-                  </Button>
-                  <OptionViews
-                    views={views.filter((p) => p.optionId === o.id)}
-                    total={views.length}
-                    bars={bars}
-                    decided={
-                      !risky &&
-                      ask.answer?.optionId === o.id &&
-                      !isSendingAnswer(ask.answer)
-                        ? actor(ask.answer.by, "You")
-                        : null
-                    }
-                  />
-                </li>
-              );
-            })}
-          </ul>
+                    {(!isOwn ||
+                      views.some((p) => optionIdOf(p) === o.id) ||
+                      optionIdOf(ask.answer) === o.id) && (
+                      <OptionViews
+                        views={views.filter((p) => optionIdOf(p) === o.id)}
+                        total={views.length}
+                        bars={bars}
+                        decided={
+                          !risky &&
+                          ask.answer &&
+                          optionIdOf(ask.answer) === o.id &&
+                          !isSendingAnswer(ask.answer)
+                            ? actor(ask.answer.by, "You")
+                            : null
+                        }
+                      />
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </Fold>
           {ask.recommended?.why && (
             <p className={`${TXT} ${MUTED} break-words`}>
               Why{recIdx >= 0 && letters ? ` ${letter(recIdx)}` : ""}:{" "}
@@ -1158,10 +1224,12 @@ export function AskBlock({
             !answer.isPending && (
               <>
                 <p className={`${TXT} font-medium`} data-ask-answer="">
-                  {actor(ask.answer.by, "You")}{" "}
-                  {ask.decider && !risky ? "decided" : "picked"}{" "}
-                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-                  {versionDate(ask.answer.at)}
+                  {answerWords && optionIdOf(ask.answer) === ownId
+                    ? ask.answer.by.me
+                      ? "You answered in your own words"
+                      : `${actor(ask.answer.by, "You")} answered in their own words`
+                    : `${actor(ask.answer.by, "You")} ${ask.decider && !risky ? "decided" : "picked"} ${letters && pickedIdx < ask.options.length ? letter(pickedIdx) : pickedOpt.label}`}{" "}
+                  · {versionDate(ask.answer.at)}
                   {ask.closed ? " · closed" : ""}
                   {canAnswer && locked && (
                     <>
@@ -1211,7 +1279,7 @@ export function AskBlock({
               Only the people asked can answer.
             </p>
           )}
-          {err != null && !pk && (
+          {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
               {answerError(err, errCtx)}
             </p>
@@ -1382,6 +1450,8 @@ type MentionedProps = {
     key: string;
     name: string;
     delivery?: DState;
+    /** A mentioned person, shown with their initials. */
+    person?: CommentAuthor;
   })[];
   guest?: boolean;
   /** #2229: show each mention's delivery in its chip. */
@@ -1432,7 +1502,11 @@ function mentioned(
         data-mention-chip=""
         className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 align-middle text-[var(--oa-accent-fg)]"
       >
-        {face && <PartyFace p={face} guest={guest} />}
+        {face?.person ? (
+          <AuthorFace a={face.person} small />
+        ) : (
+          face && <PartyFace p={face} guest={guest} />
+        )}
         {body.slice(at, end)}
       </span>,
     );
@@ -1501,10 +1575,11 @@ const isOnline = (a: ArtifactAgent) =>
 const isUnknown = (a: ArtifactAgent) => a.state === undefined && !a.online;
 const rankOf = (a: ArtifactAgent) => (isOnline(a) ? 0 : isUnknown(a) ? 2 : 1);
 
-/** Online first, then away, then agents with no state (the bus did not answer); each alphabetical. */
+/** The viewer's own agents first, then teammates' (#2577); within each: online, then away, then agents with no state (the bus did not answer); each alphabetical. */
 export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
   return [...agents].sort(
     (x, y) =>
+      Number(!!x.owner) - Number(!!y.owner) ||
       rankOf(x) - rankOf(y) ||
       x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
   );
@@ -1532,7 +1607,19 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * dot when the name stem repeats among their own agents. Another member's
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
+/** #2577: what asking another person's agent does, in three plain states. */
+export function askLine(a: ArtifactAgent): string | null {
+  if (!a.owner || !a.askState) return null;
+  return a.askState === "held"
+    ? `${a.owner} will be asked first`
+    : a.askState === "listening"
+      ? "listens to you here"
+      : `only answers ${a.owner}`;
+}
+
 function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  const line = askLine(a);
+  if (line) return `${a.owner}'s agent \u00b7 ${line}`;
   // No state at all: the bus did not answer, so nothing is claimed (an empty column; "Sam's" alone for another member's).
   if (a.state === undefined && !a.online && !a.owner) return "";
   if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
@@ -1566,46 +1653,93 @@ export function MentionMenu({
   active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
+  // #2577: with teammates' agents in the list, two labelled groups say whose is whose.
+  const grouped = matches.some((a) => a.owner && a.askState);
+  const row = (a: ArtifactAgent, i: number) => (
+    <div
+      key={a.key}
+      id={`${id}-${i}`}
+      role="option"
+      tabIndex={-1}
+      aria-selected={i === active}
+      aria-disabled={a.askState === "off" ? true : undefined}
+      className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)] ${a.askState === "off" ? "opacity-60" : ""}`}
+      // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
+      onMouseDown={(e) => {
+        e.preventDefault();
+        // Asking is off for this agent's person: it can't be picked.
+        if (a.askState !== "off") onPick(a);
+      }}
+    >
+      {isPersonKey(a.key) ? (
+        <AuthorFace a={{ kind: "user", name: a.name, me: false }} small />
+      ) : (
+        !isUnknown(a) && (
+          <span
+            aria-hidden="true"
+            className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+          />
+        )
+      )}
+      <span
+        className={`min-w-0 flex-1 ${grouped ? "flex flex-col" : "flex items-center gap-2"}`}
+      >
+        <b
+          className={`min-w-0 ${grouped ? "" : "flex-1"} truncate ${a.state === "away" ? MUTED : ""}`}
+        >
+          {rowName(a)}
+        </b>
+        <span className={`${MUTED} ${grouped ? "" : "shrink-0"}`}>
+          {isPersonKey(a.key)
+            ? "Person"
+            : grouped && !a.owner
+              ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
+              : stateText(a, all)}
+        </span>
+      </span>
+    </div>
+  );
+  const group = (label: string, from: number, to: number) => (
+    <fieldset key={label} className="m-0 min-w-0 border-0 p-0">
+      <legend className="sr-only">{label}</legend>
+      <p
+        aria-hidden="true"
+        className={`m-0 px-2 pt-1.5 pb-0.5 font-[family-name:var(--oa-font-mono)] text-[11px] tracking-[.06em] uppercase ${MUTED}`}
+      >
+        {label}
+      </p>
+      {matches.slice(from, to).map((a, j) => row(a, from + j))}
+    </fieldset>
+  );
+  // Agents first (yours, then teammates'), then people: each run is contiguous.
+  const firstTheirs = matches.findIndex((a) => a.owner);
+  const firstPerson = matches.findIndex((a) => isPersonKey(a.key));
+  const end = firstPerson < 0 ? matches.length : firstPerson;
   return (
     <div
       id={id}
       role="listbox"
-      aria-label="Agents on this page"
+      aria-label={
+        matches.some((a) => isPersonKey(a.key))
+          ? "Agents and people"
+          : "Agents on this page"
+      }
       className="rounded-md border border-border bg-background"
     >
       {matches.length === 0 ? (
         <p className={`p-2 ${TXT} ${MUTED}`}>
           No agent works on this page with that name.
         </p>
+      ) : grouped ? (
+        <>
+          {firstTheirs !== 0 &&
+            group("Your agents", 0, firstTheirs < 0 ? end : firstTheirs)}
+          {firstTheirs >= 0 &&
+            group("Teammates' agents on this page", firstTheirs, end)}
+          {firstPerson >= 0 && group("People", firstPerson, matches.length)}
+        </>
       ) : (
-        matches.map((a, i) => (
-          <div
-            key={a.key}
-            id={`${id}-${i}`}
-            role="option"
-            tabIndex={-1}
-            aria-selected={i === active}
-            className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
-            // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
-            onMouseDown={(e) => {
-              e.preventDefault();
-              onPick(a);
-            }}
-          >
-            {!isUnknown(a) && (
-              <span
-                aria-hidden="true"
-                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
-              />
-            )}
-            <b
-              className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
-            >
-              {rowName(a)}
-            </b>
-            <span className={MUTED}>{stateText(a, all)}</span>
-          </div>
-        ))
+        matches.map(row)
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import { type Inbox, MeSchema, newId, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { withBrokerProps } from "../src/auth/broker-transport.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
 import { seedWelcome } from "../src/services/onboarding.js";
@@ -29,7 +30,7 @@ const set = (key: string) =>
     .run();
 type Row = {
   id: string;
-  setup?: { state: string; done: number; stalled?: string };
+  setup?: { state: string; done: number; total?: number; stalled?: string };
 };
 const list = async (cookie: string, status?: string) =>
   (await (
@@ -57,6 +58,7 @@ describe("GET R.members setup", () => {
     expect(by(m.userId)?.setup).toEqual({
       state: "partial",
       done: 1,
+      total: 5,
       stalled: "agent",
     });
     expect((await api(app, R.members, m.cookie)).status).toBe(404);
@@ -554,5 +556,93 @@ describe("a capped caller's read publishes nothing (#2632)", () => {
       ((await r.json()) as { welcomeId: string | null }).welcomeId,
     ).toBeNull();
     expect(await seededRows(m.userId)).toBe(0);
+  });
+});
+
+describe("GET R.members setup, chat-only members (#2890)", () => {
+  const addMachine = (userId: string) =>
+    env.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(newId(), userId, newId(), Date.now(), Date.now())
+      .run();
+
+  it("a member who never connected the bus counts of 3 and is never stalled on named or mention; the bus brings five back", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await set(askAnsweredKey(m.userId));
+    let s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(3);
+    expect(s?.stalled).not.toBe("named");
+    expect(s?.stalled).not.toBe("mention");
+    await addMachine(m.userId);
+    s = (await list(o.cookie)).find((r) => r.id === m.userId)?.setup;
+    expect(s?.total).toBe(5);
+  });
+
+  const setupOf = async (ownerCookie: string, id: string) =>
+    (await list(ownerCookie)).find((r) => r.id === id)?.setup;
+  const connectAgent = async (userId: string) => {
+    const { id } = await createPat(env, userId, "agent");
+    await env.DB.prepare("update tokens set last_used_at = ?2 where id = ?1")
+      .bind(id, Date.now())
+      .run();
+  };
+
+  it("connect an agent with no bus: stalled on artifact, never named or mention", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await connectAgent(m.userId);
+    expect(await setupOf(o.cookie, m.userId)).toEqual({
+      state: "partial",
+      done: 1,
+      total: 3,
+      stalled: "artifact",
+    });
+  });
+
+  it("a recorded name or reply proves the bus without a machine row: five steps", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    for (const [key, stalled] of [
+      [namedKey, "artifact"],
+      [mentionRepliedKey, "named"],
+    ] as const) {
+      const m = await login(`mem-${tag()}@example.com`, "member");
+      await seen(m.userId);
+      await connectAgent(m.userId);
+      await set(key(m.userId));
+      const s = await setupOf(o.cookie, m.userId);
+      expect(s?.total).toBe(5);
+      expect(s?.stalled).toBe(stalled);
+    }
+  });
+
+  it("a chat-only member at 3 of 3 reads Set up, with nothing saved as completed", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    await seen(m.userId);
+    await connectAgent(m.userId);
+    await publish(
+      env as unknown as Env,
+      (await getUser(env, m.userId)) as NonNullable<
+        Awaited<ReturnType<typeof getUser>>
+      >,
+      { title: "mine", format: "html", content: "<p>x</p>" },
+      null,
+    );
+    await set(askAnsweredKey(m.userId));
+    expect(await setupOf(o.cookie, m.userId)).toEqual({
+      state: "set",
+      done: 3,
+      total: 3,
+    });
+    expect(
+      await one(
+        "select value from settings where key = ?1",
+        `onboarding:completed:${m.userId}`,
+      ),
+    ).toBeNull();
   });
 });

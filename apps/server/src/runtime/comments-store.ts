@@ -40,7 +40,8 @@ create table if not exists comment_ask_picks (
   seq integer primary key autoincrement, comment_id text not null,
   user_id text not null, option_id text not null, by text not null,
   at text not null, typed integer not null default 0, verified text,
-  guest integer not null default 0, decision integer not null default 0
+  guest integer not null default 0, decision integer not null default 0,
+  own_words text
 );
 create index if not exists comment_ask_picks_person on comment_ask_picks (comment_id, user_id, at, seq);
 create table if not exists comment_targets (
@@ -122,7 +123,10 @@ export type MentionState =
 
 /** #2381: one pick, kept for good. `guest`: the picker was a guest-role member then. */
 export type StoredPick = {
+  /** "" when the pick is the person's own words (#2895): no option. */
   optionId: string;
+  /** #2895: "Something else": the person's own words, with no option. */
+  ownWords?: string;
   by: StoredActor;
   at: string;
   verified?: "passkey";
@@ -138,6 +142,8 @@ export type StoredAsk = {
   to: StoredParty[];
   answer?: {
     optionId: string;
+    /** #2895: the decision is the decider's own words (optionId is ""). */
+    ownWords?: string;
     by: StoredActor;
     at: string;
     /** #2263: a passkey assertion for this pick verified. Set by the server only. */
@@ -413,9 +419,11 @@ type PickRow = {
   verified: string | null;
   guest: number;
   decision: number;
+  own_words: string | null;
 };
 const pickOf = (r: PickRow): StoredPick => ({
   optionId: r.option_id,
+  ...(r.own_words !== null ? { ownWords: r.own_words } : {}),
   by: JSON.parse(r.by) as StoredActor,
   at: r.at,
   ...(r.verified === "passkey" ? { verified: "passkey" as const } : {}),
@@ -453,7 +461,6 @@ const askOf = (r: AskRow): StoredAsk => ({
       }
     : {}),
   to: JSON.parse(r.addressees) as StoredParty[],
-  ...(r.confirm === "passkey" ? { confirm: "passkey" as const } : {}),
   ...(r.decider ? { decider: r.decider } : {}),
   ...(r.replaces ? { replaces: r.replaces } : {}),
   ...(r.withdrawn
@@ -498,7 +505,7 @@ function attachExtras(
     }
     const hist = new Map<string, StoredPick[]>();
     for (const r of sql.exec<PickRow>(
-      `select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks
+      `select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks
        where comment_id in (select value from json_each(?)) order by seq`,
       JSON.stringify(asked),
     )) {
@@ -802,6 +809,69 @@ export function heldCanon(
     .toArray()
     .map((n) => n.name);
   return JSON.stringify([c.body, c.anchor, ask ?? null, names]);
+}
+
+/** #2851: where a held-target scan left off. */
+export type HeldScanCursor = { at: string; commentId: string; key: string };
+
+/**
+ * #2851: the targets still held in this page's comments, oldest comment first,
+ * with who wrote the comment and when. For the sweep that finds a held target
+ * whose D1 request row never got written. Ids, keys and times only.
+ */
+export function heldScan(
+  sql: SqlStorage,
+  limit: number,
+  /** The last target of the previous page: the next page starts after it (oldest comment first, then comment id, then key: a stable order). */
+  after?: HeldScanCursor | null,
+): {
+  commentId: string;
+  threadId: string;
+  key: string;
+  way: string;
+  owner: string;
+  namespace: string;
+  name: string;
+  at: string;
+  author: string;
+}[] {
+  return sql
+    .exec<{
+      comment_id: string;
+      thread_id: string;
+      key: string;
+      way: string;
+      owner: string | null;
+      identity: string | null;
+      at: string;
+      author: string;
+    }>(
+      `select t.comment_id, t.thread_id, t.key, t.name as way, t.owner, t.identity, c.created_at as at, c.author
+         from comment_targets t join comments c on c.id = t.comment_id
+        where t.kind = 'held' and t.state = 'held' and t.owner is not null
+          ${after ? "and (c.created_at, t.comment_id, t.key) > (?, ?, ?)" : ""}
+        order by c.created_at, t.comment_id, t.key limit ?`,
+      ...(after ? [after.at, after.commentId, after.key] : []),
+      limit,
+    )
+    .toArray()
+    .map((r) => {
+      const a = JSON.parse(r.identity ?? "{}") as {
+        namespace?: string;
+        name?: string;
+      };
+      return {
+        commentId: r.comment_id,
+        threadId: r.thread_id,
+        key: r.key,
+        way: r.way,
+        owner: r.owner as string,
+        namespace: a.namespace ?? "",
+        name: a.name ?? "",
+        at: r.at,
+        author: r.author,
+      };
+    });
 }
 
 /** The held targets of a comment, optionally for one owner. */
@@ -1403,7 +1473,7 @@ export function addPick(
   p: StoredPick,
 ): void {
   sql.exec(
-    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "insert into comment_ask_picks (comment_id, user_id, option_id, by, at, typed, verified, guest, decision, own_words) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     commentId,
     p.by.ref,
     p.optionId,
@@ -1413,6 +1483,7 @@ export function addPick(
     p.verified ?? null,
     p.guest ? 1 : 0,
     p.decision ? 1 : 0,
+    p.ownWords ?? null,
   );
 }
 
@@ -1468,7 +1539,7 @@ export function askRow(
   const ask = askOf(r);
   const rows = sql
     .exec<PickRow>(
-      "select comment_id, option_id, by, at, verified, guest, decision from comment_ask_picks where comment_id = ? order by seq",
+      "select comment_id, option_id, by, at, verified, guest, decision, own_words from comment_ask_picks where comment_id = ? order by seq",
       commentId,
     )
     .toArray()

@@ -15,8 +15,13 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { Maximize2, MessageSquare, MessageSquarePlus } from "lucide-react";
+import { useNavigate, useRouter } from "@tanstack/react-router";
+import {
+  ArrowLeft,
+  Maximize2,
+  MessageSquare,
+  MessageSquarePlus,
+} from "lucide-react";
 import {
   type ReactNode,
   type RefObject,
@@ -33,11 +38,12 @@ import {
   usePatchArtifact,
   useVersionInfo,
 } from "../api/queries";
-import { accessLabel, useCan } from "../auth/permissions";
+import { ownAccessLabel, useCan } from "../auth/permissions";
 import { ForYouBell } from "../foryou/ForYou";
+import { useMuteToggle } from "../foryou/muteToggle";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
-import { useNarrow } from "./comments/surfaces";
+import { useNarrow, usePhone } from "./comments/surfaces";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
@@ -237,6 +243,15 @@ const FS_LABEL = "[@media(width>600px)_and_(width<960px)]:sr-only";
 const PRESSED =
   "[@media(width>600px)_and_(width<960px)]:aria-expanded:border-[var(--oa-border-strong)] [@media(width>600px)_and_(width<960px)]:aria-expanded:bg-[var(--oa-sunken)] [@media(width>600px)_and_(width<960px)]:aria-expanded:shadow-[inset_0_1px_2px_rgb(0_0_0/0.12)]";
 
+/** #2622: phone buttons trim their padding so the second row fits 360px. */
+const BARP = `${BAR} max-[600px]:px-2.5`;
+/** #2622: gold means "waiting for you": the Comments button with asks, as the bell's badge. */
+const GOLD =
+  "border-[var(--oa-warning)] bg-[var(--oa-warning)] font-semibold text-[var(--oa-surface)] hover:bg-[var(--oa-warning)] hover:text-[var(--oa-surface)]";
+/** #2622: the version pill on an older version turns amber (phone). */
+const OLD =
+  "border-[var(--oa-warning)] bg-[var(--oa-warning-soft)] text-[var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]";
+
 export function TitleBar({
   artifact,
   version,
@@ -290,7 +305,9 @@ export function TitleBar({
   titleInDoc?: boolean;
 }) {
   const narrow = useNarrow();
+  const phone = usePhone();
   const navigate = useNavigate();
+  const router = useRouter();
   // #2503: the one-row bar gives way in steps before the title drops below ~10 characters.
   const bar = useRef<HTMLDivElement>(null);
   const inBetween = useSyncExternalStore(
@@ -298,7 +315,11 @@ export function TitleBar({
     between.get,
     () => false,
   );
-  const pill = comments && asks && asks.count > 0 && !asks.inPanel;
+  // #2622: on a phone the asks are the Comments button itself (gold, with the count).
+  const waiting = !!comments && !!asks && asks.count > 0;
+  const goldComments = phone && waiting && !comments?.selecting;
+  const pill = waiting && !asks.inPanel && !phone;
+  const asksLabel = `${asks?.count ?? 0} ask${asks?.count === 1 ? "" : "s"} for you`;
   const stage = useBarStage(
     bar,
     inBetween,
@@ -326,6 +347,20 @@ export function TitleBar({
   // viewers of an editors-only artifact on any install (review item 28).
   const viewOnly = artifact.capabilities.db && !can.dataWrite;
   const go = (to: string) => void navigate({ to: to as string });
+  // #2622: back to where the person came from: history back when there is
+  // somewhere in the app to go (or they arrived from this site), else the Library.
+  const back = () => {
+    let sameSite = false;
+    try {
+      sameSite =
+        !!document.referrer &&
+        new URL(document.referrer).origin === location.origin;
+    } catch {
+      sameSite = false;
+    }
+    if (router.history.canGoBack() || sameSite) router.history.back();
+    else go("/");
+  };
 
   const info = useVersionInfo(artifact.id, version, authed).data;
   const entry = info?.entry;
@@ -353,6 +388,11 @@ export function TitleBar({
         ? versionDate(info.createdAt)
         : "";
   const label = `v${version}${suffix ? ` · ${suffix}` : ""}`;
+  // #2860: mute where the noise is. A signed-in person's page menu, on a server with For you.
+  const pageMute = useMuteToggle(
+    authed && !outsider ? { kind: "page", id: artifact.id } : null,
+    artifact.title,
+  );
   const items: (
     | "separator"
     | { label: string; danger?: boolean; onSelect: () => void }
@@ -388,6 +428,14 @@ export function TitleBar({
           },
         ]
       : []),
+    ...(pageMute.available && pageMute.loaded
+      ? [
+          {
+            label: pageMute.muted ? "Muted \u00b7 Unmute" : "Mute",
+            onSelect: pageMute.toggle,
+          },
+        ]
+      : []),
     ...(canDelete
       ? [
           "separator" as const,
@@ -401,9 +449,21 @@ export function TitleBar({
     <div
       ref={bar}
       data-bar-stage={inBetween ? stage : undefined}
-      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:px-4 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
+      className="oa-vt flex flex-wrap items-center gap-[10px] border-0 border-b border-border bg-card px-5 py-[10px] max-[600px]:gap-y-[6px] max-[600px]:px-4 max-[600px]:py-2 [@media(width>600px)_and_(width<960px)]:flex-nowrap"
     >
       <div className="flex min-w-0 items-center gap-2 max-[600px]:flex-[1_1_100%]">
+        {phone && !outsider && (
+          <ShButton
+            variant="ghost"
+            size="icon"
+            className="-ml-1.5 size-8 shrink-0"
+            aria-label="Back"
+            data-back=""
+            onClick={back}
+          >
+            <ArrowLeft aria-hidden="true" className="size-4" />
+          </ShButton>
+        )}
         {iconFormat && <FormatIcon format={iconFormat} />}
         {titleInDoc ? (
           // #2756: the doc shows (and edits) its title in the page; the bar
@@ -418,41 +478,57 @@ export function TitleBar({
         )}
         <VisibilityBadge
           visibility={artifact.visibility}
-          iconOnly={stage >= 2}
+          iconOnly={stage >= 2 || phone}
           org={org}
         />
-        {viewOnly && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge
-                  variant="secondary"
-                  tabIndex={0}
-                  className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)]"
-                >
-                  View only
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" collisionPadding={8}>
-                You can view this, but you can't change its data.
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
-        {artifact.space && (
-          <span className="text-[length:var(--oa-text-sm)] text-muted-foreground">
-            {accessLabel(artifact.access)}
-          </span>
-        )}
+        {/* #2932: one access label. A signed-in person sees their access named
+            (Viewer, Can comment, Editor…), in a space or on a page shared with
+            them; the owner off a space sees none. "View only" is only for a
+            visitor with no role to name (a link visitor) who can't write data.
+            The data note rides on the label as a tooltip. */}
+        {(() => {
+          const named =
+            authed && (!!artifact.space || artifact.access !== "owner");
+          if (!named && !viewOnly) return null;
+          const label = named
+            ? ownAccessLabel(artifact, outsider)
+            : "View only";
+          return viewOnly ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge
+                    variant="secondary"
+                    tabIndex={0}
+                    data-access-label=""
+                    className="h-[18px] rounded-sm px-[6px] py-0 text-[length:var(--oa-text-xs)] max-[600px]:max-w-[30vw] max-[600px]:truncate"
+                  >
+                    {label}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" collisionPadding={8}>
+                  You can view this, but you can't change its data.
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span
+              data-access-label=""
+              className="shrink-0 text-[length:var(--oa-text-sm)] text-muted-foreground max-[600px]:max-w-[30vw] max-[600px]:truncate max-[600px]:text-[length:var(--oa-text-xs)]"
+            >
+              {label}
+            </span>
+          );
+        })()}
       </div>
-      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
+      <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%] max-[600px]:flex-nowrap max-[600px]:gap-[6px] [@media(width>600px)_and_(width<960px)]:flex-none [@media(width>600px)_and_(width<960px)]:flex-nowrap">
         {pill && (
           <ShButton
             variant="outline"
             size="xs"
             data-asks-for-you
-            aria-label={`${asks.count} ask${asks.count === 1 ? "" : "s"} for you`}
-            className={`${BAR} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
+            aria-label={asksLabel}
+            className={`${BARP} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
             disabled={gone}
             onClick={asks.onClick}
           >
@@ -460,36 +536,35 @@ export function TitleBar({
             {narrow || stage >= 3 ? "" : " for you"}
           </ShButton>
         )}
-        {comments && asks?.count === 0 && (
-          <span
-            data-asks-none
-            className={`${TXT} whitespace-nowrap text-muted-foreground`}
-          >
-            No asks for you
-          </span>
-        )}
         {comments && (
           <ShButton
             variant="outline"
             size="xs"
             className={
               comments.selecting
-                ? `${BAR} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
-                : `${BAR} ${PRESSED}`
+                ? `${BARP} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
+                : goldComments
+                  ? `${BARP} ${GOLD}`
+                  : `${BARP} ${PRESSED}`
             }
             aria-label={
-              comments.selecting
-                ? narrow
-                  ? "Comment"
-                  : "Comment on selection"
-                : comments.open > 0
-                  ? `Comments, ${comments.open} open`
-                  : "Comments"
+              goldComments
+                ? asksLabel
+                : comments.selecting
+                  ? narrow
+                    ? "Comment"
+                    : "Comment on selection"
+                  : comments.open > 0
+                    ? `Comments, ${comments.open} open`
+                    : "Comments"
             }
-            aria-expanded={comments.selecting ? undefined : comments.expanded}
+            aria-expanded={
+              comments.selecting || goldComments ? undefined : comments.expanded
+            }
+            data-asks-for-you={goldComments ? "" : undefined}
             disabled={gone}
             data-oa-keep-selection=""
-            onClick={comments.onClick}
+            onClick={goldComments && asks ? asks.onClick : comments.onClick}
           >
             {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}
             {comments.selecting ? (
@@ -497,7 +572,10 @@ export function TitleBar({
             ) : (
               <MessageSquare aria-hidden="true" className="size-3.5" />
             )}
-            {comments.selecting ? (
+            {goldComments && asks ? (
+              // #2622: the count replaces the words and the comment count.
+              `${asks.count} ask${asks.count === 1 ? "" : "s"}`
+            ) : comments.selecting ? (
               narrow ? (
                 "Comment"
               ) : (
@@ -509,7 +587,7 @@ export function TitleBar({
                 Comments
               </span>
             )}{" "}
-            {!comments.selecting && comments.open > 0 && (
+            {!comments.selecting && !goldComments && comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}
               </span>
@@ -520,8 +598,15 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={BAR}
-            aria-label={`Version: ${label}`}
+            className={`${BARP} ${phone && version !== artifact.currentVersion ? OLD : ""}`}
+            aria-label={
+              phone
+                ? // The name starts with the visible "v15" (axe label-in-name).
+                  version === artifact.currentVersion
+                  ? `v${version}, the latest version`
+                  : `v${version}, not the latest version`
+                : `Version: ${label}`
+            }
             aria-expanded={versionsOpen}
             aria-controls={versionsOpen ? VERSIONS_PANEL_ID : undefined}
             data-versions-chip
@@ -543,7 +628,7 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={`${BAR} ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BARP} ${authed ? "max-[600px]:hidden" : ""}`}
             disabled
           >
             {MAXIMIZE}
@@ -554,7 +639,7 @@ export function TitleBar({
             asChild
             variant="outline"
             size="xs"
-            className={`${BAR} text-foreground hover:text-accent-foreground ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BARP} text-foreground hover:text-accent-foreground ${authed ? "max-[600px]:hidden" : ""}`}
           >
             <a href={full} target="_blank" rel="noopener noreferrer">
               {MAXIMIZE}
@@ -563,7 +648,12 @@ export function TitleBar({
           </ShButton>
         )}
         {canShare && (
-          <ShButton size="xs" className={BAR} disabled={gone} onClick={onShare}>
+          <ShButton
+            size="xs"
+            className={BARP}
+            disabled={gone}
+            onClick={onShare}
+          >
             Share
           </ShButton>
         )}
@@ -576,7 +666,7 @@ export function TitleBar({
                     <ShButton
                       variant="outline"
                       size="xs"
-                      className={BAR}
+                      className={BARP}
                       aria-label="More actions"
                     >
                       •••
@@ -622,7 +712,7 @@ export function TitleBar({
           <ShButton
             asChild
             size="xs"
-            className={`${BAR} text-primary-foreground hover:text-primary-foreground`}
+            className={`${BARP} text-primary-foreground hover:text-primary-foreground`}
           >
             <a href={`${AUTH.login}?next=${encodeURIComponent(next)}`}>
               Log in
