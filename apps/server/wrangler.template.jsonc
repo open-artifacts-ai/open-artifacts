@@ -6,6 +6,7 @@
   "workers_dev": false,
   "preview_urls": false,
   "browser": { "binding": "BROWSER" },
+  "images": { "binding": "IMAGES" },
   "send_email": [{ "name": "EMAIL" }],
   "assets": {
     "directory": "./dist-assets",

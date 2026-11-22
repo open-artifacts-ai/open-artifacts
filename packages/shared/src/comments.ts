@@ -574,6 +574,15 @@ export const ListCommentsInputSchema = z.strictObject({
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 
+/** MCP get_comment_picture: a picture's id from a comment's `pictures` on list_comments. `pictureId` is checked after access, so a malformed one is bad_request. */
+export const GetCommentPictureInputSchema = z.strictObject({
+  id: IdSchema,
+  pictureId: z.string(),
+});
+export type GetCommentPictureInput = z.infer<
+  typeof GetCommentPictureInputSchema
+>;
+
 /** MCP add_comment: a reply when `threadId` is given, else a new thread (anchor defaults to a note on the whole artifact). */
 export const AddCommentInputSchema = z.strictObject({
   id: IdSchema,

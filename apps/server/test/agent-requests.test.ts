@@ -61,6 +61,7 @@ import {
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, fetchAndWait, login } from "./helpers.js";
+import { close, connect, tool } from "./mcp-helpers.js";
 import { png } from "./picture-fixtures.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
@@ -1776,14 +1777,34 @@ describe("pictures of a held request (#2508, #2577)", () => {
     // Held: the receiver's agent reads neither the words nor the picture.
     expect(await picsOf(s.id, asAgent(owner), commentId)).toBeUndefined();
     expect((await get(s.id, pic, ownerToken)).status).toBe(404);
-    // The person (their session), and the sender, read it.
-    expect(await picsOf(s.id, view(owner), commentId)).toHaveLength(1);
-    expect((await get(s.id, pic, owner.cookie)).status).toBe(200);
-    expect((await get(s.id, pic, editor.cookie)).status).toBe(200);
-    await release();
-    // After Allow, the agent reads the picture again.
-    expect(await picsOf(s.id, asAgent(owner), commentId)).toHaveLength(1);
-    expect((await get(s.id, pic, ownerToken)).status).toBe(200);
+    const client = await connect(ownerToken);
+    try {
+      const read = () =>
+        tool(client, "get_comment_picture", { id: s.id, pictureId: pic });
+      const hidden = await read();
+      expect(hidden.isError).toBe(true);
+      expect(hidden.content).toEqual([
+        { type: "text", text: "not_found: Not found" },
+      ]);
+      // The person (their session), and the sender, read it.
+      expect(await picsOf(s.id, view(owner), commentId)).toHaveLength(1);
+      expect((await get(s.id, pic, owner.cookie)).status).toBe(200);
+      expect((await get(s.id, pic, editor.cookie)).status).toBe(200);
+      await release();
+      // After Allow, the agent reads the picture again.
+      expect(await picsOf(s.id, asAgent(owner), commentId)).toHaveLength(1);
+      expect((await get(s.id, pic, ownerToken)).status).toBe(200);
+      const shown = await read();
+      expect(shown.content).toEqual([
+        {
+          type: "image",
+          mimeType: "image/png",
+          data: btoa(String.fromCharCode(...png(6, 4, false))),
+        },
+      ]);
+    } finally {
+      await close(client);
+    }
   }
 
   const allowOnce = async (id: string) => {

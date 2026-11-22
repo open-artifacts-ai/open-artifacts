@@ -282,6 +282,7 @@ describe("comment tools over MCP", () => {
     const id = await pub({ visibility: "private" });
     for (const [name, args] of [
       ["list_comments", {}],
+      ["get_comment_picture", { pictureId: newId() }],
       ["add_comment", { body: "hi" }],
       ["resolve_comment", { threadId: "AAAAAAAAAAAAAAAA" }],
     ] as const) {
@@ -296,6 +297,7 @@ describe("comment tools over MCP", () => {
     expect(off.status).toBe(200);
     for (const [name, args] of [
       ["list_comments", {}],
+      ["get_comment_picture", { pictureId: newId() }],
       ["add_comment", { body: "hi" }],
     ] as const) {
       const r = await tool(owner.client, name, { id, ...args });
