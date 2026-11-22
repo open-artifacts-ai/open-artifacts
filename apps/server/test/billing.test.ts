@@ -1318,7 +1318,14 @@ describe("creator count", () => {
   });
 
   it("the first report starts at the go-live month (first good /tier read), never before", async () => {
-    const live = monthOf(mid);
+    // Fixed dates, so the run never depends on today: late December 2025 is
+    // the go-live month; early January 2026 (a UTC year turnover) is the next.
+    const start = Date.UTC(2025, 11, 30, 12);
+    const later = Date.UTC(2026, 0, 5, 12);
+    vi.setSystemTime(start);
+    const live = monthOf(start);
+    expect(live).toBe("2025-12");
+    expect(monthOf(later)).toBe("2026-01");
     const before1 = previousMonth(live);
     const before2 = previousMonth(before1);
     await env.DB.prepare(
@@ -1327,15 +1334,16 @@ describe("creator count", () => {
       .bind(before2, before1, live)
       .run();
     // No good read yet: nothing to report to.
-    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 40 * DAY));
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, later));
     expect(calls.filter((c) => c.path === "/usage")).toEqual([]);
     // The first good read marks the go-live month.
     expect(
-      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, mid)),
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, start)),
     ).toBe("stored");
-    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, start));
     expect(calls.filter((c) => c.path === "/usage")).toEqual([]);
-    await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 40 * DAY));
+    vi.setSystemTime(later);
+    await withBrokerProps({ props: PROPS }, () => usageTick(H, later));
     expect(
       calls.filter((c) => c.path === "/usage").map((c) => c.body?.month),
     ).toEqual([live]);
