@@ -3,7 +3,7 @@
 // two members, A and B, each with a running bus agent, and a guest.
 //   1. B in A's listens-to list: B's mention wakes A's agent.
 //   2. An unlisted B's mention is held; A is told once.
-//   3. A's "allow once", "this page for 30 days" and "Not now".
+//   3. A allows once, for this page, or for all pages until a chosen date.
 //   4. A guest's mention never reaches A's agent.
 //   5. With A's switch off, B gets 403 "Only answers ...".
 //   6. askState matches each case.
@@ -18,17 +18,18 @@ import {
   R,
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
+import { checkMemberComments } from "../staging/happy-path/member-comments";
 import { approveMachine, freshSignInUrl } from "./bus-confirm";
 import {
   APP,
   createToken,
   expect,
   freshEmail,
-  loginAs,
   publishViaApi,
   test,
   uniq,
 } from "./fixtures";
+import { mcpWithToken } from "./mcp-client";
 
 type Frame = Record<string, unknown>;
 
@@ -43,13 +44,17 @@ async function agentSocket(token: string, namespace: string) {
     headers: { authorization: `Bearer ${token}` },
   });
   const frames: Frame[] = [];
-  const raw: string[] = [];
+  const arrivals: { artifact_id?: string; comment_id?: string }[] = [];
   const waiters: (() => void)[] = [];
   ws.addEventListener("message", (ev) => {
     const text = String(ev.data);
-    raw.push(text);
     if (!text.startsWith("{")) return;
-    frames.push(JSON.parse(text) as Frame);
+    const frame = JSON.parse(text) as Frame;
+    frames.push(frame);
+    if (frame.type === "deliver" && frame.to_ref === "r1") {
+      if (frame.meta) arrivals.push(frame.meta as (typeof arrivals)[number]);
+      ws.send(JSON.stringify({ v: 1, type: "ack", msg_id: frame.msg_id }));
+    }
     for (const w of waiters.splice(0)) w();
   });
   await new Promise<void>((resolve, reject) => {
@@ -75,7 +80,7 @@ async function agentSocket(token: string, namespace: string) {
       type: "hello",
       machine_label: "E2E laptop",
       client_version: "0.0.0",
-      caps: ["roles", "rename", "follow", "notice_ack"],
+      caps: ["roles", "rename", "follow", "notice_ack", "notice_meta"],
     }),
   );
   await next("hello_ok");
@@ -94,24 +99,24 @@ async function agentSocket(token: string, namespace: string) {
   const ok = await next("agent_ok");
   return {
     name: String(ok.bus_name),
-    /** How many frames so far mention this page (its id is in the notice's link). */
-    seen: (pageId: string) => raw.filter((t) => t.includes(pageId)).length,
+    /** Count server deliveries to this agent for this page. */
+    seen: (pageId: string) =>
+      arrivals.filter((n) => n.artifact_id === pageId).length,
     close: () => ws.close(),
   };
 }
 
 const H = { "X-OA-Request": "1" };
 
-test.describe.configure({ mode: "serial" });
+test.describe.configure({ mode: "default" });
 test.skip(
   ({ browserName }) => browserName !== "chromium",
   "one browser is enough: the specs below are API calls on a real server",
 );
 
-const A_EMAIL = freshEmail("req-a");
-const B_EMAIL = freshEmail("req-b");
-const G_EMAIL = freshEmail("req-g");
-const A_NAME = `E2E ${A_EMAIL.split("@")[0]}`;
+let aEmail: string;
+let bEmail: string;
+let guestEmail: string;
 
 let pa: Page;
 let pb: Page;
@@ -120,17 +125,16 @@ let aPat = "";
 let agentA: Awaited<ReturnType<typeof agentSocket>>;
 let agentB: Awaited<ReturnType<typeof agentSocket>>;
 
-/** A page of A's, shared with B (editor) and G (guest), both agents following it. */
-async function newPage(label: string) {
+/** A private page with B as editor and both agents following. Guest cases opt in. */
+async function newPage(label: string, withGuest = false) {
   const { id } = await publishViaApi(aPat, {
     title: `req ${label} ${uniq()}`,
     format: "markdown",
     content: "x",
   });
-  for (const [email, role] of [
-    [B_EMAIL, "editor"],
-    [G_EMAIL, "commenter"],
-  ] as const) {
+  const shares = [{ email: bEmail, role: "editor" }];
+  if (withGuest) shares.push({ email: guestEmail, role: "commenter" });
+  for (const { email, role } of shares) {
     const r = await pa.request.put(`${APP}${R.shares(id)}`, {
       headers: H,
       data: { email, role },
@@ -189,12 +193,13 @@ const requestItems = async (id: string) => {
 };
 const allow = (
   requestId: string,
-  level: "once" | "page",
+  level: "once" | "page" | "all",
   items: { commentId: string; wordsHash: string }[],
+  until?: number,
 ) =>
   pa.request.post(`${APP}${R.agentAskHeldAllow(requestId)}`, {
     headers: H,
-    data: { level, items },
+    data: { level, items, until },
   });
 const listens = async () =>
   (await (
@@ -217,17 +222,14 @@ const quiet = async (id: string, before: number) => {
   expect(agentA.seen(id)).toBe(before);
 };
 
-test("0. setup: A, B and a guest; each member's agent runs on their own hub", async ({
-  browser,
-}) => {
+test.beforeEach(async ({ browser }) => {
   test.setTimeout(180_000);
   const open = async (email: string, role: "member" | "guest") => {
     const ctx = await browser.newContext({ baseURL: APP });
     const p = await ctx.newPage();
-    await loginAs(p, email, role);
     // Interactive-session routes (held requests, listens-to) refuse a plain
     // dev login (403 "Use the web app"); a ?fresh=1 sign-in is interactive.
-    const fresh = await p.request.get(freshSignInUrl(email, "/"), {
+    const fresh = await p.request.get(freshSignInUrl(email, "/", role), {
       maxRedirects: 0,
     });
     expect(fresh.status(), await fresh.text()).toBe(302);
@@ -237,17 +239,44 @@ test("0. setup: A, B and a guest; each member's agent runs on their own hub", as
       data: { displayName: `E2E ${email.split("@")[0]}` },
     });
     expect(me.ok(), await me.text()).toBe(true);
+    const profile = await p.request.get(`${APP}${R.me}`);
+    expect((await profile.json()).user.role).toBe(role);
     return p;
   };
-  pa = await open(A_EMAIL, "member");
-  pb = await open(B_EMAIL, "member");
-  pg = await open(G_EMAIL, "guest");
+  aEmail = freshEmail("req-a");
+  bEmail = freshEmail("req-b");
+  guestEmail = freshEmail("req-g");
+  pa = await open(aEmail, "member");
+  pb = await open(bEmail, "member");
+  pg = await open(guestEmail, "guest");
   aPat = await createToken(pa);
   const ns = `e2e.local/${uniq()}`;
   agentA = await agentSocket(await approveMachine(pa), `${ns}-a`);
   agentB = await agentSocket(await approveMachine(pb), `${ns}-b`);
   expect(agentA.name).toBeTruthy();
   expect(agentB.name).toBeTruthy();
+});
+
+test.afterEach(async () => {
+  agentA?.close();
+  agentB?.close();
+  await Promise.all([pa, pb, pg].map((p) => p?.context().close()));
+});
+
+test("the staging two-PAT scenario works with two local members", async () => {
+  const { id } = await publishViaApi(aPat, {
+    title: `member comments ${uniq()}`,
+    format: "markdown",
+    content: "test",
+    comments: true,
+    visibility: "private",
+  });
+  const owner = await mcpWithToken(aPat);
+  try {
+    await checkMemberComments(APP, id, owner, aPat, await createToken(pb));
+  } finally {
+    await owner.close();
+  }
 });
 
 test("2. an unlisted B's mention is held, nothing wakes A's agent, and A is told once", async () => {
@@ -260,12 +289,7 @@ test("2. an unlisted B's mention is held, nothing wakes A's agent, and A is told
   await quiet(id, before);
   const [r, ...rest] = await held(id);
   expect(rest).toHaveLength(0);
-  // Soft: the server shows users.name (the local part), not the chosen display name; see the report on #2577.
-  if (!String(r?.sender.name).includes("E2E req-b"))
-    test.info().annotations.push({
-      type: "known-gap-2577",
-      description: `sender name is ${r?.sender.name}, not the display name`,
-    });
+  expect(r?.sender.name).toBe(`E2E ${bEmail.split("@")[0]}`);
   expect(r?.items.map((i) => i.body)).toEqual([
     "first question",
     "second question",
@@ -322,12 +346,7 @@ test("3b + 1. allow on this page for 30 days lists B; B's next mention wakes A's
   expect(out.status(), await out.text()).toBe(200);
   const entry = (await listens()).entries.find((e) => e.artifact?.id === id);
   expect(entry?.scope).toBe("page");
-  // Soft: same name gap as step 2.
-  if (!String(entry?.member.name).includes("E2E req-b"))
-    test.info().annotations.push({
-      type: "known-gap-2577",
-      description: `member name is ${entry?.member.name}, not the display name`,
-    });
+  expect(entry?.member.name).toBe(`E2E ${bEmail.split("@")[0]}`);
   const days = ((entry?.until ?? 0) - Date.now()) / 86_400_000;
   expect(days).toBeGreaterThan(29.9);
   expect(days).toBeLessThan(30.1);
@@ -353,6 +372,33 @@ test("3b + 1. allow on this page for 30 days lists B; B's next mention wakes A's
   expect((await held(id))[0]?.items.map((i) => i.body)).toEqual([
     "after the removal",
   ]);
+});
+
+test("allow on all pages releases the request and wakes the agent on another private page until the chosen date", async () => {
+  const original = await newPage("all");
+  await mention(pb, original.id, original.aKey, "allow on all pages");
+  const [request] = await held(original.id);
+  expect(request?.items).toHaveLength(1);
+  const until = Date.now() + 90 * 86_400_000;
+  const before = agentA.seen(original.id);
+  const out = await allow(
+    request.id,
+    "all",
+    request.items.map(({ commentId, wordsHash }) => ({ commentId, wordsHash })),
+    until,
+  );
+  expect(out.status(), await out.text()).toBe(200);
+  expect(await out.json()).toMatchObject({ sent: 1, changed: 0, waiting: 0 });
+  await woken(original.id, before);
+  expect((await listens()).entries).toContainEqual(
+    expect.objectContaining({ scope: "all", until }),
+  );
+  const next = await newPage("another private page");
+  expect(await askStateOf(pb, next.id, next.aKey)).toBe("listening");
+  const prior = agentA.seen(next.id);
+  await mention(pb, next.id, next.aKey, "listed on another page");
+  await woken(next.id, prior);
+  expect(await held(next.id)).toHaveLength(0);
 });
 
 test("3c. Not now keeps the request held and quiets the sender: nothing wakes, no new notice, the asker sees no difference", async () => {
@@ -384,7 +430,7 @@ test("3c. Not now keeps the request held and quiets the sender: nothing wakes, n
 
 test("4. a guest's mention never reaches A's agent, and is not held", async () => {
   test.setTimeout(90_000);
-  const { id, aKey } = await newPage("guest");
+  const { id, aKey } = await newPage("guest", true);
   const before = agentA.seen(id);
   const r = await post(pg, id, "hello agent", aKey);
   expect([400, 403, 404]).toContain(r.status());
@@ -404,7 +450,9 @@ test("5. with A's switch off, B gets 403 Only answers <A>; A's own agent still h
     const before = agentA.seen(id);
     const r = await post(pb, id, "anyone there?", aKey);
     expect(r.status()).toBe(403);
-    expect(await r.text()).toContain(`Only answers ${A_NAME}`);
+    expect(await r.text()).toContain(
+      `Only answers E2E ${aEmail.split("@")[0]}`,
+    );
     await quiet(id, before);
     expect(await held(id)).toHaveLength(0);
     // A's own agent is never gated.
@@ -420,7 +468,7 @@ test("5. with A's switch off, B gets 403 Only answers <A>; A's own agent still h
 
 test("6. askState from each point of view", async () => {
   test.setTimeout(90_000);
-  const { id, aKey, bKey } = await newPage("state");
+  const { id, aKey, bKey } = await newPage("state", true);
   // B toward A: held. B toward B: listening. A toward B: held (B has not listed A). A toward A: listening.
   expect(await askStateOf(pb, id, aKey)).toBe("held");
   expect(await askStateOf(pb, id, bKey)).toBe("listening");

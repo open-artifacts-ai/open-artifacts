@@ -82,16 +82,23 @@ jobs:
       - run: pnpm --filter @oa/server smoke
       # #1736: the MCP happy-path suite (MCP-only, no browser). It runs last of
       # the checks, so the hosted prod gate (smoke green at or after a tag)
-      # covers it. The PAT goes to a 0600 file, never echoed; the sharing
-      # recipient PAT stays unset, so that spec skips. Zero retries.
+      # covers it. PATs go to 0600 files. Two-member checks skip when the
+      # dedicated recipient secret is absent. Zero retries.
       - run: pnpm --filter @oa/shared build
       - name: MCP happy path
         timeout-minutes: 8
+        env:
+          STAGING_SHARE_PAT: ${{ secrets.STAGING_SHARE_PAT }}
         run: |
           umask 077
           pat_file="$RUNNER_TEMP/staging-owner.pat"
           printf '%s' "$STAGING_OWNER_PAT" > "$pat_file"
           export OA_STAGING_PAT_FILE="$pat_file"
+          if [ -n "$STAGING_SHARE_PAT" ]; then
+            export OA_STAGING_SHARE_PAT_FILE="$RUNNER_TEMP/staging-member.pat"
+            printf '%s' "$STAGING_SHARE_PAT" > "$OA_STAGING_SHARE_PAT_FILE"
+          fi
+          unset STAGING_OWNER_PAT STAGING_SHARE_PAT
           pnpm --filter @oa/dashboard test:e2e:happy-path
       - name: ANALYTICS_TOKEN put outcome (fails the run if the deploy job's put failed)
         env:

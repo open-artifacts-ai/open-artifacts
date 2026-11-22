@@ -1,4 +1,3 @@
-import { type Me, R } from "@oa/shared";
 import { expect } from "@playwright/test";
 import { mcpWithToken } from "../../real/mcp-client";
 import {
@@ -7,6 +6,7 @@ import {
   STAGING_ORIGIN,
   test,
 } from "./fixtures";
+import { memberIdentity } from "./member-comments";
 
 test.skip(
   !process.env.OA_STAGING_SHARE_PAT_FILE,
@@ -19,15 +19,7 @@ test("grants and revokes viewer access for a staging member", async ({
   const token = await readStagingPat("OA_STAGING_SHARE_PAT_FILE");
   // Resolve an existing member from their PAT. Sharing to an arbitrary
   // address could send an invitation email.
-  const me = await fetch(`${STAGING_ORIGIN}${R.me}`, {
-    headers: { authorization: `Bearer ${token}` },
-    redirect: "error",
-    signal: AbortSignal.timeout(15_000),
-  });
-  expect(me.ok, `Staging recipient identity HTTP ${me.status}`).toBe(true);
-  const { user } = (await me.json()) as Pick<Me, "user">;
-  if (user?.role !== "member" || !user.email)
-    throw new Error("The recipient PAT must belong to a staging member");
+  const user = await memberIdentity(STAGING_ORIGIN, token);
 
   const recipient = await mcpWithToken(
     token,
