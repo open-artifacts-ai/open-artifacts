@@ -159,7 +159,7 @@ describe("RECOVERY_CRON", () => {
     expect(c.pending).toHaveLength(tickTasks);
     await c.drain();
     // The text and pdf-thumbnail windows (one indexed read each) and the
-    // fan-out cursor read, Later claim and pending push lookup.
+    // fan-out cursor read, due Later lookup and pending push lookup.
     expect(n.q).toBe(5);
     expect(await ranDay()).toBeNull();
   });
@@ -173,7 +173,7 @@ describe("RECOVERY_CRON", () => {
       c.ctx,
     );
     await c.drain();
-    // Sweep, fan-out cursor, Later claim and pending push lookup.
+    // Sweep, fan-out cursor, due Later lookup and pending push lookup.
     expect(n.q).toBe(4);
   });
 

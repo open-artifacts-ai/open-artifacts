@@ -1,10 +1,13 @@
-// #2512 S5: browser push for what needs a member. Subscriptions are one row per
-// browser; an endpoint belongs to one member at a time. A new Needs-you item (or
-// one back from Later) is queued per member who turned it on and has a browser,
-// and the cron tick sends what is due: held for the 10-minute bundle and for
-// quiet hours, one notification for everything due. The text is written here
-// and never taken from a client: by default only "An agent is waiting for your
-// answer"; the asker and the question show only with lockScreenDetail.
+// #2512 S5, #3024: browser push for what needs a member. One set of account
+// choices (notification prefs: Needs you, every ask, quiet hours, lock screen).
+// A subscription row is one enrolled device (an address, keys, a label); an
+// endpoint belongs to one member at a time. A new Needs-you item (or one back
+// from Later) is queued for a member whose account Needs you is on and who has a
+// device, and the cron tick sends what is due to every device: held for the
+// 10-minute bundle and for quiet hours, one notification for everything due.
+// Updates never push. The text is written here and never taken from a client:
+// by default only "An agent is waiting for your answer"; the asker and the
+// question show only with lockScreenDetail.
 import {
   newId,
   type PushPayload,
@@ -50,7 +53,7 @@ export async function listSubscriptions(
 ): Promise<PushSubscriptions> {
   const { results } = await stmt(
     env.DB,
-    "select id, label, created_at, last_sent_at, needs_you, updates from push_subscriptions where user_id = ?1 order by created_at, id",
+    "select id, label, created_at, last_sent_at from push_subscriptions where user_id = ?1 order by created_at, id",
   )
     .bind(userId)
     .all<{
@@ -58,8 +61,6 @@ export async function listSubscriptions(
       label: string | null;
       created_at: number;
       last_sent_at: number | null;
-      needs_you: number;
-      updates: number;
     }>();
   return {
     items: results.map((r) => ({
@@ -69,8 +70,10 @@ export async function listSubscriptions(
       lastSentAt: r.last_sent_at
         ? new Date(r.last_sent_at).toISOString()
         : null,
-      needsYou: r.needs_you === 1,
-      updates: r.updates === 1,
+      // Projected for the existing client: an enrolled device is on for
+      // Needs you; Updates are list-only and never push.
+      needsYou: true,
+      updates: false,
     })),
   };
 }
@@ -101,8 +104,7 @@ export async function addSubscription(
     : null;
   const id = newId();
   const now = Date.now();
-  // A new browser starts with Needs-you on and Updates as the member's default.
-  const updatesDefault = (await getPrefs(env, userId)).updates.browser ? 1 : 0;
+  // Enrolling a device never touches the member's account choices.
   const [, , row] = await env.DB.batch([
     // Axe 1: gone from anyone else.
     stmt(
@@ -111,8 +113,8 @@ export async function addSubscription(
     ).bind(body.endpoint, userId),
     stmt(
       env.DB,
-      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, needs_you, updates, created_at)
-       values (?1, ?2, ?3, ?4, ?5, ?6, 1, ?8, ?7)
+      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, created_at)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
        on conflict (endpoint) do update set
          p256dh = excluded.p256dh, auth = excluded.auth,
          label = coalesce(excluded.label, label)`,
@@ -124,7 +126,6 @@ export async function addSubscription(
       body.keys.auth,
       label,
       now,
-      updatesDefault,
     ),
     stmt(env.DB, "select id from push_subscriptions where endpoint = ?1").bind(
       body.endpoint,
@@ -141,28 +142,30 @@ export async function addSubscription(
   return (row?.results[0] as { id: string } | undefined)?.id ?? id;
 }
 
-/** Sets this browser's switches; null when the subscription isn't the member's. */
+/**
+ * The existing client's per-device switch (kept for it until its own UI change).
+ * A device has no switches of its own: `needsYou: false` removes this caller's
+ * device (and only it); anything else changes nothing. Resolves to the
+ * projected switches (an enrolled device: Needs you on, Updates off), or
+ * Needs you off once removed; null when the subscription isn't the member's.
+ */
 export async function patchSubscription(
   env: Env,
   userId: string,
   id: string,
   body: PushSubscriptionPatchBody,
 ): Promise<{ needsYou: boolean; updates: boolean } | null> {
-  const r = await stmt(
+  if (body.needsYou === false)
+    return (await removeSubscription(env, userId, id))
+      ? { needsYou: false, updates: false }
+      : null;
+  const mine = await stmt(
     env.DB,
-    `update push_subscriptions
-        set needs_you = coalesce(?3, needs_you), updates = coalesce(?4, updates)
-      where id = ?1 and user_id = ?2
-      returning needs_you, updates`,
+    "select 1 as x from push_subscriptions where id = ?1 and user_id = ?2",
   )
-    .bind(
-      id,
-      userId,
-      body.needsYou === undefined ? null : body.needsYou ? 1 : 0,
-      body.updates === undefined ? null : body.updates ? 1 : 0,
-    )
-    .first<{ needs_you: number; updates: number }>();
-  return r ? { needsYou: r.needs_you === 1, updates: r.updates === 1 } : null;
+    .bind(id, userId)
+    .first();
+  return mine ? { needsYou: true, updates: false } : null;
 }
 
 /** Removes the member's own subscription; false when it isn't theirs or isn't there. */
@@ -183,10 +186,10 @@ export async function removeSubscription(
 // ------------------------------------------------------------------ queue
 
 export type PushItem = {
-  /** One row per (member, key): "ask:<comment id>", "later:<item id>". */
+  /** One row per (member, key): "ask:<comment id>", "later:<item id>:<until>". */
   key: string;
-  /** "ask" and "later" (back from Later) are Needs-you; "update" is an Update. */
-  kind: "ask" | "later" | "update";
+  /** Both are Needs-you: "ask" is new, "later" is back from Later. Updates never push. */
+  kind: "ask" | "later";
   artifactId: string;
   threadId: string;
   askerName: string;
@@ -199,9 +202,63 @@ export type PushItem = {
 
 const IN_CHUNK = 90;
 
+type Recipient = { id: string; waiting: number | null; last: number | null };
+type LaterRow = { user_id: string; item_id: string; until: number };
+
+async function recipients(env: Env, ids: string[]): Promise<Recipient[]> {
+  const marks = ids.map((_, i) => `?${i + 1}`).join(",");
+  const { results } = await env.DB.prepare(
+    `select p.user_id as id,
+       (select max(send_after) from push_pending q where q.user_id = p.user_id and q.kind <> 'update') as waiting,
+       (select max(last_sent_at) from push_subscriptions s where s.user_id = p.user_id) as last
+     from notification_prefs p
+     where p.needs_you_browser = 1 and p.user_id in (${marks})
+       and exists (select 1 from push_subscriptions s where s.user_id = p.user_id)`,
+  )
+    .bind(...ids)
+    .all<Recipient>();
+  return results;
+}
+
+async function pendingInsert(
+  env: Env,
+  to: Recipient,
+  item: PushItem,
+  now: number,
+  later?: LaterRow,
+): Promise<D1PreparedStatement> {
+  const next =
+    to.waiting ?? (to.last === null ? now : Math.max(now, to.last + BUNDLE_MS));
+  const quiet = quietState(await getPrefs(env, to.id), now);
+  return stmt(
+    env.DB,
+    `insert into push_pending
+       (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, send_after, created_at)
+     select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+     where ?13 is null or exists (
+       select 1 from inbox_later where user_id = ?2 and item_id = ?13 and until = ?14 and pushed_at is null)
+     on conflict (user_id, key) do nothing`,
+  ).bind(
+    newId(),
+    to.id,
+    item.key,
+    item.kind,
+    item.artifactId,
+    item.threadId,
+    stripNameControls(item.askerName).slice(0, 80),
+    itemExcerpt(item.excerpt),
+    item.askerRef ?? null,
+    item.agentKey ?? null,
+    quiet.quiet ? Math.max(next, quiet.until) : next,
+    now,
+    later?.item_id ?? null,
+    later?.until ?? null,
+  );
+}
+
 /**
- * Queues `item` for each of `userIds` who turned browser notifications on and
- * has a browser. Held for the bundle (a push in the last 10 minutes, or items
+ * Queues `item` for each of `userIds` whose account Needs you is on and who has
+ * a device. Held for the bundle (a push in the last 10 minutes, or items
  * already waiting, set the time) and for quiet hours. Best effort: never throws.
  */
 export async function queuePush(
@@ -211,55 +268,14 @@ export async function queuePush(
   now = Date.now(),
 ): Promise<void> {
   if (!pushOn(env) || userIds.length === 0) return;
-  // Needs-you and Updates have their own member-wide switch and their own
-  // switch on each browser (constants, never client text).
-  const prefCol =
-    item.kind === "update" ? "updates_browser" : "needs_you_browser";
-  const subCol = item.kind === "update" ? "updates" : "needs_you";
+  // Only Needs-you ever queues; a row of any other kind (an old caller) is refused.
+  if (item.kind !== "ask" && item.kind !== "later") return;
   try {
     for (let i = 0; i < userIds.length; i += IN_CHUNK) {
       const chunk = userIds.slice(i, i + IN_CHUNK);
-      const marks = chunk.map((_, j) => `?${j + 1}`).join(",");
-      const { results } = await env.DB.prepare(
-        `select p.user_id as id,
-           (select max(send_after) from push_pending q where q.user_id = p.user_id) as waiting,
-           (select max(last_sent_at) from push_subscriptions s where s.user_id = p.user_id) as last
-         from notification_prefs p
-         where p.${prefCol} = 1 and p.user_id in (${marks})
-           and exists (select 1 from push_subscriptions s where s.user_id = p.user_id and s.${subCol} = 1)`,
-      )
-        .bind(...chunk)
-        .all<{ id: string; waiting: number | null; last: number | null }>();
-      for (const r of results) {
-        const base =
-          r.waiting ??
-          (r.last !== null && now - r.last < BUNDLE_MS
-            ? r.last + BUNDLE_MS
-            : now);
-        const q = quietState(await getPrefs(env, r.id), now);
-        const sendAfter = q.quiet ? Math.max(base, q.until) : base;
-        await stmt(
-          env.DB,
-          `insert into push_pending
-             (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, send_after, created_at)
-           values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-           on conflict (user_id, key) do nothing`,
-        )
-          .bind(
-            newId(),
-            r.id,
-            item.key,
-            item.kind,
-            item.artifactId,
-            item.threadId,
-            stripNameControls(item.askerName).slice(0, 80),
-            itemExcerpt(item.excerpt),
-            item.askerRef ?? null,
-            item.agentKey ?? null,
-            sendAfter,
-            now,
-          )
-          .run();
+      for (const to of await recipients(env, chunk)) {
+        const insert = await pendingInsert(env, to, item, now);
+        await insert.run();
       }
     }
   } catch (e) {
@@ -308,6 +324,7 @@ type Pending = {
   id: string;
   user_id: string;
   key: string;
+  /** "update" only on a row queued before Updates stopped pushing: dropped unsent. */
   kind: "ask" | "later" | "update";
   artifact_id: string;
   thread_id: string;
@@ -316,6 +333,8 @@ type Pending = {
   asker_ref: string | null;
   agent_key: string | null;
   created_at: number;
+  /** Set at send time: the ask is an open approval (artifact_asks.confirm). */
+  approval?: boolean;
 };
 
 type Sub = {
@@ -323,11 +342,8 @@ type Sub = {
   endpoint: string;
   p256dh: string;
   auth: string;
-  needs_you: number;
-  updates: number;
 };
 
-export const DEFAULT_UPDATE_BODY = "You have a new update";
 /** #2781: a person's @-mention of the member (Needs you), without lock-screen detail. */
 export const DEFAULT_MENTION_BODY = "Someone mentioned you";
 
@@ -341,10 +357,18 @@ const isHeldPush = (r: { key: string }): boolean =>
 const isPersonMention = (r: { key: string }): boolean =>
   r.key.startsWith("person:");
 
+/** #3024: a mention put off with Later and back: "later:mention:<inbox item id>:<until>". */
+const LATER_MENTION = "later:mention:";
+const isLaterMention = (r: { key: string }): boolean =>
+  r.key.startsWith(LATER_MENTION);
+
+/** Any person's mention, new or back from Later. */
+const isMention = (r: { key: string }): boolean =>
+  isPersonMention(r) || isLaterMention(r);
+
 /**
- * The one notification for everything due to one browser: fixed text, a link
- * to the latest Needs-you item (else the latest update). Needs-you text wins
- * when both are in it; the count is everything in it.
+ * The one notification for everything due to one device: fixed text, a link to
+ * the latest item. The count is everything in it. Needs-you only.
  */
 export function pushPayload(
   items: Pick<
@@ -354,51 +378,37 @@ export function pushPayload(
   detail: boolean,
   title: string,
 ): PushPayload {
-  const needs = items.filter((i) => i.kind !== "update");
   const n = items.length;
-  const lead = (needs.length > 0 ? needs : items)[
-    (needs.length > 0 ? needs : items).length - 1
-  ] as (typeof items)[number];
+  const lead = items[n - 1] as (typeof items)[number];
   let body: string;
   let heading = title;
-  const mentions = needs.filter(isPersonMention).length;
-  if (needs.length > 1) {
+  const mentions = items.filter(isMention).length;
+  if (n > 1) {
     // Design v10, "Several at once": counts only, safe on a lock screen too.
-    const asks = needs.length - mentions;
+    const asks = n - mentions;
     const parts = [
       asks > 0 ? `${asks} ${asks === 1 ? "ask" : "asks"}` : "",
       mentions > 0
         ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}`
         : "",
     ].filter(Boolean);
-    heading = `${needs.length} things need you`;
+    heading = `${n} things need you`;
     body = parts.join(", ");
-  } else if (needs.length > 0) {
-    const mention = isPersonMention(lead as { key: string });
-    const held = isHeldPush(lead as { key: string });
+  } else {
+    const mention = isMention(lead);
     const asks = detail
       ? mention
         ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
         : `${lead.asker_name} asks: ${lead.excerpt}`
       : "";
     // One item (several are the counts above).
-    body = held
+    body = isHeldPush(lead)
       ? DEFAULT_HELD_BODY
       : detail
         ? asks
         : mention
           ? DEFAULT_MENTION_BODY
           : DEFAULT_BODY;
-  } else {
-    const what = detail ? `${lead.asker_name}: ${lead.excerpt}` : "";
-    body =
-      n === 1
-        ? detail
-          ? what
-          : DEFAULT_UPDATE_BODY
-        : detail
-          ? `${n} new updates. Latest: ${what}`
-          : `${n} new updates`;
   }
   return {
     v: 1,
@@ -407,18 +417,20 @@ export function pushPayload(
     href: lead.thread_id
       ? `${viewerPath(lead.artifact_id)}?thread=${encodeURIComponent(lead.thread_id)}`
       : viewerPath(lead.artifact_id),
-    tag: needs.length > 0 ? "needs-you" : "updates",
+    tag: "needs-you",
     ...(n > 1 ? { count: n } : {}),
   };
 }
 
 /**
- * Sends what is due (the cron tick; one read when nothing is). Per member: off
- * or no browser drops their rows; quiet hours hold them to when quiet ends;
- * otherwise their rows are claimed (deleted), filtered to the asks they asked
- * to be interrupted for, and sent as one notification to each browser. A 404
- * or 410 removes the browser; other failures are logged and dropped. Never
- * throws. Resolves to the notifications sent.
+ * Sends what is due (the cron tick; one read when nothing is). Per member:
+ * account Needs you off drops their rows (and a queued Update is always
+ * dropped); quiet hours hold them to when quiet ends; otherwise their rows are
+ * claimed (deleted), filtered to what interrupts them (waiting asks, approvals,
+ * held requests and mentions, plus every ask with browserAllAsks), and sent as
+ * one notification to each enrolled device. A 404 or 410 removes the device;
+ * other failures are logged and dropped. Never throws. Resolves to the
+ * notifications sent.
  */
 export async function drainPush(env: Env, now = Date.now()): Promise<number> {
   if (!pushOn(env)) return 0;
@@ -467,14 +479,17 @@ const dropRows = (env: Env, rows: Pending[]) =>
 
 /**
  * What is still true at send time (the queue may be minutes or hours old): the
- * member can still read the page, the ask is still open for them, the update's
- * item still exists, and the words are the current ones (an edited comment or
- * question), never the words queued. Rows that fail any are dropped.
+ * member can still read the page, the ask is still open for them, a mention's
+ * item still exists for them, is unread and (for a new one) not put off, and
+ * the words are the current ones (an edited comment or question), never the
+ * words queued. Rows that fail any are dropped. Rows of an ask carry
+ * `approval` when it is an open confirm.
  */
 async function stillWanted(
   env: Env,
   userId: string,
   rows: Pending[],
+  now: number,
 ): Promise<Pending[]> {
   const user = await getUser(env, userId);
   if (!user || capsReads(capOfCaller(callerOf(user)))) return [];
@@ -491,7 +506,7 @@ async function stillWanted(
   const asks = kept.filter(
     (r) =>
       (r.kind === "ask" || r.kind === "later") &&
-      !isPersonMention(r) &&
+      !isMention(r) &&
       !isHeldPush(r),
   );
   // A held request waits on its own items: at least one still held and in time.
@@ -509,55 +524,95 @@ async function stillWanted(
         JSON.stringify(
           heldRows.map((r) => r.key.slice(HELD_PUSH_PREFIX.length)),
         ),
-        Date.now(),
+        now,
       )
       .all<{ id: string }>();
     for (const r of results) stillHeld.add(r.id);
   }
-  // A mention (#2781) waits on its own item, like an update: it must still exist.
-  const updates = kept.filter((r) => r.kind === "update" || isPersonMention(r));
-  const open = new Map<string, string>();
+  const open = new Map<string, { question: string; approval: boolean }>();
   if (asks.length > 0) {
     const { results } = await stmt(
       env.DB,
-      `select comment_id, question from artifact_asks
+      `select comment_id, question, confirm from artifact_asks
         where addressee = ?1 and open = 1 and comment_id in (select value from json_each(?2))`,
     )
       .bind(userId, JSON.stringify(asks.map(cid)))
-      .all<{ comment_id: string; question: string | null }>();
-    for (const r of results) open.set(r.comment_id, r.question ?? "");
+      .all<{
+        comment_id: string;
+        question: string | null;
+        confirm: number | null;
+      }>();
+    for (const r of results)
+      open.set(r.comment_id, {
+        question: r.question ?? "",
+        approval: r.confirm === 1,
+      });
   }
-  const items = new Map<string, string>();
-  if (updates.length > 0) {
+  // A mention waits on its own item (#2781): it must still exist for this member,
+  // be an unread Needs-you mention and, if new, not be put off (its return is
+  // what tells them then). A back-from-Later one is found by the original
+  // per-member item id, and must still be on the same page and thread.
+  const byKey = new Map<string, MentionItem>();
+  const byId = new Map<string, MentionItem>();
+  const mentionRows = kept.filter(isMention);
+  if (mentionRows.length > 0) {
     const { results } = await stmt(
       env.DB,
-      `select key, excerpt from inbox_items
-        where user_id = ?1 and key in (select value from json_each(?2))`,
+      `select i.id as id, i.key as key, i.excerpt as excerpt, i.artifact_id as artifact_id, i.thread_id as thread_id,
+              exists (select 1 from inbox_later l where l.user_id = i.user_id and l.item_id = 'mention:' || i.id) as deferred
+         from inbox_items i
+        where i.user_id = ?1 and i.kind = 'mention' and i.level = 'needs_you' and i.key like 'person:%' and i.read_at is null
+          and (i.key in (select value from json_each(?2)) or i.id in (select value from json_each(?3)))`,
     )
-      .bind(userId, JSON.stringify(updates.map((r) => r.key)))
-      .all<{ key: string; excerpt: string }>();
-    for (const r of results) items.set(r.key, r.excerpt);
+      .bind(
+        userId,
+        JSON.stringify(mentionRows.filter(isPersonMention).map((r) => r.key)),
+        JSON.stringify(mentionRows.filter(isLaterMention).map(laterMentionId)),
+      )
+      .all<MentionItem>();
+    for (const r of results) {
+      byKey.set(r.key, r);
+      byId.set(r.id, r);
+    }
   }
   const out: Pending[] = [];
   for (const r of kept) {
+    if (r.kind === "update") continue;
     if (isHeldPush(r)) {
       if (stillHeld.has(r.key.slice(HELD_PUSH_PREFIX.length))) out.push(r);
     } else if (isPersonMention(r)) {
-      const e = items.get(r.key);
-      if (e === undefined) continue;
-      out.push({ ...r, excerpt: e });
+      const m = byKey.get(r.key);
+      if (!m || m.deferred === 1 || m.artifact_id !== r.artifact_id) continue;
+      out.push({ ...r, excerpt: m.excerpt });
+    } else if (isLaterMention(r)) {
+      const m = byId.get(laterMentionId(r));
+      if (!m || m.artifact_id !== r.artifact_id) continue;
+      out.push({ ...r, excerpt: m.excerpt, thread_id: m.thread_id ?? "" });
     } else if (r.kind === "ask" || r.kind === "later") {
-      const q = open.get(cid(r));
-      if (q === undefined) continue;
-      out.push({ ...r, excerpt: q ? itemExcerpt(q) : r.excerpt });
-    } else if (r.kind === "update") {
-      const e = items.get(r.key);
-      if (e === undefined) continue;
-      out.push({ ...r, excerpt: e });
-    } else out.push(r);
+      const a = open.get(cid(r));
+      if (a === undefined) continue;
+      out.push({
+        ...r,
+        excerpt: a.question ? itemExcerpt(a.question) : r.excerpt,
+        approval: a.approval,
+      });
+    }
   }
   return out;
 }
+
+type MentionItem = {
+  id: string;
+  key: string;
+  excerpt: string;
+  artifact_id: string;
+  thread_id: string | null;
+  deferred: number;
+};
+
+/** The inbox item id in "later:mention:<id>:<until>". */
+const laterMentionId = (r: { key: string }): string =>
+  r.key.split(":")[2] ?? "";
 
 async function drainMember(
   env: Env,
@@ -567,9 +622,10 @@ async function drainMember(
   now: number,
 ): Promise<number> {
   const prefs = await getPrefs(env, userId);
-  // Each level has its member-wide switch: off drops its rows.
-  const live = rows.filter((r) =>
-    r.kind === "update" ? prefs.updates.browser : prefs.needsYou.browser,
+  // The account's Needs you is the one switch: off drops the rows. An Update
+  // never sends, even one queued before Updates stopped pushing.
+  const live = rows.filter(
+    (r) => r.kind !== "update" && prefs.needsYou.browser,
   );
   const off = rows.filter((r) => !live.includes(r));
   if (off.length > 0) await dropRows(env, off);
@@ -589,25 +645,38 @@ async function drainMember(
   }
   const { results: subs } = await stmt(
     env.DB,
-    "select id, endpoint, p256dh, auth, needs_you, updates from push_subscriptions where user_id = ?1",
+    "select id, endpoint, p256dh, auth from push_subscriptions where user_id = ?1",
   )
     .bind(userId)
     .all<Sub>();
-  // Claimed: deleted before sending, so a second tick can't send them again.
-  await dropRows(env, live);
-  if (subs.length === 0) return 0;
+  // Overlapping ticks may read the same rows. Only the tick that removes a
+  // still-due row may send it.
+  const claimed = await stmt(
+    env.DB,
+    `delete from push_pending where user_id = ?1 and send_after <= ?2
+       and id in (select value from json_each(?3)) returning id`,
+  )
+    .bind(userId, now, JSON.stringify(live.map((r) => r.id)))
+    .all<{ id: string }>();
+  const claimedIds = new Set(claimed.results.map((r) => r.id));
+  if (subs.length === 0 || claimedIds.size === 0) return 0;
   // A mute stops push: its agent's and its page's items are not sent.
   const muted = await mutedSet(env, userId);
   let due = live.filter(
     (r) =>
+      claimedIds.has(r.id) &&
       !muted.pages.has(r.artifact_id) &&
       !(r.agent_key && muted.agents.has(r.agent_key)),
   );
-  due = await stillWanted(env, userId, due);
+  due = await stillWanted(env, userId, due, now);
   if (due.length === 0) return 0;
   if (!prefs.browserAllAsks) {
-    // "Asks waiting for you": an ask counts only when an agent of theirs waits on them.
-    const asks = due.filter((r) => r.kind === "ask" && !isPersonMention(r));
+    // Under Needs you, held requests and mentions always interrupt, and so do
+    // an ask an agent of theirs waits on (the wait check) and an open approval.
+    // A plain ask needs "every ask put to me" (browserAllAsks).
+    const asks = due.filter(
+      (r) => r.kind === "ask" && !isMention(r) && !isHeldPush(r),
+    );
     const keys = [
       ...new Set(
         asks
@@ -618,32 +687,25 @@ async function drainMember(
     const waiting = keys.length
       ? await agentsWaitingOn(env, userId, keys)
       : new Map<string, number>();
-    // "Waiting asks and approvals": a mention interrupts only with "every ask
-    // put to me" (browserAllAsks), so it is dropped here.
     due = due.filter(
       (r) =>
         r.kind !== "ask" ||
-        (!isPersonMention(r) &&
-          r.asker_ref === userId &&
-          !!r.agent_key &&
-          waiting.has(r.agent_key)),
+        isMention(r) ||
+        isHeldPush(r) ||
+        r.approval === true ||
+        (r.asker_ref === userId && !!r.agent_key && waiting.has(r.agent_key)),
     );
   }
   if (due.length === 0) return 0;
   let ok = 0;
   for (const s of subs) {
-    // This browser's own switches.
-    const mine = due.filter((r) =>
-      r.kind === "update" ? s.updates === 1 : s.needs_you === 1,
-    );
-    if (mine.length === 0) continue;
-    // One browser's failure never stops the member's others.
+    // Every enrolled device gets it; one device's failure never stops the others.
     let r: Awaited<ReturnType<typeof sendPush>>;
     try {
       r = await sendPush(
         env,
         s,
-        pushPayload(mine, prefs.lockScreenDetail, title),
+        pushPayload(due, prefs.lockScreenDetail, title),
         now,
       );
     } catch (e) {
@@ -670,82 +732,82 @@ async function drainMember(
 /** A put-off item returns no later than this after its time, or its push is skipped (a long outage). */
 const LATER_WINDOW_MS = 6 * 3600_000;
 
-/**
- * Items put off with Later (#2762) whose time has come: queue "Back from
- * later" for push, once each (pushed_at claims the row). Asks only: the
- * question is read from the open ask; a closed or gone ask queues nothing.
- * Best effort, never throws.
- */
+/** Load the original item for this recipient. A read mention or closed ask cannot return. */
+async function returningItem(
+  env: Env,
+  row: LaterRow,
+): Promise<PushItem | null> {
+  const mention = row.item_id.startsWith("mention:");
+  if (!mention && !row.item_id.startsWith("ask:")) return null;
+  const source = await stmt(
+    env.DB,
+    mention
+      ? `select artifact_id, thread_id, excerpt, actor from inbox_items
+        where id = ?1 and user_id = ?2 and kind = 'mention' and level = 'needs_you'
+          and key like 'person:%' and read_at is null`
+      : `select artifact_id, thread_id, question as excerpt, asker as actor from artifact_asks
+        where comment_id = ?1 and addressee = ?2 and open = 1 limit 1`,
+  )
+    .bind(
+      row.item_id.slice(mention ? "mention:".length : "ask:".length),
+      row.user_id,
+    )
+    .first<{
+      artifact_id: string;
+      thread_id: string | null;
+      excerpt: string | null;
+      actor: string | null;
+    }>();
+  if (!source) return null;
+  let actor: StoredActor | null = null;
+  if (source.actor) {
+    try {
+      actor = JSON.parse(source.actor) as StoredActor;
+    } catch {
+      /* old rows may have no actor */
+    }
+  }
+  return {
+    kind: "later",
+    key: `later:${row.item_id}:${row.until}`,
+    artifactId: source.artifact_id,
+    threadId: source.thread_id ?? "",
+    askerName: actor?.agent?.name ?? actor?.name ?? "Someone",
+    excerpt: source.excerpt ?? "",
+    askerRef: !mention && actor?.agent ? actor.ref : null,
+    agentKey: mention ? null : (actor?.agent?.identity?.identityId ?? null),
+  };
+}
+
+/** Mark each due return in the same transaction that queues it. A failed write can retry on the next tick. */
 export async function queueLaterReturns(env: Env, now: number): Promise<void> {
   try {
     const { results } = await stmt(
       env.DB,
-      `update inbox_later set pushed_at = ?1
-        where pushed_at is null and until <= ?1 and until > ?2
-          and rowid in (select rowid from inbox_later where pushed_at is null and until <= ?1 and until > ?2 limit 50)
-        returning user_id, item_id, until`,
+      `select user_id, item_id, until from inbox_later
+        where pushed_at is null and until <= ?1 and until > ?2 order by until limit 50`,
     )
       .bind(now, now - LATER_WINDOW_MS)
-      .all<{ user_id: string; item_id: string; until: number }>();
-    for (const r of results) {
-      if (!r.item_id.startsWith("ask:")) continue;
-      const a = await stmt(
+      .all<LaterRow>();
+    for (const row of results) {
+      const finish = stmt(
         env.DB,
-        `select artifact_id, thread_id, question, asker from artifact_asks
-          where comment_id = ?1 and addressee = ?2 and open = 1 limit 1`,
-      )
-        .bind(r.item_id.slice(4), r.user_id)
-        .first<{
-          artifact_id: string;
-          thread_id: string;
-          question: string | null;
-          asker: string | null;
-        }>();
-      if (!a) continue;
-      let actor: StoredActor | null = null;
-      try {
-        actor = a.asker ? (JSON.parse(a.asker) as StoredActor) : null;
-      } catch {
-        actor = null;
+        `update inbox_later set pushed_at = ?1 where user_id = ?2 and item_id = ?3 and until = ?4 and pushed_at is null`,
+      ).bind(now, row.user_id, row.item_id, row.until);
+      const item = await returningItem(env, row);
+      const [to] = item ? await recipients(env, [row.user_id]) : [];
+      if (item && to) {
+        // The insert also checks pushed_at, so a second tick cannot queue an already delivered return.
+        const insert = await pendingInsert(env, to, item, now, row);
+        await env.DB.batch([insert, finish]);
+      } else {
+        await finish.run();
       }
-      await queueBackFromLater(
-        env,
-        r.user_id,
-        {
-          key: `later:${r.item_id}:${r.until}`,
-          artifactId: a.artifact_id,
-          threadId: a.thread_id,
-          askerName: actor?.agent?.name ?? actor?.name ?? "Someone",
-          excerpt: a.question ?? "",
-          askerRef: actor?.agent ? actor.ref : null,
-          agentKey: actor?.agent?.identity?.identityId ?? null,
-        },
-        now,
-      );
     }
   } catch (e) {
     logWarn("push_later_failed", e);
   }
 }
-
-/**
- * An item that was put off with Later is back (#2762): queue it for push like
- * a new ask, so the person hears it came back. `key` is unique per return.
- */
-export const queueBackFromLater = (
-  env: Env,
-  userId: string,
-  item: Omit<PushItem, "kind">,
-  now = Date.now(),
-): Promise<void> => queuePush(env, [userId], { ...item, kind: "later" }, now);
-
-/** The Updates written for a person: queued for push to those who turned it on. */
-export const queueUpdatePush = (
-  env: Env,
-  userId: string,
-  item: Omit<PushItem, "kind">,
-  now = Date.now(),
-): Promise<void> => queuePush(env, [userId], { ...item, kind: "update" }, now);
 
 /**
  * A person @mentioned the member (#2770): a Needs-you push, like an ask. The

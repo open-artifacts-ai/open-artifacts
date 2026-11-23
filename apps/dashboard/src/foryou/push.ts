@@ -424,7 +424,10 @@ export const usePatchSubscription = () => {
         pushSubsKey,
         (cur) =>
           cur && {
-            items: cur.items.map((x) => (x.id === v.id ? { ...x, ...r } : x)),
+            items:
+              v.body.needsYou === false && !r.needsYou && !r.updates
+                ? cur.items.filter((x) => x.id !== v.id)
+                : cur.items.map((x) => (x.id === v.id ? { ...x, ...r } : x)),
           },
       ),
   });

@@ -44,6 +44,7 @@ import {
   isOutsideMember,
   takeReceiverSlot,
 } from "./mention-guards.js";
+import { getPrefs } from "./notification-prefs.js";
 import { listenChallenge } from "./passkeys.js";
 import { HELD_PUSH_PREFIX, queuePush } from "./push.js";
 import { getUser, personName } from "./users.js";
@@ -230,41 +231,13 @@ export async function agentRequestsOn(
   return !r || r.off !== 1;
 }
 
-/** Whether a request held for the member also sends a browser push. Default off. */
+/**
+ * What the existing client reads as "held requests also push": a held request
+ * is part of the account's Needs you (#3024), so this is that one switch. It
+ * is only read here; the account's guarded preference save changes it.
+ */
 export async function phonePushOn(env: Env, userId: string): Promise<boolean> {
-  const r = await stmt(
-    env.DB,
-    "select phone_push as p from notification_prefs where user_id = ?1",
-  )
-    .bind(userId)
-    .first<{ p: number }>();
-  return r?.p === 1;
-}
-
-/** Saves the push choice; an unchanged save writes nothing. Audited as agent_requests.switch with `phonePush`. */
-export async function setPhonePush(
-  env: Env,
-  userId: string,
-  on: boolean,
-  now = Date.now(),
-): Promise<boolean> {
-  if ((await phonePushOn(env, userId)) === on) return on;
-  await env.DB.batch([
-    stmt(
-      env.DB,
-      `insert into notification_prefs (user_id, phone_push, updated_at)
-       values (?1, ?2, ?3)
-       on conflict (user_id) do update set phone_push = excluded.phone_push, updated_at = excluded.updated_at`,
-    ).bind(userId, on ? 1 : 0, now),
-    audit(
-      env,
-      "agent_requests.switch",
-      { type: "user", id: userId },
-      userActor(userId),
-      { detail: { phonePush: on } },
-    ),
-  ]);
-  return on;
+  return (await getPrefs(env, userId)).needsYou.browser;
 }
 
 /**
@@ -783,23 +756,23 @@ async function recordHoldsOnce(
           userActor(senderId),
           { detail: { artifactId } },
         ).run();
-        // Browser push only for a member who turned it on; otherwise the inbox alone. Never the words.
-        if (await phonePushOn(env, owner)) {
-          await queuePush(
-            env,
-            [owner],
-            {
-              key: `${HELD_PUSH_PREFIX}${req.id}`,
-              kind: "ask",
-              artifactId,
-              threadId: "",
-              // No name: a held request's push carries neither the words nor the sender.
-              askerName: "Someone",
-              excerpt: HELD_EXCERPT,
-            },
-            now,
-          );
-        }
+        // A held request is Needs you: queued for a member whose account Needs
+        // you is on and who has a device (queuePush checks), otherwise the inbox
+        // alone. Never the words.
+        await queuePush(
+          env,
+          [owner],
+          {
+            key: `${HELD_PUSH_PREFIX}${req.id}`,
+            kind: "ask",
+            artifactId,
+            threadId: "",
+            // No name: a held request's push carries neither the words nor the sender.
+            askerName: "Someone",
+            excerpt: HELD_EXCERPT,
+          },
+          now,
+        );
       }
       for (const h of held.filter((x) => x.agent.owner === owner))
         await stmt(

@@ -46,12 +46,15 @@ describe("GET and PUT /me/notification-prefs", () => {
       timeZone: "America/Los_Angeles",
       lockScreenDetail: true,
     });
+    // No device is enrolled: the account choices save all the same. Updates are
+    // list-only (#3024): their browser setting is never saved, so it reads off.
     const r = await put(a.cookie, next);
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual(next);
+    const saved = { ...next, updates: { inApp: true, browser: false } };
+    expect(await r.json()).toEqual(saved);
     expect(
       await (await api(app, R.meNotificationPrefs, a.cookie)).json(),
-    ).toEqual(next);
+    ).toEqual(saved);
     const rows = (await mine(a.userId)).results;
     expect(rows).toHaveLength(1);
     expect(rows[0]?.target_id).toBe(a.userId);
@@ -62,8 +65,30 @@ describe("GET and PUT /me/notification-prefs", () => {
       "lockScreenDetail",
       "quietHours",
       "timeZone",
-      "updatesBrowser",
     ]);
+    expect(
+      (
+        await E.DB.prepare(
+          "select count(*) as n from push_subscriptions where user_id = ?",
+        )
+          .bind(a.userId)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(0);
+    // An old row with Updates on still reads off.
+    await E.DB.prepare(
+      "update notification_prefs set updates_browser = 1 where user_id = ?",
+    )
+      .bind(a.userId)
+      .run();
+    expect(
+      (
+        (await (
+          await api(app, R.meNotificationPrefs, a.cookie)
+        ).json()) as NotificationPrefs
+      ).updates.browser,
+    ).toBe(false);
+    next.updates.browser = false;
     // Turning quiet hours off clears them.
     await put(a.cookie, { ...next, quietHours: null });
     expect(

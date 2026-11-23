@@ -22,7 +22,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
-import { queueMentionPush, queueUpdatePush } from "./push.js";
+import { queueMentionPush } from "./push.js";
 import { getUsers } from "./users.js";
 
 /** Person-mention Needs-you items one sender may cause per day (#2770). */
@@ -127,24 +127,17 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // #2512 S5: browser push for each Update, for those who turned it on. A
-    // Needs-you item (a person @mentioned, #2770) is queued as Needs-you
-    // (#2781), never as an Update.
+    // Browser push is for Needs you only: a person @mentioned (#2770) is queued
+    // (#2781); an Update is written and shown, and never pushed (#3024).
     for (const r of rows) {
-      const base = {
+      if (!r.key.startsWith("person:")) continue;
+      await queueMentionPush(env, r.userId, {
         key: r.key,
         artifactId: r.artifactId,
         threadId: r.threadId ?? "",
         askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
         excerpt: r.excerpt,
-      };
-      if (r.key.startsWith("person:"))
-        await queueMentionPush(env, r.userId, base);
-      else
-        await queueUpdatePush(env, r.userId, {
-          ...base,
-          agentKey: r.actor.agent?.identity?.identityId ?? null,
-        });
+      });
     }
   } catch (e) {
     logWarn("inbox_items_write_failed", e);

@@ -23,7 +23,6 @@ import {
   phonePushOn,
   removeListen,
   setAgentRequests,
-  setPhonePush,
   shortenListen,
 } from "../services/agent-requests.js";
 import type { AppType } from "./index.js";
@@ -78,6 +77,7 @@ export function mountAgentRequests(app: AppType): void {
   });
 
   // #2577 S2: the switch. Reading is any signed-in person's; saving is a browser session only.
+  // `phonePush` is projected from the account's Needs you for the existing client.
   app.get(R.agentRequests, async (c) => {
     const user = requireUser(c);
     return c.json({
@@ -88,9 +88,9 @@ export function mountAgentRequests(app: AppType): void {
   app.put(R.agentRequests, async (c) => {
     const user = member(c);
     const body = await jsonBody(c, AgentRequestsSwitchBodySchema);
-    if (body.on !== undefined) await setAgentRequests(c.env, user.id, body.on);
-    if (body.phonePush !== undefined)
-      await setPhonePush(c.env, user.id, body.phonePush);
+    // The phone-only switch is gone (#3024): held requests are part of the
+    // account's Needs you, which only the guarded preference save changes.
+    await setAgentRequests(c.env, user.id, body.on);
     return c.json({
       on: await agentRequestsOn(c.env, user.id),
       phonePush: await phonePushOn(c.env, user.id),

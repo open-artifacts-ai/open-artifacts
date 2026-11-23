@@ -107,20 +107,15 @@ export type AllowChallengeBody = z.infer<typeof AllowChallengeBodySchema>;
 /** The switch for asking the caller's agents (R.agentRequests). `on: false`: they hear nobody outside. */
 export const AgentRequestsSwitchSchema = z.strictObject({
   on: z.boolean(),
-  /** A request held for the caller also sends a browser push. Default off: the inbox only. */
+  /** Read-only, projected: the account's browser Needs you (#3024), which also covers held requests. Changed in the notification preferences only. */
   phonePush: z.boolean(),
 });
 export type AgentRequestsSwitch = z.infer<typeof AgentRequestsSwitchSchema>;
 
-/** PUT: either or both; at least one. A field left out stays as it is. */
-export const AgentRequestsSwitchBodySchema = z
-  .strictObject({
-    on: z.boolean().optional(),
-    phonePush: z.boolean().optional(),
-  })
-  .refine((b) => b.on !== undefined || b.phonePush !== undefined, {
-    message: "Send on or phonePush",
-  });
+/** PUT: the switch. The old phone-only `phonePush` field is refused (it would have turned on other notifications). */
+export const AgentRequestsSwitchBodySchema = z.strictObject({
+  on: z.boolean(),
+});
 export type AgentRequestsSwitchBody = z.infer<
   typeof AgentRequestsSwitchBodySchema
 >;
