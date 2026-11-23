@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import {
   type AttachDeps,
@@ -12,6 +12,7 @@ import {
   defaultAttachDeps,
   lsofEstablished,
   lsofResult,
+  macExeOf,
   parseProcNetTcp,
 } from "../src/presence/attached.ts";
 import { openState } from "../src/presence/opencode.ts";
@@ -580,6 +581,34 @@ describe("the real executable on macOS (#3020)", () => {
       signal: null,
     })) as unknown as typeof import("node:child_process").spawnSync;
     expect(macExeOf(999999, run)).toBe(null);
+  });
+
+  it("attaches a TUI whose ps comm is the bare `opencode`, since the real path matches", () => {
+    // The reported situation: `ps -o comm=` says `opencode` for a TUI started
+    // from PATH, while the service says its absolute path. Both run the same
+    // binary, so the text image is what decides, and the bare name is never
+    // read, let alone resolved through PATH.
+    const seen: string[][] = [];
+    const lsof = ((_cmd: string, args: string[]) => {
+      seen.push(args);
+      return {
+        stdout:
+          "p1\nfcwd\nn/Users/leo/project\nf14\nn/opt/homebrew/bin/opencode\n",
+        stderr: "",
+        status: 0,
+        signal: null,
+      };
+    }) as unknown as typeof import("node:child_process").spawnSync;
+    const comm = vi.fn(() => "opencode");
+    const one = link("127.0.0.1:4001", "127.0.0.1:50001");
+    const deps: AttachDeps = {
+      exeOf: (pid) => macExeOf(pid, lsof),
+      ppidOf: () => 1,
+      established: (pid) => (pid === 10 ? [one.svc] : [one.tui]),
+    };
+    expect(attachedTo(10, deps)(11)).toBe(true);
+    expect(seen.every((a) => a.includes("-d") && a.includes("txt"))).toBe(true);
+    expect(comm).not.toHaveBeenCalled();
   });
 
   it("same real path attaches, a different one is refused", () => {
