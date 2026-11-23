@@ -24,6 +24,7 @@ import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { queueMentionPush } from "./push.js";
 import { getUsers } from "./users.js";
+import { pushOn } from "./web-push.js";
 
 /** Person-mention Needs-you items one sender may cause per day (#2770). */
 export const PERSON_MENTIONS_PER_DAY = 200;
@@ -127,10 +128,23 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // Browser push is for Needs you only: a person @mentioned (#2770) is queued
-    // (#2781); an Update is written and shown, and never pushed (#3024).
-    for (const r of rows) {
-      if (!r.key.startsWith("person:")) continue;
+    // Updates stay in the inbox. Only personal mentions can need a delivery.
+    const mentions = rows.filter(
+      (r) =>
+        r.kind === "mention" &&
+        r.level === "needs_you" &&
+        r.key.startsWith("person:"),
+    );
+    if (!pushOn(env) || mentions.length === 0) return;
+    const enrolled = await stmt(
+      env.DB,
+      "select distinct user_id from push_subscriptions where user_id in (select value from json_each(?1))",
+    )
+      .bind(JSON.stringify([...new Set(mentions.map((r) => r.userId))]))
+      .all<{ user_id: string }>();
+    const hasDevice = new Set(enrolled.results.map((r) => r.user_id));
+    for (const r of mentions) {
+      if (!hasDevice.has(r.userId)) continue;
       await queueMentionPush(env, r.userId, {
         key: r.key,
         artifactId: r.artifactId,
