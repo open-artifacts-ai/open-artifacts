@@ -1172,7 +1172,6 @@ const writePersonMention = (
     {
       userId,
       kind: "mention",
-      level: "needs_you",
       key: `person:${id}`,
       artifactId: over.artifactId ?? PUB,
       threadId: "th-m",
@@ -1849,7 +1848,6 @@ describe("a person's @-mention of the member (#2781)", () => {
       {
         userId,
         kind: "mention",
-        level: "needs_you",
         key: `person:${id}`,
         artifactId: over.artifactId ?? PUB,
         threadId: "th-m",

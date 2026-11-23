@@ -47,8 +47,6 @@ export const itemExcerpt = (s: string): string => {
 };
 
 export type NewItem = {
-  /** #2770: "needs_you" for a mention of the person; every other item is an Update (a mention of their agent included). */
-  level?: "needs_you" | "update";
   userId: string;
   kind: ItemKind;
   /** The idempotency key, unique per person: "reply:<comment id>". */
@@ -62,6 +60,10 @@ export type NewItem = {
   agentName?: string;
   at: number;
 };
+
+/** Personal mentions belong in Needs you. Mentions of the recipient's agent belong in Updates. */
+const isPersonalMention = (item: NewItem) =>
+  item.kind === "mention" && item.key.startsWith("person:");
 
 /**
  * Writes the items whose person can still read the artifact now (a member,
@@ -116,7 +118,7 @@ export async function writeInboxItems(
             newId(),
             r.userId,
             r.kind,
-            r.level ?? "update",
+            isPersonalMention(r) ? "needs_you" : "update",
             r.key,
             r.artifactId,
             r.threadId ?? null,
@@ -129,12 +131,7 @@ export async function writeInboxItems(
         ),
       );
     // Updates stay in the inbox. Only personal mentions can need a delivery.
-    const mentions = rows.filter(
-      (r) =>
-        r.kind === "mention" &&
-        r.level === "needs_you" &&
-        r.key.startsWith("person:"),
-    );
+    const mentions = rows.filter(isPersonalMention);
     if (!pushOn(env) || mentions.length === 0) return;
     const enrolled = await stmt(
       env.DB,
@@ -233,7 +230,6 @@ export async function recordCommentItems(
         items.push({
           userId,
           kind: "mention",
-          level: "needs_you",
           key: `person:${c.id}`,
           artifactId: j.artifactId,
           threadId: j.threadId,
