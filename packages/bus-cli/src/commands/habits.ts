@@ -9,6 +9,7 @@ import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
 import {
   type BlockState,
+  blockState,
   HABITS_GLOBAL_UPDATE_TEXT,
   HABITS_HARNESSES,
   HABITS_LINES,
@@ -16,7 +17,6 @@ import {
   type HabitsQuestion,
   habitsBlock,
   habitsFileState,
-  blockState,
   habitsOn,
   habitsOptedOut,
   habitsQuestion,
