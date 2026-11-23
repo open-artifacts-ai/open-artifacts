@@ -285,6 +285,9 @@ const pluginDirsOf = (v: unknown): Record<string, string[]> => {
       out[name] = list.filter((d): d is string => typeof d === "string");
   return out;
 };
+/** #3008: the project blocks and declines the record holds, for the status line. */
+export const projectRecord = (busHome: string) => record(busHome).project;
+
 const saveRecord = (
   busHome: string | undefined,
   patch: {

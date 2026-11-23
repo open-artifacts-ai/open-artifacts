@@ -3,7 +3,7 @@
 // files it goes in, are steps/habits.ts.
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -16,6 +16,7 @@ import {
   type HabitsQuestion,
   habitsBlock,
   habitsFileState,
+  blockState,
   habitsOn,
   habitsOptedOut,
   habitsQuestion,
@@ -29,6 +30,7 @@ import {
   type ProjectIo,
   pluginHabitsState,
   projectHabitsFileState,
+  projectRecord,
   removeHabits,
   removeProjectHabits,
   setHabitsOptOut,
@@ -735,6 +737,36 @@ export async function habitsCommand(
 }
 
 /** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
+/**
+ * #3008: what this folder has, read from the record install wrote (no git, no
+ * writes). A block lives at the top of a work tree, so a block inside `cwd`
+ * belongs to this project, whether the command runs at the top or below it.
+ */
+const projectHere = (
+  ctx: Ctx,
+): { files: string[]; changed: boolean; declined: boolean } => {
+  const base = realpathOr(ctx.cwd);
+  const inside = (p: string) =>
+    realpathOr(p) === base || realpathOr(p).startsWith(`${base}${sep}`);
+  const rec = projectRecord(deps(ctx).busHome);
+  const files = Object.keys(rec.files).filter(inside);
+  const changed = files.some((f) => {
+    try {
+      return blockState(readFileSync(f, "utf8")).state === "changed";
+    } catch {
+      return false;
+    }
+  });
+  const declined = Object.keys(readDeclined(ctx.home)).some((root) =>
+    base.startsWith(root),
+  );
+  return { files, changed, declined };
+};
+
+/** The words for one place, kept in one function so a plugin source can join it. */
+const habitsWhere = (ctx: Ctx, files: string[]): string =>
+  `on in this project, ${shown(ctx, files)}`;
+
 export function habitsLine(ctx: Ctx): string | undefined {
   const { targets, plugins } = wired(ctx);
   if (habitsOptedOut(ctx.home)) return "Habits: off (you opted out)";
@@ -745,6 +777,13 @@ export function habitsLine(ctx: Ctx): string | undefined {
   );
   const states = used.map((p) => pluginStateText(ctx, p));
   const tail = states.length > 0 ? `; ${states.join("; ")}` : "";
+  // #3008: this folder first, then whatever is on for every project.
+  const here = projectHere(ctx);
+  if (here.files.length > 0)
+    return here.changed
+      ? `Habits: changed in this project, ${shown(ctx, here.files)} (the next install updates them)${tail}`
+      : `Habits: ${habitsWhere(ctx, here.files)}${tail}`;
+  if (here.declined) return `Habits: off in this project${tail}`;
   if (on.length > 0) return `Habits: on in ${shown(ctx, on)}${tail}`;
   if (used.some((p) => pluginHabitsState(deps(ctx), p) === "on"))
     return `Habits: ${states.join("; ")}`;

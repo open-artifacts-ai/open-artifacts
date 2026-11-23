@@ -1448,3 +1448,46 @@ describe("per-project habits: the last four (#2966)", () => {
     expect(out.question?.no).not.toContain("--no-habits-project");
   });
 });
+
+// #3008: `status` and `doctor` say what this project has, in plain words.
+describe("habitsLine shows per-project habits (#3008)", () => {
+  const repoWith = async (harnesses: string[] = ["claude"]) => {
+    const ctx = asRepo(
+      fakeCtx(
+        claudeOnly({ which: (c: string) => harnesses.includes(c) }),
+        false,
+      ),
+    );
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    return ctx;
+  };
+
+  it("names the file when this project has the block", async () => {
+    const ctx = await repoWith();
+    await install({ habits: "project" }, ctx);
+    const line = habitsLine(ctx) as string;
+    expect(line).toContain("Habits: on in this project");
+    expect(line).toContain("CLAUDE.local.md");
+  });
+
+  it("says changed when the block here is out of date", async () => {
+    const ctx = await repoWith();
+    await install({ habits: "project" }, ctx);
+    const file = projectMd(ctx);
+    writeFileSync(file, readFileSync(file, "utf8").replace("under 140", "x"));
+    expect(habitsLine(ctx)).toMatch(/Habits: changed in this project/);
+  });
+
+  it("says off in this project when the person declined here", async () => {
+    const ctx = await repoWith();
+    await install({ habits: "project-off" }, ctx);
+    expect(habitsLine(ctx)).toBe("Habits: off in this project");
+  });
+
+  it("still names the global block when that is what is on", async () => {
+    const ctx = await repoWith();
+    await install({ habits: "yes" }, ctx);
+    expect(habitsLine(ctx)).toContain("Habits: on in ~/.claude/CLAUDE.md");
+  });
+});
