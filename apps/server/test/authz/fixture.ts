@@ -595,6 +595,18 @@ export async function buildWorld(): Promise<World> {
       );
       return id;
     },
+    subscriptionId: async (who) => {
+      const id = newId();
+      if (TRAITS[who].session)
+        await run(
+          "insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, created_at) values (?, ?, ?, 'fixture', 'fixture', ?)",
+          id,
+          u(who),
+          `https://push.invalid/${id}`,
+          Date.now(),
+        );
+      return id;
+    },
     email: async () => uniq("mx-invite"),
     successorId: async () => u("otherMember"),
   };

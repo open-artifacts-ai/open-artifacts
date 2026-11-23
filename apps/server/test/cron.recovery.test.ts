@@ -49,6 +49,8 @@ const fire = async (cron: string, t: number, e: Env = env as Env) => {
   await c.drain();
   return c.pending.length;
 };
+// Sweep, run-version fan-out and push each register one task.
+const tickTasks = 3;
 const tick = (t: number) => fire(RECOVERY_CRON, t);
 const daily = (t: number, e?: Env) => fire(DAILY_CRON, t, e);
 
@@ -139,7 +141,7 @@ describe("the daily slot", () => {
 });
 
 describe("RECOVERY_CRON", () => {
-  it("an idle tick off the slot: the sweep and the fan-out drain, three D1 statements, no daily work", async () => {
+  it("an idle tick with thumbnails and push executes five D1 statements", async () => {
     const { env: e, n } = counting({
       ...(env as Env),
       BROWSER: {} as Fetcher,
@@ -154,15 +156,15 @@ describe("RECOVERY_CRON", () => {
     // #2719: every tick also registers the run-version fan-out drain (one
     // settings read when no cursor is stored).
     // Far past every row this suite publishes: nothing to recover.
-    expect(c.pending).toHaveLength(2);
+    expect(c.pending).toHaveLength(tickTasks);
     await c.drain();
     // The text and pdf-thumbnail windows (one indexed read each) and the
-    // drain's cursor read (#2719).
-    expect(n.q).toBe(3);
+    // fan-out cursor read, Later claim and pending push lookup.
+    expect(n.q).toBe(5);
     expect(await ranDay()).toBeNull();
   });
 
-  it("an idle tick without server thumbnails reads twice (sweep and fan-out cursor)", async () => {
+  it("an idle tick with push and without server thumbnails executes four D1 statements", async () => {
     const { env: e, n } = counting(env as Env);
     const c = ctxOf();
     await scheduled(
@@ -171,41 +173,41 @@ describe("RECOVERY_CRON", () => {
       c.ctx,
     );
     await c.drain();
-    // #2719: the fan-out drain's cursor read joins the sweep's.
-    expect(n.q).toBe(2);
+    // Sweep, fan-out cursor, Later claim and pending push lookup.
+    expect(n.q).toBe(4);
   });
 
   it("the 03:16 tick runs no daily work; the 03:18 tick runs it once and logs it; 03:20 doesn't", async () => {
     const logs = await dailyLogs(async () => {
-      expect(await tick(at(7, 3, 16))).toBe(2);
+      expect(await tick(at(7, 3, 16))).toBe(tickTasks);
       expect(await ranDay()).toBeNull();
-      // Sweep + fan-out drain (#2719) + daily.
-      expect(await tick(at(7, 3, 18))).toBe(3);
+      // All per-tick tasks and the daily job.
+      expect(await tick(at(7, 3, 18))).toBe(tickTasks + 1);
       expect(await ranDay()).toBe("2026-01-07");
       // A repeated delivery of the same tick: the day is claimed.
-      expect(await tick(at(7, 3, 18))).toBe(2);
-      expect(await tick(at(7, 3, 20))).toBe(2);
+      expect(await tick(at(7, 3, 18))).toBe(tickTasks);
+      expect(await tick(at(7, 3, 20))).toBe(tickTasks);
     });
     expect(logs).toHaveLength(1);
     expect(logs[0]?.via).toBe("slot");
     expect(logs[0]?.day).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // The next day's slot runs it again.
-    expect(await tick(at(8, 3, 18))).toBe(3);
+    expect(await tick(at(8, 3, 18))).toBe(tickTasks + 1);
     expect(await ranDay()).toBe("2026-01-08");
   });
 
   it("a missed 03:18 tick: 03:20 runs it; the slot's last tick, 03:28, would too", async () => {
-    expect(await tick(at(12, 3, 20))).toBe(3);
+    expect(await tick(at(12, 3, 20))).toBe(tickTasks + 1);
     expect(await ranDay()).toBe("2026-01-12");
-    expect(await tick(at(12, 3, 22))).toBe(2);
-    expect(await tick(at(13, 3, 28))).toBe(3);
+    expect(await tick(at(12, 3, 22))).toBe(tickTasks);
+    expect(await tick(at(13, 3, 28))).toBe(tickTasks + 1);
     expect(await ranDay()).toBe("2026-01-13");
   });
 
   it("only ticks in the slot claim: 03:16, 03:30 and 03:32 never run it", async () => {
-    expect(await tick(at(14, 3, 16))).toBe(2);
-    expect(await tick(at(14, 3, 30))).toBe(2);
-    expect(await tick(at(14, 3, 32))).toBe(2);
+    expect(await tick(at(14, 3, 16))).toBe(tickTasks);
+    expect(await tick(at(14, 3, 30))).toBe(tickTasks);
+    expect(await tick(at(14, 3, 32))).toBe(tickTasks);
     expect(await ranDay()).toBeNull();
   });
 
@@ -214,7 +216,7 @@ describe("RECOVERY_CRON", () => {
     const c = ctxOf();
     await scheduled({ cron: RECOVERY_CRON }, env as Env, c.ctx);
     await c.drain();
-    expect(c.pending).toHaveLength(2);
+    expect(c.pending).toHaveLength(tickTasks);
     expect(await ranDay()).toBeNull();
   });
 });
@@ -246,14 +248,14 @@ describe("DAILY_CRON (installs before O1, and with both triggers)", () => {
   it("both triggers: 03:17 runs it, the 03:18 tick skips it", async () => {
     const logs = await dailyLogs(async () => {
       expect(await daily(at(16, 3, 17))).toBe(1);
-      expect(await tick(at(16, 3, 18))).toBe(2);
+      expect(await tick(at(16, 3, 18))).toBe(tickTasks);
     });
     expect(logs.map((l) => l.via)).toEqual(["daily"]);
   });
 
   it("both triggers, 03:17 delivered late after the 03:18 tick: one run", async () => {
     const logs = await dailyLogs(async () => {
-      expect(await tick(at(17, 3, 18))).toBe(3);
+      expect(await tick(at(17, 3, 18))).toBe(tickTasks + 1);
       expect(await daily(at(17, 3, 17))).toBe(0);
     });
     expect(logs.map((l) => l.via)).toEqual(["slot"]);
@@ -266,9 +268,8 @@ describe("DAILY_CRON (installs before O1, and with both triggers)", () => {
         daily(at(18, 3, 17)),
         tick(at(18, 3, 18)),
       ]);
-      // The tick always registers its sweep and the fan-out drain (#2719);
-      // the daily work runs once.
-      expect(d + t).toBe(3);
+      // Both triggers share one daily claim.
+      expect(d + t).toBe(tickTasks + 1);
     });
     expect(logs).toHaveLength(1);
     expect(await ranDay()).toBe("2026-01-18");
