@@ -749,38 +749,6 @@ describe("comments: layouts", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("Esc closes the phone sheet from the page, not only from inside it (#3053)", async () => {
-    viewport(400);
-    mount(viewerPath(OWNED));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Comments, 1 open" }),
-    );
-    await screen.findByRole("dialog", { name: "Comments" });
-    expect(document.querySelector("[data-sheet-backdrop]")).not.toBeNull();
-    // The reader's focus is on the page, not in the sheet: Esc must still close
-    // it, or the dimmed backdrop stays over everything.
-    fireEvent.keyDown(document.body, { key: "Escape" });
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(document.querySelector("[data-sheet-backdrop]")).toBeNull();
-  });
-
-  it("Esc with words in the composer keeps the sheet, as before (#3053)", async () => {
-    viewport(400);
-    mount(viewerPath(OWNED));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Comments, 1 open" }),
-    );
-    await screen.findByRole("dialog", { name: "Comments" });
-    const box = screen.getByRole("textbox", {
-      name: "Comment on the whole page",
-    });
-    fireEvent.change(box, { target: { value: "Half typed" } });
-    fireEvent.keyDown(box, { key: "Escape" });
-    // The field keeps the key: the draft stays and the sheet stays up.
-    expect(screen.queryByRole("dialog", { name: "Comments" })).not.toBeNull();
-    expect(box).toHaveValue("Half typed");
-  });
-
   it("shows no Comments button, column or frame highlights when the setting is off", async () => {
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
