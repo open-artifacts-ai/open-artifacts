@@ -670,7 +670,6 @@ export function AskBlock({
   c,
   next,
   reply,
-  askQuestion,
   guest = false,
   body,
   face,
@@ -702,8 +701,6 @@ export function AskBlock({
   next?: () => void;
   /** Open this thread's reply composer, when the viewer may comment. */
   reply?: () => void;
-  /** Open a question to the agent that asked (#1794), when the viewer may reply. */
-  askQuestion?: () => void;
   /** #2511: jump to and open the thread of the card that replaced this one (a withdrawn card's link). */
   openCard?: (commentId: string) => void;
 }) {
@@ -1285,11 +1282,6 @@ export function AskBlock({
             </p>
           )}
           <div className="flex gap-2">
-            {askQuestion && !pickedOpt && !ask.closed && (
-              <Button size="xs" variant="outline" onClick={askQuestion}>
-                Ask a question
-              </Button>
-            )}
             {next && canAnswer && (
               <Button size="xs" variant="outline" onClick={next}>
                 Next ask ↓
