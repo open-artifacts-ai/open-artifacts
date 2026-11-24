@@ -227,6 +227,7 @@ ${renderSections(plan, (t) => `## ${t}\n`)}
 ## Writing pages
 
 - ${LINK_RULE}
+- Let html pages use the full width on large screens (no narrow fixed max-width for tables and dashboards), and keep them readable on a phone.
 
 ## Public interactive artifacts
 
