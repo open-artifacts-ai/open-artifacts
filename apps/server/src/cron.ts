@@ -15,7 +15,10 @@ import { sweepOAuthStore } from "./mcp/oauth-store.js";
 import { sweepUngrantedClients } from "./mcp/registrations.js";
 import { socketIndexStub } from "./runtime/presence.js";
 import { lapseHeld, reconcileHeld } from "./services/agent-requests.js";
-import { backfillActivation } from "./services/analytics.js";
+import {
+  backfillActivation,
+  backfillFirstComment,
+} from "./services/analytics.js";
 import {
   purgeDeleted,
   reindexStale,
@@ -26,6 +29,7 @@ import { drainRunVersionFanout } from "./services/bus.js";
 import { sweepPictures } from "./services/comment-pictures.js";
 import { feedSync, kickSync, syncPausedFor } from "./services/directory.js";
 import { pullEmailEvents, sweepEmailEvents } from "./services/email-events.js";
+import { scanFirstComments } from "./services/first-comment-scan.js";
 import { sweepInboxLater } from "./services/inbox-later.js";
 import { drainPush } from "./services/push.js";
 import { checkLatestRelease } from "./services/release.js";
@@ -174,10 +178,11 @@ async function run(
           pullEmailEvents(env).catch((e) => logError("cron_task_failed", e)),
         );
       // #2719: the members a run-version change has not reached yet.
+      // #2953: then, in the same task, the first-comment scan (one read once finished).
       ctx.waitUntil(
-        drainRunVersionFanout(env).catch((e) =>
-          logError("cron_task_failed", e),
-        ),
+        drainRunVersionFanout(env)
+          .catch((e) => logError("cron_task_failed", e))
+          .then(() => firstCommentTick(env)),
       );
       // Browser push (#2512 S5): send what is due. Never throws.
       if (pushOn(env))
@@ -246,8 +251,11 @@ async function run(
     );
     // #2719: the members a run-version change has not reached yet (one read
     // when there are none).
+    // #2953: then, in the same task, the first-comment scan (one read once finished).
     ctx.waitUntil(
-      drainRunVersionFanout(env).catch((e) => logError("cron_task_failed", e)),
+      drainRunVersionFanout(env)
+        .catch((e) => logError("cron_task_failed", e))
+        .then(() => firstCommentTick(env)),
     );
     if (pushOn(env))
       ctx.waitUntil(
@@ -269,6 +277,18 @@ async function run(
     return;
   }
   daily(env, ctx, Date.now(), true, "daily");
+}
+
+/**
+ * #2953, every 2-minute tick (self-host RECOVERY_CRON, hosted DIRECTORY_SYNC_CRON):
+ * a small batch of pages for each person's first typed comment, then a few
+ * first_comment events (their own marker). Both are one read once finished
+ * (and the second nothing unless analytics is on). Never rejects.
+ */
+function firstCommentTick(env: Env): Promise<void> {
+  return scanFirstComments(env)
+    .then(() => backfillFirstComment(env))
+    .catch((e) => logError("cron_task_failed", e));
 }
 
 /** Self-host's one cron trigger (O1): every 2 minutes. */

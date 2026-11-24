@@ -1218,7 +1218,7 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
-  /** #2953 (PROVISIONAL until OA Backend confirms): the caller's first typed comment, on any page; null if none. Absent on older servers: no comment step. */
+  /** The caller's first typed comment. Null until earned, absent on older servers. When the page is no longer readable, artifactId is empty and title is generic. */
   firstComment: z
     .strictObject({ artifactId: z.string(), title: z.string() })
     .nullable()

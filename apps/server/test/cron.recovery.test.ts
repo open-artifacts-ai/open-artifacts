@@ -18,6 +18,7 @@ import {
   scheduled,
 } from "../src/cron.js";
 import type { Env } from "../src/env.js";
+import { FIRST_COMMENT_SCAN_DONE_KEY } from "../src/services/onboarding-firsts.js";
 
 const MIN = 60_000;
 /** 2026-01-<day> at hh:mm:ss.ms UTC. */
@@ -105,6 +106,14 @@ function counting(base: Env) {
   return { env: { ...base, DB } as Env, n };
 }
 
+/** #2953: the first-comment scan finished, so a tick costs its one marker read. */
+const scanDone = () =>
+  env.DB.prepare(
+    "insert into settings (key, value) values (?, '1') on conflict (key) do nothing",
+  )
+    .bind(FIRST_COMMENT_SCAN_DONE_KEY)
+    .run();
+
 beforeEach(async () => {
   await env.DB.prepare("delete from settings where key = ?")
     .bind(DAILY_RAN_KEY)
@@ -139,7 +148,8 @@ describe("the daily slot", () => {
 });
 
 describe("RECOVERY_CRON", () => {
-  it("an idle tick off the slot: the sweep and the fan-out drain, three D1 statements, no daily work", async () => {
+  it("an idle tick off the slot: the sweep and the fan-out drain, four D1 statements, no daily work", async () => {
+    await scanDone();
     const { env: e, n } = counting({
       ...(env as Env),
       BROWSER: {} as Fetcher,
@@ -156,13 +166,14 @@ describe("RECOVERY_CRON", () => {
     // Far past every row this suite publishes: nothing to recover.
     expect(c.pending).toHaveLength(2);
     await c.drain();
-    // The text and pdf-thumbnail windows (one indexed read each) and the
-    // drain's cursor read (#2719).
-    expect(n.q).toBe(3);
+    // The text and pdf-thumbnail windows (one indexed read each), the
+    // drain's cursor read (#2719) and the first-comment scan's marker read (#2953).
+    expect(n.q).toBe(4);
     expect(await ranDay()).toBeNull();
   });
 
-  it("an idle tick without server thumbnails reads twice (sweep and fan-out cursor)", async () => {
+  it("an idle tick without server thumbnails reads three times (sweep, fan-out cursor, scan marker)", async () => {
+    await scanDone();
     const { env: e, n } = counting(env as Env);
     const c = ctxOf();
     await scheduled(
@@ -171,8 +182,8 @@ describe("RECOVERY_CRON", () => {
       c.ctx,
     );
     await c.drain();
-    // #2719: the fan-out drain's cursor read joins the sweep's.
-    expect(n.q).toBe(2);
+    // #2719: the fan-out drain's cursor read joins the sweep's; #2953: the scan's marker read.
+    expect(n.q).toBe(3);
   });
 
   it("the 03:16 tick runs no daily work; the 03:18 tick runs it once and logs it; 03:20 doesn't", async () => {

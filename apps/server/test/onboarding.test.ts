@@ -16,6 +16,7 @@ const NONE = {
   agentConnected: false,
   firstArtifact: null,
   commented: false,
+  firstComment: null,
   agentNamed: false,
   agentName: null,
   mentionReplied: false,

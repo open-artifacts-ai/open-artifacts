@@ -636,6 +636,7 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
   list_comments: art("comments.read"),
+  get_comment_picture: art("comments.read"),
   add_comment: art("comments.write"),
   resolve_comment: art("comments.write"),
   withdraw_ask: art("comments.write"),

@@ -7,6 +7,7 @@ import {
   AskInputSchema,
   type AskOption,
   anchorInputSchema,
+  type BusAddress,
   BusAddressSchema,
   type Comment,
   type CommentAuthor,
@@ -16,6 +17,7 @@ import {
   type CompactAnswer,
   type CompactCommentList,
   type CompactMention,
+  HELD_LAPSE_MS,
   isId,
   type KeyRef,
   MENTIONS_MAX,
@@ -98,6 +100,7 @@ import {
   type DeliveryState,
   notifyAgent,
   notifyAnswered,
+  observedAway,
   type RosterAgent,
   storedAgent,
   viewerRosterAgents,
@@ -140,6 +143,7 @@ import {
   mentionedKey,
   mentionRepliedKey,
   noteAskAnswered,
+  noteFirstComment,
   noteMentioned,
   noteMentionReplied,
   pendingFirst,
@@ -202,6 +206,13 @@ export type CommentViewer = {
    * reach another artifact. Absent (a test, a job): the user's own, as loaded.
    */
   caller?: Caller;
+  /**
+   * #2577: the request is a person's own interactive browser session
+   * (routes: `interactiveSession(c)`; never a PAT, a grant or MCP, whoever
+   * holds it). Only the route sets it; the MCP tools never do. Request facts
+   * (`requestFacts`) are for such a viewer alone.
+   */
+  interactive?: boolean;
 };
 
 /** #2224: the viewer may take an answer on this ask as its yes: not an agent, or the agent that posted it. */
@@ -452,6 +463,15 @@ const authorView = (
   return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
 };
 
+/** #2577: the asker's public name (the one an author shows: never an email); nothing when the member is gone. */
+const askedByView = (
+  userId: string,
+  { users }: Ctx,
+): Pick<Comment, "askedBy"> => {
+  const u = users.get(userId);
+  return u ? { askedBy: { name: shownName(u) } } : {};
+};
+
 /** Per isolate: the name map and when it was built; stale up to CLASH_TTL_MS is fine. */
 const CLASH_TTL_MS = 60_000;
 let clashCache: { at: number; map: NameClashes } | null = null;
@@ -668,6 +688,12 @@ async function threadViews(
     threads.flatMap((t) => t.comments),
     out.flatMap((t) => t.comments),
   );
+  await withRequestFacts(
+    env,
+    viewer,
+    threads.flatMap((t) => t.comments),
+    out.flatMap((t) => t.comments),
+  );
   return out;
 }
 
@@ -719,6 +745,114 @@ async function withWaiting(
 }
 
 /**
+ * #2577: per-target request facts on a person's own typed comment, for the
+ * asker's own interactive browser session only (`viewer.interactive`, set by
+ * the route from interactiveSession(c)): never another member's, an agent's, a
+ * PAT caller's, a guest, a capped or read-only caller. From stored facts only:
+ *  - `waiting_owner`: the comment's held row for that agent is still `held`
+ *    (the owner has not allowed it; "Not now" reads the same). `lapsesAt` is
+ *    the held item's expiry from D1, or (row swept) the comment's age plus the
+ *    lapse time; `lapsed` once that has passed. D1 unreadable: no status.
+ *  - `offline`: the mention's stored away evidence (the hub's own read said
+ *    "away" and it accepted the notice) while still unacknowledged. A held,
+ *    dropped, unacknowledged or deleted-address notice is never offline.
+ * One batched D1 read per list (none when no such comment has a held row).
+ * Facts are matched to views by comment id.
+ */
+async function withRequestFacts(
+  env: Env,
+  viewer: CommentViewer,
+  stored: StoredComment[],
+  views: Comment[],
+): Promise<void> {
+  const me = viewer.userId;
+  // Only the route's explicit interactiveSession(c) counts: a PAT caller with
+  // no agent label is not a person in a browser (agents and MCP never set it).
+  if (
+    !me ||
+    viewer.interactive !== true ||
+    viewer.agent !== undefined ||
+    viewer.guest ||
+    viewer.capped ||
+    viewer.readOnly
+  )
+    return;
+  const mine = (c: StoredComment) =>
+    c.author.kind === "user" && c.author.ref === me && isTyped(c.author);
+  const heldIds = stored
+    .filter((c) => mine(c) && c.held?.some((h) => h.state === "held"))
+    .map((c) => c.id);
+  // null: the D1 read failed, so no held status can be verified.
+  let expiry: Map<string, { state: string; expires: number }> | null =
+    new Map();
+  if (heldIds.length > 0) {
+    try {
+      const { results } = await stmt(
+        env.DB,
+        `select i.comment_id, i.agent_key, i.state, i.expires_at
+           from held_request_items i join held_requests r on r.id = i.request_id
+          where r.sender_id = ?1 and i.comment_id in (select value from json_each(?2))`,
+      )
+        .bind(me, JSON.stringify(heldIds))
+        .all<{
+          comment_id: string;
+          agent_key: string;
+          state: string;
+          expires_at: number;
+        }>();
+      for (const r of results)
+        expiry.set(`${r.comment_id}\n${r.agent_key}`, {
+          state: r.state,
+          expires: r.expires_at,
+        });
+    } catch (e) {
+      // Unreadable: no held status is claimed (never a guess of "waiting").
+      expiry = null;
+      logWarn("request_facts_read_failed", e);
+    }
+  }
+  const now = Date.now();
+  // Keyed by the stable comment id, never by array position.
+  const viewOf = new Map(views.map((v) => [v.id, v] as const));
+  for (const c of stored) {
+    const view = viewOf.get(c.id);
+    if (!view || !mine(c)) continue;
+    const held = new Set(
+      (c.held ?? []).filter((h) => h.state === "held").map((h) => h.key),
+    );
+    const facts: NonNullable<Comment["requestFacts"]> = [];
+    for (const key of held) {
+      if (!expiry) continue;
+      const row = expiry.get(`${c.id}\n${key}`);
+      // Allowed or withdrawn in D1: no longer waiting for the owner.
+      if (row && (row.state === "allowed" || row.state === "withdrawn"))
+        continue;
+      // A swept or never-written row: the 7 days count from the comment, as
+      // the nightly reconcile counts them (an older one lapses by age alone).
+      const expires = row
+        ? row.expires
+        : Date.parse(c.createdAt) + HELD_LAPSE_MS;
+      if (!Number.isFinite(expires)) continue;
+      const lapsed = row?.state === "lapsed" || expires <= now;
+      facts.push({
+        key,
+        status: lapsed ? "lapsed" : "waiting_owner",
+        lapsesAt: new Date(expires).toISOString(),
+      });
+    }
+    // Offline: only what the hub recorded (away, and the notice accepted to
+    // wait), still unacknowledged. Not for a held, dropped or unacked notice.
+    // A direct ask's target counts like a mention (one fact per agent).
+    const offline = new Set<string>();
+    for (const m of [...(c.mentions ?? []), ...(c.asked ?? [])])
+      if (m.away === true && m.state === "queued" && !held.has(m.key))
+        offline.add(m.key);
+    for (const key of offline) facts.push({ key, status: "offline" });
+    if (facts.length) view.requestFacts = facts;
+  }
+}
+
+/**
  * #2508: each comment's pictures, from their own table (absent when it has
  * none). Not for a comment `masked` for this viewer: an agent of the person a
  * request is held for reads a placeholder, so no picture either (#2577).
@@ -744,6 +878,7 @@ function userIds(c: StoredComment, into: Set<string>): void {
   for (const m of c.mentions ?? []) if (m.owner) into.add(m.owner);
   for (const m of c.notified ?? []) if (m.owner) into.add(m.owner);
   for (const id of c.people ?? []) into.add(id);
+  if (c.askedBy) into.add(c.askedBy.userId);
   if (!c.ask) return;
   for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
@@ -1117,6 +1252,10 @@ const commentOfRaw = (
           ),
         }
       : {}),
+    // #2577: members only, by the same public name an author shows (never an email).
+    ...(c.askedBy && !outsider(viewer) && viewer.userId !== null
+      ? askedByView(c.askedBy.userId, users)
+      : {}),
     ...(c.mentions?.length
       ? {
           mentions: c.mentions.map((m, i) => ({
@@ -1161,6 +1300,7 @@ async function commentView(
   await fillReplacedTitles(env, [out], viewer);
   await withPictures(env, [out], new Set(maskedFor(c, viewer) ? [c.id] : []));
   await withWaiting(env, viewer, [c], [out]);
+  await withRequestFacts(env, viewer, [c], [out]);
   return out;
 }
 
@@ -1428,6 +1568,8 @@ export type CommentExtras = {
   ask?: AskInput;
   /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
   pictures?: CommentPictureRef[];
+  /** #2577: a reply only: the comment (same thread) the replying agent is answering; kept only if provable (comments-store askedByOf). */
+  requestCommentId?: string;
 };
 
 /** Who may mention and ask. `moderator`: the owner or an editor. */
@@ -1822,6 +1964,14 @@ async function resolveExtras(
       ...(mentioned.length
         ? { mentions: mentioned.map((m) => storedAgent(m)) }
         : {}),
+      // #2577: direct-ask targets that will be notified now (not held, not refused), apart from the public mentions.
+      ...(asked.some((a) => agents.get(a.key)?.kind === "ask")
+        ? {
+            asked: asked
+              .filter((a) => agents.get(a.key)?.kind === "ask")
+              .map((a) => storedAgent(a)),
+          }
+        : {}),
       ...(people.length ? { people } : {}),
       ...(held.length ? { held } : {}),
     },
@@ -1937,12 +2087,37 @@ async function deliver(
   }
   // A held mention was never sent: its row stays queued ("waiting").
   const heldKeys = new Set((r.held ?? []).map((h) => h.agent.key));
-  const states = r.mentions
-    .filter((key) => !heldKeys.has(key))
-    .map((key) => ({
-      kind: r.mentionKind,
+  // #2577: recorded away = the hub's own read of the agent at POST time said
+  // "away" AND the hub accepted the notice to wait for it ("held"). A dropped
+  // notice (no session, a stalled hub, a deleted address) is never offline.
+  // Where the POST read no state (a follower of another member), one targeted hub read per owner, only for a notice the bus queued.
+  const sender = c.author.kind === "user" ? c.author.ref : null;
+  const queued = r.agents.filter((e) => outcome.get(e.agent.key) === "held");
+  const awayKeys = new Set([
+    ...queued.filter((e) => e.agent.state === "away").map((e) => e.agent.key),
+    ...(await observedAway(
+      env,
+      queued
+        .filter((e) => e.agent.state === undefined && e.agent.userId !== sender)
+        .map((e) => e.agent),
+    )),
+  ]);
+  const states = [
+    ...r.mentions.map((key) => ({ kind: r.mentionKind, key })),
+    // #2577: a direct ask's own target rows, kept apart from the mentions.
+    ...(r.extras?.asked ?? []).map(({ key }) => ({
+      kind: "asked" as const,
+      key,
+    })),
+  ]
+    .filter(({ key }) => !heldKeys.has(key))
+    .map(({ kind, key }) => ({
+      kind,
       key,
       state: stateOf(outcome.get(key) ?? "dropped"),
+      ...(awayKeys.has(key) && outcome.get(key) === "held"
+        ? { away: true }
+        : {}),
     }));
   if (states.length === 0) return c;
   try {
@@ -1974,12 +2149,19 @@ async function deliver(
  */
 async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
   const x = r.extras;
-  if (!x || r.agents.length === 0) return r;
-  const byKey = new Map(r.agents.map((e) => [e.agent.key, e.agent]));
+  if (!x || (r.agents.length === 0 && !x.held?.length)) return r;
+  // Held agents too (#2577): their hold keeps the identity the release proves.
+  const byKey = new Map<string, { userId: string; address: BusAddress }>();
+  for (const { agent: a } of x.held ?? [])
+    byKey.set(a.key, {
+      userId: a.owner,
+      address: { namespace: a.namespace, name: a.name },
+    });
+  for (const { agent: a } of r.agents) byKey.set(a.key, a);
   const keys = [...byKey.keys()];
   const found = await Promise.all(
     keys.map((k) => {
-      const a = byKey.get(k) as RosterAgent;
+      const a = byKey.get(k) as { userId: string; address: BusAddress };
       return agentIdentityOf(env, a.userId, a.address);
     }),
   );
@@ -1994,6 +2176,17 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
     extras: {
       ...x,
       ...(x.mentions ? { mentions: x.mentions.map(put) } : {}),
+      ...(x.asked ? { asked: x.asked.map(put) } : {}),
+      ...(x.held
+        ? {
+            held: x.held.map((h) => {
+              const identityId = ids.get(h.agent.key)?.identityId;
+              return identityId
+                ? { ...h, agent: { ...h.agent, identityId } }
+                : h;
+            }),
+          }
+        : {}),
       ...(x.ask
         ? {
             ask: {
@@ -2475,10 +2668,8 @@ async function addReplyInner(
       "bad_request",
       "A comment that mentions an agent needs text",
     );
-  const participants = [
-    ...r.participants,
-    ...(await authorParticipant(artifactId, who)),
-  ];
+  const [me] = await authorParticipant(artifactId, who);
+  const participants = [...r.participants, ...(me ? [me] : [])];
   // #2508: claimed before the write, given back if it never happens.
   const claim =
     pics.length > 0 && who.kind === "user"
@@ -2495,6 +2686,10 @@ async function addReplyInner(
         ...(claim ? { allowEmpty: true } : {}),
         ...(r.extras ? { extras: r.extras } : {}),
         ...(participants.length ? { participants } : {}),
+        // #2577: proved in the DO write (askedByOf); a reply with no verified agent carries none.
+        ...(me && extras.requestCommentId
+          ? { request: { commentId: extras.requestCommentId, key: me.key } }
+          : {}),
       }),
     );
   } catch (e) {
@@ -3311,6 +3506,13 @@ export async function addThread(
   // Only the person's own comment counts, never one an agent posted for them.
   if (args[2].kind === "user" && !args[2].agent)
     await noteCommented(args[0], args[2].id, args[1].id);
+  await noteTypedComment(
+    args[0],
+    args[2],
+    args[1].id,
+    written,
+    opts.after?.ctx,
+  );
   // An agent's new thread can never be a reply to a mention.
   if (args[2].kind === "user" && !args[2].agent)
     await noteMentionActivity(
@@ -3342,6 +3544,7 @@ export async function addReply(
   );
   if (args[3].kind === "user" && !args[3].agent)
     await noteCommented(args[0], args[3].id, args[1]);
+  await noteTypedComment(args[0], args[3], args[1], written, opts.after?.ctx);
   await noteMentionActivity(
     args[0],
     args[1],
@@ -3352,6 +3555,32 @@ export async function addReply(
     true,
   );
   return c;
+}
+
+/**
+ * #2953: the person's first comment typed in the web app, on any page (a new
+ * thread, a reply, a mention included): the checklist's "Comment on a page"
+ * and the first_comment event. A token, MCP, agent or anonymous comment never
+ * counts (typedByPerson reads the credential kind the route set, #1797), and a
+ * guest-role or inactive account earns nothing (the upsert checks the user:
+ * the checklist is for active non-guest members). Never throws.
+ */
+async function noteTypedComment(
+  env: Env,
+  who: CommentWho,
+  artifactId: string,
+  written: StoredComment | undefined,
+  ctx: Pick<ExecutionContext, "waitUntil"> | undefined,
+): Promise<void> {
+  if (who.kind !== "user" || !typedByPerson(who)) return;
+  const at = written ? Date.parse(written.createdAt) : Number.NaN;
+  await noteFirstComment(
+    env,
+    who.id,
+    artifactId,
+    Number.isFinite(at) ? at : Date.now(),
+  );
+  await noteMemberFirst(env, who.id, "first_comment", ctx);
 }
 
 /**

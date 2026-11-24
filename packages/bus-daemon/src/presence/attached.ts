@@ -261,6 +261,50 @@ export function lsofEstablished(text: string): Pair[] {
   return out;
 }
 
+/**
+ * #3020: the executable a pid runs, from `lsof -F n`: the first `n` field that
+ * is an absolute path is its text image (the executable; the rest are the
+ * libraries it maps). A TUI started as plain `opencode` is `opencode` in
+ * `ps -o comm=` and this reads `/opt/homebrew/bin/opencode` all the same.
+ */
+export function exeFromLsof(text: string): string | null {
+  /** The descriptor of the entry being read: `cwd` is never the executable. */
+  let fd = "";
+  for (const line of text.split("\n")) {
+    if (line.startsWith("f")) {
+      fd = line.slice(1).trim();
+      continue;
+    }
+    if (!line.startsWith("n")) continue;
+    const path = line.slice(1).trim();
+    if (fd === "cwd" || !path.startsWith("/")) continue;
+    return path;
+  }
+  return null;
+}
+
+/**
+ * #3020: the real executable on macOS, read the way `proc_pidpath` does (the
+ * process's text image, through lsof), never by resolving a name through PATH:
+ * that would make a same-name binary in another user's PATH pass the check.
+ */
+export function macExeOf(
+  pid: number,
+  runLsof: typeof spawnSync = spawnSync,
+): string | null {
+  const r = runLsof(
+    systemTool("lsof"),
+    ["-a", "-d", "txt", "-Ffn", "-p", String(pid)],
+    {
+      encoding: "utf8",
+      timeout: READ_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (r.error !== undefined || r.signal !== null) return null;
+  return exeFromLsof(r.stdout ?? "");
+}
+
 export const defaultAttachDeps: AttachDeps = {
   exeOf(pid) {
     if (process.platform === "linux") {
@@ -271,8 +315,9 @@ export const defaultAttachDeps: AttachDeps = {
         return null;
       }
     }
-    const out = run("ps", ["-o", "comm=", "-p", String(pid)])?.trim();
-    return out?.startsWith("/") ? out : null;
+    // #3020: not `ps -o comm=`, which is the bare name for a TUI started from
+    // PATH, and not a PATH lookup, which would defeat the same-executable check.
+    return macExeOf(pid);
   },
   ppidOf(pid) {
     const out = run("ps", ["-o", "ppid=", "-p", String(pid)])?.trim();

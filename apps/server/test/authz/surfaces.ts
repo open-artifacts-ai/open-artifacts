@@ -1484,6 +1484,15 @@ export const SURFACES: readonly Surface[] = [
     tool("list_comments", (id) => ({ id })),
   ),
   mcp(
+    "get_comment_picture",
+    "comments.read",
+    tool(
+      "get_comment_picture",
+      (id) => ({ id, pictureId: "invalid.id" }),
+      (o) => o.isError && /^bad_request: Invalid pictureId/.test(o.text),
+    ),
+  ),
+  mcp(
     "add_comment",
     "comments.write",
     tool(

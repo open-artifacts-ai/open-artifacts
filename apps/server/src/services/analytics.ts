@@ -31,6 +31,13 @@ import {
   WELCOME_KEY,
   welcomeKey,
 } from "./onboarding.js";
+import {
+  commentedKey,
+  FIRST_COMMENT_SCAN_DONE_KEY,
+  FIRST_COMMENT_SCAN_STARTED_KEY,
+  parseFirstComment,
+  typedAtSql,
+} from "./onboarding-firsts.js";
 import { getUser } from "./users.js";
 
 export type ActivationEvent =
@@ -39,7 +46,8 @@ export type ActivationEvent =
   | "agent_named"
   | "first_page_published"
   | "agent_replied_to_mention"
-  | "first_ask_answered";
+  | "first_ask_answered"
+  | "first_comment";
 
 /** Default PostHog capture host; POSTHOG_HOST overrides it (EU cloud, a proxy). */
 export const POSTHOG_DEFAULT_HOST = "https://us.i.posthog.com";
@@ -197,11 +205,39 @@ async function claimMemberFirst(
         .first();
       if (!mine) return;
     }
+    // #2953: until every older page was read for typed comments, a person's
+    // true first may be months old: the backfill sends it with its original
+    // time (it reads the same stored first), so a live one waits. A person
+    // created after the scan began has no older comment to find: theirs is
+    // sent at once.
+    let at: number | undefined;
+    if (event === "first_comment") {
+      const row = await stmt(
+        env.DB,
+        `select s.value from settings s join users u on u.id = ?1
+         where s.key = ?2 and (
+           exists (select 1 from settings where key = ?3)
+           or u.created_at >= cast((select value from settings where key = ?4) as integer)
+         )`,
+      )
+        .bind(
+          userId,
+          commentedKey(userId),
+          FIRST_COMMENT_SCAN_DONE_KEY,
+          FIRST_COMMENT_SCAN_STARTED_KEY,
+        )
+        .first<{ value: string }>();
+      // The stored typed first (never a page id): none on record, no event.
+      const fc = parseFirstComment(row?.value);
+      if (!fc) return;
+      at = fc.at;
+    }
     const r = await stmt(env.DB, SET_FIRST)
-      .bind(memberFirstKey(event, userId), String(Date.now()))
+      .bind(memberFirstKey(event, userId), String(at ?? Date.now()))
       .run();
     recorded.add(`${event}:${userId}`);
-    if (r.meta.changes > 0) await sendActivation(env, event, userId);
+    if (r.meta.changes > 0)
+      await sendActivation(env, event, userId, Date.now(), at);
   } catch (e) {
     logWarn("analytics_first_failed", {
       code: e instanceof Error ? e.name : "error",
@@ -306,6 +342,73 @@ export async function backfillActivation(env: Env): Promise<void> {
       sent++;
     }
     await stmt(env.DB, SET_FIRST).bind(BACKFILL_KEY, String(Date.now())).run();
+  } catch (e) {
+    logWarn("analytics_backfill_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
+}
+
+/**
+ * Its own marker, so an install whose BACKFILL_KEY is already written (the
+ * stored firsts of #2879 were all sent) still gets first_comment (#2953).
+ */
+export const BACKFILL_FIRST_COMMENT_KEY = "analytics:backfill:first_comment";
+/** Events per run of the every-2-minute tick: each is a claim and a send, so it stays inside a small subrequest budget. */
+export const FIRST_COMMENT_BACKFILL_BATCH = 10;
+
+/**
+ * #2953: sends first_comment for every active, non-guest member with a stored
+ * first typed comment, with its ORIGINAL time, once per install. Waits until
+ * the historical scan has read every page (scanFirstComments), so a person's
+ * earliest comment is the one sent. Each (member, step) is claimed first with
+ * the row a live first writes, so it is never sent twice. The SQL skips legacy
+ * timestamps before its LIMIT (only typed metadata is a candidate), so they
+ * never fill a batch. At most `batch` per run; the marker is written when none
+ * is left. Only the time goes out: no page id, title or text. Never throws.
+ */
+export async function backfillFirstComment(
+  env: Env,
+  /** Events per run; injectable for tests. */
+  batch: number = FIRST_COMMENT_BACKFILL_BATCH,
+): Promise<void> {
+  if (!analyticsOn(env)) return;
+  try {
+    const has = (key: string) =>
+      stmt(env.DB, "select 1 as x from settings where key = ?1")
+        .bind(key)
+        .first();
+    if (await has(BACKFILL_FIRST_COMMENT_KEY)) return;
+    if (!(await has(FIRST_COMMENT_SCAN_DONE_KEY))) return;
+    const { results } = await stmt(
+      env.DB,
+      `select substr(s.key, length(?1) + 1) as id, s.value as value from settings s
+        join users u on u.id = substr(s.key, length(?1) + 1)
+       where substr(s.key, 1, length(?1)) = ?1
+         and ${typedAtSql("s.value")} is not null
+         and u.role <> 'guest' and u.status = 'active'
+         and not exists (select 1 from settings d
+                          where d.key = 'analytics:first:first_comment:' || u.id)
+       order by s.key limit ${batch + 1}`,
+    )
+      .bind(commentedKey(""))
+      .all<{ id: string; value: string }>();
+    let sent = 0;
+    for (const r of results) {
+      if (sent >= batch) return;
+      const fc = parseFirstComment(r.value);
+      if (!fc) continue;
+      const claim = await stmt(env.DB, SET_FIRST)
+        .bind(memberFirstKey("first_comment", r.id), String(fc.at))
+        .run();
+      recorded.add(`first_comment:${r.id}`);
+      if (claim.meta.changes === 0) continue;
+      await sendActivation(env, "first_comment", r.id, Date.now(), fc.at);
+      sent++;
+    }
+    await stmt(env.DB, SET_FIRST)
+      .bind(BACKFILL_FIRST_COMMENT_KEY, String(Date.now()))
+      .run();
   } catch (e) {
     logWarn("analytics_backfill_failed", {
       code: e instanceof Error ? e.name : "error",

@@ -37,7 +37,7 @@ export const stripJsonc = (src: string) =>
   stripComments(src).replace(/,(\s*[}\]])/g, "$1");
 
 const BINDING =
-  /^(D1Database|R2Bucket|KVNamespace|Fetcher|RateLimit|DurableObjectNamespace|SendEmail)(<[^;{}]*>)?$/;
+  /^(D1Database|R2Bucket|KVNamespace|Fetcher|RateLimit|DurableObjectNamespace|SendEmail|ImagesBinding)(<[^;{}]*>)?$/;
 const LITERAL_UNION = /^\|?\s*("[^"]*"|'[^']*')(\s*\|\s*("[^"]*"|'[^']*'))*$/;
 
 function interfaceBody(src: string): string {
