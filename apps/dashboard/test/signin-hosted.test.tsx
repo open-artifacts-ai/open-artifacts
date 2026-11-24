@@ -1022,7 +1022,7 @@ it("no copy contains an em dash", async () => {
 
 // #3029: the plain Google page tells an invited member which account to use.
 const INVITED_HELP =
-  "Invited? Log in with the Google account your invite was sent to. Trouble getting in? Ask the person who invited you.";
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
 
 it("plain sign-in shows the invited help line under Google", async () => {
   mountHosted("/sign-in");

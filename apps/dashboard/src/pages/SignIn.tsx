@@ -128,7 +128,7 @@ export const WRONG_ACCOUNT_NO_CODES =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
 /** #3029: under the Google button on the plain sign-in page. */
 export const INVITED_HELP =
-  "Invited? Log in with the Google account your invite was sent to. Trouble getting in? Ask the person who invited you.";
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
 
 /**
  * #2590 G2 (b) is for share recipients: the server can't tell them apart,
