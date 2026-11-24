@@ -1,6 +1,7 @@
 export * from "./caps.ts";
 export * from "./config.ts";
 export * from "./device.ts";
+export * from "./habits.ts";
 export * from "./ids.ts";
 export * from "./kinds.ts";
 export * from "./leads.ts";
