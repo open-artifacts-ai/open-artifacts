@@ -92,8 +92,10 @@ export function arrange(threads: readonly CommentThread[], pos: Positions) {
   /** A thread's newest activity: its last comment (a thread's comments are oldest first). */
   const activity = (t: CommentThread) =>
     t.comments[t.comments.length - 1]?.createdAt ?? t.createdAt;
+  // Equal activity keeps the server's order (the sort is stable): two notes
+  // posted in the same second do not swap places between renders.
   const byActivityNewest = (a: CommentThread, b: CommentThread) =>
-    activity(b).localeCompare(activity(a)) || byAge(b, a);
+    activity(b).localeCompare(activity(a));
   const orphans: CommentThread[] = [];
   const notes: CommentThread[] = [];
   const placed: CommentThread[] = [];

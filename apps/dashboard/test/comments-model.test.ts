@@ -93,15 +93,16 @@ describe("arrange", () => {
     const note = (id: string, at: string, reply?: string) => {
       const t = thread(id, { kind: "note" }, { createdAt: at });
       const first = t.comments[0];
-      return first && reply
-        ? {
-            ...t,
-            comments: [
-              ...t.comments,
-              { ...first, id: `c-${id}-reply`, createdAt: reply },
-            ],
-          }
-        : t;
+      if (!first) return t;
+      return {
+        ...t,
+        comments: [
+          { ...first, createdAt: at },
+          ...(reply
+            ? [{ ...first, id: `c-${id}-reply`, createdAt: reply }]
+            : []),
+        ],
+      };
     };
     const t = [
       note("older", "2026-11-05T10:00:00Z"),
