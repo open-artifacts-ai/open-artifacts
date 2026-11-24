@@ -1720,6 +1720,27 @@ describe("an ask addressed to someone else's agent", () => {
   });
 });
 
+describe("the sender's comment route", () => {
+  it("shows request facts only to the sender's browser session", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "words", mention(s.claude));
+    const pat = (await createPat(E, editor.userId, "comment reader")).token;
+    const read = async (credential: string) => {
+      const response = await api(app, R.comments(s.id), credential);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { threads: Thread[] };
+      const comment = body.threads[0]?.comments[0];
+      expect(comment).toBeDefined();
+      return comment?.requestFacts;
+    };
+    expect(await read(editor.cookie)).toMatchObject([
+      { key: s.claude, status: "waiting_owner" },
+    ]);
+    expect(await read(pat)).toBeUndefined();
+    expect(await read(owner.cookie)).toBeUndefined();
+  });
+});
+
 describe("the receiver's routes", () => {
   it("are a browser session of the receiver only", async () => {
     const s = await setup();
