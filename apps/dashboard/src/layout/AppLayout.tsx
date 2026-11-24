@@ -136,12 +136,15 @@ function Layout() {
   const anonymous =
     !embed && state.status === "anonymous" && !publicRoute(path);
 
+  // The requested address, not the matched route: an unknown path matches no
+  // leaf but the root, which would send everyone back to "/" after sign-in.
+  // The server and the sign-in page both pass `next` through safeNext.
   useEffect(() => {
     if (anonymous)
       redirect(
-        `${AUTH.login}?next=${encodeURIComponent(path + loc.searchStr)}`,
+        `${AUTH.login}?next=${encodeURIComponent(loc.pathname + loc.searchStr)}`,
       );
-  }, [anonymous, redirect, path, loc.searchStr]);
+  }, [anonymous, redirect, loc.pathname, loc.searchStr]);
 
   const navigate = useNavigate();
   const guestHome =

@@ -133,7 +133,7 @@ it("(b) with codes off: Product's codes-off line, Try another account only", asy
   expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();
 });
 
-it("no_access from Google without a page link in next: the member line, not (b)", async () => {
+it("no_access from Google without a page link in next: the member line, not (b), with Try another account (#3029)", async () => {
   mountHosted("/sign-in?error=no_access&via=google&next=%2Fsettings");
   expect(
     await screen.findByText(
@@ -142,6 +142,6 @@ it("no_access from Google without a page link in next: the member line, not (b)"
   ).toBeVisible();
   expect(screen.queryByText(WRONG_ACCOUNT)).toBeNull();
   expect(
-    screen.queryByRole("link", { name: "Try another account" }),
-  ).toBeNull();
+    screen.getByRole("link", { name: "Try another account" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2Fsettings");
 });
