@@ -157,6 +157,10 @@ it.each([
     "You don't have access here yet. Ask an admin to invite you, then try again.",
   ],
   ["expired", "Login took too long. Try again."],
+  [
+    "invite_expired",
+    "This invite has expired. Ask whoever invited you to send a new one.",
+  ],
   ["failed", "Login didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
   mountHosted(`/sign-in?error=${error}`);

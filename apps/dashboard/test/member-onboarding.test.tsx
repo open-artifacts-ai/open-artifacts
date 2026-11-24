@@ -238,6 +238,31 @@ describe("a member's Library card", () => {
     expect(c.textContent).not.toContain("Also try");
   });
 
+  it("step 1 also shows the Claude and ChatGPT connector path, with the instance address", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ agentConnected: false }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    for (const t of [
+      "Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:",
+      "Log in when it asks. Your chat sees new comments and answers only when you ask it to look.",
+    ])
+      expect(c.textContent).toContain(t);
+    const box = screen.getByRole("textbox", { name: "Connector address" });
+    expect((box as HTMLTextAreaElement).value).toMatch(/\/mcp$/);
+    expect(
+      screen.getByRole("button", { name: "Copy connector address" }),
+    ).toBeTruthy();
+    const link = screen.getByRole("link", { name: "How to add a connector" });
+    expect(link.getAttribute("href")).toBe(
+      "https://open-artifacts.com/docs/claude-and-chatgpt/",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
   const LINE =
     "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.";
   const titles = (c: HTMLElement) =>

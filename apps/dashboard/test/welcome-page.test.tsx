@@ -275,6 +275,40 @@ describe("a member's Welcome", () => {
     expect(document.getElementById("count")?.textContent).toBe("1 of 5 done");
   });
 
+  it("shows the connector path to a member only, and Copy copies the address", async () => {
+    await load();
+    expect((document.getElementById("connector") as HTMLElement).hidden).toBe(
+      true,
+    );
+    progress = {
+      agentConnected: false,
+      firstArtifact: null,
+      commented: false,
+      who: {
+        member: true,
+        firstName: "Ada",
+        org: "Acme",
+        inviter: null,
+        teammateCommented: false,
+      },
+    };
+    const writeText = vi.fn(async (_t: string) => {});
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    await load();
+    const c = document.getElementById("connector") as HTMLElement;
+    expect(c.hidden).toBe(false);
+    expect(c.textContent).toContain("Using Claude or ChatGPT in a chat?");
+    expect(c.querySelector("a")?.getAttribute("href")).toBe(
+      "https://open-artifacts.com/docs/claude-and-chatgpt/",
+    );
+    (document.getElementById("connector-copy") as HTMLElement).click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(writeText.mock.calls[0]?.[0]).toBe(`${HOST}/mcp`);
+  });
+
   it("shows the shell's shared count when it sends one", async () => {
     progress = {
       agentConnected: true,
