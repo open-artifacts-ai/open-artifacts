@@ -736,20 +736,25 @@ export async function habitsCommand(
   return mode === "yes" ? turnOn(ctx) : turnOff(ctx);
 }
 
-/** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
 /**
  * #3008: what this folder has, read from the record install wrote (no git, no
- * writes). A block lives at the top of a work tree, so a block inside `cwd`
- * belongs to this project, whether the command runs at the top or below it.
+ * writes). A block lives at the top of a work tree, so a block whose directory
+ * is `cwd` or above it is this project's: the command may run at the top, in a
+ * subfolder, or (with --dir) in a folder below it. A folder that merely
+ * contains other repos is no one's project: a block in a child of `cwd` is not
+ * this one's.
  */
 const projectHere = (
   ctx: Ctx,
 ): { files: string[]; changed: boolean; declined: boolean } => {
   const base = realpathOr(ctx.cwd);
-  const inside = (p: string) =>
-    realpathOr(p) === base || realpathOr(p).startsWith(`${base}${sep}`);
+  // The block's own directory, so `/x/proj2` is not the project of `/x/proj`.
+  const atOrBelow = (p: string) => {
+    const dir = realpathOr(dirname(p));
+    return dir === base || base.startsWith(`${dir}${sep}`);
+  };
   const rec = projectRecord(deps(ctx).busHome);
-  const files = Object.keys(rec.files).filter(inside);
+  const files = Object.keys(rec.files).filter(atOrBelow);
   const changed = files.some((f) => {
     try {
       return blockState(readFileSync(f, "utf8")).state === "changed";
@@ -757,9 +762,12 @@ const projectHere = (
       return false;
     }
   });
-  const declined = Object.keys(readDeclined(ctx.home)).some((root) =>
-    base.startsWith(root),
-  );
+  // #3008: a decline for `/x/proj` is not a decline here when the folder is
+  // `/x/proj2`: the same boundary, on the realpathed root install wrote.
+  const declined = Object.keys(readDeclined(ctx.home)).some((root) => {
+    const dir = realpathOr(root);
+    return dir === base || base.startsWith(`${dir}${sep}`);
+  });
   return { files, changed, declined };
 };
 
@@ -767,6 +775,7 @@ const projectHere = (
 const habitsWhere = (ctx: Ctx, files: string[]): string =>
   `on in this project, ${shown(ctx, files)}`;
 
+/** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
 export function habitsLine(ctx: Ctx): string | undefined {
   const { targets, plugins } = wired(ctx);
   if (habitsOptedOut(ctx.home)) return "Habits: off (you opted out)";

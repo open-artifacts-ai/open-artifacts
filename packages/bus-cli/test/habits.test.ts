@@ -1490,4 +1490,52 @@ describe("habitsLine shows per-project habits (#3008)", () => {
     await install({ habits: "yes" }, ctx);
     expect(habitsLine(ctx)).toContain("Habits: on in ~/.claude/CLAUDE.md");
   });
+
+  // #3022: the block sits at the top of the work tree, so this folder's
+  // project is the one whose directory is the command's folder or above it.
+  it("names this project's block from a subfolder", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ob-proj-"));
+    const sub = join(root, "packages", "x");
+    mkdirSync(sub, { recursive: true });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), root, root);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "project" }, ctx);
+    expect(existsSync(join(root, "CLAUDE.local.md"))).toBe(true);
+    Object.assign(ctx, { cwd: sub });
+    const line = habitsLine(ctx) as string;
+    expect(line).toContain("Habits: on in this project");
+    expect(line).toContain("CLAUDE.local.md");
+  });
+
+  it("claims no project when the command runs from a parent folder", async () => {
+    const parent = tmp();
+    const root = join(parent, "repo");
+    mkdirSync(root, { recursive: true });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), root, root);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "project" }, ctx);
+    // A folder that only holds repos is no one's project, so the block in the
+    // repo under it is not "in this project".
+    Object.assign(ctx, { cwd: parent });
+    const line = habitsLine(ctx) as string;
+    expect(line).not.toContain("in this project");
+    expect(line).not.toContain("changed in this project");
+  });
+
+  it("a decline for a sibling folder is not this folder's", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ob-proj-"));
+    const mine = join(root, "proj");
+    const other = join(root, "proj2");
+    mkdirSync(mine, { recursive: true });
+    mkdirSync(other, { recursive: true });
+    const ctx = asRepo(fakeCtx(claudeOnly({}), false), mine, mine);
+    approvedHome(ctx);
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "project-off" }, ctx);
+    expect(habitsLine(ctx)).toBe("Habits: off in this project");
+    Object.assign(ctx, { cwd: other });
+    expect(habitsLine(ctx) as string).not.toContain("off in this project");
+  });
 });
