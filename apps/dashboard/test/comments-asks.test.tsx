@@ -724,6 +724,38 @@ describe("asks on the comments column", () => {
     ).toBeInTheDocument();
   });
 
+  it("a second Reply on the open thread moves the caret back into the box (#3042 review)", async () => {
+    // A decided ask keeps its "Reply to ask for a change" link, which opens the
+    // reply box of a thread that is already open: the caret has to come back.
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          closed: true,
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    const box = await within(c).findByRole("textbox", { name: "Reply" });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    // The reader clicked away and asks again.
+    box.blur();
+    expect(document.activeElement).not.toBe(box);
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply to ask for a change" }),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(box));
+  });
+
   it("Next ask goes to the following ask in page order, wrapping around", async () => {
     const mk = (id: string, anchor: object) => {
       const t = askThread({ id, anchor });
