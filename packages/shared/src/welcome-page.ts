@@ -95,7 +95,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 }</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
 <button class="copy" id="copy" type="button">Copy</button>
 </div>
-<div class="connector" id="connector" hidden><p class="note">Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:</p><div class="panel"><pre id="connector-url">${o}/mcp</pre></div><button class="copy" id="connector-copy" type="button">Copy</button><p class="note">Log in when it asks. Your chat sees new comments and answers only when you ask it to look.</p><p class="note"><a href="https://open-artifacts.com/docs/claude-and-chatgpt/" target="_blank" rel="noopener">How to add a connector</a></p></div>
+<div class="connector" id="connector" hidden><p class="note">Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:</p><div class="panel"><pre id="connector-url">${o}/mcp</pre></div><button class="copy" id="connector-copy" type="button" aria-label="Copy connector address">Copy</button><p class="note">Log in when it asks. Your chat sees new comments and answers only when you ask it to look.</p><p class="note"><a href="https://open-artifacts.com/docs/claude-and-chatgpt/" target="_blank" rel="noopener">How to add a connector</a></p></div>
 
 <h2>Get started</h2>
 <ol class="steps">
