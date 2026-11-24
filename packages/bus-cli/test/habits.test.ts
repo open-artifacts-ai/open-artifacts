@@ -1478,7 +1478,10 @@ describe("habitsLine shows per-project habits (#3008)", () => {
     writeFileSync(file, readFileSync(file, "utf8").replace("under 140", "x"));
     const line = habitsLine(ctx) as string;
     expect(line).toContain("Habits: out of date in this project");
-    expect(line).toContain("Run oa-bus install to update them.");
+    // The command is the one this install is run with, as in every other line.
+    expect(line).toContain(`Run ${BUS_CMD} install to update them`);
+    // No period before a plugin tail: that would read "them.; Hermes plugin".
+    expect(line).not.toContain(".; ");
   });
 
   it("says off in this project when the person declined here", async () => {
