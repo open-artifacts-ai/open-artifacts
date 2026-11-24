@@ -79,7 +79,7 @@ describe("email templates", () => {
     for (const part of [m.text, m.html]) expect(part).not.toContain("setup-->");
     for (const part of [m.text, m.html]) {
       expect(part).toContain(
-        "Using Claude or ChatGPT in a chat? Add a custom connector with https://app.example.com/mcp.",
+        "Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address: https://app.example.com/mcp. How to add a connector:",
       );
       expect(part).toContain(
         "https://open-artifacts.com/docs/claude-and-chatgpt/",

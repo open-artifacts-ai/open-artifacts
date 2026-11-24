@@ -98,7 +98,7 @@ export function ConnectorBlock({ url }: { url: string }) {
           disabled={frozen}
           onClick={copy}
         >
-          {copied ? "✓ Copied" : "Copy"}
+          {copied ? "Copied" : "Copy"}
         </Button>
       </div>
       <p className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
