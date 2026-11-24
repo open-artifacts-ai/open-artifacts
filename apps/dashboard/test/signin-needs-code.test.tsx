@@ -97,7 +97,7 @@ it("(a) with codes off: no link and no address, so Product's line and Try anothe
   });
   expect(
     await screen.findByText(
-      "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.",
+      "Google couldn't confirm that address. Ask whoever invited you or shared this page to use your Gmail or Google Workspace address.",
     ),
   ).toBeVisible();
   expect(screen.queryByRole("button", { name: "Email me a code" })).toBeNull();

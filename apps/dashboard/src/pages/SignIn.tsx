@@ -120,7 +120,7 @@ export const needsCode = (email: string) =>
  * cookie, so no address): this line, and Try another account.
  */
 export const NEEDS_CODE_NO_CODES =
-  "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.";
+  "Google couldn't confirm that address. Ask whoever invited you or shared this page to use your Gmail or Google Workspace address.";
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
 /** OA Product: (b) with codes off. */
@@ -138,6 +138,9 @@ const isPageLink = (next: string) => /^\/a\/[^/?#]+/.test(next);
  * (404): the usual sign-in, with this line above it.
  */
 export const NEEDS_CODE = "That took too long. Start again.";
+/** The invite's time ran out: the server redirects with error=invite_expired. */
+export const INVITE_EXPIRED =
+  "This invite has expired. Ask whoever invited you to send a new one.";
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
@@ -166,6 +169,8 @@ const errorCopy = (
       return "Login took too long. Try again.";
     case "needs_code":
       return NEEDS_CODE;
+    case "invite_expired":
+      return INVITE_EXPIRED;
     default:
       return "Login didn't work. Try again.";
   }

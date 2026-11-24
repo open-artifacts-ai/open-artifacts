@@ -77,10 +77,19 @@ describe("email templates", () => {
     expect(m.text).toContain(line);
     expect(m.html).toContain(line.replace(/\//g, "/<wbr>"));
     for (const part of [m.text, m.html]) expect(part).not.toContain("setup-->");
+    for (const part of [m.text, m.html]) {
+      expect(part).toContain(
+        "Using Claude or ChatGPT in a chat? Add a custom connector with https://app.example.com/mcp.",
+      );
+      expect(part).toContain(
+        "https://open-artifacts.com/docs/claude-and-chatgpt/",
+      );
+    }
     const g = inviteEmail({ ...common, guest: true });
     for (const part of [g.text, g.html]) {
       expect(part).not.toContain("llms.txt");
       expect(part).not.toContain("connect your agent");
+      expect(part).not.toContain("custom connector");
       expect(part).not.toContain("setup-->");
     }
     expect(g.text).toContain("https://app.example.com/sign-in");

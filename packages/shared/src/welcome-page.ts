@@ -70,6 +70,8 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .count{margin:12px 0 0;font-size:14px;color:var(--muted)}
 .connect-body{display:block;margin-top:10px}
 .connect-body .panel{background:var(--soft)}
+.connector{margin-top:16px}
+.connector a{color:var(--accent)}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
 </style>
@@ -93,6 +95,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 }</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
 <button class="copy" id="copy" type="button">Copy</button>
 </div>
+<div class="connector" id="connector" hidden><p class="note">Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:</p><div class="panel"><pre id="connector-url">${o}/mcp</pre></div><button class="copy" id="connector-copy" type="button">Copy</button><p class="note">Log in when it asks. Your chat sees new comments and answers only when you ask it to look.</p><p class="note"><a href="https://open-artifacts.com/docs/claude-and-chatgpt/" target="_blank" rel="noopener">How to add a connector</a></p></div>
 
 <h2>Get started</h2>
 <ol class="steps">
@@ -163,6 +166,18 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       navigator.clipboard.writeText(text).then(ok, fallback);
     else fallback();
   });
+  var connCopy = document.getElementById("connector-copy");
+  connCopy.addEventListener("click", function(){
+    var el = document.getElementById("connector-url");
+    var done = function(){
+      connCopy.textContent = "Copied";
+      setTimeout(function(){ connCopy.textContent = "Copy"; }, 2000);
+    };
+    var fallback = function(){ if (legacy(el)) done(); };
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(el.textContent).then(done, fallback);
+    else fallback();
+  });
   pick(0, false);
 
   var items = {};
@@ -205,6 +220,9 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       connectBody.className = "connect-body";
       connectBody.appendChild(document.getElementById("panel-any"));
       connectBody.appendChild(copy);
+      var conn = document.getElementById("connector");
+      conn.hidden = false;
+      connectBody.appendChild(conn);
       document.getElementById("connect-section").hidden = true;
       countLine = document.createElement("p");
       countLine.className = "count";

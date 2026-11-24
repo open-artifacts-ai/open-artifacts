@@ -73,6 +73,7 @@ export const INVITE_HTML = `<!doctype html>
           <td class="oa-pad" style="padding:24px 40px 0 40px;font-family:Geist,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
             <p class="oa-text-2" style="margin:0;font-size:15px;line-height:24px;color:#454C56;">Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:</p>
             <p class="oa-text" style="margin:8px 0 0 0;padding:10px 12px;border-radius:6px;border:1px solid #E0E3E8;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;line-height:20px;color:#15181C;overflow-wrap:anywhere;">{{setupLine}}</p>
+            <p class="oa-text-2" style="margin:16px 0 0 0;font-size:15px;line-height:24px;color:#454C56;">Using Claude or ChatGPT in a chat? Add a custom connector with {{connectorUrl}}. Steps: https://open-artifacts.com/docs/claude-and-chatgpt/</p>
           </td>
         </tr>
         <!--/setup-->
@@ -113,6 +114,8 @@ Go to {{instanceName}}:
 Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:
 
 {{setupLine}}
+
+Using Claude or ChatGPT in a chat? Add a custom connector with {{connectorUrl}}. Steps: https://open-artifacts.com/docs/claude-and-chatgpt/
 <!--/setup-->
 
 --
