@@ -1202,7 +1202,6 @@ function CommentRow({
   c,
   root,
   allProblems,
-  askQuestion,
   replyHere,
 }: {
   api: CommentsApi;
@@ -1211,8 +1210,6 @@ function CommentRow({
   root: boolean;
   /** The thread's new delivery problems per comment, computed once in ThreadCard. */
   allProblems: ReturnType<typeof newProblems>;
-  /** Open a question to the agent that asked (#1794). */
-  askQuestion?: () => void;
   /** #3042: open this thread's reply box (the card focuses it, not its own top). */
   replyHere: () => void;
 }) {
@@ -1352,7 +1349,6 @@ function CommentRow({
             c={c}
             next={nextAsk ? () => api.reveal(nextAsk) : undefined}
             reply={api.canComment ? replyHere : undefined}
-            askQuestion={askQuestion}
             openCard={(id) => {
               const to = api.threads.find((x) =>
                 x.comments.some((k) => k.id === id),
@@ -1506,10 +1502,6 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const compact = useContext(Compact);
   const reply = useReply(api.artifactId, api.guest);
   const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
-  const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
-  // The agent a question goes to, kept while the box is open so a pick
-  // elsewhere doesn't swap the draft away (the server then says why).
-  const [asking, setAsking] = useState<string | null>(null);
   // #3042: opened from Reply, not from the card: the reply box takes the caret
   // and the scroll, so the card does not jump to its top and steal the focus.
   const [replyWanted, setReplyWanted] = useState(0);
@@ -1605,22 +1597,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     setRevealFirst(null);
     if (r) focusRow(r);
   }, [revealFirst, expanded]);
-  // Leaving the thread drops the question mode.
+  // Leaving the thread clears the one-shot reply request.
   useEffect(() => {
-    if (isActive) return;
-    setAsking(null);
-    setReplyWanted(0);
+    if (!isActive) setReplyWanted(0);
   }, [isActive]);
   if (!first) return null;
-  // "Ask a question" (#1794): an open, unanswered ask from an agent, to someone who may reply.
-  const asker =
-    first.ask &&
-    first.author.kind === "agent" &&
-    !first.ask.answer &&
-    !first.ask.closed &&
-    canAct
-      ? first.author.name
-      : null;
   const toggle = () => {
     setStatusErr(null);
     status.mutate(
@@ -1690,14 +1671,6 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               allProblems={allProblems}
               root
               replyHere={replyHere}
-              askQuestion={
-                asker && !asking
-                  ? () => {
-                      setAsking(asker);
-                      api.select(t.id, true);
-                    }
-                  : undefined
-              }
             />
           </ul>
           {hidden > 0 && (
@@ -1739,57 +1712,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </p>
         )}
         {/* A post that failed after its box closed, with no box on screen to take it back. */}
-        {canAct && lostReply.lost && !(isActive && !(asking && isActive)) && (
+        {canAct && lostReply.lost && !isActive && (
           <LostLine what="reply" onRestore={replyHere} />
         )}
-        {canAct && asker && lostAsk.lost && !(asking && isActive) && (
-          <LostLine
-            what="question"
-            onRestore={() => {
-              setAsking(asker);
-              api.select(t.id, true);
-            }}
-          />
-        )}
-        {asking && isActive ? (
-          <>
-            {api.guest && <GuestName api={api} />}
-            <Composer
-              key="ask"
-              label="Question"
-              actions={ACTIONS_PLAIN}
-              placeholder={`Ask ${asking} a question`}
-              submit="Send"
-              instant
-              seed={lostAsk.lost}
-              onLost={(l) => {
-                // Kept outside this card; if the card is still here, the box reopens with it.
-                lostAsk.onLost(l);
-                setAsking(asking);
-              }}
-              autoFocus
-              buttonsRight
-              onCancel={() => setAsking(null)}
-              lead={
-                <span className={`${TXT} ${MUTED}`} data-to-asker="">
-                  To {asking}, the agent that asked
-                </span>
-              }
-              onSubmit={(body) => {
-                lostAsk.clear();
-                const done = reply.mutateAsync({
-                  thread: t.id,
-                  body,
-                  toAsker: true,
-                  ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-                });
-                // The question shows at once; the box closes with it.
-                setAsking(null);
-                return done;
-              }}
-            />
-          </>
-        ) : canAct && isActive ? (
+        {canAct && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}

@@ -615,23 +615,3 @@ export async function askerAgents(
   if (!canConnect(user)) return [];
   return [address];
 }
-
-/** `askerAgents` as roster entries, for the card's delivery marks (#1614). */
-export async function askerRoster(
-  env: Env,
-  artifactId: string,
-  askerId: string,
-  asker: AskerAddress | null,
-): Promise<RosterAgent[]> {
-  const out: RosterAgent[] = [];
-  for (const address of await askerAgents(env, artifactId, askerId, asker))
-    out.push({
-      key: await agentKey(artifactId, askerId, address),
-      name: address.name,
-      ...UNKNOWN,
-      userId: askerId,
-      address: { namespace: address.namespace, name: address.name },
-      ...(address.identityId ? { identityId: address.identityId } : {}),
-    });
-  return out;
-}
