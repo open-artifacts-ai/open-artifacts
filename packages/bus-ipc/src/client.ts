@@ -22,6 +22,7 @@ export type DaemonClient = {
       | "unfollow"
       | "following"
       | "propose_reach"
+      | "habits"
       | "link_proof";
     id?: string;
     to?: string;

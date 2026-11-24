@@ -35,6 +35,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
+  BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -135,6 +136,7 @@ import {
   folderKey,
   unmappedFolderNote,
 } from "./folders.ts";
+import { habitsOff } from "./habits-off.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
@@ -299,6 +301,11 @@ export type DaemonDeps = {
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
   /** Outgoing msg_ids awaiting a final receipt (0600); default ~/.oa-bus/sent.json. */
   sentFile?: string;
+  /**
+   * #3043: whether this install opted out of the habits the bus pushes at
+   * session start; default: install.json's `habits.optedOut`. Tests only.
+   */
+  habitsOff?: () => boolean;
   version?: string;
   log?: (msg: string) => void;
   /**
@@ -3317,6 +3324,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               ? "ok"
               : "old_hub";
         },
+        // #3043: the rules a session is told at start, or none when opted out.
+        habits: () =>
+          (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
         linked: (ref, hash) => {
           // The adapter then adds the argument to its calls: only for a hub
           // whose /mcp strips it (an older one fails a strict tool schema).
