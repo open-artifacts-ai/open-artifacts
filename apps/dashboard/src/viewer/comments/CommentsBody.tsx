@@ -446,6 +446,7 @@ function Composer({
   restore,
   onText,
   autoFocus = false,
+  focusKey = 0,
   alwaysOpen = true,
   failure,
   onDirty,
@@ -513,6 +514,11 @@ function Composer({
   restore?: string;
   onText?: (text: string) => void;
   autoFocus?: boolean;
+  /**
+   * #3042: bump this to move the caret into the box again (a second Reply on a
+   * thread that is already open). `autoFocus` only fires on false -> true.
+   */
+  focusKey?: number;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
@@ -667,8 +673,8 @@ function Composer({
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
-    if (autoFocus) focusField(ref.current);
-  }, [autoFocus]);
+    if (autoFocus || focusKey > 0) focusField(ref.current);
+  }, [autoFocus, focusKey]);
   // Width changes (panel resize, rotation, a restored hidden draft)
   // change how many lines the text takes.
   useEffect(() => {
@@ -1505,9 +1511,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // #3042: opened from Reply, not from the card: the reply box takes the caret
   // and the scroll, so the card does not jump to its top and steal the focus.
   const [replyWanted, setReplyWanted] = useState(0);
-  const wantReply = useRef(false);
+  const replyDone = useRef(0);
   const replyHere = () => {
-    wantReply.current = true;
     setReplyWanted((n) => n + 1);
     api.select(t.id, true);
   };
@@ -1535,11 +1540,12 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const revealTick = api.revealed.tick;
   const revealedHere = api.revealed.id === t.id;
   // Runs on mount too, so a column that is just opening still scrolls and focuses.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card; replyWanted is its own trigger.
   useEffect(() => {
-    // Consumed on every run: a later reveal must still scroll normally.
-    const fromReply = wantReply.current;
-    wantReply.current = false;
+    // Consumed by tick: a later reveal must still scroll normally, and a
+    // second Reply on the same open thread counts again (#3042 review).
+    const fromReply = replyWanted > replyDone.current;
+    replyDone.current = replyWanted;
     if (!isActive) return;
     if (!fromReply && el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
@@ -1585,7 +1591,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       cancelAnimationFrame(frame);
       watch?.disconnect();
     };
-  }, [isActive, revealTick]);
+  }, [isActive, revealTick, replyWanted]);
   // #2179: "Show N earlier replies" moves focus to the first reply it
   // revealed (after the effect above, which may focus the card).
   const [revealFirst, setRevealFirst] = useState<string | null>(null);
@@ -1721,7 +1727,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
             <Composer
               label="Reply"
-              autoFocus={replyWanted > 0}
+              focusKey={replyWanted}
               actions={ACTIONS_PLAIN}
               placeholder="Reply"
               mentionPlaceholder="Reply. Type @ to mention an agent or a person."
