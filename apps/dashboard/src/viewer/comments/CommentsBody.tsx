@@ -2118,7 +2118,11 @@ function NewThread({
                       ...guest,
                     })
                     .then(
-                      () => api.cancelDraft(true),
+                      (t) => {
+                        api.cancelDraft(true);
+                        // #3032: the new note sits at the top: show it there.
+                        if ("comments" in t) api.reveal(t.id);
+                      },
                       () => {},
                     )
                 }
@@ -2172,12 +2176,20 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
-          return create.mutateAsync({
-            anchor: { kind: "note" },
-            body,
-            ...extrasBody(x),
-            ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-          });
+          return create
+            .mutateAsync({
+              anchor: { kind: "note" },
+              body,
+              ...extrasBody(x),
+              ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+            })
+            .then((t) => {
+              // #3032: a posted note goes to the top of the list, so bring it
+              // into view and focus it instead of leaving the reader at the
+              // composer, below every older note.
+              if ("comments" in t) api.reveal(t.id);
+              return t;
+            });
         }}
       />
     </div>
