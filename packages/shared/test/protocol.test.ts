@@ -40,14 +40,12 @@ describe("parseArtifactMessage", () => {
     expect(
       parseArtifactMessage({ oa: 2, type: "resize", height: 1 }),
     ).toBeNull();
-    // #2426: comment.open may carry the clicked mark's box.
+    // #3048: comment.open no longer carries the clicked mark's box, and an
+    // older runtime's `rect` is dropped rather than refusing the message.
     const open = { oa: 1, type: "comment.open", id: "t1" };
     const rect = { x: 1, y: 2, width: 3, height: 4 };
-    expect(parseArtifactMessage({ ...open, rect })).toEqual({ ...open, rect });
+    expect(parseArtifactMessage({ ...open, rect })).toEqual(open);
     expect(parseArtifactMessage(open)).toEqual(open);
-    expect(
-      parseArtifactMessage({ ...open, rect: { ...rect, width: -1 } }),
-    ).toBeNull();
     expect(parseArtifactMessage({ oa: 1, type: "nope" })).toBeNull();
     expect(
       parseArtifactMessage({
