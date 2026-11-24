@@ -137,6 +137,7 @@ describe("enforcement", () => {
     if (name === "unshare_artifact") args.email = "z@y.com";
     if (name === "set_visibility") args.visibility = "public";
     if (name === "add_comment") args.body = "hi";
+    if (name === "get_comment_picture") args.pictureId = "AAAAAAAAAAAAAAAA";
     if (name === "resolve_comment") args.threadId = "AAAAAAAAAAAAAAAA";
     if (name === "withdraw_ask" || name === "edit_comment")
       Object.assign(args, {
