@@ -2354,3 +2354,36 @@ describe("#1448: revoking a machine frees every name its agents held or reserved
     c.d.close();
   });
 });
+
+describe("#3028: a session the daemon reports closed stops holding its name", () => {
+  it("a rename takes the name of a session the daemon says is gone", async () => {
+    const n = ns("3028");
+    const d = await at();
+    // A session named "OA Manager L" while another session of the machine
+    // already held that name, so the hub answered "OA Manager L-2".
+    expect(await reg(d, "ref-a", "OA Manager L", n)).toBe("OA Manager L");
+    expect(await reg(d, "ref-b", "OA Manager L", n)).toBe("OA Manager L-2");
+    await reg(d, "ref-c", "OA Codex", n);
+    // The daemon restarts and says ref-a's session is gone: a restarted daemon
+    // reports the refs it cannot see as closed (#3028), so the hub ends the row.
+    d.send({
+      v: 1,
+      id: id("se"),
+      type: "sessions",
+      open: ["ref-b", "ref-c"],
+      closed: ["ref-a"],
+    });
+    // Its name is no longer a live holder: a /rename to it gets it bare, not
+    // "OA Manager L-3", and leaves the session with one name.
+    const r = await renamed(d, "ref-b", "OA Manager L");
+    expect(r.bus_name).toBe("OA Manager L");
+    const rows = (await list(d, "ref-c")).agents.filter((a) =>
+      a.bus_name.startsWith("OA Manager L"),
+    );
+    expect(rows.map((a) => a.bus_name)).toEqual(["OA Manager L"]);
+    // Mail to the name reaches the live session, not a closed mailbox.
+    const rc = await send(d, "ref-c", "OA Manager L");
+    expect(rc.state).toBe("pending");
+    expect((await delivered(d, rc.msg_id)).to_ref).toBe("ref-b");
+  });
+});
