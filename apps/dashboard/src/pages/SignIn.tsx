@@ -126,6 +126,9 @@ export const WRONG_ACCOUNT =
 /** OA Product: (b) with codes off. */
 export const WRONG_ACCOUNT_NO_CODES =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
+/** #3029: under the Google button on the plain sign-in page. */
+export const INVITED_HELP =
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
 
 /**
  * #2590 G2 (b) is for share recipients: the server can't tell them apart,
@@ -509,6 +512,10 @@ function HostedSignIn({
       </>
     );
 
+  // #3029: a refused Google account on the plain page gets the same
+  // "Try another account" action the share-link page has (same Google start).
+  const wrongGoogle = error === "no_access" && via === "google";
+
   // Google only: one button; guests get their own row.
   return (
     <>
@@ -520,8 +527,23 @@ function HostedSignIn({
           : "Use your Google account."}
       </p>
       <Button asChild className="oa-split-btn">
-        <a href={googleHref}>Continue with Google</a>
+        <a href={googleHref}>
+          {wrongGoogle ? "Try another account" : "Continue with Google"}
+        </a>
       </Button>
+      {/* #3029: only the plain page, not a share link or a refusal. */}
+      {!error && !isPageLink(next) && (
+        <p
+          data-invited-help=""
+          style={{
+            margin: "12px 0 0",
+            fontSize: 13,
+            color: "var(--oa-text-muted)",
+          }}
+        >
+          {INVITED_HELP}
+        </p>
+      )}
       {accessButton}
       {guests && (
         <div
