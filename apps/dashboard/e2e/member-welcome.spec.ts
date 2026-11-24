@@ -75,7 +75,9 @@ test("a member's first login lands on their own Welcome: 0 of 5, the sixth step"
       exact: false,
     }),
   ).toBeVisible();
-  await expect(one.getByRole("button", { name: "Copy", exact: true })).toBeVisible();
+  await expect(
+    one.getByRole("button", { name: "Copy", exact: true }),
+  ).toBeVisible();
   await expect(
     f.getByRole("heading", { name: "Connect your agent" }),
   ).toBeHidden();
