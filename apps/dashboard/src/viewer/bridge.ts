@@ -107,11 +107,7 @@ export interface BridgeOptions {
     >["positions"],
     ghost?: { x: number; y: number },
   ) => void;
-  onCommentOpen?: (
-    id: string,
-    /** #2426: the clicked mark's box in frame-viewport pixels. */
-    rect?: { x: number; y: number; width: number; height: number },
-  ) => void;
+  onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
@@ -638,8 +634,7 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
-        if (m.rect) opts.onCommentOpen?.(m.id, m.rect);
-        else opts.onCommentOpen?.(m.id);
+        opts.onCommentOpen?.(m.id);
         break;
       case "comment.escape":
         opts.onCommentEscape?.();

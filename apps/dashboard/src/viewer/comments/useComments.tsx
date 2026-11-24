@@ -16,7 +16,7 @@ import { ApiClientError } from "../../api/client";
 import { isSending, useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
-import { asksForMe, isRiskyAsk } from "./asks";
+import { asksForMe } from "./asks";
 import { type Decision, decisionsOf } from "./decisionsModel";
 import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import { lostKey, putLost } from "./lostPosts";
@@ -110,8 +110,6 @@ export type CommentsApi = {
    * #2426: an unanswered ask the reader clicked in the page, whose card opens
    * beside its mark (`rect`: the mark's box in frame-viewport pixels).
    */
-  askBeside: { id: string; rect: Rect } | null;
-  closeAsk: () => void;
   /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
   cancelDraft: (posted?: boolean) => void;
   /** A new comment that failed after its box closed: the draft opens again with its text and the error. */
@@ -140,7 +138,7 @@ export type CommentsApi = {
     p: { id: string; state: FramePosition["state"]; top: number | null }[],
     ghost?: { x: number; y: number },
   ) => void;
-  onOpen: (id: string, rect?: Rect) => void;
+  onOpen: (id: string) => void;
   onPin: (p: PinPoint, at?: { x: number; y: number }) => void;
   /** Esc in the frame: leaves pin mode (page code can send it; it only ever leaves). */
   onEscape: () => void;
@@ -211,9 +209,6 @@ const isAskForMe = (t: CommentThread) =>
  * with an action) is answered in the pane, where the page cannot choose where
  * the options sit.
  */
-const opensBeside = (t: CommentThread) =>
-  isAskForMe(t) && !t.comments.some((c) => c.ask && isRiskyAsk(c.ask));
-
 export function useCommentsController({
   artifact,
   version,
@@ -278,7 +273,6 @@ export function useCommentsController({
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
   const [draftSeed, setDraftSeed] = useState<Lost | null>(null);
-  const [askAt, setAskAt] = useState<{ id: string; rect: Rect } | null>(null);
   const [pinAt, setPinAt] = useState<{ x: number; y: number } | null>(null);
   // #1834: a draft that was just posted stays painted until the refetched list
   // carries its thread, so posting turns the draft highlight into the thread's
@@ -508,7 +502,6 @@ export function useCommentsController({
   const onAway = useCallback(() => {
     if (gates.current.away()) {
       dropDraft(false);
-      setAskAt(null);
     }
   }, [dropDraft]);
   // A pointer down in the shell, outside the comments surface and the offers
@@ -568,21 +561,10 @@ export function useCommentsController({
         : next,
     );
   }, []);
-  const threadsRef = useRef(threads);
-  threadsRef.current = threads;
-  const onOpen = useCallback((tid: string, rect?: Rect) => {
+  // #3048: a click on a mark, an amber chip or a pin opens the comments at that
+  // thread: part A of #2426 used to float an ask card beside the mark instead.
+  const onOpen = useCallback((tid: string) => {
     if (!gates.current.open() || !ids.current.has(tid)) return;
-    // #2426: an unanswered ask opens its card beside the mark, where there is
-    // room for it (on a phone too: it sits below or above the mark); the shell re-checks that it is one (the frame can forge).
-    const t = threadsRef.current.find((x) => x.id === tid);
-    if (rect && t && opensBeside(t)) {
-      // Another thread while a card is up closes it: the card never moves
-      // from one thread to another under the pointer. The same thread again
-      // is a fresh card (its delay starts over).
-      setAskAt((cur) => (cur && cur.id !== tid ? null : { id: tid, rect }));
-      return;
-    }
-    setAskAt(null);
     setActive(tid);
     surface.current();
   }, []);
@@ -632,8 +614,6 @@ export function useCommentsController({
       revealDone,
       draft,
       pinBeside: besideOk && draft && "pin" in draft ? pinAt : null,
-      askBeside: askAt,
-      closeAsk: () => setAskAt(null),
       cancelDraft: (posted = false) => {
         dirty.current = false;
         typed.current = false;
@@ -712,7 +692,6 @@ export function useCommentsController({
       revealed,
       draft,
       pinAt,
-      askAt,
       besideOk,
       draftSeed,
       showResolved,

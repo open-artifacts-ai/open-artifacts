@@ -35,8 +35,9 @@ import { utf8Exceeds } from "./utf8.js";
  * knows it (a tab opened before a deploy keeps its old, strict shell), and the
  * shell drops unknown keys from a frame message instead of the whole message.
  * #2426: 7 adds `ask` on `comments.set` threads (the shell leaves it out for a
- * runtime that said less) and `rect` on `comment.open` (the runtime leaves it
- * out for a shell that announced less).
+ * runtime that said less). 7 also carried `rect` on `comment.open`, dropped in
+ * #3048 with the card it placed beside the mark: an older runtime still sends
+ * it, and the shell drops the unknown key.
  */
 export const PROTOCOL_VERSION = 7;
 /** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
@@ -49,7 +50,7 @@ export const PROTOCOL_COMMENT_DRAFT = 3;
 export const PROTOCOL_COMMENT_CLEAR = 4;
 /** The first protocol whose runtime draws a pin's badge and reports where a pin was clicked (#2019). */
 export const PROTOCOL_PIN_BADGE = 5;
-/** The first protocol whose runtime marks an unanswered ask (`ask`), and whose shell reads `rect` on `comment.open` (#2426). */
+/** The first protocol whose runtime marks an unanswered ask (`ask`) (#2426). */
 export const PROTOCOL_ASK_MARK = 7;
 
 /**
@@ -329,15 +330,6 @@ export const ArtifactToShellSchema = z.union([
     nonce,
     type: z.literal("comment.open"),
     id: CommentIdSchema,
-    /** #2426: the clicked mark's bounding box in frame-viewport pixels, so the shell can open an ask beside it. */
-    rect: z
-      .strictObject({
-        x: z.number().finite().min(-100_000).max(100_000),
-        y: z.number().finite().min(-100_000).max(100_000),
-        width: z.number().finite().min(0).max(100_000),
-        height: z.number().finite().min(0).max(100_000),
-      })
-      .optional(),
   }),
   /**
    * Esc pressed in the frame while in pin mode: leave pin mode. Carries no

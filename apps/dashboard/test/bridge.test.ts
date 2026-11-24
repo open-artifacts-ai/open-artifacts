@@ -598,11 +598,13 @@ describe("comments (#682)", () => {
     );
   });
 
-  it("hands comment.open's rect to the shell when there is one (#2426)", () => {
+  it("hands a mark click to the shell, dropping the old rect key (#3048)", () => {
     const o = withCb();
+    // An older runtime still sends the mark's box (#2426 A): the shell no
+    // longer uses it, and the unknown key is dropped, not the message.
     const rect = { x: 1, y: 2, width: 30, height: 10 };
     send({ oa: 1, type: "comment.open", id: "t1", rect });
-    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t1", rect);
+    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t1");
     send({ oa: 1, type: "comment.open", id: "t2" });
     expect(o.onCommentOpen).toHaveBeenLastCalledWith("t2");
   });
