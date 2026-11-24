@@ -379,17 +379,17 @@ describe("share panel", () => {
     expect(screen.getAllByText("This page uses it.")).toHaveLength(1);
     expect(screen.getAllByText("This page doesn't use it.")).toHaveLength(2);
     // The box is on: a plain mark, not a warning.
-    expect(screen.queryByText(/the page fails there/)).toBeNull();
+    expect(screen.queryByText(/asked for it/)).toBeNull();
   });
 
-  it("#3037: a box the page uses and that is off says the page is failing", async () => {
+  it("#3037: an off box the page asked for reports it in plain ink, never urging", async () => {
     capReporters.length = 0;
     const art = fixtures.artifacts.find((a) => a.id === OWNED);
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
         HttpResponse.json({
           ...art,
-          capabilities: { db: false, viewer: true, storage: false },
+          capabilities: { db: false, viewer: false, storage: false },
         }),
       ),
     );
@@ -399,10 +399,21 @@ describe("share panel", () => {
       capReporters.at(-1)?.("db");
     });
     expect(
+      screen.getByText("This page asked for it. It's off."),
+    ).toBeInTheDocument();
+    // Viewer identity names what turning it on would hand the page.
+    await act(async () => {
+      capReporters.at(-1)?.("viewer");
+    });
+    expect(
       screen.getByText(
-        "This page uses it, and it is off: the page fails there.",
+        "This page asked for it. It's off. Turning it on shows this page each viewer's name and email.",
       ),
     ).toBeInTheDocument();
+    // A page can forge these calls, so the mark never takes the warning tone
+    // (#3037 review: it should not push the owner into widening access).
+    for (const el of screen.getAllByText(/asked for it/))
+      expect(el.className).toBe("oa-muted");
   });
 
   it("#3037: a markdown artifact has no usage marks (only a page's code can call them)", async () => {

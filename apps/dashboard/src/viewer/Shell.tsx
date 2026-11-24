@@ -705,8 +705,10 @@ function Viewer({
       url: src,
       ...latest.current,
       onboarding: () => gate.current,
-      // #3037: what this page's code reaches for, for the Share panel. The
-      // box remembers: a reload of the same version keeps the marks.
+      // #3037: what this page's code reaches for, for the Share panel. In
+      // memory only: a full page reload clears the marks, a frame reload keeps
+      // them. It is a report of calls so far, never a promise of what the page
+      // needs.
       onCapability: noteUse,
       version,
       formatOf: () => formatRef.current,

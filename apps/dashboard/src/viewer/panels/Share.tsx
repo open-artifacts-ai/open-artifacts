@@ -871,18 +871,17 @@ export function Share({
                 {hint}
               </small>
               {onPage && (
+                // #3037 review: a page's own calls set this, so the copy only
+                // reports, in the same muted ink as the hint: it never urges
+                // the owner to widen access on the page's say-so.
                 <small
                   data-cap-used={used ? "" : undefined}
-                  className={
-                    used && !artifact.capabilities[k]
-                      ? "font-medium text-destructive"
-                      : "oa-muted"
-                  }
+                  className="oa-muted"
                 >
                   {used
                     ? artifact.capabilities[k]
                       ? "This page uses it."
-                      : "This page uses it, and it is off: the page fails there."
+                      : `This page asked for it. It's off.${k === "viewer" ? " Turning it on shows this page each viewer's name and email." : ""}`
                     : "This page doesn't use it."}
                 </small>
               )}
