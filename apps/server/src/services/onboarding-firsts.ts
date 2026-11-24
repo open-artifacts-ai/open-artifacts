@@ -21,6 +21,24 @@ export const mentionRepliedKey = (userId: string) =>
 export const askAnsweredKey = (userId: string) =>
   `onboarding:ask-answered:${userId}`;
 
+/**
+ * One row per person who commented (#2287), the one key for both facts.
+ * A legacy value is a timestamp (String(Date.now())): it proves only that the
+ * person commented with no agent attached (legacy `commented`, and the team
+ * step beside it), which a comment from before the typed flag (#1797) or a
+ * bare token path can also pass. #2953: a typed comment in the web app upgrades
+ * it to JSON { artifactId, at } (ms), the earliest known; never a title or text.
+ * An older server only tests that the row exists, so both shapes read as
+ * commented across a rolling update.
+ */
+export const commentedKey = (userId: string) =>
+  `onboarding:commented:${userId}`;
+/** The historical scan (first-comment-scan.ts): the last artifact id read, the marker that every artifact was, and when it began. Not `onboarding:` rows. */
+export const FIRST_COMMENT_SCAN_CURSOR_KEY = "onboarding-scan:first-comment";
+export const FIRST_COMMENT_SCAN_DONE_KEY = "onboarding-scan:first-comment:done";
+export const FIRST_COMMENT_SCAN_STARTED_KEY =
+  "onboarding-scan:first-comment:started";
+
 /** How long a mention may go unanswered before the checklist says so. */
 export const MENTION_STALLED_MS = 2 * 60 * 1000;
 
@@ -71,6 +89,91 @@ export async function namedRecorded(
     .bind(namedKey(userId))
     .first();
   return !!row;
+}
+
+/**
+ * SQL: the typed time (ms) of a commented value, NULL for a legacy timestamp or
+ * anything unreadable (valid JSON with a text artifactId and a numeric `at`).
+ * CASE, so a malformed value never reaches json_type.
+ */
+export const typedAtSql = (col: string) =>
+  `(case when json_valid(${col}) and json_type(${col}, '$.artifactId') = 'text'
+         and json_type(${col}, '$.at') in ('integer', 'real')
+    then json_extract(${col}, '$.at') end)`;
+
+/**
+ * SQL for one typed first comment (?1 key, ?2 value, ?3 user id): only for an
+ * active non-guest member (the checklist's people). Inserts, upgrades a legacy
+ * timestamp, or replaces only a later typed time: the earliest comment is kept,
+ * a repeat changes nothing, and it is one atomic statement.
+ */
+export const KEEP_EARLIEST_TYPED_COMMENT = `on conflict (key) do update set value = excluded.value
+  where ${typedAtSql("settings.value")} is null
+     or ${typedAtSql("settings.value")} > json_extract(excluded.value, '$.at')`;
+
+const UPSERT_TYPED_COMMENT = `insert into settings (key, value)
+  select ?1, ?2 where exists (select 1 from users where id = ?3 and role <> 'guest' and status = 'active')
+  ${KEEP_EARLIEST_TYPED_COMMENT}`;
+
+export const commentedValue = (artifactId: string, at: number) =>
+  JSON.stringify({ artifactId, at });
+
+/** The upsert for one person's typed first comment on `artifactId` at `at` (ms). */
+const typedCommentStmt = (
+  env: Env,
+  userId: string,
+  artifactId: string,
+  at: number,
+) =>
+  stmt(env.DB, UPSERT_TYPED_COMMENT).bind(
+    commentedKey(userId),
+    commentedValue(artifactId, at),
+    userId,
+  );
+
+/** A stored commented value as typed metadata, or null: absent, a legacy timestamp or unreadable. */
+export function parseFirstComment(
+  v: string | undefined | null,
+): { artifactId: string; at: number } | null {
+  if (!v) return null;
+  try {
+    const j = JSON.parse(v) as { artifactId?: unknown; at?: unknown } | null;
+    if (!j || typeof j !== "object") return null;
+    return typeof j.artifactId === "string" &&
+      typeof j.at === "number" &&
+      Number.isFinite(j.at)
+      ? { artifactId: j.artifactId, at: j.at }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #2953: records the person's typed comment on `artifactId` at `at` (ms) as
+ * their first if it is the earliest known. The caller has checked it was typed
+ * by the person in the web app (no token, no agent); a guest or inactive
+ * account earns nothing (the SQL checks the user). Idempotent and race-safe
+ * (one upsert). Never throws: a comment must not fail on it.
+ */
+export async function noteFirstComment(
+  env: Env,
+  userId: string,
+  artifactId: string,
+  at: number = Date.now(),
+): Promise<void> {
+  try {
+    await typedCommentStmt(
+      env,
+      userId,
+      artifactId,
+      Number.isFinite(at) ? at : Date.now(),
+    ).run();
+  } catch (e) {
+    logWarn("onboarding_first_comment_failed", {
+      code: e instanceof Error ? e.name : "error",
+    });
+  }
 }
 
 /** Step 2: the owner has a bus agent with a chosen name or a role. */

@@ -243,6 +243,41 @@ describe("reply toAsker (#1614)", () => {
     expect(c.mentions?.some((m) => m.key === s.codex)).toBe(false);
   });
 
+  it("attributes an agent's answer to the person who sent the toAsker reply", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    const res = await reply(s.id, t.id, viewer, { toAsker: true });
+    expect(res.status).toBe(201);
+    const c = (await res.json()) as Comment;
+    // The public mention is unchanged: no identity fields.
+    expect(c.mentions).toEqual([
+      { key: s.claude, name: "Claude", for: "Member", delivery: "delivered" },
+    ]);
+    // The owner's verified agent answers, pointing at that reply.
+    const out = await addReply(
+      E,
+      s.id,
+      t.id,
+      asAgent(owner),
+      {
+        userId: owner.userId,
+        short: null,
+        moderator: true,
+        agent: {
+          name: "Claude",
+          version: null,
+          via: { kind: "token", id: "t1" },
+        },
+      },
+      "the answer",
+      { requestCommentId: c.id },
+      { moderator: true },
+    );
+    expect(out.askedBy).toEqual({ name: "Member" });
+    expect(JSON.stringify(out)).not.toContain("id-ns-owner-Claude");
+    expect(JSON.stringify(c)).not.toContain("id-ns-owner-Claude");
+  });
+
   it("another member's follower is not notified even when it follows too", async () => {
     const s = await setup();
     await follow(

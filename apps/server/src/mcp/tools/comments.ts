@@ -1,7 +1,12 @@
+import { Buffer } from "node:buffer";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
+import {
+  getPicture,
+  previewForAgent,
+} from "../../services/comment-pictures.js";
 import {
   addReply,
   addThread,
@@ -110,6 +115,34 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
     }),
   );
 
+  server.registerTool(
+    "get_comment_picture",
+    toolConfig("get_comment_picture"),
+    (i) =>
+      guard(async () => {
+        // The same gate as list_comments; the id is checked after it, so a
+        // caller without access learns nothing from the id's shape.
+        await open(i.id, "comments.read");
+        const hit = await getPicture(
+          env,
+          i.id,
+          i.pictureId,
+          t.user.id,
+          "agent",
+        );
+        const preview = await previewForAgent(env, hit);
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: Buffer.from(preview.data).toString("base64"),
+              mimeType: preview.mimeType,
+            },
+          ],
+        };
+      }),
+  );
+
   server.registerTool("add_comment", toolConfig("add_comment"), (i) =>
     guard(async () => {
       const { artifact, viewer, who } = await open(i.id, "comments.write");
@@ -120,6 +153,11 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           ...(t.exec ? { ctx: t.exec } : {}),
         },
       };
+      if (i.threadId === undefined && i.requestCommentId !== undefined)
+        throw new ApiError(
+          "bad_request",
+          "`requestCommentId` is for a reply: add `threadId`, or drop it.",
+        );
       if (i.threadId !== undefined) {
         if (i.anchor !== undefined)
           throw new ApiError(
@@ -134,7 +172,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             who,
             viewer,
             i.body,
-            i.ask ? { ask: i.ask } : {},
+            {
+              ...(i.ask ? { ask: i.ask } : {}),
+              ...(i.requestCommentId
+                ? { requestCommentId: i.requestCommentId }
+                : {}),
+            },
             opts,
           ),
         );
