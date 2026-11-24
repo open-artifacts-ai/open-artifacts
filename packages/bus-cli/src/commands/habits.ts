@@ -790,7 +790,7 @@ export function habitsLine(ctx: Ctx): string | undefined {
   const here = projectHere(ctx);
   if (here.files.length > 0)
     return here.changed
-      ? `Habits: changed in this project, ${shown(ctx, here.files)} (the next install updates them)${tail}`
+      ? `Habits: out of date in this project, ${shown(ctx, here.files)}. Run oa-bus install to update them.${tail}`
       : `Habits: ${habitsWhere(ctx, here.files)}${tail}`;
   if (here.declined) return `Habits: off in this project${tail}`;
   if (on.length > 0) return `Habits: on in ${shown(ctx, on)}${tail}`;

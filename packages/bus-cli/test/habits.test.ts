@@ -1471,12 +1471,14 @@ describe("habitsLine shows per-project habits (#3008)", () => {
     expect(line).toContain("CLAUDE.local.md");
   });
 
-  it("says changed when the block here is out of date", async () => {
+  it("says the block here is out of date, and how to update it", async () => {
     const ctx = await repoWith();
     await install({ habits: "project" }, ctx);
     const file = projectMd(ctx);
     writeFileSync(file, readFileSync(file, "utf8").replace("under 140", "x"));
-    expect(habitsLine(ctx)).toMatch(/Habits: changed in this project/);
+    const line = habitsLine(ctx) as string;
+    expect(line).toContain("Habits: out of date in this project");
+    expect(line).toContain("Run oa-bus install to update them.");
   });
 
   it("says off in this project when the person declined here", async () => {
@@ -1521,7 +1523,7 @@ describe("habitsLine shows per-project habits (#3008)", () => {
     Object.assign(ctx, { cwd: parent });
     const line = habitsLine(ctx) as string;
     expect(line).not.toContain("in this project");
-    expect(line).not.toContain("changed in this project");
+    expect(line).not.toContain("out of date in this project");
   });
 
   it("a decline for a sibling folder is not this folder's", async () => {
