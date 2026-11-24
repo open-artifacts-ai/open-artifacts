@@ -77,7 +77,10 @@ describe("a session that ended while the daemon was down leaves (#3028)", () => 
     const announcedFile = join(state, "announced.json");
     const sessions = mkdtempSync(join(tmpdir(), "ob-3028-rs-"));
     session(sessions, "ended-session");
-    const first = await daemonHarness({ announcedFile, claude: claude(sessions) });
+    const first = await daemonHarness({
+      announcedFile,
+      claude: claude(sessions),
+    });
     await first.next("agent_up");
     await vi.waitFor(async () => {
       const { readAnnounced } = await import("../src/announced.ts");
@@ -88,7 +91,10 @@ describe("a session that ended while the daemon was down leaves (#3028)", () => 
     await stopAll();
     // The session ended while the daemon was down: its file is gone.
     rmSync(join(sessions, "4242.json"));
-    const second = await daemonHarness({ announcedFile, claude: claude(sessions) });
+    const second = await daemonHarness({
+      announcedFile,
+      claude: claude(sessions),
+    });
     const frame = await firstSessions(second);
     expect(frame.closed).toContain("ended-session");
     expect(frame.open).toEqual([]);
