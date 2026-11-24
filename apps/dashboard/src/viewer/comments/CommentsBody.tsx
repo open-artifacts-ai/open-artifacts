@@ -1202,6 +1202,7 @@ function CommentRow({
   c,
   root,
   allProblems,
+  replyHere,
 }: {
   api: CommentsApi;
   thread: CommentThread;
@@ -1209,6 +1210,8 @@ function CommentRow({
   root: boolean;
   /** The thread's new delivery problems per comment, computed once in ThreadCard. */
   allProblems: ReturnType<typeof newProblems>;
+  /** #3042: open this thread's reply box (the card focuses it, not its own top). */
+  replyHere: () => void;
 }) {
   const nextAsk = nextAskFor(api, thread.id);
   const errCtx = useCommentErrorCtx();
@@ -1345,9 +1348,7 @@ function CommentRow({
             thread={thread}
             c={c}
             next={nextAsk ? () => api.reveal(nextAsk) : undefined}
-            reply={
-              api.canComment ? () => api.select(thread.id, true) : undefined
-            }
+            reply={api.canComment ? replyHere : undefined}
             openCard={(id) => {
               const to = api.threads.find((x) =>
                 x.comments.some((k) => k.id === id),
@@ -1501,6 +1502,15 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const compact = useContext(Compact);
   const reply = useReply(api.artifactId, api.guest);
   const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
+  // #3042: opened from Reply, not from the card: the reply box takes the caret
+  // and the scroll, so the card does not jump to its top and steal the focus.
+  const [replyWanted, setReplyWanted] = useState(0);
+  const wantReply = useRef(false);
+  const replyHere = () => {
+    wantReply.current = true;
+    setReplyWanted((n) => n + 1);
+    api.select(t.id, true);
+  };
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const errCtx = useCommentErrorCtx();
   const [statusErr, setStatusErr] = useState<unknown>(null);
@@ -1527,8 +1537,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // Runs on mount too, so a column that is just opening still scrolls and focuses.
   // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
+    // Consumed on every run: a later reveal must still scroll normally.
+    const fromReply = wantReply.current;
+    wantReply.current = false;
     if (!isActive) return;
-    if (el.current) scrollWithin(el.current, "nearest");
+    if (!fromReply && el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1541,7 +1554,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     const outlet = card
       ?.closest('[data-sheet-height="pin"]')
       ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
-    if (card && last && outlet) {
+    if (!fromReply && card && last && outlet) {
       const go = () => {
         // Hidden (not claimed yet) or gone (the sheet grew for typing): wait
         // for a real measure, never scroll on 0.
@@ -1564,7 +1577,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         watch.observe(outlet);
       }
     }
-    if (revealedHere && revealTick > api.revealDone.current) {
+    if (!fromReply && revealedHere && revealTick > api.revealDone.current) {
       api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
     }
@@ -1584,6 +1597,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     setRevealFirst(null);
     if (r) focusRow(r);
   }, [revealFirst, expanded]);
+  // Leaving the thread clears the one-shot reply request.
+  useEffect(() => {
+    if (!isActive) setReplyWanted(0);
+  }, [isActive]);
   if (!first) return null;
   const toggle = () => {
     setStatusErr(null);
@@ -1653,6 +1670,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               c={first}
               allProblems={allProblems}
               root
+              replyHere={replyHere}
             />
           </ul>
           {hidden > 0 && (
@@ -1682,6 +1700,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   c={c}
                   allProblems={allProblems}
                   root={false}
+                  replyHere={replyHere}
                 />
               ))}
             </ul>
@@ -1694,7 +1713,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         )}
         {/* A post that failed after its box closed, with no box on screen to take it back. */}
         {canAct && lostReply.lost && !isActive && (
-          <LostLine what="reply" onRestore={() => api.select(t.id, true)} />
+          <LostLine what="reply" onRestore={replyHere} />
         )}
         {canAct && isActive ? (
           <>
@@ -1702,6 +1721,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
             <Composer
               label="Reply"
+              autoFocus={replyWanted > 0}
               actions={ACTIONS_PLAIN}
               placeholder="Reply"
               mentionPlaceholder="Reply. Type @ to mention an agent or a person."
@@ -1742,11 +1762,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             <div
               className={`flex gap-2 ${compact && first.ask && !first.ask.closed ? "" : "pl-8"}`}
             >
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => api.select(t.id, true)}
-              >
+              <Button size="xs" variant="outline" onClick={replyHere}>
                 Reply
               </Button>
               {!api.outsider && (

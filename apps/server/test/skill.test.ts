@@ -120,6 +120,7 @@ describe("skill.md drift", () => {
     expect(await skill()).not.toContain("gh run rerun");
     // One sentence, shared with the publishing section: no second wording.
     expect(section).toContain(LINK_RULE);
+    expect(section).toContain("use the full width on large screens");
     expect(section).not.toMatch(/every link/i);
     // Plain links are not dead: the runtime hands them to the shell, which
     // opens them (docs/security/security.md).

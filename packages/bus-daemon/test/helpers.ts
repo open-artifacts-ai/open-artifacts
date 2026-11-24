@@ -100,6 +100,12 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     resolveNamespace: () => ({ namespace: "ns", global: false, source: "cwd" }),
     hub: { backoffMs: () => 20 },
     sentFile: join(mkdtempSync(join(tmpdir(), "ob-sf-")), "sent.json"),
+    // #3028: never the real ~/.oa-bus/announced.json: a temp one, unless a test
+    // brings its own (a restart test shares one across two runs).
+    announcedFile: join(
+      mkdtempSync(join(tmpdir(), "ob-an-")),
+      "announced.json",
+    ),
     // A queued send answers at once unless a test waits for delivered (C17).
     deliveredWaitMs: 0,
     ...over,

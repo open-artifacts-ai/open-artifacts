@@ -3,12 +3,13 @@
 // files it goes in, are steps/habits.ts.
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
 import {
   type BlockState,
+  blockState,
   HABITS_GLOBAL_UPDATE_TEXT,
   HABITS_HARNESSES,
   HABITS_LINES,
@@ -29,6 +30,7 @@ import {
   type ProjectIo,
   pluginHabitsState,
   projectHabitsFileState,
+  projectRecord,
   removeHabits,
   removeProjectHabits,
   setHabitsOptOut,
@@ -734,6 +736,45 @@ export async function habitsCommand(
   return mode === "yes" ? turnOn(ctx) : turnOff(ctx);
 }
 
+/**
+ * #3008: what this folder has, read from the record install wrote (no git, no
+ * writes). A block lives at the top of a work tree, so a block whose directory
+ * is `cwd` or above it is this project's: the command may run at the top, in a
+ * subfolder, or (with --dir) in a folder below it. A folder that merely
+ * contains other repos is no one's project: a block in a child of `cwd` is not
+ * this one's.
+ */
+const projectHere = (
+  ctx: Ctx,
+): { files: string[]; changed: boolean; declined: boolean } => {
+  const base = realpathOr(ctx.cwd);
+  // The block's own directory, so `/x/proj2` is not the project of `/x/proj`.
+  const atOrBelow = (p: string) => {
+    const dir = realpathOr(dirname(p));
+    return dir === base || base.startsWith(`${dir}${sep}`);
+  };
+  const rec = projectRecord(deps(ctx).busHome);
+  const files = Object.keys(rec.files).filter(atOrBelow);
+  const changed = files.some((f) => {
+    try {
+      return blockState(readFileSync(f, "utf8")).state === "changed";
+    } catch {
+      return false;
+    }
+  });
+  // #3008: a decline for `/x/proj` is not a decline here when the folder is
+  // `/x/proj2`: the same boundary, on the realpathed root install wrote.
+  const declined = Object.keys(readDeclined(ctx.home)).some((root) => {
+    const dir = realpathOr(root);
+    return dir === base || base.startsWith(`${dir}${sep}`);
+  });
+  return { files, changed, declined };
+};
+
+/** The words for one place, kept in one function so a plugin source can join it. */
+const habitsWhere = (ctx: Ctx, files: string[]): string =>
+  `on in this project, ${shown(ctx, files)}`;
+
 /** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
 export function habitsLine(ctx: Ctx): string | undefined {
   const { targets, plugins } = wired(ctx);
@@ -745,6 +786,13 @@ export function habitsLine(ctx: Ctx): string | undefined {
   );
   const states = used.map((p) => pluginStateText(ctx, p));
   const tail = states.length > 0 ? `; ${states.join("; ")}` : "";
+  // #3008: this folder first, then whatever is on for every project.
+  const here = projectHere(ctx);
+  if (here.files.length > 0)
+    return here.changed
+      ? `Habits: out of date in this project, ${shown(ctx, here.files)}. Run ${ctx.busCmd} install to update them${tail}`
+      : `Habits: ${habitsWhere(ctx, here.files)}${tail}`;
+  if (here.declined) return `Habits: off in this project${tail}`;
   if (on.length > 0) return `Habits: on in ${shown(ctx, on)}${tail}`;
   if (used.some((p) => pluginHabitsState(deps(ctx), p) === "on"))
     return `Habits: ${states.join("; ")}`;
