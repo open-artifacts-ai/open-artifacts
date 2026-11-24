@@ -358,11 +358,11 @@ describe("share panel", () => {
     for (const [name, hint] of [
       [
         "Database",
-        "Lets the page store shared data. Shared with everyone who can open this page. Anyone who can open it can change it, unless you limit changes to editors.",
+        "Lets the page store data that everyone who can open it sees. Anyone who can open it can change it, unless you limit changes to editors.",
       ],
       [
         "Viewer identity",
-        "Lets the page see who is viewing. The page can read the email and name of the signed-in viewer.",
+        "Lets the page see who is viewing. The page can read the email and name of the logged-in viewer.",
       ],
       [
         "Viewer's own data",
