@@ -57,6 +57,7 @@
       ],
       // Browser Run (server-side thumbnails). Workers edit suffices to deploy.
       "browser": { "binding": "BROWSER" },
+      "images": { "binding": "IMAGES" },
       // Email Sending (team invites) from the onboarded mail.open-artifacts.com;
       // EMAIL_FROM below must stay on that domain.
       "send_email": [{ "name": "EMAIL" }],

@@ -434,6 +434,8 @@ describe("revoke paths: the daemon's marker and whether it reconnects", () => {
       onRevoked,
       hub: { backoffMs: () => 20 },
       sentFile: join(tmp("ob-sf-"), "sent.json"),
+      // #3028: never the real ~/.oa-bus/announced.json.
+      announcedFile: join(tmp("ob-an-"), "announced.json"),
       attest: () => ({ ok: true }),
       resolveNamespace: () => ({
         namespace: "ns",

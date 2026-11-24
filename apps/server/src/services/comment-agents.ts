@@ -188,6 +188,34 @@ export async function viewerRosterAgents(
   return out;
 }
 
+/**
+ * #2577: the keys of `agents` that their owner's hub itself lists as away now.
+ * For agents whose state the POST did not read (a follower's: the roster skips
+ * hub reads there). One `busView` per owner, run once however many agents that
+ * owner has here, each bounded by busView's own timeout. An unreadable hub, or
+ * an agent the hub does not list, claims nothing: never "away" by inference.
+ * Never throws.
+ */
+export async function observedAway(
+  env: Env,
+  agents: readonly RosterAgent[],
+): Promise<Set<string>> {
+  const away = new Set<string>();
+  const owners = [...new Set(agents.map((a) => a.userId))];
+  await Promise.all(
+    owners.map(async (owner) => {
+      const view = await busView(env, owner, { away: true }).catch(() => null);
+      if (!view?.read) return;
+      const sessions = sessionsOf(view.agents);
+      for (const a of agents) {
+        const s = a.userId === owner ? sessions.get(addrKey(a.address)) : null;
+        if (s && s.state !== "live") away.add(a.key);
+      }
+    }),
+  );
+  return away;
+}
+
 const sessionFor = (a: BusAgent | undefined, own = true): Session =>
   a ? sessionOf(a, own) : UNKNOWN;
 

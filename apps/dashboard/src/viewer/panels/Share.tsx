@@ -107,12 +107,20 @@ const writersHint = (w: DataWriters, v: Visibility) =>
       : "Anyone who can view it.";
 
 const CAPS = [
-  ["db", "Database", "Lets the page store shared data."],
-  ["viewer", "Viewer identity", "Lets the page see who is viewing."],
+  [
+    "db",
+    "Database",
+    "Lets the page store data that everyone who can open it sees. Anyone who can open it can change it, unless you limit changes to editors.",
+  ],
+  [
+    "viewer",
+    "Viewer identity",
+    "Lets the page see who is viewing. The page can read the email and name of the logged-in viewer.",
+  ],
   [
     "storage",
     "Viewer's own data",
-    "Lets the page save data for each logged-in viewer, such as their own ticked boxes.",
+    "Lets the page save data for each logged-in viewer, such as their own ticked boxes. Private to each viewer: others do not see it.",
   ],
 ] as const;
 

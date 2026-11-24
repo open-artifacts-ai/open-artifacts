@@ -11,6 +11,7 @@
       "migrations_dir": "migrations"
     }
   ],
+  "images": { "binding": "IMAGES" },
   "r2_buckets": [{ "binding": "FILES", "bucket_name": "oa-blobs-test" }],
   "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "oa-kv-test" }],
   "durable_objects": {

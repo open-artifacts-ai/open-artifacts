@@ -328,6 +328,32 @@ export const CommentSchema = z.object({
   notice: z.string().optional(),
   /** #2508: up to 4 pictures; absent when there are none. */
   pictures: z.array(CommentPictureSchema).optional(),
+  /**
+   * #2577: per-target request facts, only on the asker's own typed comment read in their own browser
+   * session (never another member's, an agent's or a guest's view). `key` is the agent's key (as in
+   * `mentions`, `notified`, `ask.to`). `waiting_owner`: held for the agent's person to allow (a "Not now"
+   * reads the same); `lapsesAt` is when it lapses (7 days after it was held), `lapsed` after that.
+   * `offline`: the bus had recorded that agent as away when the notice was sent, and accepted it to wait for
+   * it, and it has not been acknowledged since. A held notice, a dropped or failed send, a deleted address and
+   * an unacknowledged send alone are never `offline`. A hold with no stored lapse time is never read as
+   * waiting: it is `lapsed` by the comment's age, or left out. Absent when none apply.
+   * The `delivery` fields stay as before.
+   */
+  requestFacts: z
+    .array(
+      z.object({
+        key,
+        status: z.enum(["waiting_owner", "lapsed", "offline"]),
+        lapsesAt: z.string().optional(),
+      }),
+    )
+    .optional(),
+  /**
+   * #2577: on an agent's reply that named the request it answers (`requestCommentId`): the person who asked,
+   * by public name. Set only when the server verified that request was delivered or released to the replying
+   * agent itself, in this thread. Members only. Absent otherwise (never an error, never a guess).
+   */
+  askedBy: z.object({ name: z.string() }).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -496,6 +522,8 @@ export const ReplyBodySchema = z
      * fixed notice; `mentions` on the returned comment says who and how it went.
      */
     toAsker: z.boolean().optional(),
+    /** #2577: as add_comment's `requestCommentId`; only a verified agent's reply uses it. */
+    requestCommentId: key.optional(),
   })
   .refine((v) => v.body.length > 0 || (v.pictures?.length ?? 0) > 0, {
     path: ["body"],
@@ -574,6 +602,15 @@ export const ListCommentsInputSchema = z.strictObject({
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 
+/** MCP get_comment_picture: a picture's id from a comment's `pictures` on list_comments. `pictureId` is checked after access, so a malformed one is bad_request. */
+export const GetCommentPictureInputSchema = z.strictObject({
+  id: IdSchema,
+  pictureId: z.string(),
+});
+export type GetCommentPictureInput = z.infer<
+  typeof GetCommentPictureInputSchema
+>;
+
 /** MCP add_comment: a reply when `threadId` is given, else a new thread (anchor defaults to a note on the whole artifact). */
 export const AddCommentInputSchema = z.strictObject({
   id: IdSchema,
@@ -582,6 +619,12 @@ export const AddCommentInputSchema = z.strictObject({
   anchor: anchorInputSchema.optional(),
   /** Turns the comment into an ask (#1535): owner and editors only. */
   ask: AskInputSchema.optional(),
+  /**
+   * #2577: a reply only. The id of the comment (in this thread) that asked you, when you are answering a
+   * request you took from a notice. The reply then shows who asked, but only if that request was delivered
+   * to you in this thread. Otherwise it is ignored; nothing is refused.
+   */
+  requestCommentId: key.optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 

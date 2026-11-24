@@ -56,6 +56,7 @@ import {
   LINK_HASHES_MAX,
   withLinkHash,
 } from "./agents.ts";
+import { readAnnounced, writeAnnounced } from "./announced.ts";
 import {
   type Attest,
   attest,
@@ -299,6 +300,13 @@ export type DaemonDeps = {
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
   /** Outgoing msg_ids awaiting a final receipt (0600); default ~/.oa-bus/sent.json. */
   sentFile?: string;
+  /**
+   * #3028: refs announced to a hub, kept across a restart (0600); default
+   * ~/.oa-bus/announced.json. A restarted daemon reports the saved ones it
+   * cannot see as live as closed, so a session that ended while it was down
+   * still leaves the hub.
+   */
+  announcedFile?: string;
   version?: string;
   log?: (msg: string) => void;
   /**
@@ -671,7 +679,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       closed: agents.closedRefs().filter(mine),
     };
   };
+  /** #3028: the refs announced to a hub, kept across a restart (0600). */
+  const announcedFile = deps.announcedFile ?? join(home(), "announced.json");
+  let announcedWritten: string | undefined;
+  /**
+   * #3028: mirror the table's refs into announced.json. A ref stays until it is
+   * live again or dropped by the cap, because the link's `sessions` frame is
+   * what ends it at the hub, and a link that is down misses one.
+   */
+  const persistAnnounced = () => {
+    const rows = agents.all().map((a) => ({
+      ref: a.ref,
+      kind: a.kind,
+      ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
+        ? { instance: a.instance }
+        : {}),
+    }));
+    const text = JSON.stringify(rows);
+    if (text === announcedWritten) return;
+    try {
+      writeAnnounced(announcedFile, rows);
+      announcedWritten = text;
+    } catch (e) {
+      log(
+        `could not save ${announcedFile}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  };
   const announceSessions = () => {
+    // #3028: the file follows the table, so a restart knows every ref the hub
+    // may still hold for this machine.
+    persistAnnounced();
     // Every close goes through here: a closed agent's rate limit mark goes with it.
     for (const ref of limited.keys())
       if (!agents.byRef(ref)?.live) clearLimited(ref);
@@ -686,10 +724,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       });
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
-  const limited = new Map<string, NodeJS.Timeout>();
-  /** The cap each refused agent hit. */
+  const limited = new Map<
+    string,
+    NodeJS.Timeout
+  >(); /** The cap each refused agent hit. */
   const caps = new Map<string, AgentCap>();
   const announceUp = (rec: AgentRecord) => {
+    // #3028: a ref the hub now holds is written down before the link can go
+    // quiet; a restart then reports it closed if the session ended meanwhile.
+    persistAnnounced();
     // A /clear handover waits for hello_ok: only then is it known whether the
     // hub takes `replaces`, and an agent_up sent without it is the
     // handover lost for good (#1582). hello_ok announces it.
@@ -3908,8 +3951,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     }
   };
+  // #3028: read before the first sync, which writes the file as it goes.
+  const savedAnnounced = readAnnounced(announcedFile, undefined, log);
   restoreCodex();
   sync();
+  // #3028: every ref the last run announced that this run cannot see (its
+  // session is gone) starts as closed, so the link's first `sessions` frame
+  // ends its row at the hub. Read after the sync, so a session that is still
+  // live is not closed and reopened on every restart, and its name is free
+  // again for a later rename; before, a daemon restart after a session ended
+  // left the row live for good.
+  for (const e of savedAnnounced) {
+    if (agents.byRef(e.ref) !== undefined) continue;
+    agents.up({
+      ref: e.ref,
+      kind: e.kind as AgentRecord["kind"],
+      proposedName: "",
+      busName: "",
+      namespace: "",
+      global: false,
+      instance: e.instance ?? MAIN_INSTANCE,
+      pid: 0,
+      cwd: "",
+      live: false,
+      closedBy: "liveness",
+    });
+  }
+  persistAnnounced();
   const watcher = setInterval(sync, cl.syncMs ?? 2000);
   watcher.unref();
   // A notice that failed for a live sender is retried; `tell` keeps one in flight per entry.
