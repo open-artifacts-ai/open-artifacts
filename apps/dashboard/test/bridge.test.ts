@@ -193,6 +193,29 @@ describe("hello / welcome", () => {
 });
 
 describe("calls", () => {
+  it("reports the live data box a call reaches for, denied or not (#3037)", async () => {
+    const used: string[] = [];
+    const b = createBridge({
+      iframe,
+      url: URL_,
+      artifact: ART,
+      version: 1,
+      viewer: VIEWER,
+      theme: "light",
+      onPdfText: vi.fn(),
+      onThumb: vi.fn(),
+      onCapability: (cap) => used.push(cap),
+    });
+    live.push(b);
+    call("db.get", { collection: "c", id: "d" }, "a");
+    // storage is off on this artifact: the refused call still marks the box.
+    call("storage.get", { key: "k" }, "b");
+    // The Welcome page's own call is not viewer identity.
+    call("onboarding.get", {}, "c");
+    await flush();
+    expect(used).toEqual(["db", "storage"]);
+  });
+
   it("capability_denied makes zero fetches", async () => {
     mk();
     call("storage.get", { key: "k" });

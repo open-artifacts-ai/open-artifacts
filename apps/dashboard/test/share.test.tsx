@@ -19,13 +19,18 @@ import {
   wait,
 } from "./harness";
 
+/** #3037: the bridge's capability reporter, as the frame's calls would reach it. */
+const capReporters: ((cap: string) => void)[] = [];
 vi.mock("../src/viewer/bridge", () => ({
-  createBridge: () => ({
-    dispose: vi.fn(),
-    requestThumbnail: vi.fn(),
-    setTheme: vi.fn(),
-    setArtifact: vi.fn(),
-  }),
+  createBridge: (o: { onCapability?: (cap: string) => void }) => {
+    if (o.onCapability) capReporters.push(o.onCapability);
+    return {
+      dispose: vi.fn(),
+      requestThumbnail: vi.fn(),
+      setTheme: vi.fn(),
+      setArtifact: vi.fn(),
+    };
+  },
 }));
 
 installHarness();
@@ -350,6 +355,61 @@ describe("share panel", () => {
     await waitFor(() =>
       expect(screen.queryByText("bob@example.com")).toBeNull(),
     );
+  });
+
+  it("#3037: marks the live data boxes this page's code uses", async () => {
+    capReporters.length = 0;
+    // The caps are stated here: earlier tests may have patched the fixture.
+    const art = fixtures.artifacts.find((a) => a.id === OWNED);
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...art,
+          capabilities: { db: true, viewer: true, storage: true },
+        }),
+      ),
+    );
+    mount(panel(OWNED));
+    await screen.findByRole("checkbox", { name: "Database" });
+    // Nothing called yet: every box says so.
+    expect(screen.getAllByText("This page doesn't use it.")).toHaveLength(3);
+    await act(async () => {
+      capReporters.at(-1)?.("db");
+    });
+    expect(screen.getAllByText("This page uses it.")).toHaveLength(1);
+    expect(screen.getAllByText("This page doesn't use it.")).toHaveLength(2);
+    // The box is on: a plain mark, not a warning.
+    expect(screen.queryByText(/the page fails there/)).toBeNull();
+  });
+
+  it("#3037: a box the page uses and that is off says the page is failing", async () => {
+    capReporters.length = 0;
+    const art = fixtures.artifacts.find((a) => a.id === OWNED);
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...art,
+          capabilities: { db: false, viewer: true, storage: false },
+        }),
+      ),
+    );
+    mount(panel(OWNED));
+    await screen.findByRole("checkbox", { name: "Database" });
+    await act(async () => {
+      capReporters.at(-1)?.("db");
+    });
+    expect(
+      screen.getByText(
+        "This page uses it, and it is off: the page fails there.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("#3037: a markdown artifact has no usage marks (only a page's code can call them)", async () => {
+    capReporters.length = 0;
+    mount(panel(id("Meeting notes")));
+    await screen.findByRole("checkbox", { name: "Database" });
+    expect(screen.queryByText(/This page (uses|doesn't use) it/)).toBeNull();
   });
 
   it("each Live data checkbox has its hint as its accessible description", async () => {
