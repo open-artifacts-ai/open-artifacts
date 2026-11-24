@@ -2218,6 +2218,27 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return listThreads(this.sql, status);
   }
 
+  /**
+   * #2953, internal (the first-comment scan): each person's earliest comment
+   * typed in the web app on this page, one grouped query. Only the author ref
+   * and the time leave: no body, no thread, no list truncation. An agent's,
+   * a guest's and an untyped comment never appear (#1797). `at` is ISO text.
+   */
+  commentsTypedFirsts(): { ref: string; at: string }[] {
+    this.ensureSchema();
+    return this.sql
+      .exec<{ ref: string; at: string }>(
+        `select json_extract(author, '$.ref') as ref, min(created_at) as at
+           from comments
+          where json_extract(author, '$.kind') = 'user'
+            and json_extract(author, '$.typed') = 1
+            and json_extract(author, '$.agent') is null
+            and json_extract(author, '$.ref') is not null
+          group by ref`,
+      )
+      .toArray();
+  }
+
   /** One thread, or not_found. */
   commentsGet(threadId: string): StoredThread {
     this.ensureSchema();
@@ -3108,6 +3129,7 @@ type RpcMethods =
   | "storageDelete"
   | "storageList"
   | "commentsList"
+  | "commentsTypedFirsts"
   | "commentsGet"
   | "commentsTake"
   | "commentsAdd"
