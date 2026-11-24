@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.242.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.1...v0.242.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **signin:** invited help line, try another account, keep the requested path ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3058](https://github.com/open-artifacts-ai/open-artifacts/issues/3058)) ([e43067e](https://github.com/open-artifacts-ai/open-artifacts/commit/e43067e408a590f937abbf0fabc5efcc675bfbe8))
+
 ## [0.242.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.0...v0.242.1) (2026-11-24)
 
 
