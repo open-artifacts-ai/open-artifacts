@@ -4,9 +4,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { habitsOff } from "@oa/bus-ipc";
 import { BRIEF_RULES } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
-import { habitsOff } from "../src/habits-off.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(async () => {

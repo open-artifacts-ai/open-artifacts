@@ -25,6 +25,7 @@ import {
   fitName,
   type Hello,
   type HelloResult,
+  habitsOff,
   isWellFormed,
   lateDeliveredText,
   receiptText,
@@ -136,7 +137,6 @@ import {
   folderKey,
   unmappedFolderNote,
 } from "./folders.ts";
-import { habitsOff } from "./habits-off.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import { BoundedMap, Lane, Lanes, ResendSet, refOf } from "./hubs.ts";
 import {
