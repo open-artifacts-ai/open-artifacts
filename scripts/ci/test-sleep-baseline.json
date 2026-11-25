@@ -27,7 +27,6 @@
   "apps/dashboard/test/directory.test.tsx": 1,
   "apps/dashboard/test/embed.test.tsx": 1,
   "apps/dashboard/test/for-you-settings.test.tsx": 1,
-  "apps/dashboard/test/harness.tsx": 1,
   "apps/dashboard/test/held-requests-switch.test.tsx": 1,
   "apps/dashboard/test/hook-ledger.test.ts": 1,
   "apps/dashboard/test/layout-behaviour.test.tsx": 1,
