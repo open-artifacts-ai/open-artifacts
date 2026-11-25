@@ -287,7 +287,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "set_oauth_store",
     "R29",
-    "Move an install's OAuth store: OAUTH_STORE to kv, dual or d1, verified on the install's /healthz. d1 needs a complete copy, and an install on d1 stays on d1.",
+    "Set an install's vars, verified on its /healthz: OAUTH_STORE to kv, dual or d1 (d1 needs a complete copy, and an install on d1 stays on d1), or AUTH_PROVIDERS to google or google,email (email codes off or on; Google itself never changes).",
     [YES_HINT],
   ),
   write(

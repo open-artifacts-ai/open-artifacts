@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.245.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.0...v0.245.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **tests:** pin the clock, wait on the comment's own path ([#3085](https://github.com/open-artifacts-ai/open-artifacts/issues/3085), [#3081](https://github.com/open-artifacts-ai/open-artifacts/issues/3081)) ([#3089](https://github.com/open-artifacts-ai/open-artifacts/issues/3089)) ([da707c1](https://github.com/open-artifacts-ai/open-artifacts/commit/da707c1f9fa2e6ef681b313f6a0e8edda40b3459))
+
+## [0.245.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.1...v0.245.0) (2026-11-25)
+
+
+### Features
+
+* **contract:** R29 also takes AUTH_PROVIDERS, email codes on or off ([#3083](https://github.com/open-artifacts-ai/open-artifacts/issues/3083)) ([bcf3822](https://github.com/open-artifacts-ai/open-artifacts/commit/bcf382261d98fa407d9cf34cfeb2b792f2ef183d))
+* **skill:** record by-hand steps with a "Done?" ask; check before asking ([#3079](https://github.com/open-artifacts-ai/open-artifacts/issues/3079)) ([#3080](https://github.com/open-artifacts-ai/open-artifacts/issues/3080)) ([efc884b](https://github.com/open-artifacts-ai/open-artifacts/commit/efc884bd979cdbaf86d9b81d02dff58058d54b5d))
+
 ## [0.244.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.0...v0.244.1) (2026-11-25)
 
 

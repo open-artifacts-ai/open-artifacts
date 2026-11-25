@@ -348,16 +348,33 @@ describe("replace", () => {
     const b = await page("New");
     const bot = asAgent(owner, "Bot");
     const old = await ask(a, bot);
-    // The old page's DO refuses the withdraw (its minute budget is spent).
-    await runInDurableObject(
-      runtimeStub(E, a) as unknown as DurableObjectStub<ArtifactRuntime>,
-      (i) => {
-        (i as unknown as { commentRate: Map<string, number> }).commentRate.set(
-          `u:${owner.userId}`,
-          999,
-        );
-      },
-    );
+    // The old page's DO refuses the withdraw: its minute budget is spent.
+    // The counter lives in memory and is cleared on a new minute, so the
+    // instance's clock is pinned too: the injection cannot age out of its
+    // window between this call and the one that reads it (no sleep, and no
+    // dependence on where the wall clock is).
+    const MINUTE = 60_000;
+    const spent = Date.now();
+    const setBudget = (full: boolean) =>
+      runInDurableObject(
+        runtimeStub(E, a) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (i) => {
+          const self = i as unknown as {
+            now: () => number;
+            commentRate: Map<string, number>;
+            commentMinute: number;
+          };
+          if (!full) {
+            self.now = () => Date.now();
+            self.commentRate.clear();
+            return;
+          }
+          self.now = () => spent;
+          self.commentMinute = Math.floor(spent / MINUTE);
+          self.commentRate.set(`u:${owner.userId}`, 999);
+        },
+      );
+    await setBudget(true);
     const fresh = await ask(b, bot, {
       replaces: { artifactId: a, threadId: old.t.id, commentId: old.c },
     });
@@ -367,13 +384,7 @@ describe("replace", () => {
     expect(await rows(b, fresh.c)).toBeGreaterThan(0);
     expect(await rows(a, old.c)).toBeGreaterThan(0);
     // The budget returns; the retry completes it.
-    await runInDurableObject(
-      runtimeStub(E, a) as unknown as DurableObjectStub<ArtifactRuntime>,
-      (i) =>
-        (
-          i as unknown as { commentRate: Map<string, number> }
-        ).commentRate.clear(),
-    );
+    await setBudget(false);
     const done = await withdrawAsk(
       E,
       a,
