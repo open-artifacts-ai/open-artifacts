@@ -515,13 +515,6 @@ export const ReplyBodySchema = z
     ...extras,
     /** #2508: pictures reserved with R.commentPictures. A comment with none needs text. */
     pictures: pictureRefs,
-    /**
-     * Address the reply to the thread root's ask author (#1614): anyone who may
-     * reply, viewers included. 400 not_an_ask when the root has no ask or its
-     * author is not an agent; 400 when combined with mentions or ask. Its agents get a
-     * fixed notice; `mentions` on the returned comment says who and how it went.
-     */
-    toAsker: z.boolean().optional(),
     /** #2577: as add_comment's `requestCommentId`; only a verified agent's reply uses it. */
     requestCommentId: key.optional(),
   })

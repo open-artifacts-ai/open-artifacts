@@ -120,12 +120,15 @@ export const needsCode = (email: string) =>
  * cookie, so no address): this line, and Try another account.
  */
 export const NEEDS_CODE_NO_CODES =
-  "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.";
+  "Google couldn't confirm that address. Ask whoever invited you or shared this page to use your Gmail or Google Workspace address.";
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
 /** OA Product: (b) with codes off. */
 export const WRONG_ACCOUNT_NO_CODES =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
+/** #3029: under the Google button on the plain sign-in page. */
+export const INVITED_HELP =
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
 
 /**
  * #2590 G2 (b) is for share recipients: the server can't tell them apart,
@@ -138,6 +141,9 @@ const isPageLink = (next: string) => /^\/a\/[^/?#]+/.test(next);
  * (404): the usual sign-in, with this line above it.
  */
 export const NEEDS_CODE = "That took too long. Start again.";
+/** The invite's time ran out: the server redirects with error=invite_expired. */
+export const INVITE_EXPIRED =
+  "This invite has expired. Ask whoever invited you to send a new one.";
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
@@ -166,6 +172,8 @@ const errorCopy = (
       return "Login took too long. Try again.";
     case "needs_code":
       return NEEDS_CODE;
+    case "invite_expired":
+      return INVITE_EXPIRED;
     default:
       return "Login didn't work. Try again.";
   }
@@ -504,6 +512,10 @@ function HostedSignIn({
       </>
     );
 
+  // #3029: a refused Google account on the plain page gets the same
+  // "Try another account" action the share-link page has (same Google start).
+  const wrongGoogle = error === "no_access" && via === "google";
+
   // Google only: one button; guests get their own row.
   return (
     <>
@@ -515,8 +527,23 @@ function HostedSignIn({
           : "Use your Google account."}
       </p>
       <Button asChild className="oa-split-btn">
-        <a href={googleHref}>Continue with Google</a>
+        <a href={googleHref}>
+          {wrongGoogle ? "Try another account" : "Continue with Google"}
+        </a>
       </Button>
+      {/* #3029: only the plain page, not a share link or a refusal. */}
+      {!error && !isPageLink(next) && (
+        <p
+          data-invited-help=""
+          style={{
+            margin: "12px 0 0",
+            fontSize: 13,
+            color: "var(--oa-text-muted)",
+          }}
+        >
+          {INVITED_HELP}
+        </p>
+      )}
       {accessButton}
       {guests && (
         <div

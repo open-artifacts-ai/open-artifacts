@@ -96,7 +96,6 @@ import {
   type AskerAddress,
   agentKey,
   agentRoster,
-  askerRoster,
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
@@ -1567,8 +1566,6 @@ export type CommentExtras = {
   /** #2770: people to @mention, by user id. */
   people?: string[];
   ask?: AskInput;
-  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
-  toAsker?: boolean;
   /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
   pictures?: CommentPictureRef[];
   /** #2577: a reply only: the comment (same thread) the replying agent is answering; kept only if provable (comments-store askedByOf). */
@@ -2407,95 +2404,6 @@ export async function askingAddress(
   return { ...address, identityId: id.identityId };
 }
 
-/**
- * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
- * root carries an ask and its author is an agent (a person's ask has no agent
- * to tell). The only addressee is that author's agents: the same target as
- * ask_answered (askerRoster: that exact agent by its verified bus address, #2224;
- * an author with no bus address gets nobody). It can reach no other agent. The notice is fixed text with the ids.
- */
-async function resolveToAsker(
-  env: Env,
-  artifactId: string,
-  threadId: string,
-  who: CommentWho,
-): Promise<Resolved> {
-  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
-  const root = t.comments[0];
-  if (!root?.ask || root.author.kind !== "user" || !root.author.agent)
-    throw new ApiError(
-      "not_an_ask",
-      "This thread has no question from an agent to reply to",
-    );
-  const to = await askerRoster(
-    env,
-    artifactId,
-    root.author.ref,
-    await askingAddress(env, artifactId, threadId, root.author),
-  );
-  const known = root.author.agent.identity;
-  // #2577: the asking agent's person takes a reply only from someone on their
-  // list, or from a person the ask was put to; else the delivery is held for them.
-  const heldFor: { agent: HeldAgent; way: string }[] = [];
-  let wake = to;
-  // #2559: a reply no person typed (a token or an agent) wakes only the asking
-  // agents of its own author, an addressee included; it holds nothing, since
-  // it carries no person's request.
-  if (who.kind === "user" && !typedByPerson(who))
-    wake = to.filter((a) => a.userId === who.id);
-  else if (
-    who.kind === "user" &&
-    typedByPerson(who) &&
-    to.length > 0 &&
-    !isAsked(root.ask, who, root.author.ref)
-  ) {
-    const mine = to.filter((a) => a.userId !== who.id);
-    const receiver = mine[0]?.userId;
-    const verdict = receiver
-      ? await decide(env, who.id, receiver, artifactId)
-      : "deliver";
-    if (verdict !== "deliver") {
-      // The sender's hourly limit comes first: over it, nothing is held.
-      // #2577 S2: with their switch off, nothing is held either.
-      if (verdict === "hold") {
-        const gate = new MentionGate(env, who.id);
-        if (await gate.takeSender())
-          for (const a of mine)
-            heldFor.push({ agent: heldAgentOf(a), way: "reply" });
-      }
-      wake = to.filter((a) => a.userId === who.id);
-    }
-  }
-  return {
-    extras:
-      wake.length || heldFor.length
-        ? {
-            // The verified identity the asking agent wrote the ask with, when it is the one the address resolved to (no new hub read).
-            ...(wake.length
-              ? {
-                  asker: wake.map((a) =>
-                    storedAgent(
-                      a,
-                      a.identityId && known?.identityId === a.identityId
-                        ? { identityId: known.identityId, kind: known.kind }
-                        : null,
-                    ),
-                  ),
-                }
-              : {}),
-            ...(heldFor.length ? { held: heldFor } : {}),
-          }
-        : undefined,
-    agents: wake.map((agent) => ({ agent, kind: "asker" as const })),
-    follow: [],
-    mentions: wake.map((a) => a.key),
-    mentionKind: "asker",
-    ...(heldFor.length ? { held: heldFor } : {}),
-    // The asker's agents are not named one by one: the asking agent joins by its own comment.
-    participants: [],
-  };
-}
-
 /** #2733: lets go of the holds a reply took up front; retried once. False when it failed (they stay held: masked, undelivered). Logs a fixed event, no content. Never throws. */
 async function unholdOnce(
   env: Env,
@@ -2745,31 +2653,15 @@ async function addReplyInner(
   const text = checkBody(body, pics.length > 0);
   if (pics.length > 0 && (who.kind !== "user" || viewer.guest))
     throw new ApiError("forbidden", "Log in as a member to add pictures");
-  let r: Resolved;
-  if (extras.toAsker) {
-    // A guest, signed out or not, cannot wake the asking agent.
-    if (await guestWho(env, who))
-      throw new ApiError(
-        "forbidden",
-        "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
-      );
-    if ((extras.mentions?.length ?? 0) > 0 || extras.ask !== undefined)
-      throw new ApiError(
-        "bad_request",
-        "toAsker cannot be combined with mentions or ask",
-      );
-    r = await resolveToAsker(env, artifactId, threadId, who);
-  } else {
-    // The reply's rate-limit charge is inside the DO write, so the lookups
-    // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
-    r = await withIdentities(
-      env,
-      await resolveExtras(env, artifactId, who, extras, {
-        ...opts,
-        caller: viewer.caller,
-      }),
-    );
-  }
+  // The reply's rate-limit charge is inside the DO write, so the lookups come
+  // first here (parallel, bounded: about one LINK_LOOKUP_MS).
+  let r: Resolved = await withIdentities(
+    env,
+    await resolveExtras(env, artifactId, who, extras, {
+      ...opts,
+      caller: viewer.caller,
+    }),
+  );
   gateOf(env, who, r);
   if (text === "" && (r.agents.length > 0 || r.mentions.length > 0))
     throw new ApiError(
@@ -2805,11 +2697,6 @@ async function addReplyInner(
     throw e;
   }
   if (claim) await bindPictures(env, claim.holder, threadId, c.id);
-  // The thread's bound (one notice per window, a cap in all) left the reply
-  // without its mention rows: nobody is told, and the usual follower notice
-  // (its own limits) is the only one.
-  if (extras.toAsker && !c.mentions?.length)
-    r = { ...r, agents: [], mentions: [] };
   opts.written?.(c);
   if (who.kind === "user" && r.held?.length)
     await recordHolds(env, who.id, artifactId, threadId, c.id, r.held);
@@ -2853,16 +2740,6 @@ async function addReplyInner(
     return withNotice(await commentView(env, c, viewer));
   }
   const sent = await deliver(env, a, threadId, c, r);
-  // The bound is spent when a notice goes out or is held; a reply whose agents
-  // all read "gone" (no session, or a stalled hub) gives it back (#1614).
-  if (
-    extras.toAsker &&
-    sent.mentions?.length &&
-    sent.mentions.every((m) => m.state === "gone")
-  )
-    await call(() =>
-      stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
-    ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   await emailPeople(env, artifactId, threadId, sent, true, opts.after);
   return withNotice(await commentView(env, sent, viewer));
@@ -2884,16 +2761,6 @@ async function storedAsk(
   if (!c || !ask) throw new ApiError("not_found", "Not found");
   return { ask, status: t.status, author: c.author.ref, held: c.held ?? [] };
 }
-
-/** Whether `who` is one of the people the ask was put to (as the DO decides). */
-const isAsked = (
-  ask: { to: StoredParty[]; decider?: string },
-  who: CommentWho,
-  author: string,
-): boolean =>
-  who.kind === "user" &&
-  (ask.to.some((p) => addresseeOf(p) === who.id) ||
-    (ask.decider ?? author) === who.id);
 
 /** #2381: the ask's decider: the person the asker named, else the asker's own user. */
 const deciderOf = (ask: { decider?: string }, author: string): string =>

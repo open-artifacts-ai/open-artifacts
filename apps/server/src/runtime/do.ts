@@ -81,7 +81,6 @@ import {
   participantsOf,
   pickCount,
   recordReplyTargets,
-  refundAsker,
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
@@ -2617,14 +2616,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return moved;
   }
 
-  /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
-  commentsAskerRefund(a: { threadId: string; at: string }): void {
-    this.ensureSchema();
-    this.ctx.storage.transactionSync(() =>
-      refundAsker(this.sql, a.threadId, a.at),
-    );
-  }
-
   /** Comment emails (#1467): the people of `userIds` with no email for the thread since `sinceIso`; their slots are taken at `at`. */
   commentsEmailClaim(a: {
     threadId: string;
@@ -3167,7 +3158,6 @@ type RpcMethods =
   | "commentsWithdraw"
   | "commentsTargetStates"
   | "commentsTargetSettle"
-  | "commentsAskerRefund"
   | "commentsEmailClaim"
   | "commentsEmailRefund"
   | "commentsThreadReplyTake"

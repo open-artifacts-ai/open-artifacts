@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.242.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.1...v0.242.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **signin:** invited help line, try another account, keep the requested path ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3058](https://github.com/open-artifacts-ai/open-artifacts/issues/3058)) ([e43067e](https://github.com/open-artifacts-ai/open-artifacts/commit/e43067e408a590f937abbf0fabc5efcc675bfbe8))
+
+## [0.242.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.0...v0.242.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **comments:** a new whole-page note shows at the top, in view ([#3032](https://github.com/open-artifacts-ai/open-artifacts/issues/3032)) ([#3038](https://github.com/open-artifacts-ai/open-artifacts/issues/3038)) ([e19f636](https://github.com/open-artifacts-ai/open-artifacts/commit/e19f636c9e4f4caec2cd2f4281599fc18cc92de5))
+* **onboarding:** connector path for Claude and ChatGPT members; clearer expired-invite and Google copy ([#3034](https://github.com/open-artifacts-ai/open-artifacts/issues/3034)) ([34fbf6d](https://github.com/open-artifacts-ai/open-artifacts/commit/34fbf6dd87137b48f749c727c8df19bf8231410d))
+
 ## [0.242.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.241.0...v0.242.0) (2026-11-24)
 
 
