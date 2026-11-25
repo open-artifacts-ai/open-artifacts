@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.244.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.0...v0.244.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **bus:** a live session on no instance moves once its folder is tied ([#3073](https://github.com/open-artifacts-ai/open-artifacts/issues/3073)) ([#3077](https://github.com/open-artifacts-ai/open-artifacts/issues/3077)) ([a2cbb7a](https://github.com/open-artifacts-ai/open-artifacts/commit/a2cbb7a1bd33631274856a7bf170cf63241eedf4))
+* **bus:** an added instance's entry links again once its old bus has stopped ([#3075](https://github.com/open-artifacts-ai/open-artifacts/issues/3075)) ([#3076](https://github.com/open-artifacts-ai/open-artifacts/issues/3076)) ([13723b6](https://github.com/open-artifacts-ai/open-artifacts/commit/13723b61ec7ed57afe3daf98427b95481599aaf4))
+
+## [0.244.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.243.0...v0.244.0) (2026-11-25)
+
+
+### Features
+
+* **asks:** the in-page ask card opens its thread ([#2426](https://github.com/open-artifacts-ai/open-artifacts/issues/2426) B, [#3048](https://github.com/open-artifacts-ai/open-artifacts/issues/3048)) ([#3064](https://github.com/open-artifacts-ai/open-artifacts/issues/3064)) ([e8d7080](https://github.com/open-artifacts-ai/open-artifacts/commit/e8d7080c13c5e1e03c46d8714a2d9af2ad501d27))
+
+
+### Bug Fixes
+
+* **asks:** an agent can address its own person as "me" ([#3066](https://github.com/open-artifacts-ai/open-artifacts/issues/3066)) ([#3069](https://github.com/open-artifacts-ai/open-artifacts/issues/3069)) ([824e41b](https://github.com/open-artifacts-ai/open-artifacts/commit/824e41b0ebd5bed4155e260f04234ce9ca077151))
+* **dashboard:** ask about agent reach only after the bus is connected ([#3065](https://github.com/open-artifacts-ai/open-artifacts/issues/3065)) ([#3068](https://github.com/open-artifacts-ai/open-artifacts/issues/3068)) ([7c8b98c](https://github.com/open-artifacts-ai/open-artifacts/commit/7c8b98c7515175d1ae1aca54e33d472d39394d74))
+
 ## [0.243.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.2...v0.243.0) (2026-11-25)
 
 

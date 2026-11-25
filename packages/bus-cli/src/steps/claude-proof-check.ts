@@ -5,6 +5,7 @@ import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, tilde } from "../context.ts";
 import { originOf } from "../machine.ts";
 import {
+  busStopped,
   claudeConfigFile,
   type EntryState,
   type InstanceTarget,
@@ -122,6 +123,19 @@ export function claudeProofChecks(
               lines: [`${cc} ${at} shows as this session on pages.`],
             },
       );
+    else if (
+      e.state === "other-bus" &&
+      instance !== undefined &&
+      busStopped(e.owner, ctx.userHome)
+    )
+      // #3075: that bus stopped, so its helper links no session at all.
+      out.push({
+        level: "fail",
+        lines: [
+          `${cc} ${at} has the helper of a bus that no longer runs (${e.owner === undefined ? "the default home" : safeText(tilde(ctx, e.owner), 120)}), so sessions using it are not linked.`,
+          `  Fix: ${install}, then restart those sessions`,
+        ],
+      });
     else if (e.state === "other-bus")
       out.push({
         level: "warn",
