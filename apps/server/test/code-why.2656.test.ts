@@ -89,11 +89,20 @@ describe("codeEligibility says why not", () => {
       "domain_no_join",
     ],
     [
-      "a member row outside the domains",
+      "an admin row outside the domains",
+      async () => {
+        const a = uniq("adm", "x.com");
+        await seedUser(a, "admin");
+        return [direct(), a];
+      },
+      "not_guest",
+    ],
+    [
+      "a member row outside the domains on an install without Google",
       async () => {
         const a = uniq("mem", "x.com");
         await seedUser(a, "member");
-        return [direct(), a];
+        return [trial(), a];
       },
       "not_guest",
     ],

@@ -11,6 +11,7 @@ import {
   type MemberPatch,
   type MemberRemovedDetails,
   type MemberStatus,
+  orderSignInMethods,
   type Role,
   type Settings,
   type SettingsPatch,
@@ -450,10 +451,11 @@ async function invited(
   cooledDown: boolean,
 ): Promise<{ result: MemberInviteResult; reinvited: boolean }> {
   // What the email names, and the result reports: uncertain Google is still
-  // the only way in, so it is named.
-  const signInMethods: SignInProvider[] = reach.methods.length
-    ? reach.methods
-    : ["google"];
+  // named, alone when it is the only way in, or next to a code (an invited
+  // member outside the domains may have no Google account).
+  const signInMethods: SignInProvider[] = reach.googleUncertain
+    ? orderSignInMethods([...reach.methods, "google"])
+    : reach.methods;
   // #2632: who added them, for their Welcome and the "is set up" line.
   await stmt(
     env.DB,

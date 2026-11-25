@@ -142,7 +142,10 @@ describe("invite reachability (review item 11)", () => {
   ] as const)(
     "%s, Google with AUTH_DOMAINS, outside the domains: created, signIn uncertain",
     async (_, over) => {
-      const { e, sent } = install(direct, over as Partial<Env>);
+      const { e, sent } = install(direct, {
+        ...(over as Partial<Env>),
+        AUTH_PROVIDERS: "google",
+      });
       const email = uniq("sec", "secondary.com");
       const r = await invite(e, await owner(), email);
       expect(r.status).toBe(201);
@@ -157,6 +160,17 @@ describe("invite reachability (review item 11)", () => {
     },
   );
 
+  it("Google and email, outside the domains: no uncertain flag, the email names Google and a code", async () => {
+    const { e, sent } = install(direct, {});
+    const email = uniq("nog", "secondary.com");
+    const r = await invite(e, await owner(), email);
+    expect(r.status).toBe(201);
+    const body = MemberInviteResultSchema.parse(await r.json());
+    expect(body.signIn).toBeUndefined();
+    expect(body.signInMethods).toEqual(["google", "email"]);
+    namesExactly(sent[0]?.text, ["google", "email"]);
+  });
+
   it("Google with AUTH_DOMAINS: an invited Gmail address is certain (no uncertain flag, #2520)", async () => {
     const { e, sent } = install(direct, {});
     const email = uniq("pal", "gmail.com");
@@ -165,7 +179,8 @@ describe("invite reachability (review item 11)", () => {
     expect(
       MemberInviteResultSchema.parse(await r.json()).signIn,
     ).toBeUndefined();
-    expect(sent[0]?.text).toContain("You'll log in with your Google account.");
+    expect(sent[0]?.text).toContain("your Google account");
+    expect(sent[0]?.text).toContain("one-time code");
   });
 
   it("re-inviting an invited, never-signed-in row is a 200 (fresh clock); anything else stays 409", async () => {
@@ -258,9 +273,16 @@ describe("MemberInviteResult.signInMethods (#799)", () => {
     ["trial, in-domain", trial, {}, "a.com", ["email"]],
     ["Google and email, in-domain", direct, {}, "a.com", ["google"]],
     [
-      "Google and email, outside (uncertain)",
+      "Google and email, outside (uncertain Google, a code)",
       direct,
       {},
+      "out.com",
+      ["google", "email"],
+    ],
+    [
+      "Google only, outside (uncertain)",
+      direct,
+      { AUTH_PROVIDERS: "google" },
       "out.com",
       ["google"],
     ],

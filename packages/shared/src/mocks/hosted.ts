@@ -2858,8 +2858,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     const guest = !member;
     const out: SignInProviderId[] = [];
     if (google && (inDomain ? member : kind === "invite")) out.push("google");
-    // Codes: domain codes (Google off) in the domain; guests outside it.
-    if (codes && (inDomain ? !google && member : guest)) out.push("email");
+    // Codes: domain codes (Google off) in the domain; outside it, guests,
+    // and invited members on a Google install.
+    if (codes && (inDomain ? !google && member : guest || google))
+      out.push("email");
     return orderSignInMethods(out);
   };
 

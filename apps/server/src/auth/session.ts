@@ -52,6 +52,8 @@ export async function signSession(
      * prompt=login, or an email code sign-in (#1372). Absent otherwise.
      */
     authAt?: number;
+    /** SessionPayload.m: an invited member's code session outside the domains. */
+    invitedMember?: boolean;
   },
 ): Promise<string> {
   if (!isId(uid)) throw new Error("invalid uid");
@@ -65,6 +67,7 @@ export async function signSession(
     ...(opts.hd ? { h: opts.hd.toLowerCase() } : {}),
     e: opts.epoch,
     ...(opts.authAt !== undefined ? { a: opts.authAt } : {}),
+    ...(opts.invitedMember ? { m: 1 as const } : {}),
   };
   const p = b64urlEncode(utf8Encoder.encode(JSON.stringify(payload)));
   return `${p}.${await hmacSign(key, p)}`;
@@ -109,6 +112,7 @@ export async function readSession(
         ? s.iat
         : s.exp - MAX_AGE_S * 1000;
     const a = typeof s.a === "number" && Number.isFinite(s.a) ? s.a : undefined;
+    if (s.m !== undefined && s.m !== 1) return null;
     return {
       uid: s.uid,
       exp: s.exp,
@@ -118,6 +122,7 @@ export async function readSession(
       ...(s.h !== undefined ? { h: s.h } : {}),
       e,
       ...(a !== undefined ? { a } : {}),
+      ...(s.m === 1 ? { m: 1 as const } : {}),
     };
   } catch {
     return null;
