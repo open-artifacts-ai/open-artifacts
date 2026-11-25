@@ -406,6 +406,7 @@ describe("comments: layouts", () => {
         outletH = 0; // hidden at the first frame
         await open();
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
         await new Promise((r) => setTimeout(r, 50));
         expect(spy).not.toHaveBeenCalledWith(
           expect.objectContaining({ behavior: "smooth" }),
@@ -477,6 +478,7 @@ describe("comments: layouts", () => {
       expect(overlay).toHaveAttribute("data-sheet-height", "half");
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       expect(overlay).toHaveAttribute("data-sheet-height", "pin");
+      // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
       await new Promise((r) => setTimeout(r, 50));
       expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
       expect(spy).not.toHaveBeenCalledWith(
@@ -488,6 +490,7 @@ describe("comments: layouts", () => {
       Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
       await new Promise((r) => setTimeout(r, 50));
       expect(spy).not.toHaveBeenCalledWith(
         expect.objectContaining({ behavior: "smooth" }),

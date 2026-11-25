@@ -1208,6 +1208,7 @@ describe("#2381 S2 the Decisions tab", () => {
     const first = await within(c).findByRole("tab", { name: /Comments/ });
     fireEvent.keyDown(first, { key: "ArrowRight" });
     cleanup();
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 0));
     window.removeEventListener("error", on);
     expect(errors).toEqual([]);
@@ -1256,6 +1257,7 @@ describe("#2381 S2 the Decisions tab", () => {
     expect(
       await within(c).findByRole("button", { name: "Decisions" }),
     ).toBeInTheDocument();
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 50));
     expect(c.querySelector("[data-decision-thread]")).not.toBeNull();
   });
@@ -2378,6 +2380,7 @@ describe("agent list loads on composer focus", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await wholePage(c);
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 50));
     expect(n.count).toBe(0);
   });
@@ -2462,6 +2465,7 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     const box = await wholePage(c);
     fireEvent.focus(box);
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 50));
     expect(n.count).toBe(0);
   });
@@ -2532,6 +2536,7 @@ describe("agent list loads on composer focus", () => {
     await waitFor(() => expect(hits).toBe(1));
     fireEvent.blur(box);
     fireEvent.focus(box);
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 50));
     expect(hits).toBe(1);
   });
@@ -2683,6 +2688,7 @@ describe("asks for you in the toolbar and header (#1614)", () => {
     );
     const router = mount(`${viewerPath(OWNED)}?thread=b`);
     await toolbar().catch(() => undefined);
+    // sleep-ok: a settle for the comments socket / MSW; the assertion is that nothing changed
     await new Promise((r) => setTimeout(r, 300));
     expect(router.state.location.searchStr).toContain("thread=b");
     serveThreads(() => [mk("a"), mk("b")]);
