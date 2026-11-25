@@ -41,8 +41,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-// sleep-ok: a settle before a signal-free assertion; prefer a waitFor
-const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const count = (h: BusHubStub, q: string, ...b: SqlStorageValue[]) =>
   inHub(h, (_, s) => s.storage.sql.exec<{ n: number }>(q, ...b).one().n);
 
@@ -147,7 +145,8 @@ const exists = async (h: BusHubStub, id: string) =>
 async function alarms(h: BusHubStub, n = 5) {
   for (let k = 0; k < n; k++) {
     await runDurableObjectAlarm(stubOf(h));
-    await tick(2);
+    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+    await new Promise((r) => setTimeout(r, 2));
   }
 }
 
@@ -180,7 +179,8 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
       expect(f.type).not.toBe("error");
       if (f.type === "agent_ok") k++;
     }
-    await tick(50);
+    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+    await new Promise((r) => setTimeout(r, 50));
     expect(
       await count(h, "select count(*) as n from agents where live = 1"),
     ).toBe(0);
@@ -325,7 +325,8 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
     d.send(up("u1", "ref_a", "Idle", n));
     await until(d, "agent_ok");
     d.send({ v: 1, id: "d1", type: "agent_down", agent_ref: "ref_a" });
-    await tick(30);
+    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+    await new Promise((r) => setTimeout(r, 30));
     const id = (
       await inHub(h, (_, s) =>
         s.storage.sql

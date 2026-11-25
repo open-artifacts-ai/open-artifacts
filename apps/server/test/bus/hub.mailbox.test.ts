@@ -28,6 +28,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -105,7 +106,7 @@ async function send(
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
   // Closes are not acknowledged: wait until the hub has applied it.
-  await vi.waitFor(async () => {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
@@ -289,7 +290,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     p.rcv.close();
     await p.rcv.closed;
     let disc: number | null = null;
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       disc =
         (
           await sqlOf<{ t: number | null }>(
@@ -419,7 +420,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     // The closes are not acknowledged (only the ups are): wait until the hub
     // has applied every one, or the last churn agent may still be open when
     // the inboxes are seeded and it, with no inbox, is evicted instead.
-    await vi.waitFor(
+    await eventually(
       async () => {
         const closed = await sqlOf<{ n: number }>(
           "select count(*) as n from agents where machine_id = ? and live = 0",
@@ -680,7 +681,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
       expect(d.msg_id).toBe(r.msg_id);
       p.rcv.send({ v: 1, id: `ak${k}`, type: "ack", msg_id: r.msg_id });
     }
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const st = await sqlOf<{ n: number }>(
         `select count(*) as n from receipts where state = 'delivered' and id in (${ids.map(() => "?").join(",")})`,
         ...ids,

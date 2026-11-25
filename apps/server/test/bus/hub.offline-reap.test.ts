@@ -29,6 +29,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(
   fn: (i: BusHub, s: DurableObjectState) => R,
@@ -128,7 +129,7 @@ async function goOffline(
 ): Promise<number> {
   d.close();
   await d.closed;
-  const t = await vi.waitFor(async () => {
+  const t = await eventually(async () => {
     const at = await disconnectedAt(machineId, userId);
     expect(typeof at).toBe("number");
     return at as number;
@@ -361,7 +362,7 @@ describe("offline reap (open-bus #422)", () => {
     const since = (await disconnectedAt(m.id)) as number;
     expect(since).toBeGreaterThanOrEqual(before);
     expect(since).toBeLessThanOrEqual(after);
-    const armed = await vi.waitFor(async () => {
+    const armed = await eventually(async () => {
       const at = await alarmAt();
       expect(at).not.toBeNull();
       return at as number;
@@ -392,12 +393,12 @@ describe("offline reap (open-bus #422)", () => {
     await inHub((_, s) => {
       new BusHub(s, e);
     }, uid);
-    const since = await vi.waitFor(async () => {
+    const since = await eventually(async () => {
       const at = await disconnectedAt(m.id, uid);
       expect(typeof at).toBe("number");
       return at as number;
     });
-    const armed = await vi.waitFor(async () => {
+    const armed = await eventually(async () => {
       const at = await inHub((_, s) => s.storage.getAlarm(), uid);
       expect(at).not.toBe(far);
       return at as number;

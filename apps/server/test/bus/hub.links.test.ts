@@ -24,6 +24,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
@@ -288,7 +289,7 @@ describe("routing across a link (#1567)", () => {
       open: [],
       closed: ["own"],
     });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await inOwnerHub((s) =>
         s.storage.sql
           .exec(
@@ -459,7 +460,7 @@ describe("roster across a link (#1567)", () => {
       open: [],
       closed: ["away", "far"],
     });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await inOwnerHub((s) =>
         s.storage.sql
           .exec(
@@ -575,4 +576,4 @@ describe("roster_changed fans out across a link (#1567)", () => {
 });
 
 const waitUntil = (ok: () => boolean) =>
-  vi.waitFor(() => expect(ok()).toBe(true), { interval: 20 });
+  eventually(() => expect(ok()).toBe(true), { interval: 20 });

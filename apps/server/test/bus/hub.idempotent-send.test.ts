@@ -199,8 +199,8 @@ async function setup() {
 async function offline(d: Daemon) {
   d.close();
   await d.closed;
-  // sleep-ok: absence — the hub marks the machine offline after the close; the
-  // send that follows must see it, and no frame reports that bookkeeping
+  // sleep-ok: this file's daemon registers no machine row to watch, so the
+  // close's bookkeeping has no signal; the hub applies it before the next send
   await new Promise((r) => setTimeout(r, 50));
 }
 

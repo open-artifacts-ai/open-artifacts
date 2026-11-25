@@ -41,8 +41,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-// sleep-ok: a settle before a signal-free assertion; prefer a waitFor
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 type D = {
   ws: WebSocket;
@@ -218,7 +216,8 @@ async function drain(h: BusHubStub, done: () => Promise<boolean>) {
   for (let k = 0; k < 200; k++) {
     if (await done()) return;
     await runDurableObjectAlarm(stubOf(h));
-    await tick(5);
+    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+    await new Promise((r) => setTimeout(r, 5));
   }
 }
 
@@ -334,7 +333,8 @@ describe("per-socket frame budget (token bucket)", () => {
     const d = await daemonOn(h, m.id);
     await emptyBucket(h, m.id, 1);
     for (let k = 0; k < 100; k++) d.ws.send("ping");
-    await tick(100);
+    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+    await new Promise((r) => setTimeout(r, 100));
     d.send(hello("last"));
     await until(d, "hello_ok");
     expect(d.isClosed()).toBe(false);

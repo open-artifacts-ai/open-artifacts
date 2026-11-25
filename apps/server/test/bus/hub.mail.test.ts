@@ -24,6 +24,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 /** The hub's in-memory held bodies (test-only static accessor). */
 const heldStats = async () =>
@@ -746,7 +747,7 @@ describe("mail: held memory", () => {
     for (const ref of refs)
       t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: ref });
     await barrier(t);
-    await vi.waitFor(
+    await eventually(
       async () => {
         const queued = await inOwnerHub(
           (st) =>

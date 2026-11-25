@@ -19,6 +19,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
@@ -109,7 +110,7 @@ const shape = (r: Receipt) => {
 const changed = (d: Daemon) =>
   d.raw.filter((t) => t.includes('"roster_changed"'));
 const waitUntil = (ok: () => boolean) =>
-  vi.waitFor(() => expect(ok()).toBe(true), { interval: 20 });
+  eventually(() => expect(ok()).toBe(true), { interval: 20 });
 
 /**
  * X holds `holder` (role `lead`, reaching Y) and `peer`; Y holds `bob` and
@@ -421,7 +422,7 @@ describe("the reply path by every name", () => {
 
 async function waitUntilAway(w: { x: string; hn: string }) {
   const hub = await hubOf();
-  await vi.waitFor(
+  await eventually(
     async () =>
       expect((await hub.snapshot()).agents.some((a) => a.name === w.hn)).toBe(
         false,
@@ -592,7 +593,7 @@ describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1
       expect(r.state).toBe("pending");
       await expectReclaimed(w, how);
       dg.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "g" });
-      await vi.waitFor(
+      await eventually(
         async () =>
           expect(
             (await hub.snapshot()).agents.some((a) =>

@@ -16,6 +16,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -77,7 +78,7 @@ async function send(d: Daemon, from: string, to: string): Promise<Receipt> {
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  await vi.waitFor(async () => {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,

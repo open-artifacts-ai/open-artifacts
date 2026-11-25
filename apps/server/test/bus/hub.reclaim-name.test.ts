@@ -24,6 +24,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -118,7 +119,7 @@ async function rename(
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  await vi.waitFor(async () => {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
@@ -233,7 +234,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const dl = await waitFor(s.d, "deliver");
     expect(dl.msg_id).toBe(acked.msg_id);
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: acked.msg_id });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const st = await sqlOf<{ state: string }>(
         "select state from receipts where id = ?",
         acked.msg_id,
@@ -500,7 +501,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     // The machine goes offline; the hub reaps its agents into `away`.
     d.close();
     await d.closed;
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await sqlOf<{ t: number | null }>(
         "select disconnected_at as t from machines where id = ?",
         dm.id,
@@ -533,7 +534,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       (await rename(d2, refs[1] as string, names[1] as string)).bus_name,
     ).toBe(names[1]);
     // reg() skips frames it does not wait for: read every deliver received.
-    await vi.waitFor(() => expect(delivers(d2)).toHaveLength(3));
+    await eventually(() => expect(delivers(d2)).toHaveLength(3));
     const got = new Map(delivers(d2).map((x) => [x.msg_id, x.to_ref]));
     for (const [msgId, name] of mail)
       expect(got.get(msgId)).toBe(refs[names.indexOf(name)]);
@@ -590,7 +591,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       await waitFor(s.d, "deliver");
       s.d.send({ v: 1, id: `ak${k}`, type: "ack", msg_id: r.msg_id });
     }
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const st = await sqlOf<{ n: number }>(
         "select count(*) as n from receipts where state = 'delivered' and id in (select value from json_each(?))",
         JSON.stringify(ids),
@@ -675,14 +676,14 @@ describe("a restarted session takes back its own name (#1742)", () => {
     await close(s.d, s.oldRef);
     const ref = uniq("new");
     expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
-    await vi.waitFor(() =>
+    await eventually(() =>
       expect(delivers(s.d).some((x) => x.to_ref === ref)).toBe(true),
     );
     const dl = delivers(s.d).find((x) => x.to_ref === ref);
     expect(dl).toMatchObject({ msg_id: r.msg_id });
     expect(dl && "body" in dl && dl.body).toBe("pushed, never acked");
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: r.msg_id });
-    const st = await vi.waitFor(async () => {
+    const st = await eventually(async () => {
       const rows = await sqlOf<{ state: string; ref: string }>(
         "select r.state as state, a.native_ref as ref from receipts r join agents a on a.id = r.to_agent where r.id = ?",
         r.msg_id,

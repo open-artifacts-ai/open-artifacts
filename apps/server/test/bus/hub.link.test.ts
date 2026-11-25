@@ -25,6 +25,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -87,7 +88,7 @@ async function scene(caps: string[] | null = [BUS_CAPS.link]) {
 
 const close = async (d: Daemon, userId: string, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  await vi.waitFor(async () => {
+  await eventually(async () => {
     const r = await rows(
       userId,
       "select live from agents where native_ref = ? order by rowid desc limit 1",
@@ -404,7 +405,7 @@ describe("the proof ends with the session (#1822)", () => {
     await reg(b.d, "r1", "Lead", b.ns);
     const hb = await bindMany(b, "r1", 3);
     b.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await proofRow(b.m.userId, "r1");
       expect(r[0]?.live).toBe(0);
     });
@@ -429,7 +430,7 @@ describe("the proof ends with the session (#1822)", () => {
     const hs = await bindMany(s, "r1", 3);
     s.d.close();
     await s.d.closed;
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select disconnected_at as t from machines where id = ?",
@@ -491,7 +492,7 @@ describe("the proof ends with the session (#1822)", () => {
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("8"));
     s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await proofRow(s.m.userId, "r1");
       expect(r[0]?.live).toBe(0);
     });
@@ -526,7 +527,7 @@ describe("the proof ends with the session (#1822)", () => {
     await bind(s.d, "r1", hashOf("a"));
     s.d.close();
     await s.d.closed;
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select disconnected_at as t from machines where id = ?",
@@ -703,7 +704,7 @@ describe("the away grace (#2110)", () => {
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("f"));
     s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select live, away_since as t from agents where native_ref = 'r1'",

@@ -19,6 +19,7 @@ import {
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { e, trackSocket } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 type Stub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -311,7 +312,7 @@ describe("agent_up name_chosen (#2311)", () => {
       namespace: "ns",
       global: false,
     });
-    await vi.waitFor(
+    await eventually(
       () =>
         expect(
           types.filter((t) => t === "agent_ok").length,
@@ -346,7 +347,7 @@ describe("agent_up name_chosen (#2311)", () => {
       proposed_name: "Title B",
       name_chosen: false,
     });
-    await vi.waitFor(
+    await eventually(
       () =>
         expect(
           types.filter((t) => t === "renamed").length,
@@ -372,7 +373,7 @@ describe("agent_up name_chosen (#2311)", () => {
       agent_ref: "ref_d",
       proposed_name: "Chosen B",
     });
-    await vi.waitFor(
+    await eventually(
       () =>
         expect(
           types.filter((t) => t === "renamed").length,

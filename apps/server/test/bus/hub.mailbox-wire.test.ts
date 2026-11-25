@@ -1,3 +1,4 @@
+import { eventually } from "./helpers.ts";
 // #1295 PR B: the mailbox wire. A hello that lists BUS_CAPS.mailbox gets
 // queued/since on a send receipt, `mailbox_full`, `reserved_name`, and away
 // rows in the roster; every other socket keeps exactly today's shapes (its
@@ -121,7 +122,7 @@ async function receiptFor(d: Daemon, fid: string): Promise<Receipt> {
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  await vi.waitFor(async () => {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
@@ -209,7 +210,7 @@ describe("mailbox wire (#1295 PR B)", () => {
   it("a send to a live agent on an offline machine: queued offline since disconnected_at", async () => {
     const { rcv, snd, ref, name } = await trio(MB);
     rcv.close();
-    const since = await vi.waitFor(async () => {
+    const since = await eventually(async () => {
       const at =
         (
           await sqlOf<{ t: number | null }>(
@@ -576,7 +577,7 @@ describe("mailbox wire (#1295 PR B)", () => {
     const d1 = await waitFor(rcv, "deliver");
     expect(d1.msg_id).toBe(first.msg_id);
     rcv.send({ v: 1, id: id("ak"), type: "ack", msg_id: first.msg_id });
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const st = await sqlOf<{ state: string }>(
         "select state from receipts where id = ?",
         first.msg_id,

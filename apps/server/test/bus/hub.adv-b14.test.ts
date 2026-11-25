@@ -83,7 +83,8 @@ const delivers = (d: Daemon) =>
 async function offline(d: Daemon) {
   d.close();
   await d.closed;
-  // sleep-ok: absence — the hub's own bookkeeping after a close emits no frame
+  // sleep-ok: this file's daemon registers no machine row to watch, so the
+  // close's bookkeeping has no signal; the hub applies it before the next send
   await new Promise((r) => setTimeout(r, 50));
 }
 

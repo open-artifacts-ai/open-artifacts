@@ -14,6 +14,7 @@ import {
 import { namedKey } from "../../src/services/onboarding-firsts.js";
 import { login } from "../helpers.js";
 import { e, trackSocket } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const stored = (userId: string) =>
   env.DB.prepare("select value from settings where key = ?1")
@@ -55,7 +56,7 @@ async function connect(userId: string) {
   };
 }
 const until = (fn: () => boolean | Promise<boolean>) =>
-  vi.waitFor(async () => expect(await fn()).toBe(true));
+  eventually(async () => expect(await fn()).toBe(true));
 
 describe("the hub records a named agent (#2478)", () => {
   it("an agent_up with name_chosen records the owner's first time, once", async () => {

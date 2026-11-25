@@ -29,6 +29,7 @@ import {
   waitFor,
   workerFetch,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const proofOf = () =>
@@ -97,7 +98,7 @@ describe("linkRequest (#1822)", () => {
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
   });
@@ -116,7 +117,7 @@ describe("linkRequest (#1822)", () => {
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${b.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${b.userId}`]), {
       timeout: 5000,
     });
     expect(asked).not.toContain(`bus:${a.userId}`);
@@ -137,7 +138,7 @@ describe("linkRequest (#1822)", () => {
     // Only the well-formed unknown one reached the hub.
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
   });

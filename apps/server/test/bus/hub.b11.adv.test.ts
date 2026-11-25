@@ -43,8 +43,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-// sleep-ok: a settle before a signal-free assertion; prefer a waitFor
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 type D = {
   ws: WebSocket;
@@ -386,7 +384,8 @@ describe("M2/M3 + manager pin: machine-keyed bucket, burst 512, 4429 and cooldow
     while (frames.length < FRAME_BUDGET.burst + 100) frames.push(junkAck());
     for (const f of frames) {
       d.send(f);
-      await tick(25);
+      // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
+      await new Promise((r) => setTimeout(r, 25));
       if (d.isClosed()) break;
     }
     await sync(d);
