@@ -11,8 +11,9 @@
 //
 // Usage: node --experimental-strip-types scripts/ci/no-test-sleeps.ts [--update]
 //   --update rewrites the baseline from what is in the tree now.
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+
 import { execFileSync } from "node:child_process";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -133,6 +134,27 @@ export function baseBaseline(ref: string): Record<string, number> | null {
   }
 }
 
+/**
+ * Whether the rule itself changed since `ref`. The only reason a count may grow
+ * is a rule that finds more waits; every other growth is a hand edit growing
+ * the list, which is what this check is for.
+ */
+export function ruleChanged(ref: string, cwd = root): boolean {
+  try {
+    execFileSync(
+      "git",
+      ["diff", "--quiet", ref, "--", "scripts/ci/no-test-sleeps.ts"],
+      {
+        cwd,
+        stdio: "ignore",
+      },
+    );
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 /** Keys raised above the base's count, or added since it. */
 export function grown(
   tree: Record<string, number>,
@@ -185,10 +207,13 @@ const main = () => {
   const at = process.argv.indexOf("--base");
   const ref = at === -1 ? undefined : process.argv[at + 1];
   const base = ref ? baseBaseline(ref) : null;
-  const raised = base ? grown(baseline, base) : [];
-  for (const line of raised)
-    console.log(`no-test-sleeps: RAISED ${line}`);
-  if (added.length > 0 || stale.length > 0 || raised.length > 0) {
+  const grew = base ? grown(baseline, base) : [];
+  const ruleGrew = grew.length > 0 && !!ref && ruleChanged(ref);
+  for (const line of grew)
+    console.log(
+      `no-test-sleeps: ${ruleGrew ? "GREW (the rule changed)" : "RAISED"} ${line}`,
+    );
+  if (added.length > 0 || stale.length > 0 || (grew.length > 0 && !ruleGrew)) {
     console.log(
       "no-test-sleeps: tests control time with fake timers or wait on a signal, never sleep. Add `// sleep-ok: <why>` if a wait is the only way.",
     );

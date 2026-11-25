@@ -60,7 +60,10 @@ describe("no-test-sleeps", () => {
 
   it("the baseline may only shrink", () => {
     expect(
-      grown({ "a.test.ts": 3, "b.test.ts": 1 }, { "a.test.ts": 3, "b.test.ts": 1 }),
+      grown(
+        { "a.test.ts": 3, "b.test.ts": 1 },
+        { "a.test.ts": 3, "b.test.ts": 1 },
+      ),
     ).toEqual([]);
     expect(grown({ "a.test.ts": 4 }, { "a.test.ts": 3 })).toEqual([
       "a.test.ts: 4, was 3 on the base branch",
