@@ -66,14 +66,32 @@ export const COPY_KEY_LEFT_SQL = `SELECT 1 AS x FROM jobs j WHERE j.install_id =
 export const DOCS_PREVIEW_VALUES = ["1", ""] as const;
 export type DocsPreviewValue = (typeof DOCS_PREVIEW_VALUES)[number];
 
-/** A set carries a mode, a docs preview value, or both. */
+/**
+ * R29's AUTH_PROVIDERS values (cloud #435): email codes on or off for an
+ * install that signs in with Google. Google itself is never turned on or off
+ * here, so no broker key changes hands; the provisioner re-checks the whole
+ * set with the same rules a new install meets.
+ */
+export const AUTH_PROVIDERS_VALUES = ["google", "google,email"] as const;
+export type AuthProvidersValue = (typeof AUTH_PROVIDERS_VALUES)[number];
+
+/** A set carries a mode, a docs preview value, sign-in methods, or several. */
 export type OAuthJob =
-  | { op: "set"; mode?: OAuthStoreMode; docsPreview?: DocsPreviewValue }
+  | {
+      op: "set";
+      mode?: OAuthStoreMode;
+      docsPreview?: DocsPreviewValue;
+      authProviders?: AuthProvidersValue;
+    }
   | { op: "copy" };
 
 /** jobs.args of an R29 job: only the keys that were sent. */
 export const oauthStoreJobArgs = (b: {
-  vars: { OAUTH_STORE?: OAuthStoreMode; DOCS_PREVIEW?: DocsPreviewValue };
+  vars: {
+    OAUTH_STORE?: OAuthStoreMode;
+    DOCS_PREVIEW?: DocsPreviewValue;
+    AUTH_PROVIDERS?: AuthProvidersValue;
+  };
 }) => ({
   vars: {
     ...(b.vars.OAUTH_STORE !== undefined && {
@@ -81,6 +99,9 @@ export const oauthStoreJobArgs = (b: {
     }),
     ...(b.vars.DOCS_PREVIEW !== undefined && {
       DOCS_PREVIEW: b.vars.DOCS_PREVIEW,
+    }),
+    ...(b.vars.AUTH_PROVIDERS !== undefined && {
+      AUTH_PROVIDERS: b.vars.AUTH_PROVIDERS,
     }),
   },
 });
@@ -96,13 +117,26 @@ export function parseOAuthJob(a: Record<string, unknown>): OAuthJob | null {
   if (oauthCopy === true) return vars === undefined ? { op: "copy" } : null;
   if (oauthCopy !== undefined || !vars || typeof vars !== "object") return null;
   const keys = Object.keys(vars);
-  const { OAUTH_STORE: mode, DOCS_PREVIEW: docs } = vars as {
+  const {
+    OAUTH_STORE: mode,
+    DOCS_PREVIEW: docs,
+    AUTH_PROVIDERS: auth,
+  } = vars as {
     OAUTH_STORE?: unknown;
     DOCS_PREVIEW?: unknown;
+    AUTH_PROVIDERS?: unknown;
   };
   if (
     keys.length === 0 ||
-    keys.some((k) => k !== "OAUTH_STORE" && k !== "DOCS_PREVIEW")
+    keys.some(
+      (k) =>
+        k !== "OAUTH_STORE" && k !== "DOCS_PREVIEW" && k !== "AUTH_PROVIDERS",
+    )
+  )
+    return null;
+  if (
+    auth !== undefined &&
+    !AUTH_PROVIDERS_VALUES.includes(auth as AuthProvidersValue)
   )
     return null;
   if (mode !== undefined && !OAUTH_STORE_MODES.includes(mode as OAuthStoreMode))
@@ -116,6 +150,7 @@ export function parseOAuthJob(a: Record<string, unknown>): OAuthJob | null {
     op: "set",
     ...(mode !== undefined && { mode: mode as OAuthStoreMode }),
     ...(docs !== undefined && { docsPreview: docs as DocsPreviewValue }),
+    ...(auth !== undefined && { authProviders: auth as AuthProvidersValue }),
   };
 }
 
