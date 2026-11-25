@@ -25,6 +25,7 @@ import {
   fitName,
   type Hello,
   type HelloResult,
+  habitsOff,
   isWellFormed,
   lateDeliveredText,
   receiptText,
@@ -35,6 +36,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
+  BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -307,6 +309,11 @@ export type DaemonDeps = {
    * still leaves the hub.
    */
   announcedFile?: string;
+  /**
+   * #3043: whether this install opted out of the habits the bus pushes at
+   * session start; default: install.json's `habits.optedOut`. Tests only.
+   */
+  habitsOff?: () => boolean;
   version?: string;
   log?: (msg: string) => void;
   /**
@@ -3360,6 +3367,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               ? "ok"
               : "old_hub";
         },
+        // #3043: the rules a session is told at start, or none when opted out.
+        habits: () =>
+          (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
         linked: (ref, hash) => {
           // The adapter then adds the argument to its calls: only for a hub
           // whose /mcp strips it (an older one fails a strict tool schema).
