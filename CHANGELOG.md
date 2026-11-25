@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.246.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.1...v0.246.0) (2026-11-25)
+
+
+### Features
+
+* **auth:** an invited member outside the domains signs in by email code on a Google install ([#3082](https://github.com/open-artifacts-ai/open-artifacts/issues/3082)) ([14a9232](https://github.com/open-artifacts-ai/open-artifacts/commit/14a9232509f5c0fa2147bcb8b481df7426eb04fc))
+
 ## [0.245.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.0...v0.245.1) (2026-11-25)
 
 
