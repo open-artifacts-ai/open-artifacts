@@ -65,6 +65,23 @@ export function createAskSlots(
     el.setAttribute("data-oa-ask-sized", String(h));
   };
 
+  /**
+   * The slots the ResizeObserver watches. Re-observing every report would fire
+   * its initial callback for each element each time, which reports again: a
+   * loop at rAF speed with nothing changing.
+   */
+  let watched: HTMLElement[] = [];
+  const watchSlots = (els: HTMLElement[]) => {
+    if (
+      els.length === watched.length &&
+      els.every((el, i) => el === watched[i])
+    )
+      return;
+    ro?.disconnect();
+    for (const el of els) ro?.observe(el);
+    watched = els;
+  };
+
   const report = (force: boolean) => {
     raf = 0;
     if (ended) return;
@@ -73,8 +90,7 @@ export function createAskSlots(
       const h = sizes.get(key);
       if (h !== undefined) size(el, h);
     }
-    ro?.disconnect();
-    for (const [, el] of slots) ro?.observe(el);
+    watchSlots(slots.map(([, el]) => el));
     if ((bridge.shellProtocol?.() ?? 0) < SHELL_ASK_SLOTS) return;
     const list = slots.map(([key, el]) => {
       const r = el.getBoundingClientRect();
@@ -113,19 +129,35 @@ export function createAskSlots(
     typeof MutationObserver === "undefined"
       ? undefined
       : new MutationObserver(() => schedule());
-  mo?.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["data-oa-ask", "style", "class"],
-  });
+  /**
+   * Watch the document's own changes once a slot exists, or once the shell has
+   * said it reads them (protocol 8): before that a page pays nothing for this,
+   * and a page with no slots is the common case.
+   */
+  let watching = false;
+  const watchDocument = () => {
+    if (watching || ended) return;
+    if ((bridge.shellProtocol?.() ?? 0) < SHELL_ASK_SLOTS && !find().length)
+      return;
+    watching = true;
+    mo?.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["data-oa-ask", "style", "class"],
+    });
+  };
+  watchDocument();
   const onMove = () => schedule();
   addEventListener("resize", onMove, { passive: true });
   addEventListener("scroll", onMove, { passive: true, capture: true });
 
   const off = bridge.on((m) => {
-    if (m.type === "shell.protocol") schedule(true);
-    else if (m.type === "ask.slotSize") {
+    if (m.type === "shell.protocol") {
+      watchDocument();
+      schedule(true);
+    } else if (m.type === "ask.slotSize") {
+      watchDocument();
       const h = clamp(m.h, 0, SLOT_H_MAX);
       sizes.set(m.key, h);
       const hit = find().find(([k]) => k === m.key);

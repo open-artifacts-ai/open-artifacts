@@ -1,9 +1,4 @@
-import {
-  ASK_SLOT_H_MAX,
-  type Comment,
-  type CommentThread,
-  viewerPath,
-} from "@oa/shared";
+import { ASK_SLOT_H_MAX, viewerPath } from "@oa/shared";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { type AskSlot, useAskSlots } from "../../api/askSlots";
 import type { AskSlotRect } from "../bridge";
@@ -33,36 +28,12 @@ export function slotPlace(
   const x = Math.min(Math.max(0, rect.x), Math.max(0, frame.w - w));
   // Only a card with no part in the visible frame is hidden.
   const visible = rect.y + cardH > 0 && rect.y < frame.h && frame.w > 0;
-  // The card's top must be in view too: a page that scrolls its slot so only
-  // the options show, beside its own text, gets no pick until it is back.
-  return { x, y: rect.y, w, visible, topIn: visible && rect.y >= 0 };
+  return { x, y: rect.y, w, visible };
 }
 
-/** The ask's slot as the pane's thread and comment, so AskBlock draws it unchanged. */
-function asComment(s: AskSlot): { thread: CommentThread; c: Comment } {
-  const c: Comment = {
-    id: s.commentId,
-    body: s.ask.question,
-    author: s.author ?? { kind: "agent", name: "An agent", me: false },
-    createdAt: "",
-    editedAt: null,
-    typed: false,
-    can: { edit: false, delete: false },
-    ask: s.ask,
-  };
-  return {
-    c,
-    thread: {
-      id: s.threadId,
-      anchor: { kind: "note" },
-      version: 1,
-      status: "open",
-      resolvedBy: null,
-      resolvedAt: null,
-      createdAt: "",
-      comments: [c],
-    } as unknown as CommentThread,
-  };
+/** The thread a slot's ask lives on, and who asked it. */
+function askThread(s: AskSlot): { id: string; author: string } {
+  return { id: s.threadId, author: s.author?.name ?? "An agent" };
 }
 
 function decisionText(s: AskSlot): string | null {
@@ -112,11 +83,11 @@ function AskSlotCard({
   const px = Math.round(place.x);
   const py = Math.round(place.y);
   const pw = Math.round(place.w);
-  const { thread, c } = asComment(slot);
+  const thread = askThread(slot);
   const decided = decisionText(slot);
   const home = slot.home;
   const who = slot.ask.to.some((a) => a.me) || slot.ask.role !== undefined;
-  const from = `${c.author.name ?? "An agent"} asks${askedWho(slot.ask.to, who)}`;
+  const from = `${thread.author} asks${askedWho(slot.ask.to, who)}`;
   // #3048: an ask opens its thread in the comments; the card in the page is a
   // summary that says one is there. Answering happens in the thread.
   const body = (

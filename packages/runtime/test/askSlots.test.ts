@@ -150,6 +150,51 @@ describe("ask slots in the frame", () => {
     expect(el.style.getPropertyValue("height")).toBe("90px");
   });
 
+  it("settles when a report changes nothing (#3064 review)", () => {
+    // A ResizeObserver that calls back as soon as it observes, as browsers do
+    // on the initial delivery: re-observing on every report used to loop.
+    const callbacks: (() => void)[] = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(cb: () => void) {
+          callbacks.push(cb);
+        }
+        observe() {
+          for (const cb of callbacks) cb();
+        }
+        disconnect() {}
+      },
+    );
+    slot("launch-day");
+    start();
+    frames();
+    frames();
+    // One report went out; nothing is pending, so the loop has stopped.
+    expect(slotsMsgs()).toHaveLength(1);
+    expect(raf).toHaveLength(0);
+  });
+
+  it("watches the document only once a slot exists or the shell reads slots", () => {
+    const observe = vi.fn();
+    vi.stubGlobal(
+      "MutationObserver",
+      class {
+        observe = observe;
+        disconnect() {}
+      },
+    );
+    // No slot, no protocol yet: an ordinary page pays nothing.
+    proto = 0;
+    start();
+    frames();
+    expect(observe).not.toHaveBeenCalled();
+    // The shell announces protocol 8: now it watches.
+    proto = 8;
+    fromShell({ type: "shell.protocol", protocol: 8 });
+    expect(observe).toHaveBeenCalledTimes(1);
+  });
+
   it("caps a height at 2000 and ignores a bad key", () => {
     const el = slot("a");
     start();
