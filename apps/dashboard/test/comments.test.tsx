@@ -171,7 +171,10 @@ beforeEach(() => {
   commentOnSelection.mockClear();
   viewport(1280);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 /** #2381 S2: the Comments tab's count (the open threads), where the header said "N open". */
 const commentsCount = (c: HTMLElement) =>
@@ -846,6 +849,10 @@ describe("comments: the frame", () => {
   });
 
   it("rate-limits comment.select: the sixth in a second is dropped", async () => {
+    // The gate counts a one-second window off `Date.now`: pin the clock so a
+    // loaded runner cannot spread six selects over two windows.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-05T10:00:00.000Z"));
     mount(viewerPath(OWNED));
     await col();
     for (let i = 1; i <= 6; i++)
