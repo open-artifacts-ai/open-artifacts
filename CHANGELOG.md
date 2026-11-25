@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.245.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.0...v0.245.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **tests:** pin the clock, wait on the comment's own path ([#3085](https://github.com/open-artifacts-ai/open-artifacts/issues/3085), [#3081](https://github.com/open-artifacts-ai/open-artifacts/issues/3081)) ([#3089](https://github.com/open-artifacts-ai/open-artifacts/issues/3089)) ([da707c1](https://github.com/open-artifacts-ai/open-artifacts/commit/da707c1f9fa2e6ef681b313f6a0e8edda40b3459))
+
 ## [0.245.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.1...v0.245.0) (2026-11-25)
 
 
