@@ -1517,9 +1517,7 @@ describe("comments: live and logged out", () => {
     await act(async () => {
       events.emitComments(OWNED, 3);
     });
-    // sleep-ok: react-query's refetch does not advance on the fake clock
-    await new Promise((r) => setTimeout(r, 50));
-    expect(n()).toBeGreaterThan(before);
+    await waitFor(() => expect(n()).toBeGreaterThan(before));
   });
 
   it("a logged-out visitor who can't comment sees the list and Log in to comment.", async () => {
