@@ -81,10 +81,21 @@ export function frameThreads(
  * Document order: whole-page notes first, then threads by where the frame
  * placed them, then the ones it couldn't place (by age). Orphans (even the old
  * spot is gone) are returned apart, for the "On earlier text" section.
+ *
+ * Notes are newest activity first (#3032): a note has no place in the page, and
+ * the one just posted belongs at the top of the list, in view, not below every
+ * other note.
  */
 export function arrange(threads: readonly CommentThread[], pos: Positions) {
   const byAge = (a: CommentThread, b: CommentThread) =>
     a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  /** A thread's newest activity: its last comment (a thread's comments are oldest first). */
+  const activity = (t: CommentThread) =>
+    t.comments[t.comments.length - 1]?.createdAt ?? t.createdAt;
+  // Equal activity keeps the server's order (the sort is stable): two notes
+  // posted in the same second do not swap places between renders.
+  const byActivityNewest = (a: CommentThread, b: CommentThread) =>
+    activity(b).localeCompare(activity(a));
   const orphans: CommentThread[] = [];
   const notes: CommentThread[] = [];
   const placed: CommentThread[] = [];
@@ -99,7 +110,11 @@ export function arrange(threads: readonly CommentThread[], pos: Positions) {
   const top = (t: CommentThread) => pos.get(t.id)?.top ?? 0;
   placed.sort((a, b) => top(a) - top(b) || byAge(a, b));
   return {
-    ordered: [...notes.sort(byAge), ...placed, ...unplaced.sort(byAge)],
+    ordered: [
+      ...notes.sort(byActivityNewest),
+      ...placed,
+      ...unplaced.sort(byAge),
+    ],
     orphans: orphans.sort(byAge),
   };
 }

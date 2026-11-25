@@ -16,7 +16,7 @@ import {
   unshownNotes,
 } from "../steps/adapters.ts";
 import { uninstallClaudePlugins } from "../steps/claude-plugins.ts";
-import { removeHabits } from "../steps/habits.ts";
+import { removeHabits, removeProjectHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
 import { readMade, removeMade } from "../steps/leftovers.ts";
 import { uninstallOutputStyle } from "../steps/output-style.ts";
@@ -96,6 +96,19 @@ async function unwire(ctx: Ctx): Promise<void> {
   } catch (e) {
     say(ctx, [
       `Could not remove the habits block: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // #2966: and the per-project blocks, with the exclude lines added for them.
+  try {
+    const project = removeProjectHabits({
+      home: ctx.userHome,
+      env: ctx.env,
+      busHome: ctx.home,
+    });
+    for (const n of project.notes) say(ctx, [n]);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove this project's habits block: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
   // The oa-bus command (#1626): only our shim, only for this bus home.

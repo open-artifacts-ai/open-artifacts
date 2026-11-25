@@ -201,6 +201,16 @@ export const Send = z.object({
     .refine(isWellFormed, WELL_FORMED),
 });
 export const List = z.object({ ...base, ...optIn, type: z.literal("list") });
+/**
+ * #3043: the habits the bus pushes at session start, as one short text. One
+ * source: every adapter and extension asks the daemon rather than carrying a
+ * copy, so what a session is told is what the running bus says.
+ */
+export const Habits = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("habits"),
+});
 export const Self = z.object({
   ...base,
   ...optIn,
@@ -339,6 +349,7 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Unfollow,
   Following,
   ProposeReach,
+  Habits,
   AdapterLinkProof,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
@@ -364,6 +375,8 @@ export const AgentInfo = z.object({
   namespace: z.string(),
   /** `self` only (#1570). */
   namespace_source: NamespaceSource.optional(),
+  /** Codex self: local delivery attempts awaiting a turn; excludes mail still at the hub. */
+  codex_pending_local: z.number().int().nonnegative().optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
@@ -621,6 +634,13 @@ export const LinkProofed = z.object({
   bound: z.boolean(),
 });
 
+/** The reply to `habits`: the rules, or null when this install opted out. */
+export const HabitsReply = z.object({
+  ...base,
+  type: z.literal("habits"),
+  rules: z.string().nullable(),
+});
+
 export const DaemonFrame = z.discriminatedUnion("type", [
   LinkProofed,
   Welcome,
@@ -637,5 +657,6 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   Unfollowed,
   Follows,
   ReachProposed,
+  HabitsReply,
 ]);
 export type DaemonFrame = z.infer<typeof DaemonFrame>;

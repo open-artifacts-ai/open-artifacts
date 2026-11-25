@@ -2,7 +2,7 @@ import { applicableSteps, SETUP_STEPS } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { BUS_LINE } from "../api/myOnboarding";
+import { BUS_LINE, COMMENT_STEP } from "../api/myOnboarding";
 import {
   BUS_POLL_MS,
   qk,
@@ -65,13 +65,16 @@ export function GetStarted({
     loaded && tokens.isSuccess && clients.isSuccess && members.isSuccess;
   // #2478: the five steps, then the optional invite. #2890: someone who never
   // connected the bus (chat-only) sees three: the bus-only two are hidden.
-  const steps = applicableSteps(o?.busConnected);
+  // #2953: with the server's `firstComment`, "Comment on a page" shows for everyone.
+  const steps = applicableSteps(o?.busConnected, o?.firstComment !== undefined);
   const bus = steps.includes("named");
   const named = o?.agentNamed === true;
   const replied = o?.mentionReplied === true;
   const answered = o?.askAnswered === true;
   const nm = o?.agentName || "your agent";
-  const five = [connected, named, hasArtifacts, replied, answered];
+  const commented = o?.firstComment != null;
+  // In SETUP_STEPS order: agent, named, artifact, comment, mention, ask.
+  const five = [connected, named, hasArtifacts, commented, replied, answered];
   const shown = steps.map((s) => SETUP_STEPS.indexOf(s));
   const all = ready && shown.every((i) => five[i]) && invited;
 
@@ -101,7 +104,11 @@ export function GetStarted({
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
       if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
       // Without the bus, keep reading: connecting it brings two steps back.
-      if (!bus || !(hasArtifacts && answered && named && replied))
+      if (
+        !bus ||
+        !(hasArtifacts && answered && named && replied) ||
+        (steps.includes("comment") && !commented)
+      )
         void qc.invalidateQueries({ queryKey: qk.onboarding });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
@@ -116,16 +123,19 @@ export function GetStarted({
     named,
     replied,
     answered,
+    commented,
+    steps,
   ]);
 
   if (!live || !ready || all || !me?.instance.mcpUrl) return null;
 
   const hide = () => save({ dismissed: true });
   const count = shown.filter((i) => five[i]).length;
-  // Index 5 is the optional invite step.
-  const cur = shown.find((i) => !five[i]) ?? (invited ? -1 : 5);
+  // Index 6 is the optional invite step.
+  const INVITE = 6;
+  const cur = shown.find((i) => !five[i]) ?? (invited ? -1 : INVITE);
   const st = (i: number) =>
-    (i === 5 ? invited : five[i]) ? "done" : cur === i ? "cur" : "todo";
+    (i === INVITE ? invited : five[i]) ? "done" : cur === i ? "cur" : "todo";
   const no = (i: number) => shown.indexOf(i) + 1;
   // The trial line is true only when the server would start the Business
   // trial on an invite (plan.trialEligible): Solo or free, no trial used yet,
@@ -199,8 +209,17 @@ export function GetStarted({
             </>
           )}
         </Step>
+        {steps.includes("comment") && (
+          <Step n={no(3)} state={st(3)} title={COMMENT_STEP.title}>
+            <p className="m-0">
+              {o?.firstComment
+                ? COMMENT_STEP.done(o.firstComment.title)
+                : COMMENT_STEP.line}
+            </p>
+          </Step>
+        )}
         {bus && (
-          <Step n={no(3)} state={st(3)} title="Mention your agent">
+          <Step n={no(4)} state={st(4)} title="Mention your agent">
             {replied ? (
               <p className="m-0">{o?.agentName || "Your agent"} replied</p>
             ) : (
@@ -219,7 +238,7 @@ export function GetStarted({
             )}
           </Step>
         )}
-        <Step n={no(4)} state={st(4)} title="Answer your agent's ask">
+        <Step n={no(5)} state={st(5)} title="Answer your agent's ask">
           {answered ? (
             <p className="m-0">Answered</p>
           ) : (
@@ -229,7 +248,7 @@ export function GetStarted({
           )}
         </Step>
         <Step
-          state={st(5)}
+          state={st(INVITE)}
           title={
             <>
               Invite your team{" "}
@@ -245,7 +264,7 @@ export function GetStarted({
               {keepsSolo && " Your Solo plan stays as it is."}
             </p>
           )}
-          {!invited && cur === 5 && (
+          {!invited && cur === INVITE && (
             <div className="flex gap-[var(--oa-space-2)]">
               <Button
                 asChild

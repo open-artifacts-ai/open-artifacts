@@ -70,6 +70,8 @@ ol.steps{list-style:none;margin:0;padding:0;display:grid;gap:10px}
 .count{margin:12px 0 0;font-size:14px;color:var(--muted)}
 .connect-body{display:block;margin-top:10px}
 .connect-body .panel{background:var(--soft)}
+.connector{margin-top:16px}
+.connector a{color:var(--accent)}
 footer{margin-top:36px;padding-top:16px;border-top:1px solid var(--line);font-size:14px;color:var(--muted)}
 @media (max-width:420px){main{padding:24px 16px 40px}h1{font-size:24px}}
 </style>
@@ -93,12 +95,14 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 }</pre><p class="note">Find open-artifacts under Customize in the sidebar. When Cursor asks you to sign in, finish in your browser. Cursor then lists its tools.</p></div>
 <button class="copy" id="copy" type="button">Copy</button>
 </div>
+<div class="connector" id="connector" hidden><p class="note">Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:</p><div class="panel"><pre id="connector-url">${o}/mcp</pre></div><button class="copy" id="connector-copy" type="button" aria-label="Copy connector address">Copy</button><p class="note">Log in when it asks. Your chat sees new comments and answers only when you ask it to look.</p><p class="note"><a href="https://open-artifacts.com/docs/claude-and-chatgpt/" target="_blank" rel="noopener">How to add a connector</a></p></div>
 
 <h2>Get started</h2>
 <ol class="steps">
 <li class="step" data-step="connect" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Connect your agent</b></span></li>
 <li class="step" data-step="name" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Name your agent</b><span class="hint">Your agent will suggest a name. It's what you'll type after @ in comments.</span></span></li>
 <li class="step" data-step="publish" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Publish your first artifact</b><span class="hint">Ask your agent: &quot;Publish a page about what you're working on.&quot;</span></span></li>
+<li class="step" data-step="comment" data-done="false" hidden><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Comment on a page</b><span class="hint">Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.</span></span></li>
 <li class="step" data-step="mention" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Mention your agent</b><span class="hint">Open your first page, type @ in a comment and pick your agent. It replies in the thread.</span><span class="stalled" id="stalled" role="status" hidden>No reply yet. Your agent may not be listening. Ask it: &quot;Check the bus.&quot;</span></span></li>
 <li class="step" data-step="ask" data-done="false"><span class="box"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg></span><span class="label"><b>Answer your agent's ask</b><span class="hint">Your first page has a question from your agent. Pick an option.</span></span></li>
 </ol>
@@ -108,7 +112,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
 
 <footer>You can delete this page any time. Nothing else depends on it.</footer>
 </main>
-<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. {steps} steps and your agent is working here with you.","leadNoInviter":"{steps} steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","count":"{n} of {t} done","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
+<script type="application/json" id="oa-welcome-data">{"host":"${o}","publishHint":"Ask your agent: \\"Publish a page about what you're working on.\\"","commentHint":"Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.","nameHint":"Your agent will suggest a name. It's what you'll type after @ in comments.","mentionHint":"Open your first page, type @ in a comment and pick {name}. It replies in the thread.","askHint":"Your first page has a question from {name}. Pick an option.","fallback":"your agent","member":{"welcome":"Welcome, {first}","lead":"{inviter} added you to {org}. {steps} steps and your agent is working here with you.","leadNoInviter":"{steps} steps and your agent is working here with you.","connectHint":"Paste the line below into your agent.","publishHint":"Your agent publishes one during setup. It's private until you share it.","mentionHint":"Open your first page, type @ in a comment and pick your agent. It replies in the thread.","askHint":"Your first page has a question from your agent. Pick an option.","alsoHint":"See what {org} is working on and leave a comment.","count":"{n} of {t} done","done":"Your agent hears your comments and answers them. Next: see what {org} is working on."}}</script>
 <script>
 (function(){
   var D = JSON.parse(document.getElementById("oa-welcome-data").textContent);
@@ -162,10 +166,22 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       navigator.clipboard.writeText(text).then(ok, fallback);
     else fallback();
   });
+  var connCopy = document.getElementById("connector-copy");
+  connCopy.addEventListener("click", function(){
+    var el = document.getElementById("connector-url");
+    var done = function(){
+      connCopy.textContent = "Copied";
+      setTimeout(function(){ connCopy.textContent = "Copy"; }, 2000);
+    };
+    var fallback = function(){ if (legacy(el)) done(); };
+    if (navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(el.textContent).then(done, fallback);
+    else fallback();
+  });
   pick(0, false);
 
   var items = {};
-  ["connect","name","publish","mention","ask"].forEach(function(k){
+  ["connect","name","publish","comment","mention","ask"].forEach(function(k){
     items[k] = document.querySelector('[data-step="' + k + '"]');
   });
   var all = document.getElementById("all-done");
@@ -192,7 +208,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
   var memberDone = null, connectBody = null, countLine = null;
   // #2632: a member's own Welcome. The shell says who it's for; the owner's
   // page is unchanged. The sixth step never counts toward "You're set."
-  function greet(w, bus){
+  function greet(w, bus, cm){
     if (!memberDone) {
       var tpl = document.getElementById("member-tpl");
       all.parentNode.insertBefore(tpl.content.cloneNode(true), all.nextSibling);
@@ -204,6 +220,9 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       connectBody.className = "connect-body";
       connectBody.appendChild(document.getElementById("panel-any"));
       connectBody.appendChild(copy);
+      var conn = document.getElementById("connector");
+      conn.hidden = false;
+      connectBody.appendChild(conn);
       document.getElementById("connect-section").hidden = true;
       countLine = document.createElement("p");
       countLine.className = "count";
@@ -213,7 +232,7 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     }
     var org = w.org || "";
     document.getElementById("title").textContent = w.firstName ? M.welcome.replace("{first}", function(){ return w.firstName; }) : "Welcome";
-    var steps = bus ? "Five" : "Three";
+    var steps = ["Three", "Four", "Five", "Six"][(bus ? 2 : 0) + (cm ? 1 : 0)];
     var leadText = w.inviter ? M.lead.replace("{inviter}", function(){ return w.inviter; }).replace("{org}", function(){ return org; }) : M.leadNoInviter;
     document.getElementById("lead").textContent = leadText.replace("{steps}", steps);
     document.getElementById("also-hint").textContent = M.alsoHint.replace("{org}", function(){ return org; });
@@ -224,10 +243,13 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
     var w = p.who && p.who.member ? p.who : null;
     // #2890: a person who never connected the bus sees three steps; an older shell sends no flag: five.
     var bus = p.busConnected !== false;
-    if (w) greet(w, bus);
+    // #2953: "Comment on a page" shows once the shell sends firstComment (null or a page); an older shell sends none.
+    var cm = p.firstComment !== undefined;
+    if (w) greet(w, bus, cm);
     var nm = p.agentName || D.fallback;
     items.name.hidden = !bus;
     items.mention.hidden = !bus;
+    items.comment.hidden = !cm;
     var cl = line(items.connect, p.agentConnected, "Connect your agent", "Agent connected", w ? M.connectHint : "");
     // Step 1 holds the line until the agent is connected, then is its done row.
     if (w && !p.agentConnected) cl.appendChild(connectBody);
@@ -243,17 +265,18 @@ url = &quot;${o}/mcp&quot;</pre><p class="note">Run \`codex mcp login open-artif
       a.textContent = p.firstArtifact.title;
       b.appendChild(a);
     }
+    line(items.comment, !!p.firstComment, "Comment on a page", p.firstComment ? "You commented on " + p.firstComment.title + "." : "", D.commentHint);
     var ml = line(items.mention, !!p.mentionReplied, "Mention your agent", (p.agentName ? nm : "Your agent") + " replied", w ? M.mentionHint : D.mentionHint.replace("{name}", function(){ return nm; }));
     line(items.ask, !!p.askAnswered, "Answer your agent's ask", "Answered", w ? M.askHint : D.askHint.replace("{name}", function(){ return nm; }));
     stalled.hidden = !(p.mentionStalled && !p.mentionReplied);
     if (!stalled.hidden) ml.appendChild(stalled);
-    var done = !!(p.agentConnected && p.firstArtifact && p.askAnswered && (!bus || (p.agentNamed && p.mentionReplied)));
+    var done = !!(p.agentConnected && p.firstArtifact && p.askAnswered && (!cm || p.firstComment) && (!bus || (p.agentNamed && p.mentionReplied)));
     all.hidden = !done || !!w;
     if (w) {
       memberDone.hidden = !done;
       // The shell's setupSteps count (one count everywhere); an older shell's answer counts here.
-      var n = typeof w.done === "number" ? w.done : (bus ? [p.agentConnected, p.agentNamed, p.firstArtifact, p.mentionReplied, p.askAnswered] : [p.agentConnected, p.firstArtifact, p.askAnswered]).filter(Boolean).length;
-      countLine.textContent = M.count.replace("{n}", function(){ return String(n); }).replace("{t}", bus ? "5" : "3");
+      var n = typeof w.doneAll === "number" ? w.doneAll : typeof w.done === "number" && !cm ? w.done : (bus ? [p.agentConnected, p.agentNamed, p.firstArtifact, cm && p.firstComment, p.mentionReplied, p.askAnswered] : [p.agentConnected, p.firstArtifact, cm && p.firstComment, p.askAnswered]).filter(Boolean).length;
+      countLine.textContent = M.count.replace("{n}", function(){ return String(n); }).replace("{t}", String((bus ? 5 : 3) + (cm ? 1 : 0)));
     }
     // A member keeps polling for the optional sixth step until it's done too.
     return done && (!w || !!w.teammateCommented);

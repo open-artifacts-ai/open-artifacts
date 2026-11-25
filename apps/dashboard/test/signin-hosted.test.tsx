@@ -157,6 +157,10 @@ it.each([
     "You don't have access here yet. Ask an admin to invite you, then try again.",
   ],
   ["expired", "Login took too long. Try again."],
+  [
+    "invite_expired",
+    "This invite has expired. Ask whoever invited you to send a new one.",
+  ],
   ["failed", "Login didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
   mountHosted(`/sign-in?error=${error}`);
@@ -1014,4 +1018,34 @@ it("no copy contains an em dash", async () => {
   mountHosted("/sign-in?error=tenant");
   await screen.findByRole("alert");
   expect(document.body.textContent).not.toContain("\u2014");
+});
+
+// #3029: the plain Google page tells an invited member which account to use.
+const INVITED_HELP =
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
+
+it("plain sign-in shows the invited help line under Google", async () => {
+  mountHosted("/sign-in");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.getByText(INVITED_HELP)).toBeVisible();
+});
+
+it("the invited help line is hidden on a share link and on an error", async () => {
+  mountHosted("/sign-in?next=%2Fa%2FDe6gHjKmNp7qRsTu");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.queryByText(INVITED_HELP)).toBeNull();
+  cleanup();
+  mountHosted("/sign-in?error=expired");
+  await screen.findByRole("alert");
+  expect(screen.queryByText(INVITED_HELP)).toBeNull();
+});
+
+it("wrong Google account on the plain page offers Try another account", async () => {
+  mountHosted("/sign-in?error=no_access&via=google");
+  expect(
+    await screen.findByRole("link", { name: "Try another account" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2F");
+  expect(
+    screen.queryByRole("link", { name: "Continue with Google" }),
+  ).toBeNull();
 });

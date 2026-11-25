@@ -671,11 +671,13 @@ export const MemberSetupSchema = z.object({
   /** `set` is sticky (their `completed`); `invited` was added and never signed in. */
   state: z.enum(["set", "partial", "invited"]),
   /** Of `total`. */
-  done: z.number().int().min(0).max(5),
-  /** #2890: 5, or 3 when they never connected the bus. Absent on older servers: 5. */
-  total: z.number().int().min(3).max(5).optional(),
+  done: z.number().int().min(0).max(6),
+  /** #2890, #2953: 3 to 6 (no bus: 3, or 4 with the comment step; bus: 5, or 6). Absent on older servers: 5. */
+  total: z.number().int().min(3).max(6).optional(),
   /** The first step not done. */
-  stalled: z.enum(["agent", "named", "artifact", "mention", "ask"]).optional(),
+  stalled: z
+    .enum(["agent", "named", "artifact", "comment", "mention", "ask"])
+    .optional(),
   /** When the one reminder went out (ISO). */
   remindedAt: z.string().optional(),
 });
@@ -1216,6 +1218,11 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
+  /** The caller's first typed comment. Null until earned, absent on older servers. When the page is no longer readable, artifactId is empty and title is generic. */
+  firstComment: z
+    .strictObject({ artifactId: z.string(), title: z.string() })
+    .nullable()
+    .optional(),
   /** #2890: the caller has ever connected the bus. False: they see three setup steps, not five. Absent on older servers: read as true. */
   busConnected: z.boolean().optional(),
   /** #2632: the caller commented on an artifact another user owns. Optional extra step; never counts toward "set up". */

@@ -238,10 +238,98 @@ describe("a member's Library card", () => {
     expect(c.textContent).not.toContain("Also try");
   });
 
+  it("step 1 also shows the Claude and ChatGPT connector path, with the instance address", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ agentConnected: false }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    for (const t of [
+      "Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:",
+      "Log in when it asks. Your chat sees new comments and answers only when you ask it to look.",
+    ])
+      expect(c.textContent).toContain(t);
+    const box = screen.getByRole("textbox", { name: "Connector address" });
+    expect((box as HTMLTextAreaElement).value).toMatch(/\/mcp$/);
+    expect(
+      screen.getByRole("button", { name: "Copy connector address" }),
+    ).toBeTruthy();
+    const link = screen.getByRole("link", { name: "How to add a connector" });
+    expect(link.getAttribute("href")).toBe(
+      "https://open-artifacts.com/docs/claude-and-chatgpt/",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
   const LINE =
     "Want your agent to hear @mentions on its own? Connect the bus from Claude Code or Claude Desktop's Code tab.";
   const titles = (c: HTMLElement) =>
     [...c.querySelectorAll("ol > li")].map((li) => li.textContent ?? "");
+
+  const COMMENT_LINE =
+    "Select some text on any page and leave a comment, or reply in a thread. It's how you, your team and your agents work on the same page.";
+
+  it("with firstComment from the server, a bus member sees six steps with 'Comment on a page' after Publish (#2953)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ busConnected: true, firstComment: null }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 6");
+    const t = titles(c);
+    expect(t).toHaveLength(6);
+    [
+      "Connect your",
+      "Name your",
+      "Publish your",
+      "Comment on a",
+      "Mention your",
+      "Answer your",
+    ].forEach((w, k) => {
+      expect(t[k]).toContain(w);
+    });
+    expect(t[3]).toMatch(/^4/);
+    expect(c.textContent).toContain(COMMENT_LINE);
+  });
+
+  it("a chat-only member sees four steps and no bus-only step (#2953)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ busConnected: false, firstComment: null }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 4");
+    expect(titles(c)).toHaveLength(4);
+    expect(c.textContent).toContain("Comment on a page");
+    expect(c.textContent).not.toContain("Mention your agent");
+  });
+
+  it("a done comment step says which page (#2953)", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({
+        busConnected: true,
+        firstComment: { artifactId: "a1", title: "Q4 plan" },
+      }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("You commented on Q4 plan.");
+    expect(c.textContent).not.toContain(COMMENT_LINE);
+    expect(c.textContent).toContain("2 of 6");
+  });
+
+  it("an older server (no firstComment) keeps today's steps and counts (#2953)", async () => {
+    mountHosted("/", true, as("member"), [onboarding({}), empty()]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    expect(c.textContent).toContain("1 of 5");
+    expect(c.textContent).not.toContain("Comment on a page");
+  });
 
   it("a member who never connected the bus sees three steps, '1 of 3', and Product's bus line (#2890)", async () => {
     mountHosted("/", true, as("member"), [

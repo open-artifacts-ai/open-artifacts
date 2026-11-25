@@ -65,6 +65,14 @@ export type CxEntryIo = {
   busBin: string[];
   /** OA_BUS_HOME when the bus lives elsewhere. */
   busHome?: string;
+  /**
+   * #2954: the person's PAT file for this instance
+   * (`<home>/.open-artifacts/<hostSlug>-pat-token`). Present, it lets an entry
+   * that signs in some other way (Codex's own OAuth, a plain url) still get the
+   * proxy: the proxy reads the token from there, and the entry's own sign-in is
+   * never touched.
+   */
+  patFile?: string;
 };
 
 type Moved = {
@@ -206,41 +214,57 @@ type Plan =
   | { kind: "none" }
   | { kind: "note"; note: string }
   | { kind: "ours"; name: string; entry: Doc }
-  | { kind: "swap"; name: string; entry: Doc; tokenEnv: string };
+  | { kind: "swap"; name: string; entry: Doc; cred: Cred };
 
-const proxyArgs = (origin: string, tokenEnv: string) => [
+const proxyArgs = (origin: string, cred: Cred) => [
   PROXY_CMD,
   "--instance",
   origin,
   "--for",
   "codex",
-  "--token-env",
-  tokenEnv,
+  ...(cred.tokenEnv !== undefined
+    ? ["--token-env", cred.tokenEnv]
+    : ["--token-file", cred.tokenFile]),
 ];
 
+/** How the proxy gets its /mcp credential (#2954: an entry's own, or a file). */
+type Cred =
+  | { tokenEnv: string; tokenFile?: undefined }
+  | {
+      tokenEnv?: undefined;
+      tokenFile: string;
+    };
+
 /** Our own entry: a stdio server running `mcp-proxy --for codex` for this instance. */
-function ourEntry(e: Doc, origin: string): { tokenEnv: string } | undefined {
+function ourEntry(e: Doc, origin: string): Cred | undefined {
   if (typeof e.command !== "string" || !Array.isArray(e.args)) return undefined;
   const a = e.args as unknown[];
   const i = a.lastIndexOf(PROXY_CMD);
-  if (
-    i < 0 ||
-    a[i + 1] !== "--instance" ||
-    a[i + 2] !== origin ||
-    a[i + 3] !== "--for" ||
-    a[i + 4] !== "codex" ||
-    a[i + 5] !== "--token-env" ||
-    typeof a[i + 6] !== "string"
-  )
+  if (i < 0 || a[i + 1] !== "--instance" || a[i + 2] !== origin)
     return undefined;
-  return { tokenEnv: a[i + 6] as string };
+  if (a[i + 3] !== "--for" || a[i + 4] !== "codex") return undefined;
+  if (a[i + 5] === "--token-env" && typeof a[i + 6] === "string")
+    return { tokenEnv: a[i + 6] as string };
+  if (a[i + 5] === "--token-file" && typeof a[i + 6] === "string")
+    return { tokenFile: a[i + 6] as string };
+  return undefined;
 }
 
-function plan(doc: Doc, origin: string): Plan {
+function plan(doc: Doc, origin: string, patFile?: string): Plan {
   for (const [name, e] of Object.entries(servers(doc))) {
     if (name === CODEX_ENTRY || !isRecord(e)) continue;
     const ours = ourEntry(e, origin);
-    if (ours) return { kind: "ours", name, entry: e };
+    if (ours) {
+      // #2954: a token-file entry whose PAT is gone has no credential at all,
+      // and the proxy keeps starting. Say so on every install and doctor run:
+      // the fix is to save the PAT again, or uninstall to get the entry back.
+      if (ours.tokenFile !== undefined && !existsSync(ours.tokenFile))
+        return {
+          kind: "note",
+          note: `the ${name} entry in the Codex config reaches Open Artifacts through oa-bus, but its PAT file ${ours.tokenFile} is gone, so Codex has no token and its tools fail. Save a PAT there again, or run ${BUS_CMD} uninstall to put your own entry back.`,
+        };
+      return { kind: "ours", name, entry: e };
+    }
     if (!isInstance(e, origin) || e.enabled === false) continue;
     const left = (why: string): Plan => ({
       kind: "note",
@@ -261,15 +285,23 @@ function plan(doc: Doc, origin: string): Plan {
       return left("it is written in a form oa-bus can't edit.");
     const blocker = BLOCKING.find((k) => e[k] !== undefined);
     const tokenEnv = e.bearer_token_env_var;
-    if (
-      blocker !== undefined ||
-      typeof tokenEnv !== "string" ||
-      !VAR.test(tokenEnv)
-    )
-      return left(
-        "it signs in with `codex mcp login` or another kind of token that oa-bus can't pass on.",
-      );
-    return { kind: "swap", name, entry: e, tokenEnv };
+    if (typeof tokenEnv === "string" && VAR.test(tokenEnv)) {
+      if (blocker !== undefined)
+        return left(
+          "it signs in with another kind of token that oa-bus can't pass on.",
+        );
+      return { kind: "swap", name, entry: e, cred: { tokenEnv } };
+    }
+    // #2954: no token variable of its own. The proxy can still carry the proof
+    // when this machine holds a PAT file: the sign-in the entry would use stays
+    // exactly as it is, untouched, and oa-bus uninstall puts the entry back.
+    if (blocker === undefined && patFile !== undefined && existsSync(patFile))
+      return { kind: "swap", name, entry: e, cred: { tokenFile: patFile } };
+    return left(
+      patFile === undefined
+        ? "it signs in with `codex mcp login` or another kind of token that oa-bus can't pass on."
+        : `it signs in with \`codex mcp login\` or another kind of token that oa-bus can't pass on, and there is no PAT at ${patFile} for the proxy to use. Save one there (see the connect guide) and run oa-bus install again.`,
+    );
   }
   return { kind: "none" };
 }
@@ -284,7 +316,7 @@ export function pendingEntry(
   origin: string,
 ): { name: string } | { note: string } | undefined {
   const { doc } = readToml(io.file);
-  const p = plan(doc, origin);
+  const p = plan(doc, origin, io.patFile);
   if (p.kind === "swap") {
     const other = otherSwapped(io, doc, p.name);
     if (other !== undefined)
@@ -297,11 +329,14 @@ export function pendingEntry(
   return undefined;
 }
 
-const wantEntry = (io: CxEntryIo, origin: string, tokenEnv: string) => {
+const wantEntry = (io: CxEntryIo, origin: string, cred: Cred) => {
   const add = [
     `command = ${str(io.busBin[0] as string)}`,
-    `args = [${[...io.busBin.slice(1), ...proxyArgs(origin, tokenEnv)].map(str).join(", ")}]`,
-    `env_vars = [${str(tokenEnv)}]`,
+    `args = [${[...io.busBin.slice(1), ...proxyArgs(origin, cred)].map(str).join(", ")}]`,
+    // A token variable is passed on by name; a PAT file is read by the proxy.
+    ...(cred.tokenEnv !== undefined
+      ? [`env_vars = [${str(cred.tokenEnv)}]`]
+      : []),
     ...(io.busHome ? [`env = { OA_BUS_HOME = ${str(io.busHome)} }`] : []),
   ];
   return add;
@@ -342,7 +377,7 @@ export type Outcome = { notes: string[] };
  */
 export function installEntry(io: CxEntryIo, origin: string): Outcome {
   const { text, doc } = readToml(io.file);
-  const p = plan(doc, origin);
+  const p = plan(doc, origin, io.patFile);
   if (p.kind === "note") return { notes: [p.note] };
   if (p.kind === "none") return { notes: [] };
   if (p.kind === "swap") {
@@ -355,16 +390,15 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
       };
   }
   if (p.kind === "ours") {
-    const tokenEnv = (ourEntry(p.entry, origin) as { tokenEnv: string })
-      .tokenEnv;
-    const e = edit(text, p.name, OURS, wantEntry(io, origin, tokenEnv));
+    const cred = ourEntry(p.entry, origin) as Cred;
+    const e = edit(text, p.name, OURS, wantEntry(io, origin, cred));
     if (!e) return { notes: [] };
     if (e.next === text) return { notes: [] };
     const m = readMoved(io.moved);
     const want = { ...(plain(p.entry) as Doc) };
     for (const k of OURS) delete want[k];
     const fresh = plain(
-      readTomlText(`[x]\n${wantEntry(io, origin, tokenEnv).join("\n")}\n`).x,
+      readTomlText(`[x]\n${wantEntry(io, origin, cred).join("\n")}\n`).x,
     ) as Doc;
     io.write(checked(io.file, doc, e.next, p.name, { ...want, ...fresh }));
     if (m)
@@ -383,8 +417,10 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
     .slice(at.from, at.to)
     .filter((l) => MOVED_KEYS.includes(keyOf(l.text) as never))
     .map((l) => l.text);
-  const e = edit(text, p.name, MOVED_KEYS, wantEntry(io, origin, p.tokenEnv));
-  if (!e || mine.length !== MOVED_KEYS.length)
+  // `url` is always there; the bearer line only when that is the credential.
+  const need = p.cred.tokenEnv !== undefined ? 2 : 1;
+  const e = edit(text, p.name, MOVED_KEYS, wantEntry(io, origin, p.cred));
+  if (!e || mine.length !== need)
     return {
       notes: [
         `left the ${p.name} entry in ${io.file} as it is: it is written in a form oa-bus can't edit. Its tools still work, but Codex won't show as its own session on pages.`,
@@ -393,7 +429,7 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
   const want = { ...(plain(p.entry) as Doc) };
   for (const k of MOVED_KEYS) delete want[k];
   const fresh = plain(
-    readTomlText(`[x]\n${wantEntry(io, origin, p.tokenEnv).join("\n")}\n`).x,
+    readTomlText(`[x]\n${wantEntry(io, origin, p.cred).join("\n")}\n`).x,
   ) as Doc;
   const next = checked(io.file, doc, e.next, p.name, { ...want, ...fresh });
   io.writeMoved(
@@ -402,7 +438,11 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
   io.write(next);
   return {
     notes: [
-      `Codex now reaches Open Artifacts through oa-bus (the ${p.name} entry in ${io.file}). To undo, run ${BUS_CMD} uninstall: it puts your entry back.`,
+      `Codex now reaches Open Artifacts through oa-bus (the ${p.name} entry in ${io.file}). ${
+        p.cred.tokenEnv !== undefined
+          ? `It sends the token in ${p.cred.tokenEnv}.`
+          : `Codex's Pages calls now go out with the PAT in ${p.cred.tokenFile}, not with the sign-in this entry had; that sign-in stays where it is, unused.`
+      } To undo, run ${BUS_CMD} uninstall: it puts your entry back.`,
     ],
   };
 }

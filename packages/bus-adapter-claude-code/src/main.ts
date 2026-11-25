@@ -5,7 +5,12 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { connectDaemon, type DaemonClient } from "@oa/bus-ipc";
+import {
+  BRIEF_RULES,
+  connectDaemon,
+  type DaemonClient,
+  habitsOff,
+} from "@oa/bus-ipc";
 import { connectOutcome, noSessionMessage } from "./connect.ts";
 import {
   ancestorChain,
@@ -47,9 +52,21 @@ const connect = () => {
   });
 };
 
+/**
+ * #3043: the habits this session is told, in the initialize result (the SDK
+ * sends `instructions` once, with the handshake). The text is the module the
+ * daemon serves too, so an adapter and a daemon of one version cannot
+ * disagree; the opt-out is the same install.json flag the daemon reads, so an
+ * opted-out install gets nothing here either. No extra daemon dial: a session
+ * that never calls a tool still gets its rules.
+ */
+const rules = habitsOff(busHome()) ? null : BRIEF_RULES;
 const server = new Server(
   { name: "oa_bus", version: "0.1.0" },
-  { capabilities: { tools: {} } },
+  {
+    capabilities: { tools: {} },
+    ...(rules === null ? {} : { instructions: rules }),
+  },
 );
 /** Checked at call time, never at startup: Claude may write its session file after spawning this server. */
 const underClaude = (): boolean => {

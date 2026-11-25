@@ -568,7 +568,12 @@ describe("ci.yml", () => {
     // fails unless every test shard succeeded.
     it("test is the aggregate of its shards: always runs, passes only when all passed", () => {
       const job = w.jobs.test;
-      expect(job.needs).toEqual(["test-shard", "released-migrations-frozen"]);
+      // #2994: the packed bus joins the gate, so a missing bundle alias fails a PR.
+      expect(job.needs).toEqual([
+        "test-shard",
+        "released-migrations-frozen",
+        "pack-bus",
+      ]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       expect(steps("test")).toHaveLength(1);
@@ -582,8 +587,10 @@ describe("ci.yml", () => {
       expect(gate.env.FROZEN).toBe(
         "${{ needs.released-migrations-frozen.result }}",
       );
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(gate.env.PACKED).toBe("${{ needs.pack-bus.result }}");
       expect(gate.run).toMatch(
-        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \]$/m,
+        /^\[ "\$SHARDS" = success \] && \[ "\$FROZEN" = success \] && \[ "\$PACKED" = success \]$/m,
       );
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
@@ -1020,6 +1027,39 @@ describe("release-please", () => {
         ).not.toContain('"release-please"');
   });
 
+  it("a stable release starts the cloud pin bump with an App token narrowed to that", () => {
+    // cloud #264: the bump no longer waits for the cloud repo's 6-hour timer.
+    const job = wf("release-please.yml").jobs["cloud-pin-bump"];
+    expect(job.needs).toEqual(["release-please"]);
+    expect(job.permissions).toEqual({});
+    expect(job.if).toContain(
+      "needs.release-please.outputs.release_created == 'true'",
+    );
+    expect(job.if).toContain(
+      "!contains(needs.release-please.outputs.tag_name, '-')",
+    );
+    expect(job.if).toContain("github.ref == 'refs/heads/main'");
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const app = job.steps.find((s: any) => s.id === "app");
+    expect(app.uses).toMatch(/^actions\/create-github-app-token@[0-9a-f]{40}$/);
+    expect(app.with).toEqual({
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "app-id": "${{ secrets.RELEASE_APP_ID }}",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "private-key": "${{ secrets.RELEASE_APP_PRIVATE_KEY }}",
+      owner: "open-artifacts-ai",
+      repositories: "open-artifacts-cloud",
+      "permission-actions": "write",
+    });
+    // The App token reaches only the dispatch, and it starts only pin-bump.
+    expect(job.steps).toHaveLength(2);
+    expect(job.steps[1].run).toContain(
+      "gh workflow run pin-bump.yml --repo open-artifacts-ai/open-artifacts-cloud --ref main",
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.steps[1].env.GH_TOKEN).toBe("${{ steps.app.outputs.token }}");
+  });
+
   it("release-please opens its PR with the release App token, so CI runs on it", () => {
     // PRs and pushes made with GITHUB_TOKEN trigger no workflows; an App token's do.
     const steps = wf("release-please.yml").jobs["release-please"].steps;
@@ -1145,7 +1185,12 @@ describe("release-please", () => {
   it("has no dispatch workaround for the release PR", () => {
     const raw = read(".github/workflows/release-please.yml");
     expect(raw).not.toContain("release-pr-dispatch");
-    expect(raw).not.toContain("gh workflow run");
+    // The one dispatch here starts the cloud repo's pin bump, never a run here.
+    expect(raw.split("gh workflow run").length - 1).toBe(
+      raw.split(
+        "gh workflow run pin-bump.yml --repo open-artifacts-ai/open-artifacts-cloud",
+      ).length - 1,
+    );
     expect(existsSync(join(root, "scripts/ci/release-pr-dispatch.sh"))).toBe(
       false,
     );

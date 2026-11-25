@@ -10,6 +10,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   AGENT_CAP_MESSAGES,
+  BRIEF_RULES,
   type ClientFrame,
   ClientFrameSchema,
   frameId,
@@ -224,6 +225,12 @@ export type RouteCtx = {
    * hello'd connection. True when a live record took it.
    */
   linked?: (ref: string, hash: string) => boolean;
+  /**
+   * #3043: the habits a session is told at start: the one short text the bus
+   * pushes, or null when this install opted out. Without it, the bundled text
+   * answers (a daemon too old to know the opt-out).
+   */
+  habits?: () => string | null;
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
@@ -233,6 +240,7 @@ export type RouteCtx = {
    * this daemon is its member's own, so `self` may say it.
    */
   ownerAwayUntil?: () => string | undefined;
+  codexPendingLocal?: (ref: string) => number;
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -315,6 +323,10 @@ export function routeLocal(
           ) ?? [])
         : [];
       const away = ctx.ownerAwayUntil?.();
+      const localQueue = () =>
+        frame.row && agent.kind === "codex" && ctx.codexPendingLocal
+          ? { codex_pending_local: ctx.codexPendingLocal(ref) }
+          : {};
       const self = {
         type: "agent",
         agent: {
@@ -332,11 +344,11 @@ export function routeLocal(
       } as const;
       // The status is the hub's: asked for only by the self tool.
       const own = frame.row ? ctx.ownRow?.(ref) : undefined;
-      if (!own) return self;
+      if (!own) return { ...self, agent: { ...self.agent, ...localQueue() } };
       const answer = (row: StatusRow | undefined) =>
         reply({
           ...self,
-          agent: { ...self.agent, ...statusOf(row) },
+          agent: { ...self.agent, ...statusOf(row), ...localQueue() },
           v: 1,
           id: frame.id,
         });
@@ -375,6 +387,11 @@ export function routeLocal(
           message: "link_proof is not supported on this connection",
         };
       return { type: "link_proofed", bound: ctx.linked(ref, frame.hash) };
+    case "habits": {
+      // Not `??`: null is the opt-out's answer, not a missing one.
+      const rules = ctx.habits ? ctx.habits() : BRIEF_RULES;
+      return { type: "habits", rules };
+    }
     case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)

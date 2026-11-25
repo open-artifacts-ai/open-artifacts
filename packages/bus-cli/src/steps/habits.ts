@@ -265,12 +265,15 @@ const record = (busHome: string | undefined) => {
     at?: string;
     files?: Record<string, FileRecord>;
     pluginDirs?: unknown;
+    project?: unknown;
   };
   return {
     optedOut: h.optedOut === true,
     at: h.at,
     files: h.files ?? {},
     pluginDirs: pluginDirsOf(h.pluginDirs),
+    // #2966: the per-project blocks, and the exclude lines added for them.
+    project: projectOf(h.project),
   };
 };
 /** The plugin folders the marker was written into, by harness; an old or odd record has none. */
@@ -282,6 +285,9 @@ const pluginDirsOf = (v: unknown): Record<string, string[]> => {
       out[name] = list.filter((d): d is string => typeof d === "string");
   return out;
 };
+/** #3008: the project blocks and declines the record holds, for the status line. */
+export const projectRecord = (busHome: string) => record(busHome).project;
+
 const saveRecord = (
   busHome: string | undefined,
   patch: {
@@ -289,6 +295,7 @@ const saveRecord = (
     at?: string;
     files?: Record<string, FileRecord>;
     pluginDirs?: Record<string, string[]>;
+    project?: ProjectRecord;
   },
 ) => {
   if (!busHome) return;
@@ -297,6 +304,254 @@ const saveRecord = (
     habits: { ...cur, ...patch },
   });
 };
+
+/**
+ * #2966: the per-project file each harness loads, from its own docs.
+ * - claude: CLAUDE.local.md, documented as the local-only project file.
+ * - codex: AGENTS.md. It reads AGENTS.override.md first, but that replaces the
+ *   project's own AGENTS.md instead of adding to it, so we never write it.
+ * - pi: AGENTS.md (context files from the working directory).
+ * - opencode: AGENTS.md, with CLAUDE.md only as a fallback.
+ */
+export const PROJECT_HABITS_FILE: Record<HabitsHarness, string> = {
+  claude: "CLAUDE.local.md",
+  codex: "AGENTS.md",
+  pi: "AGENTS.md",
+  opencode: "AGENTS.md",
+};
+
+/** The project's own file for `h`, under `cwd`. */
+export const projectHabitsTarget = (cwd: string, h: HabitsHarness): string =>
+  join(cwd, PROJECT_HABITS_FILE[h]);
+
+/**
+ * A path as a literal gitignore pattern: metacharacters escaped, so a folder
+ * called `[x]` or `a*b` matches the file and not something else.
+ */
+export const gitignoreLiteral = (path: string): string =>
+  // Spaces are escaped as well: git ignores a trailing one unless it is.
+  path.replace(/[\\*?[\]! ]/g, (c) => `\\${c}`);
+
+/** One line this install added to a repository's exclude file. */
+export type ExcludeEntry = {
+  file: string;
+  line: string;
+  /** The project file it was added for, so one project can be turned off alone. */
+  for?: string;
+};
+
+/**
+ * What the project mode needs from git, injected so tests can fake it. All
+ * optional: a folder that is not a work tree gets no ignore line, and a file
+ * it already has is left alone (there is no way to tell tracked from not).
+ */
+export type ProjectIo = {
+  /** The project-relative path of a file (`apps/x/AGENTS.md`), prefix included. */
+  rel?: (name: string) => string;
+  /** Whether git tracks that path. */
+  tracked?: (rel: string) => boolean;
+  /** The exclude file git actually reads (the common dir, worktrees included). */
+  excludeFile?: string;
+  /** Adds one line; true only when it was not already there. */
+  exclude?: (line: string) => boolean;
+  /** Leaves it as it was when we did not add it. */
+  unexclude?: (line: string) => void;
+};
+
+type ProjectRecord = {
+  files: Record<string, FileRecord>;
+  /** Per repository file, so a line the person had is never taken away. */
+  exclude: ExcludeEntry[];
+};
+
+/** The project slice of the record, tolerating an older shape. */
+const projectOf = (v: unknown): ProjectRecord => {
+  const p = (typeof v === "object" && v !== null ? v : {}) as {
+    files?: Record<string, FileRecord>;
+    exclude?: unknown;
+  };
+  const exclude: ExcludeEntry[] = [];
+  if (Array.isArray(p.exclude))
+    for (const e of p.exclude)
+      if (
+        typeof e === "object" &&
+        e !== null &&
+        typeof (e as ExcludeEntry).file === "string" &&
+        typeof (e as ExcludeEntry).line === "string"
+      )
+        exclude.push({
+          file: (e as ExcludeEntry).file,
+          line: (e as ExcludeEntry).line,
+          ...(typeof (e as ExcludeEntry).for === "string"
+            ? { for: (e as ExcludeEntry).for }
+            : {}),
+        });
+  return { files: p.files ?? {}, exclude };
+};
+
+/** The state of the project file the flow would write for `h` (#2966). */
+export function projectHabitsFileState(
+  cwd: string,
+  h: HabitsHarness,
+): BlockState & { path: string } {
+  const path = projectHabitsTarget(cwd, h);
+  try {
+    if (brokenLink(path)) return { state: "broken", path };
+    if (!existsSync(path)) return { state: "absent", path };
+    return { ...blockState(readFileSync(path, "utf8")), path };
+  } catch {
+    return { state: "broken", path };
+  }
+}
+
+/**
+ * #2966: writes the block into each harness's per-project file. Never touches
+ * a file git tracks, a file it already has (unless the block there is ours),
+ * or a symbolic link; and it ignores a file it creates through the repo's own
+ * exclude file, recording the exact line so uninstall can take it back.
+ */
+export function writeProjectHabits(
+  deps: HabitsDeps & { cwd: string },
+  harnesses: HabitsHarness[],
+  io: ProjectIo = {},
+): HabitsResult {
+  const files: string[] = [];
+  const notes: string[] = [];
+  const seen = new Set<string>();
+  const cur = record(deps.busHome).project;
+  const files_ = { ...cur.files };
+  const exclude = [...cur.exclude];
+  for (const h of harnesses) {
+    const name = PROJECT_HABITS_FILE[h];
+    const path = projectHabitsTarget(deps.cwd, h);
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const rel = io.rel?.(name) ?? name;
+    if (io.tracked?.(rel) === true) {
+      notes.push(
+        `Left ${path} alone: git tracks it, so a habits block there would be committed. Habits stay off for ${h} in this project.`,
+      );
+      continue;
+    }
+    try {
+      if (brokenLink(path)) {
+        notes.push(`Left ${path} alone: it is a broken symlink.`);
+        continue;
+      }
+      if (isLink(path)) {
+        notes.push(
+          `Left ${path} alone: it is a symlink. Write that file yourself, or run the install without the link.`,
+        );
+        continue;
+      }
+      const exists = existsSync(path);
+      const before = exists ? readFileSync(path, "utf8") : "";
+      const state = blockState(before).state;
+      // A file that was already here and is not ours: not ours to add to.
+      if (exists && state === "absent") {
+        notes.push(
+          `Left ${path} alone: it was already here and it is not a bus file. Add the block yourself if you want the habits in this project.`,
+        );
+        continue;
+      }
+      const after = withHabits(before, habitsBlock());
+      if (after !== before) writeAtomic(path, after);
+      if (state === "absent")
+        files_[path] = { added: separatorFor(before), created: true };
+      files.push(path);
+      // Only a file we created is ours to ignore, and only when we added the line.
+      if (!exists && io.excludeFile !== undefined && io.exclude !== undefined) {
+        const line = `/${gitignoreLiteral(rel)}`;
+        if (io.exclude(line))
+          exclude.push({ file: io.excludeFile, line, for: path });
+      }
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block, then rerun.`
+          : `Could not write ${path}: ${reason(e)}`,
+      );
+    }
+  }
+  saveRecord(deps.busHome, { project: { files: files_, exclude } });
+  return { files, notes };
+}
+
+/**
+ * #2966: takes back exactly what the record says we wrote, in every project
+ * install ever ran in: our block, a file we created, and the exclude lines we
+ * added. Nothing else, and nothing that is not recorded.
+ */
+export function removeProjectHabits(
+  deps: HabitsDeps,
+  /** Only these paths (the per-project off switch); all recorded ones by default. */
+  only?: (path: string) => boolean,
+): HabitsResult {
+  const files: string[] = [];
+  const notes: string[] = [];
+  const cur = record(deps.busHome).project;
+  const kept = { ...cur.files };
+  const exclude = [...cur.exclude];
+  /** The files whose block actually came out: only their exclude line goes. */
+  const cleaned = new Set<string>();
+  for (const [path, rec] of Object.entries(cur.files)) {
+    if (only !== undefined && !only(path)) continue;
+    try {
+      // Nothing of ours is in that file any more: the person removed it, or
+      // the block with it. Its exclude line goes too, or it would hide a file
+      // they create later.
+      if (brokenLink(path) || !existsSync(path) || isLink(path)) {
+        delete kept[path];
+        cleaned.add(path);
+        continue;
+      }
+      const before = readFileSync(path, "utf8");
+      if (blockState(before).state === "absent") {
+        delete kept[path];
+        cleaned.add(path);
+        continue;
+      }
+      const after = withHabits(before, null, rec?.added);
+      if (rec?.created && after.trim() === "") rmSync(path, { force: true });
+      else writeAtomic(path, after);
+      delete kept[path];
+      cleaned.add(path);
+      files.push(path);
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
+          : `Could not update ${path}: ${reason(e)}`,
+      );
+    }
+  }
+  // The exclude lines last: only the exact ones we recorded, from their own
+  // files, and only for the files this call is about. An entry with no `for`
+  // predates that field, so only an unfiltered call (uninstall) takes it.
+  for (const e of [...exclude]) {
+    if (only !== undefined && (e.for === undefined || !only(e.for))) continue;
+    // A block left alone (no END marker, unreadable) keeps its line: the file
+    // still holds habits, so it must stay out of git's way.
+    if (e.for !== undefined && !cleaned.has(e.for)) continue;
+    try {
+      const text = readFileSync(e.file, "utf8");
+      const lines = text.split("\n");
+      if (!lines.includes(e.line)) {
+        exclude.splice(exclude.indexOf(e), 1);
+        continue;
+      }
+      // Never remove git's own exclude file, even when the line was the last.
+      writeAtomic(e.file, lines.filter((l) => l !== e.line).join("\n"));
+      exclude.splice(exclude.indexOf(e), 1);
+    } catch {
+      // Gone, or not ours to write: nothing to take back.
+      exclude.splice(exclude.indexOf(e), 1);
+    }
+  }
+  if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
+    saveRecord(deps.busHome, { project: { files: kept, exclude } });
+  return { files, notes };
+}
 
 /** The state of the file `h` would be written to. */
 export function habitsFileState(
@@ -712,19 +967,47 @@ export type HabitsQuestion = {
   note: string;
   yes: string;
   no: string;
+  /** For every session in every project on this machine: opt-in only. */
+  global?: string;
+  /** Turning them off everywhere, and never being asked again. */
+  never?: string;
 };
 
 /** The last line of the question: omp gets no habit lines. */
 export const OMP_NOTE = "omp: not supported yet";
 
+/**
+ * #2966: the one place the install question is worded, so Product can reword it
+ * without touching the flow. `{count}` habits, `{files}` where they go.
+ */
+/** The hand-off for a global block that changed in this release: it is not a project question. */
+export const HABITS_GLOBAL_UPDATE_TEXT =
+  "The habits for every project on this machine changed in this release, in {files}:";
+
+export const HABITS_QUESTION_TEXT =
+  "The bus would add {count} habits to this project only, in {files}:";
+
 export const habitsQuestion = (
   shownFiles: string[],
   bus: string = BUS_CMD,
 ): HabitsQuestion => {
-  const yes = `${bus} install --habits`;
-  const no = `${bus} install --no-habits`;
-  const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
-  return { text, lines: HABITS_LINES.slice(), note: OMP_NOTE, yes, no };
+  const yes = `${bus} install --habits-project`;
+  // #2966 (Product): No answers for this project; turning them off everywhere
+  // is the separate line below.
+  const no = `${bus} install --no-habits-project`;
+  const text = HABITS_QUESTION_TEXT.replace(
+    "{count}",
+    String(HABITS_LINES.length),
+  ).replace("{files}", shownFiles.join(" and "));
+  return {
+    text,
+    lines: HABITS_LINES.slice(),
+    note: OMP_NOTE,
+    yes,
+    no,
+    global: `${bus} install --habits`,
+    never: `${bus} install --no-habits`,
+  };
 };
 
 /** What a person sees in the terminal and the agent prints for its user. */
@@ -737,4 +1020,6 @@ export const habitsQuestionLines = (q: HabitsQuestion): string[] => [
   `  ${q.note}`,
   `Yes:  ${q.yes}`,
   `No:   ${q.no}`,
+  ...(q.global ? [`All projects (invasive): ${q.global}`] : []),
+  ...(q.never ? [`Never ask again on this machine: ${q.never}`] : []),
 ];

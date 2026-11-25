@@ -235,9 +235,6 @@ function fillBadge(el: HTMLElement, badge: PinBadge): void {
 
 /** #2408: the first shell protocol that announces itself (shared PROTOCOL_SHELL_ANNOUNCES; not imported to keep this chunk small). */
 export const SHELL_ANNOUNCES = 6;
-/** #2426: the first shell protocol that reads `rect` on `comment.open` (shared PROTOCOL_ASK_MARK; not imported to keep this chunk small). */
-export const SHELL_ASK_RECT = 7;
-
 export function createComments(
   bridge: Pick<Bridge, "on" | "send"> & Partial<Pick<Bridge, "shellProtocol">>,
   signal?: AbortSignal,
@@ -538,9 +535,7 @@ export function createComments(
             !!th.ask && !th.resolved,
           );
           if (th.changed) d.title = "Changed since this was placed.";
-          d.addEventListener("click", () =>
-            open(th.id, d.getBoundingClientRect()),
-          );
+          d.addEventListener("click", () => open(th.id));
         }
         continue;
       }
@@ -567,9 +562,7 @@ export function createComments(
           undefined,
           ask,
         );
-        d.addEventListener("click", () =>
-          open(th.id, d.getBoundingClientRect()),
-        );
+        d.addEventListener("click", () => open(th.id));
       } else if (
         th.ask &&
         !th.resolved &&
@@ -587,12 +580,7 @@ export function createComments(
           undefined,
           true,
         );
-        // The card goes by the quote, not by the chip above it.
-        const quoteRange = s.range;
-        d.addEventListener("click", () => {
-          const r = quoteRange?.getClientRects()[0];
-          open(th.id, r ?? d.getBoundingClientRect());
-        });
+        d.addEventListener("click", () => open(th.id));
       }
     }
     ghostAt = null;
@@ -688,24 +676,8 @@ export function createComments(
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
-  function open(
-    id: string,
-    at?: { left: number; top: number; width: number; height: number },
-  ) {
-    // #2426: where the mark is, so the shell can open an ask beside it; only
-    // for a shell that said it knows the field (an older one refuses the message).
-    const clamp = (n: number, lo: number, hi: number) =>
-      Math.min(hi, Math.max(lo, Number.isFinite(n) ? n : 0));
-    const rect =
-      at && (bridge.shellProtocol?.() ?? 0) >= SHELL_ASK_RECT
-        ? {
-            x: clamp(at.left, -100_000, 100_000),
-            y: clamp(at.top, -100_000, 100_000),
-            width: clamp(at.width, 0, 100_000),
-            height: clamp(at.height, 0, 100_000),
-          }
-        : undefined;
-    bridge.send({ oa: 1, type: "comment.open", id, ...(rect ? { rect } : {}) });
+  function open(id: string) {
+    bridge.send({ oa: 1, type: "comment.open", id });
   }
 
   // ---- selection button ----
@@ -960,7 +932,7 @@ export function createComments(
         if (!best || size < best.size) best = { id: p.id, size, rect: r };
       }
     }
-    if (best) open(best.id, best.rect);
+    if (best) open(best.id);
   }
 
   /** Where Esc belongs to the page or to a dialog above the frame (#1698). */

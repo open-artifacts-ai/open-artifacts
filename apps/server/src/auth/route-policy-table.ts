@@ -309,6 +309,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`DELETE ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
+  // #2426 B, #2536: the asks a viewer may see in a page's slots. Read access to
+  // the page is the floor; the handler filters by access to each ask's home.
+  [`GET ${ARTS}/ask-slots`]: art("comments.read"),
   // #682 comments: the floor is read access; the handler applies comments_off,
   // the embed refusal and who may edit or delete (the author, or an editor).
   [`GET ${ARTS}/comments`]: art("comments.read"),
@@ -633,6 +636,7 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
   list_comments: art("comments.read"),
+  get_comment_picture: art("comments.read"),
   add_comment: art("comments.write"),
   resolve_comment: art("comments.write"),
   withdraw_ask: art("comments.write"),

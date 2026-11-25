@@ -70,6 +70,7 @@ describe("requiredSecrets parser (fixtures)", () => {
           "  AS: Fetcher;",
           "  RL: RateLimit;",
           "  EM?: SendEmail;",
+          "  IMAGES?: ImagesBinding;",
           "  S: string;",
         ].join("\n"),
       ),

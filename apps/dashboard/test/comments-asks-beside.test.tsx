@@ -1,16 +1,9 @@
 import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import {
-  act,
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ASK_BESIDE_HOLD_MS } from "../src/viewer/comments/CommentsBody";
-import { installHarness, mount, server, wait } from "./harness";
+import { installHarness, mount, server } from "./harness";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Opts = {
@@ -183,47 +176,39 @@ describe("asks inside the page (#2426)", () => {
     expect(byId.t4).toBeUndefined();
   });
 
-  it("a click on an ask mark opens its card beside it, and answering sends the pane's request", async () => {
-    let answered: unknown = null;
-    serve([thread("t1")]);
-    server.use(
-      http.post(
-        `*${R.commentAnswer(OWNED, "t1", "c-t1")}`,
-        async ({ request }) => {
-          answered = await request.json();
-          return HttpResponse.json({});
-        },
-      ),
-    );
+  it("a click on an ask mark opens the comments at that thread, with no floating card", async () => {
+    serve([thread("t1"), thread("t2", {}, null)]);
     mount(viewerPath(OWNED));
     await hello();
-    await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
+    await waitFor(() => expect(sent()?.length).toBeGreaterThan(1));
     await click("t1");
-    const card = await waitFor(() => {
-      const el = beside();
-      if (!el) throw new Error("no card");
-      return el as HTMLElement;
+    // #3048: the pane, with the thread open for a reply, and nothing beside the mark.
+    const pane = await screen.findByRole("complementary", {
+      name: "Comments",
     });
-    expect(within(card).getByText("Which layout?")).toBeInTheDocument();
-    // The comments pane stays closed.
+    expect(beside()).toBeNull();
     expect(
-      screen.queryByRole("complementary", { name: "Comments" }),
-    ).toBeNull();
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    fireEvent.click(within(card).getByRole("button", { name: /List only/ }));
-    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+      await within(pane).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // The ask's card is there, whole, with the rest of its thread.
+    expect(within(pane).getAllByText("Which layout?").length).toBeGreaterThan(
+      1,
+    );
   });
 
-  it("a click on a plain highlight opens the pane, not a card", async () => {
+  it("a click on a plain highlight opens the comments at that thread too", async () => {
     serve([thread("t1", {}, null)]);
     mount(viewerPath(OWNED));
     await hello();
     await waitFor(() => expect(sent()?.length).toBe(1));
     await click("t1");
     expect(beside()).toBeNull();
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
   });
 
-  it("a forged rect on a plain thread opens no card", async () => {
+  it("a mark click on a decided ask opens the pane, never a card", async () => {
     serve([
       thread(
         "t1",
@@ -244,178 +229,8 @@ describe("asks inside the page (#2426)", () => {
     await waitFor(() => expect(sent()?.length).toBe(1));
     await click("t1");
     expect(beside()).toBeNull();
-  });
-
-  it("an ask click with no rect falls back to the pane", async () => {
-    serve([thread("t1")]);
-    mount(viewerPath(OWNED));
-    await hello();
-    await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-    await click("t1", null);
-    expect(beside()).toBeNull();
-  });
-
-  it("Esc closes the card, and so does a click outside it", async () => {
-    serve([thread("t1")]);
-    mount(viewerPath(OWNED));
-    await hello();
-    await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-    await click("t1");
-    await waitFor(() => expect(beside()).not.toBeNull());
-    fireEvent.keyDown(document.body, { key: "Escape" });
-    await waitFor(() => expect(beside()).toBeNull());
-    await click("t1");
-    await waitFor(() => expect(beside()).not.toBeNull());
-    fireEvent.pointerDown(document.body);
-    await waitFor(() => expect(beside()).toBeNull());
-  });
-
-  it("opens beside the mark on a phone too, not in the sheet", async () => {
-    viewport(390);
-    serve([thread("t1")]);
-    mount(viewerPath(OWNED));
-    await hello();
-    await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-    await click("t1");
-    await waitFor(() => expect(beside()).not.toBeNull());
-    expect(screen.queryByRole("dialog")).toBeNull();
-  });
-
-  describe("a page cannot steal a click (#2426 review)", () => {
-    const answerSpy = () => {
-      const picks: unknown[] = [];
-      server.use(
-        http.post(
-          `*${R.commentAnswer(OWNED, "t1", "c-t1")}`,
-          async ({ request }) => {
-            picks.push(await request.json());
-            return HttpResponse.json({});
-          },
-        ),
-      );
-      return picks;
-    };
-    const cardReady = async () => {
-      const card = await waitFor(() => {
-        const el = beside();
-        if (!el) throw new Error("no card");
-        return el as HTMLElement;
-      });
-      return within(card).getByRole("button", { name: /List only/ });
-    };
-
-    it("takes no pick for the first 700 ms, then takes one", async () => {
-      const picks = answerSpy();
-      serve([thread("t1")]);
-      mount(viewerPath(OWNED));
-      await hello();
-      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-      await click("t1");
-      const opt = await cardReady();
-      expect(opt).toBeDisabled();
-      fireEvent.click(opt);
-      await wait(150);
-      expect(picks).toEqual([]);
-      await wait(ASK_BESIDE_HOLD_MS);
-      expect(opt).not.toBeDisabled();
-      fireEvent.click(opt);
-      await waitFor(() => expect(picks).toEqual([{ optionId: "a" }]));
-    });
-
-    it('"I\'ll decide this" takes nothing for the first 700 ms, then works (#2736)', async () => {
-      const bodies: unknown[] = [];
-      server.use(
-        http.post(
-          `*${R.commentAskDecider(OWNED, "t1", "c-t1")}`,
-          async ({ request }) => {
-            bodies.push(await request.json());
-            return HttpResponse.json({});
-          },
-        ),
-      );
-      const sam = { kind: "user", id: "sam", name: "Sam", me: false };
-      serve([
-        thread(
-          "t1",
-          {},
-          {
-            to: [sam, { kind: "user", id: "me", name: "Me", me: true }],
-            decider: sam,
-            chosenBy: { kind: "user", id: "me", name: "Me", me: true },
-            role: "weigh",
-            canTakeBack: true,
-            picks: [],
-          },
-        ),
-      ]);
-      mount(viewerPath(OWNED));
-      await hello();
-      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-      await click("t1");
-      const card = await waitFor(() => {
-        const el = beside();
-        if (!el) throw new Error("no card");
-        return el as HTMLElement;
-      });
-      const btn = within(card).getByRole("button", {
-        name: "I'll decide this",
-      });
-      expect(btn).toBeDisabled();
-      fireEvent.click(btn);
-      await wait(150);
-      expect(bodies).toEqual([]);
-      await wait(ASK_BESIDE_HOLD_MS);
-      expect(btn).not.toBeDisabled();
-      fireEvent.click(btn);
-      await waitFor(() => expect(bodies).toEqual([{ takeBack: true }]));
-    });
-
-    it("a second open of the same thread starts the delay over", async () => {
-      serve([thread("t1")]);
-      mount(viewerPath(OWNED));
-      await hello();
-      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-      await click("t1");
-      const opt = await cardReady();
-      await wait(ASK_BESIDE_HOLD_MS + 100);
-      expect(opt).not.toBeDisabled();
-      await click("t1", { ...RECT, x: 200 });
-      await waitFor(() => expect(opt).toBeDisabled());
-      await wait(ASK_BESIDE_HOLD_MS + 100);
-      expect(opt).not.toBeDisabled();
-    });
-
-    it("an open for another thread closes the card, not moves it", async () => {
-      serve([thread("t1"), thread("t2")]);
-      mount(viewerPath(OWNED));
-      await hello();
-      await waitFor(() => expect(sent()?.length).toBe(2));
-      await click("t1");
-      await waitFor(() => expect(beside()).not.toBeNull());
-      await click("t2");
-      await waitFor(() => expect(beside()).toBeNull());
-    });
-
-    it.each([
-      [
-        "an option with an action",
-        {
-          options: [
-            { id: "a", label: "List only", action: "merge" },
-            { id: "b", label: "Side by side" },
-          ],
-        },
-      ],
-    ])("%s never opens beside: the pane takes it", async (_n, over) => {
-      serve([thread("t1", {}, over)]);
-      mount(viewerPath(OWNED));
-      await hello();
-      await waitFor(() => expect(sent()?.[0]?.ask).toBe(true));
-      await click("t1");
-      expect(
-        await screen.findByRole("complementary", { name: "Comments" }),
-      ).toBeInTheDocument();
-      expect(beside()).toBeNull();
-    });
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
   });
 });

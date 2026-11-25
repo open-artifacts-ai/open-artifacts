@@ -263,11 +263,12 @@ export class TakenWatch {
     return r.maybe === true;
   }
 
-  /** How many records still wait for a turn. */
-  size(): number {
+  /** How many mail records still wait for a turn, optionally for one chat. */
+  size(thread?: string): number {
     let n = 0;
     for (const r of this.#recs.values())
       if (
+        (thread === undefined || r.thread === thread) &&
         r.head !== undefined &&
         (r.state === "attempt" || r.state === "queued")
       )

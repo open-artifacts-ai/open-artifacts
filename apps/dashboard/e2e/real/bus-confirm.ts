@@ -7,8 +7,8 @@ import { APP, createToken, expect } from "./fixtures";
 import { mcpWithToken } from "./mcp-client";
 
 /** A fresh interactive-looking session (dev only, auth.ts ?fresh=1) that lands on `next`. */
-export const freshSignInUrl = (email: string, next: string) =>
-  `${APP}/auth/dev-login?${new URLSearchParams({ email, role: "member", fresh: "1", next })}`;
+export const freshSignInUrl = (email: string, next: string, role = "member") =>
+  `${APP}/auth/dev-login?${new URLSearchParams({ email, role, fresh: "1", next })}`;
 
 /** Approves a new machine in the browser (the real device flow); returns its token. */
 export async function approveMachine(page: Page): Promise<string> {

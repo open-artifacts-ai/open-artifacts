@@ -51,6 +51,7 @@ await build({
   // packages/shared/dist, and the release job only runs `pnpm install`.
   alias: {
     "@oa/shared/harness-skills": at("../shared/src/harness-skills.ts"),
+    "@oa/shared/secrets": at("../shared/src/secrets.ts"),
   },
   define: { __OA_BUS_VERSION__: JSON.stringify(version) },
   // ws's optional native add-ons: required in a try, absent is fine.

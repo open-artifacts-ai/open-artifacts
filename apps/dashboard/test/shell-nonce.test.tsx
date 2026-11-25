@@ -3,9 +3,10 @@
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ANNOUNCE_HEAL_MS } from "../src/viewer/Shell";
-import { installHarness, mount } from "./harness";
+import { ANNOUNCE_HEAL_MS, MINT_RETRY_MS } from "../src/viewer/Shell";
+import { installHarness, mount, server } from "./harness";
 
 installHarness();
 afterEach(() => vi.useRealTimers());
@@ -248,5 +249,83 @@ describe("viewer shell: per-load nonce", () => {
     loaded(first);
     vi.useRealTimers();
     await reloaded(first);
+  });
+
+  it("a tab restored with no load event heals a frame that never said hello (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    const n1 = nonceOf(first);
+    loaded(first); // no hello: the shell already suspects this frame
+    // The URL ages out while the tab is away, and the restore gives the shell
+    // neither a load it didn't start nor the expiry page's announce (a frame
+    // restored from the back/forward cache runs no script again).
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 700_000);
+    act(() => {
+      window.dispatchEvent(
+        new PageTransitionEvent("pageshow", { persisted: true }),
+      );
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    vi.useRealTimers();
+    const second = await reloaded(first);
+    expect(nonceOf(second)).not.toBe(n1);
+    loaded(second);
+    expect(hello(second, nonceOf(second))).toContain("welcome");
+  });
+
+  it("a wake leaves a frame that said hello alone (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    expect(hello(first, nonceOf(first))).toContain("welcome");
+    // Its document is alive: an old URL only matters for the next navigation.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 700_000);
+    act(() => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    vi.useRealTimers();
+    expect(document.querySelector("iframe")).toBe(first);
+  });
+
+  it("a heal whose mint fails keeps the frame and retries instead of reloading the stale URL (#2959)", async () => {
+    mount(viewerPath(OWNED));
+    const first = await frame();
+    loaded(first);
+    // The mint fails once: reloading the frame now would put the expiry page
+    // back (the URL it holds is stale by definition here).
+    let failing = true;
+    server.use(
+      http.get("*/api/v1/artifacts/:id/content-url", () => {
+        if (!failing) return undefined;
+        failing = false;
+        return HttpResponse.error();
+      }),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { oa: 1, type: "expired" },
+          origin: "null",
+          source: first.contentWindow,
+        }),
+      );
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(document.querySelector("iframe")).toBe(first);
+    // The retry (MINT_RETRY_MS later) mints again and replaces the frame.
+    const second = await waitFor(
+      () => {
+        const f = document.querySelector("iframe");
+        if (!f || f === first || !f.src) throw new Error("not reloaded");
+        return f;
+      },
+      { timeout: MINT_RETRY_MS + 2_000 },
+    );
+    loaded(second);
+    expect(hello(second, nonceOf(second))).toContain("welcome");
   });
 });

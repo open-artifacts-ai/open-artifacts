@@ -25,7 +25,10 @@ import { requireFreeStorage } from "../billing/caps.js";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
+import { readCappedRequest } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
+import { logError } from "../log.js";
+import { runtimeStub } from "../runtime/do.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 import { readPicture } from "./picture-image.js";
 
@@ -390,49 +393,123 @@ export async function picturesOf(
 }
 
 /**
- * The picture's bytes for GET: it must be on this artifact and either
- * attached to a comment or the caller's own pending one. Else 404.
+ * Who is reading a picture. `browser`: the person's own signed-in browser
+ * session (or a signed-out visitor the route let in). `agent`: a token, a
+ * grant or MCP: #2577, it reads no picture of a request held for the person it
+ * acts for.
+ */
+type PictureReadMode = "browser" | "agent";
+
+type PictureHit = {
+  body: ReadableStream;
+  type: string;
+  bytes: number;
+  w: number;
+  h: number;
+};
+
+/**
+ * The one path to a picture's bytes, for REST and MCP. It is on this artifact
+ * and either attached to a comment or the caller's own pending one. For an
+ * `agent` read of an attached picture, its comment must exist and not be held
+ * for the caller (#2577), read from the same picture row; a picture that has
+ * lost its comment fails closed. All checked before R2 is read.
  */
 export async function getPicture(
   env: Env,
   artifactId: string,
   pictureId: string,
   userId: string | null,
-): Promise<{ body: ReadableStream; type: string; bytes: number } | null> {
-  if (!isId(pictureId)) return null;
+  mode: PictureReadMode,
+): Promise<PictureHit> {
+  if (!isId(pictureId)) throw new ApiError("bad_request", "Invalid pictureId");
   const row = await stmt(
     env.DB,
     "select * from comment_pictures where id = ?1 and artifact_id = ?2 and received_at > 0",
   )
     .bind(pictureId, artifactId)
     .first<Row>();
-  if (!row) return null;
-  const attached =
-    row.comment_id !== null && !row.comment_id.startsWith("hold:");
-  if (!attached && row.user_id !== userId) return null;
+  if (!row) throw notFound();
+  if (row.comment_id && !row.comment_id.startsWith("hold:")) {
+    if (mode === "agent" && userId) {
+      if (!row.thread_id) throw notFound();
+      const thread = await runtimeStub(env, artifactId).commentsGet(
+        row.thread_id,
+      );
+      const comment = thread.comments.find((c) => c.id === row.comment_id);
+      if (
+        !comment ||
+        comment.held?.some((h) => h.state === "held" && h.owner === userId)
+      )
+        throw notFound();
+    }
+  } else if (row.user_id !== userId) {
+    throw notFound();
+  }
   const obj = await env.FILES.get(row.r2_key);
-  if (!obj) return null;
-  return { body: obj.body, type: row.type, bytes: row.bytes };
+  if (!obj) throw notFound();
+  return {
+    body: obj.body,
+    type: row.type,
+    bytes: row.bytes,
+    w: row.w,
+    h: row.h,
+  };
 }
 
+// Three MiB of image data yields at most four MiB of base64 in the MCP response.
+const PREVIEW_MAX_BYTES = 3 * 1024 * 1024;
+const PREVIEW_SIDE = 1568;
+
+type PictureForAgent = { data: Uint8Array; mimeType: string };
+
 /**
- * The picture's comment, for the GET's held-request check: null when it isn't
- * attached to one.
+ * Send the stored image within the byte budget. If Images is available,
+ * also fit its longest side to the preview limit. Images receives private bytes.
  */
-export async function pictureComment(
+export async function previewForAgent(
   env: Env,
-  artifactId: string,
-  pictureId: string,
-): Promise<{ threadId: string; commentId: string } | null> {
-  const row = await stmt(
-    env.DB,
-    "select thread_id, comment_id from comment_pictures where id = ?1 and artifact_id = ?2",
-  )
-    .bind(pictureId, artifactId)
-    .first<{ thread_id: string | null; comment_id: string | null }>();
-  if (!row?.thread_id || !row.comment_id || row.comment_id.startsWith("hold:"))
-    return null;
-  return { threadId: row.thread_id, commentId: row.comment_id };
+  hit: PictureHit,
+): Promise<PictureForAgent> {
+  const images = env.IMAGES;
+  const fitsFrame = hit.w <= PREVIEW_SIDE && hit.h <= PREVIEW_SIDE;
+  if (hit.bytes <= PREVIEW_MAX_BYTES && (!images || fitsFrame))
+    return {
+      data: new Uint8Array(await new Response(hit.body).arrayBuffer()),
+      mimeType: hit.type,
+    };
+  const unavailable = () =>
+    new ApiError(
+      "too_large",
+      "A smaller preview could not be made for this picture. You can open the original in the web app.",
+    );
+  if (!images) {
+    await hit.body.cancel().catch(() => {});
+    throw new ApiError(
+      "too_large",
+      "This picture is too large to show. Open the original in the web app.",
+    );
+  }
+  try {
+    const res = (
+      await images
+        .input(hit.body)
+        .transform({
+          width: PREVIEW_SIDE,
+          height: PREVIEW_SIDE,
+          fit: "scale-down",
+        })
+        .output({ format: "image/webp", quality: 85, anim: false })
+    ).response();
+    if (!res.ok || res.headers.get("content-type") !== "image/webp")
+      throw unavailable();
+    const data = await readCappedRequest(res, PREVIEW_MAX_BYTES);
+    if (!data.length) throw unavailable();
+    return { data, mimeType: "image/webp" };
+  } catch (e) {
+    if (!(e instanceof ApiError)) logError("comment_picture_preview_failed", e);
+    throw unavailable();
+  }
 }
 
 /** Deletes pictures by where they sit (a comment, or a whole thread) and their bytes. */

@@ -235,8 +235,33 @@ const hermesOnly = (over = {}) => {
     ...over,
   };
 };
+/** #2966: project habits need a git work tree; this ctx's cwd is its root. */
+const asRepo = (ctx: ReturnType<typeof fakeCtx>) => {
+  Object.assign(ctx, { cwd: mkdtempSync(join(tmpdir(), "ob-hp-proj-")) });
+  const base = ctx.which;
+  Object.assign(ctx, { which: (c: string) => c === "git" || base(c) });
+  const prev = ctx.exec;
+  Object.assign(ctx, {
+    exec: vi.fn(async (cmd: string, args: string[], opts?: unknown) => {
+      if (cmd !== "git") return prev(cmd, args, opts as never);
+      if (args.includes("--show-toplevel"))
+        return { code: 0, stdout: `${ctx.cwd}\n`, stderr: "" };
+      if (args.includes("--show-prefix"))
+        return { code: 0, stdout: "", stderr: "" };
+      if (args.includes("--git-path"))
+        return {
+          code: 0,
+          stdout: join(ctx.cwd, ".git", "info", "exclude"),
+          stderr: "",
+        };
+      if (args.includes("ls-files")) return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    }),
+  });
+  return ctx;
+};
 const setup = (over = {}, tty = false) => {
-  const ctx = fakeCtx(hermesOnly(over), tty);
+  const ctx = asRepo(fakeCtx(hermesOnly(over), tty));
   mkdirSync(ctx.home, { recursive: true });
   writeFileSync(
     join(ctx.home, "machine.json"),
@@ -254,13 +279,14 @@ const marker = (ctx: ReturnType<typeof fakeCtx>) =>
   join(hermesPluginDir(ctx.userHome, ctx.env), HERMES_HABITS_MARKER);
 
 describe("install and uninstall with Hermes", () => {
-  it("no yes, no marker; the question names the Hermes plugin", async () => {
+  it("a Hermes-only machine is not asked about project habits", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
-    expect(ctx.out().join("\n")).toContain(
-      "The bus would add 6 habits for sessions on the bus, to the Hermes plugin:",
-    );
+    // #2966 (Product): the plugin is machine-wide, so it is not part of the
+    // "this project only" question at all.
+    expect(ctx.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
+    expect(ctx.out().join("\n")).toContain("machine-wide");
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     expect(habitsLine(ctx)).toContain("Hermes plugin: off");
   });
@@ -328,12 +354,15 @@ describe("install and uninstall with Hermes", () => {
     expect(code).toBe(0);
     expect(ctx.out().join("\n")).toContain("Habits off");
   });
-  it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
+  it("a project yes never touches the machine-wide plugin, and --no-habits opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
     await install({ hub: HUB }, yes);
-    expect(existsSync(marker(yes))).toBe(true);
-    const no = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
-    await install({ hub: HUB }, no);
+    // #2966 (Product): the plugin is machine-wide, so a per-project yes leaves
+    // it alone; it is not even asked about.
+    expect(existsSync(marker(yes))).toBe(false);
+    expect(yes.out().join("\n")).toContain("machine-wide");
+    const no = setup();
+    await install({ habits: "no" }, no);
     expect(existsSync(marker(no))).toBe(false);
     expect(habitsLine(no)).toBe("Habits: off (you opted out)");
   });

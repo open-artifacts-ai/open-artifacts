@@ -134,6 +134,10 @@ gh workflow run release-please.yml -f tag=vX.Y.Z
 2. `upgrade`: `oa:setup --ci --upgrade`. Deploys and runs selftest with a CI token. `--upgrade` never creates resources, secrets or Access config, and keeps the owner token.
 3. `cleanup` (`always()`): `oa:setup --ci --revoke-ci-tokens`. Revokes any leaked setup-ci token.
 
+**Never rerun the whole push run once its release exists.** If anything after the `release-please` job fails (`deploy-prod`, `verify-release`, and so on), a whole-workflow rerun gives `release_created` false, so every later job is skipped and the run ends green with nothing deployed. The hosted mirror (`hosted-release.yml` in open-artifacts-cloud) reads that push run's latest attempt with `filter=latest`, finds `verify-release` skipped, and refuses the tag (cloud #410). The one case for a whole rerun is the `release-please` job's own "created no release" failure, where no release exists yet and the job's error says to rerun.
+
+To recover from a failure after the release exists, use the manual redeploy above with the tag. It fixes this instance only: the mirror looks only at the push run, so hosted takes the change with the next release (or whatever cloud #410 decides). A failed-jobs-only rerun (`gh run rerun --failed`) should keep the first attempt's outputs, but it has not been tested here.
+
 A failed preflight skips the upgrade; cleanup still runs.
 
 ## Browser Run binding (`BROWSER`)

@@ -185,6 +185,8 @@ export type MockOptions = {
         /** #2632: the optional sixth step, and who added the caller. */
         teamStep?: boolean;
         invitedBy?: string;
+        /** #2953 (PROVISIONAL): the server sends `firstComment`, so the comment step shows. Done with `commented`. */
+        commentStep?: boolean;
         /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
         bus?: boolean;
       };
@@ -478,6 +480,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       teamStep: w.teamStep ?? false,
       invitedBy: w.invitedBy ? { name: w.invitedBy } : null,
       busConnected: w.bus ?? true,
+      ...(w.commentStep
+        ? {
+            firstComment: w.commented
+              ? { artifactId: wf.artifact.id, title: "Landing page" }
+              : null,
+          }
+        : {}),
     });
   }
   if (opts.bus) {

@@ -56,7 +56,6 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
-  needsMe,
   newProblems,
   nextAskFor,
   removeMention,
@@ -79,9 +78,8 @@ import {
   useLostDrafts,
   useLostPost,
 } from "./lostPosts";
-import { Markdown } from "./Markdown";
 import { MentionMirror } from "./MentionMirror";
-import { numbering, pinChanged } from "./model";
+import { pinChanged } from "./model";
 import { takeNoteQuote, useNoteQuote } from "./noteQuote";
 import {
   isPersonKey,
@@ -101,16 +99,11 @@ import {
   usePictureDrawer,
 } from "./pictures/drawer";
 import { CommentPictures } from "./pictures/view";
-import { besideWidth, placeBeside, placeBesideRect } from "./pinPlacement";
+import { besideWidth, placeBeside } from "./pinPlacement";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
-import {
-  type CommentsApi,
-  type Lost,
-  MODAL_OR_FIELD,
-  useCommentsApi,
-} from "./useComments";
+import { type CommentsApi, type Lost, useCommentsApi } from "./useComments";
 import {
   fieldCap,
   keyboardInset,
@@ -446,6 +439,7 @@ function Composer({
   restore,
   onText,
   autoFocus = false,
+  focusKey = 0,
   alwaysOpen = true,
   failure,
   onDirty,
@@ -513,6 +507,11 @@ function Composer({
   restore?: string;
   onText?: (text: string) => void;
   autoFocus?: boolean;
+  /**
+   * #3042: bump this to move the caret into the box again (a second Reply on a
+   * thread that is already open). `autoFocus` only fires on false -> true.
+   */
+  focusKey?: number;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
@@ -667,8 +666,8 @@ function Composer({
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
-    if (autoFocus) focusField(ref.current);
-  }, [autoFocus]);
+    if (autoFocus || focusKey > 0) focusField(ref.current);
+  }, [autoFocus, focusKey]);
   // Width changes (panel resize, rotation, a restored hidden draft)
   // change how many lines the text takes.
   useEffect(() => {
@@ -1202,7 +1201,7 @@ function CommentRow({
   c,
   root,
   allProblems,
-  askQuestion,
+  replyHere,
 }: {
   api: CommentsApi;
   thread: CommentThread;
@@ -1210,8 +1209,8 @@ function CommentRow({
   root: boolean;
   /** The thread's new delivery problems per comment, computed once in ThreadCard. */
   allProblems: ReturnType<typeof newProblems>;
-  /** Open a question to the agent that asked (#1794). */
-  askQuestion?: () => void;
+  /** #3042: open this thread's reply box (the card focuses it, not its own top). */
+  replyHere: () => void;
 }) {
   const nextAsk = nextAskFor(api, thread.id);
   const errCtx = useCommentErrorCtx();
@@ -1348,10 +1347,7 @@ function CommentRow({
             thread={thread}
             c={c}
             next={nextAsk ? () => api.reveal(nextAsk) : undefined}
-            reply={
-              api.canComment ? () => api.select(thread.id, true) : undefined
-            }
-            askQuestion={askQuestion}
+            reply={api.canComment ? replyHere : undefined}
             openCard={(id) => {
               const to = api.threads.find((x) =>
                 x.comments.some((k) => k.id === id),
@@ -1505,10 +1501,14 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const compact = useContext(Compact);
   const reply = useReply(api.artifactId, api.guest);
   const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
-  const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
-  // The agent a question goes to, kept while the box is open so a pick
-  // elsewhere doesn't swap the draft away (the server then says why).
-  const [asking, setAsking] = useState<string | null>(null);
+  // #3042: opened from Reply, not from the card: the reply box takes the caret
+  // and the scroll, so the card does not jump to its top and steal the focus.
+  const [replyWanted, setReplyWanted] = useState(0);
+  const replyDone = useRef(0);
+  const replyHere = () => {
+    setReplyWanted((n) => n + 1);
+    api.select(t.id, true);
+  };
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const errCtx = useCommentErrorCtx();
   const [statusErr, setStatusErr] = useState<unknown>(null);
@@ -1533,10 +1533,14 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const revealTick = api.revealed.tick;
   const revealedHere = api.revealed.id === t.id;
   // Runs on mount too, so a column that is just opening still scrolls and focuses.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card; replyWanted is its own trigger.
   useEffect(() => {
+    // Consumed by tick: a later reveal must still scroll normally, and a
+    // second Reply on the same open thread counts again (#3042 review).
+    const fromReply = replyWanted > replyDone.current;
+    replyDone.current = replyWanted;
     if (!isActive) return;
-    if (el.current) scrollWithin(el.current, "nearest");
+    if (!fromReply && el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1549,7 +1553,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     const outlet = card
       ?.closest('[data-sheet-height="pin"]')
       ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
-    if (card && last && outlet) {
+    if (!fromReply && card && last && outlet) {
       const go = () => {
         // Hidden (not claimed yet) or gone (the sheet grew for typing): wait
         // for a real measure, never scroll on 0.
@@ -1572,7 +1576,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         watch.observe(outlet);
       }
     }
-    if (revealedHere && revealTick > api.revealDone.current) {
+    if (!fromReply && revealedHere && revealTick > api.revealDone.current) {
       api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
     }
@@ -1580,7 +1584,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       cancelAnimationFrame(frame);
       watch?.disconnect();
     };
-  }, [isActive, revealTick]);
+  }, [isActive, revealTick, replyWanted]);
   // #2179: "Show N earlier replies" moves focus to the first reply it
   // revealed (after the effect above, which may focus the card).
   const [revealFirst, setRevealFirst] = useState<string | null>(null);
@@ -1592,20 +1596,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     setRevealFirst(null);
     if (r) focusRow(r);
   }, [revealFirst, expanded]);
-  // Leaving the thread drops the question mode.
+  // Leaving the thread clears the one-shot reply request.
   useEffect(() => {
-    if (!isActive) setAsking(null);
+    if (!isActive) setReplyWanted(0);
   }, [isActive]);
   if (!first) return null;
-  // "Ask a question" (#1794): an open, unanswered ask from an agent, to someone who may reply.
-  const asker =
-    first.ask &&
-    first.author.kind === "agent" &&
-    !first.ask.answer &&
-    !first.ask.closed &&
-    canAct
-      ? first.author.name
-      : null;
   const toggle = () => {
     setStatusErr(null);
     status.mutate(
@@ -1674,14 +1669,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               c={first}
               allProblems={allProblems}
               root
-              askQuestion={
-                asker && !asking
-                  ? () => {
-                      setAsking(asker);
-                      api.select(t.id, true);
-                    }
-                  : undefined
-              }
+              replyHere={replyHere}
             />
           </ul>
           {hidden > 0 && (
@@ -1711,6 +1699,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   c={c}
                   allProblems={allProblems}
                   root={false}
+                  replyHere={replyHere}
                 />
               ))}
             </ul>
@@ -1722,62 +1711,16 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </p>
         )}
         {/* A post that failed after its box closed, with no box on screen to take it back. */}
-        {canAct && lostReply.lost && !(isActive && !(asking && isActive)) && (
-          <LostLine what="reply" onRestore={() => api.select(t.id, true)} />
+        {canAct && lostReply.lost && !isActive && (
+          <LostLine what="reply" onRestore={replyHere} />
         )}
-        {canAct && asker && lostAsk.lost && !(asking && isActive) && (
-          <LostLine
-            what="question"
-            onRestore={() => {
-              setAsking(asker);
-              api.select(t.id, true);
-            }}
-          />
-        )}
-        {asking && isActive ? (
-          <>
-            {api.guest && <GuestName api={api} />}
-            <Composer
-              key="ask"
-              label="Question"
-              actions={ACTIONS_PLAIN}
-              placeholder={`Ask ${asking} a question`}
-              submit="Send"
-              instant
-              seed={lostAsk.lost}
-              onLost={(l) => {
-                // Kept outside this card; if the card is still here, the box reopens with it.
-                lostAsk.onLost(l);
-                setAsking(asking);
-              }}
-              autoFocus
-              buttonsRight
-              onCancel={() => setAsking(null)}
-              lead={
-                <span className={`${TXT} ${MUTED}`} data-to-asker="">
-                  To {asking}, the agent that asked
-                </span>
-              }
-              onSubmit={(body) => {
-                lostAsk.clear();
-                const done = reply.mutateAsync({
-                  thread: t.id,
-                  body,
-                  toAsker: true,
-                  ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-                });
-                // The question shows at once; the box closes with it.
-                setAsking(null);
-                return done;
-              }}
-            />
-          </>
-        ) : canAct && isActive ? (
+        {canAct && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
             <Composer
               label="Reply"
+              focusKey={replyWanted}
               actions={ACTIONS_PLAIN}
               placeholder="Reply"
               mentionPlaceholder="Reply. Type @ to mention an agent or a person."
@@ -1818,11 +1761,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             <div
               className={`flex gap-2 ${compact && first.ask && !first.ask.closed ? "" : "pl-8"}`}
             >
-              <Button
-                size="xs"
-                variant="outline"
-                onClick={() => api.select(t.id, true)}
-              >
+              <Button size="xs" variant="outline" onClick={replyHere}>
                 Reply
               </Button>
               {!api.outsider && (
@@ -1895,129 +1834,12 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   );
 }
 
-/** How long the card beside a mark takes no pick after it appears. */
-export const ASK_BESIDE_HOLD_MS = 700;
-
 /**
- * #2426: an unanswered ask the reader clicked in the page opens its card right
- * beside the mark, over the page, drawn here and not in the sandboxed frame. It
- * is the pane's own AskBlock, so the pick goes the same way (the server records
- * it). Esc or a click outside closes it.
+ * #2426 B (draft): how long the ask card the page placed in a slot takes no
+ * pick after it appears or moves. Part A's card beside a mark is gone (#3048);
+ * the slot card keeps the delay.
  */
-export function AskBeside({ frame }: { frame: HTMLElement | null }) {
-  const api = useCommentsApi();
-  const at = api.askBeside;
-  const ref = useRef<HTMLElement>(null);
-  const [h, setH] = useState(200);
-  const { closeAsk } = api;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the card mounts when an ask is opened (`at?.id`)
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => el.offsetHeight && setH(el.offsetHeight);
-    measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [at?.id]);
-  const open = !!at;
-  // #2426 review: page script can place this card, so for a moment after it
-  // appears (or moves, or opens again) it takes no pick: a click the reader
-  // meant for the page cannot land on an option. `at` is a new object on every
-  // open, so every open starts the delay over.
-  const [armed, setArmed] = useState(false);
-  useEffect(() => {
-    setArmed(false);
-    if (!at) return;
-    const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
-    return () => clearTimeout(t);
-  }, [at]);
-  useEffect(() => {
-    if (!open) return;
-    const key = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented) return;
-      const t = e.target;
-      if (t instanceof HTMLElement && t.closest(MODAL_OR_FIELD) !== null)
-        return;
-      closeAsk();
-    };
-    const down = (e: PointerEvent) => {
-      const t = e.target;
-      if (
-        t instanceof Element &&
-        (ref.current?.contains(t) ||
-          t.closest("[role='menu'],[role='dialog'],[role='alertdialog']"))
-      )
-        return;
-      closeAsk();
-    };
-    document.addEventListener("keydown", key);
-    document.addEventListener("pointerdown", down, true);
-    return () => {
-      document.removeEventListener("keydown", key);
-      document.removeEventListener("pointerdown", down, true);
-    };
-  }, [open, closeAsk]);
-  const thread = at ? api.threads.find((t) => t.id === at.id) : undefined;
-  const c =
-    thread?.comments.find((k) => k.ask && needsMe(k.ask)) ??
-    thread?.comments.find((k) => k.ask);
-  if (!at || !frame || !thread || !c?.ask) return null;
-  const w = besideWidth(frame.clientWidth);
-  const { left, top } = placeBesideRect(
-    at.rect,
-    { w: frame.clientWidth, h: frame.clientHeight },
-    { w, h },
-  );
-  const nextAsk = nextAskFor(api, thread.id);
-  return (
-    <section
-      ref={ref}
-      aria-label="Ask"
-      data-oa-keep-selection=""
-      data-ask-beside=""
-      style={{
-        left: frame.offsetLeft + left,
-        top: frame.offsetTop + top,
-        width: w,
-      }}
-      className="absolute z-20 max-h-[calc(100%-16px)] overflow-y-auto rounded-xl border border-border bg-card p-3 shadow-xl"
-    >
-      <AskBlock
-        artifactId={api.artifactId}
-        thread={thread}
-        c={c}
-        next={
-          nextAsk
-            ? () => {
-                closeAsk();
-                api.reveal(nextAsk);
-              }
-            : undefined
-        }
-        reply={
-          api.canComment
-            ? () => {
-                closeAsk();
-                api.select(thread.id, true);
-              }
-            : undefined
-        }
-        guest={api.guest}
-        boxed={false}
-        holdPicks={!armed}
-        body={
-          showsAskBody(c.body, c.ask.question) ? (
-            <div className={`break-words ${CTXT}`} data-ask-body="">
-              <Markdown body={c.body} />
-            </div>
-          ) : undefined
-        }
-      />
-    </section>
-  );
-}
+export const ASK_BESIDE_HOLD_MS = 700;
 
 function NewThread({
   api,
@@ -2104,7 +1926,11 @@ function NewThread({
                       ...guest,
                     })
                     .then(
-                      () => api.cancelDraft(true),
+                      (t) => {
+                        api.cancelDraft(true);
+                        // #3032: the new note sits at the top: show it there.
+                        if ("comments" in t) api.reveal(t.id);
+                      },
                       () => {},
                     )
                 }
@@ -2158,12 +1984,20 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         onLost={lost.onLost}
         onSubmit={(body, x) => {
           lost.clear();
-          return create.mutateAsync({
-            anchor: { kind: "note" },
-            body,
-            ...extrasBody(x),
-            ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-          });
+          return create
+            .mutateAsync({
+              anchor: { kind: "note" },
+              body,
+              ...extrasBody(x),
+              ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+            })
+            .then((t) => {
+              // #3032: a posted note goes to the top of the list, so bring it
+              // into view and focus it instead of leaving the reader at the
+              // composer, below every older note.
+              if ("comments" in t) api.reveal(t.id);
+              return t;
+            });
         }}
       />
     </div>

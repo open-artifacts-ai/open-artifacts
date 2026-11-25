@@ -107,12 +107,20 @@ const writersHint = (w: DataWriters, v: Visibility) =>
       : "Anyone who can view it.";
 
 const CAPS = [
-  ["db", "Database", "Lets the page store shared data."],
-  ["viewer", "Viewer identity", "Lets the page see who is viewing."],
+  [
+    "db",
+    "Database",
+    "Lets the page store data that everyone who can open it sees. Anyone who can open it can change it, unless you limit changes to editors.",
+  ],
+  [
+    "viewer",
+    "Viewer identity",
+    "Lets the page see who is viewing. The page can read the email and name of the logged-in viewer.",
+  ],
   [
     "storage",
     "Viewer's own data",
-    "Lets the page save data for each logged-in viewer, such as their own ticked boxes.",
+    "Lets the page save data for each logged-in viewer, such as their own ticked boxes. Private to each viewer: others do not see it.",
   ],
 ] as const;
 
@@ -264,6 +272,8 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
     notEmailed?: NotEmailed;
     /** The day's limit, with a limit reason (#2620). */
     limit?: number;
+    /** With sender_paused (#2662, #2741): when the sharer's pause ends (ISO). */
+    pausedUntil?: string;
     /** How they sign in, from the server (older servers omit it). */
     with: string | null;
     /** The role picked: a guest's row corrects Editor, once, just after. */
@@ -406,6 +416,7 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               recipient: r.recipient,
               ...(r.notEmailed ? { notEmailed: r.notEmailed } : {}),
               ...(r.limit !== undefined ? { limit: r.limit } : {}),
+              ...(r.pausedUntil ? { pausedUntil: r.pausedUntil } : {}),
               with: signInWith(r.signInMethods),
               role: r.role,
             });
@@ -666,7 +677,12 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
               >
                 <p data-share-sent="">
                   {shared.notEmailed
-                    ? notEmailedLine(shared.notEmailed, install, shared.limit)
+                    ? notEmailedLine(
+                        shared.notEmailed,
+                        install,
+                        shared.limit,
+                        shared.pausedUntil,
+                      )
                     : shared.emailed
                       ? shared.with
                         ? `We emailed them a link. They'll log in with ${shared.with}.`

@@ -114,6 +114,14 @@ function useAnnouncer() {
 }
 
 /**
+ * Events that refetch the comments list: a `comments` frame, and every
+ * `hello`. A comment made after the list was fetched but before the socket
+ * joined sends its frame to no one; the hello catches it up (cloud #291).
+ */
+export const refetchesComments = (e: { type: string }): boolean =>
+  e.type === "comments" || e.type === "hello";
+
+/**
  * Live version updates for one viewer: one R.events socket, coalesced into
  * one decision per burst (swap when provably safe, otherwise the chip),
  * plus the deleted or no-access state.
@@ -315,12 +323,14 @@ export function useLiveVersions(o: {
       id,
       embed,
       onEvent: (e) => {
-        if (e.type === "comments") {
-          // Someone commented, replied or resolved: refetch the list.
+        if (refetchesComments(e)) {
+          // A comment changed, or the socket (re)connected and may have
+          // missed some (cloud #291): refetch the list.
           void qc.invalidateQueries({ queryKey: commentsKey(id) });
           // #2426 B: an ask shown in this page's slots may have been decided.
           void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
-        } else if (e.type === "hello") {
+        }
+        if (e.type === "hello") {
           down.current = false;
           enqueue({ version: e.version });
         } else if (e.type === "version") {

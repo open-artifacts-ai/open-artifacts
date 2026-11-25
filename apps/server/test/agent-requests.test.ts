@@ -61,6 +61,7 @@ import {
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, fetchAndWait, login } from "./helpers.js";
+import { close, connect, tool } from "./mcp-helpers.js";
 import { png } from "./picture-fixtures.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
@@ -1719,6 +1720,27 @@ describe("an ask addressed to someone else's agent", () => {
   });
 });
 
+describe("the sender's comment route", () => {
+  it("shows request facts only to the sender's browser session", async () => {
+    const s = await setup();
+    await post(s.id, typed(editor), editor, "words", mention(s.claude));
+    const pat = (await createPat(E, editor.userId, "comment reader")).token;
+    const read = async (credential: string) => {
+      const response = await api(app, R.comments(s.id), credential);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { threads: Thread[] };
+      const comment = body.threads[0]?.comments[0];
+      expect(comment).toBeDefined();
+      return comment?.requestFacts;
+    };
+    expect(await read(editor.cookie)).toMatchObject([
+      { key: s.claude, status: "waiting_owner" },
+    ]);
+    expect(await read(pat)).toBeUndefined();
+    expect(await read(owner.cookie)).toBeUndefined();
+  });
+});
+
 describe("the receiver's routes", () => {
   it("are a browser session of the receiver only", async () => {
     const s = await setup();
@@ -1776,14 +1798,34 @@ describe("pictures of a held request (#2508, #2577)", () => {
     // Held: the receiver's agent reads neither the words nor the picture.
     expect(await picsOf(s.id, asAgent(owner), commentId)).toBeUndefined();
     expect((await get(s.id, pic, ownerToken)).status).toBe(404);
-    // The person (their session), and the sender, read it.
-    expect(await picsOf(s.id, view(owner), commentId)).toHaveLength(1);
-    expect((await get(s.id, pic, owner.cookie)).status).toBe(200);
-    expect((await get(s.id, pic, editor.cookie)).status).toBe(200);
-    await release();
-    // After Allow, the agent reads the picture again.
-    expect(await picsOf(s.id, asAgent(owner), commentId)).toHaveLength(1);
-    expect((await get(s.id, pic, ownerToken)).status).toBe(200);
+    const client = await connect(ownerToken);
+    try {
+      const read = () =>
+        tool(client, "get_comment_picture", { id: s.id, pictureId: pic });
+      const hidden = await read();
+      expect(hidden.isError).toBe(true);
+      expect(hidden.content).toEqual([
+        { type: "text", text: "not_found: Not found" },
+      ]);
+      // The person (their session), and the sender, read it.
+      expect(await picsOf(s.id, view(owner), commentId)).toHaveLength(1);
+      expect((await get(s.id, pic, owner.cookie)).status).toBe(200);
+      expect((await get(s.id, pic, editor.cookie)).status).toBe(200);
+      await release();
+      // After Allow, the agent reads the picture again.
+      expect(await picsOf(s.id, asAgent(owner), commentId)).toHaveLength(1);
+      expect((await get(s.id, pic, ownerToken)).status).toBe(200);
+      const shown = await read();
+      expect(shown.content).toEqual([
+        {
+          type: "image",
+          mimeType: "image/png",
+          data: btoa(String.fromCharCode(...png(6, 4, false))),
+        },
+      ]);
+    } finally {
+      await close(client);
+    }
   }
 
   const allowOnce = async (id: string) => {

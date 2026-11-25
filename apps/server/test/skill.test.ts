@@ -120,6 +120,7 @@ describe("skill.md drift", () => {
     expect(await skill()).not.toContain("gh run rerun");
     // One sentence, shared with the publishing section: no second wording.
     expect(section).toContain(LINK_RULE);
+    expect(section).toContain("use the full width on large screens");
     expect(section).not.toMatch(/every link/i);
     // Plain links are not dead: the runtime hands them to the shell, which
     // opens them (docs/security/security.md).
@@ -228,11 +229,10 @@ describe("skill.md drift", () => {
     // Doc-gated tools join the skill once the doc switch is open.
     const docs = docsAvailable(env as never) ? 0 : DOC_GATED_TOOLS.length;
     const n = TOOL_DEFS.length - 1 - docs;
-    expect(md).toContain(`tools/list shows the ${n} tools`);
-    // The tool count appears once; the version (e.g. 0.17.0) is not a count.
-    expect(
-      md.replaceAll(VERSION, "").match(new RegExp(`\\b${n}\\b`, "g")) ?? [],
-    ).toHaveLength(1);
+    // Count declarations, so an unrelated limit such as "25 MB" is ignored.
+    expect(md.match(/tools\/list shows the \d+ tools/g)).toEqual([
+      `tools/list shows the ${n} tools`,
+    ]);
     expect(await skill(E({ FEATURES: "spaces" }))).toContain(
       `tools/list shows the ${TOOL_DEFS.length - docs} tools`,
     );

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "./ask-slots.js";
 import {
   pinAnchorSchema,
   selectionAnchorSchema,
@@ -35,11 +36,12 @@ import { utf8Exceeds } from "./utf8.js";
  * knows it (a tab opened before a deploy keeps its old, strict shell), and the
  * shell drops unknown keys from a frame message instead of the whole message.
  * #2426: 7 adds `ask` on `comments.set` threads (the shell leaves it out for a
- * runtime that said less) and `rect` on `comment.open` (the runtime leaves it
- * out for a shell that announced less). #2426 B: 8 adds `ask.slots` (frame to
- * shell) and `ask.slotSize` (shell to frame); the runtime sends the first only
- * to a shell that announced 8, and the shell sends the second only to a frame
- * that said 8.
+ * runtime that said less). 7 also carried `rect` on `comment.open`, dropped in
+ * #3048 with the card it placed beside the mark: an older runtime still sends
+ * it, and the shell drops the unknown key. #2426 B: 8 adds `ask.slots` (frame
+ * to shell) and `ask.slotSize` (shell to frame); the runtime sends the first
+ * only to a shell that announced 8, and the shell sends the second only to a
+ * frame that said 8.
  */
 export const PROTOCOL_VERSION = 8;
 /** The first protocol whose shell announces itself, and whose frame messages may carry fields an older shell would refuse (`at`, `ghost`). */
@@ -52,13 +54,11 @@ export const PROTOCOL_COMMENT_DRAFT = 3;
 export const PROTOCOL_COMMENT_CLEAR = 4;
 /** The first protocol whose runtime draws a pin's badge and reports where a pin was clicked (#2019). */
 export const PROTOCOL_PIN_BADGE = 5;
-/** The first protocol whose runtime marks an unanswered ask (`ask`), and whose shell reads `rect` on `comment.open` (#2426). */
+/** The first protocol whose runtime marks an unanswered ask (`ask`) (#2426). */
 export const PROTOCOL_ASK_MARK = 7;
 /** The first protocol whose runtime reports `[data-oa-ask]` slots and sizes them on `ask.slotSize` (#2426 B). */
 export const PROTOCOL_ASK_SLOTS = 8;
-/** #2426 B: a slot key, chosen by the agent's page; never an ask id. */
-export const ASK_SLOT_KEY = /^[a-z0-9-]{1,64}$/;
-export const ASK_SLOTS_MAX = 20;
+/** #2426 B: a slot's tallest card, in px (the key and the count live in ask-slots.ts). */
 export const ASK_SLOT_H_MAX = 2000;
 
 /**
@@ -103,6 +103,14 @@ export const OnboardingProgressSchema = z.strictObject({
   mentionReplied: z.boolean().optional(),
   mentionStalled: z.boolean().optional(),
   askAnswered: z.boolean().optional(),
+  /** #2953: the first typed comment's page title; null when none. Absent from an older shell or server: no comment step. */
+  firstComment: z
+    .strictObject({
+      artifactId: z.string().max(64),
+      title: z.string().max(500),
+    })
+    .nullable()
+    .optional(),
   /** #2890: false hides "named" and "mention" (three steps). Absent from an older shell: five. */
   busConnected: z.boolean().optional(),
   /**
@@ -116,8 +124,10 @@ export const OnboardingProgressSchema = z.strictObject({
       org: z.string().max(200),
       inviter: z.string().max(200).nullable(),
       teammateCommented: z.boolean(),
-      /** setupSteps(onboarding).done: the page shows the shared count. */
-      done: z.number().int().min(0).max(5).optional(),
+      /** The count without the comment step (#2953): Welcome pages published before it show this over 5 or 3. */
+      done: z.number().int().min(0).max(6).optional(),
+      /** setupSteps(onboarding).done, comment step included: the page shows the shared count. */
+      doneAll: z.number().int().min(0).max(6).optional(),
     })
     .optional(),
 });
@@ -328,15 +338,6 @@ export const ArtifactToShellSchema = z.union([
     nonce,
     type: z.literal("comment.open"),
     id: CommentIdSchema,
-    /** #2426: the clicked mark's bounding box in frame-viewport pixels, so the shell can open an ask beside it. */
-    rect: z
-      .strictObject({
-        x: z.number().finite().min(-100_000).max(100_000),
-        y: z.number().finite().min(-100_000).max(100_000),
-        width: z.number().finite().min(0).max(100_000),
-        height: z.number().finite().min(0).max(100_000),
-      })
-      .optional(),
   }),
   /**
    * #2426 B: where each `[data-oa-ask]` slot is, in frame-viewport pixels. A

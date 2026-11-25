@@ -25,7 +25,6 @@ const subscribe = (l: () => void) => {
 
 export const lostKey = {
   reply: (artifact: string, thread: string) => `${artifact}|reply|${thread}`,
-  ask: (artifact: string, thread: string) => `${artifact}|ask|${thread}`,
   note: (artifact: string) => `${artifact}|note`,
   draft: (artifact: string, d: NonNullable<Draft>) =>
     `${artifact}|draft|${JSON.stringify(d)}`,

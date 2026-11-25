@@ -1,4 +1,4 @@
-export { BUS_CMD, LINK_PROOF_HEADER } from "@oa/bus-protocol";
+export { BRIEF_RULES, BUS_CMD, LINK_PROOF_HEADER } from "@oa/bus-protocol";
 export {
   connectDaemon,
   type DaemonClient,
@@ -45,6 +45,7 @@ export {
   unfollowText,
 } from "./copy.ts";
 export * from "./frames.ts";
+export { habitsOff } from "./habits-off.ts";
 export { FrameTooLarge, LineDecoder } from "./lines.ts";
 export {
   type HelloResult,
