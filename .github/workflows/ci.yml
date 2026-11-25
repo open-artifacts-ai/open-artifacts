@@ -27,7 +27,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - name: no sleeps in tests (fake timers or a signal, never sleep)
-        run: pnpm check-no-sleeps
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        # The baseline may only shrink: the check compares it with the base
+        # commit's copy, so the base commit has to be here.
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          pnpm run check-no-sleeps -- --base "$BASE_SHA"
       - name: version-consistency (package.json, release manifest, CHANGELOG)
         run: node --experimental-strip-types scripts/ci/version-consistency.ts
       - name: actionlint (runs shellcheck on run blocks)

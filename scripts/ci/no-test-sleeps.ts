@@ -12,6 +12,7 @@
 // Usage: node --experimental-strip-types scripts/ci/no-test-sleeps.ts [--update]
 //   --update rewrites the baseline from what is in the tree now.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,7 +30,10 @@ export const isTest = (path: string) =>
 export const RULES: [name: string, re: RegExp][] = [
   ["sleep", /\bawait\s+sleep\w*\(|\b(?:const|function)\s+sleep\w*\s*[=(]/],
   ["waitForTimeout", /\.waitForTimeout\(/],
-  ["setTimeout promise", /new Promise\(\s*\(?\s*\w*\s*\)?\s*=>\s*setTimeout\(/],
+  [
+    "setTimeout promise",
+    /new Promise\s*(?:<[^>]*>)?\s*\(\s*\(?\s*\w*\s*\)?\s*=>\s*setTimeout\(/,
+  ],
 ];
 
 const SKIP = /\/(node_modules|dist|dist-assets|\.wrangler)\//;
@@ -110,6 +114,43 @@ export function check(
   return { added, stale };
 }
 
+/**
+ * The baseline at `ref` (the pull request's base), from git: the file in the
+ * tree may only lower a count, never raise one or add a path, so a hand edit or
+ * an `--update` cannot quietly grow the list. Missing ref (a shallow or
+ * detached checkout, a push build): nothing to compare against.
+ */
+export function baseBaseline(ref: string): Record<string, number> | null {
+  try {
+    const text = execFileSync(
+      "git",
+      ["show", `${ref}:scripts/ci/test-sleep-baseline.json`],
+      { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return JSON.parse(text) as Record<string, number>;
+  } catch {
+    return null;
+  }
+}
+
+/** Keys raised above the base's count, or added since it. */
+export function grown(
+  tree: Record<string, number>,
+  base: Record<string, number>,
+): string[] {
+  const out: string[] = [];
+  for (const [file, n] of Object.entries(tree)) {
+    const was = base[file] ?? 0;
+    if (n > was)
+      out.push(
+        was === 0
+          ? `${file}: ${n} added (not in the baseline on the base branch)`
+          : `${file}: ${n}, was ${was} on the base branch`,
+      );
+  }
+  return out;
+}
+
 const main = () => {
   const hits = scan(root);
   const counted: Record<string, number> = {};
@@ -139,8 +180,15 @@ const main = () => {
   const { added, stale } = check(hits, baseline);
   for (const line of added) console.log(`no-test-sleeps: NEW ${line}`);
   for (const line of stale)
-    console.log(`no-test-sleeps: STALE ${line} — lower the baseline`);
-  if (added.length > 0 || stale.length > 0) {
+    console.log(`no-test-sleeps: STALE ${line}, lower the baseline`);
+  // The baseline itself may only shrink (#3090 review).
+  const at = process.argv.indexOf("--base");
+  const ref = at === -1 ? undefined : process.argv[at + 1];
+  const base = ref ? baseBaseline(ref) : null;
+  const raised = base ? grown(baseline, base) : [];
+  for (const line of raised)
+    console.log(`no-test-sleeps: RAISED ${line}`);
+  if (added.length > 0 || stale.length > 0 || raised.length > 0) {
     console.log(
       "no-test-sleeps: tests control time with fake timers or wait on a signal, never sleep. Add `// sleep-ok: <why>` if a wait is the only way.",
     );

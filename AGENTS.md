@@ -50,7 +50,7 @@ advice for contributors.
   makes a suite flaky on a loaded runner. `pnpm check-no-sleeps` fails a test
   file that adds one; a wait that is genuinely the only way says why with
   `// sleep-ok: <reason>` and takes its line out of
-  `scripts/ci/test-sleep-baseline.json`,
+  `scripts/ci/test-sleep-baseline.json`.
 - **Leads act on their own PRs without asking.** Mark your own reviewed PR
   ready, rerun its whole workflow, and merge main into it while it isn't armed
   or queued. Run each `gh` write as one plain command (`gh pr ready 2196`),

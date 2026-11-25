@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { check, type Hit, isTest, scanText } from "./no-test-sleeps.ts";
+import { check, grown, type Hit, isTest, scanText } from "./no-test-sleeps.ts";
 
 const found = (text: string) => scanText(text).map((h) => h.why);
 
@@ -50,6 +50,26 @@ describe("no-test-sleeps", () => {
         ].join("\n"),
       ),
     ).toEqual(["sleep"]); // the last one: "short" is not a reason
+  });
+
+  it("sees a generic type argument on the Promise", () => {
+    expect(found("await new Promise<void>((r) => setTimeout(r, 5));")).toEqual([
+      "setTimeout promise",
+    ]);
+  });
+
+  it("the baseline may only shrink", () => {
+    expect(
+      grown({ "a.test.ts": 3, "b.test.ts": 1 }, { "a.test.ts": 3, "b.test.ts": 1 }),
+    ).toEqual([]);
+    expect(grown({ "a.test.ts": 4 }, { "a.test.ts": 3 })).toEqual([
+      "a.test.ts: 4, was 3 on the base branch",
+    ]);
+    expect(grown({ "new.test.ts": 1 }, {})).toEqual([
+      "new.test.ts: 1 added (not in the baseline on the base branch)",
+    ]);
+    // Lowering is the point, and never a failure.
+    expect(grown({ "a.test.ts": 1 }, { "a.test.ts": 9 })).toEqual([]);
   });
 
   it("knows which files are tests", () => {
