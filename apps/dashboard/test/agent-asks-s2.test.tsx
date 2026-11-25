@@ -513,6 +513,7 @@ describe("First setup: one question", () => {
     ["already asked", { listensAsked: true }],
     ["an old server (absent)", { listensAsked: undefined }],
     ["no agent connected yet", { agentConnected: false }],
+    ["a chat-only member (bus not connected)", { busConnected: false }],
   ])("is not shown: %s", async (_n, over) => {
     mountIt(over);
     await screen
@@ -520,6 +521,11 @@ describe("First setup: one question", () => {
       .catch(() => null);
     await new Promise((r) => setTimeout(r, 300));
     expect(card()).toBeNull();
+  });
+
+  it("is shown when the bus is connected", async () => {
+    mountIt({ busConnected: true });
+    await waitFor(() => expect(card()).not.toBeNull());
   });
 
   it("with nobody else on the team, Yes says so and cannot continue", async () => {

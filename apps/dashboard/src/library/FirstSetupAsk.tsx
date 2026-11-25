@@ -14,6 +14,7 @@ import {
   useSetAgentRequests,
 } from "../api/agentAsks";
 import { errorCopy } from "../api/errorCopy";
+import { mySteps } from "../api/myOnboarding";
 import { qk, useOnboarding } from "../api/queries";
 import {
   listensAskedOf,
@@ -74,8 +75,15 @@ export function FirstSetupAsk() {
   const connected =
     (onboarding.data as { agentConnected?: boolean } | undefined)
       ?.agentConnected === true;
+  // #3065: "your agents" means the bus; a chat-only member (busConnected false) is not asked.
+  // Same reading as the Get started steps (mySteps.bus): only an explicit false hides it.
+  const busConnected = mySteps(onboarding.data).bus;
   // Only an explicit false asks; absent is an old server.
-  const show = member && connected && listensAskedOf(onboarding.data) === false;
+  const show =
+    member &&
+    connected &&
+    busConnected &&
+    listensAskedOf(onboarding.data) === false;
   if (!show) return null;
   const team_name = me?.instance.name ?? "your team";
   const chosen = people.filter((p) => !skipped.has(p.id));
