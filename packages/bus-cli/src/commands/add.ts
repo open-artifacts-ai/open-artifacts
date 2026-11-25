@@ -8,7 +8,11 @@ import {
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
 import { proofIo } from "../steps/adapters.ts";
-import { addInstanceProof, readRecord } from "../steps/claude-proof.ts";
+import {
+  addInstanceProof,
+  busStopped,
+  readRecord,
+} from "../steps/claude-proof.ts";
 import { isDefaultHome } from "../steps/service.ts";
 import { LoginFailed, login, RedirectRefused } from "./login.ts";
 
@@ -152,6 +156,7 @@ function claudeEntries(name: string, hub: string, ctx: Ctx): void {
       { name, hub },
       ctx.service.argv?.() ?? ctx.service.cli(),
       isDefaultHome(ctx.home, ctx.userHome) ? undefined : ctx.home,
+      (owner) => busStopped(owner, ctx.userHome),
     );
     for (const n of r.notes) say(ctx, n);
     if (r.changed.length > 0)
