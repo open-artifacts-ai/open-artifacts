@@ -7,19 +7,25 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { saveInstance } from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
 import { add } from "../src/commands/add.ts";
 import { mcpProof, type ProofDeps } from "../src/commands/mcp-proof.ts";
 import { parse } from "../src/index.ts";
-import { type AdapterDeps, installAdapters } from "../src/steps/adapters.ts";
+import {
+  type AdapterDeps,
+  installAdapters,
+  reapplyClaudeProof,
+} from "../src/steps/adapters.ts";
 import {
   helperInstance,
   isProofHelper,
@@ -132,6 +138,18 @@ const approval = (host: string) =>
     return Response.json({ status: "approved", machine_token: TOKEN });
   }) as unknown as typeof fetch;
 
+/** A bus home whose daemon runs: it holds its socket. */
+function liveHome(): string {
+  const h = mkdtempSync(join(tmpdir(), "oa-live-"));
+  const sock = daemonSocketPath(h);
+  mkdirSync(dirname(sock), { recursive: true });
+  writeFileSync(sock, "");
+  return realpathSync(h);
+}
+/** A bus home left behind by a bus that stopped: no socket. */
+const stoppedHome = (): string =>
+  realpathSync(mkdtempSync(join(tmpdir(), "oa-gone-")));
+
 function world(json: string | undefined) {
   const ctx = fakeCtx({ fetch: approval(B), stdinIsTTY: true }, true);
   mkdirSync(ctx.home, { recursive: true });
@@ -208,17 +226,38 @@ describe("oa-bus add sets the --instance helper", () => {
     ).toBe("oa-bus mcp-proof --instance b");
   });
 
-  it("another bus's helper is left alone, as claude-proof does today", async () => {
+  it("a running bus's helper is left alone, as claude-proof does today", async () => {
+    const other = liveHome();
+    const helper = `OA_BUS_HOME=${other} oa-bus mcp-proof`;
     const j = JSON.parse(claudeJson());
-    j.mcpServers["open-artifacts-b"].headersHelper =
-      "OA_BUS_HOME=/other/home oa-bus mcp-proof";
+    j.mcpServers["open-artifacts-b"].headersHelper = helper;
     const w = world(`${JSON.stringify(j, null, 2)}\n`);
     await add({ address: B, name: "b", noOpen: true }, w.ctx);
     expect(parsed(w.read()).mcpServers["open-artifacts-b"]?.headersHelper).toBe(
-      "OA_BUS_HOME=/other/home oa-bus mcp-proof",
+      helper,
     );
-    expect(w.ctx.out().join("\n")).toMatch(
-      /belongs to the bus at \/other\/home/,
+    expect(w.ctx.out().join("\n")).toContain(`belongs to the bus at ${other}`);
+  });
+
+  it("#3075: a stopped bus's helper is taken over, keeping a token entry's Authorization", async () => {
+    const other = stoppedHome();
+    const j = JSON.parse(claudeJson());
+    j.mcpServers["open-artifacts-b"].headersHelper =
+      `OA_BUS_HOME=${other} oa-bus mcp-proof`;
+    j.projects["/work/p"].mcpServers.b2.headersHelper =
+      `T=$(cat /t/tok) && { OA_BUS_HOME=${other} oa-bus mcp-proof --token-file /t/tok 2>/dev/null || printf '{"Authorization":"Bearer %s"}' "$T"; }`;
+    const w = world(`${JSON.stringify(j, null, 2)}\n`);
+    await add({ address: B, name: "b", noOpen: true }, w.ctx);
+    const after = parsed(w.read());
+    expect(after.mcpServers["open-artifacts-b"]?.headersHelper).toBe(
+      "oa-bus mcp-proof --instance b",
+    );
+    const tok = after.projects["/work/p"]?.mcpServers.b2?.headersHelper ?? "";
+    expect(helperInstance(tok)).toBe("b");
+    expect(tok).toContain("--token-file /t/tok");
+    expect(tok).not.toContain(other);
+    expect(w.ctx.out().join("\n")).toContain(
+      `the bus at ${other} no longer runs`,
     );
   });
 
@@ -324,6 +363,68 @@ describe("install and doctor with an added instance", () => {
     expect(
       claudeProofChecks(w.ctx, MAIN).every((c) => c.level !== "fail"),
     ).toBe(true);
+  });
+
+  it("#3075: daemon start takes over a stopped bus's helper on an added instance's entry, never a running one's", () => {
+    const gone = stoppedHome();
+    const live = liveHome();
+    const j = JSON.parse(claudeJson());
+    j.mcpServers["open-artifacts-b"].headersHelper =
+      `OA_BUS_HOME=${gone} oa-bus mcp-proof`;
+    j.projects["/work/p"].mcpServers.b2.headersHelper =
+      `OA_BUS_HOME=${live} oa-bus mcp-proof`;
+    const w = world(`${JSON.stringify(j, null, 2)}\n`);
+    saveInstance(
+      { name: "b", hub: B, machine_id: "", label: "m", machine_token: TOKEN },
+      w.ctx.home,
+    );
+    // Doctor names the exact cause before the fix.
+    const before = instanceProofChecks(w.ctx);
+    expect(before[0]).toMatchObject({ level: "fail" });
+    expect(before[0]?.lines[0]).toContain("a bus that no longer runs");
+    expect(before[1]).toMatchObject({ level: "warn" });
+    const wrote: string[] = [];
+    reapplyClaudeProof(
+      {
+        home: w.ctx.userHome,
+        busHome: w.ctx.home,
+        env: {},
+        busBin: [BIN],
+        hub: MAIN,
+        config: w.file,
+      },
+      (c) => wrote.push(c.entry),
+    );
+    const after = parsed(w.read());
+    expect(after.mcpServers["open-artifacts-b"]?.headersHelper).toBe(
+      `${BIN} mcp-proof --instance b`,
+    );
+    expect(after.projects["/work/p"]?.mcpServers.b2?.headersHelper).toBe(
+      `OA_BUS_HOME=${live} oa-bus mcp-proof`,
+    );
+    expect(wrote).toContain("open-artifacts-b");
+    expect(instanceProofChecks(w.ctx)[0]).toMatchObject({ level: "pass" });
+  });
+
+  it("main's entries keep today's rule: a stopped bus's helper there is left alone", () => {
+    const gone = stoppedHome();
+    const j = JSON.parse(claudeJson());
+    j.mcpServers["open-artifacts"].headersHelper =
+      `OA_BUS_HOME=${gone} oa-bus mcp-proof`;
+    const w = world(`${JSON.stringify(j, null, 2)}\n`);
+    const text = w.read();
+    reapplyClaudeProof(
+      {
+        home: w.ctx.userHome,
+        busHome: w.ctx.home,
+        env: {},
+        busBin: [BIN],
+        hub: MAIN,
+        config: w.file,
+      },
+      () => {},
+    );
+    expect(w.read()).toBe(text);
   });
 
   it("a home with only main has no instance checks", () => {

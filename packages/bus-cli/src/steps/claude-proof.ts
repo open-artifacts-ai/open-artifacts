@@ -1,5 +1,6 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import {
   type Doc,
   jsoncValue,
@@ -82,6 +83,25 @@ export function helperHome(helper: string): string | undefined {
 /** Whether `helper` (one of ours) runs for the bus at `busHome` (undefined: the default home). */
 const ownedBy = (helper: string, busHome: string | undefined): boolean =>
   helperHome(helper) === (busHome === undefined ? undefined : resolve(busHome));
+
+/**
+ * #3075: whether the bus whose home a helper names has stopped for good: its
+ * home is gone, or holds no daemon socket. Its helper then reports to nobody,
+ * so the entry links no session. A running bus always has its socket, so a
+ * live bus's helper is never taken; a crashed one that left its socket is
+ * left alone too.
+ */
+export function busStopped(
+  owner: string | undefined,
+  userHome: string,
+): boolean {
+  const home = owner ?? join(userHome, ".oa-bus");
+  try {
+    return !existsSync(home) || !existsSync(daemonSocketPath(home));
+  } catch {
+    return false;
+  }
+}
 
 const isRecord = (v: unknown): v is Doc =>
   typeof v === "object" && v !== null && !Array.isArray(v);
@@ -309,7 +329,12 @@ export function installProof(
   origin: string,
   busBin: string[],
   busHome?: string,
-  opts: { guard?: boolean; instance?: InstanceTarget } = {},
+  opts: {
+    guard?: boolean;
+    instance?: InstanceTarget;
+    /** #3075: another bus's helper is taken over when this says that bus has stopped. */
+    stopped?: (owner: string | undefined) => boolean;
+  } = {},
 ): ProofResult {
   const out: ProofResult = { notes: [], changed: [] };
   const read = io.read ?? readText;
@@ -333,17 +358,21 @@ export function installProof(
     const rec = records[at];
     const cur = f.entry.headersHelper;
     let original: string | null;
-    if (
-      typeof cur === "string" &&
-      isProofHelper(cur) &&
-      !ownedBy(cur, busHome)
-    ) {
+    const foreign =
+      typeof cur === "string" && isProofHelper(cur) && !ownedBy(cur, busHome);
+    if (foreign && opts.stopped?.(helperHome(cur))) {
+      // #3075: that bus no longer runs, so its helper links nothing. This bus
+      // takes the entry, keeping a token entry's Authorization.
+      original = adoptedOriginal(cur);
+      out.notes.push(
+        `took over the headersHelper of ${f.name} (${f.scope} scope) in ${io.file}: the bus at ${helperHome(cur) ?? "the default home"} no longer runs`,
+      );
+    } else if (foreign) {
       out.notes.push(
         `left the headersHelper of ${f.name} (${f.scope} scope) in ${io.file} as it is: it belongs to the bus at ${helperHome(cur) ?? "the default home"}`,
       );
       continue;
-    }
-    if (isProofHelper(cur) && rec) original = rec.original;
+    } else if (isProofHelper(cur) && rec) original = rec.original;
     else if (isProofHelper(cur) && !opts.guard && typeof cur === "string")
       original = adoptedOriginal(cur);
     else if (isProofHelper(cur)) continue;
@@ -598,6 +627,7 @@ export function addInstanceProof(
   target: InstanceTarget,
   busBin: string[],
   busHome?: string,
+  stopped?: (owner: string | undefined) => boolean,
 ): ProofResult & { matched: number } {
   let matched = 0;
   try {
@@ -607,7 +637,10 @@ export function addInstanceProof(
   } catch {}
   if (matched === 0) return { notes: [], changed: [], matched };
   return {
-    ...installProof(io, "", busBin, busHome, { instance: target }),
+    ...installProof(io, "", busBin, busHome, {
+      instance: target,
+      ...(stopped ? { stopped } : {}),
+    }),
     matched,
   };
 }

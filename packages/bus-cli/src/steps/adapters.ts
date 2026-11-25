@@ -40,9 +40,11 @@ import {
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
 import {
+  busStopped,
   claudeConfigFile,
   installProof,
   type ProofIo,
+  type ProofResult,
   readRecord as readProofRecord,
   uninstallProof,
 } from "./claude-proof.ts";
@@ -487,19 +489,43 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
   }
 }
 
-/** The `--instance` helper for the Claude entries of each added instance; notes only. */
-function instanceProofs(deps: AdapterDeps): string[] {
-  const notes: string[] = [];
+/**
+ * #3075: an added instance's entry may still carry the helper of the separate
+ * bus that served it before #2793. Once that bus has stopped, this one takes
+ * the entry. Main's entries keep today's rule: two buses may share one hub.
+ */
+const stoppedBus =
+  (deps: Pick<AdapterDeps, "home">) => (owner: string | undefined) =>
+    busStopped(owner, deps.home);
+
+/**
+ * The `--instance` helper for the Claude entries of each added instance.
+ * `guard` is the unattended daemon's mode (see installProof).
+ */
+function instanceProofs(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin">,
+  opts: { guard?: boolean; file?: string } = {},
+): ProofResult[] {
+  const out: ProofResult[] = [];
   const bus = deps.busHome ?? join(deps.home, ".oa-bus");
+  const io = proofIo(deps);
   for (const i of listInstances(bus)) {
     if (i.main || i.hub === "") continue;
-    notes.push(
-      ...installProof(proofIo(deps), i.hub, deps.busBin, movedHome(deps), {
-        instance: { name: i.name, hub: i.hub },
-      }).notes,
+    out.push(
+      installProof(
+        opts.file ? { ...io, file: opts.file } : io,
+        i.hub,
+        deps.busBin,
+        movedHome(deps),
+        {
+          instance: { name: i.name, hub: i.hub },
+          stopped: stoppedBus(deps),
+          ...(opts.guard ? { guard: true } : {}),
+        },
+      ),
     );
   }
-  return notes;
+  return out;
 }
 
 /** The proof helper of the instance's Claude entry (#1822); never stops the install. */
@@ -512,7 +538,7 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
     );
     // #2793 S4: each added instance's entries get their own helper form. A
     // home with only main lists none, so nothing else is read or written.
-    notes.push(...instanceProofs(deps));
+    for (const r of instanceProofs(deps)) notes.push(...r.notes);
   } catch (e) {
     notes.push(
       `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
@@ -1355,6 +1381,10 @@ export function reapplyClaudeProof(
       { guard: true },
     );
     for (const c of r.changed) onWrite(c);
+    // #3075: each added instance's entries too, so an update restart links
+    // them with no step from the user. Same file, same guard.
+    for (const ri of instanceProofs(deps, { guard: true, file: deps.config }))
+      for (const c of ri.changed) onWrite(c);
   } catch {}
 }
 
