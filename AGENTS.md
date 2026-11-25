@@ -45,6 +45,12 @@ advice for contributors.
 - **Rerun the whole workflow** after a failure, not just the failed job, so a
   flake cannot hide behind a green rerun.
 - **Platform releases.** A feature session does not deploy.
+- **Tests control time with fake timers or wait on a signal, never sleep.** A
+  `setTimeout` wait, a `sleep` helper and Playwright's `waitForTimeout` are what
+  makes a suite flaky on a loaded runner. `pnpm check-no-sleeps` fails a test
+  file that adds one; a wait that is genuinely the only way says why with
+  `// sleep-ok: <reason>` and takes its line out of
+  `scripts/ci/test-sleep-baseline.json`.
 - **Leads act on their own PRs without asking.** Mark your own reviewed PR
   ready, rerun its whole workflow, and merge main into it while it isn't armed
   or queued. Run each `gh` write as one plain command (`gh pr ready 2196`),
