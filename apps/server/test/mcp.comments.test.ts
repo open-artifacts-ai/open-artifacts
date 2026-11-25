@@ -377,6 +377,47 @@ describe("add_comment with an ask (#1535)", () => {
     expect(answered.status).toBe(200);
   });
 
+  it("`me` addresses the caller's own person, stored as the user id (#3066)", async () => {
+    const id = await pub();
+    const stored = async (key: string) => {
+      const r = sc<{ thread: Thread }>(
+        await tool(owner.client, "add_comment", {
+          id,
+          body: "q",
+          ask: ASK([key]),
+        }),
+      );
+      return JSON.stringify(r.thread.comments[0]?.ask?.to);
+    };
+    const viaMe = await stored("me");
+    const viaId = await stored(owner.userId);
+    expect(viaMe).toBe(viaId);
+    expect(viaMe).toContain(owner.userId);
+    // `me` and the id together are one addressee.
+    const both = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "q",
+        ask: ASK(["me", owner.userId]),
+      }),
+    );
+    expect(both.thread.comments[0]?.ask?.to).toHaveLength(1);
+    // `me` as the decider is the default decider.
+    const dec = await tool(owner.client, "add_comment", {
+      id,
+      body: "q",
+      ask: { ...ASK(["me"]), decider: { key: "me" } },
+    });
+    expect(dec.isError).toBeFalsy();
+    // `user:<id>` is still unknown.
+    const bad = await tool(owner.client, "add_comment", {
+      id,
+      body: "q",
+      ask: ASK([`user:${owner.userId}`]),
+    });
+    expect(textOf(bad)).toMatch(/^bad_request: Unknown agent or person/);
+  });
+
   it("an ask on a reply works", async () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
