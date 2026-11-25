@@ -103,6 +103,17 @@ describe("skill.md drift", () => {
     expect(md).toContain("confirm it can land");
   });
 
+  it("records steps the user does by hand and checks before asking (#3079)", async () => {
+    const md = await skill();
+    expect(md).toContain(
+      'end it with an ask on the page where the step is: "Done?"',
+    );
+    expect(md).toContain("look for an earlier answer");
+    expect(md).toContain(
+      "Check the real state yourself first when you can do it read-only.",
+    );
+  });
+
   it("leaves the installer's habits question to the human", async () => {
     const md = await skill();
     expect(md).toContain("QUESTION FOR YOUR USER");

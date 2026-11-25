@@ -1687,12 +1687,19 @@ describe("@mentions in the composer", () => {
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
-    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
-    expect(posts[0]?.body).toMatchObject({
-      anchor: { kind: "note" },
-      body: "@OA Design why B?",
-      mentions: [{ key: "agent:design" }],
-    });
+    // The mention picker's own people lookup is a POST too (`{ q }`), and it
+    // can land first on a loaded runner: wait on the comment's own path.
+    const comment = () =>
+      posts.find((p) => p.path === R.comments(OWNED))?.body as
+        | Record<string, unknown>
+        | undefined;
+    await waitFor(() =>
+      expect(comment()).toMatchObject({
+        anchor: { kind: "note" },
+        body: "@OA Design why B?",
+        mentions: [{ key: "agent:design" }],
+      }),
+    );
   });
 
   it("renders posted @names as chips, as text only", async () => {
