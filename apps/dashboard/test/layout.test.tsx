@@ -79,6 +79,13 @@ describe("AppLayout", () => {
     );
   });
 
+  it("anonymous at an unknown path keeps it as next", async () => {
+    const redirect = await mount("anonymous", "/invite/x");
+    await waitFor(() =>
+      expect(redirect).toHaveBeenCalledWith("/auth/login?next=%2Finvite%2Fx"),
+    );
+  });
+
   it("anonymous at /a/x is not bounced by the layout", async () => {
     const redirect = await mount("anonymous", "/a/x");
     // The layout lets /a/* through; the viewer itself sends the anonymous visitor to login.

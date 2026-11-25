@@ -12,6 +12,8 @@ export type HubAgent = {
   name: string;
   /** The member whose hub lists it. */
   owner: string;
+  /** "away": closed, the bus still lists it. Default "live". */
+  state?: "live" | "away";
 };
 
 export class FakeHubs {
@@ -43,7 +45,7 @@ export class FakeHubs {
             machineId: "m",
             machineLabel: "m",
             global: false,
-            state: "live",
+            state: a.state ?? "live",
             running: true,
             since: null,
             updatedAt: new Date().toISOString(),

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.242.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.1...v0.242.2) (2026-11-24)
+
+
+### Bug Fixes
+
+* **signin:** invited help line, try another account, keep the requested path ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3058](https://github.com/open-artifacts-ai/open-artifacts/issues/3058)) ([e43067e](https://github.com/open-artifacts-ai/open-artifacts/commit/e43067e408a590f937abbf0fabc5efcc675bfbe8))
+
+## [0.242.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.0...v0.242.1) (2026-11-24)
+
+
+### Bug Fixes
+
+* **comments:** a new whole-page note shows at the top, in view ([#3032](https://github.com/open-artifacts-ai/open-artifacts/issues/3032)) ([#3038](https://github.com/open-artifacts-ai/open-artifacts/issues/3038)) ([e19f636](https://github.com/open-artifacts-ai/open-artifacts/commit/e19f636c9e4f4caec2cd2f4281599fc18cc92de5))
+* **onboarding:** connector path for Claude and ChatGPT members; clearer expired-invite and Google copy ([#3034](https://github.com/open-artifacts-ai/open-artifacts/issues/3034)) ([34fbf6d](https://github.com/open-artifacts-ai/open-artifacts/commit/34fbf6dd87137b48f749c727c8df19bf8231410d))
+
+## [0.242.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.241.0...v0.242.0) (2026-11-24)
+
+
+### Features
+
+* **bus:** status and doctor show this project's habits ([#3008](https://github.com/open-artifacts-ai/open-artifacts/issues/3008)) ([#3022](https://github.com/open-artifacts-ai/open-artifacts/issues/3022)) ([3e71c5d](https://github.com/open-artifacts-ai/open-artifacts/commit/3e71c5defab29e7dd169a6ca322b2b700d967dd0))
+* **copy:** who sees and changes live data; full-width html in the skill ([#3035](https://github.com/open-artifacts-ai/open-artifacts/issues/3035)) ([f4f108b](https://github.com/open-artifacts-ai/open-artifacts/commit/f4f108b1268de5482b67d5f098a76e317943f7f1))
+* **mcp:** let agents view authorized comment pictures ([#3007](https://github.com/open-artifacts-ai/open-artifacts/issues/3007)) ([#3010](https://github.com/open-artifacts-ai/open-artifacts/issues/3010)) ([65e472c](https://github.com/open-artifacts-ai/open-artifacts/commit/65e472c08f1d05d1b9e0e323d27a7cf071218426))
+
+
+### Bug Fixes
+
+* **bus:** a plain `opencode` TUI attaches on macOS ([#3020](https://github.com/open-artifacts-ai/open-artifacts/issues/3020)) ([#3021](https://github.com/open-artifacts-ai/open-artifacts/issues/3021)) ([c902581](https://github.com/open-artifacts-ai/open-artifacts/commit/c902581988480d228aefbecc72bf9ceb2b8fa19a))
+* **bus:** a session that ended while the daemon was down still leaves the hub ([#3028](https://github.com/open-artifacts-ai/open-artifacts/issues/3028)) ([#3036](https://github.com/open-artifacts-ai/open-artifacts/issues/3036)) ([f055b21](https://github.com/open-artifacts-ai/open-artifacts/commit/f055b21ec75db6d1cfb2c4264852b07d72ddad6b))
+* **comments:** Reply puts the caret in the reply box ([#3042](https://github.com/open-artifacts-ai/open-artifacts/issues/3042)) ([#3047](https://github.com/open-artifacts-ai/open-artifacts/issues/3047)) ([10d1330](https://github.com/open-artifacts-ai/open-artifacts/commit/10d1330d1b1c010c1d52c26b609395ebed8066fd))
+* **viewer:** a restored tab heals its expired frame on wake ([#2959](https://github.com/open-artifacts-ai/open-artifacts/issues/2959)) ([#3033](https://github.com/open-artifacts-ai/open-artifacts/issues/3033)) ([774ec29](https://github.com/open-artifacts-ai/open-artifacts/commit/774ec2989a415aa13408e1f7d5e184e9eae7b36b))
+
 ## [0.241.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.240.0...v0.241.0) (2026-11-22)
 
 

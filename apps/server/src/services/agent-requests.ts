@@ -845,6 +845,8 @@ const itemOf = async (
     way: string;
     created_at: number;
   },
+  /** Opt-in (`?details=1`): also `editedAt`. Old clients parse a strict item, so it is off by default. */
+  details = false,
 ): Promise<HeldItem | null> => {
   const info = await call(() =>
     stub(env, r.artifact_id).commentsHeldCanon({
@@ -876,6 +878,7 @@ const itemOf = async (
     ...(ask ? { ask: { question: ask.question, options } } : {}),
     wordsHash: await sha256Hex(info.canon),
     createdAt: r.created_at,
+    ...(details && info.editedAt ? { editedAt: info.editedAt } : {}),
   };
 };
 
@@ -895,6 +898,8 @@ export async function listHeld(
   env: Env,
   receiverId: string,
   now = Date.now(),
+  /** `?details=1`: items also carry `editedAt` (absent otherwise, so the old strict shape holds). */
+  details = false,
 ): Promise<HeldList> {
   const { results: reqs } = await stmt(
     env.DB,
@@ -936,10 +941,12 @@ export async function listHeld(
       .all<Omit<ItemRow, "artifact_id">>();
     const items: HeldItem[] = [];
     for (const row of rows) {
-      const it = await itemOf(env, receiverId, {
-        ...row,
-        artifact_id: r.artifact_id,
-      } as ItemRow);
+      const it = await itemOf(
+        env,
+        receiverId,
+        { ...row, artifact_id: r.artifact_id } as ItemRow,
+        details,
+      );
       if (it) items.push(it);
       else
         await stmt(
@@ -1067,6 +1074,8 @@ export async function allow(
   requestId: string,
   body: AllowBody,
   now = Date.now(),
+  /** `?details=1`: the result may carry `entryId` (absent otherwise, so the old strict shape holds). */
+  details = false,
 ): Promise<AllowResult> {
   const req = await requestOf(env, receiverId, requestId);
   // How wide the allow is (a grant's reach, not an access level).
@@ -1231,51 +1240,47 @@ export async function allow(
     result.sent += rel.keys.length;
   }
   if (grant !== "once") {
-    const exists = await stmt(
-      env.DB,
-      `select id from agent_listens where owner_id = ?1 and member_id = ?2 and removed_at is null
-         and scope = ?3 and coalesce(artifact_id, space_id, '') = ?4`,
-    )
-      .bind(
-        receiverId,
-        req.sender_id,
-        grant,
-        grant === "all"
-          ? ""
-          : grant === "space"
-            ? (space?.id ?? "")
-            : req.artifact_id,
-      )
-      .first<{ id: string }>();
-    if (exists)
-      await stmt(
+    // One live entry per owner, sender and scope. A live row is not removed and
+    // not yet ended; an ended row is no entry and keeps its id. The scope's
+    // bindings and "live" predicate are shared by both statements below.
+    const scopeKey =
+      grant === "all"
+        ? ""
+        : grant === "space"
+          ? (space?.id ?? "")
+          : req.artifact_id;
+    const live = `owner_id = ?1 and member_id = ?2 and removed_at is null
+         and until > ?3 and scope = ?4 and coalesce(artifact_id, space_id, '') = ?5`;
+    const liveBinds = [receiverId, req.sender_id, now, grant, scopeKey];
+    // One atomic batch, so two simultaneous grants cannot lose the longer end:
+    // extend the live entry (never shortening it), else create it. The entry id
+    // goes back only when this call created the row: an extension, a retry or a
+    // lost race never hands out an id whose Undo would remove an earlier grant.
+    const id = newId();
+    const [, ins] = await env.DB.batch([
+      stmt(
         env.DB,
-        "update agent_listens set until = max(until, ?1) where id = ?2",
-      )
-        .bind(until, exists.id)
-        .run();
-    else
-      await stmt(
+        `update agent_listens set until = max(until, ?6) where ${live}`,
+      ).bind(...liveBinds, until),
+      stmt(
         env.DB,
         `insert into agent_listens (id, owner_id, member_id, scope, artifact_id, space_id, until, created_via, created_at)
-         values (?1, ?2, ?3, ?4, ?5, ?9, ?6, ?7, ?8)`,
-      )
-        .bind(
-          newId(),
-          receiverId,
-          req.sender_id,
-          grant,
-          grant === "page" ? req.artifact_id : null,
-          until,
-          grant === "all"
-            ? "allow_all"
-            : grant === "space"
-              ? "allow_space"
-              : "allow_page",
-          now,
-          grant === "space" ? (space?.id ?? null) : null,
-        )
-        .run();
+         select ?7, ?1, ?2, ?4, ?8, ?9, ?6, ?10, ?3
+          where not exists (select 1 from agent_listens where ${live})`,
+      ).bind(
+        ...liveBinds,
+        until,
+        id,
+        grant === "page" ? req.artifact_id : null,
+        grant === "space" ? (space?.id ?? null) : null,
+        grant === "all"
+          ? "allow_all"
+          : grant === "space"
+            ? "allow_space"
+            : "allow_page",
+      ),
+    ]);
+    if (details && (ins?.meta.changes ?? 0) > 0) result.entryId = id;
     await audit(
       env,
       "agent_listens.add",
