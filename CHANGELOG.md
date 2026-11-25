@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.244.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.0...v0.244.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **bus:** a live session on no instance moves once its folder is tied ([#3073](https://github.com/open-artifacts-ai/open-artifacts/issues/3073)) ([#3077](https://github.com/open-artifacts-ai/open-artifacts/issues/3077)) ([a2cbb7a](https://github.com/open-artifacts-ai/open-artifacts/commit/a2cbb7a1bd33631274856a7bf170cf63241eedf4))
+* **bus:** an added instance's entry links again once its old bus has stopped ([#3075](https://github.com/open-artifacts-ai/open-artifacts/issues/3075)) ([#3076](https://github.com/open-artifacts-ai/open-artifacts/issues/3076)) ([13723b6](https://github.com/open-artifacts-ai/open-artifacts/commit/13723b61ec7ed57afe3daf98427b95481599aaf4))
+
 ## [0.244.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.243.0...v0.244.0) (2026-11-25)
 
 
