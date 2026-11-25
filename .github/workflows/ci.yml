@@ -27,16 +27,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - name: no sleeps in tests (fake timers or a signal, never sleep)
-        env:
-          # The pull request's own base: what this change is diffed against.
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
-        # The baseline may only shrink: it is compared with the base commit's
-        # copy. One commit, not the full history (80 MiB on every run); the
-        # base branch's tip would also count files main changed since, and the
-        # check fails loudly if that commit cannot be read.
+        # The baseline may only shrink: it is compared with the base branch's
+        # copy. One commit, not the full history (80 MiB on every lint run).
+        # A queue build (merge_group) merges the change into this same main, so
+        # one fetch covers a pull request and a queue run alike.
         run: |
-          git fetch --depth=1 origin "$BASE_SHA"
-          pnpm run check-no-sleeps -- --base "$BASE_SHA"
+          git fetch --depth=1 origin main
+          pnpm run check-no-sleeps -- --base FETCH_HEAD
       - name: version-consistency (package.json, release manifest, CHANGELOG)
         run: node --experimental-strip-types scripts/ci/version-consistency.ts
       - name: actionlint (runs shellcheck on run blocks)
