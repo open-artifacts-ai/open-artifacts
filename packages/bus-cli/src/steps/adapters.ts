@@ -495,8 +495,9 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
  * the entry. Main's entries keep today's rule: two buses may share one hub.
  */
 const stoppedBus =
-  (deps: Pick<AdapterDeps, "home">) => (owner: string | undefined) =>
-    busStopped(owner, deps.home);
+  (deps: Pick<AdapterDeps, "home">, retired: boolean) =>
+  (owner: string | undefined) =>
+    busStopped(owner, deps.home, { retired });
 
 /**
  * The `--instance` helper for the Claude entries of each added instance.
@@ -519,7 +520,9 @@ function instanceProofs(
         movedHome(deps),
         {
           instance: { name: i.name, hub: i.hub },
-          stopped: stoppedBus(deps),
+          // The daemon takes only a retired bus's entry; a person running
+          // install also takes one whose daemon is not running.
+          stopped: stoppedBus(deps, opts.guard === true),
           ...(opts.guard ? { guard: true } : {}),
         },
       ),

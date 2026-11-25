@@ -85,19 +85,25 @@ const ownedBy = (helper: string, busHome: string | undefined): boolean =>
   helperHome(helper) === (busHome === undefined ? undefined : resolve(busHome));
 
 /**
- * #3075: whether the bus whose home a helper names has stopped for good: its
- * home is gone, or holds no daemon socket. Its helper then reports to nobody,
- * so the entry links no session. A running bus always has its socket, so a
- * live bus's helper is never taken; a crashed one that left its socket is
- * left alone too.
+ * #3075: whether the bus whose home a helper names has stopped. Its helper
+ * then reports to nobody, so the entry links no session.
+ * - `retired` (the unattended daemon): the home is gone, or holds neither a
+ *   daemon socket nor an install record. A clean stop or a restart also
+ *   removes the socket, so a missing socket alone never lets the daemon take
+ *   a live bus's entry mid-restart.
+ * - otherwise (add and install, run by a person, who sees the note): the home
+ *   is gone or holds no daemon socket.
  */
 export function busStopped(
   owner: string | undefined,
   userHome: string,
+  opts: { retired?: boolean } = {},
 ): boolean {
   const home = owner ?? join(userHome, ".oa-bus");
   try {
-    return !existsSync(home) || !existsSync(daemonSocketPath(home));
+    if (!existsSync(home)) return true;
+    if (existsSync(daemonSocketPath(home))) return false;
+    return !opts.retired || !existsSync(join(home, "install.json"));
   } catch {
     return false;
   }

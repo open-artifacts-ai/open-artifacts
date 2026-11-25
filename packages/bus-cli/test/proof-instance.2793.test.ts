@@ -406,6 +406,40 @@ describe("install and doctor with an added instance", () => {
     expect(instanceProofChecks(w.ctx)[0]).toMatchObject({ level: "pass" });
   });
 
+  it("#3075: daemon start leaves the entry of a bus that is still installed but not running (a restart); install, run by a person, takes it", async () => {
+    const home = stoppedHome();
+    writeFileSync(join(home, "install.json"), "{}");
+    const helper = `OA_BUS_HOME=${home} oa-bus mcp-proof`;
+    const j = JSON.parse(claudeJson());
+    j.mcpServers["open-artifacts-b"].headersHelper = helper;
+    const w = world(`${JSON.stringify(j, null, 2)}\n`);
+    saveInstance(
+      { name: "b", hub: B, machine_id: "", label: "m", machine_token: TOKEN },
+      w.ctx.home,
+    );
+    reapplyClaudeProof(
+      {
+        home: w.ctx.userHome,
+        busHome: w.ctx.home,
+        env: {},
+        busBin: [BIN],
+        hub: MAIN,
+        config: w.file,
+      },
+      () => {},
+    );
+    expect(parsed(w.read()).mcpServers["open-artifacts-b"]?.headersHelper).toBe(
+      helper,
+    );
+    const r = await installAdapters(deps(w.ctx.userHome));
+    expect(parsed(w.read()).mcpServers["open-artifacts-b"]?.headersHelper).toBe(
+      `${BIN} mcp-proof --instance b`,
+    );
+    expect(JSON.stringify(r.notes)).toContain(
+      `the bus at ${home} no longer runs`,
+    );
+  });
+
   it("main's entries keep today's rule: a stopped bus's helper there is left alone", () => {
     const gone = stoppedHome();
     const j = JSON.parse(claudeJson());
