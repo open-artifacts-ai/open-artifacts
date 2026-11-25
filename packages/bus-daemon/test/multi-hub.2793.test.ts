@@ -671,3 +671,106 @@ describe("a reopened session keeps its instance and its approvals (#2793 S6)", (
     expect(again?.namespace).not.toBe("team");
   });
 });
+
+describe("a live session on no instance moves once its folder is tied (#3073)", () => {
+  async function world() {
+    const hubB = await fakeHub();
+    const home = mkdtempSync(join(tmpdir(), "ob-3073-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: hubB.origin,
+        machine_id: "",
+        label: "laptop",
+        machine_token: TOKEN_B,
+      }),
+      { mode: 0o600 },
+    );
+    const sessions = mkdtempSync(join(tmpdir(), "ob-cs-3073-"));
+    const repo = mkdtempSync(join(tmpdir(), "ob-repo-3073-"));
+    writeFileSync(
+      join(sessions, "4343.json"),
+      JSON.stringify({
+        pid: 4343,
+        sessionId: "s4343",
+        procStart: "t0",
+        name: "untied",
+        messagingSocketPath: "/tmp/cc-socks/4343.sock",
+        cwd: repo,
+      }),
+    );
+    const map: {
+      answer: { instance: string } | { unmapped: true };
+      late?: string;
+    } = { answer: { unmapped: true } };
+    const running = new Set([4343, 4444]);
+    const h = await daemonHarness({
+      instancesHome: home,
+      homeLookup: (cwd) => (cwd === map.late ? { instance: "b" } : map.answer),
+      resolveNamespace: undefined,
+      claude: {
+        sessionsDir: sessions,
+        socketsDir: join(sessions, "sinks"),
+        syncMs: 20,
+        procStart: (pid: number) => (running.has(pid) ? "t0" : null),
+        isRunning: (pid: number) => running.has(pid),
+      },
+    });
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4343")?.live).toBe(true),
+    );
+    /** Starts a second session in a folder on b: its agent_up there shows a sync ran. */
+    const later = async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ob-late-3073-"));
+      map.late = dir;
+      writeFileSync(
+        join(sessions, "4444.json"),
+        JSON.stringify({
+          pid: 4444,
+          sessionId: "s4444",
+          procStart: "t0",
+          name: "later",
+          messagingSocketPath: "/tmp/cc-socks/4444.sock",
+          cwd: dir,
+        }),
+      );
+      await vi.waitFor(() =>
+        expect(hubB.of("agent_up").map((f) => f.agent_ref)).toContain("s4444"),
+      );
+    };
+    return { h, hubB, map, later };
+  }
+
+  it("tying the folder to main registers it on main, with no restart", async () => {
+    const { h, hubB, map } = await world();
+    expect(h.daemon.agents.byRef("s4343")?.instance).toBeUndefined();
+    expect(h.of("agent_up").map((f) => f.agent_ref)).not.toContain("s4343");
+    map.answer = { instance: "main" };
+    await vi.waitFor(() =>
+      expect(h.of("agent_up").map((f) => f.agent_ref)).toContain("s4343"),
+    );
+    expect(h.daemon.agents.byRef("s4343")).toMatchObject({
+      live: true,
+      instance: "main",
+      busName: expect.any(String),
+    });
+    expect(hubB.of("agent_up").map((f) => f.agent_ref)).not.toContain("s4343");
+  });
+
+  it("a session already on an instance stays there when its folder is remapped", async () => {
+    const { h, hubB, map, later } = await world();
+    map.answer = { instance: "main" };
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4343")?.instance).toBe("main"),
+    );
+    const ups = h.of("agent_up").length;
+    map.answer = { instance: "b" };
+    // A sync ran after the remap: a new session there registered on b.
+    await later();
+    expect(h.daemon.agents.byRef("s4343")?.instance).toBe("main");
+    expect(h.of("agent_up")).toHaveLength(ups);
+    expect(hubB.of("agent_up").map((f) => f.agent_ref)).not.toContain("s4343");
+  });
+});
