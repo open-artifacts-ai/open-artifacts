@@ -25,6 +25,7 @@ import {
   type Daemon,
   daemon,
   e,
+  eventually,
   framesSeen,
   hello,
   hubOf,
@@ -196,12 +197,22 @@ async function setup() {
   return { s, t, sm, tm, n, sender, receiver, close };
 }
 
-async function offline(d: Daemon) {
+async function offline(d: Daemon, machineId: string) {
   d.close();
   await d.closed;
-  // sleep-ok: this file's daemon registers no machine row to watch, so the
-  // close's bookkeeping has no signal; the hub applies it before the next send
-  await new Promise((r) => setTimeout(r, 50));
+  // The hub writes this on close (hub.ts): wait on it, not on a clock.
+  await eventually(async () =>
+    expect(
+      await inHub((_, st) =>
+        st.storage.sql
+          .exec(
+            "select disconnected_at as t from machines where id = ?",
+            machineId,
+          )
+          .toArray(),
+      ),
+    ).toEqual([{ t: expect.any(Number) }]),
+  );
 }
 
 describe("B14 idempotent send", () => {
@@ -272,8 +283,8 @@ describe("B14 idempotent send", () => {
   });
 
   it("a resend after expiry reports expired and delivers nothing", async () => {
-    const { s, t, sm, receiver, close } = await setup();
-    await offline(t);
+    const { s, t, tm, sm, receiver, close } = await setup();
+    await offline(t, tm.id);
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver));
     await setClock(Date.now() + TTL + 1000);
     await runAlarm();
@@ -318,7 +329,7 @@ describe("B14 idempotent send", () => {
   it("a resend after inbox_full succeeds once the inbox drains, once", async () => {
     const { s, t, tm, sm, n, receiver, close } = await setup();
     const me = await agentId("sref", sm.id);
-    await offline(t);
+    await offline(t, tm.id);
     for (let k = 0; k < MAILBOX_PENDING_CAP; k++)
       expect(
         (await sendAndReceipt(s, send(`fill${k}`, "sref", receiver))).state,
@@ -353,7 +364,7 @@ describe("B14 idempotent send", () => {
   it("a reconnect (same agent ref, new socket) is still deduped", async () => {
     const { s, t, sm, n, sender, receiver, close } = await setup();
     const r1 = await sendAndReceipt(s, send("k1", "sref", receiver));
-    await offline(s);
+    await offline(s, sm.id);
     const s2 = await ready(sm.token);
     s2.send({ v: 1, id: "se", type: "sessions", open: ["sref"], closed: [] });
     await agent(s2, "sref", sender, n);
