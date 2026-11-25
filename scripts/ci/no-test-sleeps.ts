@@ -155,22 +155,58 @@ export function ruleChanged(ref: string, cwd = root): boolean {
   }
 }
 
+export type Growth = { file: string; message: string };
+
 /** Keys raised above the base's count, or added since it. */
 export function grown(
   tree: Record<string, number>,
   base: Record<string, number>,
-): string[] {
-  const out: string[] = [];
+): Growth[] {
+  const out: Growth[] = [];
   for (const [file, n] of Object.entries(tree)) {
     const was = base[file] ?? 0;
     if (n > was)
-      out.push(
-        was === 0
-          ? `${file}: ${n} added (not in the baseline on the base branch)`
-          : `${file}: ${n}, was ${was} on the base branch`,
-      );
+      out.push({
+        file,
+        message:
+          was === 0
+            ? `${file}: ${n} added (not in the baseline on the base branch)`
+            : `${file}: ${n}, was ${was} on the base branch`,
+      });
   }
   return out;
+}
+
+/**
+ * Which growth is allowed. Only a file this change did not touch may grow, and
+ * only when the rule changed: a rule that finds more waits legitimately raises
+ * counts in files nobody edited, while a sleep added in the same change is
+ * exactly what this check exists to refuse (#3090 review).
+ */
+export function allowedGrowth(
+  grew: Growth[],
+  o: { ruleChanged: boolean; untouched: (file: string) => boolean },
+): { allowed: string[]; denied: string[] } {
+  const allowed: string[] = [];
+  const denied: string[] = [];
+  for (const g of grew) {
+    if (o.ruleChanged && o.untouched(g.file)) allowed.push(g.message);
+    else denied.push(g.message);
+  }
+  return { allowed, denied };
+}
+
+/** Whether `file` is byte-identical to `ref`'s copy. */
+export function fileUnchanged(ref: string, file: string, cwd = root): boolean {
+  try {
+    execFileSync("git", ["diff", "--quiet", ref, "--", file], {
+      cwd,
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const main = () => {
@@ -207,13 +243,24 @@ const main = () => {
   const at = process.argv.indexOf("--base");
   const ref = at === -1 ? undefined : process.argv[at + 1];
   const base = ref ? baseBaseline(ref) : null;
-  const grew = base ? grown(baseline, base) : [];
-  const ruleGrew = grew.length > 0 && !!ref && ruleChanged(ref);
-  for (const line of grew)
+  if (ref && !base) {
     console.log(
-      `no-test-sleeps: ${ruleGrew ? "GREW (the rule changed)" : "RAISED"} ${line}`,
+      `no-test-sleeps: cannot read the baseline at ${ref}; the base commit has to be fetched (only-shrinks is checked against it)`,
     );
-  if (added.length > 0 || stale.length > 0 || (grew.length > 0 && !ruleGrew)) {
+    process.exitCode = 1;
+    return;
+  }
+  const grew = base ? grown(baseline, base) : [];
+  const { allowed, denied } = allowedGrowth(grew, {
+    ruleChanged: !!ref && ruleChanged(ref),
+    untouched: (file) => !!ref && fileUnchanged(ref, file),
+  });
+  for (const line of allowed)
+    console.log(
+      `no-test-sleeps: GREW (the rule changed, file untouched) ${line}`,
+    );
+  for (const line of denied) console.log(`no-test-sleeps: RAISED ${line}`);
+  if (added.length > 0 || stale.length > 0 || denied.length > 0) {
     console.log(
       "no-test-sleeps: tests control time with fake timers or wait on a signal, never sleep. Add `// sleep-ok: <why>` if a wait is the only way.",
     );
