@@ -30,8 +30,9 @@ import {
 
 // T19 step 2: how people join rl-a. rl-a signs its domain in with Google
 // (domainCodes off) and admits guests by emailed code. TEST_DOMAIN is outside
-// that domain, so a TEST_DOMAIN address can be an invited member (Google
-// only), a guest someone shared with (codes), or nobody (no code, no account).
+// that domain, so a TEST_DOMAIN address can be an invited member (Google or
+// a code, #3082), a guest someone shared with (codes), or nobody (no code, no
+// account).
 // Every code request goes through the real sign-in UI; the code comes from
 // the otp/latest hook. Each address asks once a run: a second request inside
 // the 60 s resend window would null the first code.
@@ -130,7 +131,7 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", {
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member: Google is their way in, never a code; their session lands in the library", {
+test("an invited member outside the domain: Google or a code; their session lands in the library", {
   tag: "@gate",
 }, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
@@ -142,12 +143,15 @@ test("an invited member: Google is their way in, never a code; their session lan
     }),
   );
   expect(r).toMatchObject({ email: invited, role: "member" });
-  // TEST_DOMAIN is outside rl-a's Google domain: the invite stands, flagged.
-  expect(r.signIn).toEqual({ status: "uncertain", reason: "outside_domains" });
-  expect(r.signInMethods).toEqual(["google"]);
+  // TEST_DOMAIN is outside rl-a's Google domain, but codes are on: an invited
+  // member there may sign in by code (#3082), so the invite isn't flagged.
+  expect(r.signIn).toBeUndefined();
+  expect(r.signInMethods).toEqual(["google", "email"]);
 
   await askForCode(browser, invited);
-  expect(await otp(invited)).toEqual({ outcome: "ineligible" });
+  const got = await otp(invited);
+  if (!("code" in got))
+    throw new Error(`no code for the invited member (${got.outcome})`);
 
   // Signed in (the session hook stands in for Google): the invited row, a member.
   const p = await person(browser, "invited", "member");
