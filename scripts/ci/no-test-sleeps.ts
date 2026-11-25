@@ -122,15 +122,24 @@ export function check(
  * detached checkout, a push build): nothing to compare against.
  */
 export function baseBaseline(ref: string): Record<string, number> | null {
+  const git = (args: string[]) =>
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   try {
-    const text = execFileSync(
-      "git",
-      ["show", `${ref}:scripts/ci/test-sleep-baseline.json`],
-      { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    );
+    git(["rev-parse", "--verify", `${ref}^{commit}`]);
+  } catch {
+    return null; // no such ref: the caller fails rather than skipping
+  }
+  try {
+    const text = git(["show", `${ref}:scripts/ci/test-sleep-baseline.json`]);
     return JSON.parse(text) as Record<string, number>;
   } catch {
-    return null;
+    // The ref is there, the file is not: the base branch predates the check,
+    // so it had no bare waits on its list to compare against.
+    return {};
   }
 }
 
