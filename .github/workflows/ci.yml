@@ -18,8 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          # The sleep baseline is compared with the base branch's copy.
-          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -29,9 +27,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - name: no sleeps in tests (fake timers or a signal, never sleep)
-        # The baseline may only shrink: it is compared with the base branch's
-        # copy, which the full checkout above has.
-        run: pnpm run check-no-sleeps -- --base origin/main
+        env:
+          # The pull request's own base: what this change is diffed against.
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
+        # The baseline may only shrink: it is compared with the base commit's
+        # copy. One commit, not the full history (80 MiB on every run); the
+        # base branch's tip would also count files main changed since, and the
+        # check fails loudly if that commit cannot be read.
+        run: |
+          git fetch --depth=1 origin "$BASE_SHA"
+          pnpm run check-no-sleeps -- --base "$BASE_SHA"
       - name: version-consistency (package.json, release manifest, CHANGELOG)
         run: node --experimental-strip-types scripts/ci/version-consistency.ts
       - name: actionlint (runs shellcheck on run blocks)
