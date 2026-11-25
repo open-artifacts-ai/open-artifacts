@@ -26,6 +26,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - name: no sleeps in tests (fake timers or a signal, never sleep)
+        run: pnpm check-no-sleeps
       - name: version-consistency (package.json, release manifest, CHANGELOG)
         run: node --experimental-strip-types scripts/ci/version-consistency.ts
       - name: actionlint (runs shellcheck on run blocks)
