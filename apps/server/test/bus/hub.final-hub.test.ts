@@ -41,6 +41,7 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
+// sleep-ok: a settle before a signal-free assertion; prefer a waitFor
 const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const count = (h: BusHubStub, q: string, ...b: SqlStorageValue[]) =>
   inHub(h, (_, s) => s.storage.sql.exec<{ n: number }>(q, ...b).one().n);

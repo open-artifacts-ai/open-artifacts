@@ -2,7 +2,7 @@
 // (a chosen name or a role) for the checklist; a default re-mint does not.
 import { env } from "cloudflare:workers";
 import { decodeServerFrame, encodeFrame, newId } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AUTHZ_AT_HEADER,
   type BusHub,
@@ -54,10 +54,8 @@ async function connect(userId: string) {
     seen,
   };
 }
-const until = async (fn: () => boolean | Promise<boolean>) => {
-  for (let i = 0; i < 100 && !(await fn()); i++)
-    await new Promise((r) => setTimeout(r, 20));
-};
+const until = (fn: () => boolean | Promise<boolean>) =>
+  vi.waitFor(async () => expect(await fn()).toBe(true));
 
 describe("the hub records a named agent (#2478)", () => {
   it("an agent_up with name_chosen records the owner's first time, once", async () => {
@@ -97,6 +95,7 @@ describe("the hub records a named agent (#2478)", () => {
       proposed_name: "Atlas",
     });
     await until(() => c.seen.includes("renamed"));
+    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
     await new Promise((r) => setTimeout(r, 50));
     expect((await stored(o.userId))?.value).toBe(first?.value);
   });
@@ -124,6 +123,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_kind: "default",
     });
     await until(() => c.seen.includes("renamed"));
+    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
     await new Promise((r) => setTimeout(r, 50));
     expect(await stored(o.userId)).toBeNull();
     c.send({
@@ -160,6 +160,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_chosen: false,
     });
     await until(() => c.seen.includes("renamed"));
+    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
     await new Promise((r) => setTimeout(r, 50));
     expect(await stored(o.userId)).toBeNull();
   });
@@ -186,9 +187,11 @@ describe("the hub records a named agent (#2478)", () => {
     await env.DB.prepare("delete from settings where key = ?1")
       .bind(namedKey(o.userId))
       .run();
+    // sleep-ok: absence — a hub that still wrote the row would do it now
     await new Promise((r) => setTimeout(r, 50));
     up("ref_b", "2");
     await until(() => c.seen.filter((t) => t === "agent_ok").length >= 2);
+    // sleep-ok: absence — nothing should write the row after the second hello
     await new Promise((r) => setTimeout(r, 100));
     expect(await stored(o.userId)).toBeNull();
     expect(first).not.toBeNull();

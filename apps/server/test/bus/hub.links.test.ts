@@ -11,7 +11,7 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { BUS_LINK_MAX, BUS_LINKS_PER_NAMESPACE } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import { addLink, linkedNamespaces, removeLink } from "../../src/bus/links.js";
 import {
@@ -288,7 +288,7 @@ describe("routing across a link (#1567)", () => {
       open: [],
       closed: ["own"],
     });
-    for (let k = 0; k < 400; k++) {
+    await vi.waitFor(async () => {
       const r = await inOwnerHub((s) =>
         s.storage.sql
           .exec(
@@ -298,9 +298,8 @@ describe("routing across a link (#1567)", () => {
           )
           .one(),
       );
-      if (r.n === 1) break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(r).toEqual({ n: 1 });
+    });
     await inOwnerHub((s) =>
       s.storage.sql.exec(
         "insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global) values ('ghost', 'owner', ?, ?, 'held', ?, ?, 0)",
@@ -460,7 +459,7 @@ describe("roster across a link (#1567)", () => {
       open: [],
       closed: ["away", "far"],
     });
-    for (let k = 0; k < 400; k++) {
+    await vi.waitFor(async () => {
       const r = await inOwnerHub((s) =>
         s.storage.sql
           .exec(
@@ -470,9 +469,8 @@ describe("roster across a link (#1567)", () => {
           )
           .one(),
       );
-      if (r.n === 2) break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(r).toEqual({ n: 2 });
+    });
     await link(a, b);
     const rows = await list(d, "me");
     expect(rows.find((r) => r.bus_name === away)).toMatchObject({
@@ -576,8 +574,5 @@ describe("roster_changed fans out across a link (#1567)", () => {
   });
 });
 
-async function waitUntil(ok: () => boolean) {
-  for (let i = 0; i < 400 && !ok(); i++)
-    await new Promise((r) => setTimeout(r, 25));
-  expect(ok()).toBe(true);
-}
+const waitUntil = (ok: () => boolean) =>
+  vi.waitFor(() => expect(ok()).toBe(true), { interval: 20 });

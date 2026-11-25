@@ -29,6 +29,8 @@ const list = (id: string, from_ref: string): ClientFrame => ({
 });
 type Roster = Extract<ServerFrame, { type: "roster" }>;
 const lowerNames = (r: Roster) => r.agents.map((a) => a.bus_name.toLowerCase());
+// sleep-ok: a settle before a signal-free assertion (the calls that use it
+// assert on absence); `until(pred)` below is the signal form and is preferred
 const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 async function until(pred: () => boolean, ms = 20000) {
   const end = Date.now() + ms;

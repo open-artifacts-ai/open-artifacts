@@ -5,7 +5,7 @@
 // namespaces are ambiguous. Time is BusHub.setTestClock; no sleeps.
 import { runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -77,15 +77,13 @@ async function send(d: Daemon, from: string, to: string): Promise<Receipt> {
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  for (let k = 0; k < 400; k++) {
+  await vi.waitFor(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
     );
-    if (r[0]?.live === 0) return;
-    await new Promise((res) => setTimeout(res, 5));
-  }
-  throw new Error("close never applied");
+    expect(r[0]?.live).toBe(0);
+  });
 };
 
 const agentId = async (ref: string) =>

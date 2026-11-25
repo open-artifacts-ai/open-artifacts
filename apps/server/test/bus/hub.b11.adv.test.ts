@@ -43,6 +43,7 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
+// sleep-ok: a settle before a signal-free assertion; prefer a waitFor
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 type D = {

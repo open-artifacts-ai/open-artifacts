@@ -278,6 +278,7 @@ describe("linkRequest (#1822)", () => {
     try {
       const slow = await linkRequest(
         spyHubs({
+          // sleep-ok: a deliberately slow read (400 ms) to exercise the cap, not a wait
           agentByProof: () =>
             new Promise((res) => setTimeout(() => res(who), 400)),
         }).ev,

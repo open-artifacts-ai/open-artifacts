@@ -10,7 +10,7 @@ import {
   type RefusalReason,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, HELD_BYTES_CAP } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -278,6 +278,7 @@ describe("mail: delivery", () => {
     await agent(t, "rref", receiver, n);
     t.close();
     await t.closed;
+    // sleep-ok: absence — a machine that just closed must not be marked offline
     await new Promise((r) => setTimeout(r, 50));
 
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "later"));
@@ -745,17 +746,19 @@ describe("mail: held memory", () => {
     for (const ref of refs)
       t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: ref });
     await barrier(t);
-    for (let k = 0; k < 100; k++) {
-      const queued = await inOwnerHub(
-        (st) =>
-          st.storage.sql
-            .exec("select 1 from meta where key like 'close_drain:%' limit 1")
-            .toArray().length,
-      );
-      if (queued === 0) break;
-      await runDurableObjectAlarm(await hubOf());
-      await new Promise((r) => setTimeout(r, 5));
-    }
+    await vi.waitFor(
+      async () => {
+        const queued = await inOwnerHub(
+          (st) =>
+            st.storage.sql
+              .exec("select 1 from meta where key like 'close_drain:%' limit 1")
+              .toArray().length,
+        );
+        expect(queued).toBe(0);
+        if (queued !== 0) await runDurableObjectAlarm(await hubOf());
+      },
+      { interval: 20 },
+    );
     const after = new Set((await heldStats()).ids);
     const stored2 = await inOwnerHub(
       (st) =>
