@@ -9,7 +9,7 @@ import {
   managesAdmins,
 } from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
-import { isGuestRole, orgCan } from "../auth/policy.js";
+import { isGuestRole, isMemberRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -443,7 +443,7 @@ export async function codeRule(
     // An invited member with no Gmail or Workspace at the exact invited
     // address (the row's email): a code proves that mailbox, on a Google
     // install too. Owner and admin rows here still never sign in by code.
-    if (row.role === "member" && cfg.providers.has("google"))
+    if (isMemberRole(row.role) && cfg.providers.has("google"))
       return { kind: "member", userId: row.id, role: "member" };
     return { kind: "none", why: "not_guest" };
   }

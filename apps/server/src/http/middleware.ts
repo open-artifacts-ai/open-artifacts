@@ -20,7 +20,7 @@ import {
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
-import { isGuestRole, orgCan } from "../auth/policy.js";
+import { isGuestRole, isMemberRole, orgCan } from "../auth/policy.js";
 import {
   readSession,
   type Session,
@@ -210,7 +210,7 @@ export function invitedMemberStillOk(
   s: Session,
   user: Pick<Member, "role" | "email">,
 ): boolean {
-  if (s.p !== "code" || s.t !== undefined || user.role !== "member")
+  if (s.p !== "code" || s.t !== undefined || !isMemberRole(user.role))
     return false;
   const cfg = authConfig(env);
   const at = user.email.lastIndexOf("@");
