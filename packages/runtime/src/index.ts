@@ -600,6 +600,11 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
         }),
       )
       .catch(() => {});
+  // #2426 B: `[data-oa-ask]` slots for the shell's ask cards (html pages; inert without a shell that knows protocol 8).
+  if (!bridge.raw && kind === "html")
+    void loadSchemas()
+      .then((s) => s.createAskSlots?.(bridge, opts.signal))
+      .catch(() => {});
   if (bridge.raw) welcomed();
   // Renderer pages (markdown/code/pdf) send their own hello.
   else if (kind === "html") bridge.hello(kind);

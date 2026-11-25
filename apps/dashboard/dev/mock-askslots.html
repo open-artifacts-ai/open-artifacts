@@ -1,0 +1,26 @@
+<!doctype html>
+<!-- ?mock=askslots (#2426 B): a page for the dashboard's mock. Three slots: an ask on this page, an ask placed from another page, and a key the mock has no ask for (it closes up). Dev only. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="oa-format" content="html" />
+    <title>Launch plan</title>
+    <style>
+      body { font: 16px/1.5 system-ui, sans-serif; margin: 0 auto; max-width: 640px; padding: 24px; color: #222; }
+      [data-oa-ask] { margin: 16px 0; background: #fafafa; }
+      p { margin: 12px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>Launch plan</h1>
+    <p>Here is the plan for launch week. Two decisions are still open.</p>
+    <div data-oa-ask="launch-day"></div>
+    <p>Between them, the rollout checklist runs as before.</p>
+    <div data-oa-ask="runbook"></div>
+    <p>This slot has no ask on the server: it must collapse, so this text sits right under the one above.</p>
+    <div data-oa-ask="no-ask-here" style="height: 200px"></div>
+    <p>The end. Scroll back up: the cards follow the page.</p>
+    <p style="height: 900px"></p>
+    <script type="module" src="/src/mockAskslotsRuntime.ts"></script>
+  </body>
+</html>

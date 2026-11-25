@@ -1,6 +1,7 @@
 import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ASK_SLOTS_KEY } from "../api/askSlots";
 import { ApiClientError, api } from "../api/client";
 import { commentsKey } from "../api/comments";
 import { qk } from "../api/queries";
@@ -322,10 +323,13 @@ export function useLiveVersions(o: {
       id,
       embed,
       onEvent: (e) => {
-        if (refetchesComments(e))
+        if (refetchesComments(e)) {
           // A comment changed, or the socket (re)connected and may have
           // missed some (cloud #291): refetch the list.
           void qc.invalidateQueries({ queryKey: commentsKey(id) });
+          // #2426 B: an ask shown in this page's slots may have been decided.
+          void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
+        }
         if (e.type === "hello") {
           down.current = false;
           enqueue({ version: e.version });

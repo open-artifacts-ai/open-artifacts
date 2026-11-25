@@ -1,4 +1,4 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
@@ -12,6 +12,23 @@ export default defineConfig({
     react(),
     // Tailwind for the @oa/ui/shadcn components (src/shadcn.css).
     tailwindcss(),
+    {
+      // ?mock=askslots (#2426 B): a page for the mock frame, served by the dev
+      // server only; it is not in public/, so no build ships it.
+      name: "oa-mock-askslots-page",
+      apply: "serve",
+      configureServer(server) {
+        server.middlewares.use("/mock-askslots.html", (_req, res) => {
+          res.setHeader("content-type", "text/html; charset=utf-8");
+          res.end(
+            readFileSync(
+              new URL("./dev/mock-askslots.html", import.meta.url),
+              "utf8",
+            ),
+          );
+        });
+      },
+    },
     {
       // The MSW worker lives in public/ for dev; keep it out of production output.
       name: "oa-drop-mock-worker",
@@ -40,6 +57,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // ?mock=askslots (#2426 B): a sandboxed frame (origin "null") loads the runtime module from the dev server.
+    cors: { origin: "null" },
     proxy: {
       "/api": target,
       "/auth": target,

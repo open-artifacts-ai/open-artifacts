@@ -3,6 +3,7 @@ import {
   AnonViewerSchema,
   type ArtifactSummary,
   type ArtifactToShell,
+  ASK_SLOTS_MAX,
   DataChangeSchema,
   DataDocSchema,
   type ErrorCode,
@@ -12,6 +13,7 @@ import {
   OnboardingSchema,
   PageSchema,
   PROTOCOL_ASK_MARK,
+  PROTOCOL_ASK_SLOTS,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
@@ -48,6 +50,13 @@ import { clampRetryHint } from "./liveEvents";
 /** #2632: what the shell knows of a member, for their Welcome's greeting. */
 export type WelcomeGreet = { firstName: string | null; org: string };
 
+/** A slot's box in frame-viewport pixels (#2426 B). */
+export type AskSlotRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
 
@@ -113,6 +122,8 @@ export interface BridgeOptions {
   onCommentSelection?: (has: boolean, bottom: number) => void;
   /** A pointer went down in the frame (outside the runtime's own button). */
   onCommentAway?: () => void;
+  /** #2426 B: where the page's `[data-oa-ask]` slots are, in frame-viewport pixels (a frame that said protocol 8 or more). */
+  onAskSlots?: (slots: { key: string; rect: AskSlotRect }[]) => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
     /** #2019: where the click landed, in frame-viewport pixels. */
@@ -636,6 +647,11 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.open":
         opts.onCommentOpen?.(m.id);
         break;
+      case "ask.slots":
+        // #2426 B: only from a frame that said it knows slots (an older one has none to report).
+        if (frameProtocol >= PROTOCOL_ASK_SLOTS)
+          opts.onAskSlots?.(m.slots.slice(0, ASK_SLOTS_MAX));
+        break;
       case "comment.escape":
         opts.onCommentEscape?.();
         break;
@@ -758,6 +774,11 @@ export function createBridge(opts: BridgeOptions) {
     clearSelection() {
       if (frameProtocol >= PROTOCOL_COMMENT_CLEAR)
         reply({ oa: 1, type: "comments.clear" });
+    },
+    /** #2426 B: the height the card for slot `key` needs (0 closes the slot up); a frame older than protocol 8 has no slots. */
+    setAskSlotSize(key: string, h: number) {
+      if (frameProtocol >= PROTOCOL_ASK_SLOTS)
+        reply({ oa: 1, type: "ask.slotSize", key, h });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });
