@@ -1,4 +1,4 @@
-import { normalizeEmail } from "@oa/auth-core";
+import { inDomains, normalizeEmail } from "@oa/auth-core";
 import {
   AUTH,
   CODE_POLICY,
@@ -620,16 +620,22 @@ export function mountCodes(app: AppType): void {
     const user: Member = row.user;
     const guest = elig.kind === "guest";
     const domain = email.slice(email.lastIndexOf("@") + 1);
+    // An invited member outside the domains (codeRule, Google install): no
+    // tenant (it isn't a verified domain), the m marker instead; the
+    // middleware rechecks the row on every request.
+    const invited = !guest && !inDomains(cfg.domains, domain);
+    const tenant = guest || invited ? undefined : domain;
     const maxAgeS = guest ? GUEST_MAX_AGE_S : undefined;
     const signedAt = Date.now();
     const sess = await signSession(c.env, user.id, signedAt, {
       provider: "code",
-      tenant: guest ? undefined : domain,
+      tenant,
       epoch: row.sessionEpoch,
       maxAgeS,
       // The forced re-auth marker (#1372): a code sign-in is itself one, since
       // every code is new, emailed and typed by the person; no silent path.
       authAt: signedAt,
+      invitedMember: invited,
     });
     // The sign-in and its auth.signin audit row commit together; the last
     // statement reads the member's hosted fields (restriction included).
@@ -640,7 +646,7 @@ export function mountCodes(app: AppType): void {
         Date.now(),
         user.id,
       ),
-      signInAudit(c.env, user.id, "code", guest ? undefined : domain),
+      signInAudit(c.env, user.id, "code", tenant),
       stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
     ]);
     // #2632: a member's own Welcome, once (the email code path too); never throws.
@@ -649,7 +655,7 @@ export function mountCodes(app: AppType): void {
       provider: "code",
       outcome: "ok",
       uid: user.id,
-      tenant: guest ? undefined : domain,
+      tenant,
     });
     // As the session's next request will see it (middleware; GET /me's
     // auth.cap): the member's own cap (guest, or restricted by the manual

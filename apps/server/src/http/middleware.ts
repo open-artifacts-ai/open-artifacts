@@ -200,16 +200,41 @@ export const securityHeaders =
 const BEARER = /^\s*Bearer(?:\s+(.*?))?\s*$/i;
 
 /**
+ * An invited member's code session (SessionPayload.m) still qualifies, as
+ * codeRule would admit it now: a code session with no tenant, the row still a
+ * member (not a guest, admin or owner), Google still offered, and the address
+ * still outside the verified domains. No D1: the row is already loaded.
+ */
+export function invitedMemberStillOk(
+  env: Env,
+  s: Session,
+  user: Pick<Member, "role" | "email">,
+): boolean {
+  if (s.p !== "code" || s.t !== undefined || user.role !== "member")
+    return false;
+  const cfg = authConfig(env);
+  const at = user.email.lastIndexOf("@");
+  return (
+    cfg.providers.has("google") &&
+    at > 0 &&
+    !inDomains(cfg.domains, user.email.slice(at + 1).toLowerCase())
+  );
+}
+
+/**
  * A signed session is still good for this user and install: its epoch is the
  * user's current one (a bump ends every session), its tenant, if any, is
  * still a verified domain, and a domain-code session ends once Google is on.
+ * An invited member's code session (m) also needs invitedMemberStillOk.
  */
 export function sessionStillValid(
   env: Env,
   s: Session,
   sessionEpoch: number,
+  user?: Pick<Member, "role" | "email">,
 ): boolean {
   if ((s.e ?? 0) !== sessionEpoch) return false;
+  if (s.m === 1) return !!user && invitedMemberStillOk(env, s, user);
   if (s.t === undefined) return true;
   const cfg = authConfig(env);
   if (!inDomains(cfg.domains, s.t)) return false;
@@ -279,7 +304,7 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
     else if (
       s &&
       row &&
-      sessionStillValid(c.env, s, row.sessionEpoch) &&
+      sessionStillValid(c.env, s, row.sessionEpoch, row.user) &&
       !sessionCapped(row.capSince, s.iat, Date.now())
     ) {
       // The cap travels on the member itself (authz CAP, set once by getUser
@@ -288,7 +313,9 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       // A restricted member stays "restricted"; anyone else becomes "guest",
       // whatever the billing plan says: the plan cap exempts admin reads
       // and billing, which a session this weak must not keep.
-      if (s.p === "code" && s.t === undefined)
+      // An invited member's code session (m) passed sessionStillValid: the
+      // member, uncapped, as a domain member's code session is.
+      if (s.p === "code" && s.t === undefined && s.m !== 1)
         c.set(
           "user",
           withCap(
@@ -395,7 +422,7 @@ const auditBreakGlass = (
  */
 async function meBreakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
-  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
+  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch, row.user)) return;
   const now = Date.now();
   // The 401 still names the session that asked: its use is audited as such.
   setCred({ kind: "session", id: sessionCredId(s) });
@@ -420,7 +447,7 @@ async function meBreakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
  */
 async function breakGlass(c: Context<AppEnv>, s: Session): Promise<void> {
   const row = await getMismatchOwner(c.env, s.uid);
-  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch)) return;
+  if (!row || !sessionStillValid(c.env, s, row.sessionEpoch, row.user)) return;
   const now = Date.now();
   if (!breakGlassFresh(s, now))
     throw new ApiError(
