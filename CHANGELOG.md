@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.243.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.2...v0.243.0) (2026-11-25)
+
+
+### Features
+
+* **bus:** the habits every session is told, in one short text ([#3043](https://github.com/open-artifacts-ai/open-artifacts/issues/3043), slice 1) ([#3046](https://github.com/open-artifacts-ai/open-artifacts/issues/3046)) ([51c82a7](https://github.com/open-artifacts-ai/open-artifacts/commit/51c82a72b02368e74fd9f5e0b2b1cfba304764e8))
+
+
+### Bug Fixes
+
+* **viewer:** the events socket's hello refetches comments ([#3062](https://github.com/open-artifacts-ai/open-artifacts/issues/3062)) ([93234ce](https://github.com/open-artifacts-ai/open-artifacts/commit/93234ce4090cc1b9fc06fdf86c72c73dc2cb43f0))
+
 ## [0.242.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.1...v0.242.2) (2026-11-24)
 
 
