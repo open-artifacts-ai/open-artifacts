@@ -4,13 +4,13 @@ import {
   type CommentThread,
   viewerPath,
 } from "@oa/shared";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { type AskSlot, useAskSlots } from "../../api/askSlots";
 import type { AskSlotRect } from "../bridge";
 import { TXT } from "../ui";
-import { AskBlock, askedWho } from "./asks";
-import { ASK_BESIDE_HOLD_MS } from "./CommentsBody";
+import { askedWho } from "./asks";
 import { optionIdOf, textOf } from "./ownWords";
+import { useCommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
 /** A slot narrower than this still gets a card this wide; the frame bounds the rest. */
@@ -88,6 +88,7 @@ function AskSlotCard({
   here: boolean;
   onSize: (key: string, h: number) => void;
 }) {
+  const api = useCommentsApi();
   const ref = useRef<HTMLDivElement>(null);
   const { key } = slot;
   // The height the page's slot needs: the card and its note, as drawn.
@@ -108,28 +109,56 @@ function AskSlotCard({
     { w: frame.clientWidth, h: frame.clientHeight },
     ref.current?.offsetHeight ?? 0,
   );
-  // #2426 review (part A): page script can place this card, so for a moment
-  // after it appears, moves or comes back into view it takes no pick.
-  const [armed, setArmed] = useState(false);
   const px = Math.round(place.x);
   const py = Math.round(place.y);
   const pw = Math.round(place.w);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: a new place starts the delay over
-  useEffect(() => {
-    setArmed(false);
-    if (!place.topIn) return;
-    const t = setTimeout(() => setArmed(true), ASK_BESIDE_HOLD_MS);
-    return () => clearTimeout(t);
-  }, [px, py, pw, place.topIn]);
   const { thread, c } = asComment(slot);
   const decided = decisionText(slot);
   const home = slot.home;
   const who = slot.ask.to.some((a) => a.me) || slot.ask.role !== undefined;
+  const from = `${c.author.name ?? "An agent"} asks${askedWho(slot.ask.to, who)}`;
+  // #3048: an ask opens its thread in the comments; the card in the page is a
+  // summary that says one is there. Answering happens in the thread.
+  const body = (
+    <>
+      <span className={`block ${TXT} ${MUTED}`}>
+        {from}
+        {!here && (
+          <>
+            {" · from "}
+            <a
+              href={viewerPath(home.artifactId)}
+              target="_blank"
+              rel="noopener"
+              className="underline underline-offset-2"
+            >
+              {home.title} ↗
+            </a>
+          </>
+        )}
+      </span>
+      <span className={`block ${TXT} font-medium break-words`}>
+        {slot.ask.question}
+      </span>
+      {decided !== null && (
+        <span
+          data-ask-slot-decided=""
+          className={`block ${TXT} font-medium text-[var(--oa-success-fg)]`}
+        >
+          ✓ Decided: {decided}
+        </span>
+      )}
+      {here && decided === null && (
+        <span className={`block ${TXT} ${MUTED}`}>
+          Open the thread to answer.
+        </span>
+      )}
+    </>
+  );
   return (
     <div
       ref={ref}
       data-ask-slot={key}
-      data-ask-slot-armed={armed ? "" : undefined}
       data-oa-keep-selection=""
       style={{
         left: px,
@@ -145,49 +174,30 @@ function AskSlotCard({
         aria-label="Ask"
         className="rounded-xl border border-border bg-card p-3 shadow-sm"
       >
-        {!here && (
-          <p data-ask-slot-from="" className={`mb-1.5 ${TXT} ${MUTED}`}>
-            {c.author.name} asks{askedWho(slot.ask.to, who)} · from{" "}
-            <a
-              href={viewerPath(home.artifactId)}
-              target="_blank"
-              rel="noopener"
-              className="underline underline-offset-2"
-            >
-              {home.title} ↗
-            </a>
-          </p>
-        )}
-        {decided !== null ? (
-          <p
-            data-ask-slot-decided=""
-            className={`m-0 ${TXT} font-medium text-[var(--oa-success-fg)]`}
+        {here ? (
+          <button
+            type="button"
+            data-ask-slot-open=""
+            onClick={() => api.onOpen(thread.id)}
+            className="block w-full cursor-pointer border-0 bg-transparent p-0 text-left"
           >
-            ✓ Decided: {decided}
-          </p>
+            {body}
+          </button>
         ) : (
-          <AskBlock
-            artifactId={home.artifactId}
-            thread={thread}
-            c={c}
-            from={here}
-            boxed={false}
-            holdPicks={!armed}
-            body={undefined}
-          />
-        )}
-        {!here && (
-          <p className={`mt-1.5 ${TXT}`}>
-            <a
-              href={`${viewerPath(home.artifactId)}?thread=${encodeURIComponent(slot.threadId)}`}
-              target="_blank"
-              rel="noopener"
-              data-ask-slot-context=""
-              className="underline underline-offset-2"
-            >
-              See it in context
-            </a>
-          </p>
+          <>
+            {body}
+            <p className={`mb-0 ${TXT}`}>
+              <a
+                href={`${viewerPath(home.artifactId)}?thread=${encodeURIComponent(slot.threadId)}`}
+                target="_blank"
+                rel="noopener"
+                data-ask-slot-context=""
+                className="underline underline-offset-2"
+              >
+                See it in context
+              </a>
+            </p>
+          </>
         )}
       </section>
       {slot.note && (
@@ -204,8 +214,9 @@ function AskSlotCard({
  * #2426 B: the cards for the page's `[data-oa-ask]` slots, drawn here over the
  * frame, never inside the sandbox. A card exists only for a key the frame
  * reported and the server has an ask for; every other reported key is told
- * h 0 and closes up. The cards keep part A's guards (the hold on appear and
- * move, the clamp into the frame, hidden while off-screen).
+ * h 0 and closes up. A card is a summary: clicking it opens the thread in the
+ * comments (#3048), where the answer goes. It is clamped into the frame and
+ * hidden while its slot is off-screen.
  */
 export function AskSlots({
   frame,

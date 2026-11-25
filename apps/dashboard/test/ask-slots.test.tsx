@@ -1,10 +1,15 @@
 import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { act, fireEvent, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ASK_BESIDE_HOLD_MS } from "../src/viewer/comments/CommentsBody";
-import { installHarness, mount, server, wait } from "./harness";
+import { installHarness, mount, server } from "./harness";
 
 type Rect = { x: number; y: number; width: number; height: number };
 type Opts = {
@@ -134,10 +139,40 @@ describe("ask cards in page slots (#2426 B)", () => {
     expect(card("old")).toBeNull();
   });
 
-  it("takes no pick for the hold after it appears, then answers", async () => {
+  it("a card on this page is a summary: clicking it opens the thread, no answering in place", async () => {
     let answered: unknown = null;
     serve([slot("launch-day")]);
+    // The ask's thread is one of this page's comment threads.
     server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [
+            {
+              id: "t-launch-day",
+              anchor: { kind: "note" },
+              version: 1,
+              status: "open",
+              resolvedBy: null,
+              resolvedAt: null,
+              createdAt: "2026-11-05T10:00:00Z",
+              comments: [
+                {
+                  id: "c-launch-day",
+                  body: "Ship it Friday?",
+                  author: { kind: "agent", name: "Atlas", me: false },
+                  createdAt: "2026-11-05T10:00:00Z",
+                  editedAt: null,
+                  typed: false,
+                  can: { edit: false, delete: false },
+                  ask: ask(),
+                },
+              ],
+            },
+          ],
+          open: 1,
+          truncated: false,
+        }),
+      ),
       http.post(
         `*${R.commentAnswer(OWNED, "t-launch-day", "c-launch-day")}`,
         async ({ request }) => {
@@ -153,55 +188,31 @@ describe("ask cards in page slots (#2426 B)", () => {
       if (!c) throw new Error("no card");
       return c;
     });
-    const pick = () => within(el).getByRole("button", { name: /Yes, Friday/ });
-    expect(pick()).toBeDisabled();
-    fireEvent.click(pick());
+    // The summary says who asks and what: no option buttons, no pick route.
+    expect(el.textContent).toContain("Atlas asks you");
+    expect(el.textContent).toContain("Ship it Friday?");
+    expect(
+      within(el).queryByRole("button", { name: /Yes, Friday/ }),
+    ).toBeNull();
+    expect(within(el).queryByRole("button", { name: /Not yet/ })).toBeNull();
+    // The page's own list knows that thread (the click is checked against it).
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    // Clicking it opens the thread in the comments, where the answer goes.
+    fireEvent.click(within(el).getByRole("button", { name: /Atlas asks you/ }));
+    // jsdom has no 960px media query: this is the side panel's Comments tab.
+    const panel = await screen.findByRole("complementary", {
+      name: "Side panel",
+    });
+    await waitFor(() =>
+      expect(
+        within(panel).getByRole("button", { name: "Reply" }),
+      ).toBeInTheDocument(),
+    );
+    // The thread that opened is the ask's own.
+    expect(
+      document.querySelector('[data-thread="t-launch-day"][data-active]'),
+    ).not.toBeNull();
     expect(answered).toBeNull();
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    expect(pick()).not.toBeDisabled();
-    fireEvent.click(pick());
-    await waitFor(() => expect(answered).toEqual({ optionId: "yes" }));
-  });
-
-  it("starts the hold over when the slot moves", async () => {
-    serve([slot("launch-day")]);
-    mount(viewerPath(OWNED));
-    await report(["launch-day"]);
-    await waitFor(() => expect(card("launch-day")).not.toBeNull());
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
-    await act(async () =>
-      opts
-        .at(-1)
-        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 260 } }]),
-    );
-    expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
-  });
-
-  it("holds picks while the card's top is above the frame, and starts over when it returns", async () => {
-    serve([slot("launch-day")]);
-    mount(viewerPath(OWNED));
-    await report(["launch-day"]);
-    await waitFor(() => expect(card("launch-day")).not.toBeNull());
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
-    // Top 40px above the frame, the card (120px) still partly in view.
-    await act(async () =>
-      opts
-        .at(-1)
-        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: -40 } }]),
-    );
-    expect(card("launch-day")?.style.visibility).toBe("visible");
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
-    await act(async () =>
-      opts
-        .at(-1)
-        ?.onAskSlots?.([{ key: "launch-day", rect: { ...R1, y: 10 } }]),
-    );
-    expect(card("launch-day")).not.toHaveAttribute("data-ask-slot-armed");
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    expect(card("launch-day")).toHaveAttribute("data-ask-slot-armed");
   });
 
   it("hides a card whose slot is out of the visible frame", async () => {
@@ -218,7 +229,7 @@ describe("ask cards in page slots (#2426 B)", () => {
     expect(card("launch-day")?.style.visibility).toBe("hidden");
   });
 
-  it("an ask from another page: header, context link, note, and the answer goes home", async () => {
+  it("an ask from another page: header, context link, note, and no answering here", async () => {
     let answered: unknown = null;
     serve([
       slot("runbook", {
@@ -243,22 +254,20 @@ describe("ask cards in page slots (#2426 B)", () => {
       if (!c) throw new Error("no card");
       return c;
     });
-    const from = el.querySelector("[data-ask-slot-from]");
-    expect(from?.textContent).toContain("Atlas");
-    expect(from?.textContent).toContain("asks you");
-    expect(from?.textContent).toContain("from Opening runbook");
+    expect(el.textContent).toContain("Atlas asks you");
+    expect(el.textContent).toContain("from Opening runbook");
     const link = within(el).getByRole("link", { name: /Opening runbook/ });
     expect(link).toHaveAttribute("href", viewerPath(HOME));
     expect(link).toHaveAttribute("target", "_blank");
     expect(
-      within(el).getByRole("link", { name: "See it in context" }),
+      within(el).getByRole("link", { name: /See it in context/ }),
     ).toHaveAttribute("href", `${viewerPath(HOME)}?thread=t-runbook`);
     expect(el.querySelector("[data-ask-slot-note]")?.textContent).toBe(
       "Note from Sam, who put this here: Sign off by noon",
     );
-    await wait(ASK_BESIDE_HOLD_MS + 150);
-    fireEvent.click(within(el).getByRole("button", { name: /Not yet/ }));
-    await waitFor(() => expect(answered).toEqual({ optionId: "no" }));
+    // No options in the page: the home page's thread is where it is answered.
+    expect(within(el).queryByRole("button", { name: /Not yet/ })).toBeNull();
+    expect(answered).toBeNull();
   });
 
   it("a decided ask reads '✓ Decided: option'", async () => {

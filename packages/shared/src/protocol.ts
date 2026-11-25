@@ -1,10 +1,10 @@
 import { z } from "zod";
-import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "./ask-slots.js";
 import {
   pinAnchorSchema,
   selectionAnchorSchema,
   textAnchorSchema,
 } from "./anchor.js";
+import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "./ask-slots.js";
 import { ERROR_CODES } from "./errors.js";
 import { FORMATS } from "./formats.js";
 import { LIMITS } from "./limits.js";
