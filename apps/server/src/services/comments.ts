@@ -1832,9 +1832,12 @@ async function resolveExtras(
         continue;
       }
       // A person who can read the artifact now.
-      const user = isId(key) ? await getUser(env, key) : null;
+      // #3066: `me` is the person the caller acts for (a user caller only).
+      const uid = key === "me" ? viewerId : key;
+      const user = uid && isId(uid) ? await getUser(env, uid) : null;
       if (!user || !(await accessLevel(env, callerOf(user), artifactId)))
         throw unknownKey(key);
+      if (to.some((p) => p.key === user.id)) continue;
       to.push({ kind: "user", key: user.id });
     }
     // #2381: who decides. Default: the asker's own user (nothing stored). Naming
@@ -1842,13 +1845,15 @@ async function resolveExtras(
     // that names an action; the asker's own user stays on the ask to take it back.
     let decider: string | undefined;
     const askerId = who.kind === "user" ? who.id : "";
-    if (askIn.decider && askIn.decider.key !== askerId) {
+    const deciderKey =
+      askIn.decider?.key === "me" ? askerId : askIn.decider?.key;
+    if (askIn.decider && deciderKey !== askerId) {
       if (askIn.options.some((o) => o.action))
         throw new ApiError(
           "bad_request",
           "An ask that names an action is decided by you: drop `decider`",
         );
-      const dk = askIn.decider.key;
+      const dk = deciderKey ?? "";
       const du = isId(dk) ? await getUser(env, dk) : null;
       const dl = du ? await accessLevel(env, callerOf(du), artifactId) : null;
       if (!du || !dl || !meetsLevel(dl.level, "editor"))
