@@ -6,6 +6,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { teammatesHandlers } from "../src/mockTeammates";
 import { whenText } from "../src/settings/AskHistory";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -47,6 +48,9 @@ const pickOption = async (label: string, option: string | RegExp) => {
   });
   fireEvent.click(await screen.findByRole("option", { name: option }));
 };
+
+// A clock, not the wall (test/clock.ts).
+installClock();
 
 describe("Settings: Add a teammate", () => {
   const openDialog = async () => {
@@ -477,7 +481,7 @@ describe("First setup: one question", () => {
     await waitFor(() =>
       expect(gets.some((c) => c.path === "/api/v1/onboarding")).toBe(true),
     );
-    await new Promise((r) => setTimeout(r, 400));
+    await settle(400);
     expect(gets.some((c) => c.path === R.meTeammates)).toBe(false);
   });
 
@@ -496,7 +500,7 @@ describe("First setup: one question", () => {
       expect(card()).not.toBeNull();
       return card() as HTMLElement;
     });
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(0);
     fireEvent.click(
       within(c).getByRole("radio", { name: /Yes, my colleagues/ }),
@@ -505,7 +509,7 @@ describe("First setup: one question", () => {
       expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(1),
     );
     window.dispatchEvent(new Event("focus"));
-    await new Promise((r) => setTimeout(r, 500));
+    await settle(500);
     expect(gets.filter((g) => g.path === R.meTeammates)).toHaveLength(1);
   });
 
@@ -519,7 +523,7 @@ describe("First setup: one question", () => {
     await screen
       .findByRole("heading", { name: /Get started|Library/ })
       .catch(() => null);
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(card()).toBeNull();
   });
 

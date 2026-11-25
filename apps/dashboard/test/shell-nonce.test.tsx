@@ -4,12 +4,15 @@ import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ANNOUNCE_HEAL_MS, MINT_RETRY_MS } from "../src/viewer/Shell";
+import { installClock, settle } from "./clock";
 import { installHarness, mount, server } from "./harness";
 
 installHarness();
-afterEach(() => vi.useRealTimers());
+// A clock, not the wall (test/clock.ts): the shell's timers and `Date.now` run
+// on it, so a test advances to the moment it needs.
+installClock();
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -54,13 +57,11 @@ describe("viewer shell: per-load nonce", () => {
     const first = await frame();
     const n1 = nonceOf(first);
     expect(n1).toBeDefined();
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     loaded(first);
     // No hello: the slow notice offers Reload.
     await act(() => vi.advanceTimersByTimeAsync(8_000));
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
     await act(() => vi.advanceTimersByTimeAsync(0));
-    vi.useRealTimers();
     const second = await waitFor(() => {
       const f = document.querySelector("iframe");
       if (!f || f === first || !f.src) throw new Error("not reloaded");
@@ -108,7 +109,7 @@ describe("viewer shell: per-load nonce", () => {
     const f = await frame();
     loaded(f);
     loaded(f); // the artifact navigated its own frame
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(f);
   });
 
@@ -119,18 +120,16 @@ describe("viewer shell: per-load nonce", () => {
     loaded(first);
     // The hook refetches before expiry: the shell's own URL is fresh again
     // while the one the frame holds (frozen at its first load) is long dead.
-    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 700_000);
     act(() => {
       window.dispatchEvent(new Event("focus"));
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await settle(100);
     loaded(first); // the frame asks for its expired URL on its own
-    vi.useRealTimers();
     const second = await reloaded(first);
     expect(nonceOf(second)).not.toBe(n1);
     loaded(second); // Reload's own load is expected: no further reload
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(second);
     expect(hello(second, nonceOf(second))).toContain("welcome");
   });
@@ -174,7 +173,7 @@ describe("viewer shell: per-load nonce", () => {
         }),
       );
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(first);
   });
 
@@ -198,13 +197,11 @@ describe("viewer shell: per-load nonce", () => {
     // a reload in flight, is what has to stop the next announce.
     loaded(second);
     announce(second);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(second);
     // Past the bound it heals again (a tab restored twice in one session).
-    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + ANNOUNCE_HEAL_MS + 1_000);
     announce(second);
-    vi.useRealTimers();
     const third = await reloaded(second);
     loaded(third);
     expect(hello(third, nonceOf(third))).toContain("welcome");
@@ -214,7 +211,6 @@ describe("viewer shell: per-load nonce", () => {
     mount(viewerPath(OWNED));
     const first = await frame();
     loaded(first);
-    vi.useFakeTimers({ toFake: ["Date"] });
     const send = () =>
       window.dispatchEvent(
         new MessageEvent("message", {
@@ -228,12 +224,11 @@ describe("viewer shell: per-load nonce", () => {
       send();
       send();
     });
-    vi.useRealTimers();
     const second = await reloaded(first);
     loaded(second);
     // The burst was one heal: the replacement frame is the one we then hold,
     // and the shell did not start a second reload for it.
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(second);
   });
 
@@ -242,12 +237,10 @@ describe("viewer shell: per-load nonce", () => {
     const first = await frame();
     loaded(first);
     loaded(first); // first renavigation, URL still fresh: bridge disposed, no reload
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(document.querySelector("iframe")).toBe(first);
-    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 700_000);
     loaded(first);
-    vi.useRealTimers();
     await reloaded(first);
   });
 
@@ -259,15 +252,13 @@ describe("viewer shell: per-load nonce", () => {
     // The URL ages out while the tab is away, and the restore gives the shell
     // neither a load it didn't start nor the expiry page's announce (a frame
     // restored from the back/forward cache runs no script again).
-    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 700_000);
     act(() => {
       window.dispatchEvent(
         new PageTransitionEvent("pageshow", { persisted: true }),
       );
     });
-    await new Promise((r) => setTimeout(r, 100));
-    vi.useRealTimers();
+    await settle(100);
     const second = await reloaded(first);
     expect(nonceOf(second)).not.toBe(n1);
     loaded(second);
@@ -280,14 +271,12 @@ describe("viewer shell: per-load nonce", () => {
     loaded(first);
     expect(hello(first, nonceOf(first))).toContain("welcome");
     // Its document is alive: an old URL only matters for the next navigation.
-    vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 700_000);
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
       window.dispatchEvent(new Event("focus"));
     });
-    await new Promise((r) => setTimeout(r, 100));
-    vi.useRealTimers();
+    await settle(100);
     expect(document.querySelector("iframe")).toBe(first);
   });
 
@@ -314,17 +303,11 @@ describe("viewer shell: per-load nonce", () => {
         }),
       );
     });
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(document.querySelector("iframe")).toBe(first);
-    // The retry (MINT_RETRY_MS later) mints again and replaces the frame.
-    const second = await waitFor(
-      () => {
-        const f = document.querySelector("iframe");
-        if (!f || f === first || !f.src) throw new Error("not reloaded");
-        return f;
-      },
-      { timeout: MINT_RETRY_MS + 2_000 },
-    );
+    // The retry is MINT_RETRY_MS later: advance to it (not a wait).
+    await settle(MINT_RETRY_MS + 100);
+    const second = await reloaded(first);
     loaded(second);
     expect(hello(second, nonceOf(second))).toContain("welcome");
   });
