@@ -344,6 +344,30 @@ describe("POST AUTH.codeVerify", () => {
     expect(setCookieLine(r, CODE_COOKIE)).toContain("Max-Age=0");
   });
 
+  it("an invited member outside the domains on a Google install signs in by code: a member, not read-only", async () => {
+    const member = uniq("m", "x.com");
+    await seedUser(member, "member");
+    const s = await start(direct(), member);
+    const r = await verify(s.e, s.code(), s.cookie);
+    expect(r.status).toBe(200);
+    expect(CodeVerifiedSchema.parse(await r.json())).toMatchObject({
+      readOnly: false,
+      user: { email: member, role: "member" },
+    });
+    expect(setCookieLine(r, SESSION)).toContain("Max-Age=604800");
+    expect(
+      await readSession(s.e, cookieOf(r, SESSION)?.split("=")[1]),
+    ).toMatchObject({ p: "code" });
+  });
+
+  it("a Google-linked member outside the domains gets no code", async () => {
+    const member = uniq("ml", "x.com");
+    await seedUser(member, "member", { googleSub: `L-${member}` });
+    const m = mailer();
+    await request(withMail(direct(), m), member);
+    expect(m.sent).toHaveLength(0);
+  });
+
   it("#803: a login sent with another user's valid cookie records no credential", async () => {
     const alice = await login(uniq("alice"));
     const guest = uniq("g", "x.com");
