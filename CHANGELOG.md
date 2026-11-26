@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.255.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.254.0...v0.255.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session gets bus messages through its watcher (agy S3) ([#3171](https://github.com/open-artifacts-ai/open-artifacts/issues/3171)) ([120f3b8](https://github.com/open-artifacts-ai/open-artifacts/commit/120f3b89f67c94f0c41ca544ffecf5b34044cb2d))
+
 ## [0.254.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.1...v0.254.0) (2026-11-26)
 
 

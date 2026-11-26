@@ -27,18 +27,23 @@ export type Mail = {
    * no controls). Data for a harness's own slot, never part of `body`.
    */
   meta?: NoticeMeta;
+  /** When the hub drops this message if still unacked (ms epoch, BUS_CAPS.mailExpiry). */
+  expiresAt?: number;
 };
 type Detail = RefuseFrame["detail"];
 /**
  * `cause` means the harness turned it down; `closed` alone means the session
  * is gone. `queued`: the session cannot take it now (a Codex thread under
  * `codex exec`, or no `codex` binary), so the hub's receipt stays pending.
+ * `expired`: the transport dropped it past its expiry; nothing is sent to the
+ * hub (no ack, no refuse), so the hub's own expiry settles the receipt as
+ * Expired.
  */
 export type DeliverOutcome =
   | { ok: true }
   | {
       ok: false;
-      reason: "closed" | "timeout" | "queued";
+      reason: "closed" | "timeout" | "queued" | "expired";
       cause?: Detail;
       /** #2110: on a "closed" outcome, why: a liveness miss (the session may be back) or a delivery refusal. */
       closedBy?: "liveness" | "delivery";
@@ -199,6 +204,10 @@ export function createDeliver(ctx: {
       frame.body === undefined
         ? oversizedText(frame.notice?.size ?? 0, msg_id)
         : stripTerminalControls(frame.body);
+    const parsedExpiry =
+      frame.expires_at === undefined
+        ? Number.NaN
+        : Date.parse(frame.expires_at);
     const done = fn(agent, {
       msg_id,
       from_name: stripTerminalControls(frame.from_name),
@@ -209,6 +218,7 @@ export function createDeliver(ctx: {
         ? { notice: { size: frame.notice?.size ?? 0, msg_id } }
         : {}),
       ...(frame.meta === undefined ? {} : { meta: frame.meta }),
+      ...(Number.isNaN(parsedExpiry) ? {} : { expiresAt: parsedExpiry }),
     }).catch((e: unknown): DeliverOutcome => {
       ctx.log?.(
         `transport threw: ${e instanceof Error ? e.message : String(e)}`,
@@ -223,6 +233,8 @@ export function createDeliver(ctx: {
         if (outcome.ok) {
           seen.add(msg_id);
           ack(msg_id);
+        } else if (outcome.reason === "expired") {
+          ctx.log?.(`delivery of ${msg_id} expired`);
         } else if (outcome.cause) {
           refuse(msg_id, outcome.cause);
         } else if (outcome.reason === "closed") {

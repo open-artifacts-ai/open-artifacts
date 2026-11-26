@@ -645,6 +645,11 @@ export const AddCommentInputSchema = z.strictObject({
    * to you in this thread. Otherwise it is ignored; nothing is refused.
    */
   requestCommentId: key.optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 
@@ -654,6 +659,11 @@ export const WithdrawAskInputSchema = z.strictObject({
   threadId: IdSchema,
   commentId: key,
   replacedBy: ReplacesRefSchema.optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type WithdrawAskInput = z.infer<typeof WithdrawAskInputSchema>;
 
@@ -677,5 +687,10 @@ export const ResolveCommentInputSchema = z.strictObject({
   id: IdSchema,
   threadId: IdSchema,
   resolved: z.boolean().optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type ResolveCommentInput = z.infer<typeof ResolveCommentInputSchema>;
