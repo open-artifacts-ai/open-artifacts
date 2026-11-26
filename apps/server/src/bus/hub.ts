@@ -6786,10 +6786,10 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
-   * #3132: an unfollow by `agent`. The role's part of the page ends at once,
-   * before anything awaits (a role it holds now cannot move away first), and
-   * the D1 delete runs in the same queue as a role move's re-key, so a move
-   * that starts meanwhile never hands the page on.
+   * #3132: an unfollow by `agent`, queued on receipt in the same queue as a
+   * role move's re-key, so a move that starts meanwhile runs after it. Once
+   * the D1 delete succeeds, the part of the page the roles it held on receipt
+   * carry ends too, so no later move hands the page on.
    */
   #unfollowNow(
     userId: string,
@@ -6797,11 +6797,10 @@ export class BusHub extends DurableObject<Env> {
     agent: AgentRow,
     ref: string,
   ): Promise<{ removed: boolean } | { error: unknown }> {
-    // The roles it holds as the frame arrives: the unfollow ends their part
-    // of the page now, and again once the delete is done, after a re-key
-    // queued before it may have added that part (a page it also followed).
+    // The roles it holds as the frame arrives: their part of the page ends
+    // once the delete is done, after any re-key queued before it (which may
+    // add that part), and before any later move. A failed delete keeps it.
     const roleIds = this.#rolesOf(agent);
-    this.#endRolePart(roleIds, ref);
     const gate = this.#followGate;
     // Never rejects: a refusal (not_found) comes back as `error`, so a queue
     // link waiting for its answer leaves nothing unhandled.
