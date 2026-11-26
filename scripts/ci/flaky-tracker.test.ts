@@ -2127,3 +2127,112 @@ describe("a run with more job logs than one reconcile may read", () => {
     expect(logs()).toBe(0);
   });
 });
+
+describe("a run whose logs fail part way, or whose jobs span pages", () => {
+  const logOf = (n: number) =>
+    [
+      "2026-11-25T16:10:09.0000000Z  RUN  v4.1.12 /home/runner/work/open-artifacts/open-artifacts/apps/server",
+      `2026-11-25T16:27:12.0000000Z  FAIL  test/big.test.ts > case ${n}`,
+    ].join("\n");
+  const job = (id: number, conclusion = "failure") => ({
+    id,
+    name: `test-shard (${id})`,
+    conclusion,
+    completed_at: "2026-11-26T10:00:00Z",
+  });
+  /** The jobs API as GitHub pages it: 100 a page, with the full total_count. */
+  const page = (jobs: ReturnType<typeof job>[], path: string) => {
+    const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+    const per = Number(q.get("per_page") ?? 30);
+    const p = Number(q.get("page") ?? 1);
+    return JSON.stringify({
+      total_count: jobs.length,
+      jobs: jobs.slice((p - 1) * per, p * per),
+    });
+  };
+
+  it("a 503 on the 25th log keeps the 24 before it, lets the next run go, and resumes at the 25th", () => {
+    // Run 900 has 30 failed jobs; the 25th (job 124) answers 503 for now.
+    // Run 901, behind it, is healthy.
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900), rerun(901)] });
+    const jobs = Array.from({ length: 30 }, (_, i) => job(100 + i));
+    let broken = true;
+    const reads = new Map<number, number>();
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path))
+        return { code: 0, stdout: page(jobs, path), stderr: "" };
+      const m = /\/actions\/jobs\/(\d+)\/logs$/.exec(path);
+      if (m) logs++;
+      if (m && Number(m[1]) >= 100) {
+        const id = Number(m[1]);
+        reads.set(id, (reads.get(id) ?? 0) + 1);
+        if (broken && id === 124)
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "HTTP 503: Service Unavailable",
+          };
+        return { code: 0, stdout: logOf(id - 100), stderr: "" };
+      }
+      return g.exec(cmd, args);
+    };
+    const completion = (e: number) => {
+      g.clock.now = NOW + e * HOUR;
+      logs = 0;
+      const r = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      return r;
+    };
+    const marks = () => g.comments.flatMap((c) => parseMarks(c.body).passed);
+    completion(0);
+    // The 24 logs before the 503 are kept.
+    const saved = g.comments
+      .map((c) => parseMarks(c.body).progress)
+      .filter(Boolean)
+      .at(-1);
+    expect(saved?.key).toBe("900/2");
+    expect(saved?.p.jobs.sort()).toEqual(jobs.slice(0, 24).map((j) => j.id));
+    // The next completion retries the 25th, then the healthy run gets its turn.
+    completion(1);
+    expect(marks()).toContain("901/2");
+    // Once the log answers, run 900 finishes: each log read once, but the 25th.
+    broken = false;
+    for (let e = 2; e < 6 && !marks().includes("900/2"); e++) completion(e);
+    expect(marks()).toContain("900/2");
+    for (const j of jobs.slice(0, 24)) expect(reads.get(j.id)).toBe(1);
+    const sightings = g.comments.flatMap((c) =>
+      parseStore(c.body).filter((x) => x.run === 900),
+    );
+    expect(sightings).toHaveLength(30);
+  });
+
+  it("reads a failed job on the second page of the jobs listing before it marks the run", () => {
+    // 101 jobs: the first 100 passed, the 101st failed.
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
+    const jobs = [
+      ...Array.from({ length: 100 }, (_, i) => job(100 + i, "success")),
+      job(999),
+    ];
+    const pages: string[] = [];
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path)) {
+        pages.push(new URLSearchParams(path.split("?")[1]).get("page") ?? "");
+        return { code: 0, stdout: page(jobs, path), stderr: "" };
+      }
+      if (path.endsWith("/actions/jobs/999/logs"))
+        return { code: 0, stdout: logOf(1), stderr: "" };
+      return g.exec(cmd, args);
+    };
+    const r = reconcile({ exec, repo: REPO, nowMs: NOW });
+    expect(pages).toEqual(["1", "2"]);
+    expect(r.map((x) => x.result)).toEqual(["tracked"]);
+    const seen = g.comments.flatMap((c) => parseStore(c.body));
+    expect(seen).toHaveLength(1);
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
+      "900/2",
+    ]);
+  });
+});

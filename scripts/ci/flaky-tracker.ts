@@ -800,28 +800,37 @@ export function collect(
   for (const x of resume?.found ?? []) found.set(x.f.id, x);
   const read = new Set(resume?.jobs ?? []);
   const notes: string[] = [];
-  for (let a = 1; a < run.attempt; a++) {
+  const progress = (): Progress => ({
+    jobs: [...read],
+    found: [...found.values()],
+  });
+  try {
+    for (let a = 1; a < run.attempt; a++)
+      if (readAttempt(a))
+        return { found: [...found.values()], notes, partial: progress() };
+  } catch (e) {
+    // A failure part way (a 503 on one log, say) keeps what was read before
+    // it, so a retry resumes at the read that failed.
+    throw new PartialError((e as Error).message, progress());
+  }
+  return { found: [...found.values()], notes };
+
+  /** Reads one earlier attempt; true when canRead stopped it. */
+  function readAttempt(a: number): boolean {
     const att = JSON.parse(
       gh(exec, ["api", `${base}/attempts/${a}`]),
     ) as Attempt;
-    if (!FAILED.has(att.conclusion ?? "")) continue;
+    if (!FAILED.has(att.conclusion ?? "")) return false;
     if (att.head_sha !== run.sha) {
       notes.push(`attempt ${a}: another commit (${att.head_sha}), skipped`);
-      continue;
+      return false;
     }
-    const jobs = (
-      JSON.parse(
-        gh(exec, ["api", `${base}/attempts/${a}/jobs?per_page=100`]),
-      ) as { jobs: Job[] }
-    ).jobs.filter((j) => FAILED.has(j.conclusion ?? ""));
+    const jobs = attemptJobs(exec, `${base}/attempts/${a}/jobs`).filter((j) =>
+      FAILED.has(j.conclusion ?? ""),
+    );
     for (const j of jobs) {
       if (read.has(j.id)) continue;
-      if (!canRead())
-        return {
-          found: [...found.values()],
-          notes,
-          partial: { jobs: [...read], found: [...found.values()] },
-        };
+      if (!canRead()) return true;
       const log = jobLog(exec, run.repo, j.id);
       read.add(j.id);
       const fs = [...parseVitest(log), ...parsePlaywright(log)];
@@ -835,8 +844,40 @@ export function collect(
         if (!found.has(f.id))
           found.set(f.id, { f, sighting: { at, run: run.runId, attempt: a } });
     }
+    return false;
   }
-  return { found: [...found.values()], notes };
+}
+
+/**
+ * A collect() that failed part way: the error, and what it read before it,
+ * which the reconcile saves so a retry resumes at the read that failed.
+ */
+export class PartialError extends Error {
+  readonly progress: Progress;
+  constructor(message: string, progress: Progress) {
+    super(message);
+    this.progress = progress;
+  }
+}
+
+/**
+ * Every job of an attempt, through every page of the listing (100 a page): a
+ * run is handled only once every page is read. Each page is a call, so it
+ * counts against the reconcile's budget.
+ */
+function attemptJobs(exec: Exec, path: string): Job[] {
+  const out: Job[] = [];
+  for (let page = 1; ; page++) {
+    const r = JSON.parse(
+      gh(exec, ["api", `${path}?per_page=${PER_PAGE}&page=${page}`]),
+    ) as { total_count?: number; jobs: Job[] };
+    out.push(...r.jobs);
+    if (
+      r.jobs.length < PER_PAGE ||
+      (r.total_count !== undefined && out.length >= r.total_count)
+    )
+      return out;
+  }
 }
 
 export function ownerOf(exec: Exec, run: RunInfo, f: Failure): Owner {
@@ -1627,6 +1668,22 @@ export function reconcile(o: {
       delete failedAt[k];
     } catch (e) {
       const why = (e as Error).message;
+      // What it read before it failed is kept (outside the budget), so the
+      // retry resumes at the read that failed.
+      if (
+        e instanceof PartialError &&
+        e.progress.jobs.length > (progress.get(k)?.jobs.length ?? 0)
+      ) {
+        const { store } = openStore(
+          o.exec,
+          repo,
+          nowMs,
+          nowMs - WINDOW_DAYS * DAY_MS,
+          [],
+        );
+        comment(o.exec, repo, store, progressComment(k, e.progress));
+        progress.set(k, e.progress);
+      }
       // Stopped by the log budget: not a failure, it just waits.
       if (outOfLogs) {
         out.push({ ...base, result: "left" });
