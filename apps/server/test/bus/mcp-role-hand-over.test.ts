@@ -161,14 +161,10 @@ describe("the holder hands its role over (#3132)", () => {
 
     // The old session closes; Leo answers its ask in the web app.
     s.d.send({ v: 1, id: "down", type: "agent_down", agent_ref: old!.ref });
-    const t = (
-      made.structuredContent as {
-        thread: { id: string; comments: { id: string }[] };
-      }
-    ).thread;
+    const t = made.structuredContent as { threadId: string; commentId: string };
     const res = await api(
       app,
-      R.commentAnswer(id, t.id, t.comments[0]?.id ?? ""),
+      R.commentAnswer(id, t.threadId, t.commentId),
       s.m.cookie,
       { method: "POST", body: { optionId: "roll" } },
     );
