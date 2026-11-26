@@ -5,7 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
-import { skillDir } from "../src/steps/skill.ts";
+import {
+  codexSkillFile,
+  codexSkillState,
+  skillDir,
+} from "../src/steps/skill.ts";
 import { fakeCtx } from "./fake.ts";
 
 const ORIGIN = "https://oa.example";
@@ -182,5 +186,180 @@ describe("oa-bus skill", () => {
         ),
       ),
     ).toBe(false);
+  });
+
+  it("--check picks the requested instance's Codex skill file when two instances are saved", async () => {
+    const ALPHA = "https://alpha.example";
+    const BETA = "https://beta.example";
+    const serve = (name: string, version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: ${name}\nmetadata:\n  version: "${version}"\n---\n\n# skill ${version}\n`,
+            { status: 200, headers: { "content-type": "text/markdown" } },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+    const codex080 = () =>
+      vi.fn(async () => ({
+        code: 0,
+        stdout: "codex-cli 0.80.0\n",
+        stderr: "",
+      }));
+
+    const first = world(["codex"]);
+    first.exec = codex080();
+    first.fetch = serve("open-artifacts-alpha", "1.0.0");
+    expect(await main(["skill", "--instance", ALPHA], () => first)).toBe(0);
+
+    const second = world(["codex"]);
+    Object.assign(second, {
+      userHome: first.userHome,
+      home: first.home,
+      exec: codex080(),
+      fetch: serve("open-artifacts-beta", "2.0.0"),
+    });
+    expect(await main(["skill", "--instance", BETA], () => second)).toBe(0);
+
+    expect(
+      existsSync(
+        codexSkillFile({ home: first.userHome }, "open-artifacts-alpha"),
+      ),
+    ).toBe(true);
+    expect(
+      existsSync(
+        codexSkillFile({ home: first.userHome }, "open-artifacts-beta"),
+      ),
+    ).toBe(true);
+
+    const check = world(["codex"]);
+    Object.assign(check, {
+      userHome: first.userHome,
+      home: first.home,
+      exec: codex080(),
+      fetch: serve("open-artifacts-beta", "2.0.0"),
+    });
+    expect(
+      await main(["skill", "--check", "--instance", BETA], () => check),
+    ).toBe(0);
+    expect(check.err()).toEqual([]);
+    const out = check.out().join("\n");
+    expect(out).toContain(
+      "codex: skill saved at ~/.codex/skills/open-artifacts-beta/SKILL.md",
+    );
+    expect(out).not.toContain("open-artifacts-alpha");
+  });
+
+  it("--refresh does not create a Codex skill for an instance when only another instance has one", async () => {
+    const ALPHA = "https://alpha.example";
+    const BETA = "https://beta.example";
+    const serve = (name: string, version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: ${name}\nmetadata:\n  version: "${version}"\n---\n\n# skill ${version}\n`,
+            { status: 200, headers: { "content-type": "text/markdown" } },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+    const codex080 = () =>
+      vi.fn(async () => ({
+        code: 0,
+        stdout: "codex-cli 0.80.0\n",
+        stderr: "",
+      }));
+
+    // Beta is saved on claude only, before ~/.codex exists.
+    const beta = world(["claude"]);
+    beta.fetch = serve("open-artifacts-beta", "1.0.0");
+    expect(await main(["skill", "--instance", BETA], () => beta)).toBe(0);
+
+    // Alpha is saved on both claude and codex.
+    const alpha = world(["claude", "codex"]);
+    Object.assign(alpha, {
+      userHome: beta.userHome,
+      home: beta.home,
+      exec: codex080(),
+      fetch: serve("open-artifacts-alpha", "1.0.0"),
+    });
+    expect(await main(["skill", "--instance", ALPHA], () => alpha)).toBe(0);
+    expect(
+      existsSync(
+        codexSkillFile({ home: beta.userHome }, "open-artifacts-beta"),
+      ),
+    ).toBe(false);
+
+    // Refreshing beta with codex present must update claude and leave codex without beta.
+    const r = world(["claude", "codex"]);
+    Object.assign(r, {
+      userHome: beta.userHome,
+      home: beta.home,
+      exec: codex080(),
+      fetch: serve("open-artifacts-beta", "2.0.0"),
+    });
+    expect(
+      await main(["skill", "--refresh", "--instance", BETA], () => r),
+    ).toBe(0);
+    expect(
+      readFileSync(
+        join(
+          skillDir({ home: r.userHome }, "claude"),
+          "open-artifacts-beta",
+          "SKILL.md",
+        ),
+        "utf8",
+      ),
+    ).toContain("# skill 2.0.0");
+    expect(
+      existsSync(codexSkillFile({ home: r.userHome }, "open-artifacts-beta")),
+    ).toBe(false);
+    expect(existsSync(skillDir({ home: r.userHome }, "codex"))).toBe(false);
+  });
+
+  it("saving a second instance as a Codex skill file keeps another instance's AGENTS.md block", async () => {
+    const ALPHA = "https://alpha.example";
+    const BETA = "https://beta.example";
+    const serve = (name: string, version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: ${name}\nmetadata:\n  version: "${version}"\n---\n\n# skill ${version}\n`,
+            { status: 200, headers: { "content-type": "text/markdown" } },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+
+    // Alpha saved with unreadable/old Codex version -> written as AGENTS.md block.
+    const alpha = world(["codex"]);
+    alpha.fetch = serve("open-artifacts-alpha", "1.0.0");
+    expect(await main(["skill", "--instance", ALPHA], () => alpha)).toBe(0);
+    const agentsPath = skillDir({ home: alpha.userHome }, "codex");
+    expect(readFileSync(agentsPath, "utf8")).toContain(
+      "name: open-artifacts-alpha",
+    );
+
+    // Beta saved with Codex 0.80.0 -> written as a skill file; alpha's block stays.
+    const beta = world(["codex"]);
+    Object.assign(beta, {
+      userHome: alpha.userHome,
+      home: alpha.home,
+      exec: vi.fn(async () => ({
+        code: 0,
+        stdout: "codex-cli 0.80.0\n",
+        stderr: "",
+      })),
+      fetch: serve("open-artifacts-beta", "2.0.0"),
+    });
+    expect(await main(["skill", "--instance", BETA], () => beta)).toBe(0);
+    expect(
+      existsSync(
+        codexSkillFile({ home: alpha.userHome }, "open-artifacts-beta"),
+      ),
+    ).toBe(true);
+    expect(readFileSync(agentsPath, "utf8")).toContain(
+      "name: open-artifacts-alpha",
+    );
+    // Two instances, one copy each: doctor must not call it a double load.
+    expect(codexSkillState({ home: alpha.userHome }).separate).toBe(true);
   });
 });
