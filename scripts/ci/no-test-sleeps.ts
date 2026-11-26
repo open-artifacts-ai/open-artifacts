@@ -300,7 +300,7 @@ const JS_RULES: ((code: string) => Found[])[] = [
     return out;
   },
   // A busy wait on the clock: while (Date.now() < end) with an empty body or a
-  // no-op yield (await Promise.resolve(), null, 0); awaiting anything else is a real wait.
+  // no-op yield (await Promise.resolve() with no argument or a literal, null, 0); awaiting anything else is a real wait.
   (code) => {
     const out: Found[] = [];
     for (const c of calls(code, /\bwhile\s*\(/g)) {
@@ -314,7 +314,7 @@ const JS_RULES: ((code: string) => Found[])[] = [
         /[<>]/.test(c.body) &&
         (body === "" ||
           body === ";" ||
-          /^await\s+(?:Promise\s*\.\s*resolve\s*\([^)]*\)|null|undefined|void\s+0|0)\s*;?$/.test(
+          /^await\s+(?:Promise\s*\.\s*resolve\s*\((?:\s*|\s*(?:-?\d[\d_.]*|"[^"]*"|'[^']*'|`[^`$]*`|null|undefined|true|false|void\s+0)\s*)\)|null|undefined|void\s+0|0)\s*;?$/.test(
             body,
           ))
       )

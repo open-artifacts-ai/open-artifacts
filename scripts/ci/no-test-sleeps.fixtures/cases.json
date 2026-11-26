@@ -688,5 +688,53 @@
     "file": "a.test.ts",
     "text": "while (performance.now() < end) {\n  await Promise.resolve();\n}",
     "why": ["sleep"]
+  },
+  {
+    "name": "await Promise.resolve(signal) is a real wait (the reviewer's repro)",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(signal);",
+    "why": []
+  },
+  {
+    "name": "await Promise.resolve of a call",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(next());",
+    "why": []
+  },
+  {
+    "name": "await Promise.resolve of a member",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(state.pending);",
+    "why": []
+  },
+  {
+    "name": "await Promise.resolve with a number",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(1);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "await Promise.resolve with a string",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve('x');",
+    "why": ["sleep"]
+  },
+  {
+    "name": "await Promise.resolve with true",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(true);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "await Promise.resolve with null",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(null);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "await Promise.resolve with void 0",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await Promise.resolve(void 0);",
+    "why": ["sleep"]
   }
 ]
