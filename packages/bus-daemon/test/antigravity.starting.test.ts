@@ -694,16 +694,16 @@ describe("launch and join always target the same home (agy S2b)", () => {
       ...(def.h.daemon.agents.byRef(S0)?.live ? [DEFAULT] : []),
       ...(alt.h.daemon.agents.byRef(S0)?.live ? [ALT] : []),
     ];
-    const join = joinHomeOf(p.command(), AGY_ENV);
-    return { listing, join, joined: join === DEFAULT ? def : alt };
+    const joinsAt = joinHomeOf(p.command(), AGY_ENV);
+    return { listing, joinsAt, joined: joinsAt === DEFAULT ? def : alt };
   };
 
   for (const mac of [true, false]) {
     const os_ = mac ? "macOS (env unreadable)" : "Linux (env readable)";
 
     it(`${os_}: a hook pinned to the default home lists and joins there, whatever the agy's OA_BUS_HOME`, async () => {
-      const { listing, join, joined } = await run(DEFAULT, mac);
-      expect(join).toBe(DEFAULT);
+      const { listing, joinsAt, joined } = await run(DEFAULT, mac);
+      expect(joinsAt).toBe(DEFAULT);
       expect(listing).toEqual([DEFAULT]);
       // The join takes the starting address over: the held mail moves with it.
       joined.h.toDaemon(deliver(S0, "mmmmmmmmmmmmmmm2"));
@@ -714,16 +714,16 @@ describe("launch and join always target the same home (agy S2b)", () => {
     });
 
     it(`${os_}: a hook pinned to a moved home lists and joins there`, async () => {
-      const { listing, join, joined } = await run(ALT, mac);
-      expect(join).toBe(ALT);
+      const { listing, joinsAt, joined } = await run(ALT, mac);
+      expect(joinsAt).toBe(ALT);
       expect(listing).toEqual([ALT]);
       await joined.hook();
       expect(await upFor(joined.h, A)).toMatchObject({ replaces: S0 });
     });
 
     it(`${os_}: a legacy unpinned hook sends the join to the agy's ALT home; no home advertises a starting address it would miss`, async () => {
-      const { listing, join } = await run(undefined, mac);
-      expect(join).toBe(ALT);
+      const { listing, joinsAt } = await run(undefined, mac);
+      expect(joinsAt).toBe(ALT);
       // ALT is not the plugin's route; DEFAULT is, but this agy's join goes
       // elsewhere (Linux reads that) or may (macOS can't tell): neither lists.
       expect(listing).toEqual([]);
