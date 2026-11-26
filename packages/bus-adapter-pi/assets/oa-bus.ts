@@ -570,9 +570,21 @@ const isFallbackName = (name: string, kind: string): boolean => {
   );
 };
 
+/** @oa/bus-ipc AWAY_RECENT_MS: away agents more recent than this stay listed by default (#3166). */
+const AWAY_RECENT_MS = 60 * 60_000;
+
+const isRecentAway = (since: unknown, now: number): boolean => {
+  const t = typeof since === "string" ? Date.parse(since) : Number.NaN;
+  return !Number.isNaN(t) && now - t < AWAY_RECENT_MS;
+};
+
 /** @oa/bus-ipc collapsedAwayLine: the count of away fallback-named rows. */
 const collapsedAwayLine = (n: number, listed: boolean): string =>
   `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
+
+/** @oa/bus-ipc hiddenAwayLine: the count of away rows left out by default (#3166). */
+const hiddenAwayLine = (n: number): string =>
+  `${n} away ${n === 1 ? "agent" : "agents"} not listed (still reachable by name; all: true lists them)`;
 
 /** @oa/bus-ipc rosterText: the list_agents text from the hub's roster rows. */
 function rosterText(
@@ -586,14 +598,18 @@ function rosterText(
     since?: unknown;
   })[],
   now = Date.now(),
+  all = false,
 ): string {
   if (!agents.length) return "No agents in your namespace and linked ones.";
   const lines: string[] = [];
-  let collapsed = 0;
+  let hidden = 0;
   for (const a of agents) {
     const away = a.state === "away";
-    if (away && isFallbackName(a.name, a.kind)) {
-      collapsed++;
+    if (
+      away &&
+      (isFallbackName(a.name, a.kind) || (!all && !isRecentAway(a.since, now)))
+    ) {
+      hidden++;
       continue;
     }
     lines.push(
@@ -607,7 +623,12 @@ function rosterText(
       ),
     );
   }
-  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  if (hidden > 0)
+    lines.push(
+      all
+        ? collapsedAwayLine(hidden, lines.length > 0)
+        : hiddenAwayLine(hidden),
+    );
   return lines.join("\n");
 }
 
@@ -691,7 +712,16 @@ const TOOLS = [
     label: "Open Artifacts bus: list agents",
     description:
       "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
-    parameters: none,
+    parameters: {
+      type: "object",
+      properties: {
+        all: {
+          type: "boolean",
+          description: "true lists away agents too",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "oabus_send_message",
@@ -1653,6 +1683,7 @@ export default function oaBus(pi: Pi): void {
           namespace: String(a.namespace),
         })),
         now,
+        args.all === true,
       );
     }
     if (name === "oabus_send_message") {

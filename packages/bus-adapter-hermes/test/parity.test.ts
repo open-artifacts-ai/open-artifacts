@@ -57,7 +57,7 @@ const ts: Record<string, (...a: any[]) => unknown> = {
   statusLabelTooLong,
   statusSaysText: (row, now) => statusSaysText(row, now) ?? null,
   rosterLine: (a, now) => rosterLine({ ...a, away: none(a.away) }, now),
-  rosterText: (agents, now) => rosterText(agents, now),
+  rosterText: (agents, now, all) => rosterText(agents, now, all),
   selfText,
   wrap: (from, text, source) =>
     (
@@ -272,15 +272,22 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
     same(cases);
   });
 
-  it("#1860: rosterText collapses away fallback names like the TS", () => {
-    const since = "2026-11-05T10:00:00.000Z";
-    const mk = (name: string, kind: string, state: string) => ({
+  it("#1860, #3166: rosterText matches the TS for default and all: true", () => {
+    const old = "2026-11-05T10:00:00.000Z";
+    const recent = "2026-11-05T11:30:00.000Z";
+    const exactHour = "2026-11-05T11:00:00.000Z";
+    const mk = (
+      name: string,
+      kind: string,
+      state: string,
+      since: string | undefined = old,
+    ) => ({
       name,
       kind,
       namespace: "ns",
       live: state === "live",
       state,
-      ...(state === "away" ? { since } : {}),
+      ...(state === "away" && since !== undefined ? { since } : {}),
     });
     const sets = [
       [],
@@ -292,13 +299,20 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
       [mk("claude-9", "claude-code", "live"), mk("pi-7", "pi", "queued")],
       [
         mk("a", "hermes", "live"),
+        mk("recent", "pi", "away", recent),
+        mk("at-hour", "pi", "away", exactHour),
+        mk("no-since", "pi", "away", undefined),
         mk("claude-12", "claude-code", "away"),
         mk("omp-3", "omp", "away"),
         mk("agent", "pi", "away"),
         mk("kept", "pi", "away"),
       ],
     ];
-    same(sets.map((s): Case => ["rosterText", [s, NOW]]));
+    same([
+      ...sets.map((s): Case => ["rosterText", [s, NOW]]),
+      ...sets.map((s): Case => ["rosterText", [s, NOW, false]]),
+      ...sets.map((s): Case => ["rosterText", [s, NOW, true]]),
+    ]);
   });
 
   it("moved names and linked namespaces", () => {

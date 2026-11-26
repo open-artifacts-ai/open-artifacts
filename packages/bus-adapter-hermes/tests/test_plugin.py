@@ -196,6 +196,25 @@ class Tools(unittest.TestCase):
         ctx, *_ = plugin({"list": {"type": "roster", "agents": [{**AGENT, "name": "bob", "kind": "pi"}]}})
         self.assertEqual(call(ctx, "oabus_list_agents", session_id="root-1"), "- bob (pi, ns)")
 
+    def test_list_agents_hides_old_away_by_default_and_lists_with_all(self):
+        old_away = {
+            **AGENT,
+            "name": "gamma",
+            "kind": "pi",
+            "live": False,
+            "state": "away",
+            "since": "2020-01-01T00:00:00.000Z",
+        }
+        ctx, *_ = plugin({"list": {"type": "roster", "agents": [{**AGENT, "name": "bob", "kind": "pi"}, old_away]}})
+        self.assertEqual(
+            call(ctx, "oabus_list_agents", {}, session_id="root-1"),
+            "- bob (pi, ns)\n1 away agent not listed (still reachable by name; all: true lists them)",
+        )
+        self.assertEqual(
+            call(ctx, "oabus_list_agents", {"all": True}, session_id="root-1"),
+            "- bob (pi, ns)\n- gamma (pi, ns) (away since 2020-01-01 00:00 UTC)",
+        )
+
     def test_send_needs_to_and_text(self):
         ctx, *_ = plugin()
         out = json.loads(call(ctx, "oabus_send_message", {"to": "bob"}, session_id="root-1"))

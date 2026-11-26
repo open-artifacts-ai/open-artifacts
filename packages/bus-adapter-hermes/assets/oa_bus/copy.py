@@ -489,21 +489,37 @@ def is_fallback_name(name, kind):
     return low == kind or low.startswith(f"{kind}-") or low == "agent" or re.fullmatch(r"claude-\d+", low) is not None
 
 
+AWAY_RECENT_MS = 60 * 60_000
+
+
+def _is_recent_away(since, now_ms):
+    t = parse_time_ms(since) if isinstance(since, str) else None
+    return t is not None and now_ms - t < AWAY_RECENT_MS
+
+
 def collapsed_away_line(n, listed):
     more = " more" if listed else ""
     return f"{n}{more} away {'session' if n == 1 else 'sessions'} with no chosen name (not listed, still reachable by name)"
 
 
-def roster_text(agents, now_ms):
+def hidden_away_line(n):
+    # #3166: the count line for away rows left out of list_agents by default.
+    return f"{n} away {'agent' if n == 1 else 'agents'} not listed (still reachable by name; all: true lists them)"
+
+
+def roster_text(agents, now_ms, show_all=False):
     """bus-ipc rosterText: the list_agents text from the hub's roster rows."""
     if not agents:
         return "No agents in your namespace and linked ones."
     lines = []
-    collapsed = 0
+    hidden = 0
     for a in agents:
         away = a.get("state") == "away"
-        if away and is_fallback_name(a["name"], a["kind"]):
-            collapsed += 1
+        if away and (
+            is_fallback_name(a["name"], a["kind"])
+            or (not show_all and not _is_recent_away(a.get("since"), now_ms))
+        ):
+            hidden += 1
             continue
         lines.append(
             roster_line(
@@ -515,8 +531,10 @@ def roster_text(agents, now_ms):
                 now_ms,
             )
         )
-    if collapsed:
-        lines.append(collapsed_away_line(collapsed, len(lines) > 0))
+    if hidden:
+        lines.append(
+            collapsed_away_line(hidden, len(lines) > 0) if show_all else hidden_away_line(hidden)
+        )
     return "\n".join(lines)
 
 

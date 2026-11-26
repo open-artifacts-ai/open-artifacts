@@ -19,7 +19,16 @@ TOOLS = [
     {
         "name": "oabus_list_agents",
         "description": "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
-        "parameters": _NONE,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "all": {
+                    "type": "boolean",
+                    "description": "true lists away agents too",
+                },
+            },
+            "additionalProperties": False,
+        },
     },
     {
         "name": "oabus_send_message",
@@ -120,7 +129,9 @@ def run(name, args, link):
         r = link.request({"type": "list"})
         if r["type"] != "roster":
             _failed(r)
-        return copy.roster_text(r.get("agents", []), int(time.time() * 1000))
+        return copy.roster_text(
+            r.get("agents", []), int(time.time() * 1000), args.get("all") is True
+        )
     if name == "oabus_send_message":
         to = str(args.get("to") or "")
         body = str(args.get("text") or "")
