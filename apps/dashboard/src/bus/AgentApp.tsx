@@ -40,6 +40,7 @@ export function AppMark({
   if ("png" in m)
     return (
       <img
+        data-app-mark=""
         src={m.png}
         alt={name}
         className={cn(box, "rounded-[3px] border border-border")}
@@ -50,6 +51,7 @@ export function AppMark({
     const url = `url("${agentMarkUrl(m)}")`;
     return (
       <span
+        data-app-mark=""
         role="img"
         aria-label={name}
         className={cn(box, "bg-current")}
@@ -66,7 +68,9 @@ export function AppMark({
       />
     );
   }
-  return <img src={agentMarkUrl(m)} alt={name} className={box} />;
+  return (
+    <img data-app-mark="" src={agentMarkUrl(m)} alt={name} className={box} />
+  );
 }
 
 /** Mark plus app name, as a row shows it. */
