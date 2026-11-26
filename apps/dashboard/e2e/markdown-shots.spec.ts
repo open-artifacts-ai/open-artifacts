@@ -32,11 +32,36 @@ for (const width of [1280])
         .locator("li[data-thread]")
         .filter({ hasText: "alert(1)" });
       await expect(hostile.first()).toBeVisible();
+      // What people and agents wrote never renders an image, script or frame.
       await expect(
         page.locator(
-          "li[data-thread] img, li[data-thread] script, li[data-thread] iframe",
+          [
+            "[data-comment-body] img",
+            "[data-comment-body] script",
+            "[data-comment-body] iframe",
+            "[data-ask-body] img",
+            "[data-ask-body] script",
+            "[data-ask-body] iframe",
+          ].join(", "),
         ),
       ).toHaveCount(0);
+      // Outside the bodies, the only images are app marks (#3105), drawn from
+      // our own data: URLs; a thread never holds a script or frame at all.
+      await expect(
+        page.locator("li[data-thread] script, li[data-thread] iframe"),
+      ).toHaveCount(0);
+      const imgs = page.locator("li[data-thread] img");
+      const marks = page.locator("li[data-thread] img[data-app-mark]");
+      expect(await marks.count()).toBeGreaterThan(0);
+      await expect(imgs).toHaveCount(await marks.count());
+      for (const src of await marks.evaluateAll((es) =>
+        es.map((e) => e.getAttribute("src") ?? ""),
+      ))
+        expect(src).toMatch(/^data:image\//);
+      for (const alt of await marks.evaluateAll((es) =>
+        es.map((e) => e.getAttribute("alt") ?? ""),
+      ))
+        expect(alt).not.toBe("");
       for (const h of await page
         .locator("li[data-thread] a")
         .evaluateAll((as) => as.map((a) => a.getAttribute("href"))))

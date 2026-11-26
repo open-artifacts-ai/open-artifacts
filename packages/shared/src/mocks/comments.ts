@@ -954,6 +954,26 @@ export function createCommentMock({
         ),
         pin(0.4, 0.8, mine(), "Axis label looks wrong.", "resolved"),
       );
+      // #3048: an ask pin as an agent posts it, unanswered and addressed to the
+      // viewer. Its face is the dashed robot's grey; the pin reads amber, not grey.
+      const asking = pin(
+        0.86,
+        0.24,
+        { kind: "agent", name: "Claude Code", linked: false, me: false },
+        "Steps: check the December bar.",
+      );
+      const askComment = asking.comments[0];
+      if (askComment)
+        askComment.ask = {
+          question: "Which bar is Q4?",
+          options: [
+            { id: "q4", label: "Q4" },
+            { id: "ytd", label: "Year to date" },
+          ],
+          to: [mine()],
+          closed: false,
+        };
+      faces.push(asking);
     }
     if (seedMarkdown) {
       const bot: CommentAuthor = {

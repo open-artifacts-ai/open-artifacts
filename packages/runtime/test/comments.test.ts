@@ -1155,7 +1155,7 @@ describe("pins", () => {
     });
     const pin = () => roots.at(-1)?.querySelector<HTMLElement>(".pin") ?? null;
 
-    it("an ask pin is amber, named Ask, and a plain pin is neither", async () => {
+    it("an ask pin is named Ask, and a plain pin is not", async () => {
       await start("select");
       await send({
         type: "comments.set",
@@ -1167,6 +1167,83 @@ describe("pins", () => {
       await send({ type: "comments.set", threads: [pinThread()] });
       expect(pin()?.classList.contains("ask")).toBe(false);
       expect(pin()?.getAttribute("aria-label")).toBeNull();
+    });
+
+    it("an ask pin keeps its face, is ringed amber and named by its chip (#3128)", async () => {
+      await start("select");
+      const badge = {
+        icon: '<circle cx="3" cy="3" r="2"/>',
+        color: "#5f6670",
+        dashed: true,
+        label: "Comment by Claude Code",
+      };
+      await send({
+        type: "comments.set",
+        threads: [pinThread({ ask: true, badge })],
+      });
+      const p = pin();
+      // Both looks are asked for: the face it carries, and the ask on top.
+      expect(p?.classList.contains("ask")).toBe(true);
+      expect(p?.classList.contains("face")).toBe(true);
+      const css = roots.at(-1)?.querySelector("style")?.textContent ?? "";
+      const rule = (sel: string) => {
+        const re = new RegExp(`${sel.replace(/\./g, "\\.")}\\{([^}]*)\\}`);
+        return re.exec(css)?.[1] ?? "";
+      };
+      // The face keeps its own colour (--face), and no ask rule repaints the
+      // pin: the ring is the amber, outside the white ring.
+      expect(p?.style.getPropertyValue("--face")).toBe("#5f6670");
+      expect(rule(".pin.face")).toContain("background:var(--face,#1f5fbf)");
+      expect(rule(".pin.ask")).not.toContain("background");
+      expect(rule(".pin.ask")).toContain("0 0 0 4px #e0a000");
+      // A dashed face brings its own ring; the amber still shows outside it.
+      expect(rule(".pin.ask.face.dashed")).toContain("0 0 0 4px #e0a000");
+      expect(rule(".dark .pin.ask")).not.toContain("background");
+      expect(rule(".dark .pin.ask")).toContain("0 0 0 4px #f2b51d");
+      expect(rule(".dark .pin.ask.face.dashed")).toContain("0 0 0 4px #f2b51d");
+      // The dashed robot's grey ink, on its own white bubble, is still readable.
+      expect(rule(".pin.face.dashed")).toContain("background:#fff");
+      expect(rule(".pin.face.dashed svg")).toContain("stroke:#5f6670");
+      expect(rule(".pin.ask svg")).toBe("");
+      // A colour alone is not the signal: the chip the quote's ask uses names
+      // it, past the bubble so the initials or the number stay visible.
+      const chip =
+        roots.at(-1)?.querySelector<HTMLElement>(".askchip.at-pin") ?? null;
+      expect(chip?.tagName).toBe("BUTTON");
+      expect(chip?.textContent).toBe("Ask");
+      expect(chip?.getAttribute("aria-label")).toBe("Ask");
+      expect(rule(".askchip")).toContain("font:700 10.5px/14px");
+      expect(rule(".askchip.at-pin")).toContain("margin-top:-48px");
+      expect(chip?.classList.contains("flip-y")).toBe(false);
+      expect(chip?.style.left).toBe(p?.style.left);
+      expect(chip?.style.top).toBe(p?.style.top);
+      chip?.click();
+      await flush();
+      expect(last("comment.open")).toMatchObject({ id: "p1" });
+
+      // Near the top the bubble hangs below its point, and the chip does too.
+      await send({
+        type: "comments.set",
+        threads: [
+          pinThread({
+            ask: true,
+            badge,
+            anchor: {
+              kind: "pin",
+              version: 1,
+              x: 0.5,
+              y: 0.05,
+              contentHash: "h",
+            },
+          }),
+        ],
+      });
+      const flipped = pin();
+      expect(flipped?.classList.contains("flip-y")).toBe(true);
+      const below =
+        roots.at(-1)?.querySelector<HTMLElement>(".askchip.at-pin") ?? null;
+      expect(below?.classList.contains("flip-y")).toBe(true);
+      expect(rule(".askchip.at-pin.flip-y")).toContain("margin-top:34px");
     });
 
     it("clicking an ask pin opens its thread: comment.open carries the id only (#3048)", async () => {

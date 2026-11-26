@@ -2,7 +2,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import {
@@ -12,7 +12,17 @@ import {
   MAX_EDIT_SOCKETS,
 } from "../../src/docs/room.js";
 import { appOrigin } from "../../src/http/errors.js";
-import { ACTOR_HEADER, AUTHZ_AT_HEADER } from "../../src/runtime/do.js";
+import {
+  ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
+  SOCKET_TTL_MS,
+  SOCKET_TTL_SLACK_MS,
+} from "../../src/runtime/do.js";
+import {
+  presenceStub,
+  retryBackoffMs,
+  type UserPresence,
+} from "../../src/runtime/presence.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
 import { publish } from "../../src/services/artifacts.js";
 import { DOC_SWITCH } from "../../src/services/doc-switch.js";
@@ -182,8 +192,7 @@ describe("roles by caller", () => {
     const s = await sock(id, owner.cookie);
     await s.hello;
     expect(s.all[0]).toBeTypeOf("string");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(s.all.length).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(() => expect(s.all.length).toBeGreaterThanOrEqual(2));
     expect(s.all[1]).not.toBeTypeOf("string");
     s.ws.close();
   });
@@ -327,14 +336,32 @@ describe("room full, TTL, access change, delete", () => {
       const at = await state.storage.getAlarm();
       expect(at).not.toBeNull();
     });
-    await runDurableObjectAlarm(roomOf(id));
-    let closed = false;
-    void s.closed.then(() => {
-      closed = true;
+    // The room's clock one ms short of the socket's TTL window: the alarm
+    // runs and closes nothing; one ms later it closes the socket (4401).
+    const at = await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      const att = state.getWebSockets()[0]?.deserializeAttachment() as {
+        t: number;
+      };
+      return att.t;
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(closed).toBe(false);
-    s.ws.close();
+    const open = () =>
+      runInDurableObject(
+        roomOf(id),
+        (_r: DocRoom, state) =>
+          state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN)
+            .length,
+      );
+    const clock = (t: number) =>
+      runInDurableObject(roomOf(id), (r: DocRoom) => {
+        (r as unknown as { now: () => number }).now = () => t;
+      });
+    const edge = at + SOCKET_TTL_MS - SOCKET_TTL_SLACK_MS;
+    await clock(edge - 1);
+    await runDurableObjectAlarm(roomOf(id));
+    expect(await open()).toBe(1);
+    await clock(edge);
+    await runDurableObjectAlarm(roomOf(id));
+    expect(await s.closed).toEqual({ code: 4401, reason: "auth_expired" });
   });
 
   it("narrowing a share closes the socket 4403", async () => {
@@ -395,18 +422,47 @@ describe("room full, TTL, access change, delete", () => {
     const u = await mk("dr-revoke", "member");
     await putShare(env, owner.member, id, { email: u.email, role: "editor" });
     const mine = await sock(id, u.cookie);
-    const other = await sock(id, owner.cookie);
+    const v = await mk("dr-revoke-other", "member");
+    await putShare(env, owner.member, id, { email: v.email, role: "editor" });
+    const other = await sock(id, v.cookie);
     await mine.hello;
     await other.hello;
     await revokeUserLive(env, u.userId, "member removed");
     expect((await mine.closed).code).toBe(4403);
-    let otherClosed = false;
-    void other.closed.then(() => {
-      otherClosed = true;
+    // Nothing of the fan-out is left to land later: closeAll awaits every
+    // close before it resolves (src/runtime/presence.ts:283-296, the room's
+    // closeActor closes synchronously, src/docs/room.ts:492-502) and only
+    // closes past CLOSE_FANOUT or failed ones go to an alarm-driven retry
+    // queue (presence.ts:284-295). That queue is empty for the revoked user.
+    expect(
+      await runInDurableObject(
+        presenceStub(
+          env,
+          u.userId,
+        ) as unknown as DurableObjectStub<UserPresence>,
+        (p) => p.pendingRetries(),
+      ),
+    ).toEqual([]);
+    // The negative window is that queue's: put the revoked user's presence
+    // clock past the longest backoff and run its alarm, so any queued close
+    // would be re-sent now.
+    await runInDurableObject(
+      presenceStub(env, u.userId) as unknown as DurableObjectStub<UserPresence>,
+      (p) => {
+        const at = Date.now() + retryBackoffMs(99);
+        p.now = () => at;
+      },
+    );
+    await runDurableObjectAlarm(presenceStub(env, u.userId) as never);
+    // So the room still holds the other user's socket open.
+    await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      expect(
+        state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),
+      ).toHaveLength(1);
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(otherClosed).toBe(false);
-    other.ws.close();
+    // And it was live all along: revoking that user closes it too.
+    await revokeUserLive(env, v.userId, "member removed");
+    expect((await other.closed).code).toBe(4403);
   });
 
   it("a socket authorized before the last access change is refused 4403", async () => {

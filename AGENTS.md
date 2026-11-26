@@ -42,8 +42,11 @@ advice for contributors.
 - **The Manager arms PRs.** Send the PR and its full head SHA with CI green on
   that exact SHA, and name a reviewer who is not the author. Never push to an
   armed or queued PR.
-- **Rerun the whole workflow** after a failure, not just the failed job, so a
-  flake cannot hide behind a green rerun.
+- **Rerun test and CI workflows whole** after a failure, not just the failed
+  job, so a flake cannot hide behind a green rerun. **Release workflows**
+  (hosted-release, hosted-publish, the staging and prod chains, deploys) rerun
+  only their failed jobs: their finished jobs have side effects, such as
+  attached files, tags and deploys.
 - **Platform releases.** A feature session does not deploy.
 - **Tests control time with fake timers or wait on a signal, never sleep.** A
   `setTimeout` wait, a `sleep` helper and Playwright's `waitForTimeout` are what

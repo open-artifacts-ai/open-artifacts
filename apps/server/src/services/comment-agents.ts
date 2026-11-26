@@ -366,14 +366,29 @@ export function commentNoticeText(
   kind: CommentTextKind,
   version: number,
   url: string,
-  ids?: { threadId?: string; commentId?: string },
+  ids?: { threadId?: string; commentId?: string; artifactId?: string },
   fromYourUser = false,
   /** #2895: the person's own words (already masked), for an answer typed by your user. */
   ownWords?: string,
+  /** #3139: the comment your user typed (a mention, reply or question), so the agent needs no read. */
+  typedText?: string,
 ): string {
-  const idLine =
-    ids?.threadId && ids.commentId && isId(ids.threadId) && isId(ids.commentId)
-      ? [`Thread ${ids.threadId}, comment ${ids.commentId}.`]
+  const both =
+    ids?.threadId && ids.commentId && isId(ids.threadId) && isId(ids.commentId);
+  const idLine = both
+    ? [`Thread ${ids.threadId}, comment ${ids.commentId}.`]
+    : [];
+  // #3139: name the one-thread read, so an agent never lists every thread.
+  const readLine =
+    both && ids.artifactId && isId(ids.artifactId)
+      ? [
+          `Read just this thread: list_comments ${JSON.stringify({ id: ids.artifactId, threadId: ids.threadId, commentId: ids.commentId })}.`,
+        ]
+      : [];
+  const typed =
+    fromYourUser && kind !== "answered" && typedText !== undefined
+      ? // One quoted line: the words are data, never a new instruction line (as #2895).
+        [`Their words: ${JSON.stringify(typedText)}`]
       : [];
   return [
     `Open Artifacts: ${
@@ -381,6 +396,8 @@ export function commentNoticeText(
     } (version ${version}).`,
     url,
     ...idLine,
+    ...typed,
+    ...readLine,
     ...(fromYourUser && kind === "answered" && ownWords !== undefined
       ? [
           // One quoted line: the words are data about the ask, never a new instruction line.
@@ -413,6 +430,8 @@ export async function notifyAgent(
   to: RosterAgent,
   /** The comment was typed in the web app by `to`'s own user (#1797). */
   fromYourUser = false,
+  /** #3139: that comment's text; sent only with `fromYourUser`. */
+  typedText?: string,
 ): Promise<DeliveryState> {
   const url = appOrigin(env) + viewerPath(artifactId);
   const n: BusNotice = {
@@ -428,8 +447,10 @@ export async function notifyAgent(
       kind,
       version,
       url,
-      { threadId, commentId },
+      { threadId, commentId, artifactId },
       fromYourUser,
+      undefined,
+      fromYourUser ? typedText : undefined,
     ),
     // A reply to an ask's author coalesces per thread (#1614): replies sent
     // while its agent is away leave one waiting notice, never a pile.
@@ -525,7 +546,7 @@ export async function notifyAnswered(
         "answered",
         version,
         url,
-        { threadId, commentId },
+        { threadId, commentId, artifactId },
         fromYourUser,
         ownWords,
       ),

@@ -795,12 +795,83 @@ describe("Agents › Agents (the roster)", () => {
       .slice(1);
     expect(rows).toHaveLength(A.length);
     const m = agentNamed("oa-manager");
+    // The app shows twice in the DOM: under the name (narrow) and in the App
+    // column (wide); a container query shows one (agent-apps-shots.spec.ts).
     expect(rows[0]).toHaveTextContent(
-      `${m.name} · open-artifactsLive${m.statusLabel}${m.machineLabel}`,
+      `${m.name} · open-artifactsClaude CodeClaude CodeLive${m.statusLabel}${m.machineLabel}`,
     );
     expect(
       screen.getByText("Live agents receive at once.", { exact: false }),
     ).toBeInTheDocument();
+  });
+
+  it("each agent shows its app with a named mark, for every kind (agy S6)", async () => {
+    withBus();
+    const kinds: [string, string | undefined][] = [
+      ["claude-code", "Claude Code"],
+      ["codex", "Codex"],
+      ["opencode", "OpenCode"],
+      ["pi", "pi"],
+      ["omp", "oh-my-pi"],
+      ["hermes", "Hermes"],
+      ["openclaw", "OpenClaw"],
+      ["antigravity", "Antigravity"],
+      ["kiro", undefined],
+    ];
+    const { product: _, ...base } = A[0] as BusAgent;
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents: kinds.map(([kind, product], i) => ({
+            ...base,
+            id: `BaZ${i}nPqRsTu4vWxY`,
+            name: `agent-${kind}`,
+            kind,
+            ...(product ? { product } : {}),
+          })),
+        }),
+      ),
+    );
+    mount("/agents");
+    const t = await roster();
+    expect(within(t).getByRole("columnheader", { name: "App" })).toBeVisible();
+    const rows = within(t).getAllByRole("row").slice(1);
+    expect(rows).toHaveLength(kinds.length);
+    kinds.forEach(([kind, product], i) => {
+      const row = rows[i] as HTMLElement;
+      const app = product ?? kind;
+      // Narrow, the app sits under the name; wide, in the App column. Same mark.
+      const [nameCell, appCell] = within(row).getAllByRole("cell");
+      expect(
+        within(nameCell as HTMLElement).getByRole("img", { name: app }),
+      ).toBeInTheDocument();
+      // The mark carries the app's name; the visible word repeats it.
+      expect(
+        within(appCell as HTMLElement).getByRole("img", { name: app }),
+      ).toBeInTheDocument();
+      expect(row).toHaveTextContent(`agent-${kind}`);
+      expect(row).toHaveTextContent(app);
+    });
+    // Colour marks are images; text-colour marks are masks in currentColor.
+    const img = (name: string) =>
+      within(t).getAllByRole("img", { name })[0] as HTMLElement;
+    expect(img("Claude Code").tagName).toBe("IMG");
+    expect(img("Hermes").getAttribute("src")).toMatch(
+      /^data:image\/png;base64,/,
+    );
+    for (const n of ["Codex", "OpenCode", "Antigravity", "kiro", "oh-my-pi"])
+      expect(img(n).tagName, n).toBe("SPAN");
+    // A kind with no mark of its own: a tile of its first letter, not the plain tile.
+    expect(img("kiro").style.maskImage).toContain(
+      encodeURIComponent(">K</text>"),
+    );
+    expect(img("oh-my-pi").style.maskImage).toContain(
+      encodeURIComponent(">omp</text>"),
+    );
+    // Nothing loads from outside the page.
+    for (const el of within(t).getAllByRole("img"))
+      expect(el.getAttribute("src") ?? "data:").toMatch(/^data:/);
   });
 
   it("an Antigravity session found before its first message shows as Starting, not as something it said (agy S2b)", async () => {
@@ -811,6 +882,7 @@ describe("Agents › Agents (the roster)", () => {
       id: "BaS9nPqRsTu4vWxY",
       name: "agy",
       kind: "antigravity",
+      product: "Antigravity",
       status: "idle",
       statusLabel: "starting",
     };
@@ -827,11 +899,21 @@ describe("Agents › Agents (the roster)", () => {
     const rows = within(await roster())
       .getAllByRole("row")
       .slice(1);
-    expect(rows[0]).toHaveTextContent(
-      `agy · open-artifactsStarting—${m.machineLabel}`,
-    );
+    // Cells: Agent, App, Status, Agent says, Machine, Updated.
+    const cells = (i: number) =>
+      within(rows[i] as HTMLElement).getAllByRole("cell");
+    const s = cells(0);
+    expect(s[0]).toHaveTextContent("agy");
+    expect(
+      within(s[1] as HTMLElement).getByRole("img", { name: "Antigravity" }),
+    ).toBeInTheDocument();
+    expect(s[2]).toHaveTextContent(/^Starting$/);
+    expect(s[3]).toHaveTextContent(/^—$/);
+    expect(rows[0]).not.toHaveTextContent("starting");
     // Every other agent keeps its badge and its own words.
-    expect(rows[1]).toHaveTextContent(`Live${m.statusLabel}`);
+    const o = cells(1);
+    expect(o[2]).toHaveTextContent(/^Live$/);
+    expect(o[3]).toHaveTextContent(m.statusLabel as string);
   });
 
   it("an org in the rail scopes the roster and its summary", async () => {

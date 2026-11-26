@@ -9,6 +9,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import {
   act,
+  cleanup,
   type Matcher,
   render,
   screen,
@@ -138,6 +139,9 @@ export const installHarness = () => {
     resetCpuLimit();
   });
   afterEach(() => {
+    // Unmount before the handlers go: a fetch the page still starts (a
+    // refetch waiting on a load, #3095) must not reach an empty network.
+    cleanup();
     server.resetHandlers();
     vi.unstubAllGlobals();
     shim();

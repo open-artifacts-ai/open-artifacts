@@ -1132,6 +1132,8 @@ export const BusAgentSchema = z.strictObject({
   namespace: z.string(),
   name: z.string(),
   kind: z.string(),
+  /** The app the kind runs ("Claude Code", "Antigravity"); absent when the server doesn't know the kind. */
+  product: z.string().max(80).optional(),
   machineId: z.string(),
   machineLabel: z.string(),
   global: z.boolean(),
@@ -1264,9 +1266,9 @@ export const TeammatesSchema = z.strictObject({
 });
 export type Teammates = z.infer<typeof TeammatesSchema>;
 
-/** PUT R.onboarding: a flag only turns on (true), never off. */
+/** PUT R.onboarding: `completed` only turns on (true); `dismissed` also turns off (false: the hidden checklist comes back). */
 export const OnboardingPatchSchema = z.strictObject({
-  dismissed: z.literal(true).optional(),
+  dismissed: z.boolean().optional(),
   completed: z.literal(true).optional(),
   /** #2287: the first open of the Welcome happened; a no-op for anyone but its user. */
   welcomeOpened: z.literal(true).optional(),
