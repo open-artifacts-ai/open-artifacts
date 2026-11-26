@@ -1557,7 +1557,7 @@ describe("a backlog larger than one reconcile drains over the next events", () =
     );
     expect(marks(g)).toEqual(["1000/2", "1001/2", "1002/2"]);
     expect(reconcileLines(r).at(-1)).toBe(
-      "backlog: 9 left (the next CI completion's reconcile carries on)",
+      "backlog: 9 new, 0 to retry (the next CI completion's reconcile carries on)",
     );
   });
 
@@ -1588,7 +1588,7 @@ describe("a backlog larger than one reconcile drains over the next events", () =
     const before = g.comments.length + g.created.length;
     const r = reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, NOW + DAY) });
     expect(r.every((x) => x.result === "recorded already")).toBe(true);
-    expect(reconcileLines(r).at(-1)).toBe("backlog: 0 left");
+    expect(reconcileLines(r).at(-1)).toBe("backlog: 0 new, 0 to retry");
     expect(g.comments.length + g.created.length).toBe(before);
   });
 
@@ -1672,7 +1672,7 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     });
     expect(first.filter((x) => x.result === "tracked")).toHaveLength(10);
     expect(reconcileLines(first).at(-1)).toBe(
-      "backlog: 22 left (the next CI completion's reconcile carries on)",
+      "backlog: 22 new, 0 to retry (the next CI completion's reconcile carries on)",
     );
     const list = g.pendings.at(-1)?.body ?? "";
     expect(parseMarks(list).pending).toEqual(
@@ -1692,7 +1692,7 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     expect(
       next.filter((x) => x.result === "tracked").map((x) => x.runId),
     ).toEqual(ids.slice(10));
-    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 left");
+    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 new, 0 to retry");
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
     // The list is emptied once all are marked, and then nothing more is written.
     expect(parseMarks(g.pendings.at(-1)?.body ?? "")).toMatchObject({
@@ -1753,7 +1753,7 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     expect(
       next.filter((x) => x.result === "tracked").map((x) => x.runId),
     ).toEqual(ids.slice(1));
-    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 left");
+    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 new, 0 to retry");
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
     expect(
       g.comments.flatMap((c) => parseStore(c.body).map((x) => x.run)).sort(),
@@ -1828,9 +1828,14 @@ describe("a pending list while daily events go on", () => {
       broken && args.some((a) => /\/runs\/\d+\/attempts\/2$/.test(a))
         ? { code: 1, stdout: "", stderr: "HTTP 404: Not Found" }
         : g.exec(cmd, args);
+    let last: ReturnType<typeof reconcile> = [];
     for (let d = 0; d < 63; d++)
-      reconcile({ exec, repo: REPO, nowMs: day(g, d), calls: 10_000 });
+      last = reconcile({ exec, repo: REPO, nowMs: day(g, d), calls: 10_000 });
     expect(marks(g)).toEqual([]);
+    // All 32 failed and are saved to retry: the backlog says so.
+    expect(reconcileLines(last).at(-1)).toBe(
+      "backlog: 0 new, 32 to retry (the next CI completion's reconcile carries on)",
+    );
     broken = false;
     const t = day(g, 63);
     expect(recentRuns(g.exec, REPO, t)).toEqual([]);

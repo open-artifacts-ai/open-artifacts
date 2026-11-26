@@ -10,7 +10,7 @@
 // through the same code. So a dropped event is caught by the next completion
 // even when it comes QUIET_DAYS after a rerun on the last allowed day. One
 // reconcile starts no run after RECONCILE_MS, RECONCILE_CALLS gh calls or
-// RECONCILE_LOGS job logs (it always does one), oldest first, and logs "backlog: N left":
+// RECONCILE_LOGS job logs (it always does one), oldest first, and logs "backlog: N new, M to retry":
 // each run is saved as it finishes, and the runs left (or failed) are written
 // to the store as its pending list, which the next reconcile works whatever
 // its listing's range, so the next completion carries on. That line means the run is fully handled: it is written with the run's
@@ -1349,10 +1349,13 @@ export function reconcileLines(all: Reconciled[]): string[] {
     (r) => r.result === "tracked" || r.result === "error",
   );
   const left = all.filter((r) => r.result === "left").length;
+  const retry = all.filter((r) => r.result === "error").length;
   return [
     `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS + QUIET_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later; ${all.length - worked.length - left} recorded already, ${worked.length} worked on now`,
     ...worked.flatMap((r) => runResultLines(r)),
-    `backlog: ${left} left${left ? " (the next CI completion's reconcile carries on)" : ""}`,
+    // Both stay on the pending list: runs not started yet, and runs that
+    // failed this time and are saved to retry.
+    `backlog: ${left} new, ${retry} to retry${left + retry ? " (the next CI completion's reconcile carries on)" : ""}`,
   ];
 }
 
