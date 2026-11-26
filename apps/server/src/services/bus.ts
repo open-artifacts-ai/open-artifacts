@@ -1946,7 +1946,7 @@ export async function decideBusRoleProposalById(
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
     return { proposal: r.proposal, role: r.role };
   }
   if (r.proposal === null) throw new ApiError("not_found", "Not found");
