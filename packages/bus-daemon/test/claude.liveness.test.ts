@@ -388,6 +388,9 @@ describe("runDaemon claude session sync", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     writeFileSync(join(d, "4242.json"), '{"pid":4242,');
     await syncs.next(2); // the unreadable file was seen: the grace began
+    // The original test saw it still live 60 ms in: move the clock that far, tick, then look.
+    vi.setSystemTime(Date.now() + 60);
+    await syncs.next(2);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     vi.setSystemTime(Date.now() + 200);
     await syncs.next(2);
@@ -408,6 +411,9 @@ describe("runDaemon claude session sync", () => {
     await h.next("agent_up");
     vi.useFakeTimers({ toFake: ["Date"] });
     await syncs.next(2); // the unreadable start time was seen: the grace began
+    // The original test saw it still live 60 ms in: move the clock that far, tick, then look.
+    vi.setSystemTime(Date.now() + 60);
+    await syncs.next(2);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     vi.setSystemTime(Date.now() + 200);
     await syncs.next(2);
