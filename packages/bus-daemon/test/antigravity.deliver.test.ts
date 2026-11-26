@@ -177,6 +177,19 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
     await vi.waitFor(() => expect(acked(id)).toBe(1));
   });
 
+  it("a message held for a session whose agy process ends is never refused: it stays pending at the hub", async () => {
+    const { h, join, send, acked } = await setup();
+    await join();
+    const id = send();
+    await vi.waitFor(() => expect(h.daemon.agents.byRef(A)?.live).toBe(true));
+    os.start.delete(AGY);
+    await vi.waitFor(() =>
+      expect(h.of("sessions").some((f) => f.closed.includes(A))).toBe(true),
+    );
+    expect(acked(id)).toBe(0);
+    expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
+  });
+
   it("gives a message lost with its watcher to the next watcher, once, and a redelivered id is only acked", async () => {
     const { h, join, watcher, send, acked } = await setup();
     await join();

@@ -163,7 +163,8 @@ export function writeAgyConversation(
   writeFileSync(tmp, `${JSON.stringify(c)}\n`, { mode: 0o600 });
   renameSync(tmp, file);
   for (const name of readdirSync(dir)) {
-    const m = /^(\d+)\.json$/.exec(name);
+    // agy S3: the watcher's files of a gone agy process go with its record.
+    const m = /^(\d+)(?:\.watch|\.sent)?\.json$/.exec(name);
     if (m && Number(m[1]) !== c.pid && !alive(Number(m[1])))
       rmSync(join(dir, name), { force: true });
   }

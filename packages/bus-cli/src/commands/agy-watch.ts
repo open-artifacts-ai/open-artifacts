@@ -65,6 +65,8 @@ export type AgyWatchDeps = {
   /** Calls `fn` every `ms` until the returned stop is called. */
   every: (ms: number, fn: () => void) => () => void;
   log: (line: string) => void;
+  /** Runs `fn` when the process is told to stop (agy ends its background task). */
+  onStop: (fn: () => void) => void;
 };
 
 /** Exit and timeout: a killed call may have been taken, so it is never sent again. */
@@ -132,6 +134,13 @@ const defaults = (ctx: Ctx): AgyWatchDeps => ({
     return () => clearInterval(t);
   },
   log: (line) => say(ctx, line),
+  onStop: (fn) => {
+    for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const)
+      process.once(sig, () => {
+        fn();
+        process.exit(0);
+      });
+  },
 });
 
 /** The watcher's hello: its own pid, its agy process's start time, the agy_watch cap. */
@@ -202,6 +211,7 @@ export async function agyWatch(
     stopCheck();
     clearAgyWatch(ctx.home, agy, deps.pid);
   };
+  deps.onStop(cleanup);
   /** Ids being handed to agy now: a push again while one runs waits for it. */
   const handing = new Set<string>();
   let client: DaemonClient | undefined;

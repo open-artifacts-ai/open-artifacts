@@ -128,6 +128,7 @@ async function setup() {
         };
       },
       log: (l) => logs.push(l),
+      onStop: () => {},
     });
     return { run, clients, logs, tick: () => tick?.() };
   };
@@ -257,6 +258,7 @@ describe("oa-bus agy-watch (agy S3)", () => {
       procStart: (p: number) => (p === AGY ? "t0" : null),
       pid: W1,
       log: () => {},
+      onStop: () => {},
     };
     expect(await agyWatch(ctx, { ...base, ppid: 999, env: ENV })).toBe(1);
     expect(await agyWatch(ctx, { ...base, ppid: SHELL, env: {} })).toBe(1);

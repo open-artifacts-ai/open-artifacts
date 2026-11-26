@@ -170,7 +170,9 @@ export async function agyHello(
           // agy S3: no watcher yet for this agy process: the session starts one.
           if (!deps.watcherLive(agy, procStart)) {
             watchLine = deps.watchLine();
-            fields.watch = watchLine === undefined ? "no_line" : "asked";
+            // `code`: one of the event log's allow-listed fields.
+            fields.code =
+              watchLine === undefined ? "watch_no_line" : "watch_asked";
           }
         } catch (e) {
           fields.reason =
