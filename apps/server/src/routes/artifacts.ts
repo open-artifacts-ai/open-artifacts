@@ -280,7 +280,7 @@ export function mountArtifacts(app: AppType): void {
         reason: "invalid",
       });
     const w = c.req.query("wait");
-    if (w !== undefined && !/^\d{1,9}$/.test(w))
+    if (w !== undefined && !/^\d{1,16}$/.test(w))
       throw new ApiError("bad_request", "wait must be a non-negative integer", {
         path: "wait",
         reason: "invalid",
