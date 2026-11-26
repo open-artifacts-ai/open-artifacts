@@ -11,7 +11,14 @@ const seq = (...steps: (number | Error)[]) => {
   }) as typeof fetch;
   return { f, calls };
 };
-const o = (f: typeof fetch) => ({ fetch: f, backoffMs: 1 });
+const o = (
+  f: typeof fetch,
+  healthy: (origin: string) => Promise<boolean> = async () => true,
+) => ({
+  fetch: f,
+  healthy,
+  healthPollMs: 1,
+});
 
 describe("liveFetch (xt:live, flake server #2)", () => {
   it("retries a GET on a thrown error, then answers", async () => {
@@ -26,6 +33,72 @@ describe("liveFetch (xt:live, flake server #2)", () => {
     const r = await liveFetch(new Request("https://x.test/"), o(f));
     expect(r.status).toBe(504);
     expect(calls).toHaveLength(3);
+  });
+
+  it("waits for a health answer before it resends, and asks the host's origin", async () => {
+    const { f, calls } = seq(new TypeError("fetch failed"), 200);
+    const events: string[] = [];
+    let asks = 0;
+    const healthy = async (origin: string) => {
+      events.push(`health ${origin} (${calls.length} sent)`);
+      return ++asks >= 3;
+    };
+    const r = await liveFetch(
+      new Request("https://x.test/a/b?q=1"),
+      o(f, healthy),
+    );
+    expect(r.status).toBe(200);
+    // The resend came only after the third health answer, not before.
+    expect(asks).toBe(3);
+    expect(events).toEqual(Array(3).fill("health https://x.test (1 sent)"));
+    expect(calls).toHaveLength(2);
+  });
+
+  it("by default the health answer is GET <origin>/healthz returning 200", async () => {
+    const seen: string[] = [];
+    let n = 0;
+    const f = (async (r: Request | string) => {
+      const url = typeof r === "string" ? r : r.url;
+      seen.push(url);
+      if (url.endsWith("/healthz")) return new Response("ok", { status: 200 });
+      if (++n === 1) throw new TypeError("fetch failed");
+      return new Response("x", { status: 200 });
+    }) as typeof fetch;
+    const r = await liveFetch(new Request("https://x.test/a?q=1"), {
+      fetch: f,
+      healthPollMs: 1,
+    });
+    expect(r.status).toBe(200);
+    expect(seen).toEqual([
+      "https://x.test/a?q=1",
+      "https://x.test/healthz",
+      "https://x.test/a?q=1",
+    ]);
+  });
+
+  it("does not ask the host before the first try, nor after a 4xx", async () => {
+    const { f } = seq(404);
+    let asks = 0;
+    await liveFetch(
+      new Request("https://x.test/"),
+      o(f, async () => {
+        asks++;
+        return true;
+      }),
+    );
+    expect(asks).toBe(0);
+  });
+
+  it("resends after one attempt's bound when the host never answers", async () => {
+    const { f, calls } = seq(503, 200);
+    const r = await liveFetch(new Request("https://x.test/"), {
+      fetch: f,
+      healthy: async () => false,
+      healthPollMs: 1,
+      healthWaitMs: 20,
+    });
+    expect(r.status).toBe(200);
+    expect(calls).toHaveLength(2);
   });
 
   it("never retries a 4xx", async () => {

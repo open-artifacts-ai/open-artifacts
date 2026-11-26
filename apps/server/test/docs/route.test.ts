@@ -12,7 +12,12 @@ import {
   MAX_EDIT_SOCKETS,
 } from "../../src/docs/room.js";
 import { appOrigin } from "../../src/http/errors.js";
-import { ACTOR_HEADER, AUTHZ_AT_HEADER } from "../../src/runtime/do.js";
+import {
+  ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
+  SOCKET_TTL_MS,
+  SOCKET_TTL_SLACK_MS,
+} from "../../src/runtime/do.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
 import { publish } from "../../src/services/artifacts.js";
 import { DOC_SWITCH } from "../../src/services/doc-switch.js";
@@ -326,15 +331,32 @@ describe("room full, TTL, access change, delete", () => {
       const at = await state.storage.getAlarm();
       expect(at).not.toBeNull();
     });
-    await runDurableObjectAlarm(roomOf(id));
-    // The alarm closes a stale socket inside its handler; the room's own
-    // socket list is the state to read once it has returned.
-    await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
-      expect(
-        state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),
-      ).toHaveLength(1);
+    // The room's clock one ms short of the socket's TTL window: the alarm
+    // runs and closes nothing; one ms later it closes the socket (4401).
+    const at = await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      const att = state.getWebSockets()[0]?.deserializeAttachment() as {
+        t: number;
+      };
+      return att.t;
     });
-    s.ws.close();
+    const open = () =>
+      runInDurableObject(
+        roomOf(id),
+        (_r: DocRoom, state) =>
+          state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN)
+            .length,
+      );
+    const clock = (t: number) =>
+      runInDurableObject(roomOf(id), (r: DocRoom) => {
+        (r as unknown as { now: () => number }).now = () => t;
+      });
+    const edge = at + SOCKET_TTL_MS - SOCKET_TTL_SLACK_MS;
+    await clock(edge - 1);
+    await runDurableObjectAlarm(roomOf(id));
+    expect(await open()).toBe(1);
+    await clock(edge);
+    await runDurableObjectAlarm(roomOf(id));
+    expect(await s.closed).toEqual({ code: 4401, reason: "auth_expired" });
   });
 
   it("narrowing a share closes the socket 4403", async () => {
@@ -395,19 +417,23 @@ describe("room full, TTL, access change, delete", () => {
     const u = await mk("dr-revoke", "member");
     await putShare(env, owner.member, id, { email: u.email, role: "editor" });
     const mine = await sock(id, u.cookie);
-    const other = await sock(id, owner.cookie);
+    const v = await mk("dr-revoke-other", "member");
+    await putShare(env, owner.member, id, { email: v.email, role: "editor" });
+    const other = await sock(id, v.cookie);
     await mine.hello;
     await other.hello;
     await revokeUserLive(env, u.userId, "member removed");
     expect((await mine.closed).code).toBe(4403);
-    // The revoke has finished (mine is closed); the room still holds the
-    // other socket open.
+    // The revoke has finished (revokeUserLive resolved, mine is closed); the
+    // room still holds the other user's socket open.
     await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
       expect(
         state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),
       ).toHaveLength(1);
     });
-    other.ws.close();
+    // And it was live all along: revoking that user closes it too.
+    await revokeUserLive(env, v.userId, "member removed");
+    expect((await other.closed).code).toBe(4403);
   });
 
   it("a socket authorized before the last access change is refused 4403", async () => {

@@ -46,7 +46,6 @@
   "apps/server/test/bus/hub.reclaim-name.test.ts": 1,
   "apps/server/test/bus/hub.revoke.test.ts": 1,
   "apps/server/test/bus/mcp-link.test.ts": 1,
-  "apps/server/test/xt/live-fetch.ts": 2,
   "packages/bus-adapter-claude-code/test/mcp.stall.test.ts": 1,
   "packages/bus-adapter-openclaw/test/connect.test.ts": 1,
   "packages/bus-adapter-openclaw/test/support.ts": 1,

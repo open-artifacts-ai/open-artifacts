@@ -222,17 +222,22 @@ async function otpOutcome(r: Response): Promise<string | null> {
 
 /**
  * The OTP hook's answer once the send is final: asked once a second while the
- * hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. Any other
- * answer (a code, or a 404 with a final outcome) is returned as it is.
+ * hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. A code, or a
+ * 404 with a recognized final outcome, is returned as it is; a 404 with no
+ * recognized outcome is malformed and fails at once.
  */
 async function settledOtp(to: Install, email: string): Promise<Response> {
   let final: Response | undefined;
+  let malformed = false;
   await vi
     .waitFor(
       async () => {
         const r = await hook(to, TEST_HOOKS.otpLatest, { email });
-        if (r.status === 404 && (await otpOutcome(r)) === "pending")
-          throw new Error("otp send still pending");
+        if (r.status === 404) {
+          const outcome = await otpOutcome(r);
+          if (outcome === "pending") throw new Error("otp send still pending");
+          if (outcome === null) malformed = true;
+        }
         final = r;
       },
       { timeout: OTP_DEADLINE_MS, interval: 1000 },
@@ -242,6 +247,10 @@ async function settledOtp(to: Install, email: string): Promise<Response> {
         `otp hook on ${to.origin}: still pending after ${OTP_DEADLINE_MS} ms`,
       );
     });
+  if (malformed)
+    throw new Refusal(
+      `otp hook on ${to.origin}: 404 with no recognized outcome`,
+    );
   return final as Response;
 }
 
@@ -378,13 +387,20 @@ export const SIGNIN_NEGATIVE_CASES: NegativeCase[] = [
       const codeA = await codeAt(a, email);
       // Same answer as for a known address: 202 and a pending cookie.
       const pendingB = await requestCode(b, email);
-      // Wait for B's send to be final (it never sends to a stranger), so a
-      // code that would still arrive cannot slip past the check.
+      // Wait for B's send to be final, so a code that would still arrive
+      // cannot slip past the check. B never sends to a stranger: its code
+      // path records "ineligible" (src/auth/codes.ts, codeEligibility none).
+      const settled = await settledOtp(b, email);
       await expectStatus(
-        await settledOtp(b, email),
+        settled,
         [404],
         "B otp hook for an address B doesn't know",
       );
+      const outcome = await otpOutcome(settled);
+      if (outcome !== "ineligible")
+        throw new Refusal(
+          `B otp outcome for a stranger: ${outcome ?? "none"}, expected ineligible`,
+        );
       const r = await verifyAt(b, codeA, pendingB);
       if (setsSession(r, b)) throw new Refusal("B issued a session");
       await expectStatus(r, [401], "B verify for an unknown user");

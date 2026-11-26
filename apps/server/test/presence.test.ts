@@ -157,15 +157,15 @@ describe("UserPresence", () => {
     const at = revokedAt as number;
     const before = await direct(art, uid, at - 5);
     const same = await direct(art, uid, at);
-    // The skew-margin boundary: revokedAt + 2000 is refused, + 2001 is not.
+    // The skew-margin boundary: revokedAt + SKEW_MS is refused, + 1 ms more is not.
     expect(SKEW_MS).toBe(2000);
-    const edge = await direct(art, uid, at + 2000);
+    const edge = await direct(art, uid, at + SKEW_MS);
     expect(await before.closed).toBe(4403);
     expect(await same.closed).toBe(4403);
     expect(await edge.closed).toBe(4403);
     // Authorized after the revocation plus the skew margin (a reactivated
     // user): stays open.
-    const after = await direct(art, uid, at + 2001);
+    const after = await direct(art, uid, at + SKEW_MS + 1);
     expect(await openSocketCount(art)).toBe(1);
     expect(after.isOpen()).toBe(true);
     after.ws.close();
@@ -175,15 +175,20 @@ describe("UserPresence", () => {
     const u = await mk(`pr-o-${newId().slice(0, 4)}`, "member");
     const art = await pub();
     const mine = await openSockets(u, art);
-    const theirs = await openSockets(member, art);
+    const other = await mk(`pr-t-${newId().slice(0, 4)}`, "member");
+    const theirs = await openSockets(other, art);
     await revokeUserLive(env, u.userId, "suspended");
     expect(await mine.data.closed).toBe(4403);
     expect(await mine.events.closed).toBe(4403);
+    // The revoke has finished (revokeUserLive resolved, mine are closed); the
+    // runtime still holds the other user's two sockets open.
     expect(await openSocketCount(art)).toBe(2);
     expect(theirs.data.isOpen()).toBe(true);
     expect(theirs.events.isOpen()).toBe(true);
-    theirs.data.ws.close();
-    theirs.events.ws.close();
+    // And they were live all along: revoking that user closes them too.
+    await revokeUserLive(env, other.userId, "suspended");
+    expect(await theirs.data.closed).toBe(4403);
+    expect(await theirs.events.closed).toBe(4403);
   });
 
   it("a failed closeActor is retried from the queue", async () => {
@@ -463,7 +468,11 @@ describe("UserPresence", () => {
     if (!r.webSocket) throw new Error(`no websocket (${r.status})`);
     expect(await wrap(r.webSocket).closed).toBe(4403);
     // Authorized after the change plus the skew margin: accepted.
-    const later = await direct(art, `pr-v2-${newId()}`, (at as number) + 2001);
+    const later = await direct(
+      art,
+      `pr-v2-${newId()}`,
+      (at as number) + SKEW_MS + 1,
+    );
     expect(await openSocketCount(art)).toBe(1);
     expect(later.isOpen()).toBe(true);
     later.ws.close();
@@ -531,13 +540,17 @@ describe("UserPresence", () => {
   it("closeActor closes only that actor's data and events sockets", async () => {
     const art = await pub();
     const a = await openSockets(member, art);
-    const b = await direct(art, `pr-b-${newId()}`, Date.now());
+    const bUser = `pr-b-${newId()}`;
+    const b = await direct(art, bUser, Date.now());
     const n = await runtimeStub(env, art).closeActor(`u:${member.userId}`, "x");
     expect(n).toBe(2);
     expect(await a.data.closed).toBe(4403);
     expect(await a.events.closed).toBe(4403);
+    // closeActor has returned (it counted two); the other actor's socket is
+    // still open in the runtime, and closing that actor closes it.
     expect(await openSocketCount(art)).toBe(1);
     expect(b.isOpen()).toBe(true);
-    b.ws.close();
+    expect(await runtimeStub(env, art).closeActor(`u:${bUser}`, "x")).toBe(1);
+    expect(await b.closed).toBe(4403);
   });
 });

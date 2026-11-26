@@ -136,6 +136,11 @@ async function alarmsUntil(done: () => boolean): Promise<void> {
     { timeout: 10_000 },
   );
 }
+/** Puts the index's clock at `t` (ms), where its alarm decides what is due. */
+const indexClock = (t: number) =>
+  runInDurableObject(index(), (p) => {
+    p.now = () => t;
+  });
 /** The DO's own SQL storage, inside runInDurableObject. */
 const sqlOf = (p: UserPresence) =>
   (p as unknown as { ctx: DurableObjectState }).ctx.storage.sql;
@@ -178,6 +183,7 @@ describe("oa:close-sockets (#1182)", () => {
     const pubId = await pub("public");
     const teamId = await pub("team");
     const before = await everyKind(pubId, teamId);
+    const t0 = Date.now();
     await runJob();
     for (const v of Object.values(before)) expect(await v.closed).toBe(4403);
     // The reconnect: same users, same artifacts, right after the close.
@@ -185,6 +191,16 @@ describe("oa:close-sockets (#1182)", () => {
     expect([await openOn(pubId), await openOn(teamId)]).toEqual([3, 2]);
     for (const [k, v] of Object.entries(after))
       expect({ k, open: v.isOpen() }).toEqual({ k, open: true });
+    // The index's clock one ms short of its second pass: it runs, closes nothing.
+    try {
+      await indexClock(t0 + SECOND_PASS_MS - 1);
+      await runDurableObjectAlarm(index());
+      expect([await openOn(pubId), await openOn(teamId)]).toEqual([3, 2]);
+    } finally {
+      await runInDurableObject(index(), (p) => {
+        p.now = () => Date.now();
+      });
+    }
     expect(JSON.parse(after.userEvents.frames[0] ?? "{}")).toMatchObject({
       type: "hello",
     });
@@ -211,6 +227,8 @@ describe("oa:close-sockets (#1182)", () => {
   it("the second pass closes a socket that reconnected before dispatch saw the pause", async () => {
     const pubId = await pub("public");
     const first = await viaRoute(R.events(pubId), null);
+    // Taken before the job, so every pass is due at or after t0 + its offset.
+    const t0 = Date.now();
     await runJob();
     expect(await first.closed).toBe(4403);
     const due = await runInDurableObject(index(), (p) => p.pendingSweep());
@@ -219,12 +237,14 @@ describe("oa:close-sockets (#1182)", () => {
     const again = await viaRoute(R.events(pubId), null);
     expect(await openOn(pubId)).toBe(1);
     expect(again.isOpen()).toBe(true);
-    // The second pass, SECOND_PASS_MS later.
-    await runInDurableObject(index(), (p) => {
-      const base = p.now;
-      p.now = () => base() + SECOND_PASS_MS;
-    });
     try {
+      // The index's clock one ms short of the second pass: its alarm runs and
+      // closes nothing.
+      await indexClock(t0 + SECOND_PASS_MS - 1);
+      await runDurableObjectAlarm(index());
+      expect(await openOn(pubId)).toBe(1);
+      // The second pass, SECOND_PASS_MS later.
+      await indexClock(t0 + SECOND_PASS_MS + 60_000);
       // The pass queues the closes; they run on that alarm or the next.
       await alarmsUntil(() => !again.isOpen());
       expect(await again.closed).toBe(4403);
@@ -236,10 +256,11 @@ describe("oa:close-sockets (#1182)", () => {
       const late = await viaRoute(R.events(pubId), null);
       expect(await openOn(pubId)).toBe(1);
       expect(late.isOpen()).toBe(true);
-      await runInDurableObject(index(), (p) => {
-        const base = p.now;
-        p.now = () => base() + (LATER_PASSES_MS[1] - SECOND_PASS_MS);
-      });
+      // One ms short of the last pass: nothing closes.
+      await indexClock(t0 + LATER_PASSES_MS[1] - 1);
+      await runDurableObjectAlarm(index());
+      expect(await openOn(pubId)).toBe(1);
+      await indexClock(t0 + LATER_PASSES_MS[1] + 60_000);
       await alarmsUntil(() => !late.isOpen());
       expect(await late.closed).toBe(4403);
       expect(

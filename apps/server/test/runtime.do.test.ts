@@ -484,7 +484,15 @@ describe("ArtifactRuntime websocket", () => {
       docs: [],
       deleted: ["x"],
     });
-    expect(o.msgs).toEqual([]);
+    // The other collection's socket heard none of that: its first message is
+    // its own collection's write, which it waits for, and nothing else.
+    const other = await s.set("other", "y", { n: 1 }, "u:1");
+    await vi.waitFor(() => expect(o.msgs).toHaveLength(1));
+    expect(o.msgs).toEqual([
+      { type: "db.change", collection: "other", docs: [other], deleted: [] },
+    ]);
+    expect(a.msgs).toHaveLength(2);
+    expect(b.msgs).toHaveLength(2);
     for (const c of [a, b, o]) c.ws.close();
   });
 
