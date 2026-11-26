@@ -9,25 +9,34 @@
 # tracker for its CI. The default token only: no App, no secret, no
 # Environment. The script comes from the default branch, never from the run
 # under test, and runs from forks are skipped (their logs are anyone's text).
+# Hourly, a reconcile tracks any such run of the last 26 hours whose event
+# this workflow missed; a run the store already has is skipped.
 name: flaky-tracker
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
+  schedule:
+    - cron: "17 * * * *"
 permissions: {}
 jobs:
   track:
     if: >-
+      github.event_name == 'schedule' || (
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt > 1 &&
-      github.event.workflow_run.head_repository.full_name == github.repository
+      github.event.workflow_run.head_repository.full_name == github.repository)
     # One group for every tracker run in this repo, so two runs never read
     # and write the store and the issues at once. It sits on the job, not the
     # workflow: every CI completion starts this workflow, and a skipped one
-    # holding a workflow-level slot would cancel a pending real run.
+    # holding a workflow-level slot would cancel a pending real run. queue:
+    # max keeps every pending run waiting in order instead of only the
+    # newest, so no sighting is dropped (it can't go with cancel-in-progress
+    # true); the hourly reconcile catches any run past the queue's limit.
     concurrency:
       group: flaky-tracker
       cancel-in-progress: false
+      queue: max
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -43,8 +52,14 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Record the flaky tests
+        if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --attempt "$ATTEMPT"
+      - name: Reconcile the runs the event missed
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo "$GITHUB_REPOSITORY" --reconcile

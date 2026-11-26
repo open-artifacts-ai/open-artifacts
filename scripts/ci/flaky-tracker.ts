@@ -2,7 +2,10 @@
 // its CI and redline-staging, and both behave the same). Tracking only: it
 // reruns nothing and blocks nothing. flaky-tracker.yml runs it when a CI run
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
-// group). Every test that failed on an earlier attempt of that run, with the
+// group, queued). An hourly reconcile (--reconcile) catches any run that
+// event missed: it lists the last RECONCILE_HOURS of CI runs that passed on
+// attempt 2 or later and tracks each one the store has no `passed` line for,
+// through the same code. Every test that failed on an earlier attempt of that run, with the
 // same head commit, failed and then passed with nothing changed.
 //
 // Where the failures come from: each earlier attempt's failed or timed-out
@@ -40,6 +43,7 @@
 // plain text.
 //
 // Usage: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo o/n --run-id <id> --attempt <n>
+//        node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo o/n --reconcile
 // Needs GH_TOKEN (actions: read, contents: read, issues: write).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -65,6 +69,10 @@ const SEEN_KEEP = 100;
 const COMMENT_MAX = 60000;
 const TITLE_CLIP = 500;
 const STORE_CHAIN_MAX = 10;
+/** The workflow files whose runs the tracker watches (flaky-tracker.yml). */
+export const WATCHED = ["ci.yml"];
+/** How far back the hourly reconcile looks for a run the event missed. */
+export const RECONCILE_HOURS = 26;
 const DAY_MS = 24 * 3600 * 1000;
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -229,18 +237,22 @@ function blockAt(text: string): number {
 }
 
 export type Recorded = Sighting & { key: string };
+/** A tracked run's passing attempt, as `run/attempt`. */
+export type Passed = string;
 export type Marks = {
   key?: string;
   summary?: number;
   prev?: number;
   seen: Sighting[];
   sightings: Recorded[];
+  passed: Passed[];
 };
 
 const AT = String.raw`\d{4}-\d\d-\d\dT[\d:]+Z`;
 const KEY_RE = /^key ([0-9a-f]{16})$/;
 const SUMMARY_RE = /^summary (\d+)$/;
 const PREV_RE = /^prev (\d+)$/;
+const PASSED_RE = /^passed (\d+\/\d+)$/;
 const SEEN_RE = new RegExp(`^seen (${AT}) (\\d+)/(\\d+)$`);
 const SIGHTING_RE = new RegExp(
   `^sighting ([0-9a-f]{16}) (\\d+)/(\\d+) (${AT})$`,
@@ -248,7 +260,7 @@ const SIGHTING_RE = new RegExp(
 
 /** The marks of a bot comment or body's trailing block (empty if none). */
 export function parseMarks(text: string): Marks {
-  const out: Marks = { seen: [], sightings: [] };
+  const out: Marks = { seen: [], sightings: [], passed: [] };
   const t = text.replace(/\r/g, "");
   const i = blockAt(t);
   if (i < 0) return out;
@@ -264,6 +276,8 @@ export function parseMarks(text: string): Marks {
     if (m) out.summary = Number(m[1]);
     m = PREV_RE.exec(l);
     if (m) out.prev = Number(m[1]);
+    m = PASSED_RE.exec(l);
+    if (m) out.passed.push(m[1] as string);
     m = SEEN_RE.exec(l);
     if (m)
       out.seen.push({
@@ -287,7 +301,8 @@ export const parseStore = (comment: string) => parseMarks(comment).sightings;
 
 /**
  * The store comments for this run's sightings, split to stay under GitHub's
- * comment limit. Each ends with its own marker block.
+ * comment limit. Each ends with its own marker block, which also names the
+ * run's passing attempt (`passed run/attempt`) for the reconcile.
  */
 export function storeComments(
   run: RunInfo,
@@ -300,7 +315,14 @@ export function storeComments(
   let size = 0;
   const flush = () => {
     if (!marks.length) return;
-    out.push([head, ...text, "", markerBlock(marks)].join("\n"));
+    out.push(
+      [
+        head,
+        ...text,
+        "",
+        markerBlock([`passed ${run.runId}/${run.attempt}`, ...marks]),
+      ].join("\n"),
+    );
     text = [];
     marks = [];
     size = 0;
@@ -670,15 +692,19 @@ export function storeChain(
   return out;
 }
 
-/** The stores' sightings since the window opened, from bot comments only. */
+/**
+ * The stores' sightings and passed runs since the window opened, from bot
+ * comments only.
+ */
 function readStore(
   exec: Exec,
   repo: string,
   stores: number[],
   nowMs: number,
-): Recorded[] {
+): { sightings: Recorded[]; passed: Set<Passed> } {
   const since = new Date(nowMs - WINDOW_DAYS * DAY_MS).toISOString();
-  const out: Recorded[] = [];
+  const sightings: Recorded[] = [];
+  const passed = new Set<Passed>();
   for (const n of stores) {
     const lines = gh(exec, [
       "api",
@@ -687,10 +713,14 @@ function readStore(
       "--jq",
       `.[] | select(.user.login == "${BOT}") | .body | @json`,
     ]);
-    for (const l of lines.split("\n"))
-      if (l.trim()) out.push(...parseStore(JSON.parse(l) as string));
+    for (const l of lines.split("\n")) {
+      if (!l.trim()) continue;
+      const m = parseMarks(JSON.parse(l) as string);
+      sightings.push(...m.sightings);
+      for (const p of m.passed) passed.add(p);
+    }
   }
-  return out;
+  return { sightings, passed };
 }
 
 const STORE_TITLE = "Flaky test sightings (the flaky tracker's store)";
@@ -843,7 +873,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   // Record every sighting first, so the evidence survives a failure below. A
   // rerun of the tracker finds this run's lines already there and adds none.
   const { store, read } = openStore(exec, run.repo, nowMs, notes);
-  const stored = readStore(exec, run.repo, read, nowMs);
+  const stored = readStore(exec, run.repo, read, nowMs).sightings;
   const fresh = found.filter(
     ({ f, sighting }) =>
       !stored.some((r) => r.key === keyOf(f.id) && r.run === sighting.run),
@@ -939,6 +969,96 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   return { done, notes };
 }
 
+/**
+ * The runs the reconcile looks at: runs of the watched workflows created in
+ * the last RECONCILE_HOURS whose latest attempt (2 or later) passed, with
+ * this repo as head repository (fork PRs skipped), oldest first.
+ */
+export function recentRuns(
+  exec: Exec,
+  repo: string,
+  nowMs: number,
+): { runId: number; attempt: number }[] {
+  const since = new Date(nowMs - RECONCILE_HOURS * 3600 * 1000)
+    .toISOString()
+    .replace(/\.\d+Z$/, "Z");
+  const out = new Map<number, number>();
+  for (const wf of WATCHED) {
+    const lines = gh(exec, [
+      "api",
+      "--paginate",
+      `repos/${repo}/actions/workflows/${wf}/runs?status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`,
+      "--jq",
+      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .head_repository.full_name == "${repo}") | "\\(.id) \\(.run_attempt)"`,
+    ]);
+    for (const l of lines.split("\n")) {
+      const m = /^(\d+) (\d+)$/.exec(l.trim());
+      if (m) out.set(Number(m[1]), Number(m[2]));
+    }
+  }
+  return [...out]
+    .map(([runId, attempt]) => ({ runId, attempt }))
+    .sort((a, b) => a.runId - b.runId);
+}
+
+/** The `passed run/attempt` lines of the stores, without creating one. */
+function passedRuns(exec: Exec, repo: string, nowMs: number): Set<Passed> {
+  const open = listOpen(exec, repo, STORE_LABEL);
+  if (!open.length) return new Set();
+  return readStore(exec, repo, storeChain(exec, repo, open, nowMs), nowMs)
+    .passed;
+}
+
+export type Reconciled = {
+  runId: number;
+  attempt: number;
+  result: "recorded already" | "fork" | "tracked" | "error";
+  done: Done[];
+  notes: string[];
+};
+
+/**
+ * Tracks every recent run the workflow_run event missed. A run the store
+ * already has (its `passed run/attempt` line) is skipped before any other
+ * read, so it adds nothing and bumps nothing. Each other run goes through
+ * loadRun and track like an event would. One run's error doesn't stop the
+ * rest.
+ */
+export function reconcile(o: {
+  exec: Exec;
+  repo: string;
+  nowMs: number;
+}): Reconciled[] {
+  const { exec, repo, nowMs } = o;
+  const runs = recentRuns(exec, repo, nowMs);
+  if (!runs.length) return [];
+  const passed = passedRuns(exec, repo, nowMs);
+  const out: Reconciled[] = [];
+  for (const { runId, attempt } of runs) {
+    const base = { runId, attempt, done: [], notes: [] };
+    if (passed.has(`${runId}/${attempt}`)) {
+      out.push({ ...base, result: "recorded already" });
+      continue;
+    }
+    try {
+      const run = loadRun(exec, repo, runId, attempt);
+      if (!run) {
+        out.push({ ...base, result: "fork" });
+        continue;
+      }
+      out.push({ ...base, result: "tracked", ...track({ exec, run, nowMs }) });
+    } catch (e) {
+      out.push({ ...base, result: "error", notes: [(e as Error).message] });
+    }
+  }
+  return out;
+}
+
+const doneLines = (done: Done[], notes: string[]) => [
+  ...done.map((d) => `  ${d.action} ${d.issue ? `#${d.issue} ` : ""}${d.id}`),
+  ...notes.map((n) => `  note: ${n}`),
+];
+
 const flag = (argv: string[], name: string) => {
   const i = argv.indexOf(`--${name}`);
   return i < 0 ? "" : (argv[i + 1] ?? "");
@@ -959,6 +1079,7 @@ const realExec: Exec = (cmd, args) => {
 function main(argv: string[]) {
   const repo = flag(argv, "repo");
   if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new Error("bad --repo");
+  if (argv.includes("--reconcile")) return mainReconcile(repo);
   const runId = Number(flag(argv, "run-id"));
   const attempt = Number(flag(argv, "attempt"));
   if (!Number.isSafeInteger(runId) || runId < 1)
@@ -976,15 +1097,30 @@ function main(argv: string[]) {
       ...(done.length
         ? []
         : ["  no failed test found in the earlier attempts"]),
-      ...done.map(
-        (d) => `  ${d.action} ${d.issue ? `#${d.issue} ` : ""}${d.id}`,
-      ),
-      ...notes.map((n) => `  note: ${n}`),
+      ...doneLines(done, notes),
     );
   }
+  report(lines);
+}
+
+function report(lines: string[]) {
   console.log(lines.join("\n"));
   const summary = process.env.GITHUB_STEP_SUMMARY;
   if (summary) appendFileSync(summary, `${lines.join("\n")}\n`);
+}
+
+function mainReconcile(repo: string) {
+  const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
+  const lines = [
+    `Flaky tracker reconcile, the last ${RECONCILE_HOURS} hours: ${all.length} runs passed on attempt 2 or later`,
+  ];
+  for (const r of all) {
+    lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);
+    lines.push(...doneLines(r.done, r.notes));
+  }
+  report(lines);
+  if (all.some((r) => r.result === "error"))
+    throw new Error("a run failed to reconcile (see above)");
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

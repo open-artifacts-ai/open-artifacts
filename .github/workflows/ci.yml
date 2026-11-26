@@ -49,7 +49,11 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
-          "$RUNNER_TEMP/actionlint/actionlint" -color .github/workflows/*.yml
+          # actionlint has no release that knows concurrency `queue` yet
+          # (rhysd/actionlint#654); flaky-tracker.yml uses `queue: max`.
+          "$RUNNER_TEMP/actionlint/actionlint" -color \
+            -ignore 'unexpected key "queue" for "concurrency" section' \
+            .github/workflows/*.yml
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-reads.ts check
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-imports.ts cycles
   typecheck:

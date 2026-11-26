@@ -24,8 +24,10 @@ import {
   parsePlaywright,
   parseStore,
   parseVitest,
+  RECONCILE_HOURS,
   type Recorded,
   type RunInfo,
+  reconcile,
   repoDir,
   type Sighting,
   STORE_MAX_COMMENTS,
@@ -147,15 +149,22 @@ describe("the workflow", () => {
     ),
   );
 
-  it("serializes every tracker run in one concurrency group with no per-run part", () => {
+  it("serializes every tracker run in one concurrency group with no per-run part, queueing every pending run", () => {
     const jobs = Object.values(wf.jobs) as {
-      concurrency?: { group: string; "cancel-in-progress": boolean };
+      concurrency?: {
+        group: string;
+        "cancel-in-progress": boolean;
+        queue: string;
+      };
     }[];
     expect(jobs).toHaveLength(1);
     expect(wf.concurrency).toBeUndefined();
     const c = jobs[0]?.concurrency;
     expect(c?.group).toBe("flaky-tracker");
     expect(c?.group).not.toContain("${{");
+    // queue: max keeps up to 100 pending runs instead of only the newest; it
+    // can't be combined with cancel-in-progress true.
+    expect(c?.queue).toBe("max");
     expect(c?.["cancel-in-progress"]).toBe(false);
   });
 
@@ -163,6 +172,21 @@ describe("the workflow", () => {
     expect(wf.jobs.track.if).toContain(
       "github.event.workflow_run.head_repository.full_name == github.repository",
     );
+  });
+
+  it("reconciles hourly, through the same script", () => {
+    expect(wf.on.schedule).toEqual([{ cron: "17 * * * *" }]);
+    expect(wf.on.workflow_run).toEqual({
+      workflows: ["CI"],
+      types: ["completed"],
+    });
+    expect(wf.jobs.track.if).toContain("github.event_name == 'schedule'");
+    const steps = wf.jobs.track.steps as { if?: string; run?: string }[];
+    const event = steps.find((s) => s.run?.includes("--run-id"));
+    const sched = steps.find((s) => s.run?.includes("--reconcile"));
+    expect(event?.if).toBe("github.event_name == 'workflow_run'");
+    expect(sched?.if).toBe("github.event_name == 'schedule'");
+    expect(sched?.run).toContain("scripts/ci/flaky-tracker.ts");
   });
 });
 
@@ -263,6 +287,7 @@ describe("untrusted text", () => {
         key: keyOf(f.id),
         seen: [S],
         sightings: [],
+        passed: [],
       });
       for (const text of [store ?? "", body]) {
         // The only `<!--` and `-->` are the bot's trailing block.
@@ -350,6 +375,9 @@ function fakeGh(o: {
   log: string;
   jobConclusion?: string;
   attemptConclusion?: string;
+  /** The reconcile's run list: `id attempt` lines, after its jq filter. */
+  recentRuns?: string;
+  headRepo?: string;
   storeComments?: { user: string; body: string; issue?: number }[];
   issues?: FakeIssue[];
 }) {
@@ -371,6 +399,16 @@ function fakeGh(o: {
     const ok = (stdout: string) => ({ code: 0, stdout, stderr: "" });
     const path = args.find((a) => a.startsWith("repos/")) ?? "";
     if (args[0] === "api") {
+      if (/\/actions\/workflows\/ci\.yml\/runs\?/.test(path))
+        return ok(o.recentRuns ?? "");
+      if (/\/attempts\/2$/.test(path))
+        return ok(
+          JSON.stringify({
+            conclusion: "success",
+            head_sha: SHA,
+            head_repository: { full_name: o.headRepo ?? REPO },
+          }),
+        );
       if (/\/attempts\/1$/.test(path))
         return ok(
           JSON.stringify({
@@ -758,9 +796,112 @@ describe("track", () => {
     expect(r.done).toEqual([{ action: "create", id: ID }]);
   });
 
+  it("a store comment names the run's passing attempt", () => {
+    const g = fakeGh({ log: ONE_FAIL });
+    track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
+  });
+
   it("a failure outside the tests files nothing", () => {
     const g = fakeGh({ log: "##[error]Process completed with exit code 1." });
     expect(track({ exec: g.exec, run: RUN, nowMs: NOW }).done).toEqual([]);
     expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
+  });
+});
+
+describe("reconcile", () => {
+  sleeper.sleep = () => {};
+  const writes = (g: ReturnType<typeof fakeGh>) =>
+    g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length;
+
+  it(`lists the last ${RECONCILE_HOURS} hours of passing reruns from this repo, in small reads`, () => {
+    const g = fakeGh({ log: ONE_FAIL });
+    expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
+    const list = g.calls.find((c) =>
+      c.some((a) => a.includes("/actions/workflows/ci.yml/runs?")),
+    );
+    const path = list?.find((a) => a.startsWith("repos/")) ?? "";
+    expect(path).toContain("per_page=100");
+    expect(path).toContain("status=success");
+    expect(decodeURIComponent(path)).toContain(
+      "created=>=2026-11-25T10:00:00Z",
+    );
+    const jq = list?.[list.indexOf("--jq") + 1] ?? "";
+    expect(jq).toContain(".run_attempt > 1");
+    expect(jq).toContain(`.head_repository.full_name == "${REPO}"`);
+    // Nothing to do: no store read, no write.
+    expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
+  });
+
+  it("records a run the event missed, through the same code", () => {
+    const g = fakeGh({ log: ONE_FAIL, recentRuns: "900 2\n" });
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r).toEqual([
+      {
+        runId: 900,
+        attempt: 2,
+        result: "tracked",
+        done: [{ action: "record", id: ID }],
+        notes: ["attempt 1: job test failed outside the tests"],
+      },
+    ]);
+    expect(g.created.map((c) => c.label)).toEqual(["flaky-sightings"]);
+    const body = g.comments[0]?.body ?? "";
+    expect(parseStore(body)).toEqual([
+      { key: keyOf(ID), run: 900, attempt: 1, at: "2026-11-26T10:00:00Z" },
+    ]);
+    expect(parseMarks(body).passed).toEqual(["900/2"]);
+  });
+
+  it("a run already in the store adds nothing and bumps nothing", () => {
+    // Run 800 was recorded, and run 900 filed its issue, by their events.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      recentRuns: "800 2\n900 2\n",
+      issues: [STORE],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
+      ],
+    });
+    expect(track({ exec: g.exec, run: RUN, nowMs: NOW }).done).toEqual([
+      { action: "create", id: ID },
+    ]);
+    const before = writes(g);
+    const reads = g.calls.length;
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r.map((x) => [x.runId, x.result])).toEqual([
+      [800, "recorded already"],
+      [900, "recorded already"],
+    ]);
+    expect(writes(g)).toBe(before);
+    // Neither run's attempts or logs are read again.
+    expect(
+      g.calls.slice(reads).some((c) => c.some((a) => a.includes("/attempts/"))),
+    ).toBe(false);
+  });
+
+  it("a forged passed line from someone else doesn't hide a run", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      recentRuns: "900 2\n",
+      issues: [STORE],
+      storeComments: [{ user: "mallory", body: markerBlock(["passed 900/2"]) }],
+    });
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.result).toBe("tracked");
+    expect(g.comments).toHaveLength(1);
+  });
+
+  it("skips a run whose head is in a fork", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      recentRuns: "900 2\n",
+      headRepo: "mallory/open-artifacts",
+    });
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.result).toBe("fork");
+    expect(g.calls.some((c) => c[0] === "issue" && c[1] !== "list")).toBe(
+      false,
+    );
   });
 });
