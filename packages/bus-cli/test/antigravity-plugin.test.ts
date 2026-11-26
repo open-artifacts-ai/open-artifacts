@@ -113,7 +113,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(checkAdapters(deps).antigravity).toBe("missing");
   });
 
-  it("the hook's shell runs agy-hello only when the conversation is not the one recorded", () => {
+  it("the hook's shell runs agy-hello unless the conversation is the one recorded and its watcher runs", () => {
     const h = mkdtempSync(join(tmpdir(), "ob-agyf-"));
     // A stand-in argv: prints its words instead of starting the bus.
     const cmd = agyHookCommand(["/bin/echo", "ran"], h);
@@ -138,9 +138,24 @@ describe("the oa-bus agy plugin (agy S2)", () => {
         cwd: "/w",
       }),
     );
+    // agy S3: recorded, but no watcher yet: Node asks the session to start it.
+    expect(run(REF)).toBe("ran agy-hello");
+    const watch = (pid: number) =>
+      writeFileSync(
+        join(h, "antigravity", `${process.pid}.watch.json`),
+        `${JSON.stringify({ pid, procStart: "w0", agyStart: "t0" })}\n`,
+      );
+    // A running watcher (this test process stands in for it): the shell answers.
+    watch(process.pid);
     expect(run(REF)).toBe("{}");
     expect(run("5d1c9e2a-3b4f-4a6d-8e7f-0a1b2c3d4e5f")).toBe("ran agy-hello");
     expect(run(undefined)).toBe("ran agy-hello");
+    // The watcher died without clearing its file (SIGKILL): Node again.
+    const dead = Number(
+      execFileSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" }),
+    );
+    watch(dead);
+    expect(run(REF)).toBe("ran agy-hello");
   });
 
   it("an older plugin of ours is rewritten; doctor sees it as not wired until then", async () => {

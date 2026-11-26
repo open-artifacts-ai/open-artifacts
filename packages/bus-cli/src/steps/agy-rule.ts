@@ -5,8 +5,11 @@
 // agy documents the CLI's rules as `permissions.allow` in
 // ~/.gemini/antigravity-cli/settings.json: the Global scope of `/permissions`,
 // the same list a prompt's "always allow (Persist to settings.json)" writes.
-// (The Shared scope lives in the app's binary user_settings.pb, which is not
-// ours to edit.) A `command(regex:...)` rule matches the whole raw line, so
+// We use this CLI scope, not the Shared one (`~/.gemini/config/config.json`,
+// where agy 1.0.5 moved shared rules, which the Antigravity app also reads):
+// the watcher needs the CLI's `agentapi` and runs only under the CLI, so the
+// app has no use for the rule, and the CLI scope is the one whose format
+// agy's docs give. The app never sees this rule. A `command(regex:...)` rule matches the whole raw line, so
 // ours is anchored at both ends and matches the watcher's line and nothing
 // else: never a prefix, never a wildcard. Only our string is added or
 // removed; every other byte of the file stays as it was.

@@ -70,6 +70,22 @@ export type AgyWatchDeps = {
 };
 
 /** Exit and timeout: a killed call may have been taken, so it is never sent again. */
+/**
+ * One line of agy's error, for the watcher's own output (which the session
+ * reads): agy's agentapi address and token taken out, should agy ever echo them.
+ */
+export function agyErrorLine(
+  text: string,
+  env: Record<string, string | undefined>,
+): string {
+  let line = text.split("\n")[0] ?? "";
+  for (const k of ["ANTIGRAVITY_CSRF_TOKEN", "ANTIGRAVITY_LS_ADDRESS"]) {
+    const v = env[k];
+    if (v) line = line.replaceAll(v, `<${k}>`);
+  }
+  return line.slice(0, 200);
+}
+
 const execSend =
   (env: Record<string, string | undefined>): AgyWatchDeps["send"] =>
   (bin, conversation, text) =>
@@ -91,9 +107,7 @@ const execSend =
           resolve({
             ok: false,
             ...(e.killed ? { unknown: true as const } : {}),
-            detail: String(stderr || e.message)
-              .split("\n")[0]
-              ?.slice(0, 200) as string,
+            detail: agyErrorLine(String(stderr || e.message), env),
           });
         },
       );
@@ -195,12 +209,6 @@ export async function agyWatch(
     deps.log("oa-bus agy-watch: already running for this session.");
     return 0;
   }
-  if (selfStart !== null)
-    writeAgyWatch(ctx.home, agy, {
-      pid: deps.pid,
-      procStart: selfStart,
-      agyStart,
-    });
   const agyBin = agyBinary(agy, deps);
   const sent = new AgySentIds(ctx.home, agy, agyStart);
   const gone = new AbortController();
@@ -270,6 +278,15 @@ export async function agyWatch(
       const c = await deps.connect(hello);
       client = c;
       tries = 0;
+      // Only once the daemon took this watcher: a start it refused (another
+      // runs) never names itself here, so its cleanup never clears the
+      // running one's file. The hook reads this file to tell one runs.
+      if (selfStart !== null)
+        writeAgyWatch(ctx.home, agy, {
+          pid: deps.pid,
+          procStart: selfStart,
+          agyStart,
+        });
       c.onAgyDeliver((f) => {
         void hand(f, c);
       });

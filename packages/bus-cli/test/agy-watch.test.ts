@@ -7,6 +7,7 @@ import { join } from "node:path";
 import {
   type AgyConversation,
   agyStateDir,
+  agyWatchLive,
   readAgyWatch,
   writeAgyConversation,
   writeAgyWatch,
@@ -16,10 +17,11 @@ import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../../bus-daemon/src/attest.ts";
 import { daemonHarness, stopAll } from "../../bus-daemon/test/helpers.ts";
-import { agyWatchStep } from "../src/commands/agy-hello.ts";
+import { agyHello, agyWatchStep } from "../src/commands/agy-hello.ts";
 import {
   AGY_MESSAGE_TITLE,
   type AgyWatchDeps,
+  agyErrorLine,
   agyWatch,
   type SendResult,
 } from "../src/commands/agy-watch.ts";
@@ -96,6 +98,7 @@ async function setup() {
     let tick: (() => void) | undefined;
     const clients: DaemonClient[] = [];
     const logs: string[] = [];
+    const failed: string[] = [];
     const run = agyWatch(ctx, {
       proc: (p) => table[p] ?? null,
       procStart: (p) => starts.get(p) ?? null,
@@ -109,7 +112,14 @@ async function setup() {
           return { ok: true };
         }),
       connect: async (hello) => {
+        // A killed watcher process never reaches the daemon again.
+        if (!starts.has(pid)) throw new Error("this watcher was killed");
         const c = await connectDaemon({ path: h.socketPath, hello });
+        const giveBack = c.agyFailed;
+        c.agyFailed = (id) => {
+          failed.push(id);
+          giveBack(id);
+        };
         clients.push(c);
         return c;
       },
@@ -118,7 +128,8 @@ async function setup() {
       },
       sleep: (_ms, abort) =>
         new Promise((r) => {
-          setImmediate(r);
+          // A killed one just waits for the end of the test.
+          if (starts.has(pid)) setImmediate(r);
           abort.addEventListener("abort", () => r());
         }),
       every: (_ms, fn) => {
@@ -130,7 +141,7 @@ async function setup() {
       log: (l) => logs.push(l),
       onStop: () => {},
     });
-    return { run, clients, logs, tick: () => tick?.() };
+    return { run, clients, logs, failed, tick: () => tick?.() };
   };
   let n = 0;
   const send = (body = "hello there") => {
@@ -154,7 +165,7 @@ async function setup() {
       () => expect(h.of("agent_up").some((u) => u.agent_ref === A)).toBe(true),
       { timeout: 5000, interval: 5 },
     );
-  return { h, ctx, start, send, acked, calls, up };
+  return { h, ctx, conv, start, send, acked, calls, up };
 }
 
 const until = (fn: () => void) =>
@@ -249,6 +260,106 @@ describe("oa-bus agy-watch (agy S3)", () => {
     expect(w.logs.join("\n")).toMatch(/already running/);
     // The first one's file is left alone.
     expect(readAgyWatch(ctx.home, AGY)?.pid).toBe(W1);
+  });
+
+  for (const [what, change] of [
+    [
+      "another conversation than the one the hook recorded",
+      { conversationId: "5d1c9e2a-3b4f-4a6d-8e7f-0a1b2c3d4e5f" },
+    ],
+    ["a record of an earlier agy process with this pid", { procStart: "t-1" }],
+  ] as const)
+    it(`never hands agy a message for ${what}`, async () => {
+      const { ctx, conv, start, send, calls, up } = await setup();
+      const w = start(W1);
+      await up();
+      await until(() => expect(w.clients).toHaveLength(1));
+      // The hook now records something else for this agy process.
+      writeAgyConversation(ctx.home, { ...conv, ...change }, () => true);
+      const id = send();
+      await until(() => expect(w.failed).toContain(id));
+      expect(calls).toHaveLength(0);
+      expect(w.logs.join("\n")).toContain(`${id} is for another conversation`);
+      starts.delete(AGY);
+      w.tick();
+      await w.run;
+    });
+
+  it("a watcher that died is asked for again at the next model call, and the message held meanwhile arrives once", async () => {
+    const { ctx, start, send, acked, calls, up } = await setup();
+    const w1 = start(W1);
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    await until(() => expect(readAgyWatch(ctx.home, AGY)?.pid).toBe(W1));
+    // SIGKILL: no cleanup, its watch file stays behind.
+    starts.delete(W1);
+    for (const c of w1.clients) c.close();
+    const id = send();
+    // The next PreInvocation: the hook sees no live watcher and asks again.
+    const hook = fakeCtx({ home: ctx.home });
+    await agyHello(hook, {
+      stdin: async () =>
+        JSON.stringify({
+          conversationId: A,
+          cwd: "/w/app",
+          workspacePaths: [],
+        }),
+      proc: (p) => table[p] ?? null,
+      procStart: (p) => starts.get(p) ?? null,
+      title: async () => undefined,
+      hello: async () => "agy",
+      ppid: SHELL,
+      watcherLive: (agy, s) =>
+        agyWatchLive(ctx.home, agy, s, (p) => starts.get(p) ?? null),
+      watchLine: () => "/h/.oa-bus/bin/oa-bus agy-watch",
+    });
+    const out = JSON.parse(hook.out()[0] as string);
+    expect(out.injectSteps[0].systemMessage.systemMessage).toBe(
+      agyWatchStep("/h/.oa-bus/bin/oa-bus agy-watch"),
+    );
+    expect(calls).toHaveLength(0);
+    // The session starts it: the held message drains, once.
+    const w2 = start(W2);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain(`(msg_id ${id})`);
+    expect(readAgyWatch(ctx.home, AGY)?.pid).toBe(W2);
+    starts.delete(AGY);
+    w1.tick();
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("a start the daemon refuses (another watcher runs) leaves the running one's file", async () => {
+    const { ctx, start, up } = await setup();
+    const w1 = start(W1);
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    await until(() => expect(readAgyWatch(ctx.home, AGY)?.pid).toBe(W1));
+    // Two starts raced: the second got past the file check.
+    writeAgyWatch(ctx.home, AGY, {
+      pid: W1,
+      procStart: "stale",
+      agyStart: "t0",
+    });
+    const w2 = start(W2);
+    expect(await w2.run).toBe(0);
+    expect(w2.logs.join("\n")).toMatch(/already running/);
+    expect(readAgyWatch(ctx.home, AGY)?.pid).toBe(W1);
+    starts.delete(AGY);
+    w1.tick();
+    await w1.run;
+  });
+
+  it("agy's error line never carries its agentapi address or token", () => {
+    expect(
+      agyErrorLine(
+        `dial ${ENV.ANTIGRAVITY_LS_ADDRESS} failed (token ${ENV.ANTIGRAVITY_CSRF_TOKEN})\nmore`,
+        ENV,
+      ),
+    ).toBe(
+      "dial <ANTIGRAVITY_LS_ADDRESS> failed (token <ANTIGRAVITY_CSRF_TOKEN>)",
+    );
   });
 
   it("refuses to run outside an agy session or without agy's agentapi env", async () => {

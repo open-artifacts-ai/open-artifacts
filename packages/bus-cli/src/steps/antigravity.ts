@@ -43,16 +43,21 @@ const sh = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
  * a new conversation only; PreInvocation (before each model call) also covers
  * a resumed one (`agy --conversation`, `-c`). So that a call costs no Node
  * start, the shell says `{}` itself when the conversation agy names in the
- * hook's env is already the one recorded for this agy process.
+ * hook's env is already the one recorded for this agy process AND the
+ * watcher its watch file names still runs (agy S3). A watcher that died, even
+ * by SIGKILL, so sends the next call to Node, which asks the session to start
+ * it again; Node also checks the watcher's start time, which the shell can't.
  */
 export function agyHookCommand(busBin: string[], movedHome?: string): string {
   const argv = [...busBin, "agy-hello"].map(sh).join(" ");
   const home =
     movedHome === undefined ? "" : `export OA_BUS_HOME=${sh(movedHome)}; `;
   return (
-    `${home}f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; ` +
+    `${home}d="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity"; ` +
     `if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && ` +
-    `grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; ` +
+    `grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$d/$PPID.json" 2>/dev/null && ` +
+    `p=$(sed -n 's/^{"pid":\\([0-9][0-9]*\\),.*/\\1/p' "$d/$PPID.watch.json" 2>/dev/null) && ` +
+    `[ -n "$p" ] && kill -0 "$p" 2>/dev/null; ` +
     `then echo '{}'; else exec ${argv}; fi`
   );
 }
