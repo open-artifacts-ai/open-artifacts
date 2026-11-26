@@ -3,6 +3,7 @@
 // approved through the device flow in the page, a daemon socket with one open
 // agent, and the proposals an agent or `oa-bus link` would make.
 import type { Page, Response } from "@playwright/test";
+import { withDeadline } from "../staging/with-deadline";
 import { APP, createToken, expect } from "./fixtures";
 import { mcpWithToken } from "./mcp-client";
 
@@ -81,17 +82,20 @@ export async function openAgent(
     if (w) w(f);
     else frames.push(f);
   });
-  // A frame that never comes fails at the test's own timeout.
   const next = (type: string) =>
-    new Promise<Frame>((resolve) => {
-      const take = (f: Frame) => {
-        if (f.type === type) resolve(f);
+    withDeadline(
+      new Promise<Frame>((resolve) => {
+        const take = (f: Frame) => {
+          if (f.type === type) resolve(f);
+          else waiters.push(take);
+        };
+        const q = frames.findIndex((f) => f.type === type);
+        if (q >= 0) resolve(frames.splice(q, 1)[0] as Frame);
         else waiters.push(take);
-      };
-      const q = frames.findIndex((f) => f.type === type);
-      if (q >= 0) resolve(frames.splice(q, 1)[0] as Frame);
-      else waiters.push(take);
-    });
+      }),
+      15_000,
+      `a ${type} frame`,
+    );
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("socket error")));
