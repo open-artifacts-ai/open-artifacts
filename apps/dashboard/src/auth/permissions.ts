@@ -116,18 +116,10 @@ export const accessLabel = (level: AccessLevel) => LABEL[level];
 
 /** The title bar names the signed-in visitor's effective page access. */
 export const ownAccessLabel = (
-  a: {
-    access: AccessLevel;
-    comments?: boolean;
-    can?: { comment?: boolean } | null;
-  },
-  outsider: boolean,
+  a: Pick<ArtifactSummary, "access" | "shareRole">,
 ) =>
-  a.access === "viewer" || a.access === "editor"
-    ? shareRoleLabel(
-        a.access,
-        a.comments !== false && (a.can?.comment ?? !outsider),
-      )
+  a.access === "viewer" && a.shareRole === "commenter"
+    ? shareRoleLabel("commenter")
     : LABEL[a.access];
 
 /**

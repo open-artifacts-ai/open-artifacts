@@ -1,7 +1,4 @@
-// #2590: per-share roles, with "commenter" (Can comment) for people outside
-// the instance. The role is @oa/shared's ShareRole (#2600); this file holds
-// the Share panel's choices, labels, outside-address rules and notes.
-import { type ShareResult, type ShareRole, shareRoleLabel } from "@oa/shared";
+import type { ShareResult, ShareRole } from "@oa/shared";
 
 /** Why a saved share sent no email (ShareResult.notEmailed, with #2649's "skipped"). */
 export type NotEmailed = NonNullable<ShareResult["notEmailed"]>;
@@ -71,44 +68,13 @@ export const WORKSPACE_ONLY_ADMIN = {
   after: ".",
 };
 
-type Option = { value: ShareRole; label: string };
-const memberRoles: ShareRole[] = ["viewer", "editor"];
-const outsiderRoles: ShareRole[] = ["commenter", "viewer"];
-export const OUTSIDER_DEFAULT: ShareRole = "commenter";
+export const shareRoles: readonly ShareRole[] = [
+  "viewer",
+  "commenter",
+  "editor",
+];
 
-export function roleLabel(
-  role: ShareRole,
-  outsider: boolean,
-  comments = true,
-): string {
-  return shareRoleLabel(role, !outsider && comments);
-}
-
-/** Preserve legacy grants outside the usual options so the picker has a value. */
-export function roleOptions(
-  outsider: boolean,
-  current?: ShareRole,
-  comments = true,
-): Option[] {
-  const roles = outsider ? outsiderRoles : memberRoles;
-  const choices =
-    current && !roles.includes(current) ? [...roles, current] : roles;
-  return choices.map((value) => ({
-    value,
-    label: roleLabel(value, outsider, comments),
-  }));
-}
-
-/**
- * Is a typed `email` outside the instance? Where the org lists its login
- * domains (Google): when it's at none of them. Where it lists none (OA
- * Product, #2590): when it isn't a known member, so the outsider's choices
- * show before it's saved. `members` is the known members' addresses
- * (lowercase), or null when the caller can't list them (only owners and
- * admins can): then it can't tell (null), the member's choices stay, and the
- * saved row shows the server's answer (a guest's: Can comment / Can view).
- * Null for an address still being typed.
- */
+/** Whether to show the outside-address sign-in note; null until known. */
 export function outsideAddress(
   email: string,
   domains: readonly string[],

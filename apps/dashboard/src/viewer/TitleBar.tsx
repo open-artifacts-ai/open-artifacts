@@ -486,7 +486,7 @@ export function TitleBar({
           org={org}
         />
         {/* #2932: one access label. A signed-in person sees their access named
-            (Can view, Can comment, Can edit…), in a space or on a page shared with
+            (Viewer, Commenter, Editor…), in a space or on a page shared with
             them; the owner off a space sees none. "View only" is only for a
             visitor with no role to name (a link visitor) who can't write data.
             The data note rides on the label as a tooltip. */}
@@ -494,9 +494,7 @@ export function TitleBar({
           const named =
             authed && (!!artifact.space || artifact.access !== "owner");
           if (!named && !viewOnly) return null;
-          const label = named
-            ? ownAccessLabel(artifact, outsider)
-            : "View only";
+          const label = named ? ownAccessLabel(artifact) : "View only";
           return viewOnly ? (
             <TooltipProvider>
               <Tooltip>

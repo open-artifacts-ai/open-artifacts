@@ -73,7 +73,7 @@ it("hosted guest on a live-data artifact sees the chip, a tooltip on focus, no b
   mountHosted(`/a/${arts[0].id}`, true, undefined, [
     handler({ access: "viewer", can: guestCan, capabilities: live }),
   ]);
-  const chip = await screen.findByText("Can comment");
+  const chip = await screen.findByText("Viewer");
   expect(chip).toBeVisible();
   expect(chip).toHaveAttribute("tabindex", "0");
   act(() => chip.focus());
@@ -111,7 +111,7 @@ it("contractor + db: a restricted member on a live-data artifact gets the chip",
     }),
     [handler({ access: "viewer", can: guestCan, capabilities: live })],
   );
-  expect(await screen.findByText("Can comment")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
   for (const name of ["Rename", "Share", "Delete"])
     expect(screen.queryByRole("button", { name })).toBeNull();
 });
@@ -139,7 +139,7 @@ it("self-hosted viewer of an editors-only live artifact sees one label, Viewer (
     dataWriters: "editors",
   });
   mount(`/a/${arts[0].id}`);
-  expect(await screen.findByText("Can comment")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
 });
 
 it("self-hosted viewer of a viewers-writable live artifact gets no chip", async () => {
@@ -164,7 +164,7 @@ it("hosted viewer whose can says no data writes (editors-only) sees one label, V
       dataWriters: "editors",
     }),
   ]);
-  expect(await screen.findByText("Can comment")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
 });
 
 it("self-hosted viewer share (no can, no space): names the access, no chip (#2932)", async () => {
@@ -177,7 +177,7 @@ it("self-hosted viewer share (no can, no space): names the access, no chip (#293
   mount(`/a/${arts[0].id}`);
   await screen.findByRole("heading", { name: arts[0].title });
   // #2932: a page shared with you names your access, even off a space.
-  expect(await screen.findByText("Can comment")).toBeVisible();
+  expect(await screen.findByText("Viewer")).toBeVisible();
   expect(screen.queryByText("View only")).toBeNull();
 });
 
@@ -286,7 +286,7 @@ it("accessLabel", () => {
   ).toEqual(["Owner", "Manager", "Editor", "Viewer"]);
 });
 
-// #2932: one access label in the title bar, never "Can comment" beside "View only".
+// #2932: one access label in the title bar, never "Viewer" beside "View only".
 const eng = {
   id: "SpEngNpQrSt2uVwX",
   kind: "shared",
@@ -302,7 +302,7 @@ it("in a space, a viewer who can't write data sees one label: Viewer, with the d
       space: eng,
     }),
   ]);
-  const chip = await screen.findByText("Can comment");
+  const chip = await screen.findByText("Viewer");
   expect(chip).toHaveAttribute("tabindex", "0");
   expect(screen.queryByText("View only")).toBeNull();
   expect(document.querySelectorAll("[data-access-label]")).toHaveLength(1);

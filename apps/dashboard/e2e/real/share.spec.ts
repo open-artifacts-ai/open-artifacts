@@ -38,10 +38,10 @@ test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets 
   await page.getByRole("button", { name: "Share", exact: true }).click();
   await page.getByRole("textbox", { name: "Email" }).fill(BOB);
   await expect(page.getByRole("combobox", { name: "Invite role" })).toHaveText(
-    "Viewer",
+    "Editor",
   );
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  const remove = page.getByRole("button", { name: `Remove ${BOB}` });
+  const remove = page.getByRole("combobox", { name: `Role for ${BOB}` });
   await expect(remove).toBeVisible();
   // #167: no email is sent, so the owner gets the link to pass on.
   await expect(page.getByText(`Shared with ${BOB}`)).toBeVisible();
@@ -73,6 +73,7 @@ test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets 
   await shareViaApi(member.pat, other.id, BOB);
 
   await remove.click();
+  await page.getByRole("option", { name: "Remove access" }).click();
   await expect(remove).toHaveCount(0);
 
   // Bob is shared across projects, so the list may hold others' artifacts:
@@ -121,8 +122,9 @@ test("revoking a guest's last share signs them out", async ({
 
   await page.goto(`/a/${id}`);
   await page.getByRole("button", { name: "Share", exact: true }).click();
-  const remove = page.getByRole("button", { name: `Remove ${guest}` });
+  const remove = page.getByRole("combobox", { name: `Role for ${guest}` });
   await remove.click();
+  await page.getByRole("option", { name: "Remove access" }).click();
   await expect(remove).toHaveCount(0);
 
   // The guest is deactivated with their last share: the session is gone.

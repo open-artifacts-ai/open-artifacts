@@ -6,6 +6,7 @@ import {
   DATA_EDITORS_ONLY_MESSAGE,
   type ListQuery,
   type Member,
+  type ShareRole,
   type SpaceRole,
   type Visibility,
   VisibilitySchema,
@@ -193,8 +194,7 @@ type Access = {
   level: AccessLevel;
   artifact: ArtifactRow;
   personal: boolean;
-  /** The caller's own share is a "commenter" one. */
-  commenter: boolean;
+  shareRole: ShareRole | null;
 };
 const prefetched = new AsyncLocalStorage<Map<string, Access | null>>();
 const accessKey = (c: Caller, id: string, opts: { allowDeleted?: boolean }) =>
@@ -271,7 +271,7 @@ function accessOf(
         level,
         artifact: row.a,
         personal: space.kind !== "shared",
-        commenter: row.shareRole === "commenter",
+        shareRole: row.shareRole,
       }
     : null;
 }
@@ -580,7 +580,7 @@ export async function authorize(
   const ctx: CanCtx = {
     ...base,
     personal: r.personal,
-    commenterShare: r.commenter,
+    shareRole: r.shareRole,
     ...opts.ctx,
     anonymous: base.anonymous,
     dataWriters: base.dataWriters,

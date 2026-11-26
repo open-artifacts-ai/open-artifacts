@@ -70,7 +70,7 @@ export const MAX_SHARES = 200;
 const GUEST_LINE: Record<ShareRole, string> = {
   viewer: "They're a guest, so they can only view.",
   commenter: "They're a guest, so they can view and comment.",
-  editor: "They're a guest, so they can only view for now.",
+  editor: "Editor once they join the team. Until then, they can only view.",
 };
 export const guestShareLine = (s: { role: ShareRole }): string =>
   GUEST_LINE[s.role];
@@ -101,7 +101,7 @@ export async function listShares(
   const rows = await getDb(env)
     .select({
       email: shares.email,
-      role: shareRoleSql(),
+      role: shareRoleSql<ShareRole>(),
       createdAt: shares.createdAt,
       orgRole: users.role,
       uid: users.id,
@@ -222,12 +222,9 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
-  // No role given: a guest comments, anyone else views.
   const reach = await shareReach(env, email);
   const guest = await guestRecipients(env)(email, reach.role);
-  // An outsider is never stored as editor: a guest comments at most.
-  const asked = s.role ?? (guest ? "commenter" : "viewer");
-  const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
+  const role = s.role ?? "editor";
   const stored = storedShare(role);
   // #2590: with the owner's switch off, no new share to an address outside
   // the instance (no user row here). A person already in stays shareable.
@@ -317,15 +314,7 @@ export async function putShare(
     memberId: await memberIdOfEmail(env, row.email),
     ...(guest ? { guest: true } : {}),
     ...(await emailed(created, () =>
-      emailShare(
-        env,
-        user,
-        artifact,
-        email,
-        role,
-        !guest && artifact.comments === 1,
-        reach,
-      ),
+      emailShare(env, user, artifact, email, role, reach),
     )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
@@ -377,7 +366,6 @@ async function emailShare(
   },
   email: string,
   role: ShareRole,
-  viewerCanComment: boolean,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<{
@@ -531,7 +519,6 @@ async function emailShare(
               path: viewerPath(artifact.id),
               format: apiFormat(artifact.format, artifact.doc),
               role,
-              viewerCanComment,
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
             }),

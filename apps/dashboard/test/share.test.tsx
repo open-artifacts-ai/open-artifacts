@@ -139,11 +139,7 @@ describe("share panel", () => {
     );
   });
 
-  it.each([
-    // #2590: only an old Editor share on a guest keeps the caption; a
-    // viewer or commenter guest's picker says Can view or Can comment.
-    ["editor", "Can edit", "Guest · can only view for now"],
-  ])(
+  it.each([["editor", "Editor", "Editor once they join the team"]])(
     "a guest's row with stored %s: email, caption, then the select and Remove",
     async (role, shown, caption) => {
       const guest = "gus@elsewhere.test";
@@ -170,14 +166,13 @@ describe("share panel", () => {
         name: `Role for ${guest}`,
       });
       expect(select).toHaveTextContent(shown);
-      const remove = screen.getByRole("button", { name: `Remove ${guest}` });
+
       const follows = (a: Element, b: Element) =>
         a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING;
       expect(follows(label, select)).toBeTruthy();
-      expect(follows(select, remove)).toBeTruthy();
+
       expect(label.parentElement).not.toBe(email.parentElement);
       expect(label.parentElement).toContainElement(select);
-      expect(label.parentElement).toContainElement(remove);
     },
   );
 
@@ -201,11 +196,8 @@ describe("share panel", () => {
       const select = screen.getByRole("combobox", {
         name: "Role for dan@example.com",
       });
-      expect(select).toHaveTextContent("Can edit");
+      expect(select).toHaveTextContent("Editor");
       expect(caption.parentElement).toContainElement(select);
-      expect(caption.parentElement).toContainElement(
-        screen.getByRole("button", { name: "Remove dan@example.com" }),
-      );
       // #2509: "Restricted" now names the general access; the row itself has no restricted chip.
       expect(email.closest("li")).not.toHaveTextContent(/restrict/i);
     });
@@ -228,7 +220,7 @@ describe("share panel", () => {
       ]);
       mount(panel(OWNED));
       expect(
-        await screen.findByText("Guest · can only view for now"),
+        await screen.findByText("Editor once they join the team"),
       ).toBeTruthy();
       expect(screen.queryByText(NOW)).toBeNull();
     });
@@ -253,7 +245,7 @@ describe("share panel", () => {
         await screen.findByRole("combobox", { name: "Invite role" }),
         { key: "Enter" },
       );
-      fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
       fireEvent.change(screen.getByLabelText("Email"), {
         target: { value: "bob@example.com" },
       });
@@ -270,7 +262,7 @@ describe("share panel", () => {
   describe("a guest invited as Editor", () => {
     const LINE =
       "Guests can only view. If they become a member, they'll be able to edit.";
-    const invite = async (email: string, role: "Can edit" | "Can comment") => {
+    const invite = async (email: string, role: "Editor" | "Viewer") => {
       fireEvent.keyDown(
         await screen.findByRole("combobox", { name: "Invite role" }),
         { key: "Enter" },
@@ -307,7 +299,7 @@ describe("share panel", () => {
         }),
       ];
       mountHosted(panel(OWNED), CODES, undefined, guestRows);
-      await invite(who, "Can edit");
+      await invite(who, "Editor");
       const line = await screen.findByText(LINE);
       expect(line).toHaveAttribute("role", "status");
       expect(screen.getByTitle(who).closest("li")).toContainElement(line);
@@ -315,12 +307,12 @@ describe("share panel", () => {
       mountHosted(panel(OWNED), CODES, undefined, guestRows);
       await screen.findByTitle(who);
       expect(
-        await screen.findByText("Guest · can only view for now"),
+        await screen.findByText("Editor once they join the team"),
       ).toBeTruthy();
       expect(screen.queryByText(LINE)).toBeNull();
     });
 
-    it("an unknown address is outside (Can comment / Can view); a known member as Editor gets no line", async () => {
+    it("a new address and a known member both default to Editor", async () => {
       mountHosted(panel(OWNED), CODES);
       await screen.findByRole("combobox", { name: "Invite role" });
       fireEvent.change(screen.getByLabelText("Email"), {
@@ -329,12 +321,12 @@ describe("share panel", () => {
       await waitFor(() =>
         expect(
           screen.getByRole("combobox", { name: "Invite role" }),
-        ).toHaveTextContent("Can comment"),
+        ).toHaveTextContent("Editor"),
       );
       fireEvent.change(screen.getByLabelText("Email"), {
         target: { value: "" },
       });
-      await invite("dan@example.com", "Can edit");
+      await invite("dan@example.com", "Editor");
       expect(screen.queryByText(LINE)).toBeNull();
     });
   });
@@ -345,14 +337,15 @@ describe("share panel", () => {
       name: "Role for bob@example.com",
     });
     fireEvent.keyDown(trigger, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Role for bob@example.com" }),
-      ).toHaveTextContent("Can edit"),
+      ).toHaveTextContent("Editor"),
     );
+    fireEvent.keyDown(trigger, { key: "Enter" });
     fireEvent.click(
-      screen.getByRole("button", { name: "Remove bob@example.com" }),
+      await screen.findByRole("option", { name: "Remove access" }),
     );
     await waitFor(() =>
       expect(screen.queryByText("bob@example.com")).toBeNull(),
@@ -876,9 +869,11 @@ describe("one request per action (useSingleFlight)", () => {
   it("two Remove clicks in one tick send one DELETE", async () => {
     const dels = count("DELETE");
     mount(panel(OWNED));
-    const remove = await screen.findByRole("button", {
-      name: /^Remove .+@/,
+    const trigger = await screen.findByRole("combobox", {
+      name: "Role for bob@example.com",
     });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    const remove = await screen.findByRole("option", { name: "Remove access" });
     act(() => {
       fireEvent.click(remove);
       fireEvent.click(remove);

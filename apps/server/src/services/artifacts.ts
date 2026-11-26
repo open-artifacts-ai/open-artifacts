@@ -21,6 +21,7 @@ import {
   type PublishResult,
   R,
   resolveDataWriters,
+  type ShareRole,
   type UserRef,
   VERSIONS_PAGE_SIZE,
   type VersionInfo,
@@ -59,6 +60,7 @@ import {
 } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
@@ -1022,14 +1024,14 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null, r.commenter);
+    return decorate(env, caller, out, r.level, null, null, r.shareRole);
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
     .select(spaceCols(caller, true, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
-  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.commenter);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.shareRole);
 }
 
 /** The artifact's space row as withSpace reads it (null: no row). */
@@ -1065,11 +1067,15 @@ export const spaceCols = (
  */
 function canComment(
   caller: Caller,
+  level: AccessLevel,
   out: Pick<ArtifactSummary, "comments" | "commenters">,
-  commenter = false,
+  shareRole: ShareRole | null = null,
 ): boolean {
   const cap = capOfCaller(caller);
-  if ((cap && !(cap === "guest" && commenter)) || out.comments === false)
+  if (
+    !can(level, "comments.write", { personal: false, cap, shareRole }) ||
+    out.comments === false
+  )
     return false;
   return !(out.commenters === "signed-in" && caller.kind === "anonymous");
 }
@@ -1113,8 +1119,7 @@ export function withSpace<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
-  /** The caller's own share is a commenter one (#2590). */
-  commenter = false,
+  shareRole: ShareRole | null = null,
 ): T {
   const shared = sp?.kind === "shared";
   if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
@@ -1129,7 +1134,8 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, out, commenter);
+  out.can.comment = canComment(caller, level, out, shareRole);
+  if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1169,7 +1175,7 @@ export function withCan<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   level: AccessLevel,
-  commenter = false,
+  shareRole: ShareRole | null = null,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1179,8 +1185,9 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, out, commenter),
+    comment: canComment(caller, level, out, shareRole),
   };
+  if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, true));
 }
 
@@ -1195,7 +1202,7 @@ export function decorate<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
-  commenter = false,
+  shareRole: ShareRole | null = null,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1205,8 +1212,8 @@ export function decorate<T extends ArtifactSummary>(
     return out;
   }
   return decorates(env, caller)
-    ? withSpace(caller, out, level, spaceId, sp, commenter)
-    : withCan(caller, out, level, commenter);
+    ? withSpace(caller, out, level, spaceId, sp, shareRole)
+    : withCan(caller, out, level, shareRole);
 }
 
 // --------------------------------------------------------------------- list
@@ -1305,7 +1312,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
-      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
+      shareRole: shareRoleSql(),
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
@@ -1368,15 +1375,7 @@ export async function list(
     out.lastAgent = shownLastAgent(r.lastPub, caller);
     if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
     items.push(
-      decorate(
-        env,
-        caller,
-        out,
-        level,
-        r.a.spaceId,
-        r.space,
-        r.commenter === 1,
-      ),
+      decorate(env, caller, out, level, r.a.spaceId, r.space, r.shareRole),
     );
   }
   // #2512: the "waiting" mark: one read of my open asks on this page and one

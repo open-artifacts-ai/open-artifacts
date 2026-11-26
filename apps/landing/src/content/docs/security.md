@@ -41,7 +41,7 @@ Cloudflare Access is the identity provider, using a one-time PIN by email, or Gi
 
 - **Roles:** the owner and admins manage members and settings. Members publish. Guests see only what's shared with them.
 - **Removed members:** someone an admin removes and later restores gets their space roles back, but not their old tokens or agent connections. They have to log in again, and a former admin comes back as a member.
-- **Shares** give a person `viewer` or `editor` access by email. Editors can publish new versions, edit the title and description, and restore versions.
+- **Shares** grant access by email. Viewer can read. Commenter can also post when comments are on. Editor, the default for new shares, can also publish new versions, edit the title and description, and restore versions. A guest assigned Editor can only view until they join the team.
 - **Only the creator** can share an artifact, change its visibility, or delete it. Admins can't see other people's private artifacts.
 - **No access looks like no artifact.** Anything you can't see returns `404`, never `403`.
 

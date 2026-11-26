@@ -75,21 +75,13 @@ export function resolveDataWriters(
 }
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
-/**
- * A share's role. "commenter" opens the page like a viewer and adds comments
- * and replies for a guest (a guest with "viewer" cannot comment); for a
- * member it reads as "viewer".
- */
+/** Viewer reads, Commenter may also comment, and Editor may publish versions. */
 export const ShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
 export type ShareRole = z.infer<typeof ShareRoleSchema>;
 
-/** Display a page share using the recipient's commenting rights. */
-export function shareRoleLabel(
-  role: ShareRole,
-  viewerCanComment: boolean,
-): string {
-  if (role === "editor") return "Can edit";
-  return role === "commenter" || viewerCanComment ? "Can comment" : "Can view";
+/** Names used in the sharing menu, title bar and email. */
+export function shareRoleLabel(role: ShareRole): string {
+  return { viewer: "Viewer", commenter: "Commenter", editor: "Editor" }[role];
 }
 /**
  * The caller's level on one artifact. "owner": the personal owner only;
@@ -399,6 +391,8 @@ export const ArtifactSummarySchema = z.object({
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
   can: ArtifactCanSchema.optional(),
+  /** The signed-in recipient’s directly assigned page role. */
+  shareRole: ShareRoleSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
   /** #2080: who may post when comments are on. Absent: older server, read as "everyone". */
@@ -772,7 +766,7 @@ export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
 export const ShareInputSchema = z.strictObject({
   email: z.string().email(),
-  /** Absent: "commenter" for a guest, "viewer" for anyone else. */
+  /** Absent: Editor. A guest assigned Editor can only view until joining as a member. */
   role: ShareRoleSchema.optional(),
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;

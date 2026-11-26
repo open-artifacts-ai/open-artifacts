@@ -238,7 +238,6 @@ export function shareEmail(
       path: string;
       format: Format;
       role: ShareRole;
-      viewerCanComment?: boolean;
     },
 ): EmailContent {
   const { origin, values } = common(p);
@@ -251,7 +250,7 @@ export function shareEmail(
       artifactTitle: oneLine(p.title, TITLE_MAX),
       artifactUrl: linkOn(origin, p.path),
       artifactFormat: FORMAT_LABEL[p.format],
-      role: shareRoleLabel(p.role, p.viewerCanComment === true),
+      role: shareRoleLabel(p.role),
       signInLine: signInSentence(p.signIn, values.recipientEmail, p),
     },
   );

@@ -1,20 +1,9 @@
-// #2590: a share to someone outside the instance offers only "Can comment"
-// and "Can view", starting at Can comment; members keep Can comment and Can edit;
-// a commenter reads "Can comment" wherever a share's role shows.
-// PROVISIONAL: the shared mocks take viewer | editor only until OA Comments'
-// contract lands, so these tests answer the share routes themselves.
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
-import {
-  OUTSIDER_DEFAULT,
-  outsideAddress,
-  outsideLine,
-  roleLabel,
-  roleOptions,
-} from "../src/viewer/panels/shareRoles";
+import { outsideAddress, outsideLine } from "../src/viewer/panels/shareRoles";
 import { installHarness, mountHosted } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -37,38 +26,6 @@ const OWNED = (
 const panel = `${viewerPath(OWNED)}?panel=open&tab=share`;
 
 describe("roles", () => {
-  it("an outsider: Can comment first and by default, then Can view", () => {
-    expect(OUTSIDER_DEFAULT).toBe("commenter");
-    expect(roleOptions(true).map((o) => o.label)).toEqual([
-      "Can comment",
-      "Can view",
-    ]);
-    expect(roleOptions(false).map((o) => o.label)).toEqual([
-      "Can comment",
-      "Can edit",
-    ]);
-  });
-  it("a commenter reads Can comment everywhere; an outsider's viewer, Can view", () => {
-    expect(roleLabel("commenter", false)).toBe("Can comment");
-    expect(roleLabel("commenter", true)).toBe("Can comment");
-    expect(roleLabel("viewer", true)).toBe("Can view");
-    expect(roleLabel("viewer", false)).toBe("Can comment");
-    expect(roleLabel("editor", false)).toBe("Can edit");
-  });
-  it("a member viewer reads Can view when page comments are off", () => {
-    expect(roleLabel("viewer", false, false)).toBe("Can view");
-    expect(roleOptions(false, "viewer", false)).toEqual([
-      { value: "viewer", label: "Can view" },
-      { value: "editor", label: "Can edit" },
-    ]);
-  });
-  it("a stored role outside the list stays listed (an outsider's old Editor)", () => {
-    expect(roleOptions(true, "editor").map((o) => o.value)).toEqual([
-      "commenter",
-      "viewer",
-      "editor",
-    ]);
-  });
   it("with login domains: outside means at none of them", () => {
     expect(outsideAddress("sam@gmail.com", ["example.com"], null)).toBe(true);
     expect(outsideAddress("Maya@Example.com", ["example.com"], null)).toBe(
@@ -168,17 +125,19 @@ describe("the Share panel", () => {
           name: `Role for ${share.email}`,
         });
         expect(row).toHaveTextContent(
-          share.guest || comments ? "Can comment" : "Can view",
+          share.role === "viewer" ? "Viewer" : "Commenter",
         );
+        expect(await options(`Role for ${share.email}`)).toEqual([
+          "Viewer",
+          "Commenter",
+          "Editor",
+          "Remove access",
+        ]);
       }
-      expect(await options("Role for maya@example.com")).toEqual([
-        comments ? "Can comment" : "Can view",
-        "Can edit",
-      ]);
     },
   );
 
-  it("an outside address starts at Can comment and offers only Can comment and Can view; a member's keeps Can comment and Can edit", async () => {
+  it("members and outsiders get the same roles and default to Editor", async () => {
     const { puts, handlers } = routes();
     // The hosted mocks list example.com as the login domain; these routes
     // sit ahead of them.
@@ -193,16 +152,24 @@ describe("the Share panel", () => {
     invite("maya@example.com");
     expect(
       screen.getByRole("combobox", { name: "Invite role" }),
-    ).toHaveTextContent("Can comment");
-    expect(await options("Invite role")).toEqual(["Can comment", "Can edit"]);
+    ).toHaveTextContent("Editor");
+    expect(await options("Invite role")).toEqual([
+      "Viewer",
+      "Commenter",
+      "Editor",
+    ]);
     expect(screen.queryByText(/^Outside your team/)).toBeNull();
     invite("sam@gmail.com");
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Invite role" }),
-      ).toHaveTextContent("Can comment"),
+      ).toHaveTextContent("Editor"),
     );
-    expect(await options("Invite role")).toEqual(["Can comment", "Can view"]);
+    expect(await options("Invite role")).toEqual([
+      "Viewer",
+      "Commenter",
+      "Editor",
+    ]);
     // The hosted mocks offer Google and codes.
     expect(
       screen.getByText(
@@ -211,15 +178,17 @@ describe("the Share panel", () => {
     ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() =>
-      expect(puts).toEqual([{ email: "sam@gmail.com", role: "commenter" }]),
+      expect(puts).toEqual([{ email: "sam@gmail.com", role: "editor" }]),
     );
     const row = await screen.findByRole("combobox", {
       name: "Role for sam@gmail.com",
     });
-    expect(row).toHaveTextContent("Can comment");
+    expect(row).toHaveTextContent("Editor");
     expect(await options("Role for sam@gmail.com")).toEqual([
-      "Can comment",
-      "Can view",
+      "Viewer",
+      "Commenter",
+      "Editor",
+      "Remove access",
     ]);
     // No caption for an outsider's commenter row.
     expect(screen.queryByText(/Guest ·/)).toBeNull();
@@ -227,7 +196,7 @@ describe("the Share panel", () => {
 });
 
 describe("an instance with no login domains (codes only)", () => {
-  it("a known member keeps Can comment and Can edit; anyone else is outside, with the codes line", async () => {
+  it("a known member starts at Editor; anyone else is outside, with the codes line", async () => {
     mountHosted(panel, { providers: ["email"] }, (m) => ({
       ...m,
       instance: { ...m.instance, emailEnabled: true },
@@ -240,7 +209,7 @@ describe("an instance with no login domains (codes only)", () => {
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Invite role" }),
-      ).toHaveTextContent("Can comment"),
+      ).toHaveTextContent("Editor"),
     );
     fireEvent.change(screen.getByLabelText("Email"), {
       target: { value: "sam@gmail.com" },
@@ -248,7 +217,7 @@ describe("an instance with no login domains (codes only)", () => {
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Invite role" }),
-      ).toHaveTextContent("Can comment"),
+      ).toHaveTextContent("Editor"),
     );
     expect(
       screen.getByText(
@@ -259,7 +228,7 @@ describe("an instance with no login domains (codes only)", () => {
 });
 
 describe("a member who can't list members, codes only", () => {
-  it("a teammate's address keeps Can comment and Can edit (the saved row shows the server's answer)", async () => {
+  it("a teammate’s address has all three roles (the saved row shows the server's answer)", async () => {
     // Not an owner or admin: GET members is not theirs to read.
     mountHosted(panel, { providers: ["email"] }, (m) => ({
       ...m,
@@ -271,13 +240,13 @@ describe("a member who can't list members, codes only", () => {
     });
     expect(
       screen.getByRole("combobox", { name: "Invite role" }),
-    ).toHaveTextContent("Can comment");
+    ).toHaveTextContent("Editor");
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Invite role" }), {
       key: "Enter",
     });
     expect(
       (await screen.findAllByRole("option")).map((o) => o.textContent),
-    ).toEqual(["Can comment", "Can edit"]);
+    ).toEqual(["Viewer", "Commenter", "Editor"]);
     expect(screen.queryByText(/^Outside your team/)).toBeNull();
   });
 });
@@ -315,7 +284,7 @@ describe("the stored role, not the one picked", () => {
       target: { value: "gia@elsewhere.test" },
     });
     fireEvent.keyDown(select, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() =>
       expect(puts).toEqual([{ email: "gia@elsewhere.test", role: "editor" }]),
@@ -324,7 +293,7 @@ describe("the stored role, not the one picked", () => {
       await screen.findByRole("combobox", {
         name: "Role for gia@elsewhere.test",
       }),
-    ).toHaveTextContent("Can comment");
+    ).toHaveTextContent("Commenter");
     // The Editor note goes with an Editor share; this one was stored as commenter.
     expect(
       screen.queryByText(
@@ -366,7 +335,7 @@ describe("email off means codes off (#2590)", () => {
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Invite role" }),
-      ).toHaveTextContent("Can comment"),
+      ).toHaveTextContent("Editor"),
     );
     expect(screen.getByText(WONT)).toBeVisible();
     expect(screen.queryByText(/^Outside your team/)).toBeNull();

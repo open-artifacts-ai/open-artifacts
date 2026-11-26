@@ -2,24 +2,18 @@ import { describe, expect, it } from "vitest";
 import { ownAccessLabel } from "../src/auth/permissions";
 
 describe("ownAccessLabel", () => {
-  it("a guest with a Can comment share reads Can comment", () => {
-    expect(
-      ownAccessLabel({ access: "viewer", can: { comment: true } }, true),
-    ).toBe("Can comment");
-  });
-  it("a guest who can't comment reads Can view", () => {
-    expect(
-      ownAccessLabel({ access: "viewer", can: { comment: false } }, true),
-    ).toBe("Can view");
-    expect(ownAccessLabel({ access: "viewer" }, true)).toBe("Can view");
-  });
-  it("a member sees the effective page access", () => {
-    expect(
-      ownAccessLabel({ access: "viewer", can: { comment: true } }, false),
-    ).toBe("Can comment");
-    expect(ownAccessLabel({ access: "viewer", comments: false }, false)).toBe(
-      "Can view",
+  it("uses the assigned commenter role even with comments turned off", () => {
+    expect(ownAccessLabel({ access: "viewer", shareRole: "commenter" })).toBe(
+      "Commenter",
     );
-    expect(ownAccessLabel({ access: "editor" }, false)).toBe("Can edit");
+  });
+  it("uses effective access for editors, guest editors and owners", () => {
+    expect(ownAccessLabel({ access: "editor" })).toBe("Editor");
+    expect(ownAccessLabel({ access: "viewer", shareRole: "editor" })).toBe(
+      "Viewer",
+    );
+    expect(ownAccessLabel({ access: "owner", shareRole: "viewer" })).toBe(
+      "Owner",
+    );
   });
 });

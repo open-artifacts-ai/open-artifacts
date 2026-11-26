@@ -107,28 +107,24 @@ describe("email templates", () => {
     expect(m.html).not.toContain("<img src=x");
     expect(m.html).toContain('href="https://app.example.com/a/abc"');
     expect(m.text).toContain("Format: Markdown doc");
-    expect(m.text).toContain("Your role: Can edit");
+    expect(m.text).toContain("Your role: Editor");
     expect(m.subject).toMatch(/^Mal.* shared “Plan/);
   });
 
   it.each([
-    [true, "Can comment"],
-    [false, "Can view"],
-  ] as const)(
-    "labels viewer shares when commenting is %s",
-    (viewerCanComment, label) => {
-      const email = shareEmail({
-        ...common,
-        title: "Notes",
-        path: "/a/abc",
-        format: "markdown",
-        role: "viewer",
-        viewerCanComment,
-      });
-      expect(email.text).toContain(`Your role: ${label}`);
-      expect(email.html).toContain(label);
-    },
-  );
+    ["viewer", "Viewer"],
+    ["commenter", "Commenter"],
+  ] as const)("names a %s share in both email parts", (role, label) => {
+    const email = shareEmail({
+      ...common,
+      title: "Notes",
+      path: "/a/abc",
+      format: "markdown",
+      role,
+    });
+    expect(email.text).toContain(`Your role: ${label}`);
+    expect(email.html).toContain(label);
+  });
 
   it("refuses links off the app host", () => {
     for (const appHost of ["x.com/@evil", "evil.com:80@x", "a b"])

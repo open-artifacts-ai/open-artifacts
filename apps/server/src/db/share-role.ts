@@ -20,8 +20,8 @@ export const apiShareRole = (role: string, canComment: number): string =>
   role === "viewer" && canComment === 1 ? "commenter" : role;
 
 /** The API role of the `shares` row in a drizzle query (a `case`). */
-export const shareRoleSql = () =>
-  sql<string>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 'commenter' else ${shares.role} end)`;
+export const shareRoleSql = <T extends ShareRole | null = ShareRole | null>() =>
+  sql<T>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 'commenter' else ${shares.role} end)`;
 
 /** The same case for raw SQL over a table named `t` (empty: unqualified). */
 export const SHARE_ROLE_CASE = `case when role = 'viewer' and can_comment = 1 then 'commenter' else role end`;
