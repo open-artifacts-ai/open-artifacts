@@ -328,5 +328,263 @@
     "file": "tests/timing.sh",
     "text": "echo \"the daemon will sleep on it\"\n",
     "why": []
+  },
+  {
+    "name": "node:timers promises aliased (the reviewer's plant)",
+    "file": "a.mjs",
+    "text": "import { promises as timers } from \"node:timers\";\nawait timers.setTimeout(17);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "require node:timers .promises",
+    "file": "a.test.ts",
+    "text": "await require(\"node:timers\").promises.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "import { promises } from timers",
+    "file": "a.test.ts",
+    "text": "import { promises } from \"timers\";",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "default import then .promises",
+    "file": "a.test.ts",
+    "text": "import timers from \"node:timers\";\nawait timers.promises.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "namespace import then .promises",
+    "file": "a.test.ts",
+    "text": "import * as t from \"timers\";\nawait t.promises.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import .promises",
+    "file": "a.test.ts",
+    "text": "await (await import(\"node:timers\")).promises.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "require destructured promises alias",
+    "file": "a.test.ts",
+    "text": "const { promises: tp } = require(\"timers\");\nawait tp.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import then",
+    "file": "a.test.ts",
+    "text": "import(\"timers\").then((m) => m.promises.setTimeout(5));",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "promisify(timers.setTimeout)",
+    "file": "a.test.ts",
+    "text": "const wait = util.promisify(timers.setTimeout);",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "setTimeout[promisify.custom]",
+    "file": "a.test.ts",
+    "text": "await setTimeout[util.promisify.custom](5);",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "globalThis.setTimeout in a Promise",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => globalThis.setTimeout(r, 5));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "window.setTimeout in a Promise",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => window.setTimeout(r, 5));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "self.setTimeout in a Promise",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => self.setTimeout(r, 5));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "setTimeout assigned to a variable",
+    "file": "a.test.ts",
+    "text": "const t = setTimeout;\nawait new Promise((r) => t(r, 5));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "setTimeout destructured from globalThis",
+    "file": "a.test.ts",
+    "text": "const { setTimeout: later } = globalThis;\nawait new Promise((r) => later(r, 5));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "setInterval in a Promise",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => { const i = setInterval(() => { clearInterval(i); r(0); }, 5); });",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "AbortSignal.timeout as a timer",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => AbortSignal.timeout(5).addEventListener('abort', r));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "an async helper whose result is awaited",
+    "file": "a.test.ts",
+    "text": "async function pause(ms) {\n  await new Promise((resolve) => setTimeout(resolve, ms));\n}\nawait pause(5);",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "Bun.sleep",
+    "file": "a.test.ts",
+    "text": "await Bun.sleep(5);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "Deno.sleep",
+    "file": "a.test.ts",
+    "text": "await Deno.sleep(5);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "the delay package",
+    "file": "a.test.ts",
+    "text": "import delay from \"delay\";\nawait delay(5);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "Deno std delay",
+    "file": "a.test.ts",
+    "text": "import { delay } from \"jsr:@std/async/delay\";",
+    "why": ["sleep"]
+  },
+  {
+    "name": "lodash delay call",
+    "file": "a.test.ts",
+    "text": "_.delay(fn, 5);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "Cypress cy.wait(ms)",
+    "file": "a.cy.ts",
+    "text": "cy.wait(1000);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "WebDriver browser.pause",
+    "file": "a.test.ts",
+    "text": "await browser.pause(500);",
+    "why": ["sleep"]
+  },
+  {
+    "name": "Playwright waitForFunction fixed polling",
+    "file": "a.spec.ts",
+    "text": "await page.waitForFunction(() => ready(), null, { polling: 100 });",
+    "why": ["sleep"]
+  },
+  {
+    "name": "busy wait on the clock, braces",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) {}",
+    "why": ["sleep"]
+  },
+  {
+    "name": "busy wait on the clock, awaited",
+    "file": "a.test.ts",
+    "text": "while (Date.now() <= t1) await Promise.resolve();",
+    "why": ["sleep"]
+  },
+  {
+    "name": "execSync sleep",
+    "file": "a.test.ts",
+    "text": "execSync(\"sleep 1\");",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "spawnSync sleep",
+    "file": "a.test.ts",
+    "text": "spawnSync(\"sleep\", [\"1\"]);",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "execFileSync sleep",
+    "file": "a.test.ts",
+    "text": "execFileSync(\"sleep\", [\"1\"]);",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "python Event().wait",
+    "file": "tests/test_x.py",
+    "text": "import threading\n\ndef test_a():\n    threading.Event().wait(0.1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python getattr sleep",
+    "file": "tests/test_x.py",
+    "text": "import time\n\ndef test_a():\n    getattr(time, \"sleep\")(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python star import from time",
+    "file": "tests/test_x.py",
+    "text": "from time import *\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python timed empty select",
+    "file": "tests/test_x.py",
+    "text": "import select\n\ndef test_a():\n    select.select([], [], [], 0.1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python os.system sleep",
+    "file": "tests/test_x.py",
+    "text": "import os\n\ndef test_a():\n    os.system(\"sleep 1\")\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "python subprocess sleep with a variable",
+    "file": "tests/test_x.py",
+    "text": "def test_a():\n    subprocess.run(\"sleep $T\", shell=True)\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "callback timers import, not promises",
+    "file": "a.test.ts",
+    "text": "import { setTimeout, clearTimeout } from \"node:timers\";",
+    "why": []
+  },
+  {
+    "name": "a real Event with a timeout bound",
+    "file": "tests/test_x.py",
+    "text": "import threading\n\ndef test_a():\n    ev = threading.Event()\n    assert ev.wait(5)\n",
+    "why": []
+  },
+  {
+    "name": "lodash import without delay",
+    "file": "a.test.ts",
+    "text": "import { groupBy } from \"lodash\";\nawait new Promise<void>((r) => ws.once(\"open\", () => r()));",
+    "why": []
+  },
+  {
+    "name": "AbortSignal.timeout outside a Promise executor",
+    "file": "a.test.ts",
+    "text": "const r = await fetch(url, { signal: AbortSignal.timeout(5000) });",
+    "why": []
+  },
+  {
+    "name": "a while on the clock that does real work",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) {\n  const r = await probe();\n  if (r) break;\n}",
+    "why": []
+  },
+  {
+    "name": "a while on the clock whose body has nested braces",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < stop) {\n  const r = await hook(path, { prefix, limit: 10 });\n  if (r.left === 0) break;\n}",
+    "why": []
   }
 ]

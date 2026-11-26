@@ -15,6 +15,26 @@
 //   - a shell `sleep N` in a fixture, or a `sleep` child process;
 //   - Python: `time.sleep`, `asyncio.sleep`, `trio`/`anyio`/`gevent` sleep, and a
 //     `sleep` imported from `time` or `asyncio`.
+// Also: `node:timers` `.promises` (imported, required, aliased, default or
+// namespace), `promisify` of a timer, a setTimeout/setInterval/AbortSignal.timeout
+// inside a Promise executor under any name or global (`globalThis`, `window`,
+// `self`, an assigned alias), `Bun.sleep`, `Deno.sleep`, the delay/sleep
+// packages and Deno's std delay, `cy.wait(ms)`, `browser.pause`, a fixed
+// `polling` number, a busy `while (Date.now() < end)`, and in Python
+// `Event().wait`, `getattr(time, "sleep")`, `from time import *`, and a timed
+// empty `select`.
+//
+// Deliberately not covered (a static scan cannot tell them from real use):
+//   - a bare `setTimeout(fn, ms)` outside a Promise executor: it is how
+//     fake-timer tests schedule their own work;
+//   - interval polling through `vi.waitFor` / `eventually` / `expect.poll`
+//     without `intervals`: hundreds of positive waits, tracked separately;
+//   - a thenable or class that wraps a timer without a Promise executor;
+//   - a module name built at runtime (`"node:" + "timers/promises"`), `eval`,
+//     and a sleep reached through a helper module outside the test folders;
+//   - Python `loop.call_later` and timed `Event.wait` on a real event (a bound,
+//     not a sleep);
+//   - a `while (time.time() < end)` loop in Python.
 // Comments are not code and are not scanned. A fake clock (`vi.useFakeTimers`,
 // `advanceTimersByTime`), a signal wait and `setImmediate` are fine.
 //
@@ -129,19 +149,82 @@ function* calls(code: string, opener: RegExp) {
     yield {
       index: m.index as number,
       body: code.slice(open, end < 0 ? undefined : end),
+      end,
     };
   }
 }
 
 const JS_RULES: ((code: string) => Found[])[] = [
-  // new Promise(<executor>) whose executor reaches setTimeout, however it is written.
+  // new Promise(<executor>) whose executor reaches a timer, however it is
+  // written: setTimeout / setInterval (also on globalThis, window, self),
+  // a name `setTimeout` was assigned or destructured to, AbortSignal.timeout.
+  // And promisify of any of them.
   (code) => {
     const out: Found[] = [];
+    const timers = new Set(["setTimeout", "setInterval"]);
+    for (const m of code.matchAll(
+      /\b(?:const|let|var)\s+(\w+)\s*=\s*(?:(?:globalThis|window|self|global)\s*\.\s*)?(?:setTimeout|setInterval)\b(?!\s*\()/g,
+    ))
+      timers.add(m[1] as string);
+    for (const m of code.matchAll(
+      /\b(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:globalThis|window|self|global|timers)\b/g,
+    ))
+      for (const part of (m[1] as string).split(",")) {
+        const [, name, as] = /^\s*(\w+)(?:\s*:\s*(\w+))?\s*$/.exec(part) ?? [];
+        if (name === "setTimeout" || name === "setInterval")
+          timers.add(as ?? name);
+      }
+    const names = [...timers].join("|");
+    const inExecutor = new RegExp(
+      `(?<![\\w$])(?:${names})\\s*\\(|\\bAbortSignal\\s*\\.\\s*timeout\\s*\\(`,
+    );
     for (const c of calls(code, /new\s+Promise\b[^(;]*\(/g))
-      if (/\bsetTimeout\s*\(/.test(c.body))
+      if (inExecutor.test(c.body))
         out.push({ index: c.index, why: "setTimeout promise" });
-    for (const m of code.matchAll(/\bpromisify\s*\(\s*setTimeout\s*\)/g))
+    for (const m of code.matchAll(
+      /\bpromisify\s*\(\s*(?:(?:globalThis|window|self|global|timers)\s*\.\s*)?(?:setTimeout|setInterval)\s*\)|\b(?:setTimeout|setInterval)\s*\[\s*[\w.]*promisify[\w.]*\s*\]/g,
+    ))
       out.push({ index: m.index as number, why: "setTimeout promise" });
+    return out;
+  },
+  // `node:timers` (not /promises) exposes `promises`: any use of it, imported,
+  // required, aliased or reached through a default or namespace import.
+  (code) => {
+    const out: Found[] = [];
+    for (const m of code.matchAll(/["'`](?:node:)?timers["'`]/g)) {
+      const at = m.index as number;
+      const before = code.slice(Math.max(0, at - 240), at);
+      const after = code.slice(at + m[0].length, at + m[0].length + 300);
+      const named =
+        /import\s*\{([^}]*)\}\s*from\s*$/.exec(before) ??
+        /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?(?:import|require)\s*\(\s*$/.exec(
+          before,
+        );
+      if (named && /\bpromises\b/.test(named[1] as string)) {
+        out.push({ index: at, why: "timers/promises" });
+        continue;
+      }
+      if (named) continue; // setTimeout, clearTimeout...: the callback ones
+      // `.promises` straight after the call, or in the .then that follows.
+      if (
+        /^[\s)]*\.\s*promises\b|^\s*\)\s*\.then\([^;]*\bpromises\b/.test(after)
+      ) {
+        out.push({ index: at, why: "timers/promises" });
+        continue;
+      }
+      // A default or namespace import (or a require/import bound to a name),
+      // whose name is then used as `<name>.promises`.
+      const bound =
+        /import\s+(?:\*\s+as\s+)?(\w+)\s+from\s*$/.exec(before) ??
+        /(?:const|let|var)\s+(\w+)\s*=\s*(?:await\s+)?(?:import|require)\s*\(\s*$/.exec(
+          before,
+        );
+      if (
+        bound &&
+        new RegExp(`\\b${bound[1]}\\s*\\.\\s*promises\\b`).test(code)
+      )
+        out.push({ index: at, why: "timers/promises" });
+    }
     return out;
   },
   // timers/promises (a timer wait), however it is imported or aliased, and
@@ -194,6 +277,44 @@ const JS_RULES: ((code: string) => Found[])[] = [
     for (const c of calls(code, /\.toPass\s*\(|\bexpect\s*\.poll\s*\(/g))
       if (/\bintervals?\s*:/.test(c.body))
         out.push({ index: c.index, why: "poll intervals" });
+    return out;
+  },
+  // Runtime sleeps and other libraries' waits: Bun.sleep, Deno's delay, the
+  // sleep/delay npm packages, lodash delay, Cypress cy.wait(ms), WebDriver
+  // pause/sleep, Playwright waitForFunction with a fixed `polling`.
+  (code) => {
+    const out: Found[] = [];
+    const flag = (re: RegExp) => {
+      for (const m of code.matchAll(re))
+        out.push({ index: m.index as number, why: "sleep" });
+    };
+    flag(/\bBun\s*\.\s*sleep(?:Sync)?\s*\(/g);
+    flag(/\bDeno\s*\.\s*(?:sleep|sleepSync)\s*\(/g);
+    flag(
+      /\bimport\b[^;]*\bfrom\s*["'`](?:delay|sleep|sleep-promise|p-sleep|sleep-ms|sleep-async|(?:jsr:)?@std\/async(?:\/delay)?|[^"'`]*std\/async\/delay[^"'`]*|lodash\/delay|lodash-es\/delay)["'`]/g,
+    );
+    flag(/\b_\s*\.\s*delay\s*\(/g);
+    flag(/\bcy\s*\.\s*wait\s*\(\s*\d/g);
+    flag(/\b(?:browser|driver)\s*\.\s*(?:pause|sleep)\s*\(/g);
+    flag(/\bpolling\s*:\s*\d/g);
+    return out;
+  },
+  // A busy wait on the clock: while (Date.now() < end) with an empty or awaited body.
+  (code) => {
+    const out: Found[] = [];
+    for (const c of calls(code, /\bwhile\s*\(/g)) {
+      const rest = /^\s*(\{[^{}]*\}|[^;{]*;)/.exec(
+        code.slice(c.end + 1, c.end + 200),
+      );
+      if (!rest) continue; // a body with its own braces does real work
+      const body = (rest[1] as string).replace(/^\{|\}$/g, "").trim();
+      if (
+        /\b(?:Date\.now|performance\.now)\s*\(\s*\)/.test(c.body) &&
+        /[<>]/.test(c.body) &&
+        (body === "" || body === ";" || /^await\s[^;]*;?$/.test(body))
+      )
+        out.push({ index: c.index, why: "sleep" });
+    }
     return out;
   },
   shellSleep,
@@ -267,6 +388,23 @@ const PY_RULES: ((code: string) => Found[])[] = [
       /(?:__import__|import_module)\(\s*["'](?:time|asyncio|trio|anyio|gevent|eventlet)["']\s*\)\s*\.sleep\b/g,
     ))
       out.push({ index: m.index as number, why: "sleep" });
+    return out;
+  },
+  // A wait by another name: Event().wait on a fresh Event (nothing sets it),
+  // getattr(time, "sleep"), a star import from a sleeper, a timed empty select.
+  (code) => {
+    const out: Found[] = [];
+    const flag = (re: RegExp) => {
+      for (const m of code.matchAll(re))
+        out.push({ index: m.index as number, why: "sleep" });
+    };
+    flag(/\b(?:threading\s*\.\s*)?Event\s*\(\s*\)\s*\.\s*wait\s*\(/g);
+    flag(/\bgetattr\s*\(\s*[\w.]+\s*,\s*["']sleep["']/g);
+    flag(/\bfrom\s+(?:time|asyncio|trio|anyio|gevent|eventlet)\s+import\s+\*/g);
+    flag(
+      /\bselect\s*\.\s*select\s*\(\s*\[\s*\]\s*,\s*\[\s*\]\s*,\s*\[\s*\]\s*,/g,
+    );
+    flag(/\bsignal\s*\.\s*pause\s*\(/g);
     return out;
   },
   // A `sleep` child process: ["sleep", "5"].
