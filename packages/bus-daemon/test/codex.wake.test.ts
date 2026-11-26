@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
@@ -48,13 +49,14 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
 /**
  * A fake `codex`: records its argv, CODEX_HOME and cwd to `out` (one JSON
- * line per run), then exits `code`, sleeps `sleepMs` first, kills itself
+ * line per run), then exits `code`, waits on `gate` first, kills itself
  * with `signal`, or floods stderr and never exits.
  */
 function fakeCodex(
   o: {
     code?: number;
-    sleepMs?: number;
+    /** A unix socket the child connects to and waits on: exits `code` on a byte, or when closed. */
+    gate?: string;
     signal?: NodeJS.Signals;
     flood?: boolean;
   } = {},
@@ -67,7 +69,7 @@ function fakeCodex(
     `#!${process.execPath}
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify({ argv: process.argv.slice(2), home: process.env.CODEX_HOME, cwd: process.cwd() }) + "\\n");
-${o.flood ? 'process.stderr.write("x".repeat(256 * 1024)); setInterval(() => {}, 1000);' : `setTimeout(() => process.exit(${o.code ?? 0}), ${o.sleepMs ?? 0});`}
+${o.flood ? 'process.stderr.write("x".repeat(256 * 1024)); setInterval(() => {}, 1000);' : o.gate ? `const c = require("node:net").connect(${JSON.stringify(o.gate)}); c.on("data", () => process.exit(${o.code ?? 0})); c.on("close", () => process.exit(${o.code ?? 0})); c.on("error", () => process.exit(97));` : `setImmediate(() => process.exit(${o.code ?? 0}));`}
 ${o.signal ? `process.kill(process.pid, ${JSON.stringify(o.signal)});` : ""}
 `,
   );
@@ -83,6 +85,47 @@ ${o.signal ? `process.kill(process.pid, ${JSON.stringify(o.signal)});` : ""}
   const text = (i = 0) => (runs()[i]?.argv[2] ?? "").replace(/^--message=/, "");
   return { bin, dir, runs, text };
 }
+
+/**
+ * A gate for a fake codex child: the test owns the unix socket the child
+ * connects to, so it sees when the run started (`connected`), releases it with
+ * `go()`, and sees it die (`closed`: the socket closes when the child does).
+ */
+async function gate() {
+  const path = join(tmp("ob-gate-"), "g.sock");
+  const conns: Socket[] = [];
+  const waiters: (() => void)[] = [];
+  const closed: Promise<void>[] = [];
+  let released = false;
+  const server = createServer((c) => {
+    conns.push(c);
+    if (released) c.write("go");
+    closed.push(new Promise((r) => c.once("close", () => r())));
+    for (const w of waiters.splice(0)) w();
+  });
+  await new Promise<void>((r) => server.listen(path, r));
+  cleanups.push(() => {
+    for (const c of conns) c.destroy();
+    server.close();
+  });
+  return {
+    path,
+    /** Resolves once `n` children have connected. */
+    async connected(n = 1) {
+      while (conns.length < n) await new Promise<void>((r) => waiters.push(r));
+    },
+    go: () => {
+      released = true;
+      for (const c of conns) c.write("go");
+    },
+    closed: () => Promise.all(closed),
+    count: () => conns.length,
+  };
+}
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const c of cleanups.splice(0)) c();
+});
 
 const agent = (over: Partial<AgentRecord> = {}): AgentRecord => ({
   ref: THREAD,
@@ -277,13 +320,23 @@ describe("codex queue transport (C26d)", () => {
   });
 
   it("a timed-out run is killed, kept as maybe, and stays queued without a second run", async () => {
-    const f = fakeCodex({ sleepMs: 30_000 });
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path });
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const { t, log } = transport(
       { path: f.bin, from: "path" },
       { run: execCodex(2_000), takenFile },
     );
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const first = t.deliver(agent(), mail("x"));
+      await g.connected(); // the run started and is held: never released
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(first).resolves.toEqual(QUEUED);
+    } finally {
+      vi.useRealTimers();
+    }
+    await g.closed(); // the child was killed: its socket closed
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/timed out/));
     // A redelivery, even after a restart, stays queued: never a false Delivered.
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
@@ -1144,12 +1197,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
   });
 
   it("two concurrent delivers of one id run `codex queue` once", async () => {
-    const f = fakeCodex({ sleepMs: 300 });
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path });
     const { t } = transport({ path: f.bin, from: "path" });
-    const both = await Promise.all([
-      t.deliver(agent(), mail("hi")),
-      t.deliver(agent(), mail("hi")),
-    ]);
+    const one = t.deliver(agent(), mail("hi"));
+    await g.connected(); // the first run started and is held
+    const two = t.deliver(agent(), mail("hi"));
+    g.go();
+    const both = await Promise.all([one, two]);
     expect(both).toEqual([QUEUED, QUEUED]);
     expect(f.runs()).toHaveLength(1);
   });

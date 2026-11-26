@@ -235,11 +235,15 @@ export const execCodex =
   (timeoutMs = CODEX_QUEUE_TIMEOUT_MS): CodexRun =>
   (bin, args, env) =>
     new Promise((resolve, reject) => {
-      execFile(
+      // The timeout is our own timer (not execFile's) so a test can drive it
+      // with fake timers instead of waiting it out.
+      let timedOut = false;
+      const child = execFile(
         bin,
         args,
-        { timeout: timeoutMs, maxBuffer: 64 * 1024, env },
+        { maxBuffer: 64 * 1024, env },
         (err, _stdout, stderr) => {
+          clearTimeout(timer);
           if (!err) return resolve({ code: 0, stderr });
           const e = err as NodeJS.ErrnoException & {
             code?: number | string;
@@ -249,17 +253,16 @@ export const execCodex =
           if (typeof e.code === "string" && START_ERRORS.has(e.code))
             return reject(err);
           resolve({
-            // A maxBuffer kill is SIGTERM too, but carries its own string code.
-            code:
-              e.killed && e.signal === "SIGTERM" && typeof e.code !== "string"
-                ? null
-                : typeof e.code === "number"
-                  ? e.code
-                  : -1,
+            // Only our timer yields null: a maxBuffer kill is -1.
+            code: timedOut ? null : typeof e.code === "number" ? e.code : -1,
             stderr: String(stderr ?? ""),
           });
         },
       );
+      const timer = setTimeout(() => {
+        timedOut = true;
+        child.kill("SIGTERM");
+      }, timeoutMs);
     });
 
 /**
