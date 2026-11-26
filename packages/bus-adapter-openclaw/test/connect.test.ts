@@ -77,8 +77,14 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "w" },
   );
-  const r = bus.buildPrompt(caller({ runId: "r1" }));
-  expect(r?.prependContext).toContain("over the socket");
+  // The deliver is queued only after the client's `self` round trip over the
+  // socket completes, so wait for the mail to land in the next prompt. A run
+  // with nothing pending stores nothing, so asking again with r1 is safe.
+  await vi.waitFor(() =>
+    expect(bus.buildPrompt(caller({ runId: "r1" }))?.prependContext).toContain(
+      "over the socket",
+    ),
+  );
   bus.modelCallEnded(
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "r1", outcome: "completed" },

@@ -1,5 +1,5 @@
 import { mkdtempSync } from "node:fs";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -23,9 +23,6 @@ afterEach(async () => {
   );
   vi.unstubAllEnvs();
 });
-
-/** One turn of the event loop: no wall time. */
-const turn = () => new Promise<void>((r) => setImmediate(r));
 
 /** Polls on setImmediate, which fake timers leave alone. */
 async function until(cond: () => boolean, tries = 2000) {
@@ -131,10 +128,31 @@ describe("pi asset hardening", () => {
     const { sock, sent, deliver } = await setup();
     const buf = Buffer.from(deliver("héllo 😀 wörld"), "utf8");
     const cut = buf.indexOf(Buffer.from("😀")) + 2; // mid-emoji
-    await new Promise((r) => sock().write(buf.subarray(0, cut), () => r(null)));
-    // Let the first half be read as a chunk of its own: two loop turns.
-    await turn();
-    await turn();
+    // The receiving side's own signal: the first fragment, alone and without a
+    // newline, has been read and handled by the client socket before the rest is sent.
+    const first = buf.subarray(0, cut);
+    let firstRead: () => void = () => {};
+    const gotFirst = new Promise<void>((r) => {
+      firstRead = r;
+    });
+    const emit = Socket.prototype.emit;
+    const spy = vi.spyOn(Socket.prototype, "emit").mockImplementation(function (
+      this: Socket,
+      ev: string,
+      ...a: unknown[]
+    ) {
+      const ret = emit.call(this, ev, ...a);
+      if (ev === "data" && Buffer.isBuffer(a[0]) && a[0].equals(first))
+        firstRead();
+      return ret;
+    } as never);
+    try {
+      sock().write(first);
+      await gotFirst;
+    } finally {
+      spy.mockRestore();
+    }
+    expect(sent).toHaveLength(0);
     sock().write(buf.subarray(cut));
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toContain("héllo 😀 wörld");
