@@ -64,7 +64,7 @@ export const TOOL_DEFS = [
     inputSchema: GetArtifactInputSchema,
     example: { id: ID, path: "index.html" },
     description:
-      "Open Artifacts: Read an artifact's metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
+      'Open Artifacts: Read an artifact\'s metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file\'s text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one. Pass view: "text" to read an HTML page as plain text without CSS or markup. Pass find to return only matching text blocks with context (capped at 4 KB). Pass sinceVersion to get a unified text diff from an earlier version (capped at 8 KB). Use view: "text", find or sinceVersion unless you are editing the HTML.',
   },
   {
     name: "list_artifacts",

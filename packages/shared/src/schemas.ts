@@ -1579,6 +1579,30 @@ export const GetArtifactInputSchema = z.strictObject({
   path: z.string().optional(),
   includeContent: z.boolean().default(true),
   activity: z.string().max(PRESENCE_ACTIVITY_MAX).optional(),
+  // #3165: text view, search, and diff options for get_artifact.
+  view: z
+    .enum(["text"])
+    .optional()
+    .describe(
+      'Set to "text" to read an HTML page as plain text without CSS or markup.',
+    ),
+  find: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Return only matching text blocks (case-insensitive) with context, capped at 4 KB.",
+    ),
+  sinceVersion: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Return a unified text diff from this earlier version to the requested version, capped at 8 KB.",
+    ),
 });
 export type GetArtifactInput = z.infer<typeof GetArtifactInputSchema>;
 export type GetArtifactInputInput = z.input<typeof GetArtifactInputSchema>;
@@ -1723,6 +1747,7 @@ export const GetArtifactResultSchema = z.object({
   version: VersionInfoSchema,
   content: z.string().optional(),
   downloadUrl: z.string().optional(),
+  matches: z.number().int().min(0).optional(),
 });
 export type GetArtifactResult = z.infer<typeof GetArtifactResultSchema>;
 
