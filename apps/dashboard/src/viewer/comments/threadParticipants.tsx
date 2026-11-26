@@ -48,8 +48,13 @@ export function ThreadParticipants({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { gone, run } = rm;
+  const { gone, run, clear } = rm;
   const [open, setOpen] = useState(false);
+  // #3263: closing the list ends the "won't get replies" line.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `clear` is a fresh closure each render
+  useEffect(() => {
+    if (!open) clear();
+  }, [open]);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
