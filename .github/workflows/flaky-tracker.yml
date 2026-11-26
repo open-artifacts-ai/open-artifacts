@@ -1,0 +1,48 @@
+# The flaky tracker for public CI (cloud #447). Tracking only: it reruns
+# nothing and blocks nothing. When a CI run passes on attempt 2 or later,
+# every test that failed on an earlier attempt of that run (same commit)
+# failed and then passed with nothing changed. scripts/ci/flaky-tracker.ts
+# reads those attempts' failed job logs, records each sighting in the
+# `flaky-sightings` store issue, and opens or bumps one issue labelled `flaky`
+# per test once it was seen in two runs within 7 days. workflow_run can't see
+# another repo's runs, so the cloud repo runs its own tracker for its CI.
+# The default token only: no App, no secret, no Environment. The script comes
+# from the default branch, never from the run under test, and runs from forks
+# are skipped (their logs are anyone's text).
+name: flaky-tracker
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+permissions: {}
+jobs:
+  track:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.run_attempt > 1 &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    # Per event, so a newer run never cancels a pending one and loses its
+    # sightings. The script re-lists the open issues right before each write.
+    concurrency:
+      group: flaky-tracker-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Record the flaky tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --attempt "$ATTEMPT"
