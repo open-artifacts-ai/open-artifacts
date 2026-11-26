@@ -43,9 +43,11 @@ import {
   listInstances,
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
+import { installAgyRule, uninstallAgyRule } from "./agy-rule.ts";
 import {
   agyPluginFiles,
   agyPluginState,
+  agyWatchCommand,
   installAgyPlugin,
   uninstallAgyPlugin,
 } from "./antigravity.ts";
@@ -1063,6 +1065,8 @@ const install: Record<Harness, Step> = {
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
     // agy S2: the plugin whose SessionStart hook joins each conversation.
     installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
+    // agy S3: the one always-allow rule, for exactly the watcher's line.
+    installAgyRule(deps.home, p.busDir, agyWatchCommand(deps.busBin, home));
     return "done";
   },
 };
@@ -1221,7 +1225,14 @@ const uninstall: Record<Harness, Step> = {
   async antigravity(deps) {
     const p = paths(deps);
     // Only our marked folder goes; a folder not ours stays as it is.
-    const plugin = uninstallAgyPlugin(deps.home);
+    const folder = uninstallAgyPlugin(deps.home);
+    // agy S3: our rule, and only ours, leaves agy's settings.
+    const rule = uninstallAgyRule(
+      deps.home,
+      p.busDir,
+      agyWatchCommand(deps.busBin, movedHome(deps)),
+    );
+    const plugin = folder || rule;
     if (!present(p.agyMcp)) return plugin ? "done" : "none";
     const before = readAgy(p.agyMcp);
     const record = readRecord(p.record);

@@ -822,6 +822,23 @@ export function copy(
       warn("Antigravity has the oa-bus plugin turned off"),
       next("Turn it on with: agy plugin enable oa-bus"),
     ],
+    // agy S3, doctor: the one rule that lets a session start its watcher without asking.
+    agyRulePresent: () =>
+      done("Antigravity may start the bus watcher without asking"),
+    agyRuleMissing: () => [
+      warn("Antigravity will ask before it starts the bus watcher"),
+      next(
+        `Run ${bus} to save the one rule that lets it start without asking.`,
+      ),
+    ],
+    agyRuleAltered: (file: string) => [
+      warn(
+        `Antigravity's rule for the bus watcher was changed in ${clip(file, 33)}`,
+      ),
+      next(
+        `Run ${bus} to put it back, and remove any other rule that names agy-watch.`,
+      ),
+    ],
     // Doctor, when our entry is in agy's config but turned off there.
     agyDisabled: () => [
       warn("Antigravity has the bus turned off"),

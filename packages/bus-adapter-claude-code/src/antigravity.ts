@@ -28,6 +28,7 @@ import {
   HelloRefused,
   systemTool,
 } from "@oa/bus-ipc";
+import { procStartOf } from "./session.ts";
 import { callTool, TOOLS, type ToolResult } from "./tools.ts";
 
 /** The wire's agent_ref rule. */
@@ -213,6 +214,151 @@ export function readAgyConversation(
     return undefined;
   } finally {
     closeSync(fd);
+  }
+}
+
+/**
+ * agy S3: `<bus home>/antigravity/<agy pid>.watch.json`, the watcher running
+ * for that agy process: its own pid and start time, and the agy process's.
+ * The hook reads it to tell whether the session still has to start one.
+ */
+export type AgyWatch = { pid: number; procStart: string; agyStart: string };
+
+const watchFile = (busHome: string, agyPid: number) =>
+  join(agyStateDir(busHome), `${agyPid}.watch.json`);
+
+/** A small JSON file of ours: regular, our uid, never through a symlink. */
+function readOwnJson(file: string, max = 65_536): unknown {
+  let fd: number;
+  try {
+    fd = openSync(
+      file,
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
+  } catch {
+    return undefined;
+  }
+  try {
+    const st = fstatSync(fd);
+    const uid = process.getuid?.();
+    if (!st.isFile() || (uid !== undefined && st.uid !== uid)) return undefined;
+    if (st.size > max) return undefined;
+    return JSON.parse(readFileSync(fd, "utf8"));
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Atomic and 0600, in the bus home's antigravity folder. */
+function writeOwnJson(busHome: string, file: string, doc: unknown): void {
+  mkdirSync(agyStateDir(busHome), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(doc)}\n`, { mode: 0o600 });
+  renameSync(tmp, file);
+}
+
+export function readAgyWatch(
+  busHome: string,
+  agyPid: number,
+): AgyWatch | undefined {
+  const doc = readOwnJson(watchFile(busHome, agyPid)) as
+    | Record<string, unknown>
+    | undefined;
+  if (
+    !doc ||
+    typeof doc.pid !== "number" ||
+    !Number.isInteger(doc.pid) ||
+    doc.pid <= 0 ||
+    typeof doc.procStart !== "string" ||
+    typeof doc.agyStart !== "string"
+  )
+    return undefined;
+  return { pid: doc.pid, procStart: doc.procStart, agyStart: doc.agyStart };
+}
+
+export function writeAgyWatch(
+  busHome: string,
+  agyPid: number,
+  w: AgyWatch,
+): void {
+  writeOwnJson(busHome, watchFile(busHome, agyPid), w);
+}
+
+/** Removes the watch file, only when it still names `self`. */
+export function clearAgyWatch(
+  busHome: string,
+  agyPid: number,
+  self: number,
+): void {
+  if (readAgyWatch(busHome, agyPid)?.pid === self)
+    rmSync(watchFile(busHome, agyPid), { force: true });
+}
+
+/**
+ * Whether a watcher runs for this agy process now: the file names a process
+ * that runs, started when the file says, for an agy started at `agyStart`.
+ */
+export function agyWatchLive(
+  busHome: string,
+  agyPid: number,
+  agyStart: string,
+  procStart: (pid: number) => string | null = procStartOf,
+): boolean {
+  const w = readAgyWatch(busHome, agyPid);
+  if (!w || w.agyStart !== agyStart) return false;
+  return procStart(w.pid) === w.procStart;
+}
+
+/** The most msg ids a watcher remembers handing to agy. */
+export const AGY_SENT_MAX = 1000;
+
+/**
+ * agy S3: `<bus home>/antigravity/<agy pid>.sent.json`, the msg ids a watcher
+ * handed to agy for that agy process (written before each hand-off). A
+ * watcher started again for the same agy process reads it, so no id reaches
+ * agy twice; a file for an earlier agy process with that pid counts for nothing.
+ */
+export class AgySentIds {
+  readonly #file: string;
+  #ids: string[];
+  constructor(
+    private readonly busHome: string,
+    agyPid: number,
+    private readonly agyStart: string,
+  ) {
+    this.#file = join(agyStateDir(busHome), `${agyPid}.sent.json`);
+    const doc = readOwnJson(this.#file, 1_048_576) as
+      | { agyStart?: unknown; ids?: unknown }
+      | undefined;
+    this.#ids =
+      doc?.agyStart === agyStart && Array.isArray(doc.ids)
+        ? doc.ids.filter((x): x is string => typeof x === "string")
+        : [];
+  }
+  has(id: string): boolean {
+    return this.#ids.includes(id);
+  }
+  add(id: string): void {
+    if (this.has(id)) return;
+    this.#ids.push(id);
+    if (this.#ids.length > AGY_SENT_MAX)
+      this.#ids = this.#ids.slice(-AGY_SENT_MAX);
+    this.#save();
+  }
+  delete(id: string): void {
+    const n = this.#ids.length;
+    this.#ids = this.#ids.filter((x) => x !== id);
+    if (this.#ids.length !== n) this.#save();
+  }
+  #save(): void {
+    writeOwnJson(this.busHome, this.#file, {
+      agyStart: this.agyStart,
+      ids: this.#ids,
+    });
   }
 }
 

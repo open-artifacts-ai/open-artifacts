@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgyConversation,
   agyHello as agyHelloFrame,
   agyTitle,
+  agyWatchLive,
   daemonSocketPath,
   findAgy,
   nameFromTitle,
@@ -16,6 +18,7 @@ import {
 import { createEventLog } from "@oa/bus-daemon";
 import { connectDaemon, type Hello, HelloRefused } from "@oa/bus-ipc";
 import { type Ctx, say } from "../context.ts";
+import { AGY_WATCH_FILE, agyPluginDir } from "../steps/antigravity.ts";
 
 /** The most the hook waits for agy's payload on stdin. */
 const STDIN_WAIT_MS = 5000;
@@ -39,7 +42,37 @@ export type AgyHelloDeps = {
   hello: (hello: Hello) => Promise<string>;
   /** The hook's parent: the shell agy ran the hook in, or agy itself. */
   ppid: number;
+  /** agy S3: whether a watcher runs for this agy process now. */
+  watcherLive: (agy: number, procStart: string) => boolean;
+  /** agy S3: the watcher's command line, as install wrote it into the plugin. */
+  watchLine: () => string | undefined;
 };
+
+/**
+ * agy S3: what the session is told when no watcher runs for its agy process.
+ * Fixed text of ours plus the line install wrote: nothing from a message or a
+ * peer ever goes into hook output.
+ */
+export const agyWatchStep = (line: string) =>
+  `Open Artifacts bus: to receive messages from other agents in this session, run this exact command once now as a background command with BypassSandbox: true, and carry on without waiting for it: ${line}`;
+
+/** The line from the plugin folder: one line of ours, or nothing. */
+function readWatchLine(dirs: (string | undefined)[]): string | undefined {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    let text: string;
+    try {
+      text = readFileSync(join(dir, AGY_WATCH_FILE), "utf8");
+    } catch {
+      continue;
+    }
+    const line = text.replace(/\n$/, "");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point
+    if (line.length > 2048 || /[\x00-\x1f\x7f]/.test(line)) return undefined;
+    return / agy-watch( |$)/.test(line) ? line : undefined;
+  }
+  return undefined;
+}
 
 /** Reads stdin to its end, bounded in size and time. */
 function readStdin(): Promise<string> {
@@ -82,6 +115,10 @@ const defaults = (ctx: Ctx): AgyHelloDeps => ({
     return name;
   },
   ppid: process.ppid,
+  watcherLive: (agy, procStart) => agyWatchLive(ctx.home, agy, procStart),
+  // The plugin agy ran this hook from, else the one install writes.
+  watchLine: () =>
+    readWatchLine([ctx.env.PLUGIN_ROOT, agyPluginDir(ctx.userHome)]),
 });
 
 /**
@@ -101,6 +138,7 @@ export async function agyHello(
 ): Promise<number> {
   const deps = { ...defaults(ctx), ...over };
   const fields: Record<string, string | number> = {};
+  let watchLine: string | undefined;
   try {
     const start = parseSessionStart(await deps.stdin());
     if (!start) fields.reason = "bad_payload";
@@ -129,6 +167,11 @@ export async function agyHello(
           // Only once the daemon took it: the MCP server then speaks for this
           // conversation, and the hook's shell skips Node until it changes.
           writeAgyConversation(ctx.home, conv);
+          // agy S3: no watcher yet for this agy process: the session starts one.
+          if (!deps.watcherLive(agy, procStart)) {
+            watchLine = deps.watchLine();
+            fields.watch = watchLine === undefined ? "no_line" : "asked";
+          }
         } catch (e) {
           fields.reason =
             e instanceof HelloRefused
@@ -142,8 +185,17 @@ export async function agyHello(
   } catch {
     fields.reason ??= "error";
   }
-  // agy reads the hook's answer from stdout: nothing to add to the turn.
-  say(ctx, "{}");
+  // agy reads the hook's answer from stdout: nothing else goes into the turn.
+  say(
+    ctx,
+    watchLine === undefined
+      ? "{}"
+      : JSON.stringify({
+          injectSteps: [
+            { systemMessage: { systemMessage: agyWatchStep(watchLine) } },
+          ],
+        }),
+  );
   try {
     const events = createEventLog(join(ctx.home, "logs", "events.log"));
     events(AGY_HELLO_EVENT, fields);

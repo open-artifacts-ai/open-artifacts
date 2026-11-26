@@ -70,6 +70,22 @@ export const AGY_PLUGIN_ASSETS: string = (() => {
 })();
 /** The shipped files, by their path in the plugin folder. */
 const SHIPPED = ["plugin.json", "logo.svg"];
+/** agy S3: the watcher's command line, which the hook tells the session to run. */
+export const AGY_WATCH_FILE = "watch-command.txt";
+
+/** One shell word, quoted only when it has to be. */
+const word = (s: string) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : sh(s));
+
+/**
+ * agy S3: the one fixed command line that starts the watcher. The session
+ * runs it as a background command outside agy's sandbox; it has nothing in
+ * it from a message, a peer or the session.
+ */
+export function agyWatchCommand(busBin: string[], movedHome?: string): string {
+  const argv = [...busBin, "agy-watch"];
+  if (movedHome !== undefined) argv.push("--home", movedHome);
+  return argv.map(word).join(" ");
+}
 
 /** The plugin's files, as install writes them: the shipped ones and hooks.json. */
 export function agyPluginFiles(
@@ -90,6 +106,7 @@ export function agyPluginFiles(
       SHIPPED.map((f) => [f, readFileSync(join(assets, f), "utf8")]),
     ),
     "hooks.json": `${JSON.stringify(hooks, null, 2)}\n`,
+    [AGY_WATCH_FILE]: `${agyWatchCommand(busBin, movedHome)}\n`,
   };
 }
 
@@ -188,7 +205,7 @@ export function uninstallAgyPlugin(home: string): boolean {
   const dir = agyPluginDir(home);
   if (agyPluginState(home, undefined) === "absent") return false;
   if (agyPluginState(home, undefined) === "foreign") return false;
-  for (const name of [...SHIPPED, "hooks.json"])
+  for (const name of [...SHIPPED, "hooks.json", AGY_WATCH_FILE])
     rmSync(join(dir, name), { force: true });
   rmSync(join(dir, AGY_PLUGIN_MARKER), { force: true });
   try {

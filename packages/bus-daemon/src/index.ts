@@ -18,6 +18,8 @@ import {
 } from "@oa/bus-adapter-opencode/version";
 import {
   ADAPTER_CAPS,
+  AGY_NO_SESSION,
+  AGY_WATCHER_RUNNING,
   type ConfigFile,
   correctedDeliveredText,
   type DaemonFrame,
@@ -64,6 +66,7 @@ import {
   attest,
   claudeProcStartOf,
   commOf,
+  isAgyWatcher,
   procStartOf,
 } from "./attest.ts";
 import {
@@ -184,6 +187,10 @@ import {
   type Timer,
 } from "./sent.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
+import {
+  AgyTransport,
+  type AgyTransport as AgyTransportT,
+} from "./transports/antigravity.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
   CODEX_WAKE_TEXT,
@@ -240,6 +247,7 @@ export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
 export * from "./status.ts";
+export * from "./transports/antigravity.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
@@ -452,6 +460,8 @@ export type DaemonDeps = {
   antigravity?: {
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
+    /** agy S3: how long a watcher has to answer a push; default 30 s. */
+    answerTimeoutMs?: number;
   };
   codex?: CodexAttestDeps & {
     /** Every this many syncs, each live thread's lock is proven again; default 15 (30 s). */
@@ -1150,6 +1160,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log,
     event: ev,
   });
+  /** agy S3: each agy process's watcher, and the messages held for one. */
+  const agyT: AgyTransportT = new AgyTransport({
+    log,
+    ...(deps.antigravity?.answerTimeoutMs === undefined
+      ? {}
+      : { answerTimeoutMs: deps.antigravity.answerTimeoutMs }),
+  });
+  /** agy S3: watcher connections, from admitted hello to close. */
+  const agyWatchers = new Map<
+    Hello,
+    { pid: number; procStart: string; w?: ReturnType<AgyTransportT["up"]> }
+  >();
   const pi = new PiTransport({
     push: (ref, frame) => {
       const push = [...(piLinks.get(ref)?.values() ?? [])].at(-1);
@@ -1448,6 +1470,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       a.live = false;
       a.closedBy = "liveness";
       closed = true;
+      agyT.closed(a.ref);
       ev("agent_leave", agentFields(a, "conversation_switched"));
     }
     if (closed) announceSessions();
@@ -2346,6 +2369,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hermes: (agent, mail) => pi.deliver(agent, mail),
       openclaw: (agent, mail) => pi.deliver(agent, mail),
       codex: (agent, mail) => codex.deliver(agent, mail),
+      antigravity: (agent, mail) => agyT.deliver(agent, mail),
       ...deps.transports,
     },
     onClosed: (a, closedBy) => {
@@ -3124,6 +3148,44 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       };
     },
     onHello: (hello, closed) => {
+      /**
+       * agy S3: one watcher per agy process, admitted only while a
+       * conversation of that process is on the bus; it gets that one's name.
+       */
+      const admitAgyWatcher = (
+        h: typeof hello,
+        agyPid: number | undefined,
+      ): HelloResult | { error: string } => {
+        const procStart = h.attest.proc_start;
+        if (agyPid === undefined || procStart === undefined)
+          return { error: "agy watcher hello has no agy process" };
+        const key = { pid: agyPid, procStart };
+        const taken = [...agyWatchers.values()].some(
+          (x) => x.pid === agyPid && x.procStart === procStart,
+        );
+        if (taken || agyT.watcherFor(key))
+          return { error: AGY_WATCHER_RUNNING };
+        const rec = agents
+          .all()
+          .filter(
+            (a) =>
+              a.kind === "antigravity" &&
+              a.live &&
+              a.pid === agyPid &&
+              a.procStart === procStart,
+          )
+          .sort(
+            (a, b) => (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+          )[0];
+        if (!rec) return { error: AGY_NO_SESSION };
+        agyWatchers.set(h, key);
+        ev("agy_watch_up", { pid: agyPid, ref: rec.ref });
+        return {
+          bus_name: rec.busName,
+          namespace: rec.namespace,
+          global: rec.global,
+        };
+      };
       /** welcome.caps (#1635): only to an adapter that listed `rename`. */
       const capsFor = (h: typeof hello) => {
         const listed = [
@@ -3177,6 +3239,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           });
           return { error: check.reason };
         }
+        // agy S3: a watcher speaks for its agy process, never for a conversation.
+        if (isAgyWatcher(hello)) return admitAgyWatcher(hello, check.pid);
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
         if (check.linkOnly) linkOnly.add(hello);
@@ -3391,6 +3455,32 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onFrame: (frame, hello, reply) => {
       if (frame.type === "hello") return undefined;
+      // agy S3: a watcher answers pushes; it asks nothing.
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        if (
+          (frame.type === "ack" || frame.type === "agy_failed") &&
+          watcher.w
+        ) {
+          const ok = frame.type === "ack";
+          if (!agyT.answered(frame.msg_id, watcher.w, ok) && ok)
+            log(`agy watcher acked ${frame.msg_id}, which it was not handed`);
+          return undefined;
+        }
+        return {
+          type: "error",
+          id: frame.id,
+          code: "unauthorized",
+          message: "a watcher connection only answers deliveries",
+        };
+      }
+      if (frame.type === "agy_failed")
+        return {
+          type: "error",
+          id: frame.id,
+          code: "bad_frame",
+          message: "agy_failed is for a watcher connection",
+        };
       // #1856: a proxied Open Artifacts call proves the thread's link and nothing else.
       if (linkOnly.has(hello) && frame.type !== "link_proof")
         return {
@@ -3511,6 +3601,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return undefined;
     },
     onOpen: (hello, push) => {
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        watcher.w = agyT.up(watcher, (f) => {
+          push(f);
+          return true;
+        });
+        return;
+      }
       if (!piLike(hello.kind)) return;
       const links = piLinks.get(hello.agent_ref) ?? new Map();
       links.set(hello, push);
@@ -3519,6 +3617,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onClose: (hello) => {
       if (!hello) return;
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        agyWatchers.delete(hello);
+        if (watcher.w) agyT.down(watcher.w);
+        ev("agy_watch_down", { pid: watcher.pid });
+        return;
+      }
       const links = piLinks.get(hello.agent_ref);
       links?.delete(hello);
       if (links?.size === 0) {
@@ -4033,6 +4138,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       a.live = false;
       a.closedBy = "liveness";
       closed = true;
+      agyT.closed(a.ref);
       ev("agent_leave", agentFields(a, "process_gone"));
     }
     if (closed) announceSessions();
@@ -4206,6 +4312,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       clearInterval(watcher);
       clearInterval(retry);
       delivery.stop();
+      agyT.stop();
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);

@@ -22,6 +22,7 @@ export type Command = (
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | { cmd: "agy-hello" }
+  | { cmd: "agy-watch" }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -64,6 +65,7 @@ const COMMANDS = new Set([
   "mcp",
   "mcp-proof",
   "agy-hello",
+  "agy-watch",
   "mcp-proxy",
   "status",
   "logs",
@@ -318,6 +320,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "daemon":
       return { cmd, hub: values.instance };
     case "agy-hello":
+    case "agy-watch":
       return { cmd };
     case "mcp": {
       const harness = positionals[0] ?? "";

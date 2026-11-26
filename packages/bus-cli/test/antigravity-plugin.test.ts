@@ -227,6 +227,22 @@ describe("install, doctor and uninstall --purge with the plugin (agy S2)", () =>
     );
     await doctor(ctx);
     expect(ctx.all()).toContain("[[success]]✓[[/success]]  Antigravity wired");
+    // agy S3: and the one rule that lets the session start its watcher.
+    expect(ctx.all()).toContain(
+      "[[success]]✓[[/success]]  Antigravity may start the bus watcher without asking",
+    );
+    const none = make();
+    await install({ label: LABEL, hub: HUB }, none);
+    writeFileSync(
+      join(none.userHome, ".gemini/antigravity-cli/settings.json"),
+      "{}\n",
+    );
+    await doctor(none);
+    expect(none.all()).toEqual(
+      expect.arrayContaining([
+        "[[warning]]![[/warning]]  Antigravity will ask before it starts the bus watcher",
+      ]),
+    );
     const off = make();
     await install({ label: LABEL, hub: HUB }, off);
     writeFileSync(

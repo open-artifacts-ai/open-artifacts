@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
@@ -35,7 +35,8 @@ import {
   opencodeProxyProblem,
   skippedProxyEntries,
 } from "../steps/adapters.ts";
-import { agyPluginProblem } from "../steps/antigravity.ts";
+import { agyRuleState } from "../steps/agy-rule.ts";
+import { agyPluginProblem, agyWatchCommand } from "../steps/antigravity.ts";
 import {
   claudePluginsState,
   claudeVersion,
@@ -303,6 +304,22 @@ export async function doctor(ctx: Ctx): Promise<number> {
         warn(c.agyDisabled());
       if (plugin?.problem === "off" && wiring[h] === "configured")
         warn(c.agyPluginOff());
+      // agy S3: the always-allow rule for exactly the watcher's line.
+      if (wiring[h] === "configured") {
+        const bin = ctx.service.argv?.();
+        const moved =
+          resolve(ctx.home) === join(ctx.userHome, ".oa-bus")
+            ? undefined
+            : resolve(ctx.home);
+        const rule = agyRuleState(
+          ctx.userHome,
+          ctx.home,
+          bin === undefined ? undefined : agyWatchCommand(bin, moved),
+        );
+        if (rule.state === "present") pass(c.agyRulePresent());
+        else if (rule.state === "missing") warn(c.agyRuleMissing());
+        else warn(c.agyRuleAltered(tilde(ctx, rule.file)));
+      }
       continue;
     }
     let version: string | undefined;
