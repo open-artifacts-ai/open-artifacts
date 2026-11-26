@@ -23,7 +23,13 @@ import {
 import type { Proc } from "../src/codex-attest.ts";
 import { createEventLog } from "../src/event-log.ts";
 import { execCodex } from "../src/transports/codex.ts";
-import { daemonHarness, deliverFrame, hello, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  deliverFrame,
+  eventCounter,
+  hello,
+  stopAll,
+} from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -533,13 +539,14 @@ describe("a Codex restore is logged and survives a slow ps (#2202, #2297)", () =
     const w = world();
     await attestedThenStopped(w);
     const { events } = evLog();
+    const syncs = eventCounter();
     await restartedWith(
       w,
       events,
       { procs: () => undefined },
-      { restoreRetryMs: 60_000, claude: { syncMs: 10 } },
+      { restoreRetryMs: 60_000, claude: { syncMs: 10, onSync: syncs.hook } },
     );
-    await new Promise((r) => setTimeout(r, 100));
+    await syncs.next(3); // several whole sync ticks
     expect(readCodexAgents(w.agentsFile).map((a) => a.ref)).toEqual([THREAD]);
   });
 

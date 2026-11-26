@@ -34,7 +34,12 @@ import {
   splitArgv0,
 } from "../src/transports/codex.ts";
 import { queueDb } from "./codex-queue-fixture.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  deliverFrame,
+  eventCounter,
+  stopAll,
+} from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -444,6 +449,7 @@ describe("the daemon delivers to codex threads", () => {
         },
       }),
     );
+    const syncs = eventCounter();
     const one = await daemonHarness({
       codex: {
         home,
@@ -452,10 +458,10 @@ describe("the daemon delivers to codex threads", () => {
         wakes: async () => true,
         takenFile,
       },
-      claude: { syncMs: 30 },
+      claude: { syncMs: 30, onSync: syncs.hook },
     });
     await one.adapter(THREAD, { kind: "codex" });
-    await new Promise((r) => setTimeout(r, 400));
+    await syncs.next(5); // several whole sync ticks
     expect(f.runs()).toHaveLength(0);
     expect(one.of("ack")).toEqual([]);
   });
@@ -471,12 +477,13 @@ describe("the daemon delivers to codex threads", () => {
       wakes: async () => true,
       takenFile,
     };
-    const claude = { syncMs: 30 };
+    const syncs = eventCounter();
+    const claude = { syncMs: 30, onSync: syncs.hook };
     const one = await daemonHarness({ codex, claude });
     await one.adapter(THREAD, { kind: "codex" });
     one.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
     await vi.waitFor(() => expect(f.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 150));
+    await syncs.next(3); // several whole sync ticks: the taken check ran each time
     expect(one.of("ack")).toEqual([]);
     // The thread unloads and loads again: the turn takes the item.
     writeRollout(home, [userItem(f.text())]);
@@ -491,10 +498,15 @@ describe("the daemon delivers to codex threads", () => {
   });
 
   it("without a binary, mail to a codex thread stays pending", async () => {
-    const h = await daemonHarness({ codex: { wakes: async () => true } });
+    const syncs = eventCounter();
+    const h = await daemonHarness({
+      codex: { wakes: async () => true },
+      claude: { syncMs: 20, onSync: syncs.hook },
+    });
     await h.adapter(THREAD, { kind: "codex" });
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
-    await new Promise((r) => setTimeout(r, 100));
+    await syncs.next(3); // several whole sync ticks after the delivery
+    await h.barrier();
     expect(h.of("ack")).toEqual([]);
     expect(h.of("refuse")).toEqual([]);
   });
@@ -1235,12 +1247,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         home,
         Array.from({ length: 30 }, () => padLine),
       );
+      const run = vi.fn(execCodex(5_000));
       const r = transport(
         { path: f.bin, from: "path" },
-        { takenFile, home, scanBudget: 100_000 },
+        { takenFile, home, scanBudget: 100_000, run },
       );
       for (let i = 0; i < 12; i++) r.watch.check();
-      await new Promise((res) => setTimeout(res, 150));
+      // Every spawn goes through `run`: it was never called.
+      expect(run).not.toHaveBeenCalled();
       expect(f.runs()).toHaveLength(0);
       expect(r.watch.state("mmmmmmmmmmmmmmm1")).toBe("attempt");
     });
@@ -1254,15 +1268,16 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         ...Array.from({ length: 30 }, () => padLine),
         userItem(text),
       ]);
+      const run = vi.fn(execCodex(5_000));
       const r = transport(
         { path: f.bin, from: "path" },
-        { takenFile, home, scanBudget: 100_000 },
+        { takenFile, home, scanBudget: 100_000, run },
       );
       for (let i = 0; i < 10; i++) r.watch.check();
       expect(r.onTaken.mock.calls.map((c) => c[0])).toEqual([
         "mmmmmmmmmmmmmmm1",
       ]);
-      await new Promise((res) => setTimeout(res, 100));
+      expect(run).not.toHaveBeenCalled();
       expect(f.runs()).toHaveLength(0);
     });
   });

@@ -4,18 +4,31 @@ import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   claudeTarget,
   claudeTargetState,
   liveClaudeSessions,
 } from "../src/liveness/claude.ts";
 import { ClaudeTransport } from "../src/transports/claude.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  deliverFrame,
+  eventCounter,
+  stopAll,
+} from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-live-"));
 const servers: Server[] = [];
+/** Whole sync ticks the daemon has run, and deliveries it has settled: the signals the tests wait on. */
+let syncs = eventCounter();
+let settles = eventCounter();
+beforeEach(() => {
+  syncs = eventCounter();
+  settles = eventCounter();
+});
 afterEach(async () => {
+  vi.useRealTimers();
   await stopAll();
   await Promise.all(
     servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
@@ -35,6 +48,17 @@ const writeSession = (d: string, pid: number, over: object = {}) =>
       ...over,
     }),
   );
+
+/** Dials `sock` and waits until the server has read the probe's byte, then forgets it from `seen`. */
+async function probe(sock: string, seen: string[]) {
+  const c = connect(sock);
+  c.on("error", () => {});
+  await new Promise<void>((r) => c.once("connect", () => r()));
+  c.end("PROBE");
+  await vi.waitFor(() => expect(seen.join("")).toContain("PROBE"));
+  const at = seen.findIndex((x) => x.includes("PROBE"));
+  seen.splice(at, 1);
+}
 
 describe("claude liveness", () => {
   it("lists a live session with its bus name and socket", () => {
@@ -204,7 +228,9 @@ describe("claude liveness", () => {
       reason: "closed",
       closedBy: "delivery",
     });
-    await new Promise((r) => setTimeout(r, 50)); // absence: an injection would land here
+    // Absence: an injection would have connected before deliver returned. A
+    // probe connection after it is handled after any earlier one's bytes.
+    await probe(sock, seen);
     expect(seen).toEqual([]);
 
     // A key file gone with the session is just as closed.
@@ -215,6 +241,7 @@ describe("claude liveness", () => {
       reason: "closed",
       closedBy: "delivery",
     });
+    await probe(sock, seen);
     expect(seen).toEqual([]);
     await t.close();
   });
@@ -225,6 +252,8 @@ describe("runDaemon claude session sync", () => {
     sessionsDir: d,
     socketsDir: join(d, "sinks"),
     syncMs: 20,
+    onSync: () => syncs.hook(),
+    onDeliverSettled: () => settles.hook(),
     procStart: (pid: number) => (running.has(pid) ? "t0" : null),
     isRunning: (pid: number) => running.has(pid),
   });
@@ -244,7 +273,7 @@ describe("runDaemon claude session sync", () => {
       pid: 4242,
       live: true,
     });
-    await new Promise((r) => setTimeout(r, 100)); // several sync ticks
+    await syncs.next(3); // several whole sync ticks
     expect(h.of("agent_up")).toHaveLength(1);
 
     running.delete(4242);
@@ -253,7 +282,8 @@ describe("runDaemon claude session sync", () => {
     );
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
     const downs = h.of("sessions").length;
-    await new Promise((r) => setTimeout(r, 100));
+    await syncs.next(3);
+    await h.barrier();
     expect(h.of("sessions")).toHaveLength(downs); // reported once
   });
 
@@ -323,7 +353,8 @@ describe("runDaemon claude session sync", () => {
     if (!rec) throw new Error("no record");
     rec.live = false;
     rec.closedBy = "delivery";
-    await new Promise((r) => setTimeout(r, 200)); // several sync ticks
+    await syncs.next(3); // several whole sync ticks
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(rec.live).toBe(false);
   });
@@ -336,12 +367,14 @@ describe("runDaemon claude session sync", () => {
       claude: { ...syncDeps(d, running), unknownGraceMs: 150 },
     });
     await h.next("agent_up");
+    // The grace is wall time read from Date.now(): a pinned clock, moved past it.
+    vi.useFakeTimers({ toFake: ["Date"] });
     writeFileSync(join(d, "4242.json"), '{"pid":4242,');
-    await new Promise((r) => setTimeout(r, 60));
+    await syncs.next(2); // the unreadable file was seen: the grace began
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
-    await vi.waitFor(() =>
-      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
-    );
+    vi.setSystemTime(Date.now() + 200);
+    await syncs.next(2);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
   });
 
   it("#2110: an unreadable start time keeps a session live only for the grace window", async () => {
@@ -356,11 +389,12 @@ describe("runDaemon claude session sync", () => {
       },
     });
     await h.next("agent_up");
-    await new Promise((r) => setTimeout(r, 60));
+    vi.useFakeTimers({ toFake: ["Date"] });
+    await syncs.next(2); // the unreadable start time was seen: the grace began
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
-    await vi.waitFor(() =>
-      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
-    );
+    vi.setSystemTime(Date.now() + 200);
+    await syncs.next(2);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
   });
 
   it("#2110: a delivery while the session file is mid-rewrite neither drops the mail nor closes the session", async () => {
@@ -368,12 +402,15 @@ describe("runDaemon claude session sync", () => {
     writeSession(d, 4242);
     const running = new Set([4242]);
     const h = await daemonHarness({
-      claude: { ...syncDeps(d, running), syncMs: 60_000 },
+      claude: { ...syncDeps(d, running), syncMs: 60_000, unknownRetryMs: 1 },
     });
     await h.next("agent_up");
     writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    const settled = settles.next();
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
-    await new Promise((r) => setTimeout(r, 900)); // past the target re-reads
+    // The transport's 5 re-reads of the target ran out (1 ms apart here), the file still unreadable.
+    await settled;
+    await h.barrier();
     expect(h.of("refuse")).toEqual([]);
     expect(h.of("ack")).toEqual([]);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
@@ -413,10 +450,9 @@ describe("runDaemon claude session sync", () => {
     rmSync(join(d, "4242.json"));
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm2", "s4242"));
-    await vi.waitFor(() =>
-      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
-    );
-    await new Promise((r) => setTimeout(r, 100));
+    await settles.reach(2); // both deliveries settled
+    await h.barrier();
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
     expect(h.of("refuse")).toEqual([]);
     expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("liveness");
     writeSession(d, 4242);
@@ -436,7 +472,7 @@ describe("runDaemon claude session sync", () => {
     rec.live = false;
     rec.closedBy = "liveness";
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
-    await new Promise((r) => setTimeout(r, 100));
+    await h.barrier(); // the daemon has taken the frame; it leaves it pending
     expect(h.of("refuse")).toEqual([]);
     rec.closedBy = "delivery";
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm2", "s4242"));
@@ -483,7 +519,8 @@ describe("runDaemon claude session sync", () => {
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
     expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
     expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("delivery");
-    await new Promise((r) => setTimeout(r, 400)); // several sync ticks
+    await syncs.next(3); // several whole sync ticks
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
   });
@@ -512,7 +549,8 @@ describe("runDaemon claude session sync", () => {
     await h.next("agent_up", 2);
     rec.live = false; // closed again at once
     rec.closedBy = "liveness";
-    await new Promise((r) => setTimeout(r, 200));
+    await syncs.next(3); // several whole sync ticks
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(2);
     expect(rec.live).toBe(false);
   });
@@ -530,11 +568,12 @@ describe("runDaemon claude session sync", () => {
     });
     await h.next("agent_up");
     start = null; // ps failed: unknown
-    await new Promise((r) => setTimeout(r, 150)); // several sync ticks
+    await syncs.next(3); // several whole sync ticks
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     start = "t0";
     writeFileSync(join(d, "4242.json"), '{"pid":4242,'); // a rewrite in flight
-    await new Promise((r) => setTimeout(r, 150));
+    await syncs.next(3);
+    await h.barrier();
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     expect(h.of("sessions").flatMap((x) => x.closed)).toEqual([]);
   });
@@ -550,7 +589,8 @@ describe("runDaemon claude session sync", () => {
     const a = await h.adapter("s4242", { pid: 9999 }); // the MCP server's own pid
     expect(a.welcome).toMatchObject({ agent_ref: "s4242", namespace: "ns" });
     a.close();
-    await new Promise((r) => setTimeout(r, 100));
+    await syncs.next(3);
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.daemon.agents.byRef("s4242")).toMatchObject({
       pid: 4242,

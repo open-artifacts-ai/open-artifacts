@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hello } from "@oa/bus-ipc";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   codexAttestor,
   devParts,
@@ -26,9 +26,14 @@ import {
   execCodex,
   hostWakes,
 } from "../src/transports/codex.ts";
-import { daemonHarness, hello, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, hello, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
+/** Wake passes the daemon finished: the signal for "it looked again and did nothing". */
+let passes = eventCounter();
+beforeEach(() => {
+  passes = eventCounter();
+});
 
 const THREAD = "01a18536-7f07-7680-b17c-199e3dadf886";
 const ASKER = "01a18536-7f07-7680-b17c-199e3dadf887";
@@ -137,6 +142,7 @@ function world() {
     relockEvery: 1,
     wakeAskMs: 0,
     wakeCheckMs: 0,
+    onWakePass: () => passes.hook(),
     resolveBin: () => ({ path: bin, from: "path" as const }),
     run: execCodex(5_000),
     wakes: async () => true,
@@ -175,9 +181,9 @@ function answerLists(
     server_version: "1",
     caps: ["ids", "mailbox", "waiting"],
   });
-  const t = setInterval(() => {
-    for (const f of h.of("list")) {
-      if (done.has(f.id)) continue;
+  return h.onFrame((f) => {
+    {
+      if (f.type !== "list" || done.has(f.id)) return;
       done.add(f.id);
       const w = waiting();
       h.toDaemon({
@@ -198,8 +204,17 @@ function answerLists(
         ],
       });
     }
-  }, 5);
-  return () => clearInterval(t);
+  });
+}
+
+/**
+ * Absence: the daemon's hello_ok is in, and it finished three more wake
+ * passes (the first may have begun before) and everything they sent arrived.
+ */
+async function lookedAgain(h: H) {
+  await h.barrier();
+  await passes.next(3);
+  await h.barrier();
 }
 
 /** Daemon 1 admits both threads, then stops; the app restarts: P2 holds THREAD, P holds ASKER. */
@@ -266,7 +281,7 @@ describe("waking an away Codex thread (#2029)", () => {
       `--thread=${THREAD}`,
       `--message=${CODEX_WAKE_TEXT}`,
     ]);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(1);
     expect(logs.filter((l) => /codex wake .* sent/.test(l))).toHaveLength(1);
     stop();
@@ -281,7 +296,7 @@ describe("waking an away Codex thread (#2029)", () => {
       return { two: t };
     })();
     const stop3 = answerLists(three, () => 3);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(three);
     expect(w.runs()).toHaveLength(1);
     stop3();
   });
@@ -328,7 +343,7 @@ describe("waking an away Codex thread (#2029)", () => {
     await waitFor(() =>
       expect(logs.some((l) => /skipped: no mail waiting/.test(l))).toBe(true),
     );
-    await new Promise((r) => setTimeout(r, 150));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(0);
     stop();
   });
@@ -339,7 +354,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const { two, logs } = await restarted(w);
     const stop = answerLists(two, () => 2);
     await waitFor(() => expect(w.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(1);
     expect(logs.some((l) => /codex wake .* failed/.test(l))).toBe(true);
     stop();
@@ -350,7 +365,7 @@ describe("waking an away Codex thread (#2029)", () => {
     w.state.comm2 = "/usr/bin/node";
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 2);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(0);
     expect(two.of("list")).toHaveLength(0);
     stop();
@@ -383,7 +398,7 @@ describe("waking an away Codex thread (#2029)", () => {
       claude: { syncMs: 20 },
     });
     const stop = answerLists(three, () => 2);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(three);
     expect(w.runs()).toHaveLength(0);
     stop();
     void two;
@@ -410,7 +425,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const a = await restarted(w, { wakeAgainMs: 0 });
     const stopA = answerLists(a.two, () => 2);
     await waitFor(() => expect(w.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(a.two);
     expect(w.runs()).toHaveLength(1);
     stopA();
     await stopAll();
@@ -420,7 +435,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const b = await restarted(w2, { wakeAgainMs: 0 });
     const stopB = answerLists(b.two, () => waiting++);
     await waitFor(() => expect(w2.runs()).toHaveLength(3));
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(b.two);
     expect(w2.runs()).toHaveLength(3);
     stopB();
     await stopAll();
@@ -431,7 +446,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const c = await restarted(w3);
     const stopC = answerLists(c.two, () => n3++);
     await waitFor(() => expect(w3.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(c.two);
     expect(w3.runs()).toHaveLength(1);
     stopC();
   });
@@ -630,7 +645,7 @@ describe("waking an away Codex thread (#2029)", () => {
         waiting: 9,
       },
     ]);
-    await new Promise((r) => setTimeout(r, 400));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(0);
     stop();
   });
@@ -646,7 +661,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const stop = answerLists(two, () => 2);
     await waitFor(() => expect(seen).toHaveLength(1));
     expect(seen).toEqual([true]);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(two);
     expect(seen).toHaveLength(1);
     stop();
     await stopAll();
@@ -657,7 +672,7 @@ describe("waking an away Codex thread (#2029)", () => {
       claude: { syncMs: 20 },
     });
     const stop3 = answerLists(three, () => 2);
-    await new Promise((r) => setTimeout(r, 300));
+    await lookedAgain(three);
     expect(seen).toHaveLength(1);
     stop3();
   });
@@ -681,7 +696,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 2);
     await waitFor(() => expect(w.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 200));
+    await lookedAgain(two);
     expect(w.runs().map((r) => JSON.parse(r)[1])).toEqual([
       `--thread=${THREAD}`,
     ]);
@@ -723,7 +738,7 @@ describe("waking an away Codex thread (#2029)", () => {
       };
     })();
     const stop = answerLists(two, () => 2);
-    await new Promise((r) => setTimeout(r, 400));
+    await lookedAgain(two);
     expect(w.runs()).toHaveLength(0);
     expect(two.of("list")).toHaveLength(0);
     stop();

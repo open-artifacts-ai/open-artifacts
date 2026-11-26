@@ -34,7 +34,7 @@ import {
   type Proc,
   psRows,
 } from "../src/codex-attest.ts";
-import { daemonHarness, hello, stopAll } from "./helpers.ts";
+import { daemonHarness, hello, ipcBarrier, stopAll } from "./helpers.ts";
 
 /** The live capture's thread; its cwd is redacted to CWD. */
 const THREAD = "01a18536-7f07-7680-b17c-199e3dadf886";
@@ -783,12 +783,12 @@ describe("codex code-mode attestation (C27)", () => {
   it("rejects a pending retry on the old transcript after a rotation reprove", async () => {
     const { home, rollout } = cmHome();
     let wake!: () => void;
-    const sleeping = new Promise<void>((resolve) => {
+    const released = new Promise<void>((resolve) => {
       wake = resolve;
     });
     const check = codexAttestor({
       home,
-      ...fakeProcs({ retryMs: 1, sleep: () => sleeping }),
+      ...fakeProcs({ retryMs: 1, sleep: () => released }),
     });
     const pending = check.attest(codeHello({ item_id: "ctc_late" }));
     rotateRollout(home, rollout);
@@ -1060,9 +1060,10 @@ describe("codex attestation against real processes (C26c)", () => {
   it("admits the thread through the daemon's real attest, then refuses a replay", async () => {
     const { home, rollout, lock } = codexHome({ rollout: meta() });
     const { p, adapter } = await fakeCodex(lock);
-    // Written after the fake codex's first second, as a model turn would be.
-    await new Promise((r) => setTimeout(r, 1100));
-    appendFileSync(rollout, call("call_1"));
+    // A call counts when stamped after the fake codex's first second (its start
+    // has one-second resolution): stamped ahead, as a model turn would be.
+    const later = () => new Date(Date.now() + 2000).toISOString();
+    appendFileSync(rollout, call("call_1", undefined, undefined, later()));
     const h = await daemonHarness({ attest: undefined, codex: { home } });
     const at = (call_id: string) =>
       codexHello({ call_id, ppid: p }, { pid: adapter });
@@ -1073,7 +1074,10 @@ describe("codex attestation against real processes (C26c)", () => {
       cwd: CWD,
       live: true,
     });
-    appendFileSync(rollout, AFTER + call("call_2"));
+    appendFileSync(
+      rollout,
+      AFTER + call("call_2", undefined, undefined, later()),
+    );
     await h.adapter(THREAD, at("call_2"));
     await expect(h.adapter(THREAD, at("call_2"))).rejects.toThrow(
       CODEX_REFUSALS.callNotFound,
@@ -1236,10 +1240,21 @@ describe("the absent-call retry is asynchronous, once per call (C26c N3)", () =>
     const { home, rollout } = codexHome({ rollout: meta() });
     const h = await daemonHarness({
       attest: undefined,
-      codex: { home, ...fakeProcs({ retryMs: 200 }) },
+      codex: {
+        home,
+        ...fakeProcs({
+          retryMs: 200,
+          // Only a free event loop runs this callback before the retry reads again.
+          sleep: () =>
+            new Promise<void>((resolve) =>
+              setImmediate(() => {
+                appendFileSync(rollout, call("call_1"));
+                resolve();
+              }),
+            ),
+        }),
+      },
     });
-    // Only a free event loop runs this timer before the retry reads again.
-    setTimeout(() => appendFileSync(rollout, call("call_1")), 20);
     await h.adapter(THREAD, codexHello());
     expect(h.daemon.agents.byRef(THREAD)).toMatchObject({ pid: 100, cwd: CWD });
   });
@@ -1248,32 +1263,38 @@ describe("the absent-call retry is asynchronous, once per call (C26c N3)", () =>
 describe("a hello whose connection closes during the wait (C26c R1)", () => {
   it("admits nothing once the socket is gone", async () => {
     const { home, rollout } = codexHome({ rollout: meta() });
-    let waited = false;
+    // The daemon's wait for the call is held open until the test lets it end.
+    let waiting!: () => void;
+    const isWaiting = new Promise<void>((r) => {
+      waiting = r;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     const h = await daemonHarness({
       attest: undefined,
       codex: {
         home,
         ...fakeProcs({
           retryMs: 50,
-          sleep: (ms) =>
-            new Promise((r) =>
-              setTimeout(() => {
-                // The call lands, so the attestation itself would pass.
-                appendFileSync(rollout, call("call_1"));
-                waited = true;
-                r();
-              }, ms),
-            ),
+          sleep: async () => {
+            waiting();
+            await gate;
+            // The call lands, so the attestation itself would pass.
+            appendFileSync(rollout, call("call_1"));
+          },
         }),
       },
     });
     const raw = connect(h.socketPath);
     await new Promise((r) => raw.once("connect", r));
     raw.write(`${JSON.stringify(codexHello())}\n`);
-    await new Promise((r) => setTimeout(r, 10));
+    await isWaiting; // the daemon is inside the wait
     raw.destroy();
-    await vi.waitFor(() => expect(waited).toBe(true));
-    await new Promise((r) => setTimeout(r, 20));
+    await ipcBarrier(h.socketPath); // the daemon has seen the hang-up
+    release();
+    await ipcBarrier(h.socketPath); // the wait ended and was answered
     expect(h.daemon.agents.byRef(THREAD)).toBeUndefined();
     expect(h.of("agent_up")).toEqual([]);
   });
