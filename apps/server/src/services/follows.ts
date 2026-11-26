@@ -290,9 +290,57 @@ export async function moveFollows(
    * row keeps its start.
    */
   startAt?: number,
-): Promise<void> {
-  if (from.namespace === to.namespace && from.name === to.name) return;
+  /**
+   * #3132: pages the role carries that `from` also follows for itself: `to`
+   * follows them now, and `from` keeps its own row.
+   */
+  carried: readonly string[] = [],
+): Promise<{ overlaps: string[] }> {
+  if (from.namespace === to.namespace && from.name === to.name)
+    return { overlaps: [] };
+  // #3132: the pages `to` already follows for itself that this move also
+  // gives it: one row serves both, so the caller keeps the role's part.
+  const overlaps =
+    startAt === undefined
+      ? []
+      : (
+          await stmt(
+            env.DB,
+            `select f.artifact_id as id from follows f
+           where f.user_id = ?1 and f.namespace = ?4 and f.agent_name = ?5
+             and (f.artifact_id in (select value from json_each(?7))
+               or exists (select 1 from follows g where g.user_id = ?1 and g.namespace = ?2
+                 and g.agent_name = ?3 and g.artifact_id = f.artifact_id and g.created_at >= ?6))`,
+          )
+            .bind(
+              userId,
+              from.namespace,
+              from.name,
+              to.namespace,
+              to.name,
+              since,
+              JSON.stringify(carried),
+            )
+            .all<{ id: string }>()
+        ).results.map((r) => r.id);
   await env.DB.batch([
+    ...(carried.length > 0 && startAt !== undefined
+      ? [
+          stmt(
+            env.DB,
+            `insert into follows (user_id, artifact_id, namespace, agent_name, created_at)
+             select ?1, value, ?2, ?3, ?4 from json_each(?5)
+             where exists (select 1 from artifacts a where a.id = value)
+             on conflict do nothing`,
+          ).bind(
+            userId,
+            to.namespace,
+            to.name,
+            startAt,
+            JSON.stringify(carried),
+          ),
+        ]
+      : []),
     stmt(
       env.DB,
       `insert into follows (user_id, artifact_id, namespace, agent_name, created_at, last_notice_at)
@@ -313,6 +361,7 @@ export async function moveFollows(
       "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3 and created_at >= ?4",
     ).bind(userId, from.namespace, from.name, since),
   ]);
+  return { overlaps };
 }
 
 /** An address as a case-folded set key (bus names compare without case). */
