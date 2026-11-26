@@ -45,9 +45,20 @@ describe("agent marks", () => {
     expect(letterMark("<b>").body).toContain(">?</text>");
     // oh-my-pi's tile is not the plain tile, nor a letter tile.
     const omp = AGENT_MARKS["oh-my-pi"];
-    expect(omp.body).toContain(">omp</text>");
+    expect(omp.body).toContain('mask="url(#omp)"');
     expect(omp).not.toEqual(AGENT_MARKS.Agent);
     expect(omp).not.toEqual(letterMark("O"));
+  });
+
+  it("oh-my-pi's mark knocks out a ring with shapes instead of text", () => {
+    const svg = agentMarkSvg(AGENT_MARKS["oh-my-pi"]);
+    expect(svg).not.toMatch(/<text\b/i);
+    expect(svg).toContain('<mask id="omp">');
+    expect(svg).toContain('<circle cx="12" cy="12" r="6.5" fill="#000"/>');
+    expect(svg).toContain('<circle cx="12" cy="12" r="3.2" fill="#fff"/>');
+    expect(svg).toContain(
+      '<rect x="1" y="1" width="22" height="22" rx="5" mask="url(#omp)"/>',
+    );
   });
 
   it("text-colour marks are mono; colour marks keep their own colours", () => {

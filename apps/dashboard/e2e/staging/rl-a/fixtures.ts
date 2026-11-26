@@ -8,6 +8,7 @@ import {
   type Role,
   type Space,
   TEST_HOOKS,
+  TEST_RUN_HEADER,
   type TestSessionInput,
 } from "@oa/shared";
 import {
@@ -19,12 +20,7 @@ import {
 import { type Agent, mcpWithToken } from "../../real/mcp-client";
 import { gate } from "../gate";
 import "../dispatcher";
-import {
-  clearTestStart,
-  hookFailure,
-  markTestStart,
-  paceT19Hook,
-} from "../hook-pace";
+import { hookFailure, paceT19Hook } from "../hook-pace";
 import { sendPacedHook, sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -53,10 +49,17 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
       fetch(`${A.app}${path}`, {
         method: "POST",
         redirect: "manual",
-        headers: { "content-type": "application/json", ...headers },
+        headers: {
+          "content-type": "application/json",
+          // T19's rows in the install's audit log carry this tag, so they never
+          // crowd the red-line suite's rows out of its newest-200 read.
+          [TEST_RUN_HEADER]: `t19-${RUN}`,
+          ...headers,
+        },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(FETCH_MS),
       }),
+    { origin: A.app },
   );
 
 /**
@@ -171,7 +174,7 @@ export const api = (
         },
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, origin: A.app },
   );
 
 /** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
@@ -184,7 +187,7 @@ export const anon = (path: string, init: RequestInit = {}) =>
         redirect: "manual",
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, origin: A.app },
   );
 
 /** The body of a 2xx response; anything else throws with its status. */
@@ -369,20 +372,5 @@ export async function needs(flow: string, min: string): Promise<void> {
   test.skip(why !== null, why ?? "");
 }
 
-/**
- * T19's test: an auto fixture records each test's start, so a paced hook
- * call's deadline (hook-pace.ts) is the test's own timeout.
- */
-export const test = base.extend<{ hookClock: void }>({
-  hookClock: [
-    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructured first argument.
-    async ({}, use, testInfo) => {
-      markTestStart(testInfo);
-      await use();
-      // afterAll gets this TestInfo but its own timeout (hook-pace.ts).
-      clearTestStart(testInfo);
-    },
-    { auto: true },
-  ],
-});
+export const test = base;
 export { expect };

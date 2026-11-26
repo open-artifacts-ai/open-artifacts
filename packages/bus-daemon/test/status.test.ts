@@ -5,7 +5,10 @@ import type { DaemonDeps } from "../src/index.ts";
 import { STATUS_COPY } from "../src/status.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  vi.useRealTimers();
+  await stopAll();
+});
 
 /** Any version: nothing gates on it. */
 const GATE = "0.106.0";
@@ -39,10 +42,16 @@ async function bus(over: Partial<DaemonDeps> = {}) {
 }
 /** Pacing that queues: one token, refilled slowly, and room for two frames. */
 const tight = (rate = 4) => ({ pace: { burst: 1, rate, max: 2 } });
-/** Startup's frames are out and the bucket holds its one token again. */
+/**
+ * The status guard's window and the pacer's refill run on a clock moved by
+ * hand: installed before the daemon exists, so its timers are the fake ones.
+ */
+const fakeClock = () =>
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+/** Startup's frames are out and the bucket holds its one token again (`ms` of fake time). */
 const drained = async (h: Awaited<ReturnType<typeof bus>>["h"], ms = 300) => {
   await slow(h, "agent_up");
-  await new Promise((r) => setTimeout(r, ms));
+  await vi.advanceTimersByTimeAsync(ms);
 };
 /** Waits for the n-th frame of a type on a slow queue. */
 const slow = async (
@@ -114,11 +123,12 @@ describe("set_status", () => {
         type: "error",
         code: "bad_frame",
       });
-    await new Promise((r) => setTimeout(r, 50));
+    await h.quiet();
     expect(h.of("status")).toHaveLength(0);
   });
 
   it("the local guard: one frame per agent per window, the latest kept", async () => {
+    fakeClock();
     const { h, a } = await bus({ status: { statusEveryMs: 300 } });
     const states = ["working", "blocked", "idle", "waiting_on_owner"] as const;
     const replies = states.map((state, i) =>
@@ -127,13 +137,16 @@ describe("set_status", () => {
     // Every call is answered, the superseded ones included.
     for (const r of await Promise.all(replies))
       expect(r).toMatchObject({ type: "status_set" });
+    await a.request({ type: "self" }); // every set_status above was read: the window is open
+    await vi.advanceTimersByTimeAsync(300); // it closes: the latest goes
     await h.next("status", 2);
     expect(h.of("status").map((f) => [f.state, f.label])).toEqual([
       ["working", "step 0"],
       ["waiting_on_owner", "step 3"],
     ]);
     // Nothing else goes once the window closes with nothing queued.
-    await new Promise((r) => setTimeout(r, 400));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("status")).toHaveLength(2);
     // Each agent has its own window.
     const b = await h.adapter("B", { client_version: GATE });
@@ -145,6 +158,7 @@ describe("set_status", () => {
 
   it("a status the backed-up queue drops goes again, the latest only", async () => {
     const lines: string[] = [];
+    fakeClock();
     const { h, a } = await bus({
       hub: tight(),
       status: { statusEveryMs: 200 },
@@ -157,17 +171,21 @@ describe("set_status", () => {
     // Two more user frames overflow the queue: the status, oldest, goes.
     list(a);
     list(a);
+    await a.request({ type: "self" }); // both lists were read: the queue overflowed
+    await vi.advanceTimersByTimeAsync(2_000); // the guard's window, then every refill
     await slow(h, "status");
     expect(lines).toContain(
       "hub queue full: dropped a queued status frame (max 2)",
     );
     expect(h.of("status").map((f) => f.label)).toEqual(["dropped"]);
     // Re-sent from the guard, then nothing more.
-    await new Promise((r) => setTimeout(r, 600));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("status")).toHaveLength(1);
   });
 
   it("a status lost with the link is told on the next call", async () => {
+    fakeClock();
     const { h, a } = await bus({ hub: tight(1) });
     await drained(h, 1100);
     list(a);
@@ -184,6 +202,9 @@ describe("set_status", () => {
       type: "status_set",
       earlier: { code: "hub_unavailable" },
     });
+    // The window the dropped status was held in ends: it must not go now.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("status").every((f) => f.state !== "blocked")).toBe(true);
   });
 });

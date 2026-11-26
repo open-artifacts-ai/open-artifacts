@@ -16,18 +16,18 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterDeps } from "./adapters.ts";
-import { HABITS_MARKER_TEXT, pluginHash } from "./hermes.ts";
+import { pluginHash } from "./hermes.ts";
 import { writeAtomic } from "./skill.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 /** The plugin's id in openclaw.plugin.json, and its folder under extensions/. */
 export const OPENCLAW_PLUGIN_ID = "oa-bus";
-/** Written after install, read by uninstall, status and habits: the folder is ours when it is there. */
+/** Written after install, read by uninstall and status: the folder is ours when it is there. */
 export const OPENCLAW_MARKER = ".oa-bus-managed";
 /**
- * Present in the plugin folder only when the user said yes to the always-on
- * habits: the plugin adds them to a turn only while it exists. It is not a
- * package file, so it never counts toward the hash.
+ * Legacy marker written by earlier installs; never written now, and deleted on
+ * install, upgrade and uninstall. Not a package file, so it never counts toward
+ * the hash.
  */
 export const OPENCLAW_HABITS_MARKER = "habits.on";
 /** What install says when OPENCLAW_NIX_MODE=1 (plugin commands are off there). */
@@ -121,7 +121,7 @@ const kind = (path: string): "dir" | "file" | "link" | undefined => {
   }
 };
 
-/** Whether the folder's manifest names our plugin: enough to delete habits.on there, never to replace it. */
+/** Whether the folder's manifest names our plugin: enough to delete a leftover habits.on there, never to replace it. */
 export const openclawManifestIsOurs = (dir: string): boolean => {
   try {
     const m: unknown = JSON.parse(
@@ -271,7 +271,7 @@ export async function openclawVerify(
     return `its tools are not registered (${missing.join(", ")})`;
   if (!d.typedHooks?.some((h) => h.name === NEED_HOOK))
     return `its ${NEED_HOOK} hook is not registered`;
-  // A linked dev copy can override ours: habits.on would then do nothing.
+  // A linked dev copy can override ours: the installed plugin would then not be what runs.
   const dest = openclawPluginDir(deps.home, deps.env ?? {});
   const root = d.plugin.rootDir;
   if (typeof root !== "string")
@@ -283,13 +283,11 @@ export async function openclawVerify(
 
 /**
  * Installs the shipped plugin and enables it. A folder that is not ours is
- * never replaced. `optedOut` is the user's recorded "no" to the habits: the
- * habits marker is carried across the reinstall only without it.
+ * never replaced. Any leftover `habits.on` marker in our folder is removed.
  */
 export async function installOpenclaw(
   deps: AdapterDeps,
   notes: string[],
-  optedOut: boolean,
 ): Promise<"done" | "absent"> {
   if (!deps.which("openclaw")) return "absent";
   if (openclawNix(deps.env)) {
@@ -309,20 +307,16 @@ export async function installOpenclaw(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
   const habitsFile = join(dest, OPENCLAW_HABITS_MARKER);
-  // The user's "no" wins on every install, a current one included.
-  const dropHabitsIfOptedOut = () => {
-    if (optedOut && kind(dest) === "dir") rmSync(habitsFile, { force: true });
+  const dropLegacyHabitsMarker = () => {
+    const mk = kind(habitsFile);
+    if (mk === "file" || mk === "link") rmSync(habitsFile, { force: true });
   };
   if (state === "current") {
     rememberInstall(deps);
-    dropHabitsIfOptedOut();
+    dropLegacyHabitsMarker();
     // Nothing to install; nothing to enable if it already loads.
     if ((await openclawVerify(deps)) === undefined) return "done";
   } else {
-    // The user's yes to the habits lives in the folder `plugins install --force`
-    // replaces: remember it, and put it back whether or not the install worked.
-    const keepHabits =
-      state === "stale" && !optedOut && kind(habitsFile) === "file";
     const r = await exec(
       deps,
       [
@@ -333,21 +327,8 @@ export async function installOpenclaw(
       ],
       INSTALL_TIMEOUT_MS,
     );
-    // Only into a folder that carries our marker: an install cut short after the
-    // swap leaves a bare one, and the yes is lost rather than put where off could
-    // not vouch for it.
-    const restore = () => {
-      if (
-        keepHabits &&
-        kind(dest) === "dir" &&
-        kind(join(dest, OPENCLAW_MARKER)) === "file"
-      )
-        writeAtomic(habitsFile, HABITS_MARKER_TEXT);
-    };
-    if (r.code !== 0) {
-      restore();
+    if (r.code !== 0)
       throw new Error(`\`openclaw plugins install\` failed (${why(r)})`);
-    }
     if (kind(dest) !== "dir")
       throw new Error(
         `\`openclaw plugins install\` finished, but ${dest} is not there`,
@@ -357,9 +338,8 @@ export async function installOpenclaw(
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
     rememberInstall(deps);
-    // A habits.on in the shipped folder is not the user's yes.
-    rmSync(habitsFile, { force: true });
-    restore();
+    // #3043: habits now come from the bus; never leave a habits.on marker behind.
+    dropLegacyHabitsMarker();
   }
   const en = await exec(deps, ["plugins", "enable", OPENCLAW_PLUGIN_ID]);
   if (en.code !== 0)

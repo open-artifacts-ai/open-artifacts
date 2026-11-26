@@ -227,7 +227,7 @@ class RetryOnLaterTurns(OverASocket):
 
     def test_a_turn_asks_the_link_to_retry(self):
         roots = Roots(lambda s: s)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker(),
+        bus = Bus(roots, spawn=support.inline_spawn, start="t",
                   codex_runtime=lambda: False)
         link = support.FakeLink(ref="root-1")
         bus.state("root-1").link = link
@@ -511,7 +511,7 @@ class WireInjection(unittest.TestCase):
 
     def test_no_schema_the_model_sees_carries_the_argument(self):
         ctx = support.FakeCtx()
-        register(ctx, roots=Roots(lambda s: s), bus=Bus(Roots(lambda s: s), habits_marker=support.habits_marker()))
+        register(ctx, roots=Roots(lambda s: s), bus=Bus(Roots(lambda s: s)))
         for t in ctx.tools.values():
             self.assertNotIn(ARG, json.dumps(t["schema"]))
         self.assertEqual(ctx.middleware, {})  # nothing on the middleware layer, which hooks and guards see
@@ -522,7 +522,7 @@ class Plugin(unittest.TestCase):
         calls = []
         ctx = support.FakeCtx()
         roots = Roots(lambda s: s)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus = Bus(roots, spawn=support.inline_spawn, start="t")
         bus.touch = lambda ref: None
         register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",),
                  install=lambda b, names: calls.append((b, names)) or True)
@@ -536,7 +536,7 @@ class Plugin(unittest.TestCase):
         unloads = []
         ctx.on_unload = unloads.append
         roots = Roots(lambda s: s)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus = Bus(roots, spawn=support.inline_spawn, start="t")
         register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",), install=lambda b, n: True)
         self.assertEqual(unloads, [bus.close_all])
         self.assertFalse(bus.wiring_free())
@@ -546,14 +546,14 @@ class Plugin(unittest.TestCase):
     def test_a_hermes_without_on_unload_registers_as_before(self):
         ctx = support.FakeCtx()  # no on_unload
         roots = Roots(lambda s: s)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus = Bus(roots, spawn=support.inline_spawn, start="t")
         register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",), install=lambda b, n: True)
         self.assertIn("pre_llm_call", ctx.hooks)
 
     def test_an_install_that_raises_never_breaks_the_turn(self):
         ctx = support.FakeCtx()
         roots = Roots(lambda s: s)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus = Bus(roots, spawn=support.inline_spawn, start="t")
         bus.touch = lambda ref: None
 
         def boom(b, n):
@@ -570,7 +570,7 @@ class ProofForABus(unittest.TestCase):
         self.roots = Roots({"root-1": "root-1", "kid": "kid-root", "rot": "root-1"}.get)
         self.roots.note_subagent("root-1", "kid")
         self.bus = Bus(self.roots, spawn=support.inline_spawn, start="t",
-                       habits_marker=support.habits_marker(), codex_runtime=lambda: False)
+                       codex_runtime=lambda: False)
         self.link = support.FakeLink(ref="root-1")
         self.link.proof = "q" * 43
         self.bus.state("root-1").link = self.link
@@ -603,7 +603,7 @@ class ProofForABus(unittest.TestCase):
 
     def test_a_root_this_bus_never_held_gets_no_proof_and_no_state(self):
         roots = Roots({"other": "other-root"}.get)
-        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker(),
+        bus = Bus(roots, spawn=support.inline_spawn, start="t",
                   codex_runtime=lambda: False)
         self.assertIsNone(bus.proof_for("other"))
         self.assertEqual(bus._by_root, {})

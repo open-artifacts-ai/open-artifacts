@@ -215,6 +215,10 @@ export type ClaudeTransportOptions = {
   returnIndexFile?: string;
   /** Test seam: the clock for the reply TTL. */
   now?: () => number;
+  /** Test seam: called after each line a return socket received was handled (acted on or dropped). */
+  onLineHandled?: () => void;
+  /** Test seam: called with the outcome of each delivery attempt, as it settles. */
+  onDeliverSettled?: (outcome: DeliverOutcome) => void;
   log?: (msg: string) => void;
   /**
    * A native reply from `agentRef`'s session to `peerName` in `namespace`.
@@ -299,11 +303,16 @@ export class ClaudeTransport {
   deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
     const running = this.#inflight.get(mail.msg_id);
     if (running) return running; // a hub redelivery never injects twice
-    const p = this.#deliver(agent, mail).finally(() => {
-      this.#inflight.delete(mail.msg_id);
-      this.#expecting.delete(mail.msg_id);
-      this.#buffered.delete(mail.msg_id);
-    });
+    const p = this.#deliver(agent, mail)
+      .finally(() => {
+        this.#inflight.delete(mail.msg_id);
+        this.#expecting.delete(mail.msg_id);
+        this.#buffered.delete(mail.msg_id);
+      })
+      .then((outcome) => {
+        this.opts.onDeliverSettled?.(outcome);
+        return outcome;
+      });
     this.#inflight.set(mail.msg_id, p);
     return p;
   }
@@ -614,9 +623,10 @@ export class ClaudeTransport {
         conns.add(sock);
         sock.on("close", () => conns.delete(sock));
         sock.on("error", () => {});
-        createInterface({ input: sock }).on("line", (l) =>
-          this.#onLine(sink, l),
-        );
+        createInterface({ input: sock }).on("line", (l) => {
+          this.#onLine(sink, l);
+          this.opts.onLineHandled?.();
+        });
       }),
     };
     await new Promise<void>((resolve, reject) => {

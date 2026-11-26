@@ -92,7 +92,11 @@ export const SECTIONS = {
     title: "Publishing",
     body: (p) => `- One file: publish_artifact { title, format, content }.
 - Use only these tools: publish this instance's pages with publish_artifact and the other tools here. If your harness has its own artifact or page tool, it publishes somewhere else, so don't use it for these pages.
-- A page or file under ${INLINE} is one call: read the file and pass its text as content. That is the default for pages you edit over time.
+- A file already on disk (a page you wrote with a file tool, a build output, a report): publish it by upload, so its text never passes through you. Do not read or print the file, and skip extra checks (ls, wc, get_artifact): run only the three steps below. Never paste it as content. Upload only a file you wrote for this or were asked to publish, never credentials, keys or .env files; a path outside your working folder needs the user's yes. Any size up to ${FILE_MB}, three short steps:
+  1. create_upload { path: "index.html" } returns { uploadId, artifactId, url }. To republish, add artifactId: the artifact's id.
+  2. Run this command with these exact flags, each value as one single-quoted argument: curl -q -sS --fail --globoff -T '<file>' '<url>' -o /dev/null -w '%{http_code}\\n'. Go on only on 204.
+  3. publish_artifact { id: artifactId, entry: "index.html", files: { "index.html": { "uploadId": "<uploadId>" } }, message } (add title for a new artifact).
+- Text you are writing in this turn, with no file on disk, goes inline as content when it is under ${INLINE}. To change a few lines of a published page, use edits.
 - Several files: publish_artifact { title, entry: "index.html", files: { "index.html": "...", "app.js": "...", "img/logo.png": { "base64": "..." } } }.
 - Paths are relative, use "/" and are case-sensitive; link between files with relative URLs.
 - ${LINK_RULE}
@@ -107,13 +111,10 @@ export const SECTIONS = {
     }`,
   },
   largeFiles: {
-    title: "Large files",
-    body: () => `- Inline content (content, text files and base64 together) is limited to ${INLINE} per call; over it, publish_artifact fails with too_large. For anything larger (up to ${FILE_MB} per file), upload each large file:
-  1. create_upload { path, size?, contentType, artifactId?, sha256? } returns { uploadId, artifactId, url }. Omit artifactId for a new artifact and reuse the returned artifactId for every other file.
-  2. PUT the raw bytes to url (valid 1 hour).
-  3. publish_artifact { id: artifactId, title, entry, files: { "<path>": { "uploadId": "<uploadId>" }, ... } }; small files can stay inline next to uploaded ones.
-- If you pass size, it is the exact byte count of the file as it will be sent: measure it (for example \`wc -c\`), never estimate it.
-- Before reserving an upload, compute SHA-256 from the exact file bytes locally (for example \`sha256sum file\` or \`shasum -a 256 file\`) and pass the 64-character hex result as \`sha256\`. R2 verifies it without Worker hashing, so Free uploads also get a content hash. PUT the same bytes; do not modify the file after hashing.
+    title: "Uploads",
+    body: () => `- Inline content (content, text files and base64 together) is limited to ${INLINE} per call; over it, publish_artifact fails with too_large. Uploads take any file up to ${FILE_MB}; publish several in one publish_artifact, one create_upload each, reusing the returned artifactId. Small files can stay inline next to uploaded ones.
+- The upload url is valid 1 hour and needs no other credential: send only the file's bytes to it, and never print or share it.
+- size is optional: if you pass it, it is the exact byte count (measure it, for example wc -c), never an estimate. sha256 is optional: the hex SHA-256 of the exact bytes (shasum -a 256 file); R2 verifies it and keeps a content hash.
 - An upload id works once. If the PUT or the publish fails, create a new upload instead of reusing that id.`,
   },
   reading: {

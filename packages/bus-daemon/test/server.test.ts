@@ -6,7 +6,7 @@ import { decodeClientFrame } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import type { DeliverOutcome } from "../src/deliver.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import { daemonHarness, deliverFrame, ipcBarrier, stopAll } from "./helpers.ts";
 
 const realTmp = () => realpathSync(mkdtempSync(join(tmpdir(), "ob-srv-")));
 
@@ -413,7 +413,7 @@ describe("runDaemon local server", () => {
     p.ack("mmmmmmmmmmmmmmm1");
     expect(await h.next("ack")).toMatchObject({ msg_id: "mmmmmmmmmmmmmmm1" });
     finish({ ok: false, reason: "closed", cause: "expired" });
-    await new Promise((r) => setTimeout(r, 50));
+    await h.quiet();
     expect(h.of("refuse")).toEqual([]);
     expect(h.daemon.agents.byRef("A")?.live).toBe(true);
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
@@ -443,7 +443,11 @@ describe("runDaemon local server", () => {
       await a.request({ type: "self" });
       a.close();
     }
-    await new Promise((r) => setTimeout(r, 50)); // absence: a close would be announced here
+    // Absence: a close would be announced by now. A has no connection here: a
+    // fresh helper connection (not A) is answered after the earlier closes were
+    // handled, then the hub link drains.
+    await ipcBarrier(h.socketPath);
+    await h.quiet();
     expect(h.daemon.agents.byRef("A")?.live).toBe(true);
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.of("sessions").every((f) => f.closed.length === 0)).toBe(true);

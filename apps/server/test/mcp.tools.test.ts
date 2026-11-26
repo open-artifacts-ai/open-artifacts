@@ -989,9 +989,11 @@ describe("tool manifest", () => {
     const text = (n: string) =>
       TOOL_DEFS.find((t) => t.name === n)?.description ?? "";
     expect(text("publish_artifact")).toContain(
-      `is limited to ${kb}; for more, call create_upload`,
+      `is limited to ${kb}. A file already on disk goes by upload at any size`,
     );
-    expect(text("create_upload")).toContain(`over the ${kb} inline limit`);
+    expect(text("create_upload")).toContain(
+      "PUT one file from disk (any size up to 25 MB",
+    );
     const ins = INSTRUCTIONS("free");
     expect(ins).toContain(`limited to ${kb} per call`);
     expect(ins).toContain(

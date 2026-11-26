@@ -24,6 +24,7 @@ const bound: Answer = () => ({ type: "link_proofed", bound: true });
 async function daemon(caps: string[] | undefined, answer: Answer = bound) {
   const frames: Frame[] = [];
   let proofs = 0;
+  let settledSeq = 0;
   const server = createServer((sock) => {
     sockets.push(sock);
     let buf = "";
@@ -47,7 +48,8 @@ async function daemon(caps: string[] | undefined, answer: Answer = bound) {
         else if (f.type === "link_proof") {
           const a = answer(proofs++);
           if (a) send(a);
-        }
+        } else if (f.type === "self")
+          send({ type: "agent", agent: { name: "x", global: false } });
       }
     });
   });
@@ -59,6 +61,24 @@ async function daemon(caps: string[] | undefined, answer: Answer = bound) {
     frames,
     proofs: () => frames.filter((f) => f.type === "link_proof"),
     drop: () => sockets.at(-1)?.destroy(),
+    /**
+     * Ends an absence check on an event, not a wait: a delivery is pushed to
+     * the newest session link and its ack comes back after every frame that
+     * link wrote before it, and after the daemon's answers were handled.
+     */
+    settled: async () => {
+      const msg_id = `settle-${++settledSeq}`;
+      sockets
+        .at(-1)
+        ?.write(
+          `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "p", namespace: "ns", body: "settle" })}\n`,
+        );
+      await vi.waitFor(() =>
+        expect(
+          frames.some((f) => f.type === "ack" && f.msg_id === msg_id),
+        ).toBe(true),
+      );
+    },
   };
 }
 
@@ -172,7 +192,7 @@ describe("omp session proof on /mcp (#1856)", () => {
     const s = omp();
     await s.emit("session_start");
     await vi.waitFor(() => expect(d.proofs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled();
     await call(MCP, { headers: OWN });
     expect(headerOf(seen.at(-1) as Seen)).toBeNull();
   });
@@ -182,6 +202,7 @@ describe("omp session proof on /mcp (#1856)", () => {
     const s = omp();
     await s.emit("session_start");
     await vi.waitFor(() => expect(d.frames.length).toBeGreaterThan(0));
+    await d.settled();
     await call(MCP, { headers: OWN });
     expect(d.proofs()).toHaveLength(0);
     expect(headerOf(seen.at(-1) as Seen)).toBeNull();
@@ -217,7 +238,12 @@ describe("omp session proof on /mcp (#1856)", () => {
       ...ctx("m-2"),
       mode: undefined,
     });
-    await new Promise((r) => setTimeout(r, 50));
+    await vi.waitFor(() =>
+      expect(
+        d.frames.some((f) => f.type === "hello" && f.agent_ref === "m-2"),
+      ).toBe(true),
+    );
+    await d.settled();
     expect(d.proofs()).toHaveLength(0);
   });
 
@@ -290,6 +316,7 @@ describe("omp session proof on /mcp (#1856)", () => {
   });
 
   it("keeps the header across a lost link and replaces it at the next bind", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const d = await daemon(["link"]);
     await bind(d);
     const first = headerOf(seen.at(-1) as Seen);
@@ -298,14 +325,18 @@ describe("omp session proof on /mcp (#1856)", () => {
     await call(MCP, { headers: OWN });
     expect(headerOf(seen.at(-1) as Seen)).toBe(first);
     // The link comes back after the retry delay (3 s) with a new proof.
+    let faked = 0;
     await vi.waitFor(
       async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        faked += 500;
+        expect(faked).toBeLessThanOrEqual(10_000);
         await call(MCP, { headers: OWN });
         const now = headerOf(seen.at(-1) as Seen);
         expect(now).not.toBeNull();
         expect(now).not.toBe(first);
       },
-      { timeout: 8000 },
+      { timeout: 5_000, interval: 5 },
     );
     const second = headerOf(seen.at(-1) as Seen) as string;
     expect(d.proofs().map((f) => f.hash)).toEqual([
