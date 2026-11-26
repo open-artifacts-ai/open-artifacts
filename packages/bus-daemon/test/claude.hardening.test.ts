@@ -20,13 +20,19 @@ import {
   liveClaudeSessions,
 } from "../src/liveness/claude.ts";
 import { ClaudeTransport } from "../src/transports/claude.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  deliverFrame,
+  eventCounter,
+  stopAll,
+} from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-adv5-"));
 const servers: Server[] = [];
 const transports: ClaudeTransport[] = [];
 const paused: Socket[] = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const s of paused.splice(0)) s.destroy();
   await Promise.all(transports.splice(0).map((t) => t.close()));
   await stopAll();
@@ -122,8 +128,7 @@ describe("C5 adversarial: identity and liveness", () => {
     running.delete(4242);
     running.add(5151);
     attestedPid = 5151;
-    await new Promise((r) => setTimeout(r, 150)); // many sync ticks
-    expect(h.daemon.agents.byRef("sX")?.pid).toBe(5151);
+    await vi.waitFor(() => expect(h.daemon.agents.byRef("sX")?.pid).toBe(5151));
     const a = await h.adapter("sX", { pid: 9999 });
     expect(a.welcome).toMatchObject({ agent_ref: "sX" });
   });
@@ -280,10 +285,12 @@ describe("C5 hardening: held messages across restarts", () => {
       join(sessions, `4242.${sha(f.sock)}.key`),
       JSON.stringify({ peerToken: "tok", procStart: "t0" }),
     );
+    const lines = eventCounter();
     const claude = {
       sessionsDir: sessions,
       socketsDir: join(f.d, "r"),
       heldFile: join(f.d, "claude-held.json"),
+      onLineHandled: lines.hook,
       statusWindowMs: 40,
       procStart: () => "t0",
       isRunning: () => true,
@@ -291,8 +298,8 @@ describe("C5 hardening: held messages across restarts", () => {
     const one = await daemonHarness({ claude });
     await one.next("agent_up");
     one.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
-    await vi.waitFor(() => expect(f.seen).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 100)); // held
+    await lines.reach(1); // the held status arrived
+    expect(f.seen).toHaveLength(1);
     await one.daemon.stop();
 
     const two = await daemonHarness({ claude });
@@ -329,17 +336,34 @@ describe("C5 hardening: injection failure classes", () => {
   it("a stalled write after connecting is a retryable timeout", async () => {
     const d = dir();
     const sock = join(d, "c.sock");
+    // The first bytes in prove the client connected and wrote; then it stalls.
+    let wrote!: () => void;
+    const started = new Promise<void>((r) => {
+      wrote = r;
+    });
     const server = createServer((s) => {
       s.on("error", () => {}); // peer resets are not the test
       paused.push(s);
-      s.pause();
+      s.once("data", () => {
+        s.pause();
+        wrote();
+      });
     });
     servers.push(server);
     await new Promise<void>((r) => server.listen(sock, () => r()));
     const t = transportFor({ d, sock }, { injectTimeoutMs: 100 });
-    expect(
-      await t.deliver(agent, { ...mail(), body: "x".repeat(8 * 1024 * 1024) }),
-    ).toEqual({ ok: false, reason: "timeout" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const out = t.deliver(agent, {
+        ...mail(),
+        body: "x".repeat(8 * 1024 * 1024),
+      });
+      await started;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await out).toEqual({ ok: false, reason: "timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a reset after connecting is a retryable timeout", async () => {
@@ -359,34 +383,31 @@ describe("C5 hardening: injection failure classes", () => {
 
   it("keeps the session live when an injection times out", async () => {
     const d = dir();
-    const sock = join(d, "c.sock");
-    const server = createServer((s) => {
-      s.on("error", () => {}); // peer resets are not the test
-      paused.push(s);
-      s.pause();
+    writeSession(d, 4242);
+    // The transport's answer to an injection that connected and then timed
+    // out (a non-retryable timeout): the stub settles with exactly that.
+    let timedOut!: () => void;
+    const settled = new Promise<void>((r) => {
+      timedOut = r;
     });
-    servers.push(server);
-    await new Promise<void>((r) => server.listen(sock, () => r()));
-    writeSession(d, 4242, { messagingSocketPath: sock });
-    writeFileSync(
-      join(d, `4242.${sha(sock)}.key`),
-      JSON.stringify({ peerToken: "tok", procStart: "t0" }),
-    );
     const h = await daemonHarness({
       claude: {
         sessionsDir: d,
         socketsDir: join(d, "r"),
-        injectTimeoutMs: 100,
         procStart: () => "t0",
         isRunning: () => true,
       },
+      transports: {
+        "claude-code": async () => {
+          timedOut();
+          return { ok: false, reason: "timeout" };
+        },
+      },
     });
     await h.next("agent_up");
-    h.toDaemon({
-      ...deliverFrame("mmmmmmmmmmmmmmm1", "s4242"),
-      body: "x".repeat(200_000),
-    });
-    await new Promise((r) => setTimeout(r, 400));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await settled;
+    await h.barrier();
     expect(h.of("refuse")).toEqual([]);
     expect(h.of("ack")).toEqual([]);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
@@ -569,31 +590,46 @@ describe("C5 hardening: session files", () => {
     const d = dir();
     writeSession(d, 4242, { sessionId: "sX" });
     const running = new Set([4242]);
+    const syncs = eventCounter();
+    // The sync interval is fake: each window is crossed by moving the clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: {
         sessionsDir: d,
         socketsDir: join(d, "r"),
         syncMs: 20,
+        onSync: syncs.hook,
         procStart: (pid) => (running.has(pid) ? "t0" : null),
         isRunning: (pid) => running.has(pid),
       },
     });
     await h.next("agent_up");
+    const base = syncs.count;
     for (const pid of [1111, 5151, 9999]) {
       writeSession(d, pid, { sessionId: "sX" });
       running.add(pid);
     }
+    // The original 5 x 25 ms: after each step, the ticks that fit have run.
     for (let i = 0; i < 5; i++) {
-      await new Promise((r) => setTimeout(r, 25));
+      await vi.advanceTimersByTimeAsync(25);
+      expect(syncs.count - base).toBeGreaterThanOrEqual(
+        Math.floor(((i + 1) * 25) / 20),
+      );
       expect(h.daemon.agents.byRef("sX")?.pid).toBe(4242);
     }
     running.delete(4242);
+    await vi.advanceTimersByTimeAsync(20); // the next tick sees it gone
     await vi.waitFor(() =>
       expect(h.daemon.agents.byRef("sX")?.pid).not.toBe(4242),
     );
     const next = h.daemon.agents.byRef("sX")?.pid;
-    await new Promise((r) => setTimeout(r, 100));
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // it really ran
+    }
     expect(h.daemon.agents.byRef("sX")?.pid).toBe(next);
+    await stopAll(); // clear the daemon's interval while it is still the fake one
   });
 
   it("accepts the resumed session's MCP hello before the next sync tick", async () => {
@@ -643,8 +679,10 @@ describe("C5 hardening: replies while the hub is down", () => {
       join(d, `4242.${sha(sock)}.key`),
       JSON.stringify({ peerToken: "tok", procStart: "t0" }),
     );
+    const lines = eventCounter();
     const h = await daemonHarness({
       claude: {
+        onLineHandled: lines.hook,
         sessionsDir: d,
         socketsDir: join(d, "r"),
         statusWindowMs: 20,
@@ -658,6 +696,7 @@ describe("C5 hardening: replies while the hub is down", () => {
     await h.next("ack");
     h.hubSock()?.terminate();
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(false));
+    const handled = lines.next();
     const back = connect(replyTo);
     await new Promise<void>((r) => back.once("connect", () => r()));
     back.end(
@@ -671,7 +710,7 @@ describe("C5 hardening: replies while the hub is down", () => {
         from: `uds:${sock}`,
       })}\n`,
     );
-    await new Promise((r) => setTimeout(r, 100));
+    await handled; // the daemon took the reply; the link is down, so it is queued
     expect(h.of("send")).toEqual([]);
     // The new link's hello_ok says what the hub takes: then the reply goes.
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
@@ -778,23 +817,26 @@ describe("C5 hardening: held file failures", () => {
     const notADir = join(f.d, "file");
     writeFileSync(notADir, "");
     const log = vi.fn();
+    const lines = eventCounter();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const t = transportFor(f, {
       heldFile: join(notADir, "claude-held.json"),
       statusWindowMs: 200,
+      onLineHandled: lines.hook,
       log,
     });
     const first = t.deliver(agent, mail());
-    await vi.waitFor(() => expect(f.seen).toHaveLength(1));
-    await vi.waitFor(() =>
-      expect(log).toHaveBeenCalledWith(expect.stringMatching(/held/)),
-    );
+    await lines.reach(1); // the held status arrived
+    await vi.advanceTimersByTimeAsync(0); // the delivery's continuation ran
+    expect(f.seen).toHaveLength(1);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/held/));
     let settled = false;
     void first.then(() => {
       settled = true;
     });
     // Still held in memory: a redelivery joins it instead of injecting.
     const second = t.deliver(agent, mail());
-    await new Promise((r) => setTimeout(r, 100));
+    await vi.advanceTimersByTimeAsync(300); // past the status window
     expect(settled).toBe(false);
     expect(f.seen).toHaveLength(1);
     await t.close();

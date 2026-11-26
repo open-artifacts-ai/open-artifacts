@@ -98,41 +98,45 @@ describe("the budget is RL_ANON's, less a stated margin", () => {
 describe("taking a slot is atomic", () => {
   it("two processes can't both take the last slot", async () => {
     const root = scratch();
-    const sync = scratch();
     for (let i = 0; i < HOOK_LIMIT - 1; i++) await claimHookSlot(APP, { root });
-    const child = (tag: string) =>
-      new Promise<string>((res, rej) => {
-        const p = spawn(
-          process.execPath,
-          [
-            "--experimental-strip-types",
-            "--no-warnings",
-            join(import.meta.dirname, "fixtures", "hook-claim-child.mjs"),
-            root,
-            APP,
-            tag,
-            sync,
-          ],
-          { stdio: ["ignore", "pipe", "inherit"] },
-        );
-        let out = "";
-        p.stdout.on("data", (d) => {
-          out += d;
-        });
+    // Each child prints "ready" once its scan found room, waits for a line on
+    // stdin, then prints its outcome.
+    const child = (tag: string) => {
+      const p = spawn(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          join(import.meta.dirname, "fixtures", "hook-claim-child.mjs"),
+          root,
+          APP,
+        ],
+        { stdio: ["pipe", "pipe", "inherit"] },
+      );
+      let out = "";
+      let ready!: () => void;
+      const scanned = new Promise<void>((r) => {
+        ready = r;
+      });
+      p.stdout.on("data", (d) => {
+        out += d;
+        if (out.includes("ready")) ready();
+      });
+      const result = new Promise<string>((res, rej) => {
         p.on("error", rej);
         p.on("exit", (code) =>
-          code === 0 ? res(out.trim()) : rej(new Error(`${tag}: exit ${code}`)),
+          code === 0
+            ? res(out.replace("ready", "").trim())
+            : rej(new Error(`${tag}: exit ${code}`)),
         );
       });
+      return { scanned, result, go: () => p.stdin.end("go\n") };
+    };
     const runs = [child("x"), child("y")];
     // Both have scanned and found the one free slot before either creates.
-    const ready = () =>
-      existsSync(join(sync, "x.ready")) && existsSync(join(sync, "y.ready"));
-    for (let i = 0; i < 2000 && !ready(); i++)
-      await new Promise((r) => setTimeout(r, 5));
-    expect(ready()).toBe(true);
-    writeFileSync(join(sync, "go"), "");
-    const out = (await Promise.all(runs)).sort();
+    await Promise.all(runs.map((r) => r.scanned));
+    for (const r of runs) r.go();
+    const out = (await Promise.all(runs.map((r) => r.result))).sort();
     expect(out).toEqual(["refused", `took ${HOOK_LIMIT}`]);
     expect(hookWindowCount(APP, { root })).toBe(HOOK_LIMIT);
   }, 30_000);

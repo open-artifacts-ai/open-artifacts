@@ -20,6 +20,7 @@ import {
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { GetStartedRow } from "./GetStartedRow";
 import { CARD, INSET } from "./ui";
 
 export function Profile() {
@@ -141,6 +142,7 @@ function ProfileForm({ me }: { me: Me }) {
           </CardFooter>
         </form>
       </Card>
+      <GetStartedRow />
     </section>
   );
 }

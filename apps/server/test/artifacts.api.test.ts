@@ -590,4 +590,48 @@ describe("dataWriters (#681)", () => {
     }
     expect((await row(a.id))?.dw).toBe("viewers");
   });
+
+  // Red-line port (later.spec.ts "#794: a member viewing live data that only
+  // editors may change sees 'View only'"): the route's can.dataWrite, which
+  // the viewer's read-only label follows, matches what the data route does.
+  it("#794: GET R.artifact gives a viewer of an editors-only page can.dataWrite false; the owner true", async () => {
+    const a = await publish(
+      env,
+      owner.member,
+      {
+        title: "live",
+        format: "html",
+        content: "<p>x</p>",
+        visibility: "private",
+        capabilities: { db: true, viewer: false, storage: false },
+        dataWriters: "editors",
+      } as never,
+      null,
+    );
+    await share(a.id, member.email, "viewer");
+    const canOf = async (u: U) => {
+      const r = await api(app, R.artifact(a.id), u.cookie);
+      expect(r.status).toBe(200);
+      return ArtifactSummarySchema.parse(await r.json()).can?.dataWrite;
+    };
+    const write = (u: U) =>
+      api(app, R.dataDoc(a.id, "c", "d"), u.cookie, {
+        method: "PUT",
+        body: { v: 1 },
+      });
+    expect(await canOf(member)).toBe(false);
+    const refused = await write(member);
+    expect(refused.status).toBe(403);
+    expect((await errOf(refused)).code).toBe("data_editors_only");
+    expect(await canOf(owner)).toBe(true);
+    expect((await write(owner)).status).toBe(200);
+    // Viewers may write once dataWriters is "viewers": the flag follows.
+    const p = await api(app, R.artifact(a.id), owner.cookie, {
+      method: "PATCH",
+      body: { dataWriters: "viewers" },
+    });
+    expect(p.status).toBe(200);
+    expect(await canOf(member)).toBe(true);
+    expect((await write(member)).status).toBe(200);
+  });
 });

@@ -73,6 +73,8 @@ import {
   insertComment,
   insertExtras,
   insertThread,
+  type LatestActivity,
+  latestActivity,
   listThreads,
   type NewExtras,
   openCount,
@@ -2213,9 +2215,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
-  commentsList(status: CommentStatus | "all"): StoredList {
+  commentsList(
+    status: CommentStatus | "all",
+    since?: LatestActivity,
+  ): StoredList {
     this.ensureSchema();
-    return listThreads(this.sql, status);
+    return listThreads(this.sql, status, undefined, since);
   }
 
   /**
@@ -2245,6 +2250,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const t = getThread(this.sql, threadId);
     if (!t) fail("not_found", "Not found");
     return t;
+  }
+
+  /** #3168: one thread plus the artifact's latest activity instant (for list_comments cursor). */
+  commentsGetWithLatest(threadId: string): {
+    thread: StoredThread;
+    latest: LatestActivity;
+  } {
+    this.ensureSchema();
+    const thread = getThread(this.sql, threadId);
+    if (!thread) fail("not_found", "Not found");
+    return { thread, latest: latestActivity(this.sql) };
   }
 
   /**
@@ -3150,6 +3166,7 @@ type RpcMethods =
   | "commentsList"
   | "commentsTypedFirsts"
   | "commentsGet"
+  | "commentsGetWithLatest"
   | "commentsTake"
   | "commentsAdd"
   | "commentsReply"

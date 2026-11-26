@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { http } from "msw";
 import { describe, expect, it } from "vitest";
+import { installClock } from "./clock";
 import {
   arts,
   installHarness,
@@ -21,6 +22,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 
 const box = () => screen.findByRole("searchbox", { name: "Search artifacts" });
 const searchReqs = () => seen.filter((u) => u.pathname.endsWith("/search"));

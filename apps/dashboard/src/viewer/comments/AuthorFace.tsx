@@ -1,5 +1,6 @@
 import { type CommentAuthor, PRESENCE_PALETTE_SIZE } from "@oa/shared";
 import { Bot } from "lucide-react";
+import { AppMark, tidyToken } from "../../bus/AgentApp";
 import { AnimalIcon } from "../presence/animals";
 
 /** Up to two initials of a display name. */
@@ -113,20 +114,41 @@ export function AuthorFace({
   return <AgentTile animal={linkedFace(a)} />;
 }
 
-/** The agent's second line: "Claude Code · for Leo", or "not linked · for Leo". */
+/**
+ * The agent's second line: "[mark] Claude Code · for Leo", or "not linked ·
+ * for Leo". A linked agent's app shows its mark (agy S6); a kind the server
+ * has no product for shows its own token with a tile of its first letter.
+ */
 export function AuthorSub({ a }: { a: CommentAuthor }) {
   if (a.kind !== "agent") return null;
   const isLinked = linkedFace(a) !== null;
-  const lead = isLinked ? a.product : "not linked";
-  const text = [lead, a.for ? `for ${a.for}` : ""].filter(Boolean).join(" · ");
-  if (!text) return null;
+  const app = isLinked
+    ? a.product || (a.appKind ? tidyToken(a.appKind) : "")
+    : "";
+  const lead = isLinked ? app : "not linked";
+  const rest = a.for ? `for ${a.for}` : "";
+  if (!lead && !rest) return null;
   return (
     <span
       data-for=""
       className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
     >
       {isLinked && <span className="sr-only">linked, </span>}
-      {text}
+      {app ? (
+        <>
+          <AppMark
+            product={a.product}
+            kind={a.appKind}
+            name={app}
+            className="me-[4px] size-[12px] align-[-2px]"
+          />
+          <span aria-hidden="true">{app}</span>
+        </>
+      ) : (
+        lead
+      )}
+      {lead && rest ? " · " : ""}
+      {rest}
     </span>
   );
 }

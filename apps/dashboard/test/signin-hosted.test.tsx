@@ -229,7 +229,7 @@ it("empty providers says login is not set up", async () => {
 });
 
 it("request shows the masked address, resend timer and expiry", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code");
   await requestThroughUi("bob@example.com");
   expect(
@@ -325,7 +325,7 @@ it("a hostile Google start is dropped: no Google link to it", async () => {
 });
 
 it("retryAfter is clamped to an hour: a huge value still re-enables", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -354,7 +354,7 @@ it("retryAfter is clamped to an hour: a huge value still re-enables", async () =
 });
 
 it("retryAfter of 0 or less still holds for a second", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -491,7 +491,7 @@ it("no_pending returns to the email step with the email kept", async () => {
 });
 
 it("rate_limited (scope email) says to wait and holds the button for Retry-After", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -535,7 +535,7 @@ it("rate_limited (scope email) says to wait and holds the button for Retry-After
 });
 
 it("rate_limited (scope ip) on request: the network copy, held for Retry-After", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -645,7 +645,7 @@ it("Turnstile slot renders with a site key, sends the token once, then resets", 
 });
 
 it("Resend resets the widget and sends a fresh token", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   const seen = calls("POST");
   mountHosted("/sign-in?method=code", { turnstile: true });
   await screen.findByTestId("turnstile");
@@ -727,7 +727,7 @@ it("a 429 verify (scope ip) says to wait and holds Verify for Retry-After", asyn
       ),
     ),
   ]);
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   await requestThroughUi("bob@example.com");
   await typeCode("24681357");
   expect(await screen.findByRole("status")).toHaveTextContent(

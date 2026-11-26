@@ -15,13 +15,14 @@ import { harnessSkills } from "@oa/shared/harness-skills";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
 import { install } from "../src/commands/install.ts";
+import { status as statusCmd } from "../src/commands/status.ts";
 import { uninstall } from "../src/commands/uninstall.ts";
 import type { Ctx } from "../src/context.ts";
 import {
   agyHabitsFiles,
+  HABITS_BEGIN,
+  HABITS_END,
   HABITS_HARNESSES,
-  habitsBlock,
-  PROJECT_HABITS_FILE,
 } from "../src/steps/habits.ts";
 import { leftoverTargets } from "../src/steps/leftovers.ts";
 import { SKILL_MARKER, skillDir } from "../src/steps/skill.ts";
@@ -98,14 +99,13 @@ const fetched = (ctx: Ctx) =>
   );
 
 const gemini = (ctx: Ctx) => join(ctx.userHome, ".gemini/config/GEMINI.md");
-/** The block an earlier S4 build wrote, as it wrote it. */
-const BLOCK = `${habitsBlock().join("\n")}\n`;
+/** The block an earlier S4 build wrote, in its shape: our markers around the rules. */
+const BLOCK = `${HABITS_BEGIN}\n-->\n\nUse the bus.\n${HABITS_END}\n`;
 
 describe("Antigravity's files (agy S4)", () => {
-  it("skills in ~/.gemini/config/skills; agy is no habits harness and has no project file", () => {
+  it("skills in ~/.gemini/config/skills; agy is no habits harness", () => {
     const home = "/h";
     expect(HABITS_HARNESSES).not.toContain("antigravity");
-    expect(Object.keys(PROJECT_HABITS_FILE)).not.toContain("antigravity");
     expect(agyHabitsFiles(home)).toEqual([
       "/h/.gemini/config/AGENTS.md",
       "/h/.gemini/config/GEMINI.md",
@@ -130,21 +130,12 @@ describe("install, uninstall (agy S4, #3043)", () => {
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(fetched(ctx)).toContain(`${HUB}/skill.md?harness=antigravity`);
     expect(read(skillFile(ctx)).split("\n")[3]).toBe(SKILL_MARKER);
-    // agy is the only harness: --habits has nowhere to go.
-    expect(await install({ habits: "yes" }, ctx)).toBe(1);
+    // --habits writes nothing anywhere: the bus sends the rules.
+    expect(await install({ habits: "yes" }, ctx)).toBe(0);
     expect(read(rules(ctx))).toBe("# my agy rules\n");
     expect(read(gemini(ctx))).toBe("# my gemini rules\n");
     expect(read(cli)).toBe("# gemini cli\n");
     expect(ctx.all().join("\n")).not.toContain("(Antigravity)");
-  });
-
-  it("--habits-project writes no project file for agy", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "ob-agy-proj-"));
-    const ctx = make({ cwd: repo });
-    await install({ label: LABEL, hub: HUB }, ctx);
-    await install({ habits: "project" }, ctx);
-    expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
-    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
   });
 
   it("the next install takes an earlier build's block out of agy's files: ours only, the rest byte for byte, one line", async () => {
@@ -170,7 +161,7 @@ describe("install, uninstall (agy S4, #3043)", () => {
 
   it("a block with no END marker is left alone, with a note", async () => {
     const ctx = make();
-    const text = `# mine\n\n${habitsBlock()[0]}\nnot ours to guess\n`;
+    const text = `# mine\n\n${HABITS_BEGIN}\nnot ours to guess\n`;
     put(rules(ctx), text);
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(read(rules(ctx))).toBe(text);
@@ -247,5 +238,48 @@ describe("install, uninstall (agy S4, #3043)", () => {
       await install({ label: LABEL, hub: HUB, alongside: true }, ctx),
     ).toBe(0);
     expect(existsSync(join(ctx.userHome, ".gemini/config"))).toBe(false);
+  });
+});
+
+describe("doctor and status with agy wired (agy S4, #3043)", () => {
+  /** The lines `run` prints, and a check that none is the old habits text. */
+  const run = async (ctx: Fake, f: (c: Ctx) => Promise<number>) => {
+    const n = ctx.all().length;
+    await f(ctx);
+    const out = ctx.all().slice(n);
+    const text = out.join("\n");
+    expect(text).not.toContain("not decided");
+    expect(text).not.toContain("--habits to add them");
+    return out;
+  };
+  const habits = (out: string[]) => out.filter((l) => l.includes("Habits"));
+
+  it("on: Antigravity wired, and both say the bus sends the habits", async () => {
+    const ctx = make();
+    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    expect(ctx.all().join("\n")).not.toContain("not decided");
+    const doc = await run(ctx, doctor);
+    expect(doc.join("\n")).toContain("Antigravity wired");
+    expect(habits(doc)).toEqual(["Habits: on, sent by the bus"]);
+    expect(habits(await run(ctx, statusCmd))).toEqual([
+      "Habits: on, sent by the bus",
+    ]);
+  });
+
+  it("off after --no-habits: Antigravity still wired, both say you opted out", async () => {
+    const ctx = make();
+    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    await run(ctx, (c) => install({ habits: "no" }, c));
+    const doc = await run(ctx, doctor);
+    expect(doc.join("\n")).toContain("Antigravity wired");
+    expect(habits(doc)).toEqual(["Habits: off (you opted out)"]);
+    expect(habits(await run(ctx, statusCmd))).toEqual([
+      "Habits: off (you opted out)",
+    ]);
+    // And back on.
+    await run(ctx, (c) => install({ habits: "yes" }, c));
+    expect(habits(await run(ctx, doctor))).toEqual([
+      "Habits: on, sent by the bus",
+    ]);
   });
 });

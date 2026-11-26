@@ -135,7 +135,12 @@ import {
   inspectGlobal,
   inspectRemotes,
 } from "./config-issues.ts";
-import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
+import {
+  createDeliver,
+  type DeliverFn,
+  type DeliverOutcome,
+  type NotifyFn,
+} from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
 import {
   changedSuggestionNote,
@@ -409,6 +414,14 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** Test seam: called at the end of every sync tick, after the whole tick ran. */
+    onSync?: () => void;
+    /** Tests only: ms between the re-reads of a mid-rewrite target (production 100). */
+    unknownRetryMs?: number;
+    /** Test seam: called after each line a Claude return socket received was handled. */
+    onLineHandled?: () => void;
+    /** Test seam: called with the outcome of each Claude delivery attempt, as it settles. */
+    onDeliverSettled?: (outcome: DeliverOutcome) => void;
     /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
     unknownGraceMs?: number;
     /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
@@ -489,6 +502,8 @@ export type DaemonDeps = {
     wakeAgainMs?: number;
     /** #2029: the shortest gap between wake checks (lsof, ps, rollout reads); default 5 min. */
     wakeCheckMs?: number;
+    /** Test seam: called when a wake pass finished (it did its work or found none). */
+    onWakePass?: () => void;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -1358,6 +1373,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : join(home(), "claude-return.json")),
     statusWindowMs: cl.statusWindowMs,
     injectTimeoutMs: cl.injectTimeoutMs,
+    onLineHandled: cl.onLineHandled,
+    unknownRetryMs: cl.unknownRetryMs,
+    onDeliverSettled: cl.onDeliverSettled,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
     state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
@@ -4105,6 +4123,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       log(`codex wake failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       waking = false;
+      cx.onWakePass?.();
     }
   };
 
@@ -4212,6 +4231,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         `codex taken check failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+    cl.onSync?.();
   };
   // #3028: read before the first sync, which writes the file as it goes.
   const savedAnnounced = readAnnounced(announcedFile, undefined, log);

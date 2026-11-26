@@ -450,6 +450,46 @@ describe("content host serving", () => {
       ).toBe(404);
   });
 
+  // Red-line port (credentials.test.ts "The content address ignores login
+  // cookies, including another install's"): the content host reads no
+  // cookies, so a valid app login never unlocks a private /p/ path.
+  it("a valid app login cookie does not unlock a private /p/ path", async () => {
+    const id = await pubSite({ visibility: "private" });
+    const team = await pubSite({ visibility: "team" });
+    // The owner's cookie, one under the other cookie name, and one signed
+    // by another install's SESSION_SECRET for the same user.
+    const value = owner.cookie.slice(owner.cookie.indexOf("=") + 1);
+    const otherName =
+      sessionCookieName(env) === "oa_session"
+        ? "__Host-oa_session"
+        : "oa_session";
+    const foreign = `${sessionCookieName(env)}=${await signSession(
+      { ...env, SESSION_SECRET: "f".repeat(43) },
+      owner.member.id,
+      Date.now(),
+      { provider: "access", epoch: 0 },
+    )}`;
+    for (const a of [id, team]) {
+      // Control: the owner reads it on the app host.
+      expect((await api(app, R.artifact(a), owner.cookie)).status).toBe(200);
+      const p = `${publicPrefix(a, 1)}__view`;
+      const none = await call(p);
+      expect(none.status).toBe(404);
+      const body = await none.text();
+      for (const cookie of [
+        owner.cookie,
+        `${otherName}=${value}`,
+        foreign,
+        `${owner.cookie}; ${foreign}`,
+      ]) {
+        const r = await call(p, { headers: { cookie } });
+        expect(r.status, cookie).toBe(404);
+        expect(await r.text()).toBe(body);
+        expect(r.headers.get("set-cookie")).toBeNull();
+      }
+    }
+  });
+
   it("never sets cookies on any route", async () => {
     const id = await pubSite({ visibility: "public" });
     const prefix = await signContentPrefix(env, id, 1);
