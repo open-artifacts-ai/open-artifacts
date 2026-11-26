@@ -77,7 +77,6 @@ import {
   pendingEntry as pendingCxEntry,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
-import { removeAgyHabits } from "./habits.ts";
 import {
   HERMES_NO_CLI,
   hermesPluginDir,
@@ -1048,10 +1047,9 @@ const install: Record<Harness, Step> = {
 
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
   // byte for byte. `agy mcp add` would rewrite the whole file.
-  async antigravity(deps, notes) {
+  async antigravity(deps) {
     if (!agyOn(deps.env) || !hasAgy(deps)) return "absent";
     const p = paths(deps);
-    agyHabitsGone(deps, notes);
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
     const home = movedHome(deps);
@@ -1067,23 +1065,6 @@ const install: Record<Harness, Step> = {
     return "done";
   },
 };
-
-/**
- * #3043, agy S4: agy gets the bus rules from the plugin's SessionStart hook,
- * never from a file. A block an earlier build wrote in agy's global rules
- * comes out, ours only, with one line saying so.
- */
-function agyHabitsGone(deps: AdapterDeps, notes: string[]) {
-  const r = removeAgyHabits({ home: deps.home, busHome: paths(deps).busDir });
-  const shown = r.files.map((f) =>
-    f.startsWith(`${deps.home}/`) ? `~${f.slice(deps.home.length)}` : f,
-  );
-  if (shown.length > 0)
-    notes.push(
-      `Removed the old Open Artifacts habits block from ${shown.join(", ")}: Antigravity now gets the bus rules when a conversation starts.`,
-    );
-  notes.push(...r.notes);
-}
 
 // Uninstall works from the files, so it also cleans up after a harness the
 // user removed first; the binaries are used only when present.
@@ -1236,9 +1217,8 @@ const uninstall: Record<Harness, Step> = {
     return uninstallOpenclaw(deps, notes);
   },
 
-  async antigravity(deps, notes) {
+  async antigravity(deps) {
     const p = paths(deps);
-    agyHabitsGone(deps, notes);
     // Only our marked folder goes; a folder not ours stays as it is.
     const plugin = uninstallAgyPlugin(deps.home);
     if (!present(p.agyMcp)) return plugin ? "done" : "none";

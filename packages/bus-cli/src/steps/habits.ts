@@ -433,36 +433,6 @@ export function removeHabitsBlocks(deps: HabitsDeps): {
 }
 
 /**
- * #3043, agy S4: Antigravity gets no habits file. An earlier build of agy S4
- * wrote our block into agy's global rules; install and uninstall take it out
- * of both files agy reads there, and only our block: the user's text stays
- * byte for byte.
- */
-export const agyHabitsFiles = (home: string): string[] => [
-  join(home, ".gemini", "config", "AGENTS.md"),
-  join(home, ".gemini", "config", "GEMINI.md"),
-];
-
-export function removeAgyHabits(deps: HabitsDeps): {
-  files: string[];
-  notes: string[];
-} {
-  const files: string[] = [];
-  const notes: string[] = [];
-  const kept = { ...record(deps.busHome).files };
-  for (const path of agyHabitsFiles(deps.home))
-    dropBlock(path, kept, files, notes);
-  // Nothing came out: install.json stays as it was.
-  if (
-    files.length > 0 &&
-    deps.busHome &&
-    existsSync(join(deps.busHome, "install.json"))
-  )
-    saveRecord(deps.busHome, { files: kept });
-  return { files, notes };
-}
-
-/**
  * Harnesses whose bus is a plugin with its own folder: earlier installs wrote
  * a `habits.on` marker in `dir`. Current versions ask the daemon for habits
  * over IPC, so only cleanup of leftover markers remains here.
