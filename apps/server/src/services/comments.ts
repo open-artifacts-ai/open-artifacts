@@ -1380,8 +1380,10 @@ export async function listThread(
   commentId?: string,
 ): Promise<CommentList> {
   // The one thread straight from the store, not the page's capped list, so a
-  // thread past the list's 500-thread or size budget is still found. It keeps
-  // the store's reply cap: one row past COMMENTS_MAX_REPLIES means truncated.
+  // thread past the list's 500-thread or size budget is still found. The store
+  // holds the root plus at most COMMENTS_MAX_REPLIES replies (commentsReply
+  // refuses more), so every stored comment is returned; truncated only if a
+  // row beyond that ever appears.
   let full: StoredThread;
   try {
     full = await call(() => stub(env, artifactId).commentsGet(threadId));
@@ -1393,9 +1395,10 @@ export async function listThread(
       );
     throw e;
   }
-  const truncated = full.comments.length > COMMENTS_MAX_REPLIES;
+  const cap = COMMENTS_MAX_REPLIES + 1;
+  const truncated = full.comments.length > cap;
   const t = truncated
-    ? { ...full, comments: full.comments.slice(0, COMMENTS_MAX_REPLIES) }
+    ? { ...full, comments: full.comments.slice(0, cap) }
     : full;
   let kept = t;
   if (commentId !== undefined) {

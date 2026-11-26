@@ -1,7 +1,7 @@
 /**
  * #3043: the bus's habits, in the two sizes it needs them.
  *
- * `BRIEF_RULES` is what every session is told at start: a lead line and seven
+ * `BRIEF_RULES` is what every session is told at start: a lead line and eight
  * rules, one line each, every one pointing at the skill for the detail. It is
  * short on purpose. Claude Code cuts an initialize result's instructions past
  * its own budget, and a rule that was cut is a rule the agent never had, so

@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
+import { insertComment } from "../src/runtime/comments-store.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -380,6 +381,53 @@ describe("comment tools over MCP", () => {
       const r = await tool(owner.client, name, { id, ...args });
       expect(textOf(r)).toMatch(/^comments_off: .*turn them on/);
     }
+  });
+
+  it("#3139: a thread at the reply cap reads whole, root plus every reply", async () => {
+    const id = await pub();
+    const t = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "root" }),
+    ).thread;
+    const author = (t.comments[0] as Comment).author;
+    // The store's cap: the root plus COMMENTS_MAX_REPLIES (200) replies.
+    await inDo(id, (i) => {
+      const sql = (i as unknown as { ctx: DurableObjectState }).ctx.storage.sql;
+      const actor = sql
+        .exec<{ author: string }>(
+          "select author from comments where thread_id = ?",
+          t.id,
+        )
+        .toArray()[0]?.author as string;
+      for (let n = 1; n <= 200; n++)
+        insertComment(
+          sql,
+          new Date(Date.UTC(2030, 0, 1, 0, 0, n)).toISOString(),
+          t.id,
+          JSON.parse(actor),
+          `reply ${n}`,
+        );
+    });
+    expect(author).toBeTruthy();
+    const whole = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    );
+    const cs = whole.threads[0]?.comments as Comment[];
+    expect(cs).toHaveLength(201);
+    expect(whole.truncated).toBe(false);
+    const last = cs.at(-1) as Comment;
+    expect(last.body).toBe("reply 200");
+    const one = sc<CommentList>(
+      await tool(owner.client, "list_comments", {
+        id,
+        threadId: t.id,
+        commentId: last.id,
+      }),
+    );
+    expect(one.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "root",
+      "reply 199",
+      "reply 200",
+    ]);
   });
 
   it("shares the 30 a minute bucket with REST", async () => {
