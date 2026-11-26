@@ -6722,16 +6722,25 @@ export class BusHub extends DurableObject<Env> {
     return p;
   }
 
-  /** #3132: the role part of page `ref` that `agent`'s roles carry ends now (synchronous). */
-  #endRolePart(agent: AgentRow, ref: string): void {
+  /** #3132: the roles `agent` holds now, by id. */
+  #rolesOf(agent: AgentRow): string[] {
+    return all<{ id: string }>(
+      this.ctx.storage.sql,
+      "select id from roles where org_id = ? and agent_id = ?",
+      OWNER_ORG_ID,
+      agent.id,
+    ).map((r) => r.id);
+  }
+
+  /** #3132: the role part of page `ref` that roles `roleIds` carry ends now. */
+  #endRolePart(roleIds: readonly string[], ref: string): void {
     const id = artifactIdOf(this.env, ref);
-    if (id)
+    if (id && roleIds.length > 0)
       this.ctx.storage.sql.exec(
         `delete from role_follows where artifact_id = ?
-           and role_id in (select id from roles where org_id = ? and agent_id = ?)`,
+           and role_id in (select value from json_each(?))`,
         id,
-        OWNER_ORG_ID,
-        agent.id,
+        JSON.stringify(roleIds),
       );
   }
 
@@ -6747,14 +6756,20 @@ export class BusHub extends DurableObject<Env> {
     agent: AgentRow,
     ref: string,
   ): Promise<{ removed: boolean } | { error: unknown }> {
-    this.#endRolePart(agent, ref);
+    // The roles it holds as the frame arrives: the unfollow ends their part
+    // of the page now, and again once the delete is done, after a re-key
+    // queued before it may have added that part (a page it also followed).
+    const roleIds = this.#rolesOf(agent);
+    this.#endRolePart(roleIds, ref);
     const gate = this.#followGate;
     // Never rejects: a refusal (not_found) comes back as `error`, so a queue
     // link waiting for its answer leaves nothing unhandled.
     const p = this.#rekeyed.then(async () => {
       try {
         if (gate) await gate;
-        return await unfollow(this.env, userId, to, ref);
+        const r = await unfollow(this.env, userId, to, ref);
+        this.#endRolePart(roleIds, ref);
+        return r;
       } catch (error) {
         return { error };
       }
