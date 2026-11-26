@@ -367,6 +367,25 @@ describe("admit (link-only provider)", () => {
     expect((await rowOf(uid)).email).toBe(id.email);
   });
 
+  it("a linked subject signs in with no email this time (stable id alone)", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member");
+    await linkTo(uid, "github", id.subject);
+    expect(await admit(env, cfg(), { ...id, email: "" })).toMatchObject({
+      ok: true,
+      user: { id: uid, email: id.email },
+    });
+  });
+
+  it("an unlinked identity with no email: no_access", async () => {
+    const id = gh();
+    await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), { ...id, email: "" })).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+  });
+
   it("a linked user who is suspended: removed", async () => {
     const id = gh();
     const uid = await seedUser(id.email, "member", { status: "suspended" });

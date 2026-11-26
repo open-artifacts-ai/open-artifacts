@@ -293,8 +293,6 @@ async function admitLinkOnly(
   id: VerifiedIdentity,
   now: number,
 ): Promise<AdmitResult> {
-  const email = normalizeEmail(id.email);
-  if (!email) return { ok: false, reason: "no_access" };
   const blocked = async (r: UserRow) =>
     (await unsharedGuest(env, r)) ||
     (isGuestRole(r.role as Role) &&
@@ -307,6 +305,10 @@ async function admitLinkOnly(
     if (await blocked(linked)) return { ok: false, reason: "no_access" };
     return admitted(await touch(env, linked, id, now));
   }
+  // The address matters only for a first link: a linked subject signs in by
+  // its stable id alone, whatever email the provider sends this time.
+  const email = normalizeEmail(id.email);
+  if (!email) return { ok: false, reason: "no_access" };
   const existing = await stmt(env.DB, BY_EMAIL)
     .bind(email, id.provider)
     .first<UserRow & { subject: string | null; invitedAt: number | null }>();
