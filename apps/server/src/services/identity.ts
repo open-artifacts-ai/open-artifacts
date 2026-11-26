@@ -363,7 +363,8 @@ const admitted = (user: Member | null): AdmitResult =>
 /**
  * Why a code isn't allowed, for the log only (#2656): a fixed word, never the
  * address. bad_address: not an address. row_inactive: the row is removed or
- * suspended. linked: the row has a Google link. invite_expired: a never-signed-in
+ * suspended. linked: the row has a linked identity (for a link code: one
+ * for that provider). invite_expired: a never-signed-in
  * invite past its window. domain_codes_off / domain_no_join: the address is in
  * the login domains, where codes are off or a new address can't join. not_guest:
  * an owner or admin row outside the domains, or a member row there on an
@@ -391,6 +392,15 @@ export type CodeEligibility =
 export const ELIGIBILITY = `select u.id, u.role, u.status,
     u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
+  from users u where u.email = ?1 limit 1`;
+/**
+ * ELIGIBILITY for linking a `?2` identity (#3087): linked is a link for THAT
+ * provider only, so a Google-linked member can add GitHub. Plain code
+ * sign-in keeps ELIGIBILITY (any identity blocks it).
+ */
+const LINK_ELIGIBILITY = `select u.id, u.role, u.status,
+    u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
+    exists (select 1 from identities i where i.user_id = u.id and i.provider = ?2) as linked
   from users u where u.email = ?1 limit 1`;
 // A share on a deleted page admits nothing (#2598 N3).
 const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifact_id
@@ -433,23 +443,28 @@ export async function codeEligibility(
 }
 
 /**
- * Who may get a code to LINK a Google account that admit() refused with
- * needs_code (#2590 G2): the person proved the Google account, the code
- * proves the mailbox. An active, unlinked, unlapsed row (invited member or
- * admin, or a guest); or no row and a live share (a guest row is made at
- * verify). Never a removed or suspended row, a guest left with no share, or a
- * row that already has a Google link. No write; checked at request and verify.
+ * Who may get a code to LINK a `provider` account that admit() refused with
+ * needs_code (#2590 G2, #3087): the person proved the account, the code
+ * proves the mailbox. An active, unlapsed row with no link for this provider
+ * (another provider's link doesn't block it) (invited member or admin, or a
+ * guest); or, for Google only, no row and a live share (a guest row is made
+ * at verify). Never a removed or suspended row, a guest left with no share,
+ * or a row that already has a link for this provider. No write; checked at
+ * request and verify.
  */
 export async function linkEligibility(
   env: Env,
   rawEmail: string,
+  provider: IdentityProvider,
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { kind: "none", why: "bad_address" };
-  const row = await stmt(env.DB, ELIGIBILITY)
-    .bind(email)
+  const row = await stmt(env.DB, LINK_ELIGIBILITY)
+    .bind(email, provider)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   if (!row) {
+    // A link-only provider never creates a row, not even a share's guest.
+    if (linkOnly(provider)) return { kind: "none", why: "no_share" };
     if (!(await stmt(env.DB, SHARED).bind(email).first()))
       return { kind: "none", why: "no_share" };
     return (await outsiderLoginOff(env, null, email))
