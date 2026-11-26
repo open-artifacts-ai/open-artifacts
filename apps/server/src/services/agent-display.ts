@@ -121,11 +121,15 @@ const PRODUCTS: Record<string, string> = {
   codex: "Codex",
   opencode: "OpenCode",
   pi: "Pi",
-  omp: "omp",
+  omp: "oh-my-pi",
   hermes: "Hermes",
   openclaw: "OpenClaw",
   antigravity: "Antigravity",
 };
+
+/** The product a hub kind runs ("Claude Code"), or undefined for a kind it doesn't know. */
+export const productOf = (kind: string): string | undefined =>
+  Object.hasOwn(PRODUCTS, kind) ? PRODUCTS[kind] : undefined;
 
 /**
  * The product a grant's self-asserted client name stands for: only an exact
@@ -333,7 +337,7 @@ export const linkedFields = (
   animal?: { id: string; color: number };
 } => {
   if (outsider) return {};
-  const product = PRODUCTS[identity.kind];
+  const product = productOf(identity.kind);
   return {
     linked: true,
     ...(product ? { product } : {}),
@@ -363,7 +367,7 @@ export function agentFace(
     me,
   };
   if (a.identity) {
-    const product = PRODUCTS[a.identity.kind];
+    const product = productOf(a.identity.kind);
     const bus = plainAgentName(cleanName(a.identity.name) ?? "Agent", product);
     return {
       ...base,

@@ -20,6 +20,7 @@ import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
 import { muted } from "../settings/ui";
+import { AgentApp } from "./AgentApp";
 import {
   buildRail,
   type Count,
@@ -243,6 +244,9 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
               </span>
             </span>
             <span className="justify-self-end">{status(a)}</span>
+            <span className="col-span-2 text-[length:var(--oa-text-xs)]">
+              <AgentApp a={a} />
+            </span>
             {a.statusLabel && (
               <span className="col-span-2 text-[length:var(--oa-text-xs)]">
                 {says(a)}
@@ -261,6 +265,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
       <TableHeader>
         <TableRow>
           <TableHead>Agent</TableHead>
+          <TableHead>App</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Agent says</TableHead>
           <TableHead>Machine</TableHead>
@@ -275,6 +280,9 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
               <span className="text-muted-foreground" title={a.namespace}>
                 · {shortName(a.namespace, all)}
               </span>
+            </TableCell>
+            <TableCell>
+              <AgentApp a={a} />
             </TableCell>
             <TableCell>{status(a)}</TableCell>
             <TableCell className="max-w-[180px] truncate">{says(a)}</TableCell>

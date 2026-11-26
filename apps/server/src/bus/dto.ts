@@ -1,5 +1,6 @@
 import { type BusAgent, BusAgentSchema } from "@oa/shared";
 import { logWarn } from "../log.js";
+import { productOf } from "../services/agent-display.js";
 import { isDefaultAgentName } from "./default-names.js";
 import type { AgentRow } from "./rows.js";
 import { statusFields } from "./status.js";
@@ -43,6 +44,8 @@ export const agentDto = (
   namespace: a.namespace,
   name: a.name,
   kind: a.kind,
+  // The app the kind runs, for the Agents page; absent for a kind the server doesn't know.
+  ...(productOf(a.kind) ? { product: productOf(a.kind) } : {}),
   machineId: a.machineId,
   machineLabel: a.machineLabel,
   global: a.global === 1,
