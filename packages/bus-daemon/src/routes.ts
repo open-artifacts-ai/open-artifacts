@@ -18,6 +18,7 @@ import {
 } from "@oa/bus-protocol";
 import type { z } from "zod";
 import type { AgentTable } from "./agents.ts";
+import { UNMAPPED_FOLDER_MESSAGE } from "./folders.ts";
 import type { HubConnection } from "./hub.ts";
 import { REACH_COPY, type ReachResult } from "./reach.ts";
 import type { Timer } from "./sent.ts";
@@ -317,6 +318,14 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
+      const unmapped =
+        agent.instance === undefined && ctx.unmapped?.(agent.cwd);
+      if (frame.row && unmapped)
+        return {
+          type: "error",
+          code: "hub_unavailable",
+          message: UNMAPPED_FOLDER_MESSAGE,
+        };
       const files = frame.row
         ? (ctx.configFiles?.(
             agent.cwd,
@@ -337,9 +346,7 @@ export function routeLocal(
             ? { namespace_source: agent.namespaceSource }
             : {}),
           kind: agent.kind,
-          live:
-            agent.live &&
-            !(agent.instance === undefined && ctx.unmapped?.(agent.cwd)),
+          live: agent.live && !unmapped,
           global: agent.global,
           ...(files.length > 0 ? { config_files: files } : {}),
           ...(away === undefined ? {} : { owner_away_until: away }),

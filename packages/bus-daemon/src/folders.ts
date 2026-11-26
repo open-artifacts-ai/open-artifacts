@@ -196,6 +196,7 @@ export function folderHomeLookup(
 /** Bound on the once-only sets, so a long-lived daemon does not grow them without end. */
 const SEEN_MAX = 1000;
 const noted = new Set<string>();
+export const UNMAPPED_FOLDER_MESSAGE = `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`;
 
 /**
  * The line the daemon says once per folder for a session that has no
@@ -215,7 +216,7 @@ export function unmappedFolderNote(
   if (noted.has(key)) return undefined;
   if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
-  return `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`;
+  return UNMAPPED_FOLDER_MESSAGE;
 }
 
 /**

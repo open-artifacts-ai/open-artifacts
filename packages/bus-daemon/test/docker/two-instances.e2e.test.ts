@@ -259,15 +259,9 @@ describe("two instances, one bus (#2793)", () => {
     expect(hubB.raw.join("\n")).not.toContain('"su2"');
     const me = await c.request({ type: "self", row: true });
     expect(me).toMatchObject({
-      type: "agent",
-      agent: {
-        live: false,
-        config_files: [
-          expect.objectContaining({
-            reason: expect.stringContaining("use in this folder"),
-          }),
-        ],
-      },
+      type: "error",
+      code: "hub_unavailable",
+      message: expect.stringContaining("not connected to a bus instance"),
     });
   });
 });
