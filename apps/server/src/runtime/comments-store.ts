@@ -242,6 +242,8 @@ export type StoredParticipant = StoredAgent & {
   readd?: true;
   /** #1968: joined only because it published the page a page-wide thread is on; any other reason clears it. */
   page?: true;
+  /** #3132: when it joined the thread (ISO), as a reply's notice reads it; never stored from here. */
+  joinedAt?: string;
 };
 
 export type StoredThread = {
@@ -1208,8 +1210,8 @@ export function addParticipants(
 ): void {
   for (const p of ps) {
     sql.exec(
-      `insert into comment_participants (thread_id, key, name, owner, namespace, page, identity)
-       values (?, ?, ?, ?, ?, ?, ?)
+      `insert into comment_participants (thread_id, key, name, owner, namespace, page, identity, joined_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?)
        on conflict (thread_id, key) do update set page = 0 where excluded.page = 0`,
       threadId,
       p.key,
@@ -1218,6 +1220,7 @@ export function addParticipants(
       p.namespace,
       p.page ? 1 : 0,
       p.identity ? JSON.stringify(p.identity) : null,
+      new Date().toISOString(),
     );
     // A later comment may know the identity an earlier one did not.
     if (p.identity)
@@ -1247,6 +1250,7 @@ type ParticipantSql = {
   page: number;
   removed: number;
   identity: string | null;
+  joinedAt?: string | null;
 };
 
 const participantOfRow = (r: ParticipantSql): ParticipantRow => ({
@@ -1360,7 +1364,9 @@ export function takeThreadReply(
   const out: StoredParticipant[] = [];
   const rows = sql
     .exec<ParticipantSql>(
-      `select key, name, owner, namespace, page, removed, identity from comment_participants
+      `select key, name, owner, namespace, page, removed, identity,
+         coalesce(joined_at, (select min(c.created_at) from comments c where c.thread_id = p.thread_id)) as joinedAt
+       from comment_participants p
        where thread_id = ? and removed = 0 order by key`,
       threadId,
     )
@@ -1400,6 +1406,7 @@ export function takeThreadReply(
       owner: r.owner,
       namespace: r.namespace,
       ...(identity ? { identity } : {}),
+      ...(r.joinedAt ? { joinedAt: r.joinedAt } : {}),
     });
   }
   return out;

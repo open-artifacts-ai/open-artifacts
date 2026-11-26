@@ -8486,7 +8486,7 @@ export class BusHub extends DurableObject<Env> {
         n.to.namespace,
         n.to.name.toLowerCase(),
         n.toIdentity ?? null,
-        n.originAt ?? now,
+        n.originAt ?? null,
       );
       if (holder !== null) {
         const identity = identityOfAgent(sql, holder.id);
