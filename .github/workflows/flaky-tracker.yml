@@ -13,14 +13,14 @@
 # and the test names in them) is only read as text and made inert before it
 # is written to an issue.
 # No clock (cloud #264): after every completed CI run (cancelled and skipped
-# ones aside), and on dispatch, the same job reconciles: it tracks any such
-# run created in the last 30 days and 26 hours (GitHub allows a rerun for 30
-# days; the 26 hours keep a late rerun listed) and updated in the last 26
-# hours whose event this workflow missed, so a dropped event is caught by the
-# next CI completion; a run the store already has is skipped. A listing of
-# 1,000 runs or more (GitHub's limit for one query) is split into smaller
-# creation ranges, and the reconcile fails if one second still has that many. The watched
-# workflow is named by its file (workflow_run.path), never by
+# ones aside), and on dispatch, the same job reconciles: it tracks every run
+# created in the last 30 days and 26 hours (GitHub allows a rerun for 30
+# days; the 26 hours keep a late rerun listed) that passed on a rerun and
+# that the store has not marked handled, however long ago it passed, so a
+# dropped event is caught by the next CI completion whenever that comes. A
+# listing of 1,000 runs or more (GitHub's limit for one query) is split into
+# smaller creation ranges, and the reconcile fails if one second still has
+# that many. The watched workflow is named by its file (workflow_run.path), never by
 # workflow_run.name: that is the run-name, which a workflow may set to
 # anything (cloud's redline-staging runs are named "redline-staging v0.247.0").
 name: flaky-tracker
