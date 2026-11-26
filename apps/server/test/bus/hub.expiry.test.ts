@@ -7,6 +7,7 @@
 // receives is checked with decodeServerFrame (helpers.ts).
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
+  BUS_CAPS,
   type ClientFrame,
   decodeServerFrame,
   LIMITS,
@@ -18,6 +19,7 @@ import { BusHub, HELD_BYTES_CAP, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
   type Daemon,
+  daemon,
   e,
   framesSeen,
   hello,
@@ -1188,5 +1190,88 @@ describe("a hub created with the B6 schema (adv-B7 F1, F2, F4)", () => {
       ),
     ).toHaveLength(0);
     close(t2);
+  });
+});
+
+describe("deliver.expires_at (BUS_CAPS.mailExpiry)", () => {
+  async function readyWithCaps(token: string, caps?: string[]) {
+    const d = await daemon(token);
+    d.send({
+      v: 1,
+      id: `h-${++seq}`,
+      type: "hello",
+      machine_label: "MacBook",
+      client_version: "0.1.0",
+      ...(caps === undefined ? {} : { caps }),
+    });
+    const ok = await waitFor(d, "hello_ok");
+    return { d, ok };
+  }
+
+  it("sets expires_at on live deliver and reconnect flush only for sockets that listed mail_expiry", async () => {
+    const sendTime = Date.now() + 60_000;
+    await setClock(sendTime);
+    const expectedIso = new Date(sendTime + MAILBOX_RETAIN_MS).toISOString();
+
+    const sm = await machine("Sender");
+    const tmWith = await machine("TargetWithCap");
+    const tmWithout = await machine("TargetWithoutCap");
+    const s = await ready(sm.token);
+    const withCap = await readyWithCaps(tmWith.token, [BUS_CAPS.mailExpiry]);
+    const withoutCap = await readyWithCaps(tmWithout.token, [BUS_CAPS.ids]);
+    expect(withCap.ok.caps).toContain(BUS_CAPS.mailExpiry);
+    expect(withoutCap.ok.caps).not.toContain(BUS_CAPS.mailExpiry);
+
+    const n = ns("mail-expiry");
+    const sender = uniq("Sender");
+    const recvWith = uniq("RecvWith");
+    const recvWithout = uniq("RecvWithout");
+    await agent(s, "sref", sender, n);
+    await agent(withCap.d, "rw", recvWith, n);
+    await agent(withoutCap.d, "rwo", recvWithout, n);
+
+    const r1 = await sendAndReceipt(s, send("me1", "sref", recvWith, "hi"));
+    const d1 = await waitFor(withCap.d, "deliver");
+    expect(d1.msg_id).toBe(r1.msg_id);
+    expect(d1.expires_at).toBe(expectedIso);
+
+    const r2 = await sendAndReceipt(s, send("me2", "sref", recvWithout, "hi"));
+    const d2 = await waitFor(withoutCap.d, "deliver");
+    expect(d2.msg_id).toBe(r2.msg_id);
+    expect(d2.expires_at).toBeUndefined();
+
+    // Reconnect flush path (#flushOne): unacked mail is re-pushed with or without expires_at.
+    const tWith2 = await readyWithCaps(tmWith.token, [BUS_CAPS.mailExpiry]);
+    tWith2.d.send({
+      v: 1,
+      id: "se1",
+      type: "sessions",
+      open: ["rw"],
+      closed: [],
+    });
+    await agent(tWith2.d, "rw", recvWith, n);
+    const f1 = await waitFor(tWith2.d, "deliver");
+    expect(f1.msg_id).toBe(r1.msg_id);
+    expect(f1.expires_at).toBe(expectedIso);
+
+    const tWithout2 = await readyWithCaps(tmWithout.token, [BUS_CAPS.ids]);
+    tWithout2.d.send({
+      v: 1,
+      id: "se2",
+      type: "sessions",
+      open: ["rwo"],
+      closed: [],
+    });
+    await agent(tWithout2.d, "rwo", recvWithout, n);
+    const f2 = await waitFor(tWithout2.d, "deliver");
+    expect(f2.msg_id).toBe(r2.msg_id);
+    expect(f2.expires_at).toBeUndefined();
+
+    allParse(s, withCap.d, withoutCap.d, tWith2.d, tWithout2.d);
+    s.close();
+    withCap.d.close();
+    withoutCap.d.close();
+    tWith2.d.close();
+    tWithout2.d.close();
   });
 });

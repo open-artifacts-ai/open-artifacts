@@ -4,6 +4,7 @@ import {
   neutralizeBody,
   stripTerminalControls,
 } from "@oa/bus-ipc";
+import { MAILBOX_RETAIN_MS } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
@@ -17,7 +18,8 @@ import type { DeliverOutcome, Mail } from "../deliver.ts";
  *
  * With no watcher up for the session's agy process the message is held here,
  * its receipt pending, and goes the moment one comes up. Nothing is queued
- * while one is up: agy places the message itself.
+ * while one is up: agy places the message itself. Held messages never outlive
+ * the hub's expiry.
  *
  * #3205: a message whose hand-off is unknown (an earlier agy call may have
  * reached agy, and agy's mailbox cannot say yet) stays held here too. It is
@@ -58,6 +60,8 @@ export type AgyTransportOptions = {
    * the last repeated. Default 2 s, 5 s, 10 s, then every 30 s.
    */
   recheckMs?: readonly number[];
+  /** Clock seam for tests; default `Date.now`. */
+  now?: () => number;
   log?: (msg: string) => void;
 };
 
@@ -70,6 +74,14 @@ export const AGY_SEND_TIMEOUT_MS = 20_000;
  * (up to AGY_SEND_TIMEOUT_MS), plus margin for IPC and mailbox checks.
  */
 export const AGY_ANSWER_TIMEOUT_MS = 2 * AGY_SEND_TIMEOUT_MS + 10_000;
+/**
+ * Margin before a message's hub expiry: a hand-off is started only while
+ * `now() < deadline - AGY_EXPIRY_MARGIN_MS`, so even a slow hand-off plus a
+ * minute of clock skew lands before the hub expires the receipt.
+ */
+export const AGY_EXPIRY_MARGIN_MS = AGY_ANSWER_TIMEOUT_MS + 60_000;
+
+const MAX_TIMEOUT_MS = 0x7fffffff;
 
 const RECHECK_MS = [2000, 5000, 10_000, 30_000] as const;
 
@@ -94,6 +106,13 @@ export class AgyTransport {
   #watchers = new Set<Watcher>();
   #waiting = new Set<Waiting>();
   #inflight = new Map<string, InFlight>();
+  /**
+   * First-seen ms per msg_id when an older hub omits `deliver.expires_at`.
+   * Retained across `expired` and `closed` outcomes so a hub redelivery or
+   * reopened session cannot restart the 7-day clock; deleted on `{ ok: true }`
+   * and pruned past `2 * MAILBOX_RETAIN_MS` on insert.
+   */
+  #firstSeen = new Map<string, number>();
   #stopped = false;
 
   constructor(private readonly opts: AgyTransportOptions = {}) {}
@@ -148,6 +167,7 @@ export class AgyTransport {
   /** The daemon is stopping: nothing held waits any more. */
   stop(): void {
     this.#stopped = true;
+    this.#firstSeen.clear();
     for (const wait of [...this.#waiting]) wait.wake("closed");
   }
 
@@ -170,15 +190,42 @@ export class AgyTransport {
     const procStart = agent.procStart;
     // S2 records always carry it; without it no watcher can be matched.
     if (procStart === undefined) return { ok: false, reason: "queued" };
+    const now = () => (this.opts.now ?? Date.now)();
+    let deadline: number;
+    if (mail.expiresAt !== undefined) {
+      deadline = mail.expiresAt;
+    } else {
+      let first = this.#firstSeen.get(mail.msg_id);
+      if (first === undefined) {
+        first = now();
+        const pruneBefore = first - 2 * MAILBOX_RETAIN_MS;
+        for (const [id, seenAt] of this.#firstSeen) {
+          if (seenAt < pruneBefore) this.#firstSeen.delete(id);
+        }
+        this.#firstSeen.set(mail.msg_id, first);
+      }
+      deadline = first + MAILBOX_RETAIN_MS;
+    }
+    const cutoff = deadline - AGY_EXPIRY_MARGIN_MS;
     const key = { pid: agent.pid, procStart };
     let rechecks = 0;
     for (;;) {
       if (this.#stopped || !agent.live)
         return { ok: false, reason: "closed", closedBy: "liveness" };
+      if (now() >= cutoff) {
+        this.opts.log?.(
+          `agy: ${mail.msg_id} expired before agy took it; not handed over`,
+        );
+        return { ok: false, reason: "expired" };
+      }
       const w = this.watcherFor(key);
       if (!w) {
-        // Held: the receipt stays pending until a watcher comes up.
-        if ((await this.#wait(agent.ref, key)) === "closed")
+        // Held: the receipt stays pending until a watcher comes up or the
+        // hub's expiry cutoff arrives.
+        if (
+          (await this.#wait(agent.ref, key, Math.max(0, cutoff - now()))) ===
+          "closed"
+        )
           return { ok: false, reason: "closed", closedBy: "liveness" };
         continue;
       }
@@ -187,7 +234,10 @@ export class AgyTransport {
       const got = await this.#push(w, agent.ref, mail.msg_id, text);
       // The watcher acks only what agy's agentapi or agy's own mailbox says
       // agy took.
-      if (got === "ok") return { ok: true };
+      if (got === "ok") {
+        this.#firstSeen.delete(mail.msg_id);
+        return { ok: true };
+      }
       // agy said no (e.g. its language server is restarting) or (#3205) an
       // earlier hand-off may have reached agy and its mailbox cannot say yet.
       // Never acked on a guess and never sent through the generic retry chain
@@ -200,7 +250,9 @@ export class AgyTransport {
         const pauses = this.opts.recheckMs ?? RECHECK_MS;
         const ms = pauses[Math.min(rechecks, pauses.length - 1)] ?? 30_000;
         rechecks += 1;
-        if ((await this.#wait(agent.ref, key, ms)) === "closed")
+        const left = cutoff - now();
+        if (left <= 0) continue;
+        if ((await this.#wait(agent.ref, key, left, ms)) === "closed")
           return { ok: false, reason: "closed", closedBy: "liveness" };
         continue;
       }
@@ -212,13 +264,15 @@ export class AgyTransport {
   }
 
   /**
-   * Until a watcher for `key` comes up or the session closes; with `ms`
-   * (#3205, a recheck), also until that pause ends.
+   * Until a watcher for `key` comes up, the session closes, or `cutoffMs`
+   * elapses; with `recheckPauseMs` (#3205, a recheck), also until that pause
+   * ends. Uses one timer (the smaller of the pause and the cutoff).
    */
   #wait(
     ref: string,
     key: AgyWatcherKey,
-    ms?: number,
+    cutoffMs: number,
+    recheckPauseMs?: number,
   ): Promise<"up" | "closed"> {
     if (this.#stopped) return Promise.resolve("closed");
     return new Promise((resolve) => {
@@ -226,7 +280,7 @@ export class AgyTransport {
       const wait: Waiting = {
         ref,
         key,
-        ...(ms === undefined ? {} : { recheck: true as const }),
+        ...(recheckPauseMs === undefined ? {} : { recheck: true as const }),
         wake: (why) => {
           if (timer) clearTimeout(timer);
           this.#waiting.delete(wait);
@@ -234,10 +288,14 @@ export class AgyTransport {
         },
       };
       this.#waiting.add(wait);
-      if (ms !== undefined) {
-        timer = setTimeout(() => wait.wake("up"), ms);
-        timer.unref();
-      }
+      const ms = Math.min(
+        MAX_TIMEOUT_MS,
+        recheckPauseMs === undefined
+          ? Math.max(0, cutoffMs)
+          : Math.min(recheckPauseMs, Math.max(0, cutoffMs)),
+      );
+      timer = setTimeout(() => wait.wake("up"), ms);
+      timer.unref();
     });
   }
 

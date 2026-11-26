@@ -151,6 +151,13 @@ export const BUS_CAPS = {
    * refuse them).
    */
   guest: "guest",
+  /**
+   * Mail expiry: `deliver.expires_at` names when the hub drops an unacked
+   * mail receipt. The hub sets `deliver.expires_at` only to a socket whose
+   * hello listed it, and lists it in `hello_ok.caps`: Deliver is a strict
+   * object, so an older daemon would refuse the field.
+   */
+  mailExpiry: "mail_expiry",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

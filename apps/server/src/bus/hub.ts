@@ -377,6 +377,7 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.mailExpiry,
 ];
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
@@ -462,6 +463,12 @@ const noticeGated = (ws: WebSocket): boolean => followGated(ws);
 const noticeMetaGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.noticeMeta);
+};
+
+/** `deliver.expires_at` goes only to a socket whose hello listed BUS_CAPS.mailExpiry. */
+const mailExpiryGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailExpiry);
 };
 
 /**
@@ -5755,14 +5762,17 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
-          hasCap(f, BUS_CAPS.guest)
-            ? // Everything the hub always listed, plus owner_away only to a
-              // daemon that listed it: an older daemon decodes at most 16
-              // caps, and HUB_CAPS outgrew that (#2759).
+          hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.mailExpiry)
+            ? // Everything the hub always listed, plus caps added after 16
+              // only to a daemon that listed them: an older daemon decodes at
+              // most 16 caps, and HUB_CAPS outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
-                    (c !== BUS_CAPS.ownerAway && c !== BUS_CAPS.guest) ||
+                    (c !== BUS_CAPS.ownerAway &&
+                      c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.mailExpiry) ||
                     hasCap(f, c),
                 ),
               }
@@ -7137,6 +7147,9 @@ export class BusHub extends DurableObject<Env> {
       from_name: sender.name,
       ...(idsGated(socket) ? { from_id: sender.id } : {}),
       namespace: sender.namespace,
+      ...(mailExpiryGated(socket)
+        ? { expires_at: new Date(expiresAt).toISOString() }
+        : {}),
     } as const;
     if (inline) sendFrame(socket, { ...head, body: f.body });
     else sendFrame(socket, { ...head, notice: { size, msg_id: msgId } });
@@ -7995,6 +8008,9 @@ export class BusHub extends DurableObject<Env> {
         from_name: r.fromName,
         ...(idsGated(ws) ? { from_id: r.fromAgent } : {}),
         namespace: r.namespace,
+        ...(mailExpiryGated(ws)
+          ? { expires_at: new Date(r.expiresAt).toISOString() }
+          : {}),
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {
         sendFrame(ws, { ...head, notice: { size: r.size, msg_id: r.id } });

@@ -675,6 +675,8 @@ const Deliver = z
     notice: Notice.optional(),
     /** Only from the reserved sender, only with BUS_CAPS.noticeMeta (#2768). */
     meta: NoticeMetaSchema.optional(),
+    /** When the hub drops this message if it is still unacked; set only with BUS_CAPS.mailExpiry. */
+    expires_at: IsoTimeSchema.optional(),
   })
   .refine(
     (f) => f.meta === undefined || f.from_name === INSTANCE_SENDER_NAME,
