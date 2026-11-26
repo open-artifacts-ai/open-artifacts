@@ -16,6 +16,7 @@ import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
+  fence,
   framesSeen,
   hello,
   hubOf,
@@ -555,9 +556,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     expect(dl).toMatchObject({ msg_id: q.msg_id, to_ref: ref });
     // A's old session comes back.
     expect(await reg(s.d, s.oldRef, s.name, s.n)).toBe(`${s.name}-2`);
-    // sleep-ok: absence — nothing signals that a delivery does not come, and a
-    // frame already on the wire would show up here
-    await new Promise((res) => setTimeout(res, 50));
+    await fence(s.d);
     expect(s.d.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     b.close();
     shut(s);
@@ -650,8 +649,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       const ref2 = uniq("new2");
       await reg(s.d, ref2, uniq("Other"), s.n, { kind });
       expect((await rename(s.d, ref2, fallback)).bus_name).not.toBe(fallback);
-      // sleep-ok: absence — the check is that no delivery is pushed at all
-      await new Promise((res) => setTimeout(res, 50));
+      await fence(s.d);
       expect(delivers(s.d)).toEqual([]);
       expect(await awayRows(fallback)).toContain(oldRef);
       expect(await pendingOf(oldRef)).toEqual([q.msg_id]);

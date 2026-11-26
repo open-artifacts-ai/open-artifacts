@@ -8,6 +8,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -91,6 +92,13 @@ export function devConfig(): Record<string, unknown> {
   cfg.assets.directory = join(SERVER, cfg.assets.directory);
   for (const db of cfg.d1_databases)
     db.migrations_dir = join(SERVER, db.migrations_dir);
+  // The suite runs far faster than a person: past a real install's per-IP
+  // limits (device codes, token polls, sign-ins), which only slow a local run.
+  // The limits themselves are the server tests' to prove, not this suite's.
+  for (const rl of (cfg.ratelimits ?? []) as {
+    simple?: { limit: number };
+  }[])
+    if (rl.simple) rl.simple.limit *= 100;
   const secret = () => randomBytes(32).toString("hex");
   cfg.vars = {
     ...cfg.vars,
@@ -110,14 +118,6 @@ export function devConfig(): Record<string, unknown> {
     CONTENT_SIGNING_KEY: secret(),
   };
   return cfg;
-}
-
-async function healthy(): Promise<boolean> {
-  try {
-    return (await fetch(`${APP}/healthz`)).ok;
-  } catch {
-    return false;
-  }
 }
 
 /** Whether anything accepts connections on `port`, on 127.0.0.1 or ::1. */
@@ -213,20 +213,42 @@ export async function startServer(): Promise<() => Promise<void>> {
       exited = true;
     });
     // Ours, not whatever else answers on PORT: our wrangler is alive and has
-    // logged that it bound the port, and only then does /healthz count.
-    const ready = () =>
-      readFileSync(logPath, "utf8").includes(
-        `Ready on http://127.0.0.1:${PORT}`,
+    // logged that it bound the port. The log file is watched for that line (a
+    // file change wakes the check; nothing polls on a timer), then /healthz
+    // is asked once, bounded.
+    const marker = `Ready on http://127.0.0.1:${PORT}`;
+    await new Promise<void>((resolve, reject) => {
+      const logged = () => readFileSync(logPath, "utf8");
+      const watcher = watch(logPath);
+      const done = (err?: Error) => {
+        clearTimeout(deadline);
+        watcher.close();
+        proc.off("exit", check);
+        if (err) reject(err);
+        else resolve();
+      };
+      const check = () => {
+        if (exited)
+          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`));
+        else if (logged().includes(marker)) done();
+      };
+      const deadline = setTimeout(
+        () =>
+          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`)),
+        120_000,
       );
-    const deadline = Date.now() + 120_000;
-    for (;;) {
-      if (exited || Date.now() > deadline) {
-        const out = readFileSync(logPath, "utf8");
-        throw new Error(`fixtures: wrangler dev did not start\n${out}`);
-      }
-      if (ready() && (await healthy()) && !exited) break;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+      watcher.on("change", check);
+      proc.once("exit", check);
+      // The line may already be there before the watch began.
+      check();
+    });
+    const ask = await fetch(`${APP}/healthz`, {
+      signal: AbortSignal.timeout(15_000),
+    }).catch(() => undefined);
+    if (!ask?.ok || exited)
+      throw new Error(
+        `fixtures: wrangler dev is not healthy after Ready\n${readFileSync(logPath, "utf8")}`,
+      );
     return async () => {
       const gone = new Promise<boolean>((r) =>
         exited ? r(true) : proc.once("exit", () => r(true)),

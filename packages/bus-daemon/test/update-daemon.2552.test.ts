@@ -92,10 +92,27 @@ describe("the daemon's self-check after a switch (#2552)", () => {
   it("with no update deps (every other caller) nothing reads update.json", async () => {
     const w = switched();
     const exit = vi.fn();
-    await daemonHarness({});
-    await new Promise((r) => setTimeout(r, 100));
-    expect(exit).not.toHaveBeenCalled();
-    expect(readPolicy(w.home).pending).toBeDefined();
+    // A self-check or updater would run on its timers: fake, moved far past any.
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"],
+    });
+    try {
+      const h = await daemonHarness({});
+      // The hub is up and says hello_ok: all a self-check would wait for.
+      h.toDaemon({
+        id: "w",
+        type: "hello_ok",
+        machine_id: "1".repeat(16),
+        machine_label: "laptop",
+        server_version: "1.1.0",
+      });
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await h.quiet();
+      expect(exit).not.toHaveBeenCalled();
+      expect(readPolicy(w.home).pending).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

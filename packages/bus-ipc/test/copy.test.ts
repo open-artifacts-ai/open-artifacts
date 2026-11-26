@@ -352,8 +352,8 @@ describe("rosterText (#1860)", () => {
   });
   const away = (name: string, kind = "pi") =>
     a({ name, kind, live: false, state: "away", since: SINCE });
-  const text = (rows: Record<string, unknown>[]) =>
-    rosterText(rows as unknown as Parameters<typeof rosterText>[0], NOW);
+  const text = (rows: Record<string, unknown>[], all = true) =>
+    rosterText(rows as unknown as Parameters<typeof rosterText>[0], NOW, all);
 
   it("keeps live, queued and chosen-name away rows; no count line at zero", () => {
     expect(
@@ -414,6 +414,132 @@ describe("rosterText (#1860)", () => {
       "2 away sessions with no chosen name (not listed, still reachable by name)",
     );
     expect(text([])).toBe("No agents in your namespace and linked ones.");
+  });
+});
+
+describe("rosterText (#3166)", () => {
+  const NOW = Date.parse("2026-11-09T12:00:00.000Z");
+  const iso = (minsAgo: number) =>
+    new Date(NOW - minsAgo * 60_000).toISOString();
+  const row = (r: Record<string, unknown>) => ({
+    name: "alpha",
+    kind: "pi",
+    namespace: "ns",
+    live: true,
+    state: "live",
+    ...r,
+  });
+  const away = (name: string, minsAgo: number | undefined, kind = "pi") =>
+    row({
+      name,
+      kind,
+      live: false,
+      state: "away",
+      ...(minsAgo === undefined ? {} : { since: iso(minsAgo) }),
+    });
+  const render = (rows: Record<string, unknown>[], all?: boolean) =>
+    rosterText(rows as unknown as Parameters<typeof rosterText>[0], NOW, all);
+
+  it("default lists live, queued, and away < 1h; hides older and fallback away rows in one count line", () => {
+    expect(
+      render([
+        row({ name: "live-one" }),
+        row({ name: "queued-one", live: false, state: "queued" }),
+        away("recent-one", 30),
+        away("just-under", 59),
+        away("at-one-hour", 60),
+        away("old-one", 60 * 48),
+        away("no-since", undefined),
+        away("pi-6", 10),
+        away("claude-9", 60 * 24, "claude-code"),
+      ]),
+    ).toBe(
+      [
+        "Namespace ns:",
+        "- live-one (pi)",
+        "- queued-one (pi) (queued)",
+        "- recent-one (pi) (away since 2026-11-09 11:30 UTC)",
+        "- just-under (pi) (away since 2026-11-09 11:01 UTC)",
+        "5 away agents not listed (still reachable by name; all: true lists them)",
+      ].join("\n"),
+    );
+  });
+
+  it("singular count line for 1 hidden away agent", () => {
+    expect(render([row({ name: "live-one" }), away("old-one", 120)])).toBe(
+      "Namespace ns:\n- live-one (pi)\n1 away agent not listed (still reachable by name; all: true lists them)",
+    );
+    expect(render([away("old-one", 120)])).toBe(
+      "1 away agent not listed (still reachable by name; all: true lists them)",
+    );
+  });
+
+  it("keeps another namespace on its row, and cuts machine_label at its first dot by default", () => {
+    const rows = [
+      row({ name: "home-a", machine_label: "laptop.local" }),
+      row({ name: "home-b", machine_label: "desktop.lan" }),
+      row({
+        name: "peer",
+        namespace: "other/ns",
+        machine_label: "laptop.local",
+      }),
+    ];
+    expect(render(rows)).toBe(
+      [
+        "Namespace ns:",
+        "- home-a (pi, laptop)",
+        "- home-b (pi, desktop)",
+        "- peer (pi, other/ns, laptop)",
+      ].join("\n"),
+    );
+    expect(render(rows, true)).toBe(
+      [
+        "- home-a (pi, ns, laptop.local)",
+        "- home-b (pi, ns, desktop.lan)",
+        "- peer (pi, other/ns, laptop.local)",
+      ].join("\n"),
+    );
+  });
+
+  it("40-row roster renders under 1.5 KB by default and all: true matches full output", () => {
+    const rows = [
+      row({ name: "lead", kind: "claude-code", machine_label: "mac" }),
+      row({ name: "builder", kind: "pi", status: "working" }),
+      row({ name: "reviewer", kind: "codex" }),
+      row({ name: "queued-a", kind: "pi", live: false, state: "queued" }),
+      row({ name: "queued-b", kind: "omp", live: false, state: "queued" }),
+      away("recent-peer", 30, "claude-code"),
+      ...Array.from({ length: 24 }, (_, i) =>
+        away(`stale-agent-${i + 1}`, 60 * 24 * (i + 1), "claude-code"),
+      ),
+      ...Array.from({ length: 10 }, (_, i) =>
+        away(`pi-${i + 1}`, 60 * 24 * (i + 1), "pi"),
+      ),
+    ];
+    expect(rows).toHaveLength(40);
+
+    const compact = render(rows);
+    expect(Buffer.byteLength(compact, "utf8")).toBeLessThan(1500);
+    expect(compact).toBe(
+      [
+        "Namespace ns:",
+        "- lead (claude-code, mac)",
+        "- builder (pi)  agent says: working",
+        "- reviewer (codex)",
+        "- queued-a (pi) (queued)",
+        "- queued-b (omp) (queued)",
+        "- recent-peer (claude-code) (away since 2026-11-09 11:30 UTC)",
+        "34 away agents not listed (still reachable by name; all: true lists them)",
+      ].join("\n"),
+    );
+
+    const full = render(rows, true);
+    expect(full).toContain("- stale-agent-1 (claude-code, ns) (away since");
+    expect(full).toContain("- stale-agent-24 (claude-code, ns) (away since");
+    expect(full).toContain(
+      "10 more away sessions with no chosen name (not listed, still reachable by name)",
+    );
+    expect(full.split("\n")).toHaveLength(6 + 24 + 1);
   });
 });
 

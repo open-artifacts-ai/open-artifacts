@@ -11,7 +11,8 @@ vi.mock("mermaid", () => ({
     run: async () => {
       active++;
       maxActive = Math.max(maxActive, active);
-      await new Promise((r) => setTimeout(r, 5));
+      // Yield a turn, so an unserialized second run would start meanwhile.
+      await new Promise((r) => setImmediate(r));
       active--;
     },
   },

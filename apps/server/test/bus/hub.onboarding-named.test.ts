@@ -55,6 +55,15 @@ async function connect(userId: string) {
     seen,
   };
 }
+/** The end of the hub's named-agent write (D1) for this member: it runs after the frame, not before its reply. */
+const idle = async (userId: string) => {
+  const { runInDurableObject } = await import("cloudflare:test");
+  const ns = e.BUS_HUB as DurableObjectNamespace<BusHub>;
+  const { BusHub: Hub } = await import("../../src/bus/hub.js");
+  await runInDurableObject(ns.getByName(`bus:${userId}`), (i: BusHub) =>
+    Hub.whenIdle(i),
+  );
+};
 const until = (fn: () => boolean | Promise<boolean>) =>
   eventually(async () => expect(await fn()).toBe(true));
 
@@ -96,8 +105,7 @@ describe("the hub records a named agent (#2478)", () => {
       proposed_name: "Atlas",
     });
     await until(() => c.seen.includes("renamed"));
-    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect((await stored(o.userId))?.value).toBe(first?.value);
   });
 
@@ -124,8 +132,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_kind: "default",
     });
     await until(() => c.seen.includes("renamed"));
-    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
     c.send({
       v: 1,
@@ -161,8 +168,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_chosen: false,
     });
     await until(() => c.seen.includes("renamed"));
-    // sleep-ok: absence — the frame said the rename was done; nothing may write afterwards
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
   });
 
@@ -188,12 +194,9 @@ describe("the hub records a named agent (#2478)", () => {
     await env.DB.prepare("delete from settings where key = ?1")
       .bind(namedKey(o.userId))
       .run();
-    // sleep-ok: absence — a hub that still wrote the row would do it now
-    await new Promise((r) => setTimeout(r, 50));
     up("ref_b", "2");
     await until(() => c.seen.filter((t) => t === "agent_ok").length >= 2);
-    // sleep-ok: absence — nothing should write the row after the second hello
-    await new Promise((r) => setTimeout(r, 100));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
     expect(first).not.toBeNull();
   });

@@ -18,11 +18,6 @@ export const hello = (ref = "s1") =>
     attest: {},
   });
 export const ok = () => ({ bus_name: "b", namespace: "dir:x", global: false });
-export const within = <T>(p: Promise<T>, ms = 1000) =>
-  Promise.race([
-    p,
-    new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms)),
-  ]);
 export const welcomeLine = (id = "h") =>
   `${JSON.stringify({ v: 1, id, type: "welcome", agent_ref: "s1", bus_name: "b", namespace: "n", global: false })}\n`;
 /** A fake daemon: on the hello line, calls onHello(sock). */

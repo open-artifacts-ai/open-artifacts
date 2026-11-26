@@ -1,5 +1,13 @@
 import { setupServer } from "msw/node";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   ApiErrorSchema,
   ArtifactAgentSchema,
@@ -372,11 +380,12 @@ describe("comments mock", () => {
     );
     await new Promise((r) => ws.addEventListener("open", () => r(null)));
     await send("POST", base, { anchor: { kind: "note" }, body: "x" });
-    await new Promise((r) => setTimeout(r, 20));
-    expect(frames).toContainEqual({
-      type: "comments",
-      open: expect.any(Number),
-    });
+    await vi.waitFor(() =>
+      expect(frames).toContainEqual({
+        type: "comments",
+        open: expect.any(Number),
+      }),
+    );
     ws.close();
   });
 });

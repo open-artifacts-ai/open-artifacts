@@ -216,7 +216,7 @@ export async function upgrade(
   if (!isDefaultHome(ctx.home, ctx.userHome)) args.push("--home", ctx.home);
   if (ctx.service.kind === undefined && !ctx.service.fallback)
     args.push("--no-service");
-  // Never --habits or --no-habits: the person answers that question themselves.
+  // Never --habits or --no-habits: install asks nothing about habits.
   // A switch under way, so a bad install steps back on its own: the daemon's
   // self-check reads `pending`, as it does for an update it started.
   setPending(ctx.home, { from: runBase, to: target, startedAt: ctx.now() });

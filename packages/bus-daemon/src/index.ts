@@ -130,7 +130,12 @@ import {
   inspectGlobal,
   inspectRemotes,
 } from "./config-issues.ts";
-import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
+import {
+  createDeliver,
+  type DeliverFn,
+  type DeliverOutcome,
+  type NotifyFn,
+} from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
 import {
   changedSuggestionNote,
@@ -183,6 +188,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
+import type { LaneSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -239,6 +245,7 @@ export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
+export * from "./skill-refresh.ts";
 export * from "./status.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
@@ -297,6 +304,8 @@ const piLike = (kind: string) =>
 export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
+  /** #3203: refreshes each instance's installed skills when its version changes. */
+  skillRefresh?: LaneSkillRefresher;
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
@@ -404,6 +413,14 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** Test seam: called at the end of every sync tick, after the whole tick ran. */
+    onSync?: () => void;
+    /** Tests only: ms between the re-reads of a mid-rewrite target (production 100). */
+    unknownRetryMs?: number;
+    /** Test seam: called after each line a Claude return socket received was handled. */
+    onLineHandled?: () => void;
+    /** Test seam: called with the outcome of each Claude delivery attempt, as it settles. */
+    onDeliverSettled?: (outcome: DeliverOutcome) => void;
     /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
     unknownGraceMs?: number;
     /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
@@ -470,6 +487,8 @@ export type DaemonDeps = {
     wakeAgainMs?: number;
     /** #2029: the shortest gap between wake checks (lsof, ps, rollout reads); default 5 min. */
     wakeCheckMs?: number;
+    /** Test seam: called when a wake pass finished (it did its work or found none). */
+    onWakePass?: () => void;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -513,6 +532,7 @@ const agentFields = (a: AgentRecord, reason?: string): EventFields => ({
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
+  const skillRefresh = deps.skillRefresh;
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
   // #2793: one link per instance, each built from its own credentials only.
   const lanes = new Lanes();
@@ -1330,6 +1350,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : join(home(), "claude-return.json")),
     statusWindowMs: cl.statusWindowMs,
     injectTimeoutMs: cl.injectTimeoutMs,
+    onLineHandled: cl.onLineHandled,
+    unknownRetryMs: cl.unknownRetryMs,
+    onDeliverSettled: cl.onDeliverSettled,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
     state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
@@ -2542,6 +2565,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
+            void skillRefresh?.onHello(
+              { name: lane.name, main: lane.main, hub: lane.cfg.hub },
+              frame.server_version,
+            );
             if (lane.main && lane.runCap) {
               if (takesInstance()) {
                 if (frame.run_version === null) updaterRef?.clearNamed();
@@ -3905,6 +3932,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       log(`codex wake failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       waking = false;
+      cx.onWakePass?.();
     }
   };
 
@@ -3983,6 +4011,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         `codex taken check failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+    cl.onSync?.();
   };
   // #3028: read before the first sync, which writes the file as it goes.
   const savedAnnounced = readAnnounced(announcedFile, undefined, log);

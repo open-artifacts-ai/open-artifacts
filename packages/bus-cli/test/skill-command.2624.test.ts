@@ -1,6 +1,6 @@
 // `oa-bus skill` and `oa-bus skill --check` (#2624): the skill alone, no login,
 // daemon or harness wiring. Temp home, fake fetch, fake PATH; no network.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { parse } from "../src/index.ts";
@@ -96,5 +96,91 @@ describe("oa-bus skill", () => {
     const r = JSON.parse(c.out()[0] as string);
     expect(r).toMatchObject({ ok: true, origin: ORIGIN });
     expect(r.harnesses.claude).toContain("SKILL.md");
+  });
+
+  it("--check flags a stale skill copy and exits 1; current copy exits 0", async () => {
+    const serveVersion = (version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: open-artifacts-oa-test\nmetadata:\n  version: "${version}"\n---\n\n# skill\n`,
+            {
+              status: 200,
+              headers: { "content-type": "text/markdown" },
+            },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+
+    const c = world(["claude", "codex"]);
+    c.fetch = serveVersion("1.0.0");
+    expect(await main(["skill", "--instance", ORIGIN], () => c)).toBe(0);
+
+    // Same version: exit 0 and unchanged output.
+    const same = world(["claude", "codex"]);
+    Object.assign(same, {
+      userHome: c.userHome,
+      home: c.home,
+      fetch: serveVersion("1.0.0"),
+    });
+    expect(
+      await main(["skill", "--check", "--instance", ORIGIN], () => same),
+    ).toBe(0);
+    expect(same.out()).toHaveLength(2);
+    expect(same.err()).toEqual([]);
+
+    // Newer live version: message on stderr and exit 1 for both file and Codex block.
+    const stale = world(["claude", "codex"]);
+    Object.assign(stale, {
+      userHome: c.userHome,
+      home: c.home,
+      fetch: serveVersion("1.1.0"),
+    });
+    expect(
+      await main(["skill", "--check", "--instance", ORIGIN], () => stale),
+    ).toBe(1);
+    const err = stale.err().join("\n");
+    expect(err).toContain(
+      `claude: skill at ~/.claude/skills/open-artifacts-oa-test/SKILL.md is 1.0.0, the instance has 1.1.0. Run ${stale.busCmd} skill to update it.`,
+    );
+    expect(err).toContain(
+      `codex: skill at ~/.codex/AGENTS.md is 1.0.0, the instance has 1.1.0. Run ${stale.busCmd} skill to update it.`,
+    );
+  });
+
+  it("--refresh rewrites only copies already saved, and adds none (#3203)", async () => {
+    const serve = (version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: open-artifacts-oa-test\nmetadata:\n  version: "${version}"\n---\n\n# skill ${version}\n`,
+            { status: 200, headers: { "content-type": "text/markdown" } },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+    const c = world(["claude"]);
+    c.fetch = serve("1.0.0");
+    expect(await main(["skill", "--instance", ORIGIN], () => c)).toBe(0);
+    // pi is found now, but had no saved copy: --refresh must not add one.
+    const r = world(["claude", "pi"]);
+    Object.assign(r, {
+      userHome: c.userHome,
+      home: c.home,
+      fetch: serve("1.1.0"),
+    });
+    expect(parse(["skill", "--refresh"])).toMatchObject({ refresh: true });
+    expect(
+      await main(["skill", "--refresh", "--instance", ORIGIN], () => r),
+    ).toBe(0);
+    expect(readFileSync(file(r), "utf8")).toContain("# skill 1.1.0");
+    expect(
+      existsSync(
+        join(
+          skillDir({ home: r.userHome }, "pi"),
+          "open-artifacts-oa-test",
+          "SKILL.md",
+        ),
+      ),
+    ).toBe(false);
   });
 });

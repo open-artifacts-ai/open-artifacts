@@ -10,9 +10,11 @@ import {
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordCpuLimit } from "../src/api/client";
+import { installClock } from "./clock";
 import { installHarness, mount, server, wait } from "./harness";
 
 installHarness();
+installClock();
 
 const TITLE = "Some requests hit Cloudflare's free CPU limit";
 const DAY = "2026-10-19";
