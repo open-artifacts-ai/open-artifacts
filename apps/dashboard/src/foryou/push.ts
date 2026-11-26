@@ -202,6 +202,12 @@ const b64url = (s: string) => {
   return Uint8Array.from(b, (c) => c.charCodeAt(0));
 };
 
+/** The browser's subscription key (null when it has none) is these bytes. */
+const sameKey = (have: ArrayBuffer | null | undefined, want: Uint8Array) =>
+  !!have &&
+  have.byteLength === want.length &&
+  new Uint8Array(have).every((v, i) => v === want[i]);
+
 /** Our registration, ready to subscribe (the worker active). */
 async function registration(): Promise<ServiceWorkerRegistration> {
   const reg = await navigator.serviceWorker.register(SW_URL, {
@@ -256,12 +262,19 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
   const p = await Notification.requestPermission();
   if (p !== "granted") throw new PermissionRefused(p);
   const reg = await registration();
-  const sub =
-    (await reg.pushManager.getSubscription()) ??
-    (await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: b64url(publicKey),
-    }));
+  const key = b64url(publicKey);
+  let sub = await reg.pushManager.getSubscription();
+  // #3024: a subscription made with another key (the server's key changed)
+  // never gets a push. Replace it; its old server row is removed below.
+  const rekeyed = !!sub && !sameKey(sub.options?.applicationServerKey, key);
+  if (sub && rekeyed) {
+    await sub.unsubscribe().catch(() => false);
+    sub = null;
+  }
+  sub ??= await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: key,
+  });
   const j = sub.toJSON() as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
@@ -276,6 +289,12 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
     },
     z.object({ id: z.string() }),
   );
+  // The new endpoint got a new row; the old key's row would stay as a dead one.
+  const old = storedSub();
+  if (rekeyed && old && old.userId === userId && old.id !== id)
+    await api
+      .send("DELETE", R.mePushSubscription(old.id), undefined)
+      .catch(() => undefined);
   try {
     localStorage.setItem(SUB_KEY, JSON.stringify({ userId, id }));
   } catch {
