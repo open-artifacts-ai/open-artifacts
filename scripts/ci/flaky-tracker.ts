@@ -1281,6 +1281,25 @@ export function reconcile(o: {
     .map(([runId, attempt]) => ({ runId, attempt }))
     .sort((a, b) => a.runId - b.runId);
   if (!runs.length) return [];
+  // The pending list is saved whenever it changes: first the whole list of
+  // runs not yet marked, before any run starts, so a job killed at any point
+  // after loses none of them; then, at the end, what is still not marked.
+  let saved = pending.join(" ");
+  const savePending = (list: Passed[]) => {
+    if (list.join(" ") === saved) return;
+    const { store } = openStore(
+      exec,
+      repo,
+      nowMs,
+      nowMs - WINDOW_DAYS * DAY_MS,
+      [],
+    );
+    comment(exec, repo, store, pendingComment(list, nowMs));
+    saved = list.join(" ");
+  };
+  const key = (r: { runId: number; attempt: number }) =>
+    `${r.runId}/${r.attempt}`;
+  savePending(runs.filter((r) => !passed.has(key(r))).map(key));
   const out: Reconciled[] = [];
   let started = 0;
   const push = (r: Reconciled) => {
@@ -1312,21 +1331,11 @@ export function reconcile(o: {
       push({ ...base, result: "error", notes: [(e as Error).message] });
     }
   }
-  // What is still not marked (left, or failed) is the new pending list,
-  // written when it changed. A run leaves it only once it is marked.
-  const unfinished = out
-    .filter((r) => r.result === "left" || r.result === "error")
-    .map((r) => `${r.runId}/${r.attempt}`);
-  if (unfinished.join(" ") !== pending.join(" ")) {
-    const { store } = openStore(
-      exec,
-      repo,
-      nowMs,
-      nowMs - WINDOW_DAYS * DAY_MS,
-      [],
-    );
-    comment(exec, repo, store, pendingComment(unfinished, nowMs));
-  }
+  // What is still not marked (left, or failed) is the new pending list. A
+  // run leaves it only once it is marked.
+  savePending(
+    out.filter((r) => r.result === "left" || r.result === "error").map(key),
+  );
   return out;
 }
 

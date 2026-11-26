@@ -509,6 +509,8 @@ function fakeGh(o: {
   const calls: string[][] = [];
   const created: { title: string; body: string; label: string }[] = [];
   const comments: { n: string; body: string }[] = [];
+  /** The reconcile's pending lists, kept apart from the other comments. */
+  const pendings: { n: string; body: string }[] = [];
   const store = (o.storeComments ?? []).map((c) => ({
     issue: c.issue ?? 1,
     ...c,
@@ -659,7 +661,8 @@ function fakeGh(o: {
       return ok("");
     }
     if (args[0] === "issue" && args[1] === "comment") {
-      comments.push({ n: args[2] as string, body: val(args, "--body") });
+      const c = { n: args[2] as string, body: val(args, "--body") };
+      (parseMarks(c.body).pendingAt ? pendings : comments).push(c);
       store.push({
         issue: Number(args[2]),
         user: BOT,
@@ -681,7 +684,7 @@ function fakeGh(o: {
     }
     return { code: 1, stdout: "", stderr: `unexpected ${args.join(" ")}` };
   };
-  return { exec, calls, created, comments, issues, clock };
+  return { exec, calls, created, comments, pendings, issues, clock };
 }
 
 const ONE_FAIL = VITEST_LOG.split("\n").slice(0, 7).join("\n");
@@ -1653,12 +1656,18 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
   it("is kept in the store's pending list and still tracked, every one, once", () => {
     const g = make();
     // 2 logs a run: a budget of 20 logs tracks 10.
-    const first = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, logs: 20 });
+    const first = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: NOW,
+      logs: 20,
+      calls: 10_000,
+    });
     expect(first.filter((x) => x.result === "tracked")).toHaveLength(10);
     expect(reconcileLines(first).at(-1)).toBe(
       "backlog: 22 left (the next CI completion's reconcile carries on)",
     );
-    const list = g.comments.at(-1)?.body ?? "";
+    const list = g.pendings.at(-1)?.body ?? "";
     expect(parseMarks(list).pending).toEqual(
       ids.slice(10).map((id) => `${id}/2`),
     );
@@ -1679,10 +1688,10 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     expect(reconcileLines(next).at(-1)).toBe("backlog: 0 left");
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
     // The list is emptied once all are marked, and then nothing more is written.
-    expect(parseMarks(g.comments.at(-1)?.body ?? "")).toMatchObject({
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "")).toMatchObject({
       pending: [],
     });
-    expect(parseMarks(g.comments.at(-1)?.body ?? "").pendingAt).toBeDefined();
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pendingAt).toBeDefined();
     const before = g.comments.length;
     const r = reconcile({ exec: g.exec, repo: REPO, nowMs: later + HOUR });
     expect(r).toEqual([]);
@@ -1706,6 +1715,44 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
   });
 
+  it("a runner killed right after its first mark loses none: the next completion, 27 h later, does the other 31, each once", () => {
+    const g = make();
+    // The job dies as soon as the first run is marked: every later call fails.
+    let dead = false;
+    const dying: Exec = (cmd, args) => {
+      if (dead) return { code: 1, stdout: "", stderr: "killed" };
+      const r = g.exec(cmd, args);
+      if (g.comments.some((c) => parseMarks(c.body).passed.length)) dead = true;
+      return r;
+    };
+    expect(() => reconcile({ exec: dying, repo: REPO, nowMs: NOW })).toThrow(
+      "killed",
+    );
+    expect(marks(g)).toEqual(["2000/2"]);
+    // The whole list was saved before the first run started.
+    expect(parseMarks(g.pendings[0]?.body ?? "").pending).toEqual(
+      ids.map((id) => `${id}/2`),
+    );
+    const later = NOW + 27 * HOUR;
+    g.clock.now = later;
+    expect(recentRuns(g.exec, REPO, later)).toEqual([]);
+    const next = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: later,
+      logs: 100,
+      calls: 10_000,
+    });
+    expect(
+      next.filter((x) => x.result === "tracked").map((x) => x.runId),
+    ).toEqual(ids.slice(1));
+    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 left");
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(
+      g.comments.flatMap((c) => parseStore(c.body).map((x) => x.run)).sort(),
+    ).toEqual(ids);
+  });
+
   it("keeps a failed run on the list until it is marked", () => {
     const g = make();
     let fail = true;
@@ -1721,7 +1768,7 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
       calls: 1000,
     });
     expect(r.find((x) => x.runId === 2000)?.result).toBe("error");
-    expect(parseMarks(g.comments.at(-1)?.body ?? "").pending).toEqual([
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([
       "2000/2",
     ]);
     fail = false;
@@ -1729,6 +1776,6 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     g.clock.now = later;
     const again = reconcile({ exec: g.exec, repo: REPO, nowMs: later });
     expect(again.map((x) => [x.runId, x.result])).toEqual([[2000, "tracked"]]);
-    expect(parseMarks(g.comments.at(-1)?.body ?? "").pending).toEqual([]);
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
   });
 });
