@@ -3,8 +3,10 @@
 // room (room full, view only) still sees the new text, with no chip.
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
-import { DEBOUNCE_MS } from "../src/viewer/useLiveVersions";
 import { roomPort, startRoom, stopRoom } from "./room";
+
+/** How long a newer version is watched for a chip: the spec's original 2 s. */
+const OBSERVE_MS = 2_000;
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -67,7 +69,8 @@ test("in the room: a newer version keeps the editor node and the caret", async (
   const before = await caret();
   await prose.evaluate((n) => n.setAttribute("data-mark", "mine"));
   await newVersion(page);
-  await page.clock.runFor(DEBOUNCE_MS + 500);
+  // The original observation: 2 s after the event reaches the page.
+  await page.clock.runFor(OBSERVE_MS);
   await expect(chip(page)).toHaveCount(0);
   await expect(page.locator(".ProseMirror")).toHaveAttribute(
     "data-mark",

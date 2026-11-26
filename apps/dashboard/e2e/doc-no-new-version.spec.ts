@@ -2,8 +2,10 @@
 // versions never raise "new version available". Writes PNGs to SHOTS_DIR when set.
 import type { ChildProcess } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { DEBOUNCE_MS } from "../src/viewer/useLiveVersions";
 import { startRoom, stopRoom } from "./room";
+
+/** How long a newer version is watched for a chip: the spec's original 2 s. */
+const OBSERVE_MS = 2_000;
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 const DIR = process.env.SHOTS_DIR;
@@ -41,7 +43,8 @@ for (const width of [1280, 390]) {
           method: "POST",
         });
       }, LANDING);
-      await page.clock.runFor(DEBOUNCE_MS + 500);
+      // The original observation: 2 s after the event reaches the page.
+      await page.clock.runFor(OBSERVE_MS);
       if (DIR)
         await page.screenshot({
           path: `${DIR}/${process.env.SHOT_PREFIX ?? "after"}-light-${width}.png`,

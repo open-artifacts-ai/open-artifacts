@@ -120,6 +120,7 @@ test("http asks with a not-secure warning; the port shows when not the default",
     });
   });
   await page.goto(`/a/${a.id}`);
+  await expect(artifactFrame(page).locator("#who")).toHaveText("links");
   await expect(
     page.getByText("Open link to plain.example:8080?"),
   ).toBeVisible();
