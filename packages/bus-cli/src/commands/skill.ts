@@ -2,6 +2,7 @@
 // nothing else: no login, no daemon, no service, no harness wiring. It works
 // when the bus install was refused or failed, because it needs only the
 // instance's origin. `--check` reads and changes nothing.
+import { readFileSync } from "node:fs";
 import { codexBinFile } from "@oa/bus-daemon";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { originOf, readMachine } from "../machine.ts";
@@ -12,6 +13,7 @@ import {
   installSkill,
   savedSkill,
   skillFolder,
+  skillVersion,
 } from "../steps/skill.ts";
 
 type Opts = { hub?: string; check: boolean; json?: boolean };
@@ -77,9 +79,11 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     if (failedUrl) sayErr(ctx, `Could not fetch the skill from ${failedUrl}.`);
   }
   // Only this instance's own copy counts, so its folder name must be known.
+  let liveText: string;
   let folder: string | undefined;
   try {
-    folder = skillFolder(await deps.fetchSkill(`${origin}/skill.md`));
+    liveText = await deps.fetchSkill(`${origin}/skill.md`);
+    folder = skillFolder(liveText);
     if (!folder) throw new Error("no skill name in the file");
   } catch (e) {
     sayErr(
@@ -88,14 +92,32 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     );
     return 1;
   }
+  const liveVersion = skillVersion(liveText);
   const where = Object.fromEntries(
     harnesses.map((h) => [h, savedSkill(deps, h, folder)]),
   ) as Record<Harness, string | undefined>;
   let ok = !failedUrl;
   for (const h of harnesses) {
     const path = where[h];
-    if (path) log(ctx, `${h}: skill saved at ${tilde(ctx, path)}`);
-    else {
+    if (path) {
+      let savedVersion: string | undefined;
+      if (liveVersion) {
+        try {
+          savedVersion = skillVersion(readFileSync(path, "utf8"));
+        } catch {
+          // Unreadable file: say nothing extra.
+        }
+      }
+      if (liveVersion && savedVersion && savedVersion !== liveVersion) {
+        ok = false;
+        sayErr(
+          ctx,
+          `${h}: skill at ${tilde(ctx, path)} is ${savedVersion}, the instance has ${liveVersion}. Run ${ctx.busCmd} skill to update it.`,
+        );
+      } else {
+        log(ctx, `${h}: skill saved at ${tilde(ctx, path)}`);
+      }
+    } else {
       ok = false;
       sayErr(
         ctx,

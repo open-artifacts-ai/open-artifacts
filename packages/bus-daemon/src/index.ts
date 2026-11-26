@@ -183,6 +183,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
+import { defaultSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -239,6 +240,7 @@ export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
+export * from "./skill-refresh.ts";
 export * from "./status.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
@@ -513,6 +515,9 @@ const agentFields = (a: AgentRecord, reason?: string): EventFields => ({
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
+  const skillRefresh = deps.config
+    ? undefined
+    : defaultSkillRefresher(home(), log);
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
   // #2793: one link per instance, each built from its own credentials only.
   const lanes = new Lanes();
@@ -2542,6 +2547,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
+            void skillRefresh?.onHello(lane.main, frame.server_version);
             if (lane.main && lane.runCap) {
               if (takesInstance()) {
                 if (frame.run_version === null) updaterRef?.clearNamed();

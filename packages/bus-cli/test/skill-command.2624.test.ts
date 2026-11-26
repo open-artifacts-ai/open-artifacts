@@ -97,4 +97,54 @@ describe("oa-bus skill", () => {
     expect(r).toMatchObject({ ok: true, origin: ORIGIN });
     expect(r.harnesses.claude).toContain("SKILL.md");
   });
+
+  it("--check flags a stale skill copy and exits 1; current copy exits 0", async () => {
+    const serveVersion = (version: string) =>
+      vi.fn(async (url: string | URL | Request) => {
+        if (String(url).includes("/skill.md"))
+          return new Response(
+            `---\nname: open-artifacts-oa-test\nmetadata:\n  version: "${version}"\n---\n\n# skill\n`,
+            {
+              status: 200,
+              headers: { "content-type": "text/markdown" },
+            },
+          );
+        throw new Error("no network in tests");
+      }) as unknown as typeof fetch;
+
+    const c = world(["claude", "codex"]);
+    c.fetch = serveVersion("1.0.0");
+    expect(await main(["skill", "--instance", ORIGIN], () => c)).toBe(0);
+
+    // Same version: exit 0 and unchanged output.
+    const same = world(["claude", "codex"]);
+    Object.assign(same, {
+      userHome: c.userHome,
+      home: c.home,
+      fetch: serveVersion("1.0.0"),
+    });
+    expect(
+      await main(["skill", "--check", "--instance", ORIGIN], () => same),
+    ).toBe(0);
+    expect(same.out()).toHaveLength(2);
+    expect(same.err()).toEqual([]);
+
+    // Newer live version: message on stderr and exit 1 for both file and Codex block.
+    const stale = world(["claude", "codex"]);
+    Object.assign(stale, {
+      userHome: c.userHome,
+      home: c.home,
+      fetch: serveVersion("1.1.0"),
+    });
+    expect(
+      await main(["skill", "--check", "--instance", ORIGIN], () => stale),
+    ).toBe(1);
+    const err = stale.err().join("\n");
+    expect(err).toContain(
+      `claude: skill at ~/.claude/skills/open-artifacts-oa-test/SKILL.md is 1.0.0, the instance has 1.1.0. Run ${stale.busCmd} skill to update it.`,
+    );
+    expect(err).toContain(
+      `codex: skill at ~/.codex/AGENTS.md is 1.0.0, the instance has 1.1.0. Run ${stale.busCmd} skill to update it.`,
+    );
+  });
 });
