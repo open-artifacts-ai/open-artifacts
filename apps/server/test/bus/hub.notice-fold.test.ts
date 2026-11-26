@@ -24,6 +24,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -42,7 +43,7 @@ async function setup(caps: string[] = ACK) {
   d.close();
   await d.closed;
   const hub = await hubOf(m.userId);
-  await vi.waitFor(async () =>
+  await eventually(async () =>
     expect(
       await runInDurableObject(
         hub,
@@ -167,7 +168,7 @@ describe("comment notice folding (#1752)", () => {
       expect(await targetState(art, c)).toBe("queued");
     d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
     for (const c of ["c1", "c2", "c3"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("delivered"),
       );
   });
@@ -197,7 +198,7 @@ describe("comment notice folding (#1752)", () => {
       detail: "dropped",
     } as never);
     for (const c of ["c1", "c2", "c3"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("gone"),
       );
   });
@@ -236,7 +237,7 @@ describe("comment notice folding (#1752)", () => {
     expect(await targetState(art, "c1")).toBe("queued");
     d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
     for (const c of ["c1", "c2"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("delivered"),
       );
   });
@@ -250,7 +251,7 @@ describe("comment notice folding (#1752)", () => {
       await send(s, art, c);
     }
     // 52 folded, 50 kept: the two oldest are gone at once.
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       expect(await targetState(art, "c0")).toBe("gone");
       expect(await targetState(art, "c1")).toBe("gone");
     });
@@ -258,7 +259,7 @@ describe("comment notice folding (#1752)", () => {
     const d = await comeBack(s);
     const f = await waitFor(d, "deliver");
     d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c52")).toBe("delivered"),
     );
     expect(await targetState(art, "c2")).toBe("delivered");
@@ -278,7 +279,7 @@ describe("comment notice folding (#1752)", () => {
     await runDurableObjectAlarm(s.hub);
     expect(await rows(s)).toEqual([]);
     for (const c of ["c1", "c2"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("gone"),
       );
   });
@@ -315,7 +316,7 @@ describe("comment notice folding (#1752)", () => {
     }
     await comeBack(s, [BUS_CAPS.follow]);
     for (const c of ["c1", "c2", "c3"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("delivered"),
       );
   });
@@ -404,7 +405,7 @@ describe("comment notice folding (#1752)", () => {
     await s.hub.deliverNotice(mkNote(s, art, "c1", Date.now() + 3_600_000));
     expect(await s.hub.deliverNotice(mkNote(s, art, "c2"))).toBe("delivered");
     for (const c of ["c1", "c2"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("delivered"),
       );
   });
@@ -417,7 +418,7 @@ describe("comment notice folding (#1752)", () => {
     await seedTarget(art, "c1", s.to.key);
     await writeState(art, "c1", "gone");
     await s.hub.deliverNotice(mkNote(s, art, "c1"));
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
   });
@@ -429,7 +430,7 @@ describe("comment notice folding (#1752)", () => {
     await waitFor(d, "agent_ok");
     await seedTarget(art, "c1", s.to.key);
     await s.hub.deliverNotice(mkNote(s, art, "c1"));
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
     await runInDurableObject(

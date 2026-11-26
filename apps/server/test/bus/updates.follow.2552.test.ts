@@ -30,6 +30,7 @@ import {
   member,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const app = createApp();
 const CAP = [BUS_CAPS.runVersion];
@@ -259,7 +260,7 @@ describe("pause (#2552)", () => {
     } as ClientFrame);
     expect((await waitFor(d, "hello_ok")).run_version).toBeNull();
     await setBusUpdatesPaused(e, who.userId, false, 0);
-    await vi.waitFor(() => expect(pushes(d).at(-1)).toBe("1.2.0"));
+    await eventually(() => expect(pushes(d).at(-1)).toBe("1.2.0"));
     expect(await getKey(UPDATES_PAUSED_KEY)).toBeNull();
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(true);
     void stub;

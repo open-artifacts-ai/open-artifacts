@@ -6,7 +6,7 @@
 // BusHub.setTestClock, reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   BusHub,
   OFFLINE_REAP_MS,
@@ -25,6 +25,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -87,15 +88,14 @@ async function scene(caps: string[] | null = [BUS_CAPS.link]) {
 
 const close = async (d: Daemon, userId: string, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  for (;;) {
+  await eventually(async () => {
     const r = await rows(
       userId,
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
     );
-    if (r[0]?.live === 0) return;
-    await new Promise((res) => setTimeout(res, 5));
-  }
+    expect(r[0]?.live).toBe(0);
+  });
 };
 
 describe("link_arg cap (#1856)", () => {
@@ -405,11 +405,10 @@ describe("the proof ends with the session (#1822)", () => {
     await reg(b.d, "r1", "Lead", b.ns);
     const hb = await bindMany(b, "r1", 3);
     b.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    for (;;) {
+    await eventually(async () => {
       const r = await proofRow(b.m.userId, "r1");
-      if (r[0]?.live === 0) break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(r[0]?.live).toBe(0);
+    });
     await allGone(b.m.userId, hb);
     // takeOver
     const c = await scene([BUS_CAPS.link, BUS_CAPS.mailbox]);
@@ -431,15 +430,14 @@ describe("the proof ends with the session (#1822)", () => {
     const hs = await bindMany(s, "r1", 3);
     s.d.close();
     await s.d.closed;
-    for (;;) {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select disconnected_at as t from machines where id = ?",
         s.mach.id,
       );
-      if (typeof r[0]?.t === "number") break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(typeof r[0]?.t).toBe("number");
+    });
     await setClock(s.m.userId, t0 + OFFLINE_REAP_MS);
     await runInDurableObject(
       await hubOf(s.m.userId),
@@ -494,11 +492,10 @@ describe("the proof ends with the session (#1822)", () => {
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("8"));
     s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    for (;;) {
+    await eventually(async () => {
       const r = await proofRow(s.m.userId, "r1");
-      if (r[0]?.live === 0) break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(r[0]?.live).toBe(0);
+    });
     expect(await lookup(s.m.userId, hashOf("8"))).toBeNull();
     expect(await proofRow(s.m.userId, "r1")).toEqual([{ p: null, live: 0 }]);
   });
@@ -530,15 +527,14 @@ describe("the proof ends with the session (#1822)", () => {
     await bind(s.d, "r1", hashOf("a"));
     s.d.close();
     await s.d.closed;
-    for (;;) {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select disconnected_at as t from machines where id = ?",
         s.mach.id,
       );
-      if (typeof r[0]?.t === "number") break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(typeof r[0]?.t).toBe("number");
+    });
     // Still linked while the machine is only offline.
     expect(await lookup(s.m.userId, hashOf("a"))).not.toBeNull();
     await setClock(s.m.userId, t0 + OFFLINE_REAP_MS);
@@ -708,18 +704,15 @@ describe("the away grace (#2110)", () => {
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("f"));
     s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
-    for (;;) {
+    await eventually(async () => {
       const r = await rows(
         s.m.userId,
         "select live, away_since as t from agents where native_ref = 'r1'",
       );
-      if (r[0]?.live === 0) {
-        // Closed into away like a sessions close: only the drop ends it.
-        expect(typeof r[0]?.t).toBe("number");
-        break;
-      }
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(r[0]?.live).toBe(0);
+      // Closed into away like a sessions close: only the drop ends it.
+      expect(typeof r[0]?.t).toBe("number");
+    });
     expect(await lookup(s.m.userId, hashOf("f"))).toBeNull();
     expect(await count(s.m.userId)).toEqual([{ n: 0 }]);
   });
