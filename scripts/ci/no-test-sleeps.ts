@@ -390,6 +390,62 @@ const PY_RULES: ((code: string) => Found[])[] = [
       out.push({ index: m.index as number, why: "sleep" });
     return out;
   },
+  // A busy wait on the clock: `while time.time() < end: pass` (or continue, `...`,
+  // or one awaited call), under any alias of time, or datetime.now().
+  (code) => {
+    const out: Found[] = [];
+    const clockFns = ["time", "monotonic", "perf_counter", "process_time"];
+    const calls: string[] = [];
+    for (const m of code.matchAll(/^[ \t]*import[ \t]+([^\n#]+)/gm))
+      for (const part of (m[1] as string).split(",")) {
+        const [, mod, as] =
+          /^\s*([\w.]+)(?:\s+as\s+(\w+))?\s*$/.exec(part) ?? [];
+        if (mod === "time")
+          calls.push(
+            `${as ?? mod}\\s*\\.\\s*\\w*(?:${clockFns.join("|")})(?:_ns)?\\s*\\(`,
+          );
+      }
+    for (const m of code.matchAll(
+      /^[ \t]*from[ \t]+time[ \t]+import[ \t]+(\([^)]*\)|[^\n]+)/gm,
+    ))
+      for (const part of (m[1] as string).replace(/[()]/g, "").split(",")) {
+        const [, name, as] = /^\s*(\w+)(?:\s+as\s+(\w+))?\s*$/.exec(part) ?? [];
+        if (name && clockFns.includes(name.replace(/_ns$/, "")))
+          calls.push(`(?<![\\w.])${as ?? name}\\s*\\(`);
+      }
+    calls.push(
+      "\\bdatetime\\s*\\.\\s*(?:datetime\\s*\\.\\s*)?(?:now|utcnow)\\s*\\(",
+    );
+    const clock = new RegExp(calls.join("|"));
+    const lines = code.split("\n");
+    let offset = 0;
+    const starts = lines.map((l) => {
+      const at = offset;
+      offset += l.length + 1;
+      return at;
+    });
+    lines.forEach((line, i) => {
+      const m = /^([ \t]*)while[ \t]+(.*?):(?:[ \t]+(.*))?$/.exec(line);
+      if (!m || !clock.test(m[2] as string)) return;
+      const indent = (m[1] as string).length;
+      const body: string[] = [];
+      if ((m[3] ?? "").trim() !== "") body.push(...(m[3] as string).split(";"));
+      else
+        for (let j = i + 1; j < lines.length; j++) {
+          const l = lines[j] as string;
+          if (l.trim() === "") continue;
+          if (l.length - l.trimStart().length <= indent) break;
+          body.push(l.trim());
+        }
+      const idle = body
+        .map((b) => b.trim())
+        .filter((b) => b !== "")
+        .every((b) => /^(pass|continue|\.\.\.|await\s+[^=]*)$/.test(b));
+      if (idle && body.length <= 1)
+        out.push({ index: starts[i] as number, why: "sleep" });
+    });
+    return out;
+  },
   // A wait by another name: Event().wait on a fresh Event (nothing sets it),
   // getattr(time, "sleep"), a star import from a sleeper, a timed empty select.
   (code) => {
