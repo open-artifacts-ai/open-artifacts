@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.259.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.1...v0.259.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** Pi /name and a later Codex /rename count as a person's name ([#3143](https://github.com/open-artifacts-ai/open-artifacts/issues/3143) A3) ([#3267](https://github.com/open-artifacts-ai/open-artifacts/issues/3267)) ([e504ed5](https://github.com/open-artifacts-ai/open-artifacts/commit/e504ed528961893dd7b4bf71b8b96133e7ee9c68))
+
 ## [0.258.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.0...v0.258.1) (2026-11-26)
 
 
