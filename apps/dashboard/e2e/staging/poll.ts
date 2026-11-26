@@ -2,10 +2,10 @@
 // the answer stops being pending, bounded only by the test's own timeout. A
 // read that throws (a hook refusal, a bad status) fails at once.
 //
-// There is no interval between reads: each read is a request that takes its
-// own time, and the reads that matter here are hook calls, which the hook
-// pacer already spaces (hook-pace.ts). A caller whose reads are not paced by
-// their own request must not use this.
+// There is no interval and no sleep: a read that is still pending is held by
+// the host (the otp/latest hook's `waitMs` holds the call until the send
+// lands, up to a bound), so a loop turn is one request, not a spin. A caller
+// whose read returns at once while pending must not use this.
 
 export async function untilSettled<T>(
   read: () => Promise<T>,

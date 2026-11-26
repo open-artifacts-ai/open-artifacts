@@ -19,12 +19,7 @@ import {
 import { type Agent, mcpWithToken } from "../../real/mcp-client";
 import { gate } from "../gate";
 import "../dispatcher";
-import {
-  clearTestStart,
-  hookFailure,
-  markTestStart,
-  paceT19Hook,
-} from "../hook-pace";
+import { hookFailure, paceT19Hook } from "../hook-pace";
 import { sendPacedHook, sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
@@ -370,20 +365,5 @@ export async function needs(flow: string, min: string): Promise<void> {
   test.skip(why !== null, why ?? "");
 }
 
-/**
- * T19's test: an auto fixture records each test's start, so a paced hook
- * call's deadline (hook-pace.ts) is the test's own timeout.
- */
-export const test = base.extend<{ hookClock: void }>({
-  hookClock: [
-    // biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructured first argument.
-    async ({}, use, testInfo) => {
-      markTestStart(testInfo);
-      await use();
-      // afterAll gets this TestInfo but its own timeout (hook-pace.ts).
-      clearTestStart(testInfo);
-    },
-    { auto: true },
-  ],
-});
+export const test = base;
 export { expect };

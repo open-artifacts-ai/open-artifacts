@@ -96,7 +96,17 @@ export const TestSessionResultSchema = z.object({ cookie: z.string() });
 export type TestSessionResult = z.infer<typeof TestSessionResultSchema>;
 
 /** POST TEST_HOOKS.otpLatest -> OtpLatestResult, or 404 when none. */
-export const OtpLatestInputSchema = z.strictObject({ email: z.string() });
+/** The longest `waitMs` the hook holds a call for. */
+export const OTP_WAIT_MAX_MS = 8_000;
+export const OtpLatestInputSchema = z.strictObject({
+  email: z.string(),
+  /**
+   * Hold the call, re-reading next to the data, until the outcome is no longer
+   * "pending" or this many ms have passed (at most OTP_WAIT_MAX_MS), then answer.
+   * One call replaces a client's poll.
+   */
+  waitMs: z.number().int().min(0).max(OTP_WAIT_MAX_MS).optional(),
+});
 export type OtpLatestInput = z.infer<typeof OtpLatestInputSchema>;
 export const OtpLatestResultSchema = z.object({ code: z.string() });
 export type OtpLatestResult = z.infer<typeof OtpLatestResultSchema>;

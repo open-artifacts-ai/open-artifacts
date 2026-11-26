@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { AUTH, TEST_HOOKS } from "@oa/shared";
+import { AUTH, OTP_WAIT_MAX_MS, TEST_HOOKS } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CODE_LIMITS,
@@ -348,6 +348,66 @@ describe("otp/latest reports the last outcome after the key", () => {
       reason: "no_code",
       outcome: "none",
     });
+  });
+
+  it("waitMs holds a pending call until the send lands: one call, the code", async () => {
+    const e = on(direct());
+    const email = uniq("w", TD);
+    const ek = await emailKey(e, email);
+    await noteTestOtp(e, email, ek, "pending");
+    const held = call(
+      e,
+      TEST_HOOKS.otpLatest,
+      { email, waitMs: 5_000 },
+      { authorization: `Bearer ${KEY}` },
+    );
+    // The send lands while the call is held.
+    await noteTestOtp(e, email, ek, "sent", "87654321");
+    const r = await held;
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ code: "87654321" });
+  });
+
+  it("waitMs ends with the final outcome once it is not pending, and with pending at its bound", async () => {
+    const e = on(direct());
+    const email = uniq("wb", TD);
+    const ek = await emailKey(e, email);
+    await noteTestOtp(e, email, ek, "pending");
+    const held = call(
+      e,
+      TEST_HOOKS.otpLatest,
+      { email, waitMs: 5_000 },
+      { authorization: `Bearer ${KEY}` },
+    );
+    await noteTestOtp(e, email, ek, "send_failed");
+    expect(await details(await held)).toEqual({
+      reason: "no_code",
+      outcome: "send_failed",
+    });
+    // Nothing lands: the bound ends the call, still pending.
+    await noteTestOtp(e, email, ek, "pending");
+    const t0 = Date.now();
+    const out = await call(
+      e,
+      TEST_HOOKS.otpLatest,
+      { email, waitMs: 150 },
+      { authorization: `Bearer ${KEY}` },
+    );
+    expect(await details(out)).toEqual({
+      reason: "no_code",
+      outcome: "pending",
+    });
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(150);
+  });
+
+  it("waitMs past the cap is refused as bad input", async () => {
+    const r = await call(
+      on(direct()),
+      TEST_HOOKS.otpLatest,
+      { email: uniq("wc", TD), waitMs: OTP_WAIT_MAX_MS + 1 },
+      { authorization: `Bearer ${KEY}` },
+    );
+    expect(await details(r)).toEqual({ reason: "bad_input" });
   });
 
   it("a sent code past its TTL is expired", async () => {

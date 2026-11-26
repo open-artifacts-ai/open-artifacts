@@ -53,13 +53,16 @@ import { type HookEnv, testHooksOn } from "./on.js";
 // false). At runtime it is on only when the build allows it
 // (TEST_HOOKS_ALLOWED) AND TEST_HOOKS=1 AND a 32+ char TEST_HOOK_KEY AND a
 // TEST_DOMAIN. POST /__test/audit reads back test_hook.* audit rows only
-// (never any other event). Order per request: rate limit (RL_ANON; unbound is a refusal),
-// then the key, then the input. Every refusal is the standard 404, and every
+// (never any other event). Order per request: the key compared, then the rate
+// limit (a wrong key: RL_ANON; a right one: RL_HOOKS, else RL_ANON; RL_ANON
+// unbound is a refusal), then the input. Every refusal is the standard 404, and every
 // call past the rate limit writes one audit_events row. Before the key
 // verifies the 404 is uniform (no reason); after it, the 404 body's
 // error.details.reason says why (TEST_HOOK_REFUSALS, a fixed enum).
 
 const OTP_TTL_S = 600;
+/** How often a held otp_latest call re-reads the row. */
+const OTP_REREAD_MS = 100;
 
 export { testHooksOn };
 
@@ -633,20 +636,24 @@ export function mountTestHooks(app: AppType): void {
   app.all("/__test/*", async (c) => {
     const env = c.env;
     if (!testHooksOn(env)) return notFound();
-    // Rate limit first, before any key work; no limiter bound means refuse.
-    const rl = env.RL_ANON;
-    if (!rl) return notFound();
+    // No limiter bound means refuse: a wrong or absent key is charged to
+    // RL_ANON below, so without it nothing is safe to compare.
+    const anon = env.RL_ANON;
+    if (!anon) return notFound();
     const ip = c.req.header("cf-connecting-ip") ?? "";
-    const limited = !(
-      await rl.limit({ key: `test:${authConfig(env).installKey}:${ip}` })
-    ).success;
-    if (limited) {
+    const hook = hookName(c.req.path);
+    const given = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    const keyed = await sameKey(given, env.TEST_HOOK_KEY as string);
+    // A wrong or absent key spends RL_ANON (30 a minute) as it always did, so
+    // guessing stays capped. A right key spends RL_HOOKS (the suites' own,
+    // much larger budget); without that binding it spends RL_ANON as before.
+    const key = `test:${authConfig(env).installKey}:${ip}`;
+    const limiter = keyed ? (env.RL_HOOKS ?? anon) : anon;
+    if (!(await limiter.limit({ key })).success) {
       log("limited");
       return notFound();
     }
-    const hook = hookName(c.req.path);
-    const given = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
-    if (!(await sameKey(given, env.TEST_HOOK_KEY as string))) {
+    if (!keyed) {
       await audit(env, hook, ip, "denied");
       return notFound();
     }
@@ -692,7 +699,22 @@ export function mountTestHooks(app: AppType): void {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return refused("bad_input");
       }
-      const got = await readTestOtp(env, await emailKey(env, email));
+      const ek = await emailKey(env, email);
+      // `waitMs`: hold the call while the send is still pending (it runs after
+      // the code request's 202), re-reading next to the data, so a test makes
+      // one call. Bounded by OTP_WAIT_MAX_MS.
+      const until = Date.now() + (input.success ? (input.data.waitMs ?? 0) : 0);
+      let got = await readTestOtp(env, ek);
+      while (
+        "outcome" in got &&
+        got.outcome === "pending" &&
+        Date.now() < until
+      ) {
+        await new Promise<void>((r) =>
+          setTimeout(r, Math.min(OTP_REREAD_MS, until - Date.now())),
+        );
+        got = await readTestOtp(env, ek);
+      }
       await audit(env, hook, ip, "code" in got ? "ok" : "none", { email });
       return "code" in got
         ? c.json({ code: got.code })

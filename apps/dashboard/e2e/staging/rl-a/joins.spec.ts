@@ -2,6 +2,7 @@ import {
   type Me,
   type Member,
   type MemberInviteResult,
+  OTP_WAIT_MAX_MS,
   R,
   type ShareResult,
   TEST_HOOKS,
@@ -44,8 +45,9 @@ test.beforeAll(async () => {
 test.afterAll(cleanup);
 
 /**
- * The otp/latest hook for `address`, read once a second while it says
- * "pending" (the send runs after the 202): the code, or the final no_code
+ * The otp/latest hook for `address`: each call is held by the host while the
+ * send is "pending" (it runs after the 202), up to OTP_WAIT_MAX_MS, and a call
+ * that ends still pending is asked again. The code, or the final no_code
  * outcome (TestOtpOutcome). No budget of its own: the test's timeout bounds
  * it, and a refusal (readOtp throws with the status) fails at once.
  */
@@ -61,7 +63,10 @@ const otp = (
 async function readOtp(
   address: string,
 ): Promise<{ code: string } | { outcome: TestOtpOutcome }> {
-  const res = await hookRes(TEST_HOOKS.otpLatest, { email: address });
+  const res = await hookRes(TEST_HOOKS.otpLatest, {
+    email: address,
+    waitMs: OTP_WAIT_MAX_MS,
+  });
   const body = (await res.json().catch(() => ({}))) as {
     code?: string;
     error?: { details?: { reason?: string; outcome?: TestOtpOutcome } };

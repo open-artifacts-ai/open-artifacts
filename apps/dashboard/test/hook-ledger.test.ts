@@ -17,7 +17,6 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   claimHookSlot,
-  HOOK_GAP_MS,
   HOOK_LIMIT,
   HOOK_MARGIN,
   HOOK_WINDOW_MS,
@@ -25,10 +24,9 @@ import {
   hook404IsTheKeys,
   hookLedgerDir,
   hookWindowCount,
-  RL_ANON_LIMIT,
-  RL_ANON_PERIOD_S,
+  RL_HOOKS_LIMIT,
+  RL_HOOKS_PERIOD_S,
   STALE_TMP_MS,
-  waitHookWindowClear,
 } from "../e2e/staging/hook-ledger";
 
 const ROOT = resolve(import.meta.dirname, "..", "..", "..");
@@ -44,54 +42,51 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** A pinned clock whose sleep advances it, recording each wait. */
+/** A pinned clock. */
 function clock(start = 1_800_000_000_000) {
   let t = start;
-  const waits: number[] = [];
   return {
     now: () => t,
     set: (v: number) => {
       t = v;
     },
-    waits,
-    sleep: async (ms: number) => {
-      waits.push(ms);
-      t += ms;
-      // A pacer that never stops waiting fails here, not as a hung run.
-      if (t - start > 10 * HOOK_WINDOW_MS)
-        throw new Error("runaway: waited over 10 windows of pinned time");
-      await new Promise((r) => setImmediate(r));
-    },
   };
 }
 
-/** RL_ANON's `simple` block in a wrangler jsonc (full-line comments stripped). */
-function rlAnon(file: string): { limit: number; period: number } {
+/** RL_HOOKS's `simple` block in a wrangler jsonc (full-line comments stripped). */
+function rlHooks(file: string): { limit: number; period: number } {
   const raw = readFileSync(join(ROOT, "apps", "server", file), "utf8")
     .split("\n")
     .filter((l) => !/^\s*\/\//.test(l))
     .join("\n");
-  const cfg = JSON.parse(raw) as {
-    ratelimits: { name: string; simple: { limit: number; period: number } }[];
+  const parsed = JSON.parse(raw) as {
+    ratelimits?: { name: string; simple: { limit: number; period: number } }[];
+    env?: Record<string, { ratelimits: NonNullable<typeof parsed.ratelimits> }>;
   };
-  const rl = cfg.ratelimits.find((r) => r.name === "RL_ANON");
-  if (!rl) throw new Error(`${file}: no RL_ANON`);
+  // The staging config nests its bindings under env.staging.
+  const cfg = parsed.ratelimits ? parsed : Object.values(parsed.env ?? {})[0];
+  const rl = cfg?.ratelimits?.find((r) => r.name === "RL_HOOKS");
+  if (!rl) throw new Error(`${file}: no RL_HOOKS`);
   return rl.simple;
 }
 
-describe("the budget is RL_ANON's, less a stated margin", () => {
-  for (const file of ["wrangler.template.jsonc", "wrangler.test.jsonc"])
+describe("the budget is RL_HOOKS's, less a stated margin", () => {
+  for (const file of [
+    "wrangler.template.jsonc",
+    "wrangler.staging.jsonc",
+    "wrangler.test.jsonc",
+  ])
     it(`matches ${file}`, () => {
-      expect(rlAnon(file)).toEqual({
-        limit: RL_ANON_LIMIT,
-        period: RL_ANON_PERIOD_S,
+      expect(rlHooks(file)).toEqual({
+        limit: RL_HOOKS_LIMIT,
+        period: RL_HOOKS_PERIOD_S,
       });
     });
 
-  it("is 30 a minute less 5", () => {
-    expect(HOOK_MARGIN).toBe(5);
-    expect(HOOK_LIMIT).toBe(RL_ANON_LIMIT - HOOK_MARGIN);
-    expect(HOOK_WINDOW_MS).toBe(RL_ANON_PERIOD_S * 1000);
+  it("is 600 a minute less 30", () => {
+    expect(HOOK_MARGIN).toBe(30);
+    expect(HOOK_LIMIT).toBe(RL_HOOKS_LIMIT - HOOK_MARGIN);
+    expect(HOOK_WINDOW_MS).toBe(RL_HOOKS_PERIOD_S * 1000);
   });
 });
 
@@ -146,14 +141,12 @@ describe("nothing is held past a call", () => {
       await claimHookSlot(APP, {
         root,
         now: c.now,
-        sleep: c.sleep,
       });
       if (fail) throw new Error("fetch failed mid-call");
     };
     await expect(call(true)).rejects.toThrow(/mid-call/);
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(1);
     for (let i = 1; i < HOOK_LIMIT; i++) await call(false);
-    expect(c.waits).toEqual([]);
     // Only slot files: no lock or temp file is left behind.
     const names = readdirSync(hookLedgerDir(APP, root));
     expect(names).toHaveLength(HOOK_LIMIT);
@@ -169,64 +162,37 @@ describe("a claim that throws holds nothing", () => {
       claimHookSlot(APP, {
         root,
         now: c.now,
-        sleep: c.sleep,
         afterScan: async () => {
           throw new Error("died mid-claim");
         },
       }),
     ).rejects.toThrow(/mid-claim/);
     for (let i = 0; i < HOOK_LIMIT; i++)
-      await claimHookSlot(APP, { root, now: c.now, sleep: c.sleep });
-    expect(c.waits).toEqual([]);
+      await claimHookSlot(APP, { root, now: c.now });
     for (const n of readdirSync(hookLedgerDir(APP, root)))
       expect(n).toMatch(/^s\d+\.g\d+$/);
   });
 });
 
-describe("waits come from the ledger, with a deadline", () => {
-  it("waits for the oldest call in the window to leave it", async () => {
+describe("a call past the budget fails at once", () => {
+  it("names the wait for the oldest call to leave the window, and never waits", async () => {
     const root = scratch();
     const c = clock();
     const t0 = c.now();
     for (let i = 0; i < HOOK_LIMIT; i++) {
-      c.set(t0 + i * 1000);
+      c.set(t0 + i * 10);
       await claimHookSlot(APP, { root, now: c.now });
     }
     c.set(t0 + 30_000);
-    await claimHookSlot(APP, { root, now: c.now, sleep: c.sleep });
-    // The oldest (t0) leaves at t0 + 60 s: 30 s from now, plus the edge.
-    expect(c.waits).toEqual([HOOK_WINDOW_MS - 30_000 + 100]);
-  });
-
-  it("spread: one call per gap", async () => {
-    const root = scratch();
-    const c = clock();
-    await claimHookSlot(APP, { root, now: c.now, spread: true });
-    c.set(c.now() + 1000);
-    await claimHookSlot(APP, {
-      root,
-      now: c.now,
-      sleep: c.sleep,
-      spread: true,
-    });
-    expect(c.waits).toEqual([HOOK_GAP_MS - 1000]);
-    expect(HOOK_GAP_MS).toBe(Math.ceil(HOOK_WINDOW_MS / HOOK_LIMIT));
-  });
-
-  it("past the deadline it fails clearly, without waiting", async () => {
-    const root = scratch();
-    const c = clock();
-    for (let i = 0; i < HOOK_LIMIT; i++)
-      await claimHookSlot(APP, { root, now: c.now });
-    const p = claimHookSlot(APP, {
-      root,
-      now: c.now,
-      sleep: c.sleep,
-      deadline: c.now() + 10_000,
-    });
+    const p = claimHookSlot(APP, { root, now: c.now });
     await expect(p).rejects.toBeInstanceOf(HookBudgetError);
     await expect(p).rejects.toThrow(/^hook budget exhausted: /);
-    expect(c.waits).toEqual([]);
+    await expect(p).rejects.toThrow(/the next fits in 30 s/);
+    // The oldest leaves at t0 + 60 s: then the call fits.
+    c.set(t0 + HOOK_WINDOW_MS + 1);
+    await expect(claimHookSlot(APP, { root, now: c.now })).resolves.toBe(
+      HOOK_LIMIT,
+    );
   });
 });
 
@@ -241,15 +207,13 @@ describe("a hook 404 isn't the key's while the budget is full", () => {
     const c = clock();
     for (let i = 0; i < HOOK_LIMIT - 1; i++)
       await claimHookSlot(APP, { root, now: c.now });
-    const n = await claimHookSlot(APP, {
-      root,
-      now: c.now,
-      sleep: c.sleep,
-      reserve: 1,
-    });
-    // It waited for room rather than take the last slot.
-    expect(c.waits).toHaveLength(1);
-    expect(hook404IsTheKeys(n)).toBe(true);
+    // One call is left, and reserve 1 refuses to take it.
+    await expect(
+      claimHookSlot(APP, { root, now: c.now, reserve: 1 }),
+    ).rejects.toBeInstanceOf(HookBudgetError);
+    expect(hook404IsTheKeys(hookWindowCount(APP, { root, now: c.now }))).toBe(
+      true,
+    );
   });
 });
 
@@ -268,47 +232,40 @@ describe("slot times that aren't a plain past time", () => {
     const c = clock();
     rawSlot(root, "s0.g0", "", c.now() - 2 * HOOK_WINDOW_MS);
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(0);
-    await waitHookWindowClear(APP, { root, now: c.now, sleep: c.sleep });
-    expect(c.waits).toEqual([]);
   });
 
   it("an empty slot file made inside the window counts until its mtime leaves it", async () => {
     const root = scratch();
     const c = clock();
-    rawSlot(root, "s0.g0", "", c.now() - 20_000);
+    const t0 = c.now();
+    rawSlot(root, "s0.g0", "", t0 - 20_000);
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(1);
-    await waitHookWindowClear(APP, { root, now: c.now, sleep: c.sleep });
-    expect(c.waits).toEqual([HOOK_WINDOW_MS - 20_000 + 100]);
+    c.set(t0 - 20_000 + HOOK_WINDOW_MS + 1);
+    expect(hookWindowCount(APP, { root, now: c.now })).toBe(0);
   });
 
   it("a time from the future falls back to the file's mtime, never later than now", async () => {
     const root = scratch();
     const c = clock();
-    rawSlot(root, "s0.g0", String(c.now() + 3_600_000), c.now() - 30_000);
-    await waitHookWindowClear(APP, { root, now: c.now, sleep: c.sleep });
-    expect(c.waits).toEqual([HOOK_WINDOW_MS - 30_000 + 100]);
+    const t0 = c.now();
+    rawSlot(root, "s0.g0", String(t0 + 3_600_000), t0 - 30_000);
+    expect(hookWindowCount(APP, { root, now: c.now })).toBe(1);
+    c.set(t0 - 30_000 + HOOK_WINDOW_MS + 1);
+    expect(hookWindowCount(APP, { root, now: c.now })).toBe(0);
   });
 
   it("a future mtime is capped at now", async () => {
     const root = scratch();
     const c = clock();
+    const t0 = c.now();
     // Corrupt content, so the mtime is used; the mtime is an hour ahead.
-    rawSlot(root, "s0.g0", "x", c.now() + 3_600_000);
-    // The file stays fresh until the clock reaches its mtime; only the first
-    // computed wait is checked: one window from now, not from an hour ahead.
-    const waits: number[] = [];
-    const stop = new Error("first wait seen");
+    rawSlot(root, "s0.g0", "x", t0 + 3_600_000);
+    expect(hookWindowCount(APP, { root, now: c.now })).toBe(1);
+    // With room for one call, the next fits one window from now, not an hour
+    // ahead (the claim's message names the wait).
     await expect(
-      waitHookWindowClear(APP, {
-        root,
-        now: c.now,
-        sleep: async (ms) => {
-          waits.push(ms);
-          throw stop;
-        },
-      }),
-    ).rejects.toBe(stop);
-    expect(waits).toEqual([HOOK_WINDOW_MS + 100]);
+      claimHookSlot(APP, { root, now: c.now, reserve: HOOK_LIMIT - 1 }),
+    ).rejects.toThrow(/the next fits in 60 s/);
   });
 
   it("temp files a crash left are swept on first use; a fresh one stays", async () => {
@@ -334,43 +291,6 @@ describe("slot times that aren't a plain past time", () => {
     expect(
       Number(readFileSync(join(hookLedgerDir(APP, root), "s0.g0"), "utf8")),
     ).toBeGreaterThan(0);
-  });
-});
-
-describe("waitHookWindowClear", () => {
-  it("returns at once on an empty ledger", async () => {
-    const root = scratch();
-    const c = clock();
-    await waitHookWindowClear(APP, { root, now: c.now, sleep: c.sleep });
-    expect(c.waits).toEqual([]);
-  });
-
-  it("waits until the newest call leaves the window", async () => {
-    const root = scratch();
-    const c = clock();
-    const t0 = c.now();
-    await claimHookSlot(APP, { root, now: c.now });
-    c.set(t0 + 10_000);
-    await claimHookSlot(APP, { root, now: c.now });
-    c.set(t0 + 30_000);
-    await waitHookWindowClear(APP, { root, now: c.now, sleep: c.sleep });
-    // The newest (t0 + 10 s) leaves at t0 + 70 s: 40 s from now, plus the edge.
-    expect(c.waits).toEqual([HOOK_WINDOW_MS - 20_000 + 100]);
-    expect(hookWindowCount(APP, { root, now: c.now })).toBe(0);
-  });
-
-  it("past the deadline it fails clearly, without waiting", async () => {
-    const root = scratch();
-    const c = clock();
-    await claimHookSlot(APP, { root, now: c.now });
-    const p = waitHookWindowClear(APP, {
-      root,
-      now: c.now,
-      sleep: c.sleep,
-      deadline: c.now() + 10_000,
-    });
-    await expect(p).rejects.toBeInstanceOf(HookBudgetError);
-    expect(c.waits).toEqual([]);
   });
 });
 

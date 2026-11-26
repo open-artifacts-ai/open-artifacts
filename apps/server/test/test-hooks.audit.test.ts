@@ -179,7 +179,9 @@ describe("POST /__test/audit", () => {
     const limited = {
       limit: async () => ({ success: false }),
     } as unknown as RateLimit;
-    await same404(await read(base, on({ RL_ANON: limited })));
+    await same404(
+      await read(base, on({ RL_ANON: limited, RL_HOOKS: limited })),
+    );
     const r = await call(
       on(),
       TEST_HOOKS.audit,
