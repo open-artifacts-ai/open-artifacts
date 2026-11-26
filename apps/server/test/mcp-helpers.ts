@@ -170,7 +170,11 @@ export const b64url = (b: ArrayBuffer | Uint8Array) =>
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 
-export async function register(name = "Test Agent"): Promise<string> {
+export async function register(
+  name = "Test Agent",
+  /** The Worker env (default: the pool's). */
+  e: unknown = E(),
+): Promise<string> {
   const r = await callWorker(
     new Request(`${APP}/oauth/register`, {
       method: "POST",
@@ -186,6 +190,7 @@ export async function register(name = "Test Agent"): Promise<string> {
         response_types: ["code"],
       }),
     }),
+    e,
   );
   expect(r.status).toBe(201);
   expect(r.headers.get("x-robots-tag")).toBe("noindex, nofollow");
@@ -215,8 +220,12 @@ export const cookiePairs = (r: Response) =>
   r.headers.getSetCookie().map((c) => c.split(";")[0] ?? "");
 
 /** GET the consent page as `cookie`; returns its form fields and binding cookies. */
-export async function consentPage(url: string, cookie: string) {
-  const r = await callWorker(new Request(url, { headers: { cookie } }));
+export async function consentPage(
+  url: string,
+  cookie: string,
+  e: unknown = E(),
+) {
+  const r = await callWorker(new Request(url, { headers: { cookie } }), e);
   const body = await r.text();
   const field = (n: string) =>
     new RegExp(`name="${n}" value="([^"]*)"`).exec(body)?.[1] ?? "";
@@ -233,6 +242,7 @@ export const decide = (
   cookie: string,
   fields: Record<string, string>,
   headers: Record<string, string> = {},
+  e: unknown = E(),
 ) => {
   const body = new URLSearchParams(fields).toString();
   return callWorker(
@@ -246,6 +256,7 @@ export const decide = (
       },
       body,
     }),
+    e,
   );
 };
 
@@ -254,22 +265,30 @@ export async function oauthToken(
   email: string,
   clientName = "Test Agent",
   existing?: { cookie: string; userId: string },
+  /** The Worker env for every step (default: the pool's). */
+  e: unknown = E(),
 ) {
   const member = existing ?? (await login(email));
-  const clientId = await register(clientName);
+  const clientId = await register(clientName, e);
   const { verifier, challenge } = await pkce();
   const page = await consentPage(
     authorizeUrl(clientId, challenge),
     member.cookie,
+    e,
   );
   expect(page.r.status).toBe(200);
   expect(page.body).toContain(clientName);
   expect(page.body).toContain(email);
-  const r = await decide([member.cookie, ...page.cookies].join("; "), {
-    csrf: page.csrf,
-    request: page.request,
-    decision: "approve",
-  });
+  const r = await decide(
+    [member.cookie, ...page.cookies].join("; "),
+    {
+      csrf: page.csrf,
+      request: page.request,
+      decision: "approve",
+    },
+    {},
+    e,
+  );
   expect(r.status).toBe(302);
   const loc = new URL(r.headers.get("location") ?? "");
   expect(`${loc.origin}${loc.pathname}`).toBe(REDIRECT);
@@ -291,6 +310,7 @@ export async function oauthToken(
         resource: `${APP}/mcp`,
       }).toString(),
     }),
+    e,
   );
   expect(t.status).toBe(200);
   expect(t.headers.get("x-robots-tag")).toBe("noindex, nofollow");

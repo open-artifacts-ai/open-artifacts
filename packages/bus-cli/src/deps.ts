@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
 import { systemTool } from "@oa/bus-ipc";
 
 export type Deps = {
@@ -71,39 +70,73 @@ const SYSTEM_TOOLS = new Set(["launchctl", "systemctl"]);
 export const resolveCmd = (cmd: string): string =>
   SYSTEM_TOOLS.has(cmd) ? systemTool(cmd) : cmd;
 
-/** execFile with a kill at `timeoutMs`; a killed command fails like any other. */
+/**
+ * execFile with a kill at `timeoutMs`; a killed command fails like any other.
+ * The timeout is our own timer (not execFile's) so a test can drive it with
+ * fake timers, but it behaves like execFile's: a timeout of 0 means none, an
+ * invalid one fails before spawning, and on expiry the stdio pipes are
+ * destroyed before the kill so a grandchild holding them open cannot keep the
+ * result back. The output collected so far is returned.
+ */
 export const makeExec =
   (timeoutMs: number): Deps["exec"] =>
-  async (cmd, args, opts) => {
-    guardServiceManager(cmd, args);
-    try {
-      const run = promisify(execFile)(resolveCmd(cmd), args, {
-        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: opts?.timeoutMs ?? timeoutMs,
-        killSignal: "SIGKILL",
-      });
+  (cmd, args, opts) =>
+    new Promise((resolve) => {
+      guardServiceManager(cmd, args);
+      const ms = opts?.timeoutMs ?? timeoutMs;
+      let timedOut = false;
+      // execFile's own check (an integer in 0..MAX_SAFE_INTEGER, else
+      // ERR_OUT_OF_RANGE, before spawning); the failure keeps its old shape.
+      if (!Number.isInteger(ms) || ms < 0 || ms > Number.MAX_SAFE_INTEGER) {
+        const e = Object.assign(
+          new RangeError(
+            `The value of "timeout" is out of range. It must be ${Number.isInteger(ms) ? ">= 0 && <= 9007199254740991" : "an integer"}. Received ${ms}`,
+          ),
+          { code: "ERR_OUT_OF_RANGE" },
+        );
+        return resolve({ code: 1, stdout: "", stderr: String(e) });
+      }
+      let child: ReturnType<typeof execFile>;
+      // execFile throws synchronously on input it rejects (a NUL byte in an
+      // argument, say): that fails like any other command, as it always did.
+      try {
+        child = execFile(
+          resolveCmd(cmd),
+          args,
+          {
+            ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+            maxBuffer: 8 * 1024 * 1024,
+            killSignal: "SIGKILL",
+          },
+          (e, stdout, stderr) => {
+            clearTimeout(timer);
+            if (!e) return resolve({ code: 0, stdout, stderr });
+            const err = e as { code?: number | string };
+            resolve({
+              code: typeof err.code === "number" ? err.code : 1,
+              stdout: stdout ?? "",
+              stderr: timedOut
+                ? `timed out after ${ms} ms`
+                : (stderr ?? String(e)),
+            });
+          },
+        );
+      } catch (e) {
+        return resolve({ code: 1, stdout: "", stderr: String(e) });
+      }
+      const timer =
+        ms > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              child.kill("SIGKILL");
+            }, ms)
+          : undefined;
       // Stdin is always closed (with `input`, or empty): a command that reads it never waits.
-      run.child.stdin?.on("error", () => {});
-      run.child.stdin?.end(opts?.input ?? "");
-      const r = await run;
-      return { code: 0, stdout: r.stdout, stderr: r.stderr };
-    } catch (e) {
-      const err = e as {
-        code?: number | string;
-        killed?: boolean;
-        stdout?: string;
-        stderr?: string;
-      };
-      return {
-        code: typeof err.code === "number" ? err.code : 1,
-        stdout: err.stdout ?? "",
-        stderr: err.killed
-          ? `timed out after ${opts?.timeoutMs ?? timeoutMs} ms`
-          : (err.stderr ?? String(e)),
-      };
-    }
-  };
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts?.input ?? "");
+    });
 
 export const realDeps: Deps = {
   fetch,

@@ -10,7 +10,7 @@ import {
 } from "../src/copy.ts";
 import { DaemonFrame } from "../src/frames.ts";
 import { serveDaemon } from "../src/server.ts";
-import { hello, ok, tmpSock, within } from "./helpers.ts";
+import { hello, ok, tmpSock } from "./helpers.ts";
 
 describe("notice frame", () => {
   it("is a daemon frame carrying only text", () => {
@@ -34,7 +34,7 @@ describe("notice frame", () => {
     });
     const c = await connectDaemon({ path, hello: hello() });
     const got = new Promise((r) => c.onNotice((t) => r(t)));
-    expect(await within(got, 500)).toBe("told");
+    expect(await got).toBe("told");
     // A notice never answers a request.
     expect(await c.request({ type: "self" })).toMatchObject({ type: "agent" });
     c.close();

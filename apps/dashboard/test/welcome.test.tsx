@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { qk } from "../src/api/queries";
 import { calendarDaysTo, chipLabel, chipPlan } from "../src/layout/PlanChip";
 import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
+import { installClock } from "./clock";
 import {
   calls,
   installHarness,
@@ -17,6 +18,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 beforeEach(resetWelcomeRedirect);
 
 const WELCOME = "WmCnEfGhJk4mNpQr";

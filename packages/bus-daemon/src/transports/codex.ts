@@ -235,11 +235,29 @@ export const execCodex =
   (timeoutMs = CODEX_QUEUE_TIMEOUT_MS): CodexRun =>
   (bin, args, env) =>
     new Promise((resolve, reject) => {
-      execFile(
+      // The timeout is our own timer (not execFile's) so a test can drive it
+      // with fake timers instead of waiting it out.
+      let timedOut = false;
+      // execFile validates its own timeout before spawning (an integer in
+      // 0..MAX_SAFE_INTEGER, else ERR_OUT_OF_RANGE); our timer keeps that.
+      if (
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < 0 ||
+        timeoutMs > Number.MAX_SAFE_INTEGER
+      ) {
+        throw Object.assign(
+          new RangeError(
+            `The value of "timeout" is out of range. It must be ${Number.isInteger(timeoutMs) ? ">= 0 && <= 9007199254740991" : "an integer"}. Received ${timeoutMs}`,
+          ),
+          { code: "ERR_OUT_OF_RANGE" },
+        );
+      }
+      const child = execFile(
         bin,
         args,
-        { timeout: timeoutMs, maxBuffer: 64 * 1024, env },
+        { maxBuffer: 64 * 1024, env },
         (err, _stdout, stderr) => {
+          clearTimeout(timer);
           if (!err) return resolve({ code: 0, stderr });
           const e = err as NodeJS.ErrnoException & {
             code?: number | string;
@@ -249,17 +267,24 @@ export const execCodex =
           if (typeof e.code === "string" && START_ERRORS.has(e.code))
             return reject(err);
           resolve({
-            // A maxBuffer kill is SIGTERM too, but carries its own string code.
-            code:
-              e.killed && e.signal === "SIGTERM" && typeof e.code !== "string"
-                ? null
-                : typeof e.code === "number"
-                  ? e.code
-                  : -1,
+            // Only our timer yields null: a maxBuffer kill is -1.
+            code: timedOut ? null : typeof e.code === "number" ? e.code : -1,
             stderr: String(stderr ?? ""),
           });
         },
       );
+      // Like execFile's own timeout: armed only for a positive value (0 is
+      // "no timeout"), and the stdio pipes are destroyed before the kill, so
+      // a grandchild holding them open cannot keep the callback from firing.
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              child.kill("SIGTERM");
+            }, timeoutMs)
+          : undefined;
     });
 
 /**

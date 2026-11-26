@@ -35,6 +35,11 @@ type Core = {
 export function core(o: Core = {}) {
   const files = new Map(Object.entries(o.files ?? {}));
   const lines: string[] = [];
+  /** Settles when the first line is printed: the signal a test waits on. */
+  let firstPrinted: () => void = () => {};
+  const printed = new Promise<void>((r) => {
+    firstPrinted = r;
+  });
   const prompts: string[] = [];
   const answers = [...(o.answers ?? [])];
   const sleeps: number[] = [];
@@ -86,7 +91,10 @@ export function core(o: Core = {}) {
             }
           : null,
     },
-    out: (l) => void lines.push(l),
+    out: (l) => {
+      lines.push(l);
+      firstPrinted();
+    },
     prompt: async (q, opts) => {
       prompts.push(opts?.secret ? `[secret] ${q}` : q);
       return answers.shift() ?? "";
@@ -102,5 +110,5 @@ export function core(o: Core = {}) {
     },
   };
   const state = () => JSON.parse(files.get(STATE) ?? "{}");
-  return { deps, files, lines, prompts, state, sleeps, secretWrites };
+  return { deps, files, lines, printed, prompts, state, sleeps, secretWrites };
 }

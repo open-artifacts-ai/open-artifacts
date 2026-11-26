@@ -5,6 +5,7 @@ import { BUSINESS_CONTACT_URL, type Me, R } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { expect, it, onTestFinished, vi } from "vitest";
+import { installClock, settle } from "./clock";
 import {
   calls,
   findVisibleToast,
@@ -14,6 +15,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 
 const asAdmin = (m: Me): Me => ({ ...m, user: { ...m.user, role: "admin" } });
 
@@ -441,7 +443,7 @@ it("dismissing the connect error clears the query", async () => {
   await waitFor(() =>
     expect(router.state.location.href).toBe("/settings/directory"),
   );
-  expect(screen.queryByRole("alert")).toBeNull();
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
 });
 
 it("Sync now POSTs, then shows Syncing… until the status changes", async () => {
@@ -591,7 +593,7 @@ it("a member never reaches the page, so no Disconnect", async () => {
   await waitFor(() =>
     expect(lastClient.getQueryState(["me"])?.status).toBe("success"),
   );
-  await new Promise((r) => setTimeout(r, 50));
+  await settle(50);
   expect(screen.queryByRole("status", { name: "Sync status" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
 });

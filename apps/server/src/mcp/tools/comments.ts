@@ -80,11 +80,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         if (
           i.answeredSince !== undefined ||
           i.mentionedSince !== undefined ||
-          i.compact
+          i.compact ||
+          i.since !== undefined
         )
           throw new ApiError(
             "bad_request",
-            "threadId reads one thread; leave out answeredSince, mentionedSince and compact.",
+            "threadId reads one thread; leave out since, answeredSince, mentionedSince and compact.",
           );
         const one = await listThread(
           env,
@@ -92,6 +93,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           viewer,
           i.threadId,
           i.commentId,
+          { withCursor: true },
         );
         const n = one.threads[0]?.comments.length ?? 0;
         return ok(
@@ -101,6 +103,30 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
               : ""
           }.`,
           one,
+        );
+      }
+      // #3168: delta read from an earlier list_comments cursor.
+      if (i.since !== undefined) {
+        if (
+          i.answeredSince !== undefined ||
+          i.mentionedSince !== undefined ||
+          i.compact
+        )
+          throw new ApiError(
+            "bad_request",
+            "since combines with status only; leave out answeredSince, mentionedSince and compact.",
+          );
+        const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+          since: i.since,
+          withCursor: true,
+        });
+        if (out.threads.length === 0)
+          return ok(`No changes on ${i.id} since your cursor.`, out);
+        return ok(
+          `${plural(out.threads.length, "changed thread")} on ${i.id} since your cursor (${out.open} open)${
+            out.truncated ? ", more exist than are shown" : ""
+          }.`,
+          out,
         );
       }
       if (
@@ -121,6 +147,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             ? { mentionedSince: i.mentionedSince }
             : {}),
           ...(i.compact ? { compact: true } : {}),
+          withCursor: true,
         });
         if ("threads" in found) {
           return ok(
@@ -135,7 +162,9 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           found,
         );
       }
-      const out = await listComments(env, i.id, i.status ?? "all", viewer);
+      const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+        withCursor: true,
+      });
       return ok(
         `${plural(out.threads.length, "thread")} on ${i.id} (${out.open} open)${
           out.truncated ? ", more exist than are shown" : ""

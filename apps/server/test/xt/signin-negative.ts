@@ -11,8 +11,8 @@ import {
   TEST_HOOKS,
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
-import { vi } from "vitest";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
+import { buffered, type SettleOtp, settleOtp } from "./settled-otp.js";
 
 export type Install = {
   /** App origin, e.g. https://stg-a.example.com. */
@@ -129,6 +129,7 @@ function send(
     body?: unknown;
     headers?: Record<string, string>;
     origin?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<Response> {
   return to.fetch(
@@ -142,15 +143,22 @@ function send(
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       redirect: "manual",
+      signal: init.signal,
     }),
   );
 }
 
-const hook = (to: Install, path: string, body: unknown = {}) =>
+const hook = (
+  to: Install,
+  path: string,
+  body: unknown = {},
+  signal?: AbortSignal,
+) =>
   send(to, path, {
     method: "POST",
     body,
     headers: { authorization: `Bearer ${to.hookKey}` },
+    signal,
   });
 
 /**
@@ -220,38 +228,42 @@ async function otpOutcome(r: Response): Promise<string | null> {
   return TEST_OTP_OUTCOMES.find((x) => x === o) ?? null;
 }
 
+/** The most one hold of the hook asks for (the server holds up to its own cap). */
+const OTP_HOLD_MS = 8_000;
+/** Quick "pending" answers in a row before the hook is judged not to hold requests. */
+const OTP_QUICK_MAX = 20;
+
 /**
- * The OTP hook's answer once the send is final: asked once a second while the
- * hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. A code, or a
- * 404 with a recognized final outcome, is returned as it is; a 404 with no
- * recognized outcome is malformed and fails at once.
+ * The OTP hook's answer once the send is final: each ask is held by the
+ * install while the hook's 404 says the send is "pending" and answers the
+ * moment its outcome is final (an event, not a timed re-ask), up to
+ * OTP_DEADLINE_MS in all (each ask is held for the time left at most, cut off
+ * at the deadline, and an answer after it is refused: settled-otp.ts). A code, or a 404 with a recognized final outcome, is
+ * returned as it is; a 404 with no recognized outcome is malformed and fails
+ * at once. An install whose hook answers "pending" at once, again and again,
+ * does not hold requests (an older build): that fails rather than spins.
  */
-async function settledOtp(to: Install, email: string): Promise<Response> {
-  let final: Response | undefined;
-  let malformed = false;
-  await vi
-    .waitFor(
-      async () => {
-        const r = await hook(to, TEST_HOOKS.otpLatest, { email });
-        if (r.status === 404) {
-          const outcome = await otpOutcome(r);
-          if (outcome === "pending") throw new Error("otp send still pending");
-          if (outcome === null) malformed = true;
-        }
-        final = r;
-      },
-      { timeout: OTP_DEADLINE_MS, interval: 1000 },
-    )
-    .catch(() => {
-      throw new Refusal(
-        `otp hook on ${to.origin}: still pending after ${OTP_DEADLINE_MS} ms`,
-      );
-    });
-  if (malformed)
-    throw new Refusal(
-      `otp hook on ${to.origin}: 404 with no recognized outcome`,
-    );
-  return final as Response;
+export function settledOtp(
+  to: Install,
+  email: string,
+  /** The clock and deadline signal, for a test to drive. */
+  seams: Pick<SettleOtp<Response>, "now" | "signalFor"> = {},
+): Promise<Response> {
+  return settleOtp({
+    ...seams,
+    // The body is read inside the ask: the bound covers it, not only the headers.
+    ask: async (wait, signal) =>
+      buffered(
+        await hook(to, TEST_HOOKS.otpLatest, { email, wait }, signal),
+        signal,
+      ),
+    outcome: otpOutcome,
+    deadlineMs: OTP_DEADLINE_MS,
+    holdMs: OTP_HOLD_MS,
+    quickMax: OTP_QUICK_MAX,
+    fail: (m) => new Refusal(m),
+    where: to.origin,
+  });
 }
 
 /** The OTP hook's code (it is mailed after the response); a final 404 fails with its outcome. */

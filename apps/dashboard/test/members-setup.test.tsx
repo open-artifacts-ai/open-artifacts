@@ -6,9 +6,11 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { shortDate } from "../src/api/memberSetup";
+import { installClock, settle } from "./clock";
 import { findVisibleToast, installHarness, mountHosted } from "./harness";
 
 installHarness();
+installClock();
 
 const me = fixtures.me.user;
 const ROWS = [
@@ -155,7 +157,7 @@ describe("the Setup column", () => {
   it("a member doesn't see anyone's progress", async () => {
     mountHosted("/settings/members", true, as("member"), [members()]);
     await screen.findByRole("heading", { name: "Settings" });
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(document.querySelector("[data-setup]")).toBeNull();
     expect(document.body.textContent).not.toContain("no agent reply yet");
   });

@@ -19,6 +19,7 @@ import {
   usePictureDrawer,
 } from "../src/viewer/comments/pictures/drawer";
 import { fitSide, isHeic } from "../src/viewer/comments/pictures/shrink";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mount, mountHosted, server } from "./harness";
 
 // jsdom draws nothing: shrinking is the browser's, so it is stood in for here.
@@ -86,6 +87,7 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+installClock();
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -139,9 +141,9 @@ beforeEach(() => {
 });
 
 describe("shrink rules", () => {
-  it("fits the longest side to 2,560px, keeping the shape", () => {
-    expect(fitSide(4000, 3000)).toEqual({ w: 2560, h: 1920 });
-    expect(fitSide(1200, 5120)).toEqual({ w: 600, h: 2560 });
+  it("fits the longest side to 1,568px, keeping the shape", () => {
+    expect(fitSide(4000, 3000)).toEqual({ w: 1568, h: 1176 });
+    expect(fitSide(1200, 5120)).toEqual({ w: 368, h: 1568 });
     expect(fitSide(800, 600)).toEqual({ w: 800, h: 600 });
   });
   it("knows HEIC by type or name", () => {
@@ -351,7 +353,7 @@ describe("in the viewer", () => {
       user: { ...m.user, role: "guest" },
     }));
     await col();
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(document.querySelector("[data-attach-picture]")).toBeNull();
   });
 
