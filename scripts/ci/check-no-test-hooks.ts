@@ -1,7 +1,7 @@
 // Release guard for the /__test/* hooks (P2 T14). Runs a BUILT release Worker
 // bundle (the --outdir of `wrangler deploy --dry-run`) in Miniflare with the
 // hooks' runtime switches all on (TEST_HOOKS=1, a valid 48-char key, a
-// TEST_DOMAIN, RL_ANON bound) and asserts every /__test/* path answers 404
+// TEST_DOMAIN, RL_ANON and RL_HOOKS bound) and asserts every /__test/* path answers 404
 // (none with a hook refusal reason in error.details) while /healthz answers
 // 200 without testHooks. Prints one line; exits 0 or 1.
 // Usage: node --experimental-strip-types scripts/ci/check-no-test-hooks.ts <bundle-dir>
@@ -99,6 +99,10 @@ async function main(): Promise<Result> {
           ratelimits: {
             RL_ANON: {
               namespace_id: "1001",
+              simple: { limit: 1000, period: 60 },
+            },
+            RL_HOOKS: {
+              namespace_id: "1005",
               simple: { limit: 1000, period: 60 },
             },
           },

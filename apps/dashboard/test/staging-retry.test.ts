@@ -4,6 +4,7 @@
 import { TEST_HOOKS } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
+  HEALTH_ASKS_MAX,
   InfraError,
   isNetworkError,
   REPEATABLE_WRITE_ROUTES,
@@ -16,7 +17,8 @@ const reset = () =>
   Object.assign(new TypeError("fetch failed"), {
     cause: Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
   });
-const noWait = { wait: async () => {} };
+/** The host answers /healthz at once: a retry resends without waiting on anything. */
+const noWait = { origin: "https://h.test", healthy: async () => true };
 
 describe("sendRead", () => {
   it("a GET that loses its connection is sent again, then succeeds", async () => {
@@ -67,19 +69,49 @@ describe("sendRead", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("waits the short backoff between tries", async () => {
-    const waits: number[] = [];
+  it("asks the host to answer again before each resend, never sleeping", async () => {
+    const asked: string[] = [];
     const send = vi
       .fn<() => Promise<Response>>()
       .mockRejectedValueOnce(reset())
       .mockRejectedValueOnce(reset())
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     await sendRead("GET", send, {
-      wait: async (ms) => {
-        waits.push(ms);
+      origin: "https://h.test",
+      healthy: async (origin) => {
+        asked.push(origin);
+        return true;
       },
     });
-    expect(waits).toEqual([250, 1000]);
+    expect(asked).toEqual(["https://h.test", "https://h.test"]);
+  });
+
+  it("keeps asking while the host is down, then resends once it answers", async () => {
+    let down = 3;
+    const asks = vi.fn(async () => --down < 0);
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(reset())
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await sendRead("GET", send, { origin: "https://h.test", healthy: asks });
+    expect(asks).toHaveBeenCalledTimes(4);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("a host that never answers is asked a bounded number of times, then the resend reports it", async () => {
+    const asks = vi.fn(async () => false);
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(
+      sendRead("GET", send, { origin: "https://h.test", healthy: asks }),
+    ).rejects.toBeInstanceOf(InfraError);
+    expect(asks.mock.calls.length).toBeLessThanOrEqual(2 * HEALTH_ASKS_MAX);
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it("without an origin there is nothing to ask: a failed GET is sent once", async () => {
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(sendRead("GET", send)).rejects.toBeInstanceOf(InfraError);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });
 

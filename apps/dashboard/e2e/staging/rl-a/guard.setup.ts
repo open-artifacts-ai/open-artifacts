@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import "../dispatcher";
-import { HOOK_WINDOW_MS } from "../hook-ledger";
-import { clearT19HookWindow } from "../hook-pace";
+import { HOOK_LIMIT, hookWindowCount } from "../hook-ledger";
 import { sendRead } from "../retry";
 import { FETCH_MS, rlA } from "../targets";
 
@@ -11,8 +10,10 @@ test("rl-a reports testHooks and its own installId", {
   tag: "@gate",
 }, async () => {
   const a = rlA();
-  const res = await sendRead("GET", () =>
-    fetch(`${a.app}/healthz`, { signal: AbortSignal.timeout(FETCH_MS) }),
+  const res = await sendRead(
+    "GET",
+    () => fetch(`${a.app}/healthz`, { signal: AbortSignal.timeout(FETCH_MS) }),
+    { origin: a.app },
   );
   expect(res.status).toBe(200);
   const h = (await res.json()) as { testHooks?: boolean; installId?: string };
@@ -24,11 +25,10 @@ test("rl-a reports testHooks and its own installId", {
 });
 
 // #1254: the red-line live suite runs just before on the same runner and
-// shares rl-a's hook bucket. Start T19 with its calls out of the window, so
-// T19's spread calls never wait past a test's own timeout.
-test("rl-a's hook budget is clear of earlier calls", {
+// shares rl-a's hook budget (the ledger counts both). T19 starts only with
+// room left in it, so none of its calls is refused for the budget.
+test("rl-a's hook budget has room", {
   tag: "@gate",
 }, async () => {
-  test.setTimeout(HOOK_WINDOW_MS + 30_000);
-  await clearT19HookWindow(rlA().app);
+  expect(hookWindowCount(rlA().app)).toBeLessThan(HOOK_LIMIT);
 });

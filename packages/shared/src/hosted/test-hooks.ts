@@ -212,9 +212,22 @@ export type TestDirectoryHeldResult = z.infer<
 /** Most rows POST TEST_HOOKS.audit returns. */
 export const TEST_AUDIT_LIMIT = 200;
 
-/** POST TEST_HOOKS.audit: `since` is ms since the epoch (rows with at >= since). */
+/**
+ * A suite names its own hook calls with this header (a TEST_RUN_TAG value). The
+ * audit row of a call whose key verified carries the tag. An unfiltered
+ * POST TEST_HOOKS.audit leaves tagged rows out, so one suite's many calls never
+ * push another suite's rows past TEST_AUDIT_LIMIT; `run` reads that suite's own.
+ */
+export const TEST_RUN_HEADER = "x-oa-test-run";
+export const TEST_RUN_TAG = /^[A-Za-z0-9_-]{1,40}$/;
+
+/**
+ * POST TEST_HOOKS.audit: `since` is ms since the epoch (rows with at >= since).
+ * Without `run`: the rows no suite tagged. With `run`: only that tag's rows.
+ */
 export const TestAuditInputSchema = z.strictObject({
   since: z.number().int().nonnegative(),
+  run: z.string().regex(TEST_RUN_TAG).optional(),
 });
 export type TestAuditInput = z.infer<typeof TestAuditInputSchema>;
 /** One `test_hook.*` audit row. Never any other event. */
