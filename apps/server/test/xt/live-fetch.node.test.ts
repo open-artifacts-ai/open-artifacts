@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { liveFetch } from "./live-fetch.js";
 
 const seq = (...steps: (number | Error)[]) => {
@@ -21,6 +21,10 @@ const o = (
 });
 
 describe("liveFetch (xt:live, flake server #2)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("retries a GET on a thrown error, then answers", async () => {
     const { f, calls } = seq(new TypeError("fetch failed"), 200);
     const r = await liveFetch(new Request("https://x.test/healthz"), o(f));
@@ -89,16 +93,41 @@ describe("liveFetch (xt:live, flake server #2)", () => {
     expect(asks).toBe(0);
   });
 
-  it("resends after one attempt's bound when the host never answers", async () => {
-    const { f, calls } = seq(503, 200);
+  it("resends once the health wait is up when the host never answers, and not before", async () => {
+    // Only Date is faked: the wait reads its bound from it, and vi.waitFor
+    // moves it by one poll per check, so no wall time is spent waiting.
+    vi.useFakeTimers({ now: 0, toFake: ["Date"] });
+    const POLL = 5;
+    const WAIT = 20;
+    const asks: { at: number; sentThen: number }[] = [];
+    const sent: number[] = [];
+    const f = (async () => {
+      sent.push(Date.now());
+      return new Response("x", { status: sent.length === 1 ? 503 : 200 });
+    }) as typeof fetch;
     const r = await liveFetch(new Request("https://x.test/"), {
       fetch: f,
-      healthy: async () => false,
-      healthPollMs: 1,
-      healthWaitMs: 20,
+      healthy: async () => {
+        asks.push({ at: Date.now(), sentThen: sent.length });
+        return false;
+      },
+      healthPollMs: POLL,
+      healthWaitMs: WAIT,
     });
     expect(r.status).toBe(200);
-    expect(calls).toHaveLength(2);
+    // Exactly one resend, and only once the clock passed the wait.
+    expect(sent).toHaveLength(2);
+    expect(sent[1] as number).toBeGreaterThanOrEqual(WAIT);
+    // Right up to the deadline (the last ask is within one poll of it) exactly
+    // one request had gone out; the second came only after it.
+    expect(asks.length).toBeGreaterThan(0);
+    for (const a of asks) {
+      expect(a.at).toBeLessThan(WAIT);
+      expect(a.sentThen).toBe(1);
+    }
+    expect(Math.max(...asks.map((a) => a.at))).toBeGreaterThanOrEqual(
+      WAIT - POLL,
+    );
   });
 
   it("never retries a 4xx", async () => {

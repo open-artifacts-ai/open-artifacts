@@ -180,8 +180,13 @@ describe("UserPresence", () => {
     await revokeUserLive(env, u.userId, "suspended");
     expect(await mine.data.closed).toBe(4403);
     expect(await mine.events.closed).toBe(4403);
-    // The revoke has finished (revokeUserLive resolved, mine are closed); the
-    // runtime still holds the other user's two sockets open.
+    // Nothing of the fan-out is left to land later: closeAll awaits every
+    // close before it resolves (src/runtime/presence.ts:283-296; the runtime's
+    // closeActor closes synchronously, src/runtime/do.ts:2089-2106) and only
+    // closes past CLOSE_FANOUT or failed ones go to an alarm-driven retry
+    // queue (presence.ts:284-295). That queue is empty for the revoked user.
+    expect(await inPresence(u.userId, (p) => p.pendingRetries())).toEqual([]);
+    // So the runtime still holds the other user's two sockets open.
     expect(await openSocketCount(art)).toBe(2);
     expect(theirs.data.isOpen()).toBe(true);
     expect(theirs.events.isOpen()).toBe(true);
@@ -546,8 +551,10 @@ describe("UserPresence", () => {
     expect(n).toBe(2);
     expect(await a.data.closed).toBe(4403);
     expect(await a.events.closed).toBe(4403);
-    // closeActor has returned (it counted two); the other actor's socket is
-    // still open in the runtime, and closing that actor closes it.
+    // closeActor closes synchronously, inside the call (src/runtime/do.ts:2089-
+    // 2106), so nothing can land after it returned (it counted two); the other
+    // actor's socket is still open in the runtime, and closing that actor
+    // closes it.
     expect(await openSocketCount(art)).toBe(1);
     expect(b.isOpen()).toBe(true);
     expect(await runtimeStub(env, art).closeActor(`u:${bUser}`, "x")).toBe(1);

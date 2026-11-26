@@ -18,6 +18,7 @@ import {
   SOCKET_TTL_MS,
   SOCKET_TTL_SLACK_MS,
 } from "../../src/runtime/do.js";
+import { presenceStub, type UserPresence } from "../../src/runtime/presence.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
 import { publish } from "../../src/services/artifacts.js";
 import { DOC_SWITCH } from "../../src/services/doc-switch.js";
@@ -424,8 +425,21 @@ describe("room full, TTL, access change, delete", () => {
     await other.hello;
     await revokeUserLive(env, u.userId, "member removed");
     expect((await mine.closed).code).toBe(4403);
-    // The revoke has finished (revokeUserLive resolved, mine is closed); the
-    // room still holds the other user's socket open.
+    // Nothing of the fan-out is left to land later: closeAll awaits every
+    // close before it resolves (src/runtime/presence.ts:283-296, the room's
+    // closeActor closes synchronously, src/docs/room.ts:492-502) and only
+    // closes past CLOSE_FANOUT or failed ones go to an alarm-driven retry
+    // queue (presence.ts:284-295). That queue is empty for the revoked user.
+    expect(
+      await runInDurableObject(
+        presenceStub(
+          env,
+          u.userId,
+        ) as unknown as DurableObjectStub<UserPresence>,
+        (p) => p.pendingRetries(),
+      ),
+    ).toEqual([]);
+    // So the room still holds the other user's socket open.
     await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
       expect(
         state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),

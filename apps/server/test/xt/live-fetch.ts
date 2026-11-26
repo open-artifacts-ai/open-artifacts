@@ -47,18 +47,27 @@ export async function liveFetch(
   const tries = IDEMPOTENT.has(req.method) ? (o.tries ?? LIVE_FETCH_TRIES) : 1;
   const ms = o.timeoutMs ?? LIVE_FETCH_TIMEOUT_MS;
   const healthy = o.healthy ?? ((origin) => hostHealthy(f, origin, ms));
-  /** Waits (up to one attempt's bound) until the host answers, then lets the caller resend. */
-  const untilHealthy = () =>
-    vi
+  /**
+   * Waits until the host answers, for at most healthWaitMs (one attempt's
+   * bound by default) of Date time, then lets the caller resend. The bound is
+   * read from the clock inside the poll, so a test's fake clock drives it
+   * (vi.waitFor's own timeout is real time; it only backstops here).
+   */
+  const untilHealthy = () => {
+    const waitMs = o.healthWaitMs ?? ms;
+    const start = Date.now();
+    return vi
       .waitFor(
         async () => {
+          // Still down after the bound: the resend itself reports it.
+          if (Date.now() - start >= waitMs) return;
           if (!(await healthy(new URL(req.url).origin)))
             throw new Error("host not answering yet");
         },
-        { timeout: o.healthWaitMs ?? ms, interval: o.healthPollMs ?? 250 },
+        { timeout: waitMs + 5_000, interval: o.healthPollMs ?? 250 },
       )
-      // Still down after the bound: the resend itself reports it.
       .catch(() => undefined);
+  };
   for (let i = 1; ; i++) {
     // Each attempt gets its own copy (a body is single-use) and bound.
     const signal = AbortSignal.any([req.signal, AbortSignal.timeout(ms)]);
