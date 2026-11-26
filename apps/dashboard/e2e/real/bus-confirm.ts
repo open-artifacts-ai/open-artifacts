@@ -33,13 +33,13 @@ export async function approveMachine(page: Page): Promise<string> {
     ),
     page.getByRole("button", { name: "Approve", exact: true }).click(),
   ]);
-  // The status is what counts, and it is known with the headers: a success
-  // never waits on the body. Only a failure reads it, to say why (WebKit drops
-  // a body once the page has navigated away; then the status stands alone).
-  if (approved.status() >= 300) {
-    const body = await approved.text().catch(() => "(body unavailable)");
-    throw new Error(`POST /bus/approve: ${approved.status()} ${body}`);
-  }
+  // The status is what counts, and it is known with the headers: neither a
+  // success nor a failure waits on the body (a held body would stall it, and
+  // WebKit drops a body once the page navigates). A failure names the status.
+  if (approved.status() >= 300)
+    throw new Error(
+      `POST /bus/approve: ${approved.status()} ${approved.statusText()}`,
+    );
   // Approval is committed once POST /bus/approve answers, and this is the
   // first token request for the code (so inside its rate limit): it returns
   // the token. No polling.

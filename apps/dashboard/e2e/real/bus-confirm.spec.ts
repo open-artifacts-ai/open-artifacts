@@ -5,6 +5,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Page } from "@playwright/test";
+import { withDeadline } from "../staging/with-deadline";
 import {
   approveMachine,
   freshSignInUrl,
@@ -28,7 +29,7 @@ const KINDS = [
  * real one, writes status and headers (flushed), and ends the body only when
  * the test lets it. `reached` resolves once the headers are out.
  */
-async function holdApproveBody(page: Page) {
+async function holdApproveBody(page: Page, status?: number) {
   let release: () => void = () => {};
   const gate = new Promise<void>((r) => {
     release = r;
@@ -54,7 +55,7 @@ async function holdApproveBody(page: Page) {
         redirect: "manual",
       });
       const body = await up.text();
-      res.writeHead(up.status, {
+      res.writeHead(status ?? up.status, {
         "content-type": up.headers.get("content-type") ?? "application/json",
         "cache-control": "no-store",
         "access-control-allow-origin": APP,
@@ -96,6 +97,28 @@ async function holdApproveBody(page: Page) {
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
+
+test("a refused approval fails at once with its status, while the body is held", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  await loginAs(page, freshEmail(`refused-${info.project.name}`), "member");
+  const held = await holdApproveBody(page, 403);
+  try {
+    const refused = approveMachine(page).then(
+      () => "approved",
+      (e: Error) => e.message,
+    );
+    await held.reached;
+    // The 403's body is still out: the failure comes from its headers.
+    expect(await withDeadline(refused, 15_000, "the refused approval")).toMatch(
+      /POST \/bus\/approve: 403/,
+    );
+  } finally {
+    held.release();
+    await held.close();
+  }
+});
 
 test("approving a machine does not wait for the approve response's body", async ({
   page,
