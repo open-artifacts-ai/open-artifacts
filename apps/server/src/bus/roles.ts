@@ -24,8 +24,20 @@ export type RoleResolution =
   | { ok: true; agent: AgentRow; viaRole: true }
   | { ok: false; reason: RefusalReason };
 
+/**
+ * #3132: a role re-pointed from one session to another, as recorded in
+ * role_moves: the sessions' addresses at the time of the move.
+ */
+export type RoleMove = {
+  roleId: string;
+  fromAgentId: string;
+  toAgentId: string;
+  from: { namespace: string; name: string };
+  to: { namespace: string; name: string };
+};
+
 export type PutRoleResult =
-  | { ok: true; role: BusRole }
+  | { ok: true; role: BusRole; moved: RoleMove | null }
   | { ok: false; reason: "invalid"; field: "namespace" | "name" }
   | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" };
 
@@ -254,7 +266,101 @@ export function putRole(
   );
   const row = one<StoredRole>(sql, `${ROLE_SELECT} where r.id = ?`, id);
   if (row === null) throw new Error("role row missing after write");
-  return { ok: true, role: roleDto(row) };
+  const prior = c.existing?.agentId ?? null;
+  const moved =
+    prior !== null && agentId !== null && prior !== agentId
+      ? recordMove(sql, orgId, id, prior, agentId, now, newId)
+      : null;
+  return { ok: true, role: roleDto(row), moved };
+}
+
+/**
+ * #3132: records that role `roleId` moved from agent `fromId` to `toId`,
+ * with the from-session's address and identity as they are now (its agents
+ * row may be gone later). Null when either row is already gone: there is no
+ * address to forward from.
+ */
+function recordMove(
+  sql: SqlStorage,
+  orgId: string,
+  roleId: string,
+  fromId: string,
+  toId: string,
+  now: number,
+  newId: () => string,
+): RoleMove | null {
+  const row = (id: string) =>
+    one<{ namespace: string; name: string; identity: string | null }>(
+      sql,
+      "select namespace, name, identity_id as identity from agents where org_id = ? and id = ?",
+      orgId,
+      id,
+    );
+  const from = row(fromId);
+  const to = row(toId);
+  if (from === null || to === null) return null;
+  sql.exec(
+    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    newId(),
+    orgId,
+    roleId,
+    fromId,
+    from.namespace,
+    from.name.toLowerCase(),
+    from.identity,
+    toId,
+    now,
+  );
+  return {
+    roleId,
+    fromAgentId: fromId,
+    toAgentId: toId,
+    from: { namespace: from.namespace, name: from.name },
+    to: { namespace: to.namespace, name: to.name },
+  };
+}
+
+/**
+ * #3132: where a notice for a session that handed its role on goes now: the
+ * role's live holder. `identity` set: the move of the session with that
+ * identity. Otherwise the move from address (ns, lname), only while no other
+ * agent has taken that name since (a namesake inherits nothing, #3208). The
+ * latest such move wins; none applies once the session holds the role again
+ * or the role is vacant, removed or held by nobody live. Null: deliver as
+ * addressed.
+ */
+export function roleForward(
+  sql: SqlStorage,
+  orgId: string,
+  ns: string,
+  lname: string,
+  identity: string | null,
+): AgentRow | null {
+  const move = one<{ roleId: string; fromId: string }>(
+    sql,
+    identity !== null
+      ? `select role_id as roleId, from_agent_id as fromId from role_moves indexed by role_moves_identity
+           where org_id = ? and from_identity = ? order by at desc, rowid desc limit 1`
+      : `select role_id as roleId, from_agent_id as fromId from role_moves indexed by role_moves_from
+           where org_id = ? and from_ns = ? and from_lname = ?
+             and not exists (select 1 from agents a where a.org_id = role_moves.org_id
+               and lower(a.name) = role_moves.from_lname and a.namespace = role_moves.from_ns
+               and a.id <> role_moves.from_agent_id)
+           order by at desc, rowid desc limit 1`,
+    ...(identity !== null ? [orgId, identity] : [orgId, ns, lname]),
+  );
+  if (move === null) return null;
+  return one<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where id =
+       (select r.agent_id from roles r where r.org_id = ? and r.id = ? and r.agent_id <> ?)
+       and live = 1 and (namespace = (select namespace from roles where id = ?) or global = 1)`,
+    orgId,
+    move.roleId,
+    move.fromId,
+    move.roleId,
+  );
 }
 
 /** Removes role `id`; false when there was none. The name is free at once. */

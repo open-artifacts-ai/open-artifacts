@@ -38,6 +38,7 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import type { PutRoleResult, RoleMove } from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -171,11 +172,7 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
     agentId: string | null,
-  ): Promise<
-    | { ok: true; role: BusRole }
-    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
-    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
-  >;
+  ): Promise<PutRoleResult>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -1014,7 +1011,10 @@ export async function putBusRole(
   const hub = busHub(env, userId);
   if (!hub) throw refuse("no_bus");
   const r = await roleCall(hub.putRole(namespace, name, agentId));
-  if (r.ok) return r.role;
+  if (r.ok) {
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    return r.role;
+  }
   if (r.reason === "invalid")
     throw new ApiError("bad_request", `Invalid ${r.field}`, {
       field: r.field,
@@ -1312,6 +1312,16 @@ const PROPOSAL_REFUSALS: Record<
 
 const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
 
+/** #3132: a role moved between sessions, by the member. Ids only. */
+const auditMove = (env: Env, userId: string, m: RoleMove) =>
+  audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
+    detail: {
+      roleId: m.roleId,
+      fromAgentId: m.fromAgentId,
+      toAgentId: m.toAgentId,
+    },
+  }).run();
+
 /** An audit row's detail: ids and enums, the absent ones left out. */
 const detailOf = (a: ProposalAudit, why?: string) => ({
   proposalId: a.proposalId,
@@ -1598,11 +1608,12 @@ export async function decideBusRoleProposal(
   );
   await auditExpired(env, userId, r.expired);
   const actor = userActor(userId);
-  if (r.ok)
+  if (r.ok) {
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-  else if (r.proposal !== null)
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+  } else if (r.proposal !== null)
     // A link already used or expired is a refusal too; an unknown one has
     // nothing to name (the page answers the same).
     await audit(env, "bus.role.refused", auditTarget(userId), actor, {

@@ -215,6 +215,26 @@ create table if not exists roles (
 );
 create index if not exists roles_lname on roles(org_id, lname);
 
+-- #3132 role moves: a role re-pointed from one session to another
+-- (putRole). The from-session's address and identity are kept as they were,
+-- since its agents row may be gone, so a notice still sent there (an ask's
+-- answer, a mention, a follow) reaches the role's current holder
+-- (roleForward). A name reclaim (#1816) is not a move: nothing follows a
+-- name by itself. A new table: create-if-not-exists adds it; wipe() deletes it.
+create table if not exists role_moves (
+  id text primary key,
+  org_id text not null,
+  role_id text not null,
+  from_agent_id text not null,
+  from_ns text not null,
+  from_lname text not null,
+  from_identity text,
+  to_agent_id text not null,
+  at integer not null
+);
+create index if not exists role_moves_from on role_moves(org_id, from_ns, from_lname);
+create index if not exists role_moves_identity on role_moves(org_id, from_identity);
+
 -- #1372 role proposals: a role change an AI agent proposed over MCP
 -- (bus_role_propose). Nothing changes until the member confirms it in a
 -- browser on its link; token_hash is the sha256 of that link's secret (the

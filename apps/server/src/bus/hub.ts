@@ -139,8 +139,10 @@ import {
   listRoles,
   type PutRoleResult,
   putRole,
+  type RoleMove,
   resolveRoleAnywhere,
   resolveRoleIn,
+  roleForward,
   roleTakenSql,
 } from "./roles.js";
 import {
@@ -4204,6 +4206,7 @@ export class BusHub extends DurableObject<Env> {
     );
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
   }
 
@@ -5083,7 +5086,17 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
     // A confirmed set (not a clear) names the holder.
     if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
+  }
+
+  /**
+   * #3132: a role moved between sessions: the old session's followed pages
+   * move to the new holder (its later notices forward via roleForward).
+   */
+  #roleMoved(m: RoleMove): void {
+    logEvent("role_moved", {});
+    void this.#moveFollowRows(m.from, m.to);
   }
 
   /**
@@ -6567,6 +6580,17 @@ export class BusHub extends DurableObject<Env> {
     )
       return undefined;
     this.#retargetIdentityNotices(before, after);
+    return this.#moveFollowRows(before, after);
+  }
+
+  /**
+   * The member's follow rows at address `before` move to `after` (D1, in the
+   * background, one at a time). A rename's re-key, and #3132 a role move's.
+   */
+  #moveFollowRows(
+    before: { namespace: string; name: string },
+    after: { namespace: string; name: string },
+  ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
       : null;
@@ -8341,9 +8365,35 @@ export class BusHub extends DurableObject<Env> {
     return ack !== null && noticeAckGated(live) ? "held" : "delivered";
   }
 
-  #acceptNotice(n: BusNotice): DeliveryOutcome {
+  #acceptNotice(n: BusNotice, forwarded = false): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
+    // #3132: a notice for a session that handed its role on (an ask's answer,
+    // a mention, a follow) goes to the role's live holder, as if sent there.
+    // Once only: two sessions that swapped roles never bounce a notice.
+    if (!forwarded) {
+      const holder = roleForward(
+        sql,
+        OWNER_ORG_ID,
+        n.to.namespace,
+        n.to.name.toLowerCase(),
+        n.toIdentity ?? null,
+      );
+      if (holder !== null) {
+        const identity = identityOfAgent(sql, holder.id);
+        const { toIdentity: _, ...rest } = n;
+        return this.#acceptNotice(
+          {
+            ...rest,
+            to: { namespace: holder.namespace, name: holder.name },
+            ...(n.toIdentity !== undefined && identity !== null
+              ? { toIdentity: identity }
+              : {}),
+          },
+          true,
+        );
+      }
+    }
     // #1752: as a send resolves (role > live > former): a role address in
     // the notice's own namespace reaches its current live holder (same org
     // and namespace scope; a vacant role falls through). A follow row still at
