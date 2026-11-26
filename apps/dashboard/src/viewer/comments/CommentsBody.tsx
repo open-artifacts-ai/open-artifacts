@@ -276,13 +276,26 @@ function QuoteBar({
 }
 
 /**
- * #2234: the outlined field. One line when empty, then it grows a line at a
- * time up to ~10 lines (240px; ~6 on a phone) and scrolls inside its own edge.
+ * #2234: the outlined field. Two lines when empty, then it grows a line at a
+ * time up to ten lines and scrolls inside its own edge: 10 x 21px of text
+ * (210px) at the body font, 10 x 24px (240px) at the phone's 16px. Both caps
+ * are `min` with 40% of the visible height, so the phone keyboard shrinks them.
+ * The lines are `em`, so the cap follows the font the field actually renders in.
  */
 export const FIELD =
-  "min-h-[42px] max-h-[min(9rem,calc(var(--oa-vvh,1svh)*40))] md:max-h-[min(15rem,calc(var(--oa-vvh,1svh)*40))] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.45] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
-export const FIELD_MAX = 240;
-export const FIELD_MAX_PHONE = 144;
+  "min-h-[calc(3em_+_18px)] max-h-[min(calc(15em_+_18px),calc(var(--oa-vvh,1svh)*40))] resize-none overflow-y-auto border-input bg-card px-2.5 py-2 leading-[1.5] focus-visible:border-ring focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring max-[599px]:text-[16px] [@media(pointer:coarse)]:text-[16px]";
+/** The field's own chrome: 8px of padding top and bottom, and a 1px border each. */
+export const FIELD_CHROME = 18;
+/** One line at the body font (14px, 1.5) and at the phone font (16px, 1.5). */
+export const FIELD_LINE = 21;
+export const FIELD_LINE_PHONE = 24;
+/** Two lines when empty, ten before it scrolls (#2234). */
+export const FIELD_MIN_LINES = 2;
+export const FIELD_MAX_LINES = 10;
+/** 228px: 210px of text plus the chrome. 258px on the phone font. */
+export const FIELD_MAX = FIELD_MAX_LINES * FIELD_LINE + FIELD_CHROME;
+export const FIELD_MAX_PHONE =
+  FIELD_MAX_LINES * FIELD_LINE_PHONE + FIELD_CHROME;
 
 /** Fallback for browsers without `field-sizing: content`: size to the text, capped. */
 export function growField(el: HTMLTextAreaElement | null) {
