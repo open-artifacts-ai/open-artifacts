@@ -8,7 +8,10 @@
 // RECONCILE_HOURS of slack) that passed on attempt 2 or later, however long
 // ago it passed, and tracks each one the store has no `passed` line for,
 // through the same code. So a dropped event is caught by the next completion
-// even when it comes QUIET_DAYS after a rerun on the last allowed day. That line means the run is fully handled: it is written with the run's
+// even when it comes QUIET_DAYS after a rerun on the last allowed day. One
+// reconcile spends at most RECONCILE_CALLS gh calls and RECONCILE_LOGS job
+// logs (always at least one run), oldest first, and logs "backlog: N left":
+// each run is saved as it finishes, so the next completion carries on. That line means the run is fully handled: it is written with the run's
 // sightings when nothing is filed, else in its own store comment after every
 // filing succeeded (so a failed filing is retried), and on its own when the
 // earlier attempts hold no failed test (so the run is not read again).
@@ -86,6 +89,16 @@ const STORE_CHAIN_MAX = 10;
  * workflow's name, so it is never read.
  */
 export const WATCHED = ["ci.yml"];
+/**
+ * The most gh calls, and job logs, one reconcile spends before it stops
+ * starting runs: a few minutes, well inside the job's 10. The rest is the
+ * backlog: each run's work is saved in the store as it finishes, and the next
+ * CI completion's reconcile carries on, oldest first.
+ */
+export const RECONCILE_CALLS = 300;
+export const RECONCILE_LOGS = 40;
+/** One gh call that takes longer is killed, and retried like a 5xx. */
+const GH_TIMEOUT_MS = 120_000;
 /** Slack on top of RERUN_DAYS plus QUIET_DAYS in the reconcile's range. */
 export const RECONCILE_HOURS = 26;
 /** GitHub lets a run be rerun for this many days after it was created. */
@@ -654,6 +667,7 @@ export function ownerOf(exec: Exec, run: RunInfo, f: Failure): Owner {
 }
 
 function ensureLabel(exec: Exec, repo: string, name: string, about: string) {
+  // gh prints nothing at all, not `[]`, when no label matches the search.
   const labels = JSON.parse(
     gh(exec, [
       "label",
@@ -664,7 +678,7 @@ function ensureLabel(exec: Exec, repo: string, name: string, about: string) {
       name,
       "--json",
       "name",
-    ]),
+    ]).trim() || "[]",
   ) as { name: string }[];
   if (labels.some((l) => l.name === name)) return;
   gh(
@@ -1167,43 +1181,92 @@ function passedRuns(exec: Exec, repo: string, nowMs: number): Set<Passed> {
 export type Reconciled = {
   runId: number;
   attempt: number;
-  result: "recorded already" | "tracked" | "error";
+  /** "left": not started this time (the budget ran out); the next reconcile takes it. */
+  result: "recorded already" | "tracked" | "error" | "left";
   done: Done[];
   notes: string[];
 };
 
 /**
- * Tracks every recent run the workflow_run event missed. A run the store
- * already has (its `passed run/attempt` line) is skipped before any other
- * read, so it adds nothing and bumps nothing. Each other run goes through
- * loadRun and track like an event would. One run's error doesn't stop the
- * rest.
+ * Tracks the recent runs the workflow_run event missed, oldest first. A run
+ * the store already has (its `passed run/attempt` line) is skipped before any
+ * other read, so it adds nothing and bumps nothing. Each other run goes
+ * through loadRun and track like an event would, and is saved (marked) in the
+ * store when it finishes, so a job cut off later loses none of it. One run's
+ * error doesn't stop the rest. Once `calls` gh calls or `logs` job logs are
+ * spent, no further run is started (one always is): those are "left", and the next
+ * reconcile (the next CI completion) takes them, oldest first. Oldest first
+ * because the oldest is nearest to leaving the range; a quiet stretch of up
+ * to QUIET_DAYS only delays them. `onRun` sees each result as it is made.
  */
 export function reconcile(o: {
   exec: Exec;
   repo: string;
   nowMs: number;
+  calls?: number;
+  logs?: number;
+  onRun?: (r: Reconciled) => void;
 }): Reconciled[] {
-  const { exec, repo, nowMs } = o;
+  const { repo, nowMs } = o;
+  const spent = { calls: 0, logs: 0 };
+  const exec: Exec = (cmd, args) => {
+    spent.calls++;
+    if (args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a))) spent.logs++;
+    return o.exec(cmd, args);
+  };
   const runs = recentRuns(exec, repo, nowMs);
   if (!runs.length) return [];
   const passed = passedRuns(exec, repo, nowMs);
   const out: Reconciled[] = [];
+  let started = 0;
+  const push = (r: Reconciled) => {
+    out.push(r);
+    o.onRun?.(r);
+  };
   for (const { runId, attempt } of runs) {
     const base = { runId, attempt, done: [], notes: [] };
     if (passed.has(`${runId}/${attempt}`)) {
       out.push({ ...base, result: "recorded already" });
       continue;
     }
+    // At least one run each time, so a listing that alone spends the budget
+    // still never stops the backlog.
+    if (
+      started > 0 &&
+      (spent.calls >= (o.calls ?? RECONCILE_CALLS) ||
+        spent.logs >= (o.logs ?? RECONCILE_LOGS))
+    ) {
+      out.push({ ...base, result: "left" });
+      continue;
+    }
+    started++;
     try {
       const run = loadRun(exec, repo, runId, attempt);
-      out.push({ ...base, result: "tracked", ...track({ exec, run, nowMs }) });
+      push({ ...base, result: "tracked", ...track({ exec, run, nowMs }) });
     } catch (e) {
-      out.push({ ...base, result: "error", notes: [(e as Error).message] });
+      push({ ...base, result: "error", notes: [(e as Error).message] });
     }
   }
   return out;
 }
+
+/** The step summary's lines for a reconcile: each run it worked on, then the backlog. */
+export function reconcileLines(all: Reconciled[]): string[] {
+  const worked = all.filter(
+    (r) => r.result === "tracked" || r.result === "error",
+  );
+  const left = all.filter((r) => r.result === "left").length;
+  return [
+    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS + QUIET_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later; ${all.length - worked.length - left} recorded already, ${worked.length} worked on now`,
+    ...worked.flatMap((r) => runResultLines(r)),
+    `backlog: ${left} left${left ? " (the next CI completion's reconcile carries on)" : ""}`,
+  ];
+}
+
+const runResultLines = (r: Reconciled) => [
+  `- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`,
+  ...doneLines(r.done, r.notes),
+];
 
 const doneLines = (done: Done[], notes: string[]) => [
   ...done.map((d) => `  ${d.action} ${d.issue ? `#${d.issue} ` : ""}${d.id}`),
@@ -1219,11 +1282,18 @@ const realExec: Exec = (cmd, args) => {
   const r = spawnSync(cmd, args, {
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
+    timeout: GH_TIMEOUT_MS,
   });
+  // A killed call (the timeout) says "timed out", which gh() retries.
+  const err = r.error
+    ? /ETIMEDOUT/.test(String(r.error))
+      ? `timed out after ${GH_TIMEOUT_MS / 1000} s`
+      : String(r.error)
+    : "";
   return {
     code: r.status ?? 1,
     stdout: r.stdout ?? "",
-    stderr: r.stderr ?? String(r.error ?? ""),
+    stderr: err || (r.stderr ?? ""),
   };
 };
 
@@ -1268,15 +1338,15 @@ function report(lines: string[]) {
 }
 
 function mainReconcile(repo: string) {
-  const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
-  const lines = [
-    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS + QUIET_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later`,
-  ];
-  for (const r of all) {
-    lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);
-    lines.push(...doneLines(r.done, r.notes));
-  }
-  report(lines);
+  // Each run's result goes to the log as it is made, so a job cut off still
+  // shows what it saved.
+  const all = reconcile({
+    exec: realExec,
+    repo,
+    nowMs: Date.now(),
+    onRun: (r) => console.log(runResultLines(r).map(inert).join("\n")),
+  });
+  report(reconcileLines(all));
   if (all.some((r) => r.result === "error"))
     throw new Error("a run failed to reconcile (see above)");
 }
