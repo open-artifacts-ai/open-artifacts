@@ -16,6 +16,11 @@ export const AuthProviderSchema = z.discriminatedUnion("id", [
     domains: z.array(z.string()),
   }),
   z.object({
+    id: z.literal("microsoft"),
+    /** AUTH.loginMicrosoft; navigate (full page) to `${start}?next=…`. */
+    start: z.string(),
+  }),
+  z.object({
     id: z.literal("email"),
     /** Domain members may sign in with codes (trial, or no Google). */
     domainCodes: z.boolean(),
@@ -66,7 +71,7 @@ export type SignInError = z.infer<typeof SignInErrorSchema>;
  * Google callback). Present on every no_access redirect, absent otherwise.
  * Params: `error` (SignInError), `next` (a safe same-origin path), `via`.
  */
-export const SignInViaSchema = z.enum(["access", "google"]);
+export const SignInViaSchema = z.enum(["access", "google", "microsoft"]);
 export type SignInVia = z.infer<typeof SignInViaSchema>;
 
 /** Code policy, as the server applies it and the UI shows it. */
@@ -192,7 +197,7 @@ export type SessionPayload = {
   uid: string;
   exp: number;
   iat: number;
-  p: "access" | "google" | "code" | "dev" | "test";
+  p: "access" | "google" | "microsoft" | "code" | "dev" | "test";
   t?: string;
   /**
    * The signature-checked Google token's `hd` (lowercase), set at the Google

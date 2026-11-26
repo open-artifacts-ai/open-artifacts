@@ -38,8 +38,52 @@ describe("authConfig", () => {
     const c = authConfig(base({ AUTH_PROVIDERS: "saml" }));
     expect(c.providers.size).toBe(0);
     expect(c.problems).toContain(
-      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google or email.`,
+      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google, microsoft or email.`,
     );
+  });
+
+  test("microsoft needs AUTH_PROVIDERS, MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET", () => {
+    const ok = authConfig(
+      base({
+        AUTH_PROVIDERS: "microsoft",
+        MICROSOFT_CLIENT_ID: " ms-id ",
+        MICROSOFT_CLIENT_SECRET: "ms-sec",
+      }),
+    );
+    expect(ok.microsoft).toEqual({ clientId: "ms-id", secret: "ms-sec" });
+    expect(ok.problems).toEqual([]);
+
+    const noId = authConfig(
+      base({
+        AUTH_PROVIDERS: "microsoft",
+        MICROSOFT_CLIENT_SECRET: "ms-sec",
+      }),
+    );
+    expect(noId.microsoft).toBeNull();
+    expect(noId.problems).toContain(
+      "Microsoft login is on, but MICROSOFT_CLIENT_ID isn't set, so Microsoft isn't offered. Set it, or turn Microsoft login off.",
+    );
+
+    const noSecret = authConfig(
+      base({
+        AUTH_PROVIDERS: "microsoft",
+        MICROSOFT_CLIENT_ID: "ms-id",
+      }),
+    );
+    expect(noSecret.microsoft).toBeNull();
+    expect(noSecret.problems).toContain(
+      "Microsoft login is on, but MICROSOFT_CLIENT_SECRET isn't set, so Microsoft isn't offered. Set it, or turn Microsoft login off.",
+    );
+
+    // Not listed in AUTH_PROVIDERS: null and no problem even when vars are set.
+    const unlisted = authConfig(
+      base({
+        MICROSOFT_CLIENT_ID: "ms-id",
+        MICROSOFT_CLIENT_SECRET: "ms-sec",
+      }),
+    );
+    expect(unlisted.microsoft).toBeNull();
+    expect(unlisted.problems).toEqual([]);
   });
 
   test("the guest cap is on for every install; FEATURES can't change it", () => {

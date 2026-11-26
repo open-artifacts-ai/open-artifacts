@@ -4,13 +4,13 @@ import type { Env } from "../env.js";
 import { b64urlDecode } from "../util/crypto.js";
 
 /** Redirect (OIDC) sign-in providers. Codes ("email") aren't one. */
-export type ProviderId = "access" | "google";
+export type ProviderId = "access" | "google" | "microsoft";
 /**
  * Every provider an identities row may name (#3087). Wider than ProviderId:
- * microsoft, github and apple arrive in later slices, and AUTH_PROVIDERS
+ * github and apple arrive in later slices, and AUTH_PROVIDERS
  * (parseProviders) refuses them until then.
  */
-export type IdentityProvider = ProviderId | "microsoft" | "github" | "apple";
+export type IdentityProvider = ProviderId | "github" | "apple";
 export type SignInProvider = ProviderId | "email";
 
 export type GoogleTransport =
@@ -40,6 +40,8 @@ export type AuthConfig = {
   features: FeatureFlag[];
   /** Null unless google is enabled and fully configured (fail closed). */
   google: { clientId: string; transport: GoogleTransport } | null;
+  /** Null unless microsoft is enabled and fully configured (fail closed). */
+  microsoft: { clientId: string; secret: string } | null;
   turnstile: { siteKey: string; secret: string } | null;
   codeEmailsPerDay: number;
   /** INSTALL_ID, else APP_HOST: the install part of rate-limit keys. */
@@ -55,7 +57,12 @@ export type AuthConfig = {
 export const NO_BOT_CHECK =
   "Login codes are on without a bot check. Add a Turnstile key so bots can't use your email quota.";
 
-const PROVIDERS: readonly SignInProvider[] = ["access", "google", "email"];
+const PROVIDERS: readonly SignInProvider[] = [
+  "access",
+  "google",
+  "microsoft",
+  "email",
+];
 const CODE_EMAILS_DEFAULT = 200;
 const CODE_EMAILS_MAX = 10_000;
 // DER prefix of a PKCS#8 Ed25519 private key (RFC 8410); 16 + 32 bytes.
@@ -96,7 +103,7 @@ function parseProviders(
       out.add(p as SignInProvider);
     else
       problems.push(
-        `AUTH_PROVIDERS lists "${p}", which isn't a login method, so it's ignored. Use access, google or email.`,
+        `AUTH_PROVIDERS lists "${p}", which isn't a login method, so it's ignored. Use access, google, microsoft or email.`,
       );
   }
   return out;
@@ -180,6 +187,32 @@ function googleConfig(
   };
 }
 
+function microsoftConfig(
+  env: Env,
+  problems: string[],
+): AuthConfig["microsoft"] {
+  const fail = (why: string, todo: string) => {
+    problems.push(
+      `Microsoft login is on, but ${why}, so Microsoft isn't offered. ${todo}.`,
+    );
+    return null;
+  };
+  if (!nonEmpty(env.MICROSOFT_CLIENT_ID))
+    return fail(
+      "MICROSOFT_CLIENT_ID isn't set",
+      "Set it, or turn Microsoft login off",
+    );
+  if (!nonEmpty(env.MICROSOFT_CLIENT_SECRET))
+    return fail(
+      "MICROSOFT_CLIENT_SECRET isn't set",
+      "Set it, or turn Microsoft login off",
+    );
+  return {
+    clientId: env.MICROSOFT_CLIENT_ID.trim(),
+    secret: env.MICROSOFT_CLIENT_SECRET,
+  };
+}
+
 /**
  * Hosted installs never admit by domain: their AUTH_DOMAINS aren't proven owned
  * (M1). Except when AUTH_DOMAIN_JOIN_SOURCE is "owner" and there is exactly
@@ -243,6 +276,9 @@ function build(env: Env): AuthConfig {
   const google = providers.has("google")
     ? googleConfig(env, domains, problems)
     : null;
+  const microsoft = providers.has("microsoft")
+    ? microsoftConfig(env, problems)
+    : null;
   // Same rule as email/send.ts emailEnabled (not imported: it pulls in services).
   const canSend = !!env.EMAIL && !!env.EMAIL_FROM;
   if (providers.has("email") && !canSend)
@@ -277,6 +313,7 @@ function build(env: Env): AuthConfig {
     guestsReadOnly: true,
     features: parseFeatures(env.FEATURES),
     google,
+    microsoft,
     turnstile,
     codeEmailsPerDay:
       intIn(env.CODE_EMAILS_PER_DAY, 1, CODE_EMAILS_MAX) ?? CODE_EMAILS_DEFAULT,

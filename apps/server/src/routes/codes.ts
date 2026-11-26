@@ -106,8 +106,11 @@ type LinkValue = {
  * Providers a link cookie may carry: those a session can name (SessionPayload
  * `p`). Google only today; later slices widen it with the session's set.
  */
-type LinkProvider = "google";
-const LINK_PROVIDERS: readonly string[] = ["google"] satisfies LinkProvider[];
+type LinkProvider = "google" | "microsoft";
+const LINK_PROVIDERS: readonly string[] = [
+  "google",
+  "microsoft",
+] satisfies LinkProvider[];
 
 const aesKey = async (c: Context<AppEnv>) =>
   crypto.subtle.importKey(

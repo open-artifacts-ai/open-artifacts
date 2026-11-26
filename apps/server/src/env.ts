@@ -211,7 +211,8 @@ export interface Env {
   EMAIL_FROM?: string;
   /**
    * Direct sign-in (auth/config.ts). Comma list of "access", "google",
-   * "email"; unset means "access" (Cloudflare Access, today's behaviour).
+   * "microsoft", "email"; unset means "access" (Cloudflare Access, today's
+   * behaviour).
    */
   AUTH_PROVIDERS?: string;
   /** Comma list of verified domains: the Google `hd` allow-list and code domains. */
@@ -227,6 +228,7 @@ export interface Env {
   /** "on": domain members may sign in with emailed codes (trial; only while Google is off). */
   EMAIL_CODE_DOMAIN?: string;
   GOOGLE_CLIENT_ID?: string;
+  MICROSOFT_CLIENT_ID?: string;
   /** Hosted broker origin (https); set, it selects the broker transport. */
   AUTH_BROKER_URL?: string;
   /**
@@ -263,6 +265,8 @@ export interface Env {
   ACCESS_CLIENT_SECRET: string;
   /** Google client secret (direct transport only). */
   GOOGLE_CLIENT_SECRET?: string;
+  /** Microsoft client secret (self-hosted direct transport only). */
+  MICROSOFT_CLIENT_SECRET?: string;
   /** Ed25519 private key, PKCS#8 DER base64url (broker transport). */
   BROKER_SIGNING_KEY?: string;
   /**

@@ -117,6 +117,15 @@ export async function reachOf(
       googleAfterCode = offered.has("email");
     }
   }
+  // Microsoft is link-only (#3087): admits an existing active row (linked, or
+  // via an emailed code on first link). Never creates a row.
+  if (
+    offered.has("microsoft") &&
+    row !== null &&
+    row.status === "active" &&
+    (Boolean(row.linked) || offered.has("email"))
+  )
+    methods.push("microsoft");
   if (
     offered.has("email") &&
     (await codeRule(cfg, email, row, shared)).kind !== "none"

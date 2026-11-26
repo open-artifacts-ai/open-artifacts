@@ -12,11 +12,13 @@ Open Artifacts logs people in through Cloudflare Access by default. Direct login
 
 | Variable | Kind | Setup flag | Meaning |
 |---|---|---|---|
-| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, or `email`), optionally with `access`. Unset means Access only. |
+| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, `microsoft`, or `email`), optionally with `access`. Unset means Access only. |
 | `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. |
 | `AUTH_DOMAIN_JOIN` | var | `--auth-domain-join` | `member` (anyone in the domain joins) or `invite` (default). |
 | `GOOGLE_CLIENT_ID` | var | `--google-client-id` | Your Google OAuth client id. |
 | `GOOGLE_CLIENT_SECRET` | secret | none | Its secret. |
+| `MICROSOFT_CLIENT_ID` | var | none | Your Microsoft Entra app registration's client id (self-hosted). |
+| `MICROSOFT_CLIENT_SECRET` | secret | none | Its client secret. |
 | `EMAIL_CODE_DOMAIN` | var | `--email-code-domain` | `on` lets domain members use codes, only while Google is off. |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | var, secret | `--turnstile-site-key` (the key only) | When set, every code request needs a Turnstile token. Required for domain codes. |
 | `CODE_EMAILS_PER_DAY` | var | `--code-emails-per-day` | Daily cap on code emails (default 200, at most 10000), separate from invites (`EMAIL_DAILY_CAP`, default 100). |
@@ -63,6 +65,15 @@ Direct login keys everything it signs from `SESSION_SECRET`: one key per purpose
 2. Add the redirect URI `https://<your app host>/auth/callback/google`.
 3. Use only the `openid`, `email` and `profile` scopes.
 4. Put the client id and secret in the variables above.
+
+## Setting up Microsoft
+
+Sign in with Microsoft is link-only: it signs in people who already have an active account on the install, and links a Microsoft account on first sign-in after an emailed code.
+
+1. In the Microsoft Entra admin center, create an **App registration** with supported account types set to **Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant) and personal Microsoft accounts**.
+2. Add a **Web** redirect URI: `https://<your app host>/auth/callback/microsoft`.
+3. Create a client secret under **Certificates & secrets**.
+4. Set `MICROSOFT_CLIENT_ID` as a Worker var, `MICROSOFT_CLIENT_SECRET` as a Worker secret, and include `microsoft` in `AUTH_PROVIDERS` (along with `email` so first-time links can verify by code).
 
 ## Switching an existing install
 

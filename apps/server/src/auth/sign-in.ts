@@ -15,7 +15,9 @@ import { type AuthConfig, authConfig } from "./config.js";
 export const ACCESS_START = `${AUTH.login}?via=access`;
 
 export const signInMode = (cfg: AuthConfig): "access" | "direct" =>
-  cfg.providers.has("google") || cfg.providers.has("email")
+  cfg.providers.has("google") ||
+  cfg.providers.has("microsoft") ||
+  cfg.providers.has("email")
     ? "direct"
     : "access";
 
@@ -29,6 +31,11 @@ export function googleOffered(cfg: AuthConfig): boolean {
   if (!t) return false;
   if (t.kind === "direct") return t.secret.length > 0;
   return t.url.length > 0 && t.installId.length > 0 && t.signingKey.length > 0;
+}
+
+/** Microsoft is offered only when enabled with both client id and secret. */
+export function microsoftOffered(cfg: AuthConfig): boolean {
+  return Boolean(cfg.microsoft && cfg.microsoft.secret.length > 0);
 }
 
 /** #359 AuthProvidersSchema: only enabled, fully configured providers. */
@@ -46,6 +53,11 @@ export function authProviders(env: Env): AuthProviders {
       id: "google",
       start: AUTH.loginGoogle,
       domains: [...cfg.domains],
+    });
+  if (microsoftOffered(cfg))
+    providers.push({
+      id: "microsoft",
+      start: AUTH.loginMicrosoft,
     });
   // Only when codes can be sent (cfg.emailCodes): email on without email
   // sending is a problem the owner sees, not a code that never arrives.

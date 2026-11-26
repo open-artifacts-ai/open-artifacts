@@ -24,6 +24,7 @@ import {
 } from "../auth/oidc.js";
 import { accessProvider } from "../auth/providers/access.js";
 import { googleProvider } from "../auth/providers/google.js";
+import { microsoftProvider } from "../auth/providers/microsoft.js";
 import {
   clearSessionCookie,
   readSession,
@@ -422,6 +423,105 @@ export function mountAuth(app: AppType): void {
       // Anything unexpected (D1, signing): the sign-in page, never a 500.
       logOidcFail("internal");
       return toSignIn("failed", next, clear, "google");
+    }
+  });
+
+  app.get(AUTH.loginMicrosoft, async (c) => {
+    if (!authConfig(c.env).microsoft)
+      throw new ApiError("not_found", "Not found");
+    const { location, stateCookie, evict } = await buildAuthorizeRedirect(
+      c.env,
+      microsoftProvider,
+      c.req.query("next") ?? "/",
+      {
+        retry: c.req.query("retry") === "1",
+        cookieHeader: c.req.header("cookie"),
+        reauth: c.req.query("reauth") === "1",
+      },
+    );
+    return redirect(location, [...evict, stateCookie]);
+  });
+
+  app.get(AUTH.callbackMicrosoft, async (c) => {
+    if (!authConfig(c.env).microsoft)
+      throw new ApiError("not_found", "Not found");
+    const picked = await pickStateCookie(
+      c.env,
+      c.req.raw,
+      c.req.query("state") ?? "",
+    );
+    const clear = picked ? [clearOidcCookie(c.env, picked.name)] : [];
+    let next = "/";
+    try {
+      const id = await handleCallback(c.env, microsoftProvider, c.req.raw);
+      next = id.next;
+      const r = await admit(c.env, authConfig(c.env), id);
+      if (!r.ok) {
+        logOidcFail(r.reason);
+        logAuth({ provider: "microsoft", outcome: "refused", stage: r.reason });
+        if (r.reason === "needs_code") {
+          const link = await linkSetCookie(c, {
+            sub: id.subject,
+            email: id.email,
+            hd: null,
+            name: id.name,
+            provider: "microsoft",
+          });
+          if (link)
+            return redirect(
+              `${SIGN_IN_PAGE}?error=needs_code&next=${encodeURIComponent(
+                id.next,
+              )}&link=1`,
+              [...clear, link],
+            );
+        }
+        return toSignIn(r.reason, id.next, clear, "microsoft");
+      }
+      await seedWelcomeAfter(c, r.user);
+      const row = await getUserWithEpoch(c.env, r.user.id);
+      if (!row) {
+        logAuth({ provider: "microsoft", outcome: "error", stage: "no_user" });
+        return toSignIn("failed", id.next, clear, "microsoft");
+      }
+      const now = Date.now();
+      const sess = sessionCookie(
+        await signSession(c.env, r.user.id, now, {
+          provider: "microsoft",
+          epoch: row.sessionEpoch,
+          ...(id.reauth ? { authAt: now } : {}),
+        }),
+        c.env,
+      );
+      logAuth({ provider: "microsoft", outcome: "ok", uid: r.user.id });
+      return redirect(id.next, [...clear, sess]);
+    } catch (e) {
+      logAuth({
+        provider: "microsoft",
+        outcome: e instanceof ApiError ? "refused" : "error",
+        stage: catchStage(e),
+      });
+      if (e instanceof OidcStateError) {
+        if (e.retry) return toSignIn("expired", e.next, clear, "microsoft");
+        return redirect(
+          `${AUTH.loginMicrosoft}?next=${encodeURIComponent(e.next)}&retry=1`,
+          clear,
+        );
+      }
+      if (e instanceof OidcRedeemError)
+        return toSignIn(
+          e.stage === "expired" ? "expired" : "failed",
+          e.next,
+          clear,
+          "microsoft",
+        );
+      if (e instanceof ApiError) {
+        const res = toErrorResponse(e);
+        for (const k of clear) res.headers.append("set-cookie", k);
+        res.headers.set("cache-control", "no-store");
+        return res;
+      }
+      logOidcFail("internal");
+      return toSignIn("failed", next, clear, "microsoft");
     }
   });
 

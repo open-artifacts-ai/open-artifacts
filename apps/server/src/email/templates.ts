@@ -118,6 +118,7 @@ const ROLE_LABEL: Record<ShareRole, string> = {
 
 const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
   google: () => "your Google account",
+  microsoft: () => "your Microsoft account",
   access: () => "your organization's single sign-on",
   email: (to) => `a one-time code sent to ${to}`,
 };
@@ -334,9 +335,11 @@ export function outsideShareEmail(
   const phrase = (m: SignInProvider) =>
     m === "google"
       ? `your Google account (${values.recipientEmail})`
-      : m === "email"
-        ? "a one-time code"
-        : "your organization's single sign-on";
+      : m === "microsoft"
+        ? `your Microsoft account (${values.recipientEmail})`
+        : m === "email"
+          ? "a one-time code"
+          : "your organization's single sign-on";
   const openLine =
     methods.length > 0
       ? `Open it with ${methods.map(phrase).join(" or ")}.`
