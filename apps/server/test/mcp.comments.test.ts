@@ -137,11 +137,11 @@ describe("comment tools over MCP", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     const added = (await reader.client.callTool({
       name: "add_comment",
-      arguments: { id, body: "  Is this right?  " },
+      arguments: { id, body: "  Is this right?  ", verbose: true },
     })) as never;
     await settle(reader.client);
     const t = sc<{ thread: Thread }>(added).thread;
@@ -156,6 +156,7 @@ describe("comment tools over MCP", () => {
         id,
         threadId: t.id,
         body: "Yes.",
+        verbose: true,
       }),
     );
     expect(reply.comment.body).toBe("Yes.");
@@ -169,10 +170,14 @@ describe("comment tools over MCP", () => {
       "Yes.",
     ]);
 
-    const done = sc<{ thread: Thread }>(
+    const done = sc<{ threadId: string; commentId: string; status: string }>(
       await tool(reader.client, "resolve_comment", { id, threadId: t.id }),
-    ).thread;
-    expect(done.status).toBe("resolved");
+    );
+    expect(done).toEqual({
+      threadId: t.id,
+      commentId: t.comments[0]?.id,
+      status: "resolved",
+    });
     expect(
       sc<CommentList>(
         await tool(owner.client, "list_comments", { id, status: "open" }),
@@ -183,19 +188,28 @@ describe("comment tools over MCP", () => {
         await tool(owner.client, "list_comments", { id, status: "resolved" }),
       ).threads,
     ).toHaveLength(1);
-    const again = sc<{ thread: Thread }>(
+    const again = sc<{ threadId: string; commentId: string; status: string }>(
       await tool(reader.client, "resolve_comment", {
         id,
         threadId: t.id,
         resolved: false,
       }),
-    ).thread;
-    expect(again.status).toBe("open");
+    );
+    expect(again).toEqual({
+      threadId: t.id,
+      commentId: t.comments[0]?.id,
+      status: "open",
+    });
 
     // #3139: one thread by id, and one comment with the one before it and the first.
-    const other = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Another thread." }),
-    ).thread;
+    const other = {
+      id: sc<{ threadId: string }>(
+        await tool(owner.client, "add_comment", {
+          id,
+          body: "Another thread.",
+        }),
+      ).threadId,
+    };
     const one = sc<CommentList>(
       await tool(owner.client, "list_comments", { id, threadId: t.id }),
     );
@@ -288,6 +302,7 @@ describe("comment tools over MCP", () => {
           prefix: "The ",
           suffix: " fox",
         },
+        verbose: true,
       }),
     );
     expect(ok.thread.anchor).toMatchObject({
@@ -303,6 +318,7 @@ describe("comment tools over MCP", () => {
         prefix: "",
         suffix: "",
       },
+      verbose: true,
     });
     expect(bad.isError).toBeFalsy();
     expect(sc<{ thread: Thread }>(bad).thread.anchor).toMatchObject({
@@ -330,15 +346,15 @@ describe("comment tools over MCP", () => {
     expect(
       textOf(await tool(owner.client, "add_comment", { id, body: "  " })),
     ).toMatch(/^invalid_body\b/);
-    const t = sc<{ thread: Thread }>(
+    const { threadId } = sc<{ threadId: string }>(
       await tool(owner.client, "add_comment", { id, body: "x" }),
-    ).thread;
+    );
     expect(
       textOf(
         await tool(owner.client, "add_comment", {
           id,
           body: "y",
-          threadId: t.id,
+          threadId,
           anchor: { kind: "note" },
         }),
       ),
@@ -386,7 +402,11 @@ describe("comment tools over MCP", () => {
   it("#3139: a thread at the reply cap reads whole, root plus every reply", async () => {
     const id = await pub();
     const t = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "root" }),
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "root",
+        verbose: true,
+      }),
     ).thread;
     const author = (t.comments[0] as Comment).author;
     // The store's cap: the root plus COMMENTS_MAX_REPLIES (200) replies.
@@ -471,13 +491,14 @@ describe("add_comment with an ask (#1535)", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     const t = sc<{ thread: Thread }>(
       await tool(owner.client, "add_comment", {
         id,
         body: "Which layout?",
         ask: ASK([reader.userId]),
+        verbose: true,
       }),
     ).thread;
     const root = t.comments[0];
@@ -510,6 +531,7 @@ describe("add_comment with an ask (#1535)", () => {
           id,
           body: "q",
           ask: ASK([key]),
+          verbose: true,
         }),
       );
       return JSON.stringify(r.thread.comments[0]?.ask?.to);
@@ -524,6 +546,7 @@ describe("add_comment with an ask (#1535)", () => {
         id,
         body: "q",
         ask: ASK(["me", owner.userId]),
+        verbose: true,
       }),
     );
     expect(both.thread.comments[0]?.ask?.to).toHaveLength(1);
@@ -549,15 +572,16 @@ describe("add_comment with an ask (#1535)", () => {
       email: reader.email,
       role: "viewer",
     });
-    const t = sc<{ thread: Thread }>(
+    const { threadId } = sc<{ threadId: string }>(
       await tool(owner.client, "add_comment", { id, body: "start" }),
-    ).thread;
+    );
     const r = sc<{ comment: Comment }>(
       await tool(owner.client, "add_comment", {
         id,
-        threadId: t.id,
+        threadId,
         body: "Pick one",
         ask: ASK([reader.userId]),
+        verbose: true,
       }),
     );
     expect(r.comment.ask?.question).toBe("Which layout do we ship?");
@@ -584,6 +608,7 @@ describe("add_comment with an ask (#1535)", () => {
         id,
         body: "Which?",
         ask: ASK([reader.userId]),
+        verbose: true,
       }),
     ).thread;
     expect(t.comments[0]?.ask?.closed).toBe(false);
@@ -593,7 +618,7 @@ describe("add_comment with an ask (#1535)", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     await putShare(E, owner.member, id, {
       email: stranger.email,
@@ -630,6 +655,7 @@ describe("add_comment with an ask (#1535)", () => {
         id,
         body: "x",
         ask: { ...ASK([reader.userId]), decider: { key: stranger.userId } },
+        verbose: true,
       }),
     ).thread;
     expect(ok.comments[0]?.ask).toMatchObject({
@@ -726,13 +752,13 @@ describe("add_comment with an ask (#1535)", () => {
       email: reader.email,
       role: "viewer",
     });
-    const t = sc<{ thread: Thread }>(
+    const { threadId } = sc<{ threadId: string }>(
       await tool(owner.client, "add_comment", { id, body: "start" }),
-    ).thread;
-    sc(await tool(owner.client, "resolve_comment", { id, threadId: t.id }));
+    );
+    sc(await tool(owner.client, "resolve_comment", { id, threadId }));
     const args = {
       id,
-      threadId: t.id,
+      threadId,
       body: "Pick one",
       ask: ASK([reader.userId]),
     };
@@ -743,18 +769,165 @@ describe("add_comment with an ask (#1535)", () => {
     sc(
       await tool(owner.client, "add_comment", {
         id,
-        threadId: t.id,
+        threadId,
         body: "plain",
       }),
     );
     sc(
       await tool(owner.client, "resolve_comment", {
         id,
-        threadId: t.id,
+        threadId,
         resolved: false,
       }),
     );
     sc(await tool(owner.client, "add_comment", args));
+  });
+});
+
+describe("compact write results (#3163)", () => {
+  const ASK = (to: string[]) => ({
+    question: "Which layout do we ship?",
+    options: [
+      { id: "wide", label: "Wide hero", detail: "Full bleed" },
+      { id: "compact", label: "Compact hero" },
+    ],
+    recommended: { optionId: "compact", why: "Loads faster" },
+    to: to.map((key) => ({ key })),
+  });
+
+  it("add_comment returns compact ids and status under 300 chars by default, and full shape with verbose: true", async () => {
+    const id = await pub();
+    const longBody = "A".repeat(400);
+
+    const created = await tool(owner.client, "add_comment", {
+      id,
+      body: longBody,
+    });
+    expect(created.isError, textOf(created)).toBeFalsy();
+    expect(JSON.stringify(created).length).toBeLessThan(300);
+    const cData = sc<Record<string, unknown>>(created);
+    expect(cData).toEqual({
+      threadId: expect.any(String),
+      commentId: expect.any(String),
+      status: "open",
+    });
+    expect(cData).not.toHaveProperty("thread");
+    expect(cData).not.toHaveProperty("comment");
+
+    const threadId = cData.threadId as string;
+    const replied = await tool(owner.client, "add_comment", {
+      id,
+      threadId,
+      body: longBody,
+    });
+    expect(replied.isError, textOf(replied)).toBeFalsy();
+    expect(JSON.stringify(replied).length).toBeLessThan(300);
+    const rData = sc<Record<string, unknown>>(replied);
+    // A plain reply never says the thread's status: it does not know it.
+    expect(rData).toEqual({ threadId, commentId: expect.any(String) });
+    expect(rData).not.toHaveProperty("thread");
+    expect(rData).not.toHaveProperty("comment");
+
+    const verboseThread = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "verbose thread",
+        verbose: true,
+      }),
+    );
+    expect(verboseThread.thread.comments[0]?.body).toBe("verbose thread");
+
+    const verboseReply = sc<{ threadId: string; comment: Comment }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        threadId,
+        body: "verbose reply",
+        verbose: true,
+      }),
+    );
+    expect(verboseReply.threadId).toBe(threadId);
+    expect(verboseReply.comment.body).toBe("verbose reply");
+  });
+
+  it("resolve_comment and withdraw_ask omit thread/comment by default and keep full fields with verbose: true", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+
+    const asked = await tool(owner.client, "add_comment", {
+      id,
+      body: "Which layout?",
+      ask: ASK([reader.userId]),
+    });
+    expect(asked.isError, textOf(asked)).toBeFalsy();
+    expect(JSON.stringify(asked).length).toBeLessThan(300);
+    const askData = sc<{
+      threadId: string;
+      commentId: string;
+      askId: string;
+      status: string;
+    }>(asked);
+    expect(askData).toEqual({
+      threadId: expect.any(String),
+      commentId: expect.any(String),
+      askId: askData.commentId,
+      status: "open",
+    });
+
+    const withdrawn = await tool(owner.client, "withdraw_ask", {
+      id,
+      threadId: askData.threadId,
+      commentId: askData.commentId,
+    });
+    const wData = sc<Record<string, unknown>>(withdrawn);
+    expect(wData).toEqual({
+      threadId: askData.threadId,
+      commentId: askData.commentId,
+      askId: askData.commentId,
+      status: "withdrawn",
+    });
+    expect(wData).not.toHaveProperty("thread");
+    expect(wData).not.toHaveProperty("comment");
+
+    const withdrawnVerbose = sc<{ threadId: string; comment: Comment }>(
+      await tool(owner.client, "withdraw_ask", {
+        id,
+        threadId: askData.threadId,
+        commentId: askData.commentId,
+        verbose: true,
+      }),
+    );
+    expect(withdrawnVerbose.threadId).toBe(askData.threadId);
+    expect(withdrawnVerbose.comment.ask?.withdrawn?.at).toEqual(
+      expect.any(String),
+    );
+
+    const resolved = await tool(owner.client, "resolve_comment", {
+      id,
+      threadId: askData.threadId,
+    });
+    const resData = sc<Record<string, unknown>>(resolved);
+    expect(resData).toEqual({
+      threadId: askData.threadId,
+      commentId: askData.commentId,
+      status: "resolved",
+    });
+    expect(resData).not.toHaveProperty("thread");
+    expect(resData).not.toHaveProperty("comment");
+
+    const reopenedVerbose = sc<{ thread: Thread }>(
+      await tool(owner.client, "resolve_comment", {
+        id,
+        threadId: askData.threadId,
+        resolved: false,
+        verbose: true,
+      }),
+    );
+    expect(reopenedVerbose.thread.id).toBe(askData.threadId);
+    expect(reopenedVerbose.thread.status).toBe("open");
+    expect(reopenedVerbose.thread.comments[0]?.body).toBe("Which layout?");
   });
 });
 

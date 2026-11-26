@@ -166,7 +166,7 @@ async function setup(extra: Record<string, unknown> = {}) {
   });
   for (const [u, role] of [
     [editor, "editor"],
-    [viewer, "viewer"],
+    [viewer, "commenter"],
   ] as const)
     await api(app, R.shares(id), owner.cookie, {
       method: "PUT",
@@ -867,7 +867,7 @@ describe("deciders (#2381)", () => {
     const cid = cidOf(t);
     await api(app, R.shares(s.id), owner.cookie, {
       method: "PUT",
-      body: { email: editor.email, role: "viewer" },
+      body: { email: editor.email, role: "commenter" },
     });
     const r = await answer(s.id, t.id, cid, editor, "wide");
     expect(r.status).toBe(403);

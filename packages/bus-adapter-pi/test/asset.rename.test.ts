@@ -15,8 +15,11 @@ const sockets: Socket[] = [];
 let home: string;
 const shutdowns: (() => Promise<void>)[] = [];
 
-async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
+async function daemon(caps: string[] | undefined, holdWelcome = false) {
   const frames: Frame[][] = [];
+  // With holdWelcome the welcome waits for releaseWelcome(), not for a clock.
+  const heldWelcomes: (() => void)[] = [];
+  let settledSeq = 0;
   const server = createServer((sock) => {
     const mine: Frame[] = [];
     frames.push(mine);
@@ -30,10 +33,13 @@ async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
         mine.push(f);
         if (f.type === "hello") {
           const welcome = `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, bind_token: "bind-token-0123456789abcdef", ...(caps ? { caps } : {}) })}\n`;
-          if (welcomeDelayMs)
-            setTimeout(() => sock.write(welcome), welcomeDelayMs);
+          if (holdWelcome) heldWelcomes.push(() => sock.write(welcome));
           else sock.write(welcome);
         }
+        if (f.type === "self")
+          sock.write(
+            `${JSON.stringify({ v: 1, id: f.id, type: "agent", agent: { name: "x", global: false } })}\n`,
+          );
       }
     });
   });
@@ -45,14 +51,60 @@ async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
     frames,
     renames: (n: number) => frames[n].filter((f) => f.type === "rename"),
     drop: () => sockets.at(-1)?.destroy(),
+    releaseWelcome: () => {
+      for (const w of heldWelcomes.splice(0)) w();
+    },
+    /**
+     * Ends an absence check on an event, not a wait: a delivery is pushed to
+     * the session and its ack comes back on the same link, after every frame
+     * the session wrote before it. Whatever it would have sent has arrived.
+     */
+    settled: async (n: number) => {
+      const msg_id = `settle-${++settledSeq}`;
+      sockets
+        .at(-1)
+        ?.write(
+          `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "p", namespace: "ns", body: "settle" })}\n`,
+        );
+      await vi.waitFor(() =>
+        expect(
+          frames[n].some((f) => f.type === "ack" && f.msg_id === msg_id),
+        ).toBe(true),
+      );
+    },
   };
+}
+
+/** Advances the faked clock until the session has reconnected. */
+async function reconnected(d: { frames: Frame[][] }, n: number) {
+  const t0 = Date.now();
+  await vi.waitFor(
+    async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      expect(d.frames[n]?.length).toBeGreaterThan(0);
+    },
+    { timeout: 5_000, interval: 5 },
+  );
+  // The 3 s reconnect timer, well inside the 10 s bound.
+  expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
 }
 
 let name: string | undefined;
 let agent: { kind: string } | undefined;
+let editorText: string;
+let terminalInput: ((data: string) => void) | undefined;
 const ctx = (id = "pi-sess-r") => ({
   cwd: "/work/repo",
   sessionManager: { getSessionId: () => id, getSessionName: () => name },
+  ui: {
+    getEditorText: () => editorText,
+    onTerminalInput: (handler: (data: string) => void) => {
+      terminalInput = handler;
+      return () => {
+        terminalInput = undefined;
+      };
+    },
+  },
   ...(agent ? { agent } : {}),
 });
 type C = ReturnType<typeof ctx>;
@@ -69,7 +121,11 @@ async function pi(awaitStart = true) {
     for (const h of handlers.get(e) ?? []) await h({}, c);
   };
   shutdowns.push(() => emit("session_shutdown"));
-  const started = emit("session_start");
+  const started = Promise.all(
+    (handlers.get("session_start") ?? []).map((h) =>
+      h({ reason: "startup" }, ctx()),
+    ),
+  );
   if (awaitStart) await started;
   return emit;
 }
@@ -79,6 +135,8 @@ beforeEach(() => {
   vi.stubEnv("OA_BUS_HOME", home);
   name = "First Name";
   agent = undefined;
+  editorText = "";
+  terminalInput = undefined;
 });
 afterEach(async () => {
   for (const s of shutdowns.splice(0)) await s();
@@ -98,19 +156,57 @@ describe("pi rename (#1635)", () => {
     expect((d.frames[0][0].caps as string[]).includes("rename")).toBe(true);
   });
 
-  it("sends one rename per change and nothing when unchanged", async () => {
+  it("marks a submitted /name chosen and sends it only once", async () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     await emit("session_info_changed");
     await emit("turn_start");
     expect(d.renames(0)).toHaveLength(0);
+    editorText = "/name Second Name";
+    terminalInput?.("\r");
     name = "Second Name";
     await emit("session_info_changed");
     await emit("turn_start");
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("Second Name");
+    expect(d.renames(0)[0]).toMatchObject({
+      name: "Second Name",
+      name_chosen: true,
+    });
+    await d.settled(0);
+    expect(d.renames(0)).toHaveLength(1);
   });
+
+  it("forwards setSessionName without marking it chosen", async () => {
+    const d = await daemon(["rename"]);
+    const emit = await pi();
+    // An unsubmitted command in the editor is not evidence of a choice.
+    editorText = "/name Extension Title";
+    name = "Extension Title";
+    await emit("session_info_changed");
+    await d.settled(0);
+    expect(d.renames(0)).toHaveLength(1);
+    expect(d.renames(0)[0]).toMatchObject({ name: "Extension Title" });
+    expect(d.renames(0)[0]).not.toHaveProperty("name_chosen");
+  });
+
+  it.each(["--name", "-n"])(
+    "marks the startup %s chosen in hello",
+    async (flag) => {
+      const d = await daemon(["rename"]);
+      const argv = process.argv;
+      process.argv = [...argv.slice(0, 2), flag, "First Name"];
+      try {
+        await pi();
+        expect(d.frames[0][0]).toMatchObject({
+          proposed_name: "First Name",
+          name_chosen: true,
+        });
+      } finally {
+        process.argv = argv;
+      }
+    },
+  );
 
   it("a turn start catches a rename when the event is missing", async () => {
     const d = await daemon(["rename"]);
@@ -129,7 +225,7 @@ describe("pi rename (#1635)", () => {
     await emit("session_info_changed");
     name = " \u0001\u007f ";
     await emit("session_info_changed");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
@@ -178,7 +274,7 @@ describe("pi rename (#1635)", () => {
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Renamed";
     await emit("session_info_changed");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
@@ -187,21 +283,17 @@ describe("pi rename (#1635)", () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    editorText = "/name After Rename";
+    terminalInput?.("\x1b[13u");
     name = "After Rename";
     await emit("session_info_changed");
     d.drop();
-    // The 3 s reconnect timer, well inside the 10 s bound: faked time passes
-    // while the real socket close and reconnect settle.
-    const t0 = Date.now();
-    await vi.waitFor(
-      async () => {
-        await vi.advanceTimersByTimeAsync(500);
-        expect(d.frames[1]?.length).toBeGreaterThan(0);
-      },
-      { timeout: 5_000, interval: 5 },
-    );
-    expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
-    expect(d.frames[1][0].proposed_name).toBe("After Rename");
+    // Faked time passes while the real socket close and reconnect settle.
+    await reconnected(d, 1);
+    expect(d.frames[1][0]).toMatchObject({
+      proposed_name: "After Rename",
+      name_chosen: true,
+    });
   });
 
   it("a reconnect echoes the binding token the first welcome issued (#1608)", async () => {
@@ -210,40 +302,41 @@ describe("pi rename (#1635)", () => {
     await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     d.drop();
-    await vi.waitFor(
-      async () => {
-        await vi.advanceTimersByTimeAsync(500);
-        expect(d.frames[1]?.length).toBeGreaterThan(0);
-      },
-      { timeout: 5_000, interval: 5 },
-    );
+    await reconnected(d, 1);
     expect(d.frames[1][0].bind_token).toBe("bind-token-0123456789abcdef");
   });
 
   it("a rename while the hello is in flight is sent once the link is welcomed", async () => {
-    const d = await daemon(["rename"], 300);
+    const d = await daemon(["rename"], true);
     // Not awaited: session_start resolves only once the welcome arrives.
     const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    editorText = "/name Typed During Hello";
+    terminalInput?.("\r");
     name = "Typed During Hello";
+    // Another extension can delay Pi's metadata event by a microtask.
+    await Promise.resolve();
     await emit("session_info_changed");
+    d.releaseWelcome();
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("Typed During Hello");
+    expect(d.renames(0)[0]).toMatchObject({
+      name: "Typed During Hello",
+      name_chosen: true,
+    });
   });
 
   it("an event from another session neither renames nor changes what a reconnect proposes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Other Session Name";
     await emit("session_info_changed", ctx("some-other-session"));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
     name = "First Name";
     d.drop();
-    await vi.waitFor(() => expect(d.frames[1]?.[0]).toBeDefined(), {
-      timeout: 6_000,
-    });
+    await reconnected(d, 1);
     expect(d.frames[1][0].proposed_name).toBe("First Name");
   });
 
@@ -252,22 +345,24 @@ describe("pi rename (#1635)", () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    expect(d.frames[0][0]).not.toHaveProperty("name_chosen");
     name = "Auto Title";
     await emit("session_info_changed");
     await emit("turn_start");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
   it("omp: a title that changes while the hello is in flight is not sent", async () => {
     agent = { kind: "main" };
-    const d = await daemon(["rename"], 300);
+    const d = await daemon(["rename"], true);
     const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     // omp titles the session itself; a second session_start sees the new title.
     name = "Auto Title";
     void emit("session_start");
-    await new Promise((r) => setTimeout(r, 600));
+    d.releaseWelcome();
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 });

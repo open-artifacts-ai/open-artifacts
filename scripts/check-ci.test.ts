@@ -94,7 +94,9 @@ describe("ci.yml", () => {
         expect(wr["branches-ignore"]).toBeUndefined();
       }
     }
-    expect(onCi).toEqual(["release-cadence.yml"]);
+    // flaky-tracker reads a finished run's own attempts and logs (cloud #447),
+    // never a check on main's commit.
+    expect(onCi).toEqual(["flaky-tracker.yml", "release-cadence.yml"]);
     // release-cadence reads the release PR's check rollup and the merge
     // queue, never a check on main's commit.
     const cadence = ci("release-cadence.ts");
@@ -125,6 +127,21 @@ describe("ci.yml", () => {
     );
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
     expect(sh).toContain("pnpm --filter @oa/server test:cpu");
+  });
+  it("e2e fails only when a shard did: the report is its own job", () => {
+    // Run 45756613297 attempt 1: every shard passed, but one shard's blob zip
+    // was truncated and the report merge failed the required check. Nothing
+    // but the shard result may decide e2e, so the report has its own job.
+    const steps = w.jobs.e2e.steps as { name?: string }[];
+    expect(steps.map((s) => s.name)).toEqual(["Every shard passed"]);
+    const report = w.jobs["e2e-report"];
+    expect(report.needs).toEqual(["e2e-shard"]);
+    expect(report.if).toBe("${{ !cancelled() }}");
+    expect(
+      (report.steps as { run?: string }[]).some(
+        (s) => s.run === "bash scripts/ci/e2e.sh merge",
+      ),
+    ).toBe(true);
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
@@ -218,6 +235,30 @@ describe("ci.yml", () => {
     ))
       expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
         "public-only",
+      );
+  });
+  // release-cadence reads main's required checks with its job token: a
+  // contents-read job token proves on every run that it can.
+  it("cadence-rules-read reads main's rules with a contents-read job token, and nothing needs it", () => {
+    const job = w.jobs["cadence-rules-read"];
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job.if).toBeUndefined();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].env.GH_TOKEN).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.token }}",
+    );
+    expect(steps[0].run).toContain("rules/branches/main");
+    // Every page, as the planner reads it.
+    expect(steps[0].run).toContain("gh api --paginate");
+    expect(steps[0].run).toContain('select(.type == "required_status_checks")');
+    for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
+      w.jobs,
+    ))
+      expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
+        "cadence-rules-read",
       );
   });
   // #2568: the updater's tests on the lowest Node the bus allows. Informational:
@@ -1825,14 +1866,44 @@ describe("release cadence", () => {
   const job = w.jobs.cadence;
   const steps: Step[] = job.steps;
 
-  it("runs every 15 minutes, on dispatch, and after release-please and CI (no check_suite)", () => {
-    expect(w.on.schedule).toEqual([{ cron: "*/15 * * * *" }]);
+  it("runs on events only, never on a timer: after release-please and CI, and on dispatch (cloud #264)", () => {
+    expect("schedule" in w.on).toBe(false);
+    // No drain to re-check, so no push or dequeue trigger: the release PR is
+    // queued at the front the moment its own CI goes green.
     expect(triggers(w).sort()).toEqual(
-      ["schedule", "workflow_dispatch", "workflow_run"].sort(),
+      ["workflow_dispatch", "workflow_run"].sort(),
     );
     expect(w.on.workflow_run.workflows).toEqual(["release-please", "CI"]);
     expect(w.on.workflow_run.types).toEqual(["completed"]);
     expect(w.concurrency.group).toBe("release-cadence");
+    expect(w.concurrency["cancel-in-progress"]).toBe(false);
+    // Only in the real repository, never a fork.
+    expect(job.if).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.repository == 'open-artifacts-ai/open-artifacts' }}",
+    );
+  });
+
+  it("re-runs after every workflow whose checks the release PR needs", () => {
+    // The release PR changes only package.json, CHANGELOG.md and the
+    // manifest. Every pull_request workflow either re-triggers the cadence
+    // when it completes or cannot run on those files.
+    const dir = join(root, ".github/workflows");
+    const named = new Set<string>(w.on.workflow_run.workflows);
+    const others: Record<string, unknown> = {};
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      if (!x.on || !("pull_request" in x.on) || named.has(x.name)) continue;
+      others[f] = x.on.pull_request?.paths;
+    }
+    expect(others).toEqual({
+      "landing-preview.yml": ["apps/landing/**"],
+      "release-title.yml": [
+        "apps/server/src/mcp/**",
+        "apps/server/scripts/emit-skill.ts",
+        "apps/server/scripts/emit-upgrade.ts",
+      ],
+    });
   });
 
   it("checks out the default branch only, without persisting credentials", () => {
@@ -1902,6 +1973,8 @@ describe("release cadence", () => {
       "pull-requests",
       "statuses",
     ]);
+    // The planner reads the release head's check runs on every event.
+    expect(p.checks).toBe("read");
     expect(p.contents).toBe("read");
     expect(p["pull-requests"]).toBe("read");
   });

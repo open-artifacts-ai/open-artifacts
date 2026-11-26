@@ -77,7 +77,7 @@ Search indexes each publish asynchronously, so a new version becomes searchable 
 
 ## Sharing
 
-- `share_artifact`: gives an email address `viewer` or `editor` access. The person doesn't need to have logged in yet.
+- `share_artifact`: grants Viewer (`viewer`), Commenter (`commenter`), or Editor (`editor`) access by email. Viewer can read. Commenter can also comment while comments are on. Editor can also publish new versions and is the default when you omit `role`. A guest assigned Editor can only view until they join the team.
 - `unshare_artifact`: removes that access.
 - `set_visibility`: `private`, `team`, or `public`.
 

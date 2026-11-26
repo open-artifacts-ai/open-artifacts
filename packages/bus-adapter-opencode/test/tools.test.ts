@@ -346,7 +346,9 @@ describe("status in OpenCode", () => {
         row({ name: "docs", namespace: "acme/docs" }),
       ],
     }));
-    expect(text).toBe("- a (opencode, ns)\n- docs (opencode, acme/docs)");
+    expect(text).toBe(
+      "Namespace ns:\n- a (opencode)\n- docs (opencode, acme/docs)",
+    );
     const empty = await run("list_agents", {}, () => ({
       type: "roster",
       agents: [],
@@ -355,7 +357,7 @@ describe("status in OpenCode", () => {
   });
 
   it("list_agents: statuses, stale, hostile; no role", async () => {
-    const { text } = await run("list_agents", {}, () => ({
+    const { text } = await run("list_agents", { all: true }, () => ({
       type: "roster",
       agents: [
         row({
@@ -387,7 +389,7 @@ describe("status in OpenCode", () => {
     );
   });
 
-  it("#1860: away fallback-named rows collapse to a count", async () => {
+  it("#1860, #3166: away rows hide by default and collapse fallback names with all: true", async () => {
     const away = (name: string) =>
       row({
         name,
@@ -395,17 +397,29 @@ describe("status in OpenCode", () => {
         live: false,
         since: "2026-11-05T10:00:00.000Z",
       });
-    const { text } = await run("list_agents", {}, () => ({
+    const agents = [
+      row({ name: "live-one" }),
+      away("opencode-3"),
+      away("opencode"),
+      away("agent"),
+      away("kept"),
+    ];
+    const compact = await run("list_agents", {}, () => ({
       type: "roster",
-      agents: [
-        row({ name: "live-one" }),
-        away("opencode-3"),
-        away("opencode"),
-        away("agent"),
-        away("kept"),
-      ],
+      agents,
     }));
-    expect(text).toBe(
+    expect(compact.text).toBe(
+      [
+        "Namespace ns:",
+        "- live-one (opencode)",
+        "4 away agents not listed (still reachable by name; all: true lists them)",
+      ].join("\n"),
+    );
+    const full = await run("list_agents", { all: true }, () => ({
+      type: "roster",
+      agents,
+    }));
+    expect(full.text).toBe(
       [
         "- live-one (opencode, ns)",
         "- kept (opencode, ns) (away since 2026-11-05 10:00 UTC)",

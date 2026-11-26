@@ -7,20 +7,30 @@
 // receives is checked with decodeServerFrame (helpers.ts).
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
+  BUS_CAPS,
   type ClientFrame,
   decodeServerFrame,
   LIMITS,
   MAILBOX_RETAIN_MS,
   type ServerFrame,
 } from "@oa/bus-protocol";
+import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { BusHub, HELD_BYTES_CAP, SWEEP_BATCH } from "../../src/bus/hub.js";
+import {
+  BusHub,
+  HELD_BYTES_CAP,
+  NOTICE_ACK_TTL_MS,
+  SWEEP_BATCH,
+} from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
+  closing,
   type Daemon,
+  daemon,
   e,
   framesSeen,
   hello,
+  hubIdle,
   hubOf,
   inOwnerHub,
   machine,
@@ -197,10 +207,10 @@ async function setup() {
 
 /** Closes a daemon's socket and waits until the hub has seen it go. */
 async function offline(d: Daemon) {
-  d.close();
-  await d.closed;
-  // sleep-ok: absence — the hub's own bookkeeping after a close emits no frame
-  await new Promise((r) => setTimeout(r, 50));
+  await closing(await hubOf(), async () => {
+    d.close();
+    await d.closed;
+  });
 }
 
 /** A new socket for the machine, registering `ref` again (the reconnect). */
@@ -523,6 +533,111 @@ describe("reconnect flush", () => {
     await barrier(s);
     expect(updates(s, r.msg_id)).toHaveLength(1);
     close(t2);
+  });
+});
+
+describe("#3205: an agy recipient's body is stored when pushed", () => {
+  /** A receiver of `kind` on its own machine, and a sender. */
+  async function setupKind(kind: "antigravity" | "opencode") {
+    const sm = await machine("Sender");
+    const tm = await machine("Target");
+    const s = await ready(sm.token);
+    const t = await ready(tm.token);
+    const n = ns();
+    const receiver = uniq("Receiver");
+    await agent(s, "sref", uniq("Sender"), n);
+    t.send({ ...up(`u-k-${++seq}`, "rref", receiver, n), kind } as ClientFrame);
+    expect((await waitFor(t, "agent_ok")).bus_name).toBe(receiver);
+    return {
+      s,
+      t,
+      n,
+      receiver,
+      close: () => {
+        s.close();
+        t.close();
+      },
+    };
+  }
+
+  it("an eviction while agy's daemon still holds the message expires nothing; its late ack settles it delivered, once", async () => {
+    const { s, t, n, receiver, close } = await setupKind("antigravity");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    expect(await waitFor(t, "deliver")).toMatchObject({
+      msg_id: r.msg_id,
+      body: "held",
+    });
+    // Stored at once, never only in memory.
+    expect((await heldStats()).ids).not.toContain(r.msg_id);
+    expect((await mailRow(r.msg_id))?.body).toBe("held");
+    // The hub is evicted while the watcher restarts, and the ack timeout passes.
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    // The hook's hello on the same socket: the daemon announces the session again.
+    t.send({
+      ...up(`u-k-${++seq}`, "rref", receiver, n),
+      kind: "antigravity",
+    } as ClientFrame);
+    await waitFor(t, "agent_ok");
+    await barrier(s);
+    expect(updates(s, r.msg_id)).toHaveLength(0);
+    expect(await receiptRow(r.msg_id)).toMatchObject({
+      state: "pending",
+      reason: null,
+    });
+    // The flush pushed it again from the stored copy.
+    const again = framesSeen(t).filter(
+      (f) => f.type === "deliver" && f.msg_id === r.msg_id,
+    );
+    expect(again).toHaveLength(2);
+    // The next watcher finds it in agy's mailbox and acks: delivered, told once.
+    t.send(ack("a1", r.msg_id));
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "delivered",
+    });
+    t.send(ack("a2", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(updates(s, r.msg_id).map((u) => u.state)).toEqual(["delivered"]);
+    expect(await mailRow(r.msg_id)).toBeNull();
+    close();
+  });
+
+  it("other kinds are held in memory as before: an eviction still expires the receipt (lost_body)", async () => {
+    const { s, t, receiver, close } = await setupKind("opencode");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    await waitFor(t, "deliver");
+    expect((await heldStats()).ids).toContain(r.msg_id);
+    expect(await mailRow(r.msg_id)).toBeNull();
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await receiptRow(r.msg_id)).toMatchObject({ reason: "lost_body" });
+    close();
+  });
+
+  it("an agy message still expires at its TTL, and a later ack does not flip it", async () => {
+    const { s, t, receiver, close } = await setupKind("antigravity");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "old"));
+    await waitFor(t, "deliver");
+    await setClock(Date.now() + TTL + 5000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await mailRow(r.msg_id)).toBeNull();
+    t.send(ack("a1", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(updates(s, r.msg_id)).toHaveLength(1);
+    close();
   });
 });
 
@@ -1083,5 +1198,138 @@ describe("a hub created with the B6 schema (adv-B7 F1, F2, F4)", () => {
       ),
     ).toHaveLength(0);
     close(t2);
+  });
+});
+
+describe("deliver.expires_at (BUS_CAPS.mailExpiry)", () => {
+  async function readyWithCaps(token: string, caps?: string[]) {
+    const d = await daemon(token);
+    d.send({
+      v: 1,
+      id: `h-${++seq}`,
+      type: "hello",
+      machine_label: "MacBook",
+      client_version: "0.1.0",
+      ...(caps === undefined ? {} : { caps }),
+    });
+    const ok = await waitFor(d, "hello_ok");
+    return { d, ok };
+  }
+
+  it("sets expires_at on live deliver and reconnect flush only for sockets that listed mail_expiry", async () => {
+    const sendTime = Date.now() + 60_000;
+    await setClock(sendTime);
+    const expectedIso = new Date(sendTime + MAILBOX_RETAIN_MS).toISOString();
+
+    const sm = await machine("Sender");
+    const tmWith = await machine("TargetWithCap");
+    const tmWithout = await machine("TargetWithoutCap");
+    const s = await ready(sm.token);
+    const withCap = await readyWithCaps(tmWith.token, [BUS_CAPS.mailExpiry]);
+    const withoutCap = await readyWithCaps(tmWithout.token, [BUS_CAPS.ids]);
+    expect(withCap.ok.caps).toContain(BUS_CAPS.mailExpiry);
+    expect(withoutCap.ok.caps).not.toContain(BUS_CAPS.mailExpiry);
+
+    const n = ns("mail-expiry");
+    const sender = uniq("Sender");
+    const recvWith = uniq("RecvWith");
+    const recvWithout = uniq("RecvWithout");
+    await agent(s, "sref", sender, n);
+    await agent(withCap.d, "rw", recvWith, n);
+    await agent(withoutCap.d, "rwo", recvWithout, n);
+
+    const r1 = await sendAndReceipt(s, send("me1", "sref", recvWith, "hi"));
+    const d1 = await waitFor(withCap.d, "deliver");
+    expect(d1.msg_id).toBe(r1.msg_id);
+    expect(d1.expires_at).toBe(expectedIso);
+
+    const r2 = await sendAndReceipt(s, send("me2", "sref", recvWithout, "hi"));
+    const d2 = await waitFor(withoutCap.d, "deliver");
+    expect(d2.msg_id).toBe(r2.msg_id);
+    expect(d2.expires_at).toBeUndefined();
+
+    // Reconnect flush path (#flushOne): unacked mail is re-pushed with or without expires_at.
+    const tWith2 = await readyWithCaps(tmWith.token, [BUS_CAPS.mailExpiry]);
+    tWith2.d.send({
+      v: 1,
+      id: "se1",
+      type: "sessions",
+      open: ["rw"],
+      closed: [],
+    });
+    await agent(tWith2.d, "rw", recvWith, n);
+    const f1 = await waitFor(tWith2.d, "deliver");
+    expect(f1.msg_id).toBe(r1.msg_id);
+    expect(f1.expires_at).toBe(expectedIso);
+
+    const tWithout2 = await readyWithCaps(tmWithout.token, [BUS_CAPS.ids]);
+    tWithout2.d.send({
+      v: 1,
+      id: "se2",
+      type: "sessions",
+      open: ["rwo"],
+      closed: [],
+    });
+    await agent(tWithout2.d, "rwo", recvWithout, n);
+    const f2 = await waitFor(tWithout2.d, "deliver");
+    expect(f2.msg_id).toBe(r2.msg_id);
+    expect(f2.expires_at).toBeUndefined();
+
+    allParse(s, withCap.d, withoutCap.d, tWith2.d, tWithout2.d);
+    s.close();
+    withCap.d.close();
+    withoutCap.d.close();
+    tWith2.d.close();
+    tWithout2.d.close();
+  });
+
+  it("sets expires_at on notice deliver frames to clock + NOTICE_ACK_TTL_MS only when mail_expiry is negotiated", async () => {
+    const sendTime = Date.now() + 60_000;
+    await setClock(sendTime);
+    const expectedIso = new Date(sendTime + NOTICE_ACK_TTL_MS).toISOString();
+
+    const tmWith = await machine("NoticeWithCap");
+    const tmWithout = await machine("NoticeWithoutCap");
+    const withCap = await readyWithCaps(tmWith.token, [
+      BUS_CAPS.follow,
+      BUS_CAPS.mailExpiry,
+    ]);
+    const withoutCap = await readyWithCaps(tmWithout.token, [BUS_CAPS.follow]);
+
+    const n = ns("notice-expiry");
+    const recvWith = uniq("NoticeWith");
+    const recvWithout = uniq("NoticeWithout");
+    await agent(withCap.d, "nw", recvWith, n);
+    await agent(withoutCap.d, "nwo", recvWithout, n);
+
+    const makeNotice = (name: string): BusNotice => {
+      const artifactId = uniq("art");
+      return {
+        id: newId(),
+        kind: "shared",
+        from: NOTICE_SENDER,
+        artifactId,
+        version: 1,
+        url: `https://app.test/a/${artifactId}`,
+        to: { namespace: n, name },
+        text: `Shared artifact ${artifactId}`,
+        coalesceKey: artifactId,
+      };
+    };
+
+    const hub = await stub();
+    expect(await hub.deliverNotice(makeNotice(recvWith))).toBe("delivered");
+    const d1 = await waitFor(withCap.d, "deliver");
+    expect(d1.from_name).toBe(NOTICE_SENDER);
+    expect(d1.expires_at).toBe(expectedIso);
+
+    expect(await hub.deliverNotice(makeNotice(recvWithout))).toBe("delivered");
+    const d2 = await waitFor(withoutCap.d, "deliver");
+    expect(d2.from_name).toBe(NOTICE_SENDER);
+    expect(d2.expires_at).toBeUndefined();
+
+    allParse(withCap.d, withoutCap.d);
+    withCap.d.close();
+    withoutCap.d.close();
   });
 });

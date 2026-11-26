@@ -4,7 +4,7 @@
 // turn on login codes.
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { installHarness, mountHosted } from "./harness";
@@ -77,11 +77,9 @@ describe("workspace_only", () => {
       within(box).getByRole("textbox", { name: "Artifact link" }),
     ).toBeVisible();
     // Saved, with its picker.
-    await waitFor(() =>
-      expect(
-        screen.getByRole("combobox", { name: "Role for sam@gmail.com" }),
-      ).toHaveTextContent("Can comment"),
-    );
+    expect(
+      await screen.findByRole("combobox", { name: "Role for sam@gmail.com" }),
+    ).toHaveTextContent("Editor");
   });
 
   it("a member: the note only, no Settings line", async () => {

@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -211,8 +212,10 @@ describe("daemon start re-applies the helper", () => {
     expect(log).not.toContain(PROJ_B);
     // A second start: no write at all.
     const bytes = s.text();
+    // Age the file, so a rewrite would show in its mtime without any wait.
+    const aged = new Date(Date.now() - 60_000);
+    utimesSync(s.file, aged, aged);
     const mtime = statSync(s.file).mtimeMs;
-    await new Promise((r) => setTimeout(r, 15));
     await start(ctx);
     expect(s.text()).toBe(bytes);
     expect(statSync(s.file).mtimeMs).toBe(mtime);
@@ -594,7 +597,7 @@ describe("doctor, Claude entries (#2688)", () => {
 });
 
 describe("doctor, Codex and OpenCode entries the proxy swap skipped", () => {
-  it("warns, by name, for an OAuth Codex entry and an OpenCode entry that signs in with auth", async () => {
+  it("reports an OAuth Codex entry as linked through the server check, and warns by name for an OpenCode entry that signs in with auth (#3108)", async () => {
     const h = mkdtempSync(join(tmpdir(), "ob-proof-2688-x-"));
     mkdirSync(join(h, ".codex"), { recursive: true });
     writeFileSync(
@@ -630,10 +633,67 @@ describe("doctor, Codex and OpenCode entries the proxy swap skipped", () => {
         machine_token: TOKEN,
       }),
     );
+    // What install records for an entry oa-bus leaves as it is.
+    writeFileSync(
+      join(ctx.home, "codex-oa-entries.json"),
+      JSON.stringify({ instances: [{ origin: HUB, names: ["oa-codex"] }] }),
+    );
     await doctor(ctx);
     const all = ctx.all().join("\n");
-    expect(all).toContain("Codex: left the oa-codex entry");
+    expect(all).not.toMatch(/PAT|pat-token/);
+    expect(all).not.toContain("Codex: left the oa-codex entry");
+    expect(all).toContain(
+      "Codex's oa-codex entry links on its first Open Artifacts call.",
+    );
     expect(all).toContain("OpenCode: left the oa-oc entry");
+  });
+
+  it("says a Codex entry is linked, with the time, once the daemon logged a link (#3108)", async () => {
+    const h = mkdtempSync(join(tmpdir(), "ob-proof-3108-"));
+    mkdirSync(join(h, ".codex"), { recursive: true });
+    writeFileSync(
+      join(h, ".codex/config.toml"),
+      `[mcp_servers.oa-codex]\nurl = "${HUB}/mcp"\n`,
+    );
+    const ctx = fakeCtx({
+      userHome: h,
+      home: join(h, ".oa-bus"),
+      env: {},
+      nodeVersion: "v22.11.0",
+      which: (c) => c === "codex",
+      exec: vi.fn(async () => ({
+        code: 0,
+        stdout: "codex-cli 0.167.0",
+        stderr: "",
+      })),
+    });
+    mkdirSync(join(ctx.home, "logs"), { recursive: true });
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        hub: HUB,
+        machine_id: "m",
+        label: "l",
+        machine_token: TOKEN,
+      }),
+    );
+    writeFileSync(
+      join(ctx.home, "codex-oa-entries.json"),
+      JSON.stringify({ instances: [{ origin: HUB, names: ["oa-codex"] }] }),
+    );
+    // The fake clock reads 1970: a link 3 hours before it, and another entry's.
+    const at = new Date(ctx.now() - 3 * 3600_000).toISOString();
+    writeFileSync(
+      join(ctx.home, "logs", "events.log"),
+      `${at} codex_call_linked name=other\n${at} codex_call_linked name=oa-codex\n`,
+    );
+    await doctor(ctx);
+    const all = ctx.all().join("\n");
+    expect(all).toContain(
+      "Codex's oa-codex entry is linked (last call 3 hours ago).",
+    );
+    expect(all).not.toContain("links on its first");
+    expect(all).not.toMatch(/PAT|pat-token|\u2014/);
   });
 });
 

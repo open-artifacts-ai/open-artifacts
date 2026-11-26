@@ -12,6 +12,7 @@ export const HARNESSES = [
   "omp",
   "hermes",
   "openclaw",
+  "antigravity",
 ] as const;
 export type Harness = (typeof HARNESSES)[number];
 
@@ -59,6 +60,13 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
   openclaw: {
     skillPath: "~/.openclaw/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `oabus_${tool}`,
+  },
+  // agy S4: agy's global skills folder. agy calls every MCP tool through one
+  // tool of its own, call_mcp_tool, by server and tool name (seen live, 1.5.17).
+  antigravity: {
+    skillPath: "~/.gemini/config/skills/open-artifacts/SKILL.md",
+    busToolName: (tool) =>
+      `call_mcp_tool(ServerName="oa_bus", ToolName="${tool}")`,
   },
 };
 

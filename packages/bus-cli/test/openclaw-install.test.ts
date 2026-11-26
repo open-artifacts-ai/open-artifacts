@@ -1,5 +1,5 @@
 // The OpenClaw step: the built plugin folder is installed and enabled through
-// OpenClaw's own CLI, and the habits marker follows the user's choice. Temp
+// OpenClaw's own CLI, and any leftover habits.on marker is removed. Temp
 // homes and a fake exec that behaves like the real CLI (checked against
 // OpenClaw 2026.6.5 in a throwaway state dir); nothing real runs.
 import {
@@ -29,10 +29,8 @@ import {
 } from "../src/steps/adapters.ts";
 import {
   PLUGIN_HARNESSES,
-  pluginHabitsState,
   removeHabits,
-  setHabitsOptOut,
-  setPluginHabits,
+  removePluginHabits,
 } from "../src/steps/habits.ts";
 import {
   OPENCLAW_HABITS_MARKER,
@@ -358,11 +356,10 @@ describe("installAdapters: openclaw", () => {
     expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
   });
 
-  it("deletes habits.on on every install once the user opted out, even a current one", async () => {
-    const { deps, dest, busHome } = setup();
+  it("deletes any leftover habits.on on every install, even a current one", async () => {
+    const { deps, dest } = setup();
     await installAdapters(deps);
-    setPluginHabits({ home: deps.home, env: deps.env }, [openclaw], true);
-    setHabitsOptOut(busHome, true, "2026-11-09T00:00:00Z");
+    put(join(dest, OPENCLAW_HABITS_MARKER), "on\n");
     expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(true);
     await installAdapters(deps);
     expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
@@ -386,16 +383,16 @@ describe("installAdapters: openclaw", () => {
     expect(calls[0]).toEqual(INSTALL(src, true));
   });
 
-  it("reinstalls a stale folder with --force and keeps habits.on that was there", async () => {
+  it("reinstalls a stale folder with --force and drops any leftover habits.on", async () => {
     const { deps, dest, calls, src, busHome } = setup();
     await installAdapters(deps);
-    setPluginHabits({ home: deps.home, env: deps.env }, [openclaw], true);
+    put(join(dest, OPENCLAW_HABITS_MARKER), "on\n");
     put(join(src, "index.js"), "export default { v: 2 };\n");
     calls.length = 0;
     await installAdapters(deps);
     expect(calls[0]).toEqual(INSTALL(src, true));
     expect(readFileSync(join(dest, "index.js"), "utf8")).toContain("v: 2");
-    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(true);
+    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
     expect(openclawPluginState(dest, src)).toBe("current");
     expect(busHome).toBeTruthy();
   });
@@ -406,36 +403,6 @@ describe("installAdapters: openclaw", () => {
     put(join(src, "index.js"), "export default { v: 3 };\n");
     await installAdapters(deps);
     expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
-  });
-
-  it("drops habits.on on a reinstall when the user opted out", async () => {
-    const { deps, dest, src, busHome } = setup();
-    await installAdapters(deps);
-    setPluginHabits({ home: deps.home, env: deps.env }, [openclaw], true);
-    setHabitsOptOut(busHome, true, "2026-11-09T00:00:00Z");
-    put(join(src, "index.js"), "export default { v: 4 };\n");
-    await installAdapters(deps);
-    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
-    expect(openclawPluginState(dest, src)).toBe("current");
-  });
-
-  it("keeps habits.on when a forced install fails but leaves the folder", async () => {
-    const { deps, dest, src } = setup({
-      replies: {
-        "openclaw plugins install --force": { code: 1, stderr: "nope" },
-      },
-    });
-    // Seed a stale folder of ours with the marker on.
-    put(join(dest, "openclaw.plugin.json"), '{"id":"oa-bus"}');
-    put(
-      join(dest, OPENCLAW_MARKER),
-      "managed by the Open Artifacts bus installer: old\n",
-    );
-    put(join(dest, OPENCLAW_HABITS_MARKER), "on\n");
-    const out = await installAdapters(deps);
-    expect(out.skipped[0]?.reason).toMatch(/plugins install` failed \(nope\)/);
-    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(true);
-    expect(src).toBeTruthy();
   });
 
   it("does not resurrect habits.on after a failed install wiped the folder", async () => {
@@ -463,7 +430,6 @@ describe("installAdapters: openclaw", () => {
     expect(out.skipped[0]?.reason).toContain("swapped");
     expect(existsSync(join(dest, "index.js"))).toBe(true);
     expect(existsSync(join(dest, OPENCLAW_MARKER))).toBe(false);
-    // An interrupted upgrade loses the yes: the safe direction.
     expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
   });
 
@@ -780,16 +746,12 @@ describe("openclaw habits: on, then off", () => {
   };
   const marker = (dir: string) => join(dir, OPENCLAW_HABITS_MARKER);
 
-  it("yes writes the marker and no removes it, in the default state dir", () => {
+  it("removes a legacy marker in the default state dir", () => {
     const home = tmp("oa-oc-habits-");
     const dir = ours(openclawPluginDir(home, {}));
     const deps = { home, env: {} };
-    expect(pluginHabitsState(deps, openclaw)).toBe("off");
-    expect(setPluginHabits(deps, [openclaw], true).changed).toEqual([openclaw]);
-    expect(pluginHabitsState(deps, openclaw)).toBe("on");
-    expect(setPluginHabits(deps, [openclaw], false).changed).toEqual([
-      openclaw,
-    ]);
+    writeFileSync(marker(dir), "on\n");
+    expect(removePluginHabits(deps, [openclaw]).changed).toEqual([openclaw]);
     expect(existsSync(marker(dir))).toBe(false);
   });
 
@@ -825,16 +787,11 @@ describe("openclaw habits: on, then off", () => {
     if (form === "ohome") env = { OPENCLAW_HOME: tmp("oa-oc-ohome-") };
     const dir = ours(openclawPluginDir(home, env));
     const deps = { home, env };
-    expect(setPluginHabits(deps, [openclaw], true).changed).toEqual([openclaw]);
-    expect(existsSync(marker(dir))).toBe(true);
-    expect(pluginHabitsState(deps, openclaw)).toBe("on");
-    expect(setPluginHabits(deps, [openclaw], false).changed).toEqual([
-      openclaw,
-    ]);
+    writeFileSync(marker(dir), "on\n");
+    expect(removePluginHabits(deps, [openclaw]).changed).toEqual([openclaw]);
     expect(existsSync(marker(dir))).toBe(false);
-    expect(pluginHabitsState(deps, openclaw)).toBe("off");
     // The same through the uninstall and --no-habits path.
-    setPluginHabits(deps, [openclaw], true);
+    writeFileSync(marker(dir), "on\n");
     removeHabits({ home, env });
     expect(existsSync(marker(dir))).toBe(false);
   });
@@ -851,32 +808,22 @@ describe("openclaw habits: on, then off", () => {
     ];
     for (const d of dirs) expect(openclawPluginDirs(home, env)).toContain(d);
     for (const d of dirs) writeFileSync(marker(d), "on\n");
-    // Only the active folder was given a yes; a leftover elsewhere must go too.
-    expect(setPluginHabits({ home, env }, [openclaw], false).changed).toEqual([
+    expect(removePluginHabits({ home, env }, [openclaw]).changed).toEqual([
       openclaw,
     ]);
     for (const d of dirs) expect(existsSync(marker(d))).toBe(false);
   });
 
-  it("a yes writes only the active folder", () => {
-    const home = tmp("oa-oc-habits-");
-    const env = { OPENCLAW_STATE_DIR: join(home, ".openclaw-work") };
-    const other = ours(join(home, ".openclaw", "extensions", "oa-bus"));
-    const active = ours(openclawPluginDir(home, env));
-    setPluginHabits({ home, env }, [openclaw], true);
-    expect(existsSync(marker(active))).toBe(true);
-    expect(existsSync(marker(other))).toBe(false);
-  });
-
-  it("off reaches a folder written under an env that is gone (#1743)", () => {
+  it("off reaches a folder recorded under an env that is gone (#1743)", () => {
     const home = tmp("oa-oc-habits-");
     const busHome = join(home, ".oa-bus");
     const env = { OPENCLAW_STATE_DIR: join(tmp("oa-oc-srv-"), "srv-oc") };
     const dir = ours(openclawPluginDir(home, env));
-    expect(
-      setPluginHabits({ home, env, busHome }, [openclaw], true).changed,
-    ).toEqual([openclaw]);
-    expect(existsSync(marker(dir))).toBe(true);
+    writeFileSync(marker(dir), "on\n");
+    put(
+      join(busHome, "install.json"),
+      JSON.stringify({ habits: { pluginDirs: { openclaw: [dir] } } }),
+    );
     // The next command runs without that env.
     const r = removeHabits({ home, busHome });
     expect(r.files).toContain(marker(dir));
@@ -885,16 +832,6 @@ describe("openclaw habits: on, then off", () => {
     writeFileSync(marker(dir), "on\n");
     removeHabits({ home, busHome });
     expect(existsSync(marker(dir))).toBe(true);
-  });
-
-  it("--no-habits and uninstall paths both sweep recorded folders", () => {
-    const home = tmp("oa-oc-habits-");
-    const busHome = join(home, ".oa-bus");
-    const env = { OPENCLAW_STATE_DIR: join(tmp("oa-oc-srv-"), "s") };
-    const dir = ours(openclawPluginDir(home, env));
-    setPluginHabits({ home, env, busHome }, [openclaw], true);
-    setPluginHabits({ home, busHome }, [openclaw], false);
-    expect(existsSync(marker(dir))).toBe(false);
   });
 
   it("tolerates an install record from before the list existed", () => {
@@ -939,7 +876,7 @@ describe("openclaw habits: on, then off", () => {
     put(join(dir, "openclaw.plugin.json"), '{"id":"oa-bus"}');
     put(join(dir, "index.js"), "my fork\n");
     put(marker(dir), "on\n");
-    const r = setPluginHabits({ home, env: {} }, [openclaw], false);
+    const r = removePluginHabits({ home, env: {} }, [openclaw]);
     expect(r.changed).toEqual([openclaw]);
     expect(existsSync(marker(dir))).toBe(false);
     expect(readFileSync(join(dir, "index.js"), "utf8")).toBe("my fork\n");
@@ -949,13 +886,9 @@ describe("openclaw habits: on, then off", () => {
     put(join(od, "openclaw.plugin.json"), '{"id":"other"}');
     put(marker(od), "theirs\n");
     expect(
-      setPluginHabits({ home: other, env: {} }, [openclaw], false).changed,
+      removePluginHabits({ home: other, env: {} }, [openclaw]).changed,
     ).toEqual([]);
     expect(existsSync(marker(od))).toBe(true);
-    // And a yes still needs our marker.
-    expect(
-      setPluginHabits({ home, env: {} }, [openclaw], true).changed,
-    ).toEqual([]);
   });
 
   describe("an off that cannot finish", () => {
@@ -976,7 +909,7 @@ describe("openclaw habits: on, then off", () => {
       writeFileSync(marker(swept), "on\n");
       const ghost = join(tmp("oa-oc-g-"), "gone", "extensions", "oa-bus");
       seed(busHome, [swept, ghost]);
-      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
       expect(r.incomplete).toBe(false);
       expect(existsSync(marker(swept))).toBe(false);
       expect(listed(busHome)).toEqual([ghost]);
@@ -993,11 +926,7 @@ describe("openclaw habits: on, then off", () => {
         seed(busHome, [dir]);
         chmodSync(join(root, "state"), 0o000);
         try {
-          const r = setPluginHabits(
-            { home, env: {}, busHome },
-            [openclaw],
-            false,
-          );
+          const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
           expect(r.incomplete).toBe(true);
           expect(r.notes.join("\n")).toMatch(/Couldn't reach .*EACCES/);
           expect(listed(busHome)).toEqual([dir]);
@@ -1018,11 +947,7 @@ describe("openclaw habits: on, then off", () => {
         seed(busHome, [dir]);
         chmodSync(dir, 0o500);
         try {
-          const r = setPluginHabits(
-            { home, env: {}, busHome },
-            [openclaw],
-            false,
-          );
+          const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
           expect(r.incomplete).toBe(true);
           expect(r.notes.join("\n")).toContain("habits are still on");
           expect(listed(busHome)).toEqual([dir]);
@@ -1043,11 +968,7 @@ describe("openclaw habits: on, then off", () => {
         seed(busHome, [dir]);
         chmodSync(dir, 0o000);
         try {
-          const r = setPluginHabits(
-            { home, env: {}, busHome },
-            [openclaw],
-            false,
-          );
+          const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
           expect(r.incomplete).toBe(true);
           expect(r.notes.join("\n")).toContain(`Couldn't reach ${marker(dir)}`);
           expect(listed(busHome)).toEqual([dir]);
@@ -1072,7 +993,7 @@ describe("openclaw habits: on, then off", () => {
         symlinkSync(t, l);
       }
       seed(busHome, [a, b]);
-      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
       expect(r.incomplete).toBe(false);
       expect(r.notes).toEqual([]);
       expect(listed(busHome)).toEqual([]);
@@ -1084,7 +1005,7 @@ describe("openclaw habits: on, then off", () => {
       const dir = ours(join(tmp("oa-oc-d-"), "extensions", "oa-bus"));
       mkdirSync(marker(dir));
       seed(busHome, [dir]);
-      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
       expect(r.incomplete).toBe(false);
       expect(r.changed).toEqual([]);
       expect(lstatSync(marker(dir)).isDirectory()).toBe(true);
@@ -1100,31 +1021,10 @@ describe("openclaw habits: on, then off", () => {
       mkdirSync(join(link, ".."), { recursive: true });
       symlinkSync(target, link);
       seed(busHome, [link]);
-      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      const r = removePluginHabits({ home, env: {}, busHome }, [openclaw]);
       expect(r.incomplete).toBe(true);
       expect(listed(busHome)).toEqual([link]);
       expect(existsSync(marker(target))).toBe(true);
     });
-
-    it("writes no marker when the record cannot be written, and says so", () => {
-      const home = tmp("oa-oc-habits-");
-      const busHome = join(home, "not-a-folder");
-      writeFileSync(busHome, "a file where the bus home should be\n");
-      const dir = ours(openclawPluginDir(home, {}));
-      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], true);
-      expect(r.changed).toEqual([]);
-      expect(r.notes.join("\n")).toContain("could not record");
-      expect(existsSync(marker(dir))).toBe(false);
-    });
-  });
-
-  it("refuses a folder that is not ours, and says so", () => {
-    const home = tmp("oa-oc-habits-");
-    const dir = openclawPluginDir(home, {});
-    put(join(dir, "openclaw.plugin.json"), '{"id":"other"}');
-    const r = setPluginHabits({ home, env: {} }, [openclaw], true);
-    expect(r.changed).toEqual([]);
-    expect(r.notes[0]).toContain("wasn't installed by");
-    expect(existsSync(marker(dir))).toBe(false);
   });
 });

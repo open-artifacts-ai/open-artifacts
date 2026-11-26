@@ -184,8 +184,6 @@ class _Root:
         self.ref = ref
         self.lock = threading.Lock()
         self.link = None
-        # #3043: bus rules fetched from the daemon when this root's link opens; None when opted out or unavailable.
-        self.rules = None
         self.queue = []
         self.busy = False
         self.platform = None
@@ -275,23 +273,7 @@ class Bus:
                 raise
             root.link = link
             root.refusals = 0
-            root.rules = None
-        # #3043: fetch the current bus rules once the link opens, off the hook thread.
-        self._spawn(lambda: self._fetch_rules(root, link))
-        return link
-
-    def _fetch_rules(self, root, link):
-        """#3043: asks the daemon for the current bus rules once a link opens; never raises."""
-        rules = None
-        try:
-            r = link.request({"type": "habits"}, SELF_TIMEOUT_S)
-            if r.get("type") == "habits" and isinstance(r.get("rules"), str) and r["rules"]:
-                rules = r["rules"]
-        except Exception:
-            rules = None
-        with root.lock:
-            if root.link is link and not root.stopped and not link.closed:
-                root.rules = rules
+            return link
 
     def touch(self, ref):
         """Opens the link in the background when it is not open, so a turn never waits on it."""
@@ -331,13 +313,11 @@ class Bus:
         root = self.state(link.ref)
         if root.link is link:
             root.link = None
-            root.rules = None
             self._retry_later(root, False)
 
     def close(self, ref):
         root = self.state(ref)
         root.stopped = True
-        root.rules = None
         if root.retry is not None:
             root.retry.cancel()
             root.retry = None
@@ -554,6 +534,24 @@ class Bus:
 
     # --- Hooks.
 
+    @staticmethod
+    def _habits_for(link):
+        """#3043: asks the daemon once per link for the bus's habits rules and caches
+        the reply on `link`. On error or timeout, caches None so a failing daemon is
+        not retried on every turn."""
+        if getattr(link, "_habits_fetched", False):
+            return getattr(link, "_habits_rules", None)
+        rules = None
+        try:
+            r = link.request({"type": "habits"}, SELF_TIMEOUT_S)
+            if r.get("type") == "habits" and isinstance(r.get("rules"), str):
+                rules = r["rules"]
+        except LinkError:
+            pass
+        link._habits_fetched = True
+        link._habits_rules = rules
+        return rules
+
     def turn_start(self, session_id, platform, user_message=None, conversation_history=None,
                    session_key=None, chat_type=None):
         """pre_llm_call: the queued messages as this turn's context, or None.
@@ -584,15 +582,16 @@ class Bus:
             if platform == "cli":
                 self._cli_root = ref
             out = []
-            rules = None
+            habits_link = None
             if context_reaches_model(user_message, conversation_history) and self._codex_runtime() is False:
                 out, root.queue = root.queue, []
                 for _text, msg_id in out:
                     if msg_id:
                         root.shown[msg_id] = "done"
-                # #3043: only while the bus is really connected for this root.
-                if root.link is not None and not root.link.closed and root.rules:
-                    rules = root.rules
+                # Only while the bus is really connected for this root: the link opens in
+                # the background (touch), so a root's first turn goes without.
+                if root.link is not None and not root.link.closed:
+                    habits_link = root.link
         if remember:
             self._store.upsert(ref, session_id, key_now, platform_now, type_now or "unknown")
         self.touch(ref)
@@ -601,12 +600,13 @@ class Bus:
         link = root.link
         if link is not None and not link.closed and link.proof is None:
             self._spawn(link.retry_proof)
-        if not out and not rules:
+        habits = self._habits_for(habits_link) if habits_link is not None and not habits_link.closed else None
+        if not out and not habits:
             return None
         for _text, msg_id in out:
             if msg_id:
                 self._ack_root(root, msg_id)
-        parts = [t for t, _ in out] + ([rules] if rules else [])
+        parts = [t for t, _ in out] + ([habits] if habits else [])
         return {"context": "\n\n".join(parts)}
 
     def session_open(self, session_id):

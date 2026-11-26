@@ -248,30 +248,20 @@ describe("delivery", () => {
   });
 });
 
-describe("habits (#3043)", () => {
-  it("come from the daemon as appendSystemContext while a link is open, not before", async () => {
+describe("habits", () => {
+  it("come as appendSystemContext from the daemon once per connection, not before", async () => {
     const hub = new Hub();
+    hub.habitsAnswer = "When connected to the bus:\n- stay brief";
     const bus = newBus(hub);
     expect(bus.buildPrompt(caller({ runId: "r0" }))).toBeUndefined();
     await flush();
     expect(bus.buildPrompt(caller({ runId: "r1" }))).toEqual({
-      appendSystemContext: "RULES v1",
+      appendSystemContext: "When connected to the bus:\n- stay brief",
     });
-  });
-
-  it("picks up updated rules in a fresh Bus after a simulated update", async () => {
-    const hub = new Hub();
-    const bus1 = newBus(hub);
-    await online(bus1);
-    expect(bus1.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
-      "RULES v1",
-    );
-    hub.habitsAnswer = "RULES v2";
-    const bus2 = newBus(hub);
-    await online(bus2);
-    expect(bus2.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
-      "RULES v2",
-    );
+    expect(bus.buildPrompt(caller({ runId: "r2" }))).toEqual({
+      appendSystemContext: "When connected to the bus:\n- stay brief",
+    });
+    expect(hub.habitsRequests).toBe(1);
   });
 
   it("are not sent when the daemon is down", async () => {
@@ -290,10 +280,10 @@ describe("habits (#3043)", () => {
     hub.clients[0]?.close();
     hub.down = true; // and it cannot come back right now
     expect(bus.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
-      "RULES v1",
+      "bus habits rules",
     );
     expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
-      "RULES v1",
+      "bus habits rules",
     );
   });
 });
@@ -388,7 +378,7 @@ describe("the first prompt of a root", () => {
     );
     const r = await bus.promptBuild(caller({ runId: "r1" }));
     expect(r?.prependContext).toContain("held while down");
-    expect(r?.appendSystemContext).toBe("RULES v1");
+    expect(r?.appendSystemContext).toBe("bus habits rules");
     expect(hub.connects).toHaveLength(1);
     // A second prompt in the same run does not wait or connect again.
     expect(await bus.promptBuild(caller({ runId: "r1" }))).toEqual(r);
@@ -581,7 +571,7 @@ describe("a root is handed mail only after its runtime has reported a model call
     ]);
     // Habits are not part of delivery and carry on.
     expect(bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext).toBe(
-      "RULES v1",
+      "bus habits rules",
     );
     // The runtime reports a model call again: mail flows once more.
     bus.modelCallStarted(key, { runId: "r3" });
@@ -844,8 +834,8 @@ describe("a provider failure that still reports a completed model call", () => {
   });
 });
 
-describe("habits opt-out and errors (#3043)", () => {
-  it("are not sent when the daemon answers rules: null, and mail still flows", async () => {
+describe("habits from the daemon IPC", () => {
+  it("are not sent when the daemon answers null, but mail still flows", async () => {
     const hub = new Hub();
     hub.habitsAnswer = null;
     const bus = newBus(hub);
@@ -858,20 +848,36 @@ describe("habits opt-out and errors (#3043)", () => {
     ended(bus, "r1");
     expect(hub.acks).toEqual(["m1"]);
     expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
+    expect(hub.habitsRequests).toBe(1);
   });
 
-  it("are not sent when the daemon answers an error frame, and mail still flows", async () => {
+  it("stay cached across link flaps and refresh on reconnect", async () => {
+    const hub = new Hub();
+    hub.habitsAnswer = "rule v1";
+    const bus = newBus(hub);
+    await online(bus);
+    expect(bus.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
+      "rule v1",
+    );
+    hub.clients[0]?.close();
+    hub.habitsAnswer = null;
+    // Before the reconnect finishes, the cached rules stay put.
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
+      "rule v1",
+    );
+    await flush();
+    // After reconnect, the daemon's new null reply takes effect.
+    expect(bus.buildPrompt(caller({ runId: "r3" }))).toBeUndefined();
+    expect(hub.habitsRequests).toBe(2);
+  });
+
+  it("uses no rules when the daemon answers an error", async () => {
     const hub = new Hub();
     hub.habitsAnswer = "error";
     const bus = newBus(hub);
     await online(bus);
-    hub.push({ id: "m1" });
-    await flush();
-    const r = bus.buildPrompt(caller({ runId: "r1" }));
-    expect(r?.prependContext).toContain("body of m1");
-    expect(r?.appendSystemContext).toBeUndefined();
-    ended(bus, "r1");
-    expect(hub.acks).toEqual(["m1"]);
+    expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
+    expect(hub.habitsRequests).toBe(1);
   });
 
   it("model_call_* and before_message_write count as activity (N4)", async () => {

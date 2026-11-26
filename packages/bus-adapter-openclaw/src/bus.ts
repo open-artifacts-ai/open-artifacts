@@ -109,8 +109,8 @@ class Mailbox {
   refusals = 0;
   /** A link was opened in this process: the habits decision stays put across link flaps. */
   everLinked = false;
-  /** #3043: bus rules fetched from the daemon when a link opens; undefined when opted out or unavailable. */
-  rules?: string;
+  /** #3043: the habits rules the daemon returned for this connection, or null when opted out/unavailable. */
+  habits: string | null = null;
   lastActive = 0;
   /** In arrival order, keyed by item key. */
   pending = new Map<string, Item>();
@@ -151,6 +151,8 @@ export type BusDeps = {
   random?: () => Buffer;
   /** Test seam: PROOF_MS. */
   proofMs?: number;
+  /** Test seam: called once a pushed message is queued for the next prompt. */
+  onQueued?: (msgId: string) => void;
 };
 
 export type PromptResult = {
@@ -270,7 +272,7 @@ export class Bus {
         b.everLinked = true;
         b.refusals = 0;
         await this.proveLink(b, client);
-        void this.fetchRules(b, client);
+        await this.fetchHabits(b, client);
         return client;
       } catch (e) {
         const refused = e instanceof LinkError && e.refused;
@@ -294,9 +296,13 @@ export class Bus {
     return attempt;
   }
 
-  /** #3043: ask the daemon for the current bus rules once a link opens; never throws. */
-  private async fetchRules(b: Mailbox, client: DaemonClient): Promise<void> {
+  /**
+   * #3043: asks the daemon once per connection for the bus's habits rules.
+   * On error or timeout, uses no rules; never breaks the link or a tool.
+   */
+  private async fetchHabits(b: Mailbox, client: DaemonClient): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let rules: string | null = null;
     try {
       const r = await Promise.race([
         client.request({ type: "habits" }),
@@ -305,16 +311,12 @@ export class Bus {
           timer.unref?.();
         }),
       ]);
-      if (b.client !== client) return;
-      b.rules =
-        r.type === "habits" && typeof r.rules === "string" && r.rules.length > 0
-          ? r.rules
-          : undefined;
+      if (r.type === "habits" && typeof r.rules === "string") rules = r.rules;
     } catch {
-      if (b.client === client) b.rules = undefined;
     } finally {
       clearTimeout(timer);
     }
+    if (b.client === client) b.habits = rules;
   }
 
   /**
@@ -532,6 +534,7 @@ export class Bus {
           });
       b.pending.set(msgId, { msgId, key: msgId, text: wrap(sender, text) });
       b.shown.set(msgId, "queued");
+      this.deps.onQueued?.(msgId);
     } catch (e) {
       b.shown.delete(msgId);
       throw e;
@@ -619,7 +622,7 @@ export class Bus {
 
   /**
    * The queued mail as prependContext, the same set for the same runId however
-   * often this fires, and the habits (behind the user's marker). Never waits; a
+   * often this fires, and the habits sent by the bus. Never waits; a
    * closed link is reopened in the background.
    *
    * Mail goes out only to a root that has already reported a model call
@@ -690,7 +693,7 @@ export class Bus {
       }
       if (run) out.prependContext = run.text;
     }
-    if (b.everLinked && b.rules) out.appendSystemContext = b.rules;
+    if (b.everLinked && b.habits) out.appendSystemContext = b.habits;
     return out.prependContext || out.appendSystemContext ? out : undefined;
   }
 

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
@@ -7,6 +7,8 @@ import {
 } from "@oa/bus-adapter-opencode";
 import {
   codexBinFile,
+  codexOaEntries,
+  formatEvent,
   globalFile,
   isGlobalDir,
   nearestConfig,
@@ -28,13 +30,18 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import {
+  agyEntryIo,
   agyProblem,
+  agyTargets,
   checkAdapters,
   codexProxyProblem,
   type Harness,
   opencodeProxyProblem,
   skippedProxyEntries,
 } from "../steps/adapters.ts";
+import { agyPagesState } from "../steps/agy-proof.ts";
+import { agyRuleState } from "../steps/agy-rule.ts";
+import { agyPluginProblem, agyWatchCommand } from "../steps/antigravity.ts";
 import {
   claudePluginsState,
   claudeVersion,
@@ -139,6 +146,61 @@ function asksForGlobal(ctx: Ctx, dirs: string[]): boolean {
  * Codex's own folder, which the attestation assumes only Codex writes
  * (docs/probes/codex.md §2).
  */
+/** Only this much of the end of events.log is read. */
+const EVENTS_TAIL = 512 * 1024;
+/** A link older than this reads as not seen: the entry links on its next call. */
+const LINK_RECENT_MS = 7 * 24 * 3600_000;
+
+/** `5 minutes ago`, `3 hours ago`, `2 days ago`. */
+function ago(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  return `${Math.floor(h / 24)} days ago`;
+}
+
+/**
+ * #3108: each Codex entry that signs in by itself is linked through the
+ * server's call check. Reported only from what the daemon logged: a recent
+ * `codex_call_linked` for the entry, else that it links on its first call.
+ */
+function codexLinkLines(ctx: Ctx, hub: string): void {
+  let origin: string;
+  try {
+    origin = new URL(hub).origin;
+  } catch {
+    return;
+  }
+  const names = codexOaEntries(ctx.home, origin);
+  if (names.length === 0) return;
+  let tail = "";
+  try {
+    const file = join(ctx.home, "logs", "events.log");
+    const text = readFileSync(file, "utf8");
+    tail = text.length > EVENTS_TAIL ? text.slice(-EVENTS_TAIL) : text;
+  } catch {}
+  const lines = tail.split("\n");
+  for (const name of names) {
+    // The log's own writer makes the token, so quoting matches.
+    const token = formatEvent(new Date(0), "codex_call_linked", { name })
+      .split(" ")
+      .slice(1)
+      .join(" ");
+    let last: number | undefined;
+    for (const l of lines) {
+      if (!l.endsWith(` ${token}`)) continue;
+      const at = Date.parse(l.slice(0, l.indexOf(" ")));
+      if (Number.isFinite(at) && (last === undefined || at > last)) last = at;
+    }
+    const age = last === undefined ? undefined : ctx.now() - last;
+    if (age !== undefined && age <= LINK_RECENT_MS)
+      say(ctx, ctx.copy.codexLinked(safeText(name, 80), ago(age)));
+    else say(ctx, ctx.copy.codexLinksOnFirstCall(safeText(name, 80)));
+  }
+}
+
 function codexChecks(
   ctx: Ctx,
   out: { pass: (line: string) => void; warn: (lines: string[]) => void },
@@ -291,12 +353,56 @@ export async function doctor(ctx: Ctx): Promise<number> {
         busHome: ctx.home,
         env: ctx.env,
       });
+      const plugin = agyPluginProblem(ctx.userHome);
       if (bad?.problem === "malformed")
         fail(c.agyMalformed(tilde(ctx, bad.file)));
+      else if (plugin?.problem === "foreign")
+        fail(c.agyPluginForeign(tilde(ctx, plugin.dir)));
       else if (wiring[h] === "configured") pass(c.wired(h));
       else fail(c.notWired(h));
       if (bad?.problem === "disabled" && wiring[h] === "configured")
         warn(c.agyDisabled());
+      // agy S5: each Open Artifacts entry, and whether it links pages.
+      if (bad?.problem !== "malformed")
+        try {
+          const deps = {
+            home: ctx.userHome,
+            busHome: ctx.home,
+            env: ctx.env,
+            busBin: ctx.service.argv?.() ?? [],
+            ...(hub !== undefined ? { hub } : {}),
+          };
+          for (const l of agyPagesState(
+            agyEntryIo(deps),
+            agyTargets(deps),
+            ctx.which,
+          ))
+            if (l.state === "linked")
+              pass(c.agyPagesLinked(l.name, hostOf(l.origin), l.instance));
+            else if (l.state === "pending") warn(c.agyPagesPending(l.name));
+            else if (l.state === "missing")
+              fail(c.agyPagesMissing(l.name, l.program));
+            else warn(c.agyPagesLeft(l.note));
+        } catch {}
+      if (plugin?.problem === "off" && wiring[h] === "configured")
+        warn(c.agyPluginOff());
+      // agy S3: the always-allow rule for exactly the watcher's line.
+      if (wiring[h] === "configured") {
+        const bin = ctx.service.argv?.();
+        // agy S2b: the watcher's line pins the home, default too, like the hook.
+        const rule = agyRuleState(
+          ctx.userHome,
+          ctx.home,
+          bin === undefined
+            ? undefined
+            : agyWatchCommand(bin, resolve(ctx.home)),
+        );
+        if (rule.missingTools.length)
+          warn(c.agyToolsMissing(rule.missingTools));
+        if (rule.state === "present") pass(c.agyRulePresent());
+        else if (rule.state === "missing") warn(c.agyRuleMissing());
+        else warn(c.agyRuleAltered(tilde(ctx, rule.file)));
+      }
       continue;
     }
     let version: string | undefined;
@@ -409,9 +515,11 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
-      if (hub !== undefined)
+      if (hub !== undefined) {
         for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
           if (k.harness === "Codex") warn([`Codex: ${safeText(k.note, 400)}`]);
+        codexLinkLines(ctx, hub);
+      }
     }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
@@ -438,8 +546,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   if (others.length > 0) say(ctx, c.otherHomes(others));
 
   // Not a pass or a warning: the habits are the user's choice either way.
-  const habits = habitsLine(ctx);
-  if (habits) say(ctx, habits);
+  say(ctx, habitsLine(ctx));
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

@@ -7,13 +7,16 @@ const bus = new Bus({
   connect: realConnect({ OA_BUS_HOME: process.argv[2] }),
   stateDir: () => "/state/.openclaw",
 });
-bus.buildPrompt({
+// promptBuild waits for the link to open. The link is unref'd, so hold the
+// loop until it answers; the hold is released before the exit that is tested.
+const hold = setInterval(() => {}, 2 ** 30);
+await bus.promptBuild({
   agentId: "main",
   sessionKey: "agent:main:main",
   trigger: "user",
   runId: "r",
 });
-await new Promise((r) => setTimeout(r, 400));
+clearInterval(hold);
 console.log(
   bus.buildPrompt({
     agentId: "main",

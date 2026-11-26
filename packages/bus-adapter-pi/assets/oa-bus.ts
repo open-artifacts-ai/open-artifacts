@@ -20,6 +20,10 @@ type Ctx = {
     getSessionId(): string;
     getSessionName?(): string | undefined;
   };
+  ui?: {
+    getEditorText?(): string;
+    onTerminalInput?(handler: (data: string) => void): () => void;
+  };
   /**
    * omp only (Pi has none): the agent this session runs, set on every omp
    * session (types.ts ExtensionAgentIdentity); `sub` for a subagent (task
@@ -554,25 +558,58 @@ function rosterLine(
     away?: string | undefined;
   },
   now = Date.now(),
+  /** #3166: the short row: no namespace when it is `home`, the host to its first label. */
+  short?: { home: string },
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  const host =
+    typeof a.machine_label === "string" && a.machine_label
+      ? short
+        ? a.machine_label.split(".")[0] || a.machine_label
+        : a.machine_label
+      : "";
+  const where = [
+    displayKind(a.kind),
+    ...(short && a.namespace === short.home ? [] : [a.namespace]),
+    ...(host ? [host] : []),
+  ].join(", ");
+  return `- ${a.name} (${where})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** @oa/bus-protocol isFallbackName: a name only the harness gave the session. */
+const KIND_DEFAULT_NAMES: Readonly<Record<string, string>> = {
+  antigravity: "agy",
+};
+
 const isFallbackName = (name: string, kind: string): boolean => {
   const lname = name.toLowerCase();
+  const d = Object.hasOwn(KIND_DEFAULT_NAMES, kind)
+    ? KIND_DEFAULT_NAMES[kind]
+    : undefined;
   return (
     lname === kind ||
     lname.startsWith(`${kind}-`) ||
+    (d !== undefined && (lname === d || lname.startsWith(`${d}-`))) ||
     lname === "agent" ||
     /^claude-\d+$/.test(lname)
   );
 };
 
+/** @oa/bus-ipc AWAY_RECENT_MS: away agents more recent than this stay listed by default (#3166). */
+const AWAY_RECENT_MS = 60 * 60_000;
+
+const isRecentAway = (since: unknown, now: number): boolean => {
+  const t = typeof since === "string" ? Date.parse(since) : Number.NaN;
+  return !Number.isNaN(t) && now - t < AWAY_RECENT_MS;
+};
+
 /** @oa/bus-ipc collapsedAwayLine: the count of away fallback-named rows. */
 const collapsedAwayLine = (n: number, listed: boolean): string =>
   `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
+
+/** @oa/bus-ipc hiddenAwayLine: the count of away rows left out by default (#3166). */
+const hiddenAwayLine = (n: number): string =>
+  `${n} away ${n === 1 ? "agent" : "agents"} not listed (still reachable by name; all: true lists them)`;
 
 /** @oa/bus-ipc rosterText: the list_agents text from the hub's roster rows. */
 function rosterText(
@@ -586,16 +623,31 @@ function rosterText(
     since?: unknown;
   })[],
   now = Date.now(),
+  all = false,
 ): string {
   if (!agents.length) return "No agents in your namespace and linked ones.";
   const lines: string[] = [];
-  let collapsed = 0;
-  for (const a of agents) {
+  let hidden = 0;
+  const shown = agents.filter((a) => {
     const away = a.state === "away";
-    if (away && isFallbackName(a.name, a.kind)) {
-      collapsed++;
-      continue;
-    }
+    const hide =
+      away &&
+      (isFallbackName(a.name, a.kind) || (!all && !isRecentAway(a.since, now)));
+    if (hide) hidden++;
+    return !hide;
+  });
+  // #3166: by default the most common namespace is named once, on top, and
+  // left out of its rows. `all` keeps the long rows as before.
+  const counts = new Map<string, number>();
+  for (const a of shown)
+    counts.set(a.namespace, (counts.get(a.namespace) ?? 0) + 1);
+  let home: string | undefined;
+  for (const [ns, n] of counts)
+    if (home === undefined || n > (counts.get(home) ?? 0)) home = ns;
+  const short = !all && home !== undefined ? { home } : undefined;
+  if (short) lines.push(`Namespace ${short.home}:`);
+  for (const a of shown) {
+    const away = a.state === "away";
     lines.push(
       rosterLine(
         {
@@ -604,10 +656,16 @@ function rosterText(
           away: away ? String(a.since ?? "") : undefined,
         },
         now,
+        short,
       ),
     );
   }
-  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  if (hidden > 0)
+    lines.push(
+      all
+        ? collapsedAwayLine(hidden, lines.length > 0)
+        : hiddenAwayLine(hidden),
+    );
   return lines.join("\n");
 }
 
@@ -691,7 +749,16 @@ const TOOLS = [
     label: "Open Artifacts bus: list agents",
     description:
       "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
-    parameters: none,
+    parameters: {
+      type: "object",
+      properties: {
+        all: {
+          type: "boolean",
+          description: "true lists away agents too",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "oabus_send_message",
@@ -954,14 +1021,24 @@ function nameOf(title: string | undefined, kind: string): string {
   return cut || kind;
 }
 
-type Identity = { ref: string; cwd: string; name: string; kind: "pi" | "omp" };
+// Pi's session manager flattens multiline names before storing them.
+const piTitle = (name: string | undefined) =>
+  name?.replace(/[\r\n]+/g, " ").trim();
+
+type Identity = {
+  ref: string;
+  cwd: string;
+  name: string;
+  kind: "pi" | "omp";
+  nameChosen: boolean;
+};
 type Link = {
   ref: string;
   welcome: Frame;
   request: (frame: Json, timeoutMs?: number) => Promise<Frame>;
   ack: (msgId: string) => void;
   /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
-  rename: (name: string) => boolean;
+  rename: (name: string, chosen: boolean) => boolean;
   /** #1856: this link's proof hash, to a daemon whose welcome listed `link`; true only when it bound it. */
   prove: (hash: string) => Promise<boolean>;
   closed: () => boolean;
@@ -1035,11 +1112,16 @@ function open(
       // Fire-and-forget: the daemon answers an ack with nothing.
       ack: (msgId) => write({ type: "ack", id: `ack-${++seq}`, msg_id: msgId }),
       // Only to a daemon whose welcome listed `rename`: an older one has no such frame.
-      rename: (name) => {
+      rename: (name, chosen) => {
         const caps = link.welcome.caps;
         if (ended || !Array.isArray(caps) || !caps.includes("rename"))
           return false;
-        write({ type: "rename", id: `rename-${++seq}`, name });
+        write({
+          type: "rename",
+          id: `rename-${++seq}`,
+          name,
+          ...(chosen ? { name_chosen: true } : {}),
+        });
         return true;
       },
       prove: async (hash) => {
@@ -1132,6 +1214,7 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        ...(id.nameChosen ? { name_chosen: true } : {}),
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
@@ -1548,10 +1631,11 @@ export default function oaBus(pi: Pi): void {
         // Renamed while this hello was in flight (#1635).
         if (
           identity.kind !== "omp" &&
-          identity.name !== id.name &&
-          identity.name !== identity.kind
+          (identity.name !== id.name ||
+            identity.nameChosen !== id.nameChosen) &&
+          (identity.name !== identity.kind || identity.nameChosen)
         )
-          l.rename(identity.name);
+          l.rename(identity.name, identity.nameChosen);
         return l;
       },
       (e: unknown) => {
@@ -1565,11 +1649,19 @@ export default function oaBus(pi: Pi): void {
 
   const identityOf = (ctx: Ctx): Identity => {
     const kind = ctx.agent !== undefined ? "omp" : "pi";
+    const ref = ctx.sessionManager.getSessionId();
+    const name = nameOf(ctx.sessionManager.getSessionName?.(), "");
     return {
-      ref: ctx.sessionManager.getSessionId(),
+      ref,
       cwd: ctx.cwd,
-      name: nameOf(ctx.sessionManager.getSessionName?.(), kind),
+      name: name || kind,
       kind,
+      nameChosen:
+        name !== "" &&
+        kind === "pi" &&
+        identity?.ref === ref &&
+        identity.name === name &&
+        identity.nameChosen,
     };
   };
 
@@ -1580,11 +1672,8 @@ export default function oaBus(pi: Pi): void {
    */
   const subagent = (ctx: Ctx | undefined) => ctx?.agent?.kind === "sub";
 
-  /**
-   * #1635: the session was renamed (/name, --name, setSessionName). One frame
-   * per change; nothing for the fallback name. The identity carries the name,
-   * so a reconnect's hello proposes the new one.
-   */
+  let stopWatchingName: (() => void) | undefined;
+  let submittedName: { ref: string; name: string } | undefined;
   const renamed = (ctx: Ctx) => {
     if (stopped || !identity) return;
     // omp titles a session itself ("auto") after its first message, and its
@@ -1592,13 +1681,53 @@ export default function oaBus(pi: Pi): void {
     // so omp never renames on the hub. (pi has no auto titles.)
     if (identity.kind === "omp") return;
     const id = identityOf(ctx);
-    if (id.ref !== identity.ref || id.name === identity.name) return;
-    identity = { ...identity, name: id.name };
-    if (id.name === id.kind) return;
+    if (id.ref !== identity.ref) return;
+    if (
+      submittedName?.ref === id.ref &&
+      submittedName.name === ctx.sessionManager.getSessionName?.()
+    )
+      id.nameChosen = true;
+    if (id.name === identity.name && id.nameChosen === identity.nameChosen)
+      return;
+    identity = id;
+    if (id.name === id.kind && !id.nameChosen) return;
     // An open link tells the daemon now; a daemon without the cap, or no
     // link, learns it from the next hello.
     if (current && !current.closed() && current.ref === id.ref)
-      current.rename(id.name);
+      current.rename(id.name, id.nameChosen);
+  };
+
+  // Pi handles the built-in /name in the editor before emitting extension
+  // input events. Its metadata event is also emitted by setSessionName.
+  const watchNameCommand = (ctx: Ctx) => {
+    const ui = ctx.ui;
+    return ui?.onTerminalInput?.((data) => {
+      // Enter and keypad Enter in Pi's legacy and Kitty keyboard modes.
+      if (
+        data !== "\r" &&
+        data !== "\n" &&
+        data !== "\x1bOM" &&
+        !(
+          data.startsWith("\x1b") &&
+          /^\[(?:13|57414)(?:;1(?::[12])?)?u$/.test(data.slice(1))
+        )
+      )
+        return;
+      const text = ui.getEditorText?.()?.trim();
+      if (!text?.startsWith("/name ")) return;
+      const name = piTitle(text.slice(6));
+      if (!name || !nameOf(name, "")) return;
+      const before = ctx.sessionManager.getSessionName?.();
+      const submission = { ref: ctx.sessionManager.getSessionId(), name };
+      submittedName = submission;
+      queueMicrotask(() => {
+        if (submittedName !== submission) return;
+        // The editor applies /name synchronously. Other extensions can delay
+        // delivery of session_info_changed.
+        if (ctx.sessionManager.getSessionName?.() !== before) renamed(ctx);
+        submittedName = undefined;
+      });
+    });
   };
   pi.on("session_info_changed", (_event, ctx) => {
     if (!subagent(ctx)) renamed(ctx);
@@ -1616,17 +1745,32 @@ export default function oaBus(pi: Pi): void {
     retryProof();
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
     rules = undefined;
     rulesFetch = undefined;
     // The entry works unlinked: no header until this session's link is bound.
     identity = identityOf(ctx);
+    stopWatchingName?.();
+    stopWatchingName = undefined;
+    if (identity.kind === "pi") {
+      if ((event as { reason?: string }).reason === "startup") {
+        let startName: string | undefined;
+        const argv = process.argv.slice(2);
+        for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+          if (argv[i] === "--name" || argv[i] === "-n") startName = argv[++i];
+        }
+        const name = piTitle(startName);
+        if (nameOf(name, "") && name === ctx.sessionManager.getSessionName?.())
+          identity.nameChosen = true;
+      }
+      stopWatchingName = watchNameCommand(ctx);
+    }
     register();
     if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
-    const link = await ensure(identityOf(ctx)).catch((e: unknown) => {
+    const link = await ensure(identity).catch((e: unknown) => {
       reconnect(e);
       return undefined;
     });
@@ -1683,6 +1827,9 @@ export default function oaBus(pi: Pi): void {
     stopped = true;
     rules = undefined;
     rulesFetch = undefined;
+    stopWatchingName?.();
+    stopWatchingName = undefined;
+    submittedName = undefined;
     identity = identity ?? identityOf(ctx);
     dropHeader();
     ompWrap?.restore();
@@ -1718,6 +1865,7 @@ export default function oaBus(pi: Pi): void {
           namespace: String(a.namespace),
         })),
         now,
+        args.all === true,
       );
     }
     if (name === "oabus_send_message") {

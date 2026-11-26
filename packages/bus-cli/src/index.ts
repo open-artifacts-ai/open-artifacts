@@ -11,17 +11,25 @@ export type Command = (
       noOpen: boolean;
       noService: boolean;
       alongside: boolean;
-      habits?: "yes" | "project" | "project-off" | "no" | "show";
+      habits?: "yes" | "no" | "show";
       json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "add"; address: string; name?: string; noOpen: boolean }
   | { cmd: "use"; name?: string; none: boolean }
-  | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
+  | {
+      cmd: "skill";
+      hub?: string;
+      check: boolean;
+      json?: boolean;
+      refresh?: boolean;
+    }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "rules"; sub: "codex-hook" }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
+  | { cmd: "agy-hello" }
+  | { cmd: "agy-watch" }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -29,7 +37,9 @@ export type Command = (
       /** The environment variable that holds the token (Codex passes it by name). */
       tokenEnv?: string;
       /** Which harness runs the proxy; OpenCode when absent. */
-      for?: "opencode" | "codex";
+      for?: "opencode" | "codex" | "antigravity";
+      /** agy S5: an added instance's local name (#2793 S4); absent is main. */
+      name?: string;
     }
   | { cmd: "status" }
   | { cmd: "logs" }
@@ -64,6 +74,8 @@ const COMMANDS = new Set([
   "mcp",
   "rules",
   "mcp-proof",
+  "agy-hello",
+  "agy-watch",
   "mcp-proxy",
   "status",
   "logs",
@@ -98,8 +110,6 @@ const FLAGS: Record<string, string[]> = {
     "no-service",
     "alongside",
     "habits",
-    "habits-project",
-    "no-habits-project",
     "no-habits",
     "show-habits",
     "json",
@@ -107,11 +117,11 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   add: ["name", "no-open"],
   use: ["none"],
-  skill: ["instance", "check", "json"],
+  skill: ["instance", "check", "json", "refresh"],
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
-  "mcp-proxy": ["instance", "token-file", "token-env", "for"],
+  "mcp-proxy": ["instance", "token-file", "token-env", "for", "name"],
   namespace: ["yes"],
   upgrade: ["allow-failed"],
 };
@@ -140,11 +150,10 @@ export function parse(argv: string[]): Command {
       none: { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
+      refresh: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
       alongside: { type: "boolean", default: false },
       habits: { type: "boolean", default: false },
-      "habits-project": { type: "boolean", default: false },
-      "no-habits-project": { type: "boolean", default: false },
       "no-habits": { type: "boolean", default: false },
       "show-habits": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -171,7 +180,9 @@ export function parse(argv: string[]): Command {
           : 2
         : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+    throw new Error(
+      `usage: ${BUS_CMD} mcp <claude|opencode|codex|pi|antigravity>`,
+    );
   if (cmd === "add" && rest.length === 0)
     throw new Error(`usage: ${BUS_CMD} add <address> [--name <name>]`);
   if (cmd === "use" && rest[0] !== undefined && values.none)
@@ -243,14 +254,25 @@ export function parse(argv: string[]): Command {
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
   if (cmd === "mcp-proxy" && !values.instance)
     throw new Error(
-      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex|antigravity] [--name <instance name>] [--token-file <path> | --token-env <name>]`,
     );
   if (cmd === "mcp-proxy") {
     const f = values.for;
-    if (f !== undefined && f !== "opencode" && f !== "codex")
-      throw new Error("--for takes opencode or codex");
-    if (values["token-env"] !== undefined && f !== "codex")
-      throw new Error("--token-env needs --for codex");
+    if (
+      f !== undefined &&
+      f !== "opencode" &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--for takes opencode, codex or antigravity");
+    if (
+      values["token-env"] !== undefined &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--token-env needs --for codex or --for antigravity");
+    if (values.name !== undefined && f !== "antigravity")
+      throw new Error("--name needs --for antigravity");
     if (values["token-env"] !== undefined && tokenFile)
       throw new Error("give --token-file or --token-env, not both");
   }
@@ -269,7 +291,10 @@ export function parse(argv: string[]): Command {
             hub: values.instance as string,
             ...(tokenFile ? { tokenFile } : {}),
             ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
-            ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
+            ...(values.for
+              ? { for: values.for as "opencode" | "codex" | "antigravity" }
+              : {}),
+            ...(values.name !== undefined ? { name: values.name } : {}),
           }
         : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
@@ -284,11 +309,10 @@ type Values = {
   none: boolean;
   yes: boolean;
   check: boolean;
+  refresh: boolean;
   "no-service": boolean;
   alongside: boolean;
   habits: boolean;
-  "habits-project": boolean;
-  "no-habits-project": boolean;
   "no-habits": boolean;
   "show-habits": boolean;
   json: boolean;
@@ -319,13 +343,19 @@ function route(cmd: string, values: Values, positionals: string[]) {
         hub: values.instance,
         check: values.check,
         ...(values.json ? { json: true } : {}),
+        ...(values.refresh ? { refresh: true } : {}),
       };
     case "daemon":
       return { cmd, hub: values.instance };
+    case "agy-hello":
+    case "agy-watch":
+      return { cmd };
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
-        throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+        throw new Error(
+          `usage: ${BUS_CMD} mcp <claude|opencode|codex|pi|antigravity>`,
+        );
       return { cmd, harness: harness as Harness };
     }
     case "uninstall":
@@ -393,20 +423,16 @@ function route(cmd: string, values: Values, positionals: string[]) {
   }
 }
 
-/** At most one of --habits, --habits-project, --no-habits, --show-habits. */
+/** At most one of --habits, --no-habits, --show-habits. */
 function habitsMode(v: Values): {
-  habits?: "yes" | "project" | "project-off" | "no" | "show";
+  habits?: "yes" | "no" | "show";
 } {
   const asked = [
     v.habits && "yes",
-    v["habits-project"] && "project",
-    v["no-habits-project"] && "project-off",
     v["no-habits"] && "no",
     v["show-habits"] && "show",
-  ].filter(Boolean) as ("yes" | "project" | "project-off" | "no" | "show")[];
+  ].filter(Boolean) as ("yes" | "no" | "show")[];
   if (asked.length > 1)
-    throw new Error(
-      "use only one of --habits, --habits-project, --no-habits-project, --no-habits, --show-habits",
-    );
+    throw new Error("use only one of --habits, --no-habits, --show-habits");
   return asked[0] ? { habits: asked[0] } : {};
 }

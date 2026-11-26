@@ -80,7 +80,6 @@ const adapter: Set = {
     },
     { name: "unfollow", frame: { ...b, type: "unfollow", artifact: "abc" } },
     { name: "following", frame: { ...b, type: "following" } },
-    { name: "habits (#3043)", frame: { ...b, type: "habits" } },
     {
       name: "link_proof (#1856: a hash, no pid)",
       frame: { ...b, type: "link_proof", hash: HASH },
@@ -309,14 +308,6 @@ const daemon: Set = {
     },
     { name: "unfollowed", frame: { ...b, type: "unfollowed", removed: true } },
     {
-      name: "habits (#3043)",
-      frame: { ...b, type: "habits", rules: "Rules text." },
-    },
-    {
-      name: "habits opted out (#3043)",
-      frame: { ...b, type: "habits", rules: null },
-    },
-    {
       name: "link_proofed",
       frame: { ...b, type: "link_proofed", bound: true },
     },
@@ -336,10 +327,6 @@ const daemon: Set = {
     },
   ],
   invalid: [
-    {
-      name: "habits with non-string rules (#3043)",
-      frame: { ...b, type: "habits", rules: 123 },
-    },
     {
       name: "link_proofed with no bound",
       frame: { ...b, type: "link_proofed" },

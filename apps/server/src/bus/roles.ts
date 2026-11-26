@@ -24,8 +24,30 @@ export type RoleResolution =
   | { ok: true; agent: AgentRow; viaRole: true }
   | { ok: false; reason: RefusalReason };
 
+/**
+ * #3132: a role re-pointed from one session to another, as recorded in
+ * role_moves: the sessions' addresses at the time of the move.
+ */
+export type RoleMove = {
+  /** The role_moves row (and its bus.role.moved audit row's) id. */
+  id: string;
+  roleId: string;
+  /** When the old session started holding the role (ms). */
+  heldFrom: number;
+  /** When the role moved (ms): the new holder's held_since. */
+  at: number;
+  fromAgentId: string;
+  toAgentId: string;
+  /** The old holder's session link identity, if it had one. */
+  fromIdentity: string | null;
+  /** member: a browser or API write; holder: the holding session handed it over. */
+  by: "member" | "holder";
+  from: { namespace: string; name: string };
+  to: { namespace: string; name: string };
+};
+
 export type PutRoleResult =
-  | { ok: true; role: BusRole }
+  | { ok: true; role: BusRole; moved: RoleMove | null }
   | { ok: false; reason: "invalid"; field: "namespace" | "name" }
   | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" };
 
@@ -141,9 +163,9 @@ const roleRow = (
   namespace: string,
   lname: string,
 ) =>
-  one<{ id: string; agentId: string | null }>(
+  one<{ id: string; agentId: string | null; heldSince: number | null }>(
     sql,
-    "select id, agent_id as agentId from roles where org_id = ? and namespace = ? and lname = ?",
+    "select id, agent_id as agentId, held_since as heldSince from roles where org_id = ? and namespace = ? and lname = ?",
     orgId,
     namespace,
     lname,
@@ -164,7 +186,14 @@ export function checkRole(
   now: number,
   max: number = BUS_ROLE_MAX,
 ):
-  | { ok: true; existing: { id: string; agentId: string | null } | null }
+  | {
+      ok: true;
+      existing: {
+        id: string;
+        agentId: string | null;
+        heldSince: number | null;
+      } | null;
+    }
   | RoleRefusal {
   if (!WireNamespaceSchema.safeParse(namespace).success)
     return { ok: false, reason: "invalid", field: "namespace" };
@@ -241,9 +270,13 @@ export function putRole(
   if (!c.ok) return c;
   const lname = name.toLowerCase();
   const id = c.existing?.id ?? newId();
+  const prior = c.existing?.agentId ?? null;
+  // #3132: a holder keeps its start through a rename; a new holder starts now.
+  const heldSince =
+    c.existing && prior === agentId ? (c.existing.heldSince ?? now) : now;
   sql.exec(
-    `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, ?, ?, ?, ?, ?)
-     on conflict (org_id, namespace, lname) do update set name = excluded.name, agent_id = excluded.agent_id, set_at = excluded.set_at`,
+    `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at, held_since) values (?, ?, ?, ?, ?, ?, ?, ?)
+     on conflict (org_id, namespace, lname) do update set name = excluded.name, agent_id = excluded.agent_id, set_at = excluded.set_at, held_since = excluded.held_since`,
     id,
     orgId,
     namespace,
@@ -251,10 +284,276 @@ export function putRole(
     lname,
     agentId,
     now,
+    heldSince,
   );
   const row = one<StoredRole>(sql, `${ROLE_SELECT} where r.id = ?`, id);
   if (row === null) throw new Error("role row missing after write");
-  return { ok: true, role: roleDto(row) };
+  const moved =
+    prior !== null && agentId !== null && prior !== agentId
+      ? recordMove(
+          sql,
+          orgId,
+          id,
+          prior,
+          agentId,
+          c.existing?.heldSince ?? now,
+          now,
+          newId,
+        )
+      : null;
+  return { ok: true, role: roleDto(row), moved };
+}
+
+/**
+ * #3132: the role's live holder hands it to its open agent `agentName`, at
+ * once (Leo's pick, 2026-11-26: "The holder hands it over, or you
+ * approve"). not_holder when the session with `identityId` is not the
+ * role's live holder, or names itself: then nothing is handed over and the
+ * caller only proposes. Otherwise putRole's answer (ambiguous: two open agents have the
+ * name).
+ */
+export type HandOverResult =
+  | PutRoleResult
+  | { ok: false; reason: "ambiguous" | "not_holder" };
+
+export function handOver(
+  sql: SqlStorage,
+  orgId: string,
+  identityId: string,
+  namespace: string,
+  name: string,
+  agentName: string,
+  now: number,
+  newId: () => string,
+  max: number = BUS_ROLE_MAX,
+): HandOverResult {
+  const notHolder = { ok: false, reason: "not_holder" } as const;
+  const role = roleRow(sql, orgId, namespace, name.toLowerCase());
+  if (role?.agentId == null) return notHolder;
+  const holder = one<{ id: string }>(
+    sql,
+    `select id from agents where org_id = ? and id = ? and live = 1 and identity_id = ?
+       and (namespace = ? or global = 1)`,
+    orgId,
+    role.agentId,
+    identityId,
+    namespace,
+  );
+  if (holder === null) return notHolder;
+  const named = all<{ id: string }>(
+    sql,
+    `select id from agents where org_id = ? and lower(name) = ? and live = 1
+       and (namespace = ? or global = 1) limit 2`,
+    orgId,
+    agentName.toLowerCase(),
+    namespace,
+  );
+  if (named.length > 1) return { ok: false, reason: "ambiguous" };
+  const to = named[0]?.id ?? "";
+  if (to === holder.id) return notHolder;
+  const r = putRole(sql, orgId, namespace, name, to, now, newId, max);
+  if (!r.ok || r.moved === null) return r;
+  sql.exec(
+    "update role_moves set moved_by = 'holder' where id = ?",
+    r.moved.id,
+  );
+  return { ...r, moved: { ...r.moved, by: "holder" } };
+}
+
+/** #3132: a move whose bus.role.moved audit row D1 does not have yet. */
+export type MoveAudit = {
+  id: string;
+  roleId: string;
+  fromAgentId: string;
+  toAgentId: string;
+  /** The holder's session link identity, for a hand-over by the holder. */
+  fromIdentity: string | null;
+  by: "member" | "holder";
+  at: number;
+  /** The moving request's credential, kept when its first write failed. */
+  cred: { kind: string; id: string | null } | null;
+};
+
+/** The oldest `max` moves not audited yet. */
+export function pendingMoveAudits(
+  sql: SqlStorage,
+  orgId: string,
+  max: number,
+): MoveAudit[] {
+  return all<{
+    id: string;
+    roleId: string;
+    fromAgentId: string;
+    toAgentId: string;
+    fromIdentity: string | null;
+    by: string;
+    at: number;
+    credKind: string | null;
+    credId: string | null;
+  }>(
+    sql,
+    `select id, role_id as roleId, from_agent_id as fromAgentId, to_agent_id as toAgentId,
+       from_identity as fromIdentity, moved_by as by, at, cred_kind as credKind, cred_id as credId
+     from role_moves indexed by role_moves_unaudited where audited = 0 and org_id = ? order by at limit ?`,
+    orgId,
+    max,
+  ).map((r) => ({
+    id: r.id,
+    roleId: r.roleId,
+    fromAgentId: r.fromAgentId,
+    toAgentId: r.toAgentId,
+    fromIdentity: r.fromIdentity,
+    by: r.by === "holder" ? "holder" : "member",
+    at: r.at,
+    cred: r.credKind === null ? null : { kind: r.credKind, id: r.credId },
+  }));
+}
+
+/**
+ * Settles move audits: `done` are in D1 now; `held` failed and keep the
+ * moving request's credential for the retry (a credential already kept is
+ * never replaced).
+ */
+export function settleMoveAudits(
+  sql: SqlStorage,
+  orgId: string,
+  done: string[],
+  held: { id: string; cred: { kind: string; id: string | null } | null }[],
+): void {
+  for (const id of done)
+    sql.exec(
+      "update role_moves set audited = 1 where org_id = ? and id = ?",
+      orgId,
+      id,
+    );
+  for (const h of held)
+    if (h.cred !== null)
+      sql.exec(
+        "update role_moves set cred_kind = ?, cred_id = ? where org_id = ? and id = ? and audited = 0 and cred_kind is null",
+        h.cred.kind,
+        h.cred.id,
+        orgId,
+        h.id,
+      );
+}
+
+/**
+ * #3132: records that role `roleId` moved from agent `fromId` to `toId`,
+ * with the from-session's address and identity as they are now (its agents
+ * row may be gone later). Null when either row is already gone: there is no
+ * address to forward from.
+ */
+function recordMove(
+  sql: SqlStorage,
+  orgId: string,
+  roleId: string,
+  fromId: string,
+  toId: string,
+  heldFrom: number,
+  now: number,
+  newId: () => string,
+): RoleMove | null {
+  const row = (id: string) =>
+    one<{ namespace: string; name: string; identity: string | null }>(
+      sql,
+      "select namespace, name, identity_id as identity from agents where org_id = ? and id = ?",
+      orgId,
+      id,
+    );
+  const from = row(fromId);
+  const to = row(toId);
+  if (from === null || to === null) return null;
+  const id = newId();
+  sql.exec(
+    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, audited)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    id,
+    orgId,
+    roleId,
+    fromId,
+    from.namespace,
+    from.name.toLowerCase(),
+    from.identity,
+    toId,
+    heldFrom,
+    now,
+  );
+  return {
+    id,
+    roleId,
+    heldFrom,
+    at: now,
+    fromAgentId: fromId,
+    toAgentId: toId,
+    fromIdentity: from.identity,
+    by: "member",
+    from: { namespace: from.namespace, name: from.name },
+    to: { namespace: to.namespace, name: to.name },
+  };
+}
+
+/**
+ * #3132: where a notice for a session that handed its role on goes now: the
+ * role's live holder. Approved design: what a session does "while it holds a
+ * role belongs to the role", so a notice whose subject began (`originAt`:
+ * the ask posted, the follow started, the thread joined) while the session
+ * held the role, from held_from up to the move, goes with it; one begun
+ * before or after stays the session's own. An undated notice (null: a new
+ * mention of the old name) goes with the role it handed on last. `identity` set: the moves of the session with that
+ * identity. Otherwise the moves from address (ns, lname), only while no
+ * other agent has taken that name since (a namesake inherits nothing,
+ * #3208). None applies while the session holds any role (its mail is its
+ * own), or once the role is vacant, removed or held by nobody live. Null:
+ * deliver as addressed.
+ */
+export function roleForward(
+  sql: SqlStorage,
+  orgId: string,
+  ns: string,
+  lname: string,
+  identity: string | null,
+  /** When the subject began; null: a new message to the session (a mention). */
+  originAt: number | null,
+): AgentRow | null {
+  // Only while the session holds no role now (a holder's mail is its own).
+  // A dated subject goes with the role it held then: held_from <= originAt <
+  // the move. An undated one, a new message to the session's old name, goes
+  // with the role it handed on last.
+  const window = originAt === null ? "1 = 1" : "m.held_from <= ? and ? < m.at";
+  const scope = `${window}
+    and not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)`;
+  const times = originAt === null ? [] : [originAt, originAt];
+  const order =
+    originAt === null
+      ? "order by m.at desc, m.rowid desc"
+      : "order by m.held_from desc, m.rowid desc";
+  const move = one<{ roleId: string; fromId: string }>(
+    sql,
+    identity !== null
+      ? `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_identity
+           where m.org_id = ? and m.from_identity = ? and ${scope}
+           ${order} limit 1`
+      : `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_from
+           where m.org_id = ? and m.from_ns = ? and m.from_lname = ? and ${scope}
+             and not exists (select 1 from agents a where a.org_id = m.org_id
+               and lower(a.name) = m.from_lname and a.namespace = m.from_ns
+               and a.id <> m.from_agent_id)
+           ${order} limit 1`,
+    ...(identity !== null
+      ? [orgId, identity, ...times]
+      : [orgId, ns, lname, ...times]),
+  );
+  if (move === null) return null;
+  return one<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where id =
+       (select r.agent_id from roles r where r.org_id = ? and r.id = ? and r.agent_id <> ?)
+       and live = 1 and (namespace = (select namespace from roles where id = ?) or global = 1)`,
+    orgId,
+    move.roleId,
+    move.fromId,
+    move.roleId,
+  );
 }
 
 /** Removes role `id`; false when there was none. The name is free at once. */
@@ -271,6 +570,8 @@ export function deleteRole(
     orgId,
     id,
   );
+  // #3132: and the pages it carried.
+  sql.exec("delete from role_follows where role_id = ?", id);
   return (
     sql.exec("delete from roles where org_id = ? and id = ?", orgId, id)
       .rowsWritten > 0

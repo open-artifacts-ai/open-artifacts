@@ -86,14 +86,34 @@ test("a forged navigate to anything but an artifact view is ignored", async ({
 }) => {
   await page.goto(`/a/${LANDING}`);
   const a = await contentFrame(page, LANDING);
-  for (const url of [
+  const forged = [
     `${APP}/settings`,
     `${APP}/a/${POLL}/diff`,
     `https://evil.example/a/${POLL}`,
     `javascript:alert(1)`,
-  ])
-    await a.evaluate((u) => window.__forge(u), url);
-  await page.waitForTimeout(300);
+  ];
+  // Wait for every forged postMessage to reach the shell's message listener
+  // (ours registers after it, so the 4th arrival means all 4 were handled).
+  const delivered = page.evaluate(
+    (count) =>
+      new Promise<void>((resolve) => {
+        let seen = 0;
+        const onMsg = (e: MessageEvent) => {
+          if (
+            e.data?.oa === 1 &&
+            e.data?.type === "navigate" &&
+            ++seen >= count
+          ) {
+            window.removeEventListener("message", onMsg);
+            resolve();
+          }
+        };
+        window.addEventListener("message", onMsg);
+      }),
+    forged.length,
+  );
+  for (const url of forged) await a.evaluate((u) => window.__forge(u), url);
+  await delivered;
   await expect(page).toHaveURL(`${APP}/a/${LANDING}`);
   // The channel itself works: a valid request still goes through.
   await a.evaluate((u) => window.__forge(u), `${APP}/a/${POLL}/v/1`);

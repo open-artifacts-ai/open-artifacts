@@ -9,18 +9,18 @@ AGENT = {
     "type": "agent",
     "agent": {"name": "renamed", "namespace": "ns", "kind": "hermes", "live": True, "global": False},
 }
+TEST_HABITS = "When you're connected to the Open Artifacts bus:\n- test bus rule"
 M1, M2 = "mmmmmmmmmmmmmmm1", "mmmmmmmmmmmmmmm2"
-RULES = "Bus rules from daemon."
 
 
 class Env:
     """A bus with two roots; `current` is the session the CLI is on right now (HERMES_SESSION_ID)."""
 
-    def __init__(self, inject_result=True, inject=None, rules=RULES):
+    def __init__(self, inject_result=True, inject=None, habits=TEST_HABITS):
         self.ctx = support.FakeCtx(inject_result)
         self.current = "root-1"
         self.codex = False
-        self.default_rules = rules
+        self.habits = habits
         parents = {"root-1": "root-1", "root-2": "root-2", "rot": "root-1", "kid": "kid"}
         self.roots = Roots(parents.get)
         self.bus = Bus(
@@ -38,11 +38,14 @@ class Env:
             history = [{"role": "assistant", "content": "earlier"}, {"role": "user", "content": msg}]
         return self.bus.turn_start(sid, platform, msg, history)
 
-    def link(self, ref="root-1"):
-        link = AckingLink(self, ref=ref, replies={"self": AGENT})
-        root = self.bus.state(ref)
-        root.link = link
-        root.rules = self.default_rules
+    def link(self, ref="root-1", replies=None):
+        r = {"self": AGENT}
+        if self.habits != "error":
+            r["habits"] = {"type": "habits", "rules": self.habits}
+        if replies:
+            r.update(replies)
+        link = AckingLink(self, ref=ref, replies=r)
+        self.bus.state(ref).link = link
         return link
 
     def idle_cli(self, sid="root-1"):
@@ -173,8 +176,8 @@ class AckTiming(unittest.TestCase):
         self.assertIn("later", out["context"])
         self.assertIn("<cross-session-message", out["context"])
         self.assertEqual(link.acks, [M1])
-        # Mail is not repeated; the rules still ride along while the link is open.
-        self.assertEqual(e.turn("root-1", "cli", "again"), {"context": RULES})
+        # Mail is not repeated; the habits still ride along while the link is open.
+        self.assertEqual(e.turn("root-1", "cli", "again"), {"context": TEST_HABITS})
         self.assertEqual(link.acks, [M1])  # once
 
     def queued_one(self, env=None):
@@ -463,32 +466,52 @@ class RootsAreSeparate(unittest.TestCase):
 
 
 class Habits(unittest.TestCase):
-    def test_a_turn_with_an_open_link_carries_them(self):
+    def test_a_turn_with_an_open_link_carries_them_and_caches_per_link(self):
         e = Env()
-        e.link()
-        self.assertEqual(e.turn("root-1", "telegram", "x"), {"context": RULES})
+        link = e.link()
+        self.assertEqual(e.turn("root-1", "telegram", "x"), {"context": TEST_HABITS})
+        self.assertEqual(e.turn("root-1", "telegram", "y"), {"context": TEST_HABITS})
+        habits_reqs = [r for r in link.requests if r.get("type") == "habits"]
+        self.assertEqual(len(habits_reqs), 1)
 
     def test_they_follow_the_mail_in_the_same_context(self):
         e = Env()
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1, body="later"), link)
         out = e.turn("root-1", "telegram", "x")["context"]
-        self.assertTrue(out.endswith("\n\n" + RULES))
+        self.assertTrue(out.endswith("\n\n" + TEST_HABITS))
         self.assertIn("later", out)
-        self.assertEqual(out.count(RULES), 1)
+        self.assertEqual(out.count(TEST_HABITS), 1)
 
-    def test_without_rules_there_are_no_habits(self):
-        e = Env(rules=None)
-        e.link()
+    def test_null_rules_means_no_habits(self):
+        e = Env(habits=None)
+        link = e.link()
         self.assertIsNone(e.turn("root-1", "telegram", "x"))
+        self.assertIsNone(e.turn("root-1", "telegram", "y"))
+        habits_reqs = [r for r in link.requests if r.get("type") == "habits"]
+        self.assertEqual(len(habits_reqs), 1)
 
-    def test_without_rules_the_mail_still_comes(self):
-        e = Env(rules=None)
+    def test_null_rules_still_delivers_mail(self):
+        e = Env(habits=None)
         link = e.link()
         e.bus.deliver(support.deliver_frame(M1, body="later"), link)
         out = e.turn("root-1", "telegram", "x")["context"]
         self.assertIn("later", out)
-        self.assertNotIn(RULES, out)
+        self.assertNotIn(TEST_HABITS, out)
+
+    def test_habits_error_caches_none_and_does_not_retry_every_turn(self):
+        e = Env(habits="error")
+        link = e.link()
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+        self.assertIsNone(e.turn("root-1", "telegram", "y"))
+        habits_reqs = [r for r in link.requests if r.get("type") == "habits"]
+        self.assertEqual(len(habits_reqs), 1)
+
+    def test_no_marker_file_is_consulted(self):
+        from oa_bus import bus as bus_mod
+
+        self.assertFalse(hasattr(bus_mod, "HABITS_MARKER"))
+        self.assertFalse(hasattr(bus_mod, "HABITS"))
 
     def test_no_open_link_means_no_habits(self):
         e = Env()
@@ -501,7 +524,7 @@ class Habits(unittest.TestCase):
         e = Env()
         e.link("root-2")
         self.assertIsNone(e.turn("root-1", "telegram", "x"))
-        self.assertEqual(e.turn("root-2", "telegram", "x"), {"context": RULES})
+        self.assertEqual(e.turn("root-2", "telegram", "x"), {"context": TEST_HABITS})
 
     def test_they_are_withheld_wherever_the_context_would_not_reach_the_model(self):
         e = Env()

@@ -14,6 +14,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
+import { RUNTIME_DOC_URI } from "../src/mcp/instructions.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
@@ -452,13 +453,17 @@ describe("DATA_DOC_BYTES override", () => {
     expect(m).toContain("limited to 1536 KB");
   });
 
-  it("the MCP instructions state the effective per-doc limit", async () => {
-    const c = await connect(pat, { env: PAID_BIG });
-    expect(c.getInstructions()).toContain(
+  // #3169: the limits moved from the short instructions to the runtime guide resource.
+  it("the MCP runtime guide states the effective per-doc limit", async () => {
+    const guide = async (env: typeof PAID) => {
+      const c = await connect(pat, { env });
+      const r = await c.readResource({ uri: RUNTIME_DOC_URI });
+      return (r.contents[0] as { text: string }).text;
+    };
+    expect(await guide(PAID_BIG)).toContain(
       "- Limits: 1536 KB per document on this instance (paid plan), 50 MB per artifact",
     );
-    const d = await connect(pat, { env: PAID });
-    expect(d.getInstructions()).toContain(
+    expect(await guide(PAID)).toContain(
       "- Limits: 1 MB per document on this instance (paid plan), 50 MB per artifact",
     );
   });

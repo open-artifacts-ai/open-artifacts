@@ -48,7 +48,16 @@ const passRl = {
     return { success: true };
   },
 } as unknown as RateLimit;
+/** RL_HOOKS: the limiter a call with the right key spends. */
+const hookCalls: RlCall[] = [];
+const passHooksRl = {
+  limit: async (o: RlCall) => {
+    hookCalls.push(o);
+    return { success: true };
+  },
+} as unknown as RateLimit;
 const ON = {
+  RL_HOOKS: passHooksRl,
   TEST_HOOKS: "1",
   TEST_HOOK_KEY: KEY,
   TEST_DOMAIN: TD,
@@ -56,13 +65,21 @@ const ON = {
 };
 const tu = (local: string) => uniq(local, TD);
 /**
- * A start time past the current millisecond: an earlier test's last audit
- * row may share it. Waits on the clock moving (a D1 round trip advances
- * workerd's clock), not on a sleep.
+ * A start time past every earlier audit row, with every later `Date.now()`
+ * strictly later than the one before it, across the whole file: the clock is a
+ * counter that never goes back (an earlier test advanced it past real time, so
+ * a later one starts from where it left off), restored after each test. Audit
+ * rows never tie on `at`, no earlier row is at or after a later `since`, and
+ * nothing waits for the real clock to move.
  */
+let ticking = false;
+let fakeNow = 0;
 async function freshSince(): Promise<number> {
-  const t = Date.now();
-  while (Date.now() <= t) await env.DB.prepare("select 1").first();
+  if (!ticking) {
+    ticking = true;
+    fakeNow = Math.max(Date.now(), fakeNow);
+    vi.spyOn(Date, "now").mockImplementation(() => ++fakeNow);
+  }
   return Date.now();
 }
 
@@ -101,7 +118,10 @@ async function refused404(
     error: { ...error, details: { reason, ...extra } },
   });
 }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  ticking = false;
+});
 
 async function call(
   e: Env,
@@ -261,7 +281,7 @@ describe("activation", () => {
   });
 });
 
-describe("rate limit first", () => {
+describe("rate limits", () => {
   const failRl = (keys: string[]) =>
     ({
       limit: async ({ key }: { key: string }) => {
@@ -269,32 +289,78 @@ describe("rate limit first", () => {
         return { success: false };
       },
     }) as unknown as RateLimit;
+  const KEYS = `test:${env.APP_HOST}:198.51.100.200`;
 
-  it("over RL_ANON (test:<install>:<ip>) is the 404, before the key compare or D1", async () => {
+  it("a wrong key over RL_ANON is the 404, with no D1 access", async () => {
     const keys: string[] = [];
-    const digest = vi.spyOn(crypto.subtle, "digest");
     const d = vi.spyOn(env.DB, "prepare");
-    for (const key of [KEY, "x".repeat(32)])
-      await same404(
-        await hook(
-          on({ RL_ANON: failRl(keys) }),
-          TEST_HOOKS.session,
-          { email: tu("rl"), role: "member" },
-          key,
-        ),
-      );
-    expect(keys).toEqual([
-      `test:${env.APP_HOST}:198.51.100.200`,
-      `test:${env.APP_HOST}:198.51.100.200`,
-    ]);
-    expect(digest).not.toHaveBeenCalled();
+    await same404(
+      await hook(
+        on({ RL_ANON: failRl(keys) }),
+        TEST_HOOKS.session,
+        { email: tu("rl"), role: "member" },
+        "x".repeat(32),
+      ),
+    );
+    expect(keys).toEqual([KEYS]);
     expect(d).not.toHaveBeenCalled();
   });
 
-  it("a wrong key still spends the limiter", async () => {
+  it("a right key over RL_HOOKS is the same 404, with no D1 access", async () => {
+    const keys: string[] = [];
+    const d = vi.spyOn(env.DB, "prepare");
+    await same404(
+      await hook(on({ RL_HOOKS: failRl(keys) }), TEST_HOOKS.session, {
+        email: tu("rl"),
+        role: "member",
+      }),
+    );
+    expect(keys).toEqual([KEYS]);
+    expect(d).not.toHaveBeenCalled();
+  });
+
+  it("a wrong key spends RL_ANON and never RL_HOOKS", async () => {
     rlCalls.length = 0;
+    hookCalls.length = 0;
     await call(on(), TEST_HOOKS.session, { body: {}, key: "x".repeat(32) });
-    expect(rlCalls).toHaveLength(1);
+    await call(on(), TEST_HOOKS.session, { body: {} });
+    expect(rlCalls).toHaveLength(2);
+    expect(hookCalls).toHaveLength(0);
+  });
+
+  it("a right key spends RL_HOOKS and never RL_ANON", async () => {
+    rlCalls.length = 0;
+    hookCalls.length = 0;
+    await call(on(), TEST_HOOKS.session, {
+      body: { email: tu("own"), role: "member" },
+      key: KEY,
+    });
+    expect(hookCalls).toEqual([{ key: KEYS }]);
+    expect(rlCalls).toHaveLength(0);
+  });
+
+  it("a wrong key past RL_ANON is not helped by a roomy RL_HOOKS", async () => {
+    const keys: string[] = [];
+    hookCalls.length = 0;
+    await same404(
+      await hook(
+        on({ RL_ANON: failRl(keys) }),
+        TEST_HOOKS.session,
+        { email: tu("g"), role: "member" },
+        "y".repeat(32),
+      ),
+    );
+    expect(keys).toHaveLength(1);
+    expect(hookCalls).toHaveLength(0);
+  });
+
+  it("RL_HOOKS unbound: a right key spends RL_ANON, as before the binding", async () => {
+    rlCalls.length = 0;
+    await call(on({ RL_HOOKS: undefined }), TEST_HOOKS.session, {
+      body: { email: tu("fb"), role: "member" },
+      key: KEY,
+    });
+    expect(rlCalls).toEqual([{ key: KEYS }]);
   });
 
   it("RL_ANON unbound: the 404 even with the right key", async () => {
@@ -501,7 +567,9 @@ describe("TEST_DOMAIN and refusals", () => {
     const rs = [
       await call(on(), "/__test/x", { body: {}, key: "x".repeat(32) }),
       await call(on(), TEST_HOOKS.session, { body: { email: "nope" } }),
-      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.session, { email: "nope" }),
+      await hook(on({ RL_ANON: noRl, RL_HOOKS: noRl }), TEST_HOOKS.session, {
+        email: "nope",
+      }),
       await hook(on({ RL_ANON: undefined }), TEST_HOOKS.session, {}),
       await hook(env, TEST_HOOKS.session, { email: "nope" }),
     ];
@@ -754,9 +822,9 @@ describe("hooks", () => {
 
   it("code-caps/reset: audited and rate-limited like every hook", async () => {
     const since = await freshSince();
-    rlCalls.length = 0;
+    hookCalls.length = 0;
     await hook(on(), TEST_HOOKS.codeCapsReset, {});
-    expect(rlCalls).toHaveLength(1);
+    expect(hookCalls).toHaveLength(1);
     const rows = await auditRows(since);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.action).toBe("test_hook.code_caps_reset");
@@ -769,7 +837,11 @@ describe("hooks", () => {
       limit: async () => ({ success: false }),
     } as unknown as RateLimit;
     await same404(
-      await hook(on({ RL_ANON: noRl }), TEST_HOOKS.codeCapsReset, {}),
+      await hook(
+        on({ RL_ANON: noRl, RL_HOOKS: noRl }),
+        TEST_HOOKS.codeCapsReset,
+        {},
+      ),
     );
   });
 
