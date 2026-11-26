@@ -20,6 +20,7 @@ import {
   MICROSOFT_JWKS_URL,
   MICROSOFT_TOKEN_URL,
   microsoftProvider,
+  resetMicrosoftJwksCache,
 } from "../src/auth/providers/microsoft.js";
 import { readSession, sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
@@ -31,7 +32,15 @@ const MS_CID = "ms-client-id-1234";
 const MS_SECRET = "ms-client-secret-top-secret";
 const TID = "9188040d-6c67-4c5b-b112-36a304b66dad";
 const OID = "00000000-0000-0000-1111-222222222222";
+const OTHER_TID = "72f988bf-86f1-41af-91ab-2d7cd011db47";
 const APP = "http://app.localhost";
+// Extra JWKS entries (same key pair) carrying Microsoft's `issuer` property.
+const KEY_ISSUERS: Record<string, string> = {
+  "m-tpl": "https://login.microsoftonline.com/{tenantid}/v2.0",
+  "m-own": `https://login.microsoftonline.com/${TID}/v2.0`,
+  "m-other": `https://login.microsoftonline.com/${OTHER_TID}/v2.0`,
+  "m-sts": "https://sts.windows.net/{tenantid}/",
+};
 const SESSION = sessionCookieName(env);
 const app = createApp();
 const ctx = { waitUntil() {}, passThroughOnException() {} } as never;
@@ -102,6 +111,7 @@ type CodeEntry = {
   challenge: string;
   claims: Record<string, unknown>;
   key?: CryptoKey;
+  kid?: string;
 };
 
 async function fakeMicrosoft() {
@@ -112,7 +122,7 @@ async function fakeMicrosoft() {
 
   const mint = (
     claims: Record<string, unknown>,
-    o: { key?: CryptoKey; alg?: string } = {},
+    o: { key?: CryptoKey; alg?: string; kid?: string } = {},
   ) => {
     const now = Math.floor(Date.now() / 1000);
     const tid = (claims.tid as string | undefined) ?? TID;
@@ -132,7 +142,7 @@ async function fakeMicrosoft() {
       }).filter(([, v]) => v !== undefined),
     ) as JWTPayload;
     return new SignJWT(body)
-      .setProtectedHeader({ alg: o.alg ?? "RS256", kid: "m1" })
+      .setProtectedHeader({ alg: o.alg ?? "RS256", kid: o.kid ?? "m1" })
       .sign(o.key ?? kp.privateKey);
   };
 
@@ -141,7 +151,17 @@ async function fakeMicrosoft() {
     .spyOn(globalThis, "fetch")
     .mockImplementation(async (input, init) => {
       const req = new Request(input, init);
-      if (req.url === MICROSOFT_JWKS_URL) return Response.json({ keys: [jwk] });
+      if (req.url === MICROSOFT_JWKS_URL)
+        return Response.json({
+          keys: [
+            jwk,
+            ...Object.entries(KEY_ISSUERS).map(([kid, issuer]) => ({
+              ...jwk,
+              kid,
+              issuer,
+            })),
+          ],
+        });
       if (req.url === MICROSOFT_TOKEN_URL && req.method === "POST") {
         const body = new URLSearchParams(await req.text());
         tokenCalls.push(body);
@@ -162,7 +182,10 @@ async function fakeMicrosoft() {
         if (b64urlEncode(new Uint8Array(d)) !== entry.challenge)
           return Response.json({ error: "invalid_grant" }, { status: 400 });
         return Response.json({
-          id_token: await mint(entry.claims, { key: entry.key }),
+          id_token: await mint(entry.claims, {
+            key: entry.key,
+            kid: entry.kid,
+          }),
           access_token: "ms-access-token-secret",
           token_type: "Bearer",
         });
@@ -176,9 +199,10 @@ async function fakeMicrosoft() {
       claims: Record<string, unknown>,
       challenge: string,
       key?: CryptoKey,
+      kid?: string,
     ): string {
       const code = `ms-code-${crypto.randomUUID()}`;
-      codes.set(code, { challenge, claims, key });
+      codes.set(code, { challenge, claims, key, kid });
       return code;
     },
     setTokenStatus(s: number) {
@@ -190,6 +214,7 @@ async function fakeMicrosoft() {
 
 let ms: Awaited<ReturnType<typeof fakeMicrosoft>>;
 beforeEach(async () => {
+  resetMicrosoftJwksCache();
   ms = await fakeMicrosoft();
 });
 afterEach(() => vi.restoreAllMocks());
@@ -324,6 +349,62 @@ describe("microsoft provider (self-hosted)", () => {
     await expect(
       handleCallback(e, microsoftProvider, callbackReq(b, code)),
     ).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("tid must be a GUID (any case); other tids are refused", async () => {
+    const e = msEnv();
+    for (const tid of [TID, TID.toUpperCase()]) {
+      const b = await begin(e);
+      const code = ms.issueCode({ nonce: b.nonce, tid }, b.challenge);
+      expect(
+        await handleCallback(e, microsoftProvider, callbackReq(b, code)),
+      ).toMatchObject({ subject: `${tid}:${OID}` });
+    }
+    for (const tid of [
+      "contoso",
+      "common",
+      "9188040d6c674c5bb11236a304b66dad",
+      `${TID}-x`,
+      "9188040d-6c67-4c5b-b112-36a304b66dag",
+    ]) {
+      const b = await begin(e);
+      const code = ms.issueCode({ nonce: b.nonce, tid }, b.challenge);
+      await expect(
+        handleCallback(e, microsoftProvider, callbackReq(b, code)),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+    }
+  });
+
+  it("signing key issuer: template and own tenant pass; other tenant and mismatch are refused", async () => {
+    const e = msEnv();
+    const run = async (kid: string) => {
+      const b = await begin(e);
+      const code = ms.issueCode(
+        { nonce: b.nonce },
+        b.challenge,
+        undefined,
+        kid,
+      );
+      return handleCallback(e, microsoftProvider, callbackReq(b, code));
+    };
+    for (const kid of ["m-tpl", "m-own", "m1"])
+      expect(await run(kid)).toMatchObject({ subject: `${TID}:${OID}` });
+    for (const kid of ["m-other", "m-sts", "no-such-kid"])
+      await expect(run(kid)).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("template key issuer passes for another tenant's matching tid", async () => {
+    const e = msEnv();
+    const b = await begin(e);
+    const code = ms.issueCode(
+      { nonce: b.nonce, tid: OTHER_TID },
+      b.challenge,
+      undefined,
+      "m-tpl",
+    );
+    expect(
+      await handleCallback(e, microsoftProvider, callbackReq(b, code)),
+    ).toMatchObject({ subject: `${OTHER_TID}:${OID}` });
   });
 
   it("refuses wrong aud and multi-audience tokens", async () => {

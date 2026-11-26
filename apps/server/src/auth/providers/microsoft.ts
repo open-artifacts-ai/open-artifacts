@@ -1,6 +1,12 @@
 import { normalizeEmail } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
-import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
+import {
+  decodeProtectedHeader,
+  importJWK,
+  type JWK,
+  type JWTPayload,
+  jwtVerify,
+} from "jose";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin } from "../../http/errors.js";
 import { authConfig } from "../config.js";
@@ -12,6 +18,10 @@ import type { OidcProvider, VerifiedIdentity } from "./types.js";
 // Uses the multi-tenant `common` endpoint and verifies the ID token locally:
 // RS256 signature against Microsoft's JWKS, aud = client id, exp/nbf skew,
 // constant-time nonce, and per-tenant issuer `https://login.microsoftonline.com/{tid}/v2.0`.
+// Issuer rules for the `common` JWKS (learn.microsoft.com/entra/identity-platform/
+// access-tokens#validate-the-issuer): tid must be a GUID, and when the signing
+// key (picked by kid) carries an `issuer`, that issuer with `{tenantid}` set to
+// the token's tid must equal the token's iss.
 // Subject is `${tid}:${oid}` (never `sub` alone). Microsoft does not vouch for
 // email addresses across tenants/personal accounts, so emailVerified is always
 // false and admit() requires an emailed code on first link.
@@ -25,7 +35,10 @@ export const MICROSOFT_JWKS_URL =
 
 const CLOCK_TOLERANCE_S = 60;
 const MAX_NAME = 200;
-const SAFE_TID = /^[A-Za-z0-9-]+$/;
+const TID_GUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const JWKS_TTL_MS = 60 * 60 * 1000;
+const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
 
 const redirectUri = (env: Env) => `${appOrigin(env)}${AUTH.callbackMicrosoft}`;
 
@@ -36,10 +49,56 @@ function microsoftConfig(env: Env) {
   return m;
 }
 
-let microsoftJwks: ReturnType<typeof createRemoteJWKSet> | undefined;
-function jwks() {
-  microsoftJwks ??= createRemoteJWKSet(new URL(MICROSOFT_JWKS_URL));
-  return microsoftJwks;
+type MsJwk = JWK & { kid: string; issuer?: unknown };
+
+// Microsoft's JWKS, cached per isolate. We hold the raw keys (not jose's
+// remote set) so the key that verified a token, and its `issuer`, is known.
+let jwksCache: { keys: MsJwk[]; at: number } | undefined;
+
+async function fetchJwks(): Promise<MsJwk[]> {
+  let res: Response;
+  try {
+    res = await fetch(MICROSOFT_JWKS_URL, {
+      headers: { accept: "application/json" },
+      redirect: "manual",
+    });
+  } catch {
+    return fail("jwks_fetch");
+  }
+  if (!res.ok) {
+    await res.body?.cancel();
+    return fail(`jwks_http_${res.status}`);
+  }
+  let out: unknown;
+  try {
+    out = await res.json();
+  } catch {
+    return fail("jwks_bad_json");
+  }
+  const keys = (out as { keys?: unknown } | null)?.keys;
+  if (!Array.isArray(keys)) return fail("jwks_bad_json");
+  return keys.filter(
+    (k): k is MsJwk =>
+      !!k && typeof k === "object" && typeof (k as MsJwk).kid === "string",
+  );
+}
+
+/** The JWKS key with this kid, refetching once (rate-limited) on a miss. */
+async function signingJwk(kid: string): Promise<MsJwk | undefined> {
+  const now = Date.now();
+  if (!jwksCache || now - jwksCache.at > JWKS_TTL_MS)
+    jwksCache = { keys: await fetchJwks(), at: now };
+  let k = jwksCache.keys.find((x) => x.kid === kid);
+  if (!k && now - jwksCache.at > JWKS_REFETCH_COOLDOWN_MS) {
+    jwksCache = { keys: await fetchJwks(), at: now };
+    k = jwksCache.keys.find((x) => x.kid === kid);
+  }
+  return k;
+}
+
+/** Test hook: drop the cached JWKS. */
+export function resetMicrosoftJwksCache() {
+  jwksCache = undefined;
 }
 
 async function exchange(
@@ -110,9 +169,20 @@ export const microsoftProvider: OidcProvider = {
     const m = microsoftConfig(env);
     const idToken = await exchange(env, m.clientId, m.secret, a);
 
+    let kid: unknown;
+    try {
+      ({ kid } = decodeProtectedHeader(idToken));
+    } catch {
+      return fail("jwt_verify");
+    }
+    if (typeof kid !== "string" || !kid) return fail("jwt_verify");
+    const jwk = await signingJwk(kid);
+    if (!jwk) return fail("jwt_verify");
+
     let claims: JWTPayload & Record<string, unknown>;
     try {
-      ({ payload: claims } = await jwtVerify(idToken, jwks(), {
+      const key = await importJWK({ ...jwk, alg: "RS256" }, "RS256");
+      ({ payload: claims } = await jwtVerify(idToken, key, {
         algorithms: ["RS256"],
         audience: m.clientId,
         clockTolerance: CLOCK_TOLERANCE_S,
@@ -132,9 +202,17 @@ export const microsoftProvider: OidcProvider = {
       return fail("aud");
 
     const tid = claims.tid;
-    if (typeof tid !== "string" || !SAFE_TID.test(tid)) return fail("claims");
-    if (claims.iss !== `https://login.microsoftonline.com/${tid}/v2.0`)
-      return fail("jwt_verify");
+    if (typeof tid !== "string" || !TID_GUID.test(tid)) return fail("claims");
+    const iss = `https://login.microsoftonline.com/${tid}/v2.0`;
+    if (claims.iss !== iss) return fail("jwt_verify");
+    // The signing key's issuer, when present, binds the key to tenants.
+    if (jwk.issuer !== undefined) {
+      if (
+        typeof jwk.issuer !== "string" ||
+        jwk.issuer.replaceAll("{tenantid}", tid) !== iss
+      )
+        return fail("key_issuer");
+    }
 
     const oid = claims.oid;
     if (typeof oid !== "string" || !oid.trim()) return fail("claims");
