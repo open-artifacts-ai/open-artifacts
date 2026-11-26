@@ -57,7 +57,8 @@ export async function checkMemberComments(
         body: "Member smoke comment",
       });
       expect(first.ok, "Member creates a comment").toBe(true);
-      const threadId = (first.data?.thread as { id: string })?.id;
+      // #3163: add_comment returns the short result ({ threadId, commentId }).
+      const threadId = first.data?.threadId as string | undefined;
       expect(threadId).toBeTruthy();
       const reply = await owner.call("add_comment", {
         id,
