@@ -804,6 +804,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : {}),
       // #3208: a definitive exit (starting agy) is kept across a restart.
       ...(!a.live && a.gone === true ? { gone: true as const } : {}),
+      // #3208: a live starting agy's process, checked again by a restart.
+      ...(a.live && a.starting && a.pid > 0 && a.procStart !== undefined
+        ? { agy: { pid: a.pid, procStart: a.procStart } }
+        : {}),
     }));
     const text = JSON.stringify(rows);
     if (text === announcedWritten) return;
@@ -4726,6 +4730,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   // live is not closed and reopened on every restart, and its name is free
   // again for a later rename; before, a daemon restart after a session ended
   // left the row live for good.
+  const agyEnded = (p: { pid: number; procStart: string }): boolean => {
+    if (!agRunning(p.pid)) return true;
+    const now = agStart(p.pid);
+    return now !== null && now !== p.procStart;
+  };
   for (const e of savedAnnounced) {
     if (agents.byRef(e.ref) !== undefined) continue;
     agents.up({
@@ -4740,8 +4749,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       cwd: "",
       live: false,
       closedBy: "liveness",
-      // #3208: a definitive exit (starting agy) is kept across a restart.
-      ...(e.gone ? { gone: true } : {}),
+      // #3208: a definitive exit (starting agy) is kept across a restart, and
+      // so is one whose process ended (or whose pid now runs another
+      // process) while the daemon was down. A start time that can't be read
+      // is not conclusive: a plain close.
+      ...(e.gone || (e.agy !== undefined && agyEnded(e.agy))
+        ? { gone: true }
+        : {}),
     });
   }
   persistAnnounced();
