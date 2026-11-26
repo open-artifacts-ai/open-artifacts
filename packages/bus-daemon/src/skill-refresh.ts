@@ -12,11 +12,20 @@ export type SkillRefreshDeps = {
 
 export type SkillRefresher = {
   refresh: (serverVersion: string | undefined) => Promise<void>;
+};
+
+/** The lane a hello came on: each instance refreshes its own skill copies. */
+export type HelloLane = { name: string; main: boolean; hub: string };
+
+export type LaneSkillRefresher = {
   onHello: (
-    isMain: boolean,
+    lane: HelloLane,
     serverVersion: string | undefined,
   ) => Promise<void>;
 };
+
+/** A local instance name safe to put in a file name. */
+const LANE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 
 /** Reads the last instance version skills were refreshed for, or undefined. */
 export function readSkillVersion(file: string): string | undefined {
@@ -47,21 +56,26 @@ export const SKILL_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
 export const SKILL_REFRESH_DEADLINE_MS = 60_000;
 
 /**
- * Runs the CLI's `skill --refresh` with the same node and entry as the daemon:
+ * Runs the CLI's `skill --refresh --instance <hub>` with the same node and entry as the daemon:
  * fixed arguments, no shell, killed at the deadline.
  */
 export function runSkillCommand(
   execPath: string,
   entry: string | undefined,
+  hub: string,
   deadlineMs = SKILL_REFRESH_DEADLINE_MS,
 ): Promise<number> {
   if (!entry) return Promise.resolve(1);
   return new Promise((resolve) => {
-    const child = spawn(execPath, [entry, "skill", "--refresh"], {
-      stdio: "ignore",
-      shell: false,
-      env: process.env,
-    });
+    const child = spawn(
+      execPath,
+      [entry, "skill", "--refresh", "--instance", hub],
+      {
+        stdio: "ignore",
+        shell: false,
+        env: process.env,
+      },
+    );
     let settled = false;
     const done = (code: number) => {
       if (settled) return;
@@ -117,24 +131,50 @@ export function createSkillRefresher(deps: SkillRefreshDeps): SkillRefresher {
       inFlight = false;
     }
   };
+  return { refresh };
+}
+
+/**
+ * One refresher per instance, made on its first hello. A lane whose name is
+ * not a plain local name is skipped.
+ */
+export function createLaneSkillRefresher(
+  make: (lane: HelloLane) => SkillRefresher,
+): LaneSkillRefresher {
+  const byName = new Map<string, SkillRefresher>();
   return {
-    refresh,
-    onHello: (isMain: boolean, serverVersion: string | undefined) =>
-      isMain ? refresh(serverVersion) : Promise.resolve(),
+    onHello: (lane, serverVersion) => {
+      if (!lane.main && !LANE_NAME_RE.test(lane.name)) return Promise.resolve();
+      let r = byName.get(lane.name);
+      if (!r) {
+        r = make(lane);
+        byName.set(lane.name, r);
+      }
+      return r.refresh(serverVersion);
+    },
   };
 }
 
-/** Default daemon wiring: stores `skill-version` under `busHomeDir` and spawns `oa-bus skill`. */
+/**
+ * Default daemon wiring: main stores `skill-version`, another instance
+ * `skill-version.<name>`, under `busHomeDir`; each runs `oa-bus skill --refresh
+ * --instance <its hub>`.
+ */
 export function defaultSkillRefresher(
   busHomeDir: string,
   log: (msg: string) => void,
   entry: string,
-): SkillRefresher {
-  const file = join(busHomeDir, "skill-version");
-  return createSkillRefresher({
-    readStored: () => readSkillVersion(file),
-    writeStored: (v) => writeSkillVersion(file, v),
-    run: () => runSkillCommand(process.execPath, entry),
-    log,
+): LaneSkillRefresher {
+  return createLaneSkillRefresher((lane) => {
+    const file = join(
+      busHomeDir,
+      lane.main ? "skill-version" : `skill-version.${lane.name}`,
+    );
+    return createSkillRefresher({
+      readStored: () => readSkillVersion(file),
+      writeStored: (v) => writeSkillVersion(file, v),
+      run: () => runSkillCommand(process.execPath, entry, lane.hub),
+      log: (m) => log(lane.main ? m : `${m} (${lane.name})`),
+    });
   });
 }

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  createLaneSkillRefresher,
   createSkillRefresher,
   readSkillVersion,
   writeSkillVersion,
@@ -136,25 +137,37 @@ describe("createSkillRefresher", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("onHello only refreshes on the main lane", async () => {
-    let stored: string | undefined;
-    const run = vi.fn(async () => 0);
-    const refresher = createSkillRefresher({
-      readStored: () => stored,
-      writeStored: (v) => {
-        stored = v;
-      },
-      run,
-      log: vi.fn(),
+  it("onHello refreshes each instance on its own hello, with its own state", async () => {
+    const stored = new Map<string, string>();
+    const runs: string[] = [];
+    const lanes = createLaneSkillRefresher((lane) =>
+      createSkillRefresher({
+        readStored: () => stored.get(lane.name),
+        writeStored: (v) => {
+          stored.set(lane.name, v);
+        },
+        run: async () => {
+          runs.push(lane.hub);
+          return 0;
+        },
+        log: vi.fn(),
+      }),
+    );
+    const main = { name: "main", main: true, hub: "https://a.example" };
+    const mit = { name: "mit-ai", main: false, hub: "https://b.example" };
+    await lanes.onHello(main, "1.1.0");
+    await lanes.onHello(mit, "2.0.0");
+    await lanes.onHello(mit, "2.0.0");
+    expect(runs).toEqual(["https://a.example", "https://b.example"]);
+    expect(Object.fromEntries(stored)).toEqual({
+      main: "1.1.0",
+      "mit-ai": "2.0.0",
     });
-
-    await refresher.onHello(false, "1.1.0");
-    expect(run).not.toHaveBeenCalled();
-    expect(stored).toBeUndefined();
-
-    await refresher.onHello(true, "1.1.0");
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(stored).toBe("1.1.0");
+    await lanes.onHello(
+      { name: "../x", main: false, hub: "https://c.example" },
+      "1.0.0",
+    );
+    expect(runs).toHaveLength(2);
   });
 });
 

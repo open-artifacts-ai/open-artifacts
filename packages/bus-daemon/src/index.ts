@@ -183,7 +183,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
-import type { SkillRefresher } from "./skill-refresh.ts";
+import type { LaneSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -299,8 +299,8 @@ const piLike = (kind: string) =>
 export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
-  /** #3203: refreshes the installed skills when the main instance's version changes. */
-  skillRefresh?: SkillRefresher;
+  /** #3203: refreshes each instance's installed skills when its version changes. */
+  skillRefresh?: LaneSkillRefresher;
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
@@ -2547,7 +2547,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
-            void skillRefresh?.onHello(lane.main, frame.server_version);
+            void skillRefresh?.onHello(
+              { name: lane.name, main: lane.main, hub: lane.cfg.hub },
+              frame.server_version,
+            );
             if (lane.main && lane.runCap) {
               if (takesInstance()) {
                 if (frame.run_version === null) updaterRef?.clearNamed();
