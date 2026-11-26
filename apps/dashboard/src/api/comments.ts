@@ -159,17 +159,18 @@ export function overlayPending(
     : { ...data, threads, open: data.open + opened };
 }
 
+/** A server without comments, or comments off: asked once, never again. */
+export const commentsUnavailable = (e: unknown): boolean =>
+  e instanceof ApiClientError &&
+  (e.status === 404 || e.code === "comments_off");
+
 /** Every thread, open and resolved: the shell filters and counts. Posts still in flight are laid over the list. */
 export const useThreads = (id: string, enabled: boolean, guest = false) => {
   const q = useQuery({
     enabled,
     queryKey: commentsKey(id),
     // A server without comments, or comments off: no retry, the shell hides them.
-    retry: (n, e) =>
-      !(
-        e instanceof ApiClientError &&
-        (e.status === 404 || e.code === "comments_off")
-      ) && n < 2,
+    retry: (n, e) => !commentsUnavailable(e) && n < 2,
     queryFn: ({ signal }) =>
       withAnon(guest, false, (x) =>
         api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),

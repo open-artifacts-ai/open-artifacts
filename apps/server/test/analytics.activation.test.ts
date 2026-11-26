@@ -262,7 +262,6 @@ describe("activation events", () => {
     const owner = await member("an-slow");
     const u = await getUser(on(), owner.userId);
     if (!u) throw new Error("no user");
-    const slow = new Promise((r) => setTimeout(() => r("slow"), 1500));
     const done = async () => {
       await activation(on(), "agent_named", owner.userId);
       await noteMemberFirst(on(), owner.userId, "agent_connected");
@@ -279,7 +278,9 @@ describe("activation events", () => {
       );
       return "done";
     };
-    expect(await Promise.race([done(), slow])).toBe("done");
+    // The send never settles; the caller finishing at all is the proof (a
+    // caller that waited on it would hit the test timeout instead).
+    expect(await done()).toBe("done");
   });
 });
 

@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { BUS_CMD } from "@oa/bus-protocol";
 
-export type Harness = "claude" | "opencode" | "codex" | "pi";
+export type Harness = "claude" | "opencode" | "codex" | "pi" | "antigravity";
 export type Command = (
   | {
       cmd: "install";
@@ -77,7 +77,7 @@ const COMMANDS = new Set([
   "upgrade",
   "version",
 ]);
-const HARNESSES = ["claude", "opencode", "codex", "pi"];
+const HARNESSES = ["claude", "opencode", "codex", "pi", "antigravity"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;

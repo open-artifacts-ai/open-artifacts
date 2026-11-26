@@ -69,6 +69,21 @@ describe("layout behaviour", () => {
     expect(redirect).not.toHaveBeenCalled();
   });
 
+  // #3029: a path with no route goes to the sign-in page flagged dead, no next;
+  // a known one keeps the server's /auth/login?next= hop.
+  it("anonymous at an unknown path goes to /sign-in?dead=1", async () => {
+    const { redirect } = mount(async () => unauth(), "/invite/x");
+    await waitFor(() =>
+      expect(redirect).toHaveBeenCalledWith("/sign-in?dead=1"),
+    );
+  });
+  it("anonymous at a known path keeps next through /auth/login", async () => {
+    const { redirect } = mount(async () => unauth(), "/mine");
+    await waitFor(() =>
+      expect(redirect).toHaveBeenCalledWith("/auth/login?next=%2Fmine"),
+    );
+  });
+
   // TanStack Router matches case-insensitively, so /A/x renders the viewer, yet
   // the anonymous exemption is a case-sensitive startsWith("/a/").
   it("anonymous at /A/x (renders the viewer route) is not redirected", async () => {

@@ -18,6 +18,7 @@ import {
 import { migrateHub } from "../../src/bus/schema.js";
 import {
   type Daemon,
+  eventually,
   framesSeen,
   hello,
   hubOf,
@@ -80,10 +81,22 @@ async function reply(d: Daemon, f: ClientFrame): Promise<Receipt | ErrorF> {
 }
 const delivers = (d: Daemon) =>
   framesSeen(d).filter((f) => f.type === "deliver");
-async function offline(d: Daemon) {
+async function offline(d: Daemon, machineId: string) {
   d.close();
   await d.closed;
-  await new Promise((r) => setTimeout(r, 50));
+  // The hub writes this on close (hub.ts): wait on it, not on a clock.
+  await eventually(async () =>
+    expect(
+      await inHub((_, st) =>
+        st.storage.sql
+          .exec(
+            "select disconnected_at as t from machines where id = ?",
+            machineId,
+          )
+          .toArray(),
+      ),
+    ).toEqual([{ t: expect.any(Number) }]),
+  );
 }
 
 /** Lifts a machine's frame budget so a flood of sends is not rate limited. */
@@ -177,7 +190,7 @@ describe("adv B14", () => {
     const rcv = uniq("Rcv");
     await agent(s, "sref", sender, n);
     await agent(t, "rref", rcv, n);
-    await offline(t);
+    await offline(t, tm.id);
     const r1 = (await reply(s, send("k1", "sref", rcv))) as Receipt;
     expect(r1.state).toBe("pending");
     // Two resends in the same burst (same DO turn ordering).
@@ -222,7 +235,7 @@ describe("adv B14", () => {
       rcvs.push(r);
       await agent(t, `r${i}`, r, n);
     }
-    await offline(t);
+    await offline(t, tm.id);
     await liftBudget(sm.id);
     // Original goes to R0 and stays pending (R0 offline).
     const first = (await reply(
@@ -371,7 +384,7 @@ describe("adv B14", () => {
     const rcv = uniq("Rcv");
     await agent(s, "sref", sender, n);
     await agent(t, "rref", rcv, n);
-    await offline(t);
+    await offline(t, tm.id);
     const r1 = (await reply(s, send("k1", "sref", rcv))) as Receipt;
     expect(await (await hubOf()).revokeMachine(tm.id)).toBe(true);
     await waitFor(s, "receipt_update");
@@ -419,7 +432,7 @@ describe("adv B14", () => {
     const rcv = uniq("Rcv");
     await agent(s, "sref", sender, n);
     await agent(t, "rref", rcv, n);
-    await offline(t);
+    await offline(t, tm.id);
     const r1 = (await reply(s, send("k1", "sref", rcv, "stale"))) as Receipt;
     await setClock(Date.now() + 2 * LIMITS.mailTtlSec * 1000 + 5000);
     const r2 = (await reply(s, send("k1", "sref", rcv, "stale"))) as Receipt;
@@ -445,7 +458,7 @@ describe("adv B14", () => {
     const n = ns("adv14ch");
     const rcv = uniq("Rcv");
     await agent(t, "rref", rcv, n);
-    await offline(t);
+    await offline(t, tm.id);
     const total = () =>
       inOwnerHub(
         (st) =>
@@ -536,7 +549,7 @@ describe("adv B14", () => {
       }
       const acker = uniq("Acker");
       await agent(a, "acker", acker, n);
-      await offline(t);
+      await offline(t, tm.id);
       await liftBudget(sm.id);
       // SEND_KEYS_PER_AGENT old keys, all pending (the recipients are offline).
       for (let i = 0; i < SEND_KEYS_PER_AGENT; i++) {
@@ -618,7 +631,7 @@ describe("adv B14", () => {
       const rcv = uniq("Rcv");
       await agent(s, "sref", uniq("Snd"), n);
       await agent(t, "rref", rcv, n);
-      if (offlineRecipient) await offline(t);
+      if (offlineRecipient) await offline(t, tm.id);
       const r = (await reply(s, send("k1", "sref", rcv))) as Receipt;
       expect(r.state).toBe("pending");
       expect(await keyFinal(r.msg_id)).toBe(0);

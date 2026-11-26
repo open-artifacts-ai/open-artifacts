@@ -1,4 +1,4 @@
-import { AUTH, type Me } from "@oa/shared";
+import { AUTH, type Me, SIGN_IN_PAGE } from "@oa/shared";
 import {
   Button,
   DropdownMenu,
@@ -25,6 +25,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   Outlet,
   useNavigate,
+  useRouter,
   useRouterState,
   useSearch,
 } from "@tanstack/react-router";
@@ -139,12 +140,20 @@ function Layout() {
   // The requested address, not the matched route: an unknown path matches no
   // leaf but the root, which would send everyone back to "/" after sign-in.
   // The server and the sign-in page both pass `next` through safeNext.
+  // #3029: a path with no route (only the root matches) goes to the sign-in
+  // page flagged dead, with no `next`: a line says so and sign-in lands on "/".
+  const router = useRouter();
+  const dead = router
+    .matchRoutes(loc.pathname)
+    .every((m) => m.routeId === "__root__");
   useEffect(() => {
     if (anonymous)
       redirect(
-        `${AUTH.login}?next=${encodeURIComponent(loc.pathname + loc.searchStr)}`,
+        dead
+          ? `${SIGN_IN_PAGE}?dead=1`
+          : `${AUTH.login}?next=${encodeURIComponent(loc.pathname + loc.searchStr)}`,
       );
-  }, [anonymous, redirect, loc.pathname, loc.searchStr]);
+  }, [anonymous, dead, redirect, loc.pathname, loc.searchStr]);
 
   const navigate = useNavigate();
   const guestHome =
