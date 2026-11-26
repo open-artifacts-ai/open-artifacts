@@ -107,6 +107,8 @@ const RPC_ALLOWLIST = [
   "putReach",
   "putRole",
   "revokeMachine",
+  // #3132: read-only; the live holder a moved role names, as an address.
+  "roleHolderFor",
   "runVersionChanged",
   "snapshot",
   "viewLinkProposal",
