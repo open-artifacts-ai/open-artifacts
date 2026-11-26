@@ -19,9 +19,12 @@ import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { readClaudeLinks } from "../src/claude-links.ts";
-import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll, wsServer } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const TOKEN_B = `oa_machine_${"b".repeat(28)}7f3a`;
 const TOKEN_C = `oa_machine_${"c".repeat(28)}9d1e`;
@@ -112,6 +115,8 @@ type Opts = {
 };
 
 async function setup(o: Opts = {}) {
+  /** Finished claude syncs: the signal for "several ticks later". */
+  const syncs = eventCounter();
   const names = o.instances ?? ["b"];
   const hubs =
     o.existing?.hubs ?? (await Promise.all(names.map(() => fakeHub())));
@@ -190,6 +195,7 @@ async function setup(o: Opts = {}) {
       projectsDir: projects,
       mcpConfigFile: config,
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: (pid) => !gone.has(pid),
       ...(o.ratePerMin === undefined ? {} : { guestRatePerMin: o.ratePerMin }),
@@ -217,6 +223,7 @@ async function setup(o: Opts = {}) {
     told,
     logs,
     gone,
+    syncs,
   };
 }
 type Scene = Awaited<ReturnType<typeof setup>>;
@@ -595,6 +602,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
   });
 
   it("held proofs alone create no guest after a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const files = {
       links: join(mkdtempSync(join(tmpdir(), "ob-g-l-")), "claude-links.json"),
       guests: join(
@@ -623,7 +631,12 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     });
     await settled(second);
     // Several sync ticks later: still none.
-    await new Promise((r) => setTimeout(r, 120));
+    {
+      const before = second.syncs.count;
+      await vi.advanceTimersByTimeAsync(120); // the original 120 ms window
+      expect(second.syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
+    await second.h.quiet();
     expect(second.hubB.of("guest_up")).toEqual([]);
     expect(existsSync(files.guests)).toBe(false);
   });

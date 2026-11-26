@@ -12,7 +12,16 @@ import {
 } from "../src/index.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
+/** Every timer the daemon's update paths arm. */
+const FAKE_TIMERS: (
+  | "setTimeout"
+  | "clearTimeout"
+  | "setInterval"
+  | "clearInterval"
+)[] = ["setTimeout", "clearTimeout", "setInterval", "clearInterval"];
+
 afterEach(async () => {
+  vi.useRealTimers();
   await stopAll();
   delete process.env.OA_BUS_HOME;
 });
@@ -71,7 +80,7 @@ describe("the update wire, daemon side (#2552)", () => {
     // A hub without the cap: the field and the push are ignored.
     h.toDaemon(helloOk({ run_version: "1.1.0" }));
     h.toDaemon({ id: "p0", type: "run_version", run_version: "1.1.0" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).not.toHaveBeenCalled();
     // A hub that listed it.
     h.toDaemon(helloOk({ caps: ["run_version"], run_version: "1.1.0" }));
@@ -80,7 +89,7 @@ describe("the update wire, daemon side (#2552)", () => {
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("1.2.0"));
     // A bad value never reaches the updater: the frame does not decode.
     h.toDaemon({ id: "p2", type: "run_version", run_version: "latest" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
@@ -99,14 +108,14 @@ describe("the update wire, daemon side (#2552)", () => {
       .mockResolvedValue({ kind: "disabled" });
     h.toDaemon(helloOk());
     h.toDaemon({ id: "i0", type: "install_now" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).not.toHaveBeenCalled();
     h.toDaemon(helloOk({ caps: ["run_version"] }));
     h.toDaemon({ id: "i1", type: "install_now" });
     await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     // A frame with a field is no frame.
     h.toDaemon({ id: "i2", type: "install_now", version: "9.9.9" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -137,14 +146,20 @@ describe("the update wire, daemon side (#2552)", () => {
       reason: "proof_failed",
       at: T + 2000,
     });
+    // The daemon also flushes reports on a timer (REPORT_FLUSH_MS): its timers
+    // are fake, moved past that window by hand.
+    vi.useFakeTimers({ toFake: FAKE_TIMERS });
     const h = await daemonHarness({
       update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     // No cap (an older hub): nothing goes, nothing is lost.
     h.toDaemon(helloOk());
-    await new Promise((r) => setTimeout(r, 150));
+    await h.quiet();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(3);
+    vi.useRealTimers();
     h.toDaemon(helloOk({ caps: ["run_version"] }));
     await h.next("update_report", 3);
     expect(
@@ -184,9 +199,12 @@ describe("the update wire, daemon side (#2552)", () => {
       reason: "ok",
       at: T,
     });
+    vi.useFakeTimers({ toFake: FAKE_TIMERS });
     const h = await daemonHarness({});
     h.toDaemon(helloOk({ caps: ["run_version"] }));
-    await new Promise((r) => setTimeout(r, 150));
+    await h.quiet();
+    await vi.advanceTimersByTimeAsync(60_000); // past the report flush timer
+    await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(1);
   });
@@ -208,7 +226,7 @@ describe("the update wire, daemon side (#2552)", () => {
       h.toDaemon(helloOk({ caps: ["run_version"] }));
       await vi.waitFor(() => expect(h.daemon.updater).toBeDefined());
       // Let the hello_ok land before asking for a switch.
-      await new Promise((r) => setTimeout(r, 100));
+      await h.quiet();
       return { w, exit, h };
     };
 
@@ -269,13 +287,15 @@ describe("the update wire, daemon side (#2552)", () => {
           exit,
           every,
           enabled: true,
+          ackMs: 1, // if it were asked, it fails fast, by assertion
         },
       });
       h.toDaemon(helloOk());
-      await new Promise((r) => setTimeout(r, 100));
+      await h.quiet();
       expect(await h.daemon.updater?.instructFromInstance("0.9.0")).toEqual({
         kind: "retry_later",
       });
+      await h.quiet();
       expect(h.of("update_report")).toHaveLength(0);
       expect(exit).not.toHaveBeenCalled();
     });

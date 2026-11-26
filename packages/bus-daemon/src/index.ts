@@ -188,6 +188,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
+import type { LaneSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -244,6 +245,7 @@ export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
+export * from "./skill-refresh.ts";
 export * from "./status.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
@@ -302,6 +304,8 @@ const piLike = (kind: string) =>
 export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
+  /** #3203: refreshes each instance's installed skills when its version changes. */
+  skillRefresh?: LaneSkillRefresher;
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
@@ -528,6 +532,7 @@ const agentFields = (a: AgentRecord, reason?: string): EventFields => ({
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
+  const skillRefresh = deps.skillRefresh;
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
   // #2793: one link per instance, each built from its own credentials only.
   const lanes = new Lanes();
@@ -2560,6 +2565,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
+            void skillRefresh?.onHello(
+              { name: lane.name, main: lane.main, hub: lane.cfg.hub },
+              frame.server_version,
+            );
             if (lane.main && lane.runCap) {
               if (takesInstance()) {
                 if (frame.run_version === null) updaterRef?.clearNamed();
