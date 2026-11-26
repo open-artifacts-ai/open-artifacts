@@ -94,7 +94,7 @@ describe("Settings → Instance Version card", () => {
     clipboard();
     mount("/settings/instance");
     const c = await card();
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(4100));

@@ -10,6 +10,7 @@ import { muteErrorCopy } from "../src/foryou/prefsContract";
 import {
   dismissNudge,
   nudgeDismissed,
+  pushSubsKey,
   SW_SCOPE,
   SW_URL,
 } from "../src/foryou/push";
@@ -21,6 +22,7 @@ import {
   events,
   findVisibleToast,
   installHarness,
+  lastClient,
   mount,
   server,
 } from "./harness";
@@ -848,6 +850,10 @@ describe("a subscription left by someone else (Axe)", () => {
     );
     mount("/settings/notifications");
     await needs();
+    // The list's failure is the event: only after it could anything be removed.
+    await waitFor(() =>
+      expect(lastClient.getQueryState(pushSubsKey)?.status).toBe("error"),
+    );
     await settle(300);
     expect(await f.pushManager.getSubscription()).not.toBeNull();
     expect(localStorage.getItem(KEY)).not.toBeNull();
