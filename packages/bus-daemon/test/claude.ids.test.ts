@@ -145,6 +145,7 @@ describe("reply ids in the daemon", () => {
       "owner_away",
       "guest",
       "mail_expiry",
+      "sessions_gone",
     ]);
   });
 

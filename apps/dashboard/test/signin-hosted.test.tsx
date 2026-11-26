@@ -838,7 +838,7 @@ it("a numeric ?error= in Access mode still shows today's banner", async () => {
   expect(await screen.findByText("Login didn't finish.")).toBeVisible();
 });
 
-it("Google only: one Google button, a guest link carrying next, no code form", async () => {
+it("Google and codes: one Google button, a login code link carrying next, no code form", async () => {
   mountHosted("/sign-in?next=%2Fmine");
   expect(
     await screen.findByRole("link", { name: "Continue with Google" }),
@@ -847,8 +847,7 @@ it("Google only: one Google button, a guest link carrying next, no code form", a
     screen.getByText(
       (_, el) =>
         el?.tagName === "P" &&
-        el.textContent ===
-          "Invited as a guest? If someone shared an artifact with your email, use a code.",
+        el.textContent === "No Google account? We'll email you a login code.",
     ),
   ).toBeVisible();
   // A full-width outlined secondary button, not an inline link.
@@ -1021,13 +1020,44 @@ it("no copy contains an em dash", async () => {
 });
 
 // #3029: the plain Google page tells an invited member which account to use.
+// #3179: with codes on it names both ways in, and never says "guest".
 const INVITED_HELP =
+  "Invited? Use the Google account or email address your invite went to. Can't get in? Ask whoever invited you.";
+const INVITED_HELP_GOOGLE_ONLY =
   "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
 
 it("plain sign-in shows the invited help line under Google", async () => {
   mountHosted("/sign-in");
   await screen.findByRole("link", { name: "Continue with Google" });
   expect(screen.getByText(INVITED_HELP)).toBeVisible();
+});
+
+it("codes on: Google and a login code are equal ways in, with no guest copy (#3179)", async () => {
+  mountHosted("/sign-in");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(document.body.textContent).toMatch(/or a login code\./);
+  expect(document.body.textContent?.toLowerCase()).not.toContain("guest");
+  expect(document.body.textContent).not.toMatch(
+    /Use your( \S+)? Google account\./,
+  );
+});
+
+it("codes off: the Google-only copy is unchanged (#3179)", async () => {
+  mountHosted("/sign-in", true, undefined, [
+    http.get("*/auth/providers", () =>
+      HttpResponse.json({
+        mode: "direct",
+        providers: [
+          { id: "google", start: "/auth/login/google", domains: [] },
+          { id: "email", domainCodes: false, guests: false },
+        ],
+      }),
+    ),
+  ]);
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.getByText("Use your Google account.")).toBeVisible();
+  expect(screen.getByText(INVITED_HELP_GOOGLE_ONLY)).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Get a login code" })).toBeNull();
 });
 
 it("the invited help line is hidden on a share link and on an error", async () => {

@@ -119,6 +119,7 @@ describe("hello caps", () => {
       ownerAway: "owner_away",
       guest: "guest",
       mailExpiry: "mail_expiry",
+      sessionsGone: "sessions_gone",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

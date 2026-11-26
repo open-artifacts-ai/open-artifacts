@@ -203,6 +203,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         mkdtempSync(join(tmpdir(), "ob-ag-")),
         "antigravity-agents.json",
       ),
+      // agy S2b: never the machine's real process table.
+      discover: false,
+      pids: () => [],
+      pluginHome: () => null,
       ...over.antigravity,
     },
   });

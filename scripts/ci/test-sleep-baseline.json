@@ -1,7 +1,1 @@
-{
-  "apps/server/test/bus/bus.suspend-close.test.ts": 1,
-  "apps/server/test/bus/hub.default-away.test.ts": 1,
-  "apps/server/test/bus/hub.reclaim-name.test.ts": 1,
-  "apps/server/test/bus/hub.revoke.test.ts": 1,
-  "apps/server/test/bus/mcp-link.test.ts": 1
-}
+{}

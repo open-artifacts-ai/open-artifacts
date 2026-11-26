@@ -34,6 +34,10 @@ const LINE = "/opt/node/bin/node /h/.oa-bus/bin/oa-bus.js agy-watch";
 const RULE =
   "command(regex:^/opt/node/bin/node /h/\\.oa-bus/bin/oa-bus\\.js agy-watch$)";
 
+/** agy S2b: install pins the bus home in the watcher's line, default too. */
+const pinnedLine = (h: string) => agyWatchCommand(BIN, join(h, ".oa-bus"));
+const pinnedRule = (h: string) => agyWatchRule(pinnedLine(h));
+
 function setup(): { h: string; deps: AdapterDeps; file: string } {
   const h = mkdtempSync(join(tmpdir(), "ob-agyr-"));
   const deps: AdapterDeps = {
@@ -77,6 +81,8 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
 
   it("install adds it to permissions.allow and keeps every other byte; uninstall puts the file back byte for byte", async () => {
     const { h, deps, file } = setup();
+    const RULE = pinnedRule(h);
+    const LINE = pinnedLine(h);
     const before =
       '{\n  "colorScheme": "dark",\n  "permissions": {\n    "allow": [\n      "command(git status)"\n    ],\n    "deny": ["command(sudo)"]\n  },\n  "trustedWorkspaces": ["/w"]\n}\n';
     put(file, before);
@@ -96,7 +102,8 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
   });
 
   it("creates the settings file when there is none, and uninstall leaves no permissions key behind", async () => {
-    const { deps, file } = setup();
+    const { h, deps, file } = setup();
+    const RULE = pinnedRule(h);
     await installAdapters(deps);
     expect(JSON.parse(read(file))).toEqual({ permissions: { allow: [RULE] } });
     await uninstallAdapters(deps);
@@ -104,12 +111,13 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
   });
 
   it("replaces the rule an earlier install saved for another line, and touches no rule of the user's", async () => {
-    const { deps, file } = setup();
+    const { h, deps, file } = setup();
+    const RULE = pinnedRule(h);
     put(file, '{"permissions":{"allow":["command(git)"]}}\n');
     await installAdapters({ ...deps, busBin: ["/old/oa-bus"] });
     expect(allowOf(file)).toEqual([
       "command(git)",
-      agyWatchRule("/old/oa-bus agy-watch"),
+      agyWatchRule(agyWatchCommand(["/old/oa-bus"], join(h, ".oa-bus"))),
     ]);
     await installAdapters(deps);
     expect(allowOf(file)).toEqual(["command(git)", RULE]);
@@ -119,6 +127,8 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
 
   it("doctor says present, missing or altered, with the fix", async () => {
     const { h, deps, file } = setup();
+    const RULE = pinnedRule(h);
+    const LINE = pinnedLine(h);
     const busDir = join(h, ".oa-bus");
     expect(agyRuleState(h, busDir, LINE).state).toBe("missing");
     await installAdapters(deps);

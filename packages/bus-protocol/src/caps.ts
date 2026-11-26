@@ -158,6 +158,14 @@ export const BUS_CAPS = {
    * object, so an older daemon would refuse the field.
    */
   mailExpiry: "mail_expiry",
+  /**
+   * Sessions gone (#3208): the client may send `sessions.gone` (refs of closed
+   * sessions that will never reopen, a subset of `closed`); the hub expires
+   * their pending mail as `recipient_closed` and drops their away
+   * reservations. The hub lists it in `hello_ok.caps`; a client sends it only
+   * after `hello_ok.caps` listed it (older hubs refuse the key).
+   */
+  sessionsGone: "sessions_gone",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

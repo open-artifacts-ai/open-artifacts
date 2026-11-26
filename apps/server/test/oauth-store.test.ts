@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { newId, R } from "@oa/shared";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { scheduled } from "../src/cron.js";
 import { revokeAllGrants } from "../src/mcp/oauth-api.js";
 import {
@@ -300,6 +300,7 @@ const isBackfilled = async () =>
 // Each test starts as if this install never served in d1 mode (leaving d1
 // is refused otherwise) and a copy completed (d1 needs one), with no
 // isolate's markers checked.
+afterEach(() => vi.useRealTimers());
 beforeEach(async () => {
   resetOAuthStoreMarkers();
   await env.DB.prepare("delete from settings where key = ?")
@@ -972,7 +973,9 @@ describe("/healthz oauthStore", () => {
     const t1 = Number(await offSince());
     expect(t1).toBeGreaterThanOrEqual(before);
     // Later serves (another isolate too) leave it.
-    while (Date.now() <= t1) await Promise.resolve();
+    // Past the stamp: the clock is set, not waited on.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(t1 + 1);
     resetOAuthStoreMarkers();
     await robots(inMode("d1"));
     expect((await health(inMode("d1"))).kvWritesOffSince).toBe(t1);
@@ -982,7 +985,9 @@ describe("/healthz oauthStore", () => {
   it("kvWritesOffSince only ever moves earlier (two d1 isolates racing to stamp)", async () => {
     await robots(inMode("d1"));
     const t1 = Number(await offSince());
-    while (Date.now() <= t1) await Promise.resolve();
+    // Past the stamp: the clock is set, not waited on.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(t1 + 1);
     // An isolate whose marker read missed the first stamp writes a later one.
     const blind = new Proxy(env.DB, {
       get(t, p) {

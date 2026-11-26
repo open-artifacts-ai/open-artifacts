@@ -263,6 +263,14 @@ const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
 };
 
 /**
+ * agy S2b: the bus home the agy plugin's hook pins, always (default home
+ * too), so the agy process's own OA_BUS_HOME never moves its join off the
+ * home that lists it at launch.
+ */
+const agyHookHome = (deps: Pick<AdapterDeps, "home" | "busHome">) =>
+  movedHome(deps) ?? join(deps.home, ".oa-bus");
+
+/**
  * Pi, oh-my-pi and OpenCode's TUI plugin run inside the harness, whose config
  * has no env to set: a moved home is set in the file's own first line, never
  * over an OA_BUS_HOME the user exported (#1443).
@@ -1054,7 +1062,9 @@ const install: Record<Harness, Step> = {
     const p = paths(deps);
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
-    const home = movedHome(deps);
+    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+    // read the conversation file the hook wrote, whatever agy's own env says.
+    const home = agyHookHome(deps);
     const next = upsertAgyMcp(text, NAME, server, home);
     target(p.agyMcp);
     const record = readRecord(p.record);
@@ -1063,9 +1073,13 @@ const install: Record<Harness, Step> = {
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
     // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
     // agy S3: the one always-allow rule, for exactly the watcher's line.
-    installAgyRule(deps.home, p.busDir, agyWatchCommand(deps.busBin, home));
+    installAgyRule(
+      deps.home,
+      p.busDir,
+      agyWatchCommand(deps.busBin, agyHookHome(deps)),
+    );
     return "done";
   },
 };
@@ -1229,7 +1243,7 @@ const uninstall: Record<Harness, Step> = {
     const rule = uninstallAgyRule(
       deps.home,
       p.busDir,
-      agyWatchCommand(deps.busBin, movedHome(deps)),
+      agyWatchCommand(deps.busBin, agyHookHome(deps)),
     );
     const plugin = folder || rule;
     if (!present(p.agyMcp)) return plugin ? "done" : "none";
@@ -1467,14 +1481,14 @@ export function checkAdapters(
         agyEntryIs(
           parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
           deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-          movedHome(deps),
+          agyHookHome(deps),
         ) &&
         // agy S2: and the plugin whose hook joins each conversation.
         agyPluginState(
           deps.home,
           deps.busBin === undefined
             ? undefined
-            : agyPluginFiles(deps.busBin, movedHome(deps)),
+            : agyPluginFiles(deps.busBin, agyHookHome(deps)),
         ) === "current",
     ),
   };

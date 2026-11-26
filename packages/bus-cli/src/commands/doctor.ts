@@ -307,14 +307,13 @@ export async function doctor(ctx: Ctx): Promise<number> {
       // agy S3: the always-allow rule for exactly the watcher's line.
       if (wiring[h] === "configured") {
         const bin = ctx.service.argv?.();
-        const moved =
-          resolve(ctx.home) === join(ctx.userHome, ".oa-bus")
-            ? undefined
-            : resolve(ctx.home);
+        // agy S2b: the watcher's line pins the home, default too, like the hook.
         const rule = agyRuleState(
           ctx.userHome,
           ctx.home,
-          bin === undefined ? undefined : agyWatchCommand(bin, moved),
+          bin === undefined
+            ? undefined
+            : agyWatchCommand(bin, resolve(ctx.home)),
         );
         if (rule.state === "present") pass(c.agyRulePresent());
         else if (rule.state === "missing") warn(c.agyRuleMissing());
