@@ -216,3 +216,37 @@ export type SessionPayload = {
    */
   m?: 1;
 };
+
+/** Every sign-in method GET R.meSignInMethods may list (#3087 slice 7). */
+export const SignInMethodProviderSchema = z.enum([
+  "google",
+  "microsoft",
+  "github",
+  "apple",
+  "access",
+  "email",
+]);
+export type SignInMethodProvider = z.infer<typeof SignInMethodProviderSchema>;
+
+/** One sign-in method on the caller's own account (GET R.meSignInMethods). */
+export const SignInMethodSchema = z.object({
+  provider: SignInMethodProviderSchema,
+  /** ISO timestamp when the identity was linked; always null for "email". */
+  linkedAt: z.string().nullable(),
+  /** True when the current request's session signed in with this provider. */
+  current: z.boolean(),
+});
+export type SignInMethod = z.infer<typeof SignInMethodSchema>;
+
+/** GET R.meSignInMethods response (#3087 slice 7). */
+export const SignInMethodsSchema = z.object({
+  methods: z.array(SignInMethodSchema),
+});
+export type SignInMethods = z.infer<typeof SignInMethodsSchema>;
+
+/** DELETE R.meSignInMethod(provider) response (#3087 slice 7). */
+export const SignInMethodRemovedSchema = z.object({
+  /** True when removing the method also ended the caller's current session. */
+  signedOut: z.boolean(),
+});
+export type SignInMethodRemoved = z.infer<typeof SignInMethodRemovedSchema>;

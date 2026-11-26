@@ -48,6 +48,8 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   "services/shares.ts:removeGuestIfUnshared": "user",
   // owner_only identity reset: sessions, PATs and grants revoked.
   "services/identity.ts:resetIdentity": "user",
+  // #3087 slice 7: removing a sign-in method bumps session_epoch and closes live sockets.
+  "services/identity.ts:removeSignInMethod": "user",
   // One share on one artifact: the artifact guard covers the race precisely;
   // the guest case is removeGuestIfUnshared above.
   "services/shares.ts:deleteShare": "artifact",

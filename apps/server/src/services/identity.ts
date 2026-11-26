@@ -1,5 +1,14 @@
 import { googleEvidenceStrong, inDomains, normalizeEmail } from "@oa/auth-core";
-import type { Member, Role } from "@oa/shared";
+import {
+  type AuthMethod,
+  type Member,
+  type Role,
+  type SignInMethod,
+  type SignInMethodProvider,
+  SignInMethodProviderSchema,
+  type SignInMethodRemoved,
+  type SignInMethods,
+} from "@oa/shared";
 import { logAuth } from "../auth/audit.js";
 import {
   callerOf,
@@ -624,4 +633,187 @@ export async function resetIdentity(
   if (!results[3]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).
   await revokeUserLive(env, userId, "identity reset", ctx);
+}
+
+// ------------------------------------------------ Me › Sign-in methods (#3087 slice 7)
+
+const REMOVABLE_PROVIDERS: ReadonlySet<string> = new Set<IdentityProvider>([
+  "google",
+  "microsoft",
+  "github",
+  "apple",
+  "access",
+]);
+
+/** Maps a request's session authMethod (`SessionPayload.p` or `"pat"`) to its SignInMethodProvider. */
+function sessionProviderToMethod(
+  authMethod: AuthMethod | null,
+): SignInMethodProvider | null {
+  if (!authMethod) return null;
+  if (authMethod === "code") return "email";
+  const parsed = SignInMethodProviderSchema.safeParse(authMethod);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Whether `user` would still be eligible to sign in by email code if they had
+ * no linked identities (used to decide if removing their last linked identity
+ * would lock them out). Reuses `codeRule` with `linked: false`.
+ */
+async function emailCodeEligibleIfUnlinked(
+  env: Env,
+  cfg: AuthConfig,
+  user: Member,
+): Promise<boolean> {
+  if (!cfg.emailCodes) return false;
+  const email = normalizeEmail(user.email);
+  if (!email) return false;
+  const row = await stmt(env.DB, ELIGIBILITY)
+    .bind(email)
+    .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
+  if (row?.status !== "active") return false;
+  if (inviteLapsed(row, Date.now())) return false;
+  const rule = await codeRule(
+    cfg,
+    email,
+    { ...row, linked: false },
+    async () => false,
+  );
+  if (rule.kind === "none") return false;
+  if (
+    rule.kind === "guest" &&
+    ((await unsharedGuest(env, { id: user.id, role: row.role })) ||
+      (await outsiderLoginOff(env, rule.userId, email)))
+  )
+    return false;
+  return true;
+}
+
+/**
+ * Lists the caller's linked identities plus "email" when the install offers
+ * email codes and the user is currently eligible to sign in by code.
+ */
+export async function listSignInMethods(
+  env: Env,
+  cfg: AuthConfig,
+  user: Member,
+  authMethod: AuthMethod | null,
+): Promise<SignInMethods> {
+  const { results } = await stmt(
+    env.DB,
+    "select provider, created_at as createdAt from identities where user_id = ?1 order by created_at asc, provider asc",
+  )
+    .bind(user.id)
+    .all<{ provider: string; createdAt: number }>();
+  const current = sessionProviderToMethod(authMethod);
+  const methods: SignInMethod[] = [];
+  for (const r of results) {
+    const parsed = SignInMethodProviderSchema.safeParse(r.provider);
+    if (!parsed.success) continue;
+    methods.push({
+      provider: parsed.data,
+      linkedAt: new Date(r.createdAt).toISOString(),
+      current: current === parsed.data,
+    });
+  }
+  if (cfg.emailCodes) {
+    const elig = await codeEligibility(env, cfg, user.email);
+    if (elig.kind !== "none") {
+      methods.push({
+        provider: "email",
+        linkedAt: null,
+        current: current === "email",
+      });
+    }
+  }
+  return { methods };
+}
+
+/**
+ * Removes one linked identity for the caller only (#3087 slice 7). Refuses
+ * with 409 conflict (`{ reason: "last_method" }`) if removing it would leave
+ * the caller with no other linked identity and no email-code eligibility.
+ * One D1 batch deletes the row, bumps `users.session_epoch` (there is no
+ * per-provider session epoch, so this ends all of the user's browser sessions,
+ * including the caller's own), and writes `auth.method_removed` (provider only,
+ * never the subject).
+ */
+export async function removeSignInMethod(
+  env: Env,
+  cfg: AuthConfig,
+  user: Member,
+  rawProvider: string,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<SignInMethodRemoved> {
+  if (!REMOVABLE_PROVIDERS.has(rawProvider))
+    throw new ApiError("not_found", "Not found");
+  const provider = rawProvider as IdentityProvider;
+
+  const { results: existing } = await stmt(
+    env.DB,
+    "select provider from identities where user_id = ?1",
+  )
+    .bind(user.id)
+    .all<{ provider: string }>();
+  if (!existing.some((r) => r.provider === provider))
+    throw new ApiError("not_found", "Not found");
+
+  const canUseEmailCode = await emailCodeEligibleIfUnlinked(env, cfg, user);
+  const hasOtherIdentity = existing.some((r) => r.provider !== provider);
+  if (!hasOtherIdentity && !canUseEmailCode) {
+    throw new ApiError(
+      "conflict",
+      "You cannot remove your only sign-in method",
+      { reason: "last_method" },
+    );
+  }
+
+  const results = await env.DB.batch([
+    stmt(
+      env.DB,
+      `delete from identities
+       where user_id = ?1 and provider = ?2
+         and (?3 = 1 or exists (
+           select 1 from identities i2 where i2.user_id = ?1 and i2.provider <> ?2
+         ))
+       returning 1`,
+    ).bind(user.id, provider, canUseEmailCode ? 1 : 0),
+    // There is no per-provider session epoch; bumping users.session_epoch ends
+    // all of the user's browser sessions (including the caller's own).
+    stmt(
+      env.DB,
+      "update users set session_epoch = session_epoch + 1 where id = ?1 and changes() > 0",
+    ).bind(user.id),
+    audit(
+      env,
+      "auth.method_removed",
+      { type: "user", id: user.id },
+      userActor(user.id),
+      {
+        detail: { provider },
+        when: { sql: "changes() > 0", args: [] },
+      },
+    ),
+  ]);
+
+  if (!results[0]?.results.length) {
+    const stillThere = await stmt(
+      env.DB,
+      "select 1 as x from identities where user_id = ?1 and provider = ?2 limit 1",
+    )
+      .bind(user.id, provider)
+      .first();
+    if (stillThere) {
+      throw new ApiError(
+        "conflict",
+        "You cannot remove your only sign-in method",
+        { reason: "last_method" },
+      );
+    }
+    throw new ApiError("not_found", "Not found");
+  }
+
+  // Sessions ended by the epoch bump: close live sockets now (P3 T7).
+  await revokeUserLive(env, user.id, "sign-in method removed", ctx);
+  return { signedOut: true };
 }
