@@ -205,11 +205,17 @@ describe("MCP auth: OAuth", () => {
 
     it("a grant the KV revocation missed is refused after an unsuspend; a new one works", async () => {
       const email = `oauth-miss-${tag}@x.com`;
+      // Only Date is faked: the grant's issuedAt and the status change must
+      // differ by a millisecond, which a moved clock gives without a wait.
+      vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+      onTestFinished(() => {
+        vi.useRealTimers();
+      });
       const { member, accessToken } = await oauthToken(email);
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(200);
       // listUserGrants lagged: setUserStatus's D1 writes landed (a suspend,
       // then an unsuspend), the KV revocation missed this grant.
-      await new Promise((r) => setTimeout(r, 5));
+      vi.setSystemTime(Date.now() + 5);
       await env.DB.prepare(
         "update users set status = 'active', status_changed_at = ? where id = ?",
       )
@@ -220,7 +226,7 @@ describe("MCP auth: OAuth", () => {
       ).toHaveLength(1);
       expect((await listTools(`Bearer ${accessToken}`)).status).toBe(401);
       // Past the status change: a grant approved now is honoured.
-      await new Promise((r) => setTimeout(r, 5));
+      vi.setSystemTime(Date.now() + 5);
       const again = await oauthToken(email, "Again", {
         userId: member.userId,
         cookie: await freshCookie(member.userId),
