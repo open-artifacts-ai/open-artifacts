@@ -211,19 +211,30 @@ describe("the workflow", () => {
     for (const s of steps) if (s.run) expect(s.run).not.toContain("${{");
   });
 
-  it("reconciles hourly, through the same script", () => {
-    expect(wf.on.schedule).toEqual([{ cron: "17 * * * *" }]);
-    expect(wf.on.workflow_run).toEqual({
-      workflows: ["CI"],
-      types: ["completed"],
+  it("reconciles after every CI completion and on dispatch, never on a clock, through the same script", () => {
+    // cloud #264: event-only. A dropped tracker event is caught by the next
+    // CI completion's reconcile.
+    expect(wf.on).toEqual({
+      workflow_run: { workflows: ["CI"], types: ["completed"] },
+      workflow_dispatch: null,
     });
-    expect(wf.jobs.track.if).toContain("github.event_name == 'schedule'");
+    expect(wf.on.schedule).toBeUndefined();
+    expect(String(wf.jobs.track.if).replace(/\s+/g, " ").trim()).toBe(
+      "github.repository == 'open-artifacts-ai/open-artifacts' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'))",
+    );
     const steps = wf.jobs.track.steps as { if?: string; run?: string }[];
     const event = steps.find((s) => s.run?.includes("--run-id"));
-    const sched = steps.find((s) => s.run?.includes("--reconcile"));
-    expect(event?.if).toBe("github.event_name == 'workflow_run'");
-    expect(sched?.if).toBe("github.event_name == 'schedule'");
-    expect(sched?.run).toContain("scripts/ci/flaky-tracker.ts");
+    const recon = steps.find((s) => s.run?.includes("--reconcile"));
+    // The event's own run only when it passed on attempt 2 or later.
+    expect(String(event?.if).replace(/\s+/g, " ").trim()).toBe(
+      "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt > 1",
+    );
+    // No condition: every tracker run reconciles, right after the record step.
+    expect(recon?.if).toBeUndefined();
+    expect(steps.indexOf(recon as (typeof steps)[number])).toBe(
+      steps.indexOf(event as (typeof steps)[number]) + 1,
+    );
+    expect(recon?.run).toContain("scripts/ci/flaky-tracker.ts");
   });
 });
 

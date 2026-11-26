@@ -2,8 +2,8 @@
 // its CI and redline-staging, and both behave the same). Tracking only: it
 // reruns nothing and blocks nothing. flaky-tracker.yml runs it when a CI run
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
-// group, queued). An hourly reconcile (--reconcile) catches any run that
-// event missed: it lists the CI runs created in the last RERUN_DAYS plus
+// group, queued). A reconcile (--reconcile), right after every tracker run
+// and on dispatch, never on a clock, catches any run that event missed: it lists the CI runs created in the last RERUN_DAYS plus
 // RECONCILE_HOURS that
 // passed on attempt 2 or later and were updated in the last RECONCILE_HOURS,
 // and tracks each one the store has no `passed` line for, through the same
@@ -81,7 +81,7 @@ const STORE_CHAIN_MAX = 10;
  * workflow's name, so it is never read.
  */
 export const WATCHED = ["ci.yml"];
-/** The hourly reconcile tracks the runs updated in the last this many hours. */
+/** The reconcile tracks the runs updated in the last this many hours. */
 export const RECONCILE_HOURS = 26;
 /** GitHub lets a run be rerun for this many days after it was created. */
 export const RERUN_DAYS = 30;
@@ -939,7 +939,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   // adds none. The run marker (`passed run/attempt`) means "fully handled",
   // and the reconcile skips a marked run. With nothing to file it rides on
   // the last store part. With filings it is written last (finish), so a
-  // failed create or bump leaves the run unmarked and the hourly reconcile
+  // failed create or bump leaves the run unmarked and the next reconcile
   // tracks it again, where decide() sees the stored sightings.
   for (const body of storeComments(run, fresh, !filed.length))
     comment(exec, run.repo, store, body);

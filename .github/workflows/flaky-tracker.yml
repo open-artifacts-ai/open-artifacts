@@ -12,10 +12,12 @@
 # never checks out or runs a fork's code, and what their runs give it (logs
 # and the test names in them) is only read as text and made inert before it
 # is written to an issue.
-# Hourly, a reconcile tracks any such run created in the last 30 days and
-# 26 hours (GitHub allows a rerun for 30 days; the 26 hours keep a late
-# rerun listed) and updated in the last 26 hours whose event
-# this workflow missed; a run the store already has is skipped. A listing of
+# No clock (cloud #264): after every completed CI run (cancelled and skipped
+# ones aside), and on dispatch, the same job reconciles: it tracks any such
+# run created in the last 30 days and 26 hours (GitHub allows a rerun for 30
+# days; the 26 hours keep a late rerun listed) and updated in the last 26
+# hours whose event this workflow missed, so a dropped event is caught by the
+# next CI completion; a run the store already has is skipped. A listing of
 # 1,000 runs or more (GitHub's limit for one query) is split into smaller
 # creation ranges, and the reconcile fails if one second still has that many. The watched
 # workflow is named by its file (workflow_run.path), never by
@@ -26,23 +28,27 @@ on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-  schedule:
-    - cron: "17 * * * *"
+  workflow_dispatch:
 permissions: {}
 jobs:
   track:
+    # This repo's main only: workflow_run always runs the default branch, and
+    # a dispatch from another branch or a copy of this repo is skipped.
     if: >-
-      github.event_name == 'schedule' || (
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.run_attempt > 1 &&
-      github.event.workflow_run.path == '.github/workflows/ci.yml')
+      github.repository == 'open-artifacts-ai/open-artifacts' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.conclusion != 'skipped'))
     # One group for every tracker run in this repo, so two runs never read
     # and write the store and the issues at once. It sits on the job, not the
     # workflow: every CI completion starts this workflow, and a skipped one
-    # holding a workflow-level slot would cancel a pending real run. queue:
-    # max keeps every pending run waiting in order instead of only the
-    # newest, so no sighting is dropped (it can't go with cancel-in-progress
-    # true); the hourly reconcile catches any run past the queue's limit.
+    # (a cancelled CI run) holding a workflow-level slot would cancel a
+    # pending real run. queue: max keeps every pending run waiting in order
+    # instead of only the newest, so no sighting is dropped (it can't go with
+    # cancel-in-progress true); the next run's reconcile catches any run past
+    # the queue's limit.
     concurrency:
       group: flaky-tracker
       cancel-in-progress: false
@@ -61,15 +67,21 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
+      # The event's own run, when it passed after a failed attempt.
       - name: Record the flaky tests
-        if: github.event_name == 'workflow_run'
+        if: >-
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.run_attempt > 1
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --attempt "$ATTEMPT"
+      # Every run, right after the record step: a run whose tracker event
+      # GitHub dropped is tracked here. A failed record step fails the job
+      # (the alert) and skips this; the next completion reconciles.
       - name: Reconcile the runs the event missed
-        if: github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
         run: node --experimental-strip-types scripts/ci/flaky-tracker.ts --repo "$GITHUB_REPOSITORY" --reconcile
