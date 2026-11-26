@@ -2,7 +2,7 @@
 // Helpers for the bus confirm pages' real-browser e2e (#1426): a machine
 // approved through the device flow in the page, a daemon socket with one open
 // agent, and the proposals an agent or `oa-bus link` would make.
-import type { Page } from "@playwright/test";
+import type { Page, Response } from "@playwright/test";
 import { APP, createToken, expect } from "./fixtures";
 import { mcpWithToken } from "./mcp-client";
 
@@ -25,14 +25,24 @@ export async function approveMachine(page: Page): Promise<string> {
   await page.goto(`${APP}/bus/approve`);
   await page.locator("#code").fill(dev.user_code);
   await page.getByRole("button", { name: /continue|next|check/i }).click();
-  const [approved] = await Promise.all([
-    page.waitForResponse(
-      (r) =>
-        r.url().endsWith("/bus/approve") && r.request().method() === "POST",
-    ),
-    page.getByRole("button", { name: "Approve", exact: true }).click(),
-  ]);
-  expect(approved.status(), await approved.text()).toBeLessThan(300);
+  // The body is read the moment the response arrives (WebKit drops it once the
+  // page has navigated away); the status is what counts, the body only names a
+  // failure.
+  const approved = new Promise<{ status: number; body: string }>((resolve) => {
+    const onResponse = (r: Response) => {
+      if (!r.url().endsWith("/bus/approve") || r.request().method() !== "POST")
+        return;
+      page.off("response", onResponse);
+      r.text().then(
+        (body) => resolve({ status: r.status(), body }),
+        () => resolve({ status: r.status(), body: "(the page navigated)" }),
+      );
+    };
+    page.on("response", onResponse);
+  });
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  const answer = await approved;
+  expect(answer.status, answer.body).toBeLessThan(300);
   // Approval is committed once POST /bus/approve answers, and this is the
   // first token request for the code (so inside its rate limit): it returns
   // the token. No polling.
