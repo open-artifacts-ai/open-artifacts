@@ -57,7 +57,7 @@ export const TOOL_DEFS = [
     name: "create_upload",
     inputSchema: CreateUploadInputSchema,
     example: { path: "video.mp4", contentType: "video/mp4" },
-    description: `Open Artifacts: Get a signed URL to PUT one file from disk (any size up to 25 MB; the way to publish a file you already have, without reading it into your context; do not open or check the file first), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. \`size\` (bytes) is optional: leave it out and the server measures the file at PUT; give it and the PUT must match it exactly. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads. Optional \`sha256\` is the 64-character hex SHA-256 of the exact bytes to PUT; R2 verifies it and preserves a content hash on every plan.`,
+    description: `Open Artifacts: Get a signed URL to PUT one file from disk (any size up to 25 MB; the way to publish a file you already have, without reading it into your context; do not read or print the file first), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. \`size\` (bytes) is optional: leave it out and the server measures the file at PUT; give it and the PUT must match it exactly. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads. Optional \`sha256\` is the 64-character hex SHA-256 of the exact bytes to PUT; R2 verifies it and preserves a content hash on every plan.`,
   },
   {
     name: "get_artifact",
