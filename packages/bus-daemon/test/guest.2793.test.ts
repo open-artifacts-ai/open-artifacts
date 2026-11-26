@@ -320,7 +320,10 @@ describe("a guest joins only after using the instance's tools (#2793 S3b)", () =
     // An opaque ref of its own on this instance: nothing of the session id.
     const gref = up.agent_ref as string;
     expect(gref).toMatch(/^g-[A-Za-z0-9_-]{22}$/);
-    expect(gref).not.toContain("sa");
+    // Nothing the session brings with it: its name and the bound hash, in full
+    // (the 2-letter session id would match random data about once in 250, #2969).
+    expect(gref).not.toContain("name-sa");
+    expect(gref).not.toContain(HASH_B.slice(0, 8));
     await vi.waitFor(() => expect(s.hubB.of("link_bind")).toHaveLength(1));
     expect(s.hubB.of("link_bind")[0]).toMatchObject({
       agent_ref: gref,
