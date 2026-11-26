@@ -113,6 +113,7 @@ const call = (
 const admitGoogle = (e: Env, subject: string, email: string) =>
   admit(e, authConfig(e), {
     provider: "google",
+    emailVerified: true,
     subject,
     email,
     name: null,

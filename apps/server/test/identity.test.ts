@@ -14,6 +14,7 @@ import {
   codeEligibility,
   resetIdentity,
 } from "../src/services/identity.js";
+import { identityLinkStmts } from "../src/services/users.js";
 import { direct, seedShare, seedUser, trial, uniq } from "./auth-helpers.js";
 
 // P2 Task 5: admission, linking and code eligibility.
@@ -37,6 +38,7 @@ const rowOf = (id: string) =>
   );
 const g = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: `sub-${crypto.randomUUID()}`,
   email: uniq("bob"),
   name: "Bob",
@@ -319,6 +321,222 @@ describe("admit (Google)", () => {
       ok: false,
       reason: "no_access",
     });
+  });
+});
+
+// #3087 slice 1: a provider other than Google or Access is link-only. "github"
+// stands in for any of them.
+describe("admit (link-only provider)", () => {
+  const gh = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
+    provider: "github",
+    emailVerified: true,
+    subject: `gh-${crypto.randomUUID()}`,
+    email: uniq("gh"),
+    name: "Gee",
+    tenant: null,
+    ...o,
+  });
+  const linkTo = (userId: string, provider: string, subject: string) =>
+    env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at) values (?, ?, '', ?, ?)",
+    )
+      .bind(provider, subject, userId, Date.now())
+      .run();
+  const linksOf = (userId: string) =>
+    count("identities where user_id = ?", userId);
+
+  it("a linked subject signs in as that user, keeping its role", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "admin");
+    await linkTo(uid, "github", id.subject);
+    expect(await admit(env, cfg(), id)).toMatchObject({
+      ok: true,
+      user: { id: uid, role: "admin" },
+    });
+  });
+
+  it("a linked subject never follows email drift", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member");
+    await linkTo(uid, "github", id.subject);
+    const moved = uniq("ghmoved");
+    expect(await admit(env, cfg(), { ...id, email: moved })).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    expect((await rowOf(uid)).email).toBe(id.email);
+  });
+
+  it("a linked user who is suspended: removed", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member", { status: "suspended" });
+    await linkTo(uid, "github", id.subject);
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "removed",
+    });
+  });
+
+  it("unlinked, no row: no_access, even where Google would join a member", async () => {
+    const id = gh({ tenant: "a.com" });
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+    expect(await count("users where email = ?", id.email)).toBe(0);
+  });
+
+  it("unlinked, an active row: needs_code, whatever the provider vouches for; nothing linked", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "needs_code",
+    });
+    expect(await linksOf(uid)).toBe(0);
+  });
+
+  it("no tenant rule: a tenant outside the domains is not refused as tenant", async () => {
+    const id = gh({ tenant: "other.com" });
+    await seedUser(id.email, "member");
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "needs_code",
+    });
+  });
+
+  it("unlinked, a suspended or removed row: no_access", async () => {
+    for (const status of ["suspended", "removed"]) {
+      const id = gh();
+      await seedUser(id.email, "member", { status });
+      expect(await admit(env, cfg(), id)).toEqual({
+        ok: false,
+        reason: "no_access",
+      });
+    }
+  });
+
+  it("unlinked, a lapsed invite: invite_expired", async () => {
+    const id = gh({ tenant: "a.com" });
+    const uid = await seedUser(id.email, "member");
+    await env.DB.prepare(
+      "update users set invited_at = ?, last_seen_at = null where id = ?",
+    )
+      .bind(Date.now() - 40 * 86_400_000, uid)
+      .run();
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "invite_expired",
+    });
+  });
+
+  it("the row has another subject for this provider: identity_conflict", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member");
+    await linkTo(uid, "github", `other-${id.subject}`);
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "identity_conflict",
+    });
+  });
+
+  it("another provider's link is no conflict, either way", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "member", {
+      googleSub: `g-${id.subject}`,
+    });
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "needs_code",
+    });
+    const email = uniq("both");
+    const u2 = await seedUser(email, "member");
+    await linkTo(u2, "github", `gh2-${email}`);
+    const google = g({ email });
+    expect(await admit(env, cfg(), google)).toMatchObject({
+      ok: true,
+      user: { id: u2 },
+    });
+    expect(await subjectOf(u2)).toBe(google.subject);
+    expect(await linksOf(uid)).toBe(1);
+  });
+
+  it("a guest with a share stays a guest; one with no share left is refused", async () => {
+    const id = gh();
+    const uid = await seedUser(id.email, "guest");
+    await linkTo(uid, "github", id.subject);
+    expect(await admit(env, cfg(), id)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+    await seedShare(id.email);
+    expect(await admit(env, cfg(), id)).toMatchObject({
+      ok: true,
+      user: { id: uid, role: "guest" },
+    });
+  });
+});
+
+describe("identityLinkStmts", () => {
+  const run = (provider: "google" | "github", email: string, subject: string) =>
+    env.DB.batch<{ id: string; status: string; subject: string | null }>(
+      identityLinkStmts(env, {
+        provider,
+        email,
+        name: null,
+        role: "member",
+        subject,
+        tenant: "",
+        now: Date.now(),
+      }),
+    );
+
+  it("four statements for any provider, the read-back at [2]", () => {
+    for (const provider of ["google", "github"] as const)
+      expect(
+        identityLinkStmts(env, {
+          provider,
+          email: "x@a.com",
+          name: null,
+          role: "member",
+          subject: "s",
+          tenant: "",
+          now: 0,
+        }),
+      ).toHaveLength(4);
+  });
+
+  it("a non-Google provider never creates a row", async () => {
+    const email = uniq("nocreate");
+    const out = await run("github", email, `s-${email}`);
+    expect(out[2]?.results).toEqual([]);
+    expect(await count("users where email = ?", email)).toBe(0);
+    expect(await count("identities where subject = ?", `s-${email}`)).toBe(0);
+  });
+
+  it("links an existing active row under its provider and leaves google_relink alone", async () => {
+    const email = uniq("ghlink");
+    const uid = await seedUser(email, "member");
+    await env.DB.prepare("update users set google_relink = 1 where id = ?")
+      .bind(uid)
+      .run();
+    const out = await run("github", email, `s-${email}`);
+    expect(out[2]?.results[0]).toMatchObject({
+      id: uid,
+      subject: `s-${email}`,
+    });
+    expect(
+      await one<{ p: string }>(
+        "select provider p from identities where user_id = ?",
+        uid,
+      ),
+    ).toEqual({ p: "github" });
+    expect(
+      await one<{ r: number }>(
+        "select google_relink r from users where id = ?",
+        uid,
+      ),
+    ).toEqual({ r: 1 });
   });
 });
 

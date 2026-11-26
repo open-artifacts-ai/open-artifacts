@@ -848,6 +848,7 @@ describe("T14 security review", () => {
     const cfg = authConfig(direct());
     const r = await admit(env, cfg, {
       provider: "google",
+      emailVerified: true,
       subject: sa,
       email: a2,
       name: null,
@@ -858,6 +859,7 @@ describe("T14 security review", () => {
     expect(await sharesFor(a2)).toEqual([{ artifact_id: art }]);
     const c = await admit(env, cfg, {
       provider: "google",
+      emailVerified: true,
       subject: `g-drift-c-${crypto.randomUUID()}`,
       email: a1,
       name: null,

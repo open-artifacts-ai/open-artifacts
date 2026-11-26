@@ -485,6 +485,7 @@ describe("guest invites keep their role (#2520)", () => {
     const id = MemberInviteResultSchema.parse(await r.json()).id;
     const login1 = (email: string) => ({
       provider: "google" as const,
+      emailVerified: true,
       subject: `sub-${crypto.randomUUID()}`,
       email,
       name: "M",

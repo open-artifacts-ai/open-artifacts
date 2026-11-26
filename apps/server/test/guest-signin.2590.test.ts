@@ -20,6 +20,7 @@ const run = (e: Env, id: VerifiedIdentity) => admit(e, authConfig(e), id);
 /** A Gmail login: no hd, no tenant, bound to its address. */
 const gmail = (email = uniq("gm", "gmail.com")): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: sub(),
   email,
   name: "G",
@@ -30,6 +31,7 @@ const gmail = (email = uniq("gm", "gmail.com")): VerifiedIdentity => ({
 /** A Workspace login on a login domain: hd is the tenant. */
 const onLogin = (email = uniq("ws", "a.com")): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: sub(),
   email,
   name: "W",
@@ -39,6 +41,7 @@ const onLogin = (email = uniq("ws", "a.com")): VerifiedIdentity => ({
 /** A weak login: another domain, no hd for it. */
 const weak = (email = uniq("wk", "other.com")): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: sub(),
   email,
   name: "K",

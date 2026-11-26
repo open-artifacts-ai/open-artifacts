@@ -35,7 +35,7 @@ import { codeEligibility, linkEligibility } from "../services/identity.js";
 import { HOSTED_FIELDS, hostedFields } from "../services/members.js";
 import {
   getUserWithEpoch,
-  googleLinkStmts,
+  identityLinkStmts,
   insertUser,
 } from "../services/users.js";
 import { forgetTestOtp, noteTestOtp } from "../test-hooks/index.js";
@@ -87,14 +87,27 @@ type Pending = {
 /**
  * The Google link, in this browser only (#2590 G2): a first Google login that
  * admit() refused with needs_code (weak evidence for its address). { ek, ee,
- * exp, k }: `ee` seals { s: sub, e: email, h: hd, n: name } (AES-GCM, `ek`
- * as AAD). A code requested for exactly this address, and verified, links
- * `s` to the row (or makes the guest row) and signs in with Google. Same
- * signing key and lifetime as the pending code; a cookie, so another browser
- * can't use it.
+ * exp, k }: `ee` seals { s: sub, e: email, h: hd, n: name, p: provider }
+ * (AES-GCM, `ek` as AAD). A code requested for exactly this address, and
+ * verified, links `s` to the row (or makes the guest row) and signs in with
+ * that provider. Same signing key and lifetime as the pending code; a
+ * cookie, so another browser can't use it.
  */
 type Link = { ek: string; ee: string; exp: number; k: "gl" };
-type LinkValue = { s: string; e: string; h: string | null; n: string | null };
+type LinkValue = {
+  s: string;
+  e: string;
+  h: string | null;
+  n: string | null;
+  /** The provider of `s` (#3087). Absent (a cookie sealed before it): google. */
+  p: LinkProvider;
+};
+/**
+ * Providers a link cookie may carry: those a session can name (SessionPayload
+ * `p`). Google only today; later slices widen it with the session's set.
+ */
+type LinkProvider = "google";
+const LINK_PROVIDERS: readonly string[] = ["google"] satisfies LinkProvider[];
 
 const aesKey = async (c: Context<AppEnv>) =>
   crypto.subtle.importKey(
@@ -194,7 +207,13 @@ async function readPending(c: Context<AppEnv>): Promise<Pending | null> {
  */
 export async function linkSetCookie(
   c: Context<AppEnv>,
-  v: { sub: string; email: string; hd: string | null; name: string | null },
+  v: {
+    sub: string;
+    email: string;
+    hd: string | null;
+    name: string | null;
+    provider?: LinkProvider;
+  },
 ): Promise<string | null> {
   const cfg = authConfig(c.env);
   if (!cfg.emailCodes) return null;
@@ -202,7 +221,13 @@ export async function linkSetCookie(
   if (!email) return null;
   try {
     const ek = await emailKey(c.env, email);
-    const body: LinkValue = { s: v.sub, e: email, h: v.hd, n: v.name };
+    const body: LinkValue = {
+      s: v.sub,
+      e: email,
+      h: v.hd,
+      n: v.name,
+      p: v.provider ?? "google",
+    };
     const p: Link = {
       ek,
       ee: await sealEmail(c, JSON.stringify(body), ek),
@@ -247,6 +272,9 @@ async function readLink(c: Context<AppEnv>): Promise<LinkValue | null> {
     if (!json) return null;
     const out = JSON.parse(json) as Partial<LinkValue>;
     if (typeof out.s !== "string" || typeof out.e !== "string") return null;
+    // An unknown provider is refused, never read as Google.
+    const provider = out.p ?? "google";
+    if (!LINK_PROVIDERS.includes(provider)) return null;
     // The sealed address must be the one this key was made for.
     if (p.ek !== (await emailKey(c.env, out.e))) return null;
     return {
@@ -254,6 +282,7 @@ async function readLink(c: Context<AppEnv>): Promise<LinkValue | null> {
       e: out.e,
       h: typeof out.h === "string" ? out.h : null,
       n: typeof out.n === "string" ? out.n : null,
+      p: provider as LinkProvider,
     };
   } catch {
     return null;
@@ -349,10 +378,11 @@ async function ensureUser(
 }
 
 /**
- * The verified code of a Google link: makes the guest row for a share
- * recipient with none, links the Google sub to the row (googleLinkStmts), and
- * signs in with Google as the row's own role. Null when it can't be linked
- * (no eligibility now, or the sub is another person's): the caller refuses.
+ * The verified code of a provider link (Google today): makes the guest row
+ * for a share recipient with none, links the provider's sub to the row
+ * (identityLinkStmts), and signs in with that provider as the row's own
+ * role. Null when it can't be linked (no eligibility now, or the sub is
+ * another person's): the caller refuses.
  * Later logins go straight in by subject.
  */
 async function verifyLink(
@@ -377,7 +407,8 @@ async function verifyLink(
     subject: string | null;
   }>([
     inviteAcceptAudit(c.env, elig.userId),
-    ...googleLinkStmts(c.env, {
+    ...identityLinkStmts(c.env, {
+      provider: link.p,
       email,
       name: link.n,
       role: elig.kind === "guest" ? "guest" : "member",
@@ -393,7 +424,7 @@ async function verifyLink(
   if (!row) return null;
   const user: Member = row.user;
   const sess = await signSession(c.env, user.id, now, {
-    provider: "google",
+    provider: link.p,
     epoch: row.sessionEpoch,
     ...(link.h ? { hd: link.h } : {}),
     // A code was just typed: a forced re-authentication, as a code login is.
@@ -404,12 +435,12 @@ async function verifyLink(
       now,
       user.id,
     ),
-    signInAudit(c.env, user.id, "google", undefined),
+    signInAudit(c.env, user.id, link.p, undefined),
     stmt(c.env.DB, HOSTED_FIELDS).bind(user.id),
   ]);
   // #2632: a member's own Welcome, once; never throws.
   await seedWelcomeAfter(c, user);
-  logAuth({ provider: "google", outcome: "ok", uid: user.id });
+  logAuth({ provider: link.p, outcome: "ok", uid: user.id });
   const cap = capOfCaller(callerOf(user));
   const res = c.json({
     next: p.next,

@@ -299,6 +299,7 @@ describe("invites", () => {
     const signIn = () =>
       admit(env, authConfig(direct()), {
         provider: "google",
+        emailVerified: true,
         subject: sub,
         email,
         name: "I",
@@ -356,6 +357,7 @@ describe("invites", () => {
     const sub = `sub-${crypto.randomUUID()}`;
     const joined = await admit(env, authConfig(direct()), {
       provider: "google",
+      emailVerified: true,
       subject: sub,
       email: uniq("ev-join"),
       name: "J",
@@ -368,6 +370,7 @@ describe("invites", () => {
       authConfig(direct({ OWNER_EMAIL: ownerEmail })),
       {
         provider: "google",
+        emailVerified: true,
         subject: `sub-${crypto.randomUUID()}`,
         email: ownerEmail,
         name: "O",
@@ -380,6 +383,7 @@ describe("invites", () => {
     const syncedId = await seedUser(synced, "member");
     const s = await admit(env, authConfig(direct()), {
       provider: "google",
+      emailVerified: true,
       subject: `sub-${crypto.randomUUID()}`,
       email: synced,
       name: "S",

@@ -153,6 +153,7 @@ describe("silent result handling", () => {
     const other = await login(uniq("someone"));
     vi.spyOn(googleProvider, "redeem").mockResolvedValue({
       provider: "google",
+      emailVerified: true,
       subject: "s-owner",
       email:
         (
@@ -179,6 +180,7 @@ describe("silent result handling", () => {
     const email = uniq("fresh", "a.com");
     const redeem = vi.spyOn(googleProvider, "redeem").mockResolvedValue({
       provider: "google",
+      emailVerified: true,
       subject: "s-fresh",
       email,
       name: null,

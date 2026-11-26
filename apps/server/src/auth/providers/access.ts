@@ -173,6 +173,8 @@ export const accessProvider: OidcProvider = {
       provider: "access",
       subject: typeof claims.sub === "string" ? claims.sub : "",
       email: email.trim(),
+      // Access vouches for the address (an explicit false is refused above).
+      emailVerified: true,
       name,
       tenant: null,
     };

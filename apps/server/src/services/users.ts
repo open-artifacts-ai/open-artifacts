@@ -3,7 +3,7 @@ import { type Member, newId, type Role, type UserRef } from "@oa/shared";
 import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
+import { authConfig, type IdentityProvider } from "../auth/config.js";
 import { capOf, isGuestRole, planCapsRole } from "../auth/policy.js";
 import { seedPlan } from "../billing/features.js";
 import {
@@ -106,7 +106,7 @@ const defaultName = (email: string) => email.split("@")[0] || email;
 /**
  * The only way the app inserts a user (P2 seam with P3): every path that
  * creates a person (sign-in, invite, codes, dev and test hooks) goes through
- * here or through googleLinkStmts below. P3's AFTER INSERT trigger adds the
+ * here or through identityLinkStmts below. P3's AFTER INSERT trigger adds the
  * personal space. Returns the drizzle insert for the caller's conflict rule.
  */
 export function insertUser(
@@ -126,15 +126,20 @@ export function insertUser(
 }
 
 /**
- * First Google sign-in, race-safe in one batch: create the user (or touch an
- * active one), link (google, sub) only to an ACTIVE row with that email (never
- * a removed or suspended one), then read back the row and its Google link.
- * The caller decides from the read: status not active → removed; another
- * subject → identity_conflict.
+ * First sign-in with a provider identity, race-safe in one batch: create the
+ * user (or touch an active one), link (provider, sub) only to an ACTIVE row
+ * with that email (never a removed or suspended one), then read back the row
+ * and its link for that provider. The caller decides from the read: status
+ * not active → removed; another subject → identity_conflict.
+ * Always four statements, whatever the provider, so callers' result indexes
+ * never shift (the read-back is [2]). Only Google may create a row; any other
+ * provider's first statement only touches an existing active row (#3087). The
+ * fourth consumes google_relink, for a Google link only (a no-op otherwise).
  */
-export function googleLinkStmts(
+export function identityLinkStmts(
   env: Env,
   p: {
+    provider: IdentityProvider;
     email: string;
     name: string | null;
     role: Role;
@@ -144,33 +149,38 @@ export function googleLinkStmts(
   },
 ): D1PreparedStatement[] {
   return [
-    stmt(
-      env.DB,
-      // One owner: an 'owner' insert while an owner row exists becomes a member.
-      `insert into users (id, email, name, role, created_at, last_seen_at) values (?1, ?2, ?3,
+    p.provider === "google"
+      ? stmt(
+          env.DB,
+          // One owner: an 'owner' insert while an owner row exists becomes a member.
+          `insert into users (id, email, name, role, created_at, last_seen_at) values (?1, ?2, ?3,
          case when ?4 = 'owner' and exists (select 1 from users where role = 'owner') then 'member' else ?4 end, ?5, ?5)
        on conflict(email) do update set last_seen_at = excluded.last_seen_at where users.status = 'active'`,
-    ).bind(newId(), p.email, p.name ?? defaultName(p.email), p.role, p.now),
+        ).bind(newId(), p.email, p.name ?? defaultName(p.email), p.role, p.now)
+      : stmt(
+          env.DB,
+          "update users set last_seen_at = ?1 where email = ?2 and status = 'active'",
+        ).bind(p.now, p.email),
     stmt(
       env.DB,
       `insert into identities (provider, subject, tenant, user_id, created_at)
-       select 'google', ?1, ?2, id, ?3 from users where email = ?4 and status = 'active'
+       select ?5, ?1, ?2, id, ?3 from users where email = ?4 and status = 'active'
        on conflict do nothing`,
-    ).bind(p.subject, p.tenant, p.now, p.email),
+    ).bind(p.subject, p.tenant, p.now, p.email, p.provider),
     stmt(
       env.DB,
       `select u.id, u.email, u.name, u.display_name as displayName, u.role, u.last_seen_at as lastSeenAt,
               u.status, i.subject
-       from users u left join identities i on i.user_id = u.id and i.provider = 'google'
+       from users u left join identities i on i.user_id = u.id and i.provider = ?2
        where u.email = ?1`,
-    ).bind(p.email),
-    // A sign-in that linked after an admin's reset consumes google_relink
-    // (directory sync then finds the row by its identity).
+    ).bind(p.email, p.provider),
+    // A Google sign-in that linked after an admin's reset consumes
+    // google_relink (directory sync then finds the row by its identity).
     stmt(
       env.DB,
-      `update users set google_relink = 0 where email = ?1 and google_relink = 1
+      `update users set google_relink = 0 where ?2 = 'google' and email = ?1 and google_relink = 1
        and exists (select 1 from identities i where i.provider = 'google' and i.user_id = users.id)`,
-    ).bind(p.email),
+    ).bind(p.email, p.provider),
   ];
 }
 

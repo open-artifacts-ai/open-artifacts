@@ -4,9 +4,11 @@ import { env } from "cloudflare:workers";
 import { AUTH, R, SIGN_IN_PAGE } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { codesKey, emailKey } from "../src/auth/codes.js";
 import { readSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import { shareReach } from "../src/services/reach.js";
+import { b64urlDecode, b64urlEncode, hmacSign } from "../src/util/crypto.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import { fakeGoogle } from "./fixtures/fake-google.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
@@ -104,6 +106,43 @@ async function linkFlow(e: Env, m: ReturnType<typeof mailer>, email: string) {
   const pending = cookieOf(req, /oa_code=/);
   const code = m.codeFor(email);
   return { g, link, req, pending, code };
+}
+
+/**
+ * A link cookie sealed as routes/codes.ts seals one, with any body: the
+ * provider field (#3087) present, absent (a cookie from before it) or unknown.
+ */
+async function sealLink(e: Env, body: Record<string, unknown>) {
+  const email = body.e as string;
+  const ek = await emailKey(e, email);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    b64urlDecode(await codesKey(e, "oa:code-email")) ?? new Uint8Array(),
+    "AES-GCM",
+    false,
+    ["encrypt"],
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(ek) },
+    key,
+    new TextEncoder().encode(JSON.stringify(body)),
+  );
+  const sealed = new Uint8Array(12 + ct.byteLength);
+  sealed.set(iv);
+  sealed.set(new Uint8Array(ct), 12);
+  const val = b64urlEncode(
+    new TextEncoder().encode(
+      JSON.stringify({
+        ek,
+        ee: b64urlEncode(sealed),
+        exp: Date.now() + 600_000,
+        k: "gl",
+      }),
+    ),
+  );
+  const sig = await hmacSign(await codesKey(e, "oa:glink-cookie"), val);
+  return `oa_glink=${val}.${sig}`;
 }
 
 describe("a weak first Google login links after a code (#2590 G2)", () => {
@@ -253,6 +292,55 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     }
     expect(() => m.codeFor(email)).toThrow();
     expect(await subjectOf(email)).toBeNull();
+  });
+
+  it("a link cookie from before the provider field links as Google (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("old", "custom.example");
+    const uid = await seedUser(email, "member");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    const link = await sealLink(e, {
+      s: `sub-${email}`,
+      e: email,
+      h: null,
+      n: null,
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    const pending = cookieOf(req, /oa_code=/);
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      `${link}; ${pending}`,
+    );
+    expect(ok.status).toBe(200);
+    const sess = await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ uid, p: "google" });
+    expect(
+      await env.DB.prepare(
+        "select provider p, subject s from identities where user_id = ?",
+      )
+        .bind(uid)
+        .first(),
+    ).toEqual({ p: "google", s: `sub-${email}` });
+  });
+
+  it("a link cookie naming a provider sessions don't know is refused (#3087)", async () => {
+    const { e } = install();
+    const email = uniq("gh", "custom.example");
+    await seedUser(email, "member");
+    const body = { s: `sub-${email}`, e: email, h: null, n: null };
+    // The same body with p: "google" is read, so only the provider differs.
+    const good = await sealLink(e, { ...body, p: "google" });
+    expect((await get(e, AUTH.codeLink, good)).status).toBe(200);
+    const bad = await sealLink(e, { ...body, p: "github" });
+    expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
+    expect((await post(e, AUTH.codeRequest, { link: true }, bad)).status).toBe(
+      400,
+    );
   });
 
   it("a forged link cookie is refused", async () => {

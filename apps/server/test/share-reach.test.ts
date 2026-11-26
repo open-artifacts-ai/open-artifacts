@@ -343,6 +343,7 @@ describe("guest on a share row, and the email, from one rule", () => {
     expect(await row()).toMatchObject({ role: "commenter", guest: true });
     const signedIn = await admit(e, authConfig(e), {
       provider: "google",
+      emailVerified: true,
       subject: uniq("sub", IN),
       email,
       name: null,

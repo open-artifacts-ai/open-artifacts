@@ -191,6 +191,8 @@ export const googleProvider: OidcProvider = {
           provider: "google",
           subject: id.sub,
           email: id.email,
+          // The verifier refuses a token without email_verified: true.
+          emailVerified: true,
           name: id.name,
           tenant: null,
           hd: id.hd,
@@ -211,6 +213,7 @@ export const googleProvider: OidcProvider = {
         provider: "google",
         subject: id.sub,
         email: id.email,
+        emailVerified: true,
         name: id.name,
         tenant: inList ? id.hd : null,
         hd: id.hd,
