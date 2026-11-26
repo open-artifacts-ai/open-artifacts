@@ -6,10 +6,24 @@ import { connectDaemon, type DaemonClient, type Hello } from "@oa/bus-ipc";
 import type { ClientFrame as DaemonToHub } from "@oa/bus-protocol";
 import { PING, PONG } from "@oa/bus-protocol";
 import { expect, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import type { HubOptions } from "../src/hub.ts";
 import { type DaemonDeps, runDaemon } from "../src/index.ts";
 
+/**
+ * A connection made now is accepted after any connect the client began before
+ * it (one listen backlog, in order): once it is in, a reconnect that was on its
+ * way would already have been counted. Probes are not counted by the servers.
+ */
+export const PROBE = "/probe";
+export async function probeWs(url: string) {
+  const ws = new WebSocket(url.replace(/\/hub$/, PROBE));
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  ws.close();
+}
 export const servers: { close: (cb: () => void) => void }[] = [];
 export async function closeAll() {
   await Promise.all(

@@ -413,7 +413,7 @@ describe("runDaemon local server", () => {
     p.ack("mmmmmmmmmmmmmmm1");
     expect(await h.next("ack")).toMatchObject({ msg_id: "mmmmmmmmmmmmmmm1" });
     finish({ ok: false, reason: "closed", cause: "expired" });
-    await new Promise((r) => setTimeout(r, 50));
+    await h.quiet();
     expect(h.of("refuse")).toEqual([]);
     expect(h.daemon.agents.byRef("A")?.live).toBe(true);
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
@@ -443,7 +443,11 @@ describe("runDaemon local server", () => {
       await a.request({ type: "self" });
       a.close();
     }
-    await new Promise((r) => setTimeout(r, 50)); // absence: a close would be announced here
+    // Absence: a close would be announced by now. A fresh connection is
+    // accepted and answered after the earlier ones closed, then the hub link drains.
+    const last = await h.adapter("A");
+    await last.request({ type: "self" });
+    await h.quiet();
     expect(h.daemon.agents.byRef("A")?.live).toBe(true);
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.of("sessions").every((f) => f.closed.length === 0)).toBe(true);

@@ -1,7 +1,7 @@
 import { AGENT_CAP_MESSAGES } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MACHINE_CAP_COPY, MEMBER_CAP_COPY } from "../src/routes.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -73,14 +73,17 @@ describe("a rate-limited agent_up", () => {
   });
 
   it("is not retried in a loop", async () => {
+    const syncs = eventCounter();
     const h = await daemonHarness({
-      claude: { syncMs: 20 },
+      claude: { syncMs: 20, onSync: () => syncs.hook() },
       limitedRetryMs: 60_000,
     });
     await h.adapter("A");
     const up = await h.next("agent_up");
     h.toDaemon(limited(up.id));
-    await new Promise((r) => setTimeout(r, 300));
+    // Several syncs after the limit: each would have announced A again.
+    await syncs.next(3);
+    await h.quiet();
     expect(h.of("agent_up")).toHaveLength(1);
   });
 
@@ -133,18 +136,28 @@ describe("a rate-limited agent_up", () => {
 
 describe("fair, at-most-once user requests", () => {
   it("a request that times out while still queued never goes out", async () => {
-    const h = await daemonHarness({
-      hub: { backoffMs: () => 20, pace: { rate: 2, burst: 1 } },
-      pendingTimeoutMs: 200,
-    });
-    const a = await h.adapter("A");
-    expect(await a.request({ type: "list" })).toMatchObject({
-      type: "error",
-      code: "timeout",
-    });
-    await new Promise((r) => setTimeout(r, 2500));
-    expect(h.of("agent_up")).toHaveLength(1);
-    expect(h.of("list")).toEqual([]);
+    // The pending timer and the pacer's refill run on a clock moved by hand.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const h = await daemonHarness({
+        hub: { backoffMs: () => 20, pace: { rate: 2, burst: 1 } },
+        pendingTimeoutMs: 200,
+      });
+      const a = await h.adapter("A");
+      const reply = a.request({ type: "list" });
+      await a.request({ type: "self" }); // answered after the list was read and queued
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await reply).toMatchObject({
+        type: "error",
+        code: "timeout",
+      });
+      await vi.advanceTimersByTimeAsync(5_000); // far past every refill
+      await h.quiet();
+      expect(h.of("agent_up")).toHaveLength(1);
+      expect(h.of("list")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a rate limit mark goes when its agent goes down", async () => {

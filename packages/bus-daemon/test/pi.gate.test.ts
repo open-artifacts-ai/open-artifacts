@@ -8,8 +8,9 @@ import { daemonHarness, deliverFrame, hello, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
+/** Pi's ack timer and the tests' own: moved by hand, never waited out. */
+const FAKE_TIMERS = { toFake: ["setTimeout", "clearTimeout"] } as const;
 const ID = "mmmmmmmmmmmmmmm1";
-const settle = () => new Promise((r) => setTimeout(r, 60));
 type Deliver = Extract<DaemonFrame, { type: "deliver" }>;
 
 describe("pi gate: attest", () => {
@@ -55,7 +56,7 @@ describe("pi gate: delivery on the extension's connection", () => {
     expect(got).toEqual([
       expect.objectContaining({ msg_id: ID, from_name: "peer", body: "hi" }),
     ]);
-    await settle();
+    await h.quiet();
     expect(h.of("ack")).toHaveLength(1);
     expect(h.of("refuse")).toEqual([]);
   });
@@ -75,7 +76,7 @@ describe("pi gate: delivery on the extension's connection", () => {
       msg_id: ID,
       reason: "closed",
     });
-    await settle();
+    await h.quiet();
     expect(got).toEqual([]);
     expect(h.of("ack")).toEqual([]);
   });
@@ -87,13 +88,20 @@ describe("pi gate: delivery on the extension's connection", () => {
     a.onDeliver(() => {
       b.ack(ID);
     });
-    h.toDaemon(deliverFrame(ID));
-    await settle();
-    expect(h.of("ack")).toEqual([]);
-    // Unacked, the attempt times out: no ack, no refuse; the hub retries.
-    await new Promise((r) => setTimeout(r, 200));
-    expect(h.of("ack")).toEqual([]);
-    expect(h.of("refuse")).toEqual([]);
+    vi.useFakeTimers(FAKE_TIMERS);
+    try {
+      h.toDaemon(deliverFrame(ID));
+      await b.request({ type: "self" }); // B's ack was read before this reply
+      await h.quiet();
+      expect(h.of("ack")).toEqual([]);
+      // Unacked, the attempt times out: no ack, no refuse; the hub retries.
+      await vi.advanceTimersByTimeAsync(150);
+      await h.quiet();
+      expect(h.of("ack")).toEqual([]);
+      expect(h.of("refuse")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -116,28 +124,52 @@ describe("pi gate: late acks", () => {
     const a = await h.adapter("A", { kind: "pi" });
     const got: Deliver[] = [];
     // Pi took it (sendMessage ran) but the ack lands just past the timeout.
-    a.onDeliver((f) => {
-      got.push(f);
-      setTimeout(() => a.ack(f.msg_id), 200);
-    });
-    h.toDaemon(deliverFrame(ID9));
-    await new Promise((r) => setTimeout(r, 350));
-    h.toDaemon(deliverFrame(ID9)); // the hub retries the unacked message
-    await new Promise((r) => setTimeout(r, 350));
-    expect(got).toHaveLength(1);
-    expect(h.of("ack").length).toBeGreaterThanOrEqual(1);
+    vi.useFakeTimers(FAKE_TIMERS);
+    try {
+      let delivered!: () => void;
+      const arrived = new Promise<void>((r) => {
+        delivered = r;
+      });
+      a.onDeliver((f) => {
+        got.push(f);
+        setTimeout(() => a.ack(f.msg_id), 200);
+        delivered();
+      });
+      h.toDaemon(deliverFrame(ID9));
+      await arrived;
+      await vi.advanceTimersByTimeAsync(200); // past the timeout, then the ack goes
+      await a.request({ type: "self" }); // the late ack was read before this reply
+      h.toDaemon(deliverFrame(ID9)); // the hub retries the unacked message
+      await h.next("ack"); // answered from the late ack, not pushed again
+      expect(got).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a late ack from another agent confirms nothing", async () => {
     const h = await daemonHarness({ pi: { ackTimeoutMs: 80 } });
     const a = await h.adapter("A", { kind: "pi" });
     const b = await h.adapter("B", { kind: "pi" });
-    a.onDeliver(() => {
-      setTimeout(() => b.ack(ID9), 150);
-    });
-    h.toDaemon(deliverFrame(ID9));
-    await new Promise((r) => setTimeout(r, 300));
-    expect(h.of("ack")).toEqual([]);
+    vi.useFakeTimers(FAKE_TIMERS);
+    try {
+      let delivered!: () => void;
+      const got = new Promise<void>((r) => {
+        delivered = r;
+      });
+      a.onDeliver(() => {
+        setTimeout(() => b.ack(ID9), 150);
+        delivered();
+      });
+      h.toDaemon(deliverFrame(ID9));
+      await got;
+      await vi.advanceTimersByTimeAsync(150); // past the timeout, then B's ack goes
+      await b.request({ type: "self" }); // B's late ack was read before this reply
+      await h.quiet();
+      expect(h.of("ack")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -175,15 +207,16 @@ describe("pi gate: notices", () => {
     const sent = await h.next("send");
     h.toDaemon({ id: sent.id, type: "receipt", msg_id: ID, state: "pending" });
     await reply;
+    const before = h.of("sessions").length;
     a.close();
-    await settle();
+    await h.next("sessions", before + 1); // the daemon saw A go
     h.toDaemon({
       id: "u1",
       type: "receipt_update",
       msg_id: ID,
       state: "expired",
     });
-    await settle();
+    await h.quiet();
     const again = await h.adapter("A", { kind: "pi" });
     const notices: string[] = [];
     again.onNotice((t) => notices.push(t));

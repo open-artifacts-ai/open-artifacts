@@ -8,7 +8,13 @@ import { WebSocket, WebSocketServer } from "ws";
 import { tokenHash } from "../src/config.ts";
 import { HubConnection, type HubOptions } from "../src/hub.ts";
 import { runDaemon } from "../src/index.ts";
-import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  eventCounter,
+  PROBE,
+  probeWs,
+  stopAll,
+} from "./helpers.ts";
 
 const servers: WebSocketServer[] = [];
 afterEach(async () => {
@@ -26,20 +32,6 @@ async function listen(wss: WebSocketServer): Promise<string> {
   return `ws://127.0.0.1:${addr.port}/hub`;
 }
 
-/**
- * A connection made now is accepted after any connect the client began before
- * it (one listen backlog, in order): once it is in, a reconnect that was on its
- * way would already have been counted. Probes are not counted by the servers.
- */
-const PROBE = "/probe";
-async function probeWs(url: string) {
-  const ws = new WebSocket(url.replace(/\/hub$/, PROBE));
-  await new Promise<void>((resolve, reject) => {
-    ws.once("open", () => resolve());
-    ws.once("error", reject);
-  });
-  ws.close();
-}
 /** The http twin of `probeWs`: answered after any upgrade the daemon began before it. */
 async function probeHttp(base: string) {
   await new Promise<void>((resolve, reject) => {

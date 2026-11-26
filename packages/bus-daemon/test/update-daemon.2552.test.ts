@@ -92,8 +92,8 @@ describe("the daemon's self-check after a switch (#2552)", () => {
   it("with no update deps (every other caller) nothing reads update.json", async () => {
     const w = switched();
     const exit = vi.fn();
-    await daemonHarness({});
-    await new Promise((r) => setTimeout(r, 100));
+    const h = await daemonHarness({});
+    await h.quiet();
     expect(exit).not.toHaveBeenCalled();
     expect(readPolicy(w.home).pending).toBeDefined();
   });

@@ -71,7 +71,7 @@ describe("the update wire, daemon side (#2552)", () => {
     // A hub without the cap: the field and the push are ignored.
     h.toDaemon(helloOk({ run_version: "1.1.0" }));
     h.toDaemon({ id: "p0", type: "run_version", run_version: "1.1.0" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).not.toHaveBeenCalled();
     // A hub that listed it.
     h.toDaemon(helloOk({ caps: ["run_version"], run_version: "1.1.0" }));
@@ -80,7 +80,7 @@ describe("the update wire, daemon side (#2552)", () => {
     await vi.waitFor(() => expect(spy).toHaveBeenCalledWith("1.2.0"));
     // A bad value never reaches the updater: the frame does not decode.
     h.toDaemon({ id: "p2", type: "run_version", run_version: "latest" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).toHaveBeenCalledTimes(2);
   });
 
@@ -99,14 +99,14 @@ describe("the update wire, daemon side (#2552)", () => {
       .mockResolvedValue({ kind: "disabled" });
     h.toDaemon(helloOk());
     h.toDaemon({ id: "i0", type: "install_now" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).not.toHaveBeenCalled();
     h.toDaemon(helloOk({ caps: ["run_version"] }));
     h.toDaemon({ id: "i1", type: "install_now" });
     await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
     // A frame with a field is no frame.
     h.toDaemon({ id: "i2", type: "install_now", version: "9.9.9" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(spy).toHaveBeenCalledTimes(1);
   });
 
@@ -142,7 +142,7 @@ describe("the update wire, daemon side (#2552)", () => {
     });
     // No cap (an older hub): nothing goes, nothing is lost.
     h.toDaemon(helloOk());
-    await new Promise((r) => setTimeout(r, 150));
+    await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(3);
     h.toDaemon(helloOk({ caps: ["run_version"] }));
@@ -186,7 +186,7 @@ describe("the update wire, daemon side (#2552)", () => {
     });
     const h = await daemonHarness({});
     h.toDaemon(helloOk({ caps: ["run_version"] }));
-    await new Promise((r) => setTimeout(r, 150));
+    await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(1);
   });
@@ -208,7 +208,7 @@ describe("the update wire, daemon side (#2552)", () => {
       h.toDaemon(helloOk({ caps: ["run_version"] }));
       await vi.waitFor(() => expect(h.daemon.updater).toBeDefined());
       // Let the hello_ok land before asking for a switch.
-      await new Promise((r) => setTimeout(r, 100));
+      await h.quiet();
       return { w, exit, h };
     };
 
@@ -272,7 +272,7 @@ describe("the update wire, daemon side (#2552)", () => {
         },
       });
       h.toDaemon(helloOk());
-      await new Promise((r) => setTimeout(r, 100));
+      await h.quiet();
       expect(await h.daemon.updater?.instructFromInstance("0.9.0")).toEqual({
         kind: "retry_later",
       });

@@ -28,7 +28,13 @@ function clock() {
   };
 }
 
-const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Lets what is already in flight finish: the hub link is often down here, so
+ * not a ping; a few turns of the event loop, no clock.
+ */
+const tick = async (_ms?: number) => {
+  for (let i = 0; i < 3; i++) await new Promise<void>((r) => setImmediate(r));
+};
 
 async function setup(
   over: Parameters<typeof daemonHarness>[0] = {},
