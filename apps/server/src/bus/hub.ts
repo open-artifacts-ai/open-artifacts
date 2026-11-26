@@ -148,7 +148,9 @@ import {
   type HandOverResult,
   handOver,
   listRoles,
+  type MoveAudit,
   type PutRoleResult,
+  pendingMoveAudits,
   putRole,
   type RoleMove,
   resolveRoleAnywhere,
@@ -156,6 +158,7 @@ import {
   roleForward,
   roleOfIdentity,
   roleTakenSql,
+  settleMoveAudits,
 } from "./roles.js";
 import {
   AGENT_COLS,
@@ -4483,6 +4486,22 @@ export class BusHub extends DurableObject<Env> {
       if (r.moved !== null) this.#roleMoved(r.moved);
     }
     return r;
+  }
+
+  /**
+   * #3132: the oldest role moves whose bus.role.moved audit row D1 does not
+   * have yet (roles.ts pendingMoveAudits). Worker only.
+   */
+  async pendingRoleMoveAudits(max = 20): Promise<MoveAudit[]> {
+    return pendingMoveAudits(this.ctx.storage.sql, OWNER_ORG_ID, max);
+  }
+
+  /** #3132: settles move audits (roles.ts settleMoveAudits). Worker only. */
+  async settleRoleMoveAudits(
+    done: string[],
+    held: { id: string; cred: { kind: string; id: string | null } | null }[],
+  ): Promise<void> {
+    settleMoveAudits(this.ctx.storage.sql, OWNER_ORG_ID, done, held);
   }
 
   /**
