@@ -1013,10 +1013,11 @@ describe("reconcile", () => {
     const path = list[0]?.find((a) => a.startsWith("repos/")) ?? "";
     expect(path).toContain("status=success");
     expect(path).toContain("per_page=100&page=1");
-    // Created in the last 30 days, when GitHub still allows a rerun.
+    // Created in the last 30 days and 26 hours: a rerun up to 30 days after
+    // creation, updated in the last 26 hours.
     expect(RERUN_DAYS).toBe(30);
     expect(decodeURIComponent(path)).toContain(
-      "created=2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
+      "created=2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     const jq = list[0]?.[list[0].indexOf("--jq") + 1] ?? "";
     expect(jq).toContain("total_count");
@@ -1031,8 +1032,8 @@ describe("reconcile", () => {
       rerun(901, { attempt: 3, created: 4 * DAY, updated: 2 * HOUR }),
       // Created 25 days ago: still inside GitHub's 30-day rerun period.
       rerun(902, { created: 25 * DAY, updated: 3 * HOUR }),
-      // Created 31 days ago: GitHub can't rerun it any more.
-      rerun(903, { created: 31 * DAY, updated: 3 * HOUR }),
+      // Created 31 days and 3 hours ago: past 30 days plus 26 hours.
+      rerun(903, { created: 31 * DAY + 3 * HOUR, updated: 3 * HOUR }),
       // Updated 27 hours ago: an earlier reconcile had it.
       rerun(904, { created: 2 * DAY, updated: 27 * HOUR }),
       // Passed on its first attempt: nothing to track.
@@ -1042,6 +1043,21 @@ describe("reconcile", () => {
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([
       { runId: 901, attempt: 3 },
       { runId: 902, attempt: 2 },
+    ]);
+  });
+
+  it("finds a legal rerun that passed 29d 23h 55m after creation, scanned 10 minutes later", () => {
+    const MIN = 60 * 1000;
+    const late = rerun(901, {
+      attempt: 3,
+      created: 10 * MIN + 29 * DAY + 23 * HOUR + 55 * MIN,
+      updated: 10 * MIN,
+    });
+    const g = fakeGh({ log: ONE_FAIL, runs: [late] });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
+    // Still found until its update leaves the 26-hour window.
+    expect(recentRuns(g.exec, REPO, NOW + 25 * HOUR)).toEqual([
+      { runId: 901, attempt: 3 },
     ]);
   });
 
@@ -1067,7 +1083,7 @@ describe("reconcile", () => {
 
   it("splits a range whose listing reaches 1,000 runs, so none is missed", () => {
     // 999 runs that passed first time in the last day, and the oldest one, a
-    // rerun from 20 days ago: 1,000 in the 30 days, GitHub's limit.
+    // rerun from 20 days ago: 1,000 in the range, GitHub's limit.
     const runs = [
       ...Array.from({ length: LIST_MAX - 1 }, (_, i) =>
         rerun(10_000 + i, { attempt: 1, created: HOUR + i * 60_000 }),
@@ -1077,9 +1093,9 @@ describe("reconcile", () => {
     const g = fakeGh({ log: ONE_FAIL, runs });
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
     expect(ranges(g.calls)).toEqual([
-      "2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
-      "2026-10-27T12:00:00Z..2026-11-11T12:00:00Z",
-      "2026-11-11T12:00:01Z..2026-11-26T12:00:00Z",
+      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "2026-10-26T10:00:00Z..2026-11-10T23:00:00Z",
+      "2026-11-10T23:00:01Z..2026-11-26T12:00:00Z",
     ]);
   });
 
@@ -1094,9 +1110,9 @@ describe("reconcile", () => {
     ];
     const g = fakeGh({ log: ONE_FAIL, runs });
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
-    // The whole 30 days held 1,145, so it was split before paging.
+    // The whole range held 1,145, so it was split before paging.
     expect(ranges(g.calls)[0]).toBe(
-      "2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
+      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     expect(ranges(g.calls).length).toBeGreaterThan(1);
   });

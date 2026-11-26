@@ -3,7 +3,8 @@
 // reruns nothing and blocks nothing. flaky-tracker.yml runs it when a CI run
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
 // group, queued). An hourly reconcile (--reconcile) catches any run that
-// event missed: it lists the CI runs created in the last RERUN_DAYS that
+// event missed: it lists the CI runs created in the last RERUN_DAYS plus
+// RECONCILE_HOURS that
 // passed on attempt 2 or later and were updated in the last RECONCILE_HOURS,
 // and tracks each one the store has no `passed` line for, through the same
 // code. That line means the run is fully handled: it is
@@ -1064,8 +1065,9 @@ export function listRuns(
 
 /**
  * The runs the reconcile looks at: runs of the watched workflows created in
- * the last RERUN_DAYS days (a run can be rerun that long after it was
- * created) whose latest attempt (2 or later) passed and that were updated in
+ * the last RERUN_DAYS days plus RECONCILE_HOURS (a run can be rerun up to
+ * RERUN_DAYS after it was created, and its rerun must stay listed for the
+ * whole update window) whose latest attempt (2 or later) passed and that were updated in
  * the last RECONCILE_HOURS, fork PRs' runs too, oldest first. Whether a
  * failure counts toward two in seven days is decided later, by the failed
  * job's completion time, never by the run's creation.
@@ -1076,7 +1078,9 @@ export function recentRuns(
   nowMs: number,
 ): { runId: number; attempt: number }[] {
   const to = Math.floor(nowMs / 1000) * 1000;
-  const from = to - RERUN_DAYS * DAY_MS;
+  // A rerun can start up to RERUN_DAYS after creation, and a run updated
+  // any time in the last RECONCILE_HOURS must still be in the range.
+  const from = to - RERUN_DAYS * DAY_MS - RECONCILE_HOURS * 3600 * 1000;
   const touched = nowMs - RECONCILE_HOURS * 3600 * 1000;
   const out = new Map<number, number>();
   for (const wf of WATCHED)
@@ -1211,7 +1215,7 @@ function report(lines: string[]) {
 function mainReconcile(repo: string) {
   const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
   const lines = [
-    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS} days passed on attempt 2 or later and were updated in the last ${RECONCILE_HOURS} hours`,
+    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later and were updated in the last ${RECONCILE_HOURS} hours`,
   ];
   for (const r of all) {
     lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);
