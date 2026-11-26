@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.253.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.0...v0.253.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **release:** main's version files say 0.253.0, as tag v0.253.0 does ([#3246](https://github.com/open-artifacts-ai/open-artifacts/issues/3246)) ([d6846e0](https://github.com/open-artifacts-ai/open-artifacts/commit/d6846e0d8b9b98d3e1fd90732fc2c29887e1212f))
+
 ## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
 
 
