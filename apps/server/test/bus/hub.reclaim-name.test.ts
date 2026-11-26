@@ -817,7 +817,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
 });
 
 describe("held mail stays with its session (#3208)", () => {
-  it("an agy row that closes without a handover: a new agy session takes the name and none of the mail; the sender is told", async () => {
+  it("an agy row that closes without a handover keeps its mail: a new agy session gets agy-2 and none of it, and the row's own reopen receives it", async () => {
     await setClock(base());
     const n = ns("rc");
     const dm = await machine("Work");
@@ -831,19 +831,43 @@ describe("held mail stays with its session (#3208)", () => {
     const m2 = await send(snd, "snd", "agy", "second");
     await close(d, oldRef);
     const newRef = uniq("agy-starting-2");
-    expect(await reg(d, newRef, "agy", n, { kind: "antigravity" })).toBe("agy");
-    await waitExpired(snd, [m1.msg_id, m2.msg_id]);
+    const got = await reg(d, newRef, "agy", n, { kind: "antigravity" });
+    expect(got).not.toBe("agy");
+    expect(got).toMatch(/^agy-/);
     expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
-    expect(await pendingOf(oldRef)).toEqual([]);
     expect(await pendingOf(newRef)).toEqual([]);
-    expect(await receiptOf(m1.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
+    expect(await pendingOf(oldRef)).toEqual([m1.msg_id, m2.msg_id]);
+    expect((await receiptOf(m1.msg_id))?.state).toBe("pending");
+    await reg(d, oldRef, "agy", n, { kind: "antigravity" });
+    await eventually(() => {
+      const ids = delivers(d)
+        .filter((x) => x.to_ref === oldRef)
+        .map((x) => x.msg_id);
+      expect(ids).toContain(m1.msg_id);
+      expect(ids).toContain(m2.msg_id);
     });
-    expect(await receiptOf(m2.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    d.close();
+    snd.close();
+  });
+
+  it("a chosen-name restart with no handover: the namesake takes the name but none of the mail; the sender is told", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [BUS_CAPS.mailbox]);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
+    const name = uniq("Lead");
+    const oldRef = uniq("codex-1");
+    expect(await reg(d, oldRef, name, n, { kind: "codex" })).toBe(name);
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", name, "for the old lead");
+    await close(d, oldRef);
+    const newRef = uniq("codex-2");
+    expect(await reg(d, newRef, name, n, { kind: "codex" })).toBe(name);
+    await waitExpired(snd, [m.msg_id]);
+    expect(await pendingOf(newRef)).toEqual([]);
+    expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
     d.close();
     snd.close();
   });
@@ -905,5 +929,95 @@ describe("held mail stays with its session (#3208)", () => {
     expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
     d.close();
     snd.close();
+  });
+
+  it("a starting agy row whose process ended (gone): its mail expires at once as recipient_closed, the sender is told, and a new agy session gets none", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const snd = await connect(sm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const oldRef = uniq("agy-starting-9");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", "agy", "during startup");
+    d.send({
+      v: 1,
+      id: id("c"),
+      type: "sessions",
+      open: [],
+      closed: [oldRef],
+      gone: [oldRef],
+    });
+    await waitExpired(snd, [m.msg_id]);
+    expect(await receiptOf(m.msg_id)).toEqual({
+      state: "expired",
+      reason: "recipient_closed",
+    });
+    expect(await awayRows("agy")).not.toContain(oldRef);
+    const newRef = uniq("agy-starting-10");
+    expect(await reg(d, newRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
+    expect(await pendingOf(newRef)).toEqual([]);
+    d.close();
+    snd.close();
+  });
+
+  it("a plain close (no gone) keeps the mail for the reopen", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const snd = await connect(sm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const oldRef = uniq("agy-starting-11");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", "agy", "keep for reopen");
+    await close(d, oldRef);
+    expect((await receiptOf(m.msg_id))?.state).toBe("pending");
+    await reg(d, oldRef, "agy", n, { kind: "antigravity" });
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === oldRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    d.close();
+    snd.close();
+  });
+
+  it("gone that is not in closed is refused", async () => {
+    await setClock(base());
+    const dm = await machine("Work");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const fid = id("c");
+    d.send({
+      v: 1,
+      id: fid,
+      type: "sessions",
+      open: [],
+      closed: [],
+      gone: [uniq("agy-starting-12")],
+    } as ClientFrame);
+    const err = await waitFor(d, "error");
+    expect(err).toMatchObject({ id: fid, code: "bad_frame" });
+    d.close();
   });
 });

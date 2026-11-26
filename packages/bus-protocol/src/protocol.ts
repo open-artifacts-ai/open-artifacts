@@ -115,12 +115,25 @@ const Sessions = z
     type: z.literal("sessions"),
     open: z.array(AgentRefSchema).max(LIMITS.maxRosterAgents),
     closed: z.array(AgentRefSchema).max(LIMITS.maxRosterAgents),
+    /**
+     * #3208 (`BUS_CAPS.sessionsGone`): refs of closed sessions that will never
+     * reopen (a subset of `closed`). The hub expires their pending mail as
+     * `recipient_closed` and drops their away reservations. Sent only after
+     * `hello_ok.caps` listed `sessions_gone` (older hubs refuse the key).
+     */
+    gone: z.array(AgentRefSchema).max(LIMITS.maxRosterAgents).optional(),
   })
   .refine((f) => {
     if (!distinct(f.open) || !distinct(f.closed)) return false;
     const open = new Set(f.open);
-    return !f.closed.some((r) => open.has(r));
-  }, "duplicate or overlapping session refs");
+    if (f.closed.some((r) => open.has(r))) return false;
+    if (f.gone !== undefined) {
+      if (!distinct(f.gone)) return false;
+      const closed = new Set(f.closed);
+      if (f.gone.some((r) => !closed.has(r))) return false;
+    }
+    return true;
+  }, "duplicate, overlapping, or unclosed gone session refs");
 
 /**
  * `to_namespace` names the target only; it never affects the sender's

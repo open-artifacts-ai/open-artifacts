@@ -377,6 +377,7 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.sessionsGone,
 ];
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
@@ -1520,11 +1521,12 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
-  // #1346: mail that crossed a namespace boundary (admitted by a reach grant,
-  // which may be gone by now) waits for its holder: the newcomer may hold no
-  // such grant. Pending in-session mail from another namespace blocks the
-  // takeover unless its sender is global or its namespace is linked to the
-  // holder's. A sender row that no longer exists counts as not global.
+  // #1346, #3208: pending in-session mail from another namespace (sent under a
+  // reach grant) keeps the reclaim from happening unless its sender is global
+  // or its namespace is linked to the holder's, so that mail stays with its
+  // row and is not expired by a namesake; same-namespace pending mail expires
+  // as recipient_closed on reclaim. A sender row that no longer exists counts
+  // as not global.
   const holder = one<{ ns: string; global: number; start: number }>(
     sql,
     "select namespace as ns, global, session_start_rowid as start from agents where id = ?",
@@ -5711,14 +5713,18 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
-          hasCap(f, BUS_CAPS.guest)
-            ? // Everything the hub always listed, plus owner_away only to a
-              // daemon that listed it: an older daemon decodes at most 16
-              // caps, and HUB_CAPS outgrew that (#2759).
+          hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.sessionsGone)
+            ? // Everything the hub always listed, plus owner_away, guest and
+              // sessions_gone only to a daemon that listed them: an older
+              // daemon decodes at most 16 caps, and HUB_CAPS outgrew that
+              // (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
-                    (c !== BUS_CAPS.ownerAway && c !== BUS_CAPS.guest) ||
+                    (c !== BUS_CAPS.ownerAway &&
+                      c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.sessionsGone) ||
                     hasCap(f, c),
                 ),
               }
@@ -5773,6 +5779,11 @@ export class BusHub extends DurableObject<Env> {
           if (a.global === 1) change.global = true;
         }
         this.#closeSessions(downed.map((a) => a.id));
+        if (f.gone !== undefined && f.gone.length > 0) {
+          const goneChange = this.#endGone(machineId, f.gone);
+          change.namespaces.push(...goneChange.namespaces);
+          if (goneChange.global) change.global = true;
+        }
         notifyRoster(this.ctx, change, ws);
         return;
       }
@@ -7396,6 +7407,45 @@ export class BusHub extends DurableObject<Env> {
       JSON.stringify({ through, ids: left }),
     );
     this.#arm(closedAt + 1);
+  }
+
+  /**
+   * #3208: closed sessions that will never reopen (such as an agy row whose
+   * process ended before it joined a conversation). Drop their away
+   * reservations and expire their pending mail at once as recipient_closed so
+   * each sender is told. Mail never moves. Runs for rows closed by this frame
+   * and rows closed earlier (a repeated gone ref is a harmless no-op).
+   */
+  #endGone(machineId: string, refs: string[]): RosterChange {
+    const change: RosterChange = { namespaces: [], global: false };
+    if (refs.length === 0) return change;
+    const sql = this.ctx.storage.sql;
+    const rows = all<{ id: string; namespace: string; global: number }>(
+      sql,
+      `select id, namespace, global from agents
+        where machine_id = ? and org_id = ? and live = 0
+          and native_ref in (select value from json_each(?))`,
+      machineId,
+      OWNER_ORG_ID,
+      JSON.stringify(refs),
+    );
+    for (const a of rows) {
+      sql.exec(
+        "delete from former_names where agent_id = ? and kind = 'away'",
+        a.id,
+      );
+      const pending = all<{ id: string; fromAgent: string }>(
+        sql,
+        "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' order by rowid limit ?",
+        a.id,
+        MAILBOX_PENDING_CAP,
+      );
+      for (const r of pending)
+        this.#expire(r.id, r.fromAgent, "recipient_closed");
+      change.namespaces.push(a.namespace);
+      if (a.global === 1) change.global = true;
+    }
+    return change;
   }
 
   /**
