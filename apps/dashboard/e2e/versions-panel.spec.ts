@@ -41,7 +41,7 @@ const settle = (page: Page) =>
     document.getAnimations().every((x) => x.playState !== "running"),
   );
 const chip = (page: Page) =>
-  page.getByRole("button", { name: /^(Version: |v\d+, )/ });
+  page.getByRole("button", { name: /^(Version: |v\d+, |Version \d+, )/ });
 const list = (page: Page) => page.getByRole("list", { name: "Versions" });
 const search = (page: Page) =>
   page.getByRole("searchbox", { name: "Search versions" });
@@ -98,7 +98,8 @@ for (const scheme of ["light"] as const)
           row.getByRole("button", { name: "Restore" }),
         ).toBeVisible();
         await expect(chip(page)).toHaveAccessibleName(
-          /^(Version: v21 · Jan 22(, 2026)?|v21, not the latest version)$/,
+          // #2622: the approved line on a phone's older version.
+          /^(Version: v21 · Jan 22(, 2026)?|Version 21, not the latest)$/,
         );
         if (width < 600)
           for (const b of await row.getByRole("button").all())
