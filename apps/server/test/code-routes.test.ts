@@ -5,6 +5,7 @@ import {
   CodeRequestedSchema,
   CodeVerifiedSchema,
   CodeVerifyFailureDetailsSchema,
+  newId,
   R,
   TurnstileRequiredDetailsSchema,
 } from "@oa/shared";
@@ -268,7 +269,8 @@ describe("POST AUTH.codeRequest", () => {
     expect(ok.status).toBe(202);
   });
 
-  it("the outside-domain owner and a Google-linked user get no email", async () => {
+  // #3184: every active row at its exact address, linked or not.
+  it("the outside-domain owner and a Google-linked user get an email", async () => {
     const owner = uniq("boss", "x.com");
     await seedUser(owner, "owner");
     const linked = uniq("linked");
@@ -279,6 +281,22 @@ describe("POST AUTH.codeRequest", () => {
     );
     await request(withMail(direct(), m), owner);
     await request(withMail(trial(), m), linked, { token: "ok" });
+    expect(m.sent.map((x) => x.to)).toEqual([owner, linked]);
+  });
+
+  it("a suspended row, a lapsed invite and a login-domain address with no row get no email (Google install)", async () => {
+    const suspended = uniq("susp", "x.com");
+    await seedUser(suspended, "admin", { status: "suspended" });
+    const lapsed = uniq("lapse", "x.com");
+    const lid = await seedUser(lapsed, "member");
+    await env.DB.prepare(
+      "update users set invited_at = ?, last_seen_at = null where id = ?",
+    )
+      .bind(Date.now() - 40 * 86_400_000, lid)
+      .run();
+    const m = mailer();
+    for (const a of [suspended, lapsed, uniq("norow")])
+      await request(withMail(direct(), m), a);
     expect(m.sent).toHaveLength(0);
   });
 });
@@ -382,31 +400,114 @@ describe("POST AUTH.codeVerify", () => {
     expect(body.auth.cap ?? null).toBeNull();
   });
 
-  // The m session holds only while codeRule would still admit the row.
-  for (const [what, change] of [
-    ["made a guest", "update users set role = 'guest' where email = ?1"],
-    ["made an admin", "update users set role = 'admin' where email = ?1"],
+  // #3184: on a Google install, every non-guest row signs in by code as
+  // itself (its own role, an m session, not capped), linked or not, outside
+  // the domains or in them.
+  for (const [label, role, domain, linked] of [
+    ["an owner", "owner", "x.com", false],
+    ["an admin", "admin", "x.com", false],
+    ["a member", "member", "x.com", false],
+    ["a Google-linked member", "member", "x.com", true],
+    ["a Google-linked owner in the login domain", "owner", "a.com", true],
+    ["an admin in the login domain", "admin", "a.com", false],
   ] as const)
-    it(`an invited member's code session ends when the row is ${what}`, async () => {
-      const member = uniq("mx", "x.com");
-      await seedUser(member, "member");
-      const s = await start(direct(), member);
-      const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
-      expect((await meWith(s.e, cookie)).status).toBe(200);
-      await env.DB.prepare(change).bind(member).run();
-      expect((await meWith(s.e, cookie)).status).toBe(401);
+    it(`${label} on a Google install signs in by code with that role, not capped`, async () => {
+      const addr = uniq(`all-${role}`, domain);
+      await seedUser(
+        addr,
+        role,
+        linked ? { googleSub: `L-${addr}`, tenant: domain } : {},
+      );
+      const s = await start(direct(), addr);
+      const r = await verify(s.e, s.code(), s.cookie);
+      expect(r.status).toBe(200);
+      expect(CodeVerifiedSchema.parse(await r.json())).toMatchObject({
+        readOnly: false,
+        user: { email: addr, role },
+      });
+      expect(setCookieLine(r, SESSION)).toContain("Max-Age=604800");
+      const cookie = cookieOf(r, SESSION);
+      const sess = await readSession(s.e, cookie?.split("=")[1]);
+      expect(sess).toMatchObject({ p: "code", m: 1 });
+      expect(sess?.t).toBeUndefined();
+      expect(sess?.a).toBeTypeOf("number");
+      const me = await meWith(s.e, cookie);
+      expect(me.status).toBe(200);
+      const body = (await me.json()) as {
+        user: unknown;
+        auth: { readOnly: boolean; cap?: unknown };
+      };
+      expect(body.user).toMatchObject({ email: addr, role });
+      expect(body.auth.readOnly).toBe(false);
+      expect(body.auth.cap ?? null).toBeNull();
     });
 
-  it("an invited member's code session ends once the address is in the login domains or Google is off", async () => {
+  // The m session holds only while codeRule would still admit the row.
+  it("a row's code session ends when the row is made a guest", async () => {
+    const member = uniq("mx", "x.com");
+    await seedUser(member, "member");
+    const s = await start(direct(), member);
+    const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+    expect((await meWith(s.e, cookie)).status).toBe(200);
+    await env.DB.prepare("update users set role = 'guest' where email = ?1")
+      .bind(member)
+      .run();
+    expect((await meWith(s.e, cookie)).status).toBe(401);
+  });
+
+  it("a row's code session keeps the row's current role: made an admin, it is an admin", async () => {
+    const member = uniq("ma", "x.com");
+    await seedUser(member, "member");
+    const s = await start(direct(), member);
+    const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+    await env.DB.prepare("update users set role = 'admin' where email = ?1")
+      .bind(member)
+      .run();
+    const me = await meWith(s.e, cookie);
+    expect(me.status).toBe(200);
+    expect(((await me.json()) as { user: unknown }).user).toMatchObject({
+      role: "admin",
+    });
+  });
+
+  it("a row's code session ends when the row is suspended", async () => {
+    const member = uniq("ms", "x.com");
+    await seedUser(member, "admin");
+    const s = await start(direct(), member);
+    const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+    expect((await meWith(s.e, cookie)).status).toBe(200);
+    await env.DB.prepare(
+      "update users set status = 'suspended' where email = ?1",
+    )
+      .bind(member)
+      .run();
+    expect((await meWith(s.e, cookie)).status).toBe(401);
+  });
+
+  it("a row's code session outlives a domain or Google change, and ends once the install stops offering codes", async () => {
     const member = uniq("md", "x.com");
     await seedUser(member, "member");
     const s = await start(direct(), member);
     const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
     expect((await meWith(s.e, cookie)).status).toBe(200);
     const inDomain = { ...s.e, AUTH_DOMAINS: "a.com,x.com" } as Env;
-    expect((await meWith(inDomain, cookie)).status).toBe(401);
+    expect((await meWith(inDomain, cookie)).status).toBe(200);
     const noGoogle = { ...s.e, AUTH_PROVIDERS: "email" } as Env;
-    expect((await meWith(noGoogle, cookie)).status).toBe(401);
+    expect((await meWith(noGoogle, cookie)).status).toBe(200);
+    const noCodes = { ...s.e, AUTH_PROVIDERS: "google" } as Env;
+    expect((await meWith(noCodes, cookie)).status).toBe(401);
+  });
+
+  it("an m:1 cookie signed before #3184 (an invited member's) is still read and accepted", async () => {
+    const member = uniq("old", "x.com");
+    const uid = await seedUser(member, "member");
+    const old = await signSession(env, uid, Date.now(), {
+      provider: "code",
+      epoch: 0,
+      rowCode: true,
+    });
+    expect(await readSession(env, old)).toMatchObject({ m: 1 });
+    expect((await meWith(direct(), `${SESSION}=${old}`)).status).toBe(200);
   });
 
   it("a guest code session is still capped (no m marker)", async () => {
@@ -428,17 +529,25 @@ describe("POST AUTH.codeVerify", () => {
     const forged = await signSession(env, uid, Date.now(), {
       provider: "code",
       epoch: 0,
-      invitedMember: true,
+      rowCode: true,
     });
     expect((await meWith(direct(), `${SESSION}=${forged}`)).status).toBe(401);
   });
 
-  it("a Google-linked member outside the domains gets no code", async () => {
-    const member = uniq("ml", "x.com");
-    await seedUser(member, "member", { googleSub: `L-${member}` });
-    const m = mailer();
-    await request(withMail(direct(), m), member);
-    expect(m.sent).toHaveLength(0);
+  it("a guest row with a Google link gets a capped guest code session", async () => {
+    const guest = uniq("gl", "x.com");
+    await seedUser(guest, "guest", { googleSub: `L-${guest}`, tenant: "" });
+    const s = await start(direct(), guest);
+    const r = await verify(s.e, s.code(), s.cookie);
+    expect(r.status).toBe(200);
+    const cookie = cookieOf(r, SESSION);
+    expect((await readSession(s.e, cookie?.split("=")[1]))?.m).toBeUndefined();
+    expect(setCookieLine(r, SESSION)).toContain("Max-Age=86400");
+    const me = await meWith(s.e, cookie);
+    expect(((await me.json()) as { auth: unknown }).auth).toMatchObject({
+      readOnly: true,
+      cap: "guest",
+    });
   });
 
   it("#803: a login sent with another user's valid cookie records no credential", async () => {
@@ -801,11 +910,11 @@ describe("code routes: review fixes", () => {
   });
 
   // A row that appears between the eligibility check and ensureUser (a
-  // concurrent sign-in or invite) is what the session would get, so role and
-  // link are read again: an admin row outside the domains, or a Google-linked
-  // row, is refused.
+  // concurrent sign-in or invite) is what the session gets, so role and link
+  // are read again (#3184): an admin row signs in as that admin (an m
+  // session), a Google-linked guest row as a capped guest.
   for (const kind of ["admin", "linked"] as const) {
-    it(`a ${kind} row created during verify is re-checked: 401, no session`, async () => {
+    it(`a ${kind} row created during verify is re-checked: the session is the new row's`, async () => {
       const addr = uniq(`race-${kind}`, "x.com");
       await seedShare(addr);
       const m = mailer();
@@ -813,21 +922,29 @@ describe("code routes: review fixes", () => {
       const r1 = await request(e, addr);
       const trig = `race_${kind}_${crypto.randomUUID().slice(0, 8)}`;
       const role = kind === "admin" ? "admin" : "guest";
+      // A real id: the session is signed for the race row now.
+      const rid = newId();
       const link =
         kind === "linked"
-          ? "insert into identities (provider, subject, tenant, user_id, created_at) values ('google', 'sub-' || NEW.email, 'x.com', 'race-' || NEW.email, 0);"
+          ? `insert into identities (provider, subject, tenant, user_id, created_at) values ('google', 'sub-' || NEW.email, 'x.com', '${rid}', 0);`
           : "";
       await env.DB.prepare(
-        `create trigger ${trig} before insert on users when NEW.email = '${addr}' and NEW.id <> 'race-${addr}'
+        `create trigger ${trig} before insert on users when NEW.email = '${addr}' and NEW.id <> '${rid}'
          begin
-           insert into users (id, email, name, role, created_at, status) values ('race-' || NEW.email, NEW.email, 'r', '${role}', 0, 'active');
+           insert into users (id, email, name, role, created_at, status) values ('${rid}', NEW.email, 'r', '${role}', 0, 'active');
            ${link}
          end`,
       ).run();
       try {
         const r = await verify(e, m.codeFor(addr), cookieOf(r1, CODE_COOKIE));
-        expect(r.status).toBe(401);
-        expect(cookieOf(r, SESSION)).toBeUndefined();
+        expect(r.status).toBe(200);
+        expect(CodeVerifiedSchema.parse(await r.json())).toMatchObject({
+          readOnly: kind !== "admin",
+          user: { email: addr, role },
+        });
+        const sess = await readSession(e, cookieOf(r, SESSION)?.split("=")[1]);
+        expect(sess?.uid).toBe(rid);
+        expect(sess?.m).toBe(kind === "admin" ? 1 : undefined);
       } finally {
         await env.DB.prepare(`drop trigger if exists ${trig}`).run();
       }

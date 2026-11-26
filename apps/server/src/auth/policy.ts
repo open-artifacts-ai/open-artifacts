@@ -258,13 +258,6 @@ export const isCommenterRole = (role: string): boolean => role === "commenter";
 /** The guest role, for the few data decisions that key on it. */
 export const isGuestRole = (role: Role): boolean => role === "guest";
 
-/**
- * A plain member: neither guest nor admin nor owner. The only role an invited
- * address outside the domains may sign in by code with (codeRule, and the
- * middleware's recheck of that session).
- */
-export const isMemberRole = (role: Role): boolean => role === "member";
-
 const SPACE_RANK: Record<SpaceRole, number> = {
   viewer: 1,
   editor: 2,
