@@ -21,7 +21,10 @@ import type { WebSocket } from "ws";
 import { readClaudeLinks } from "../src/claude-links.ts";
 import { daemonHarness, eventCounter, stopAll, wsServer } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const TOKEN_B = `oa_machine_${"b".repeat(28)}7f3a`;
 const TOKEN_C = `oa_machine_${"c".repeat(28)}9d1e`;
@@ -599,6 +602,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
   });
 
   it("held proofs alone create no guest after a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const files = {
       links: join(mkdtempSync(join(tmpdir(), "ob-g-l-")), "claude-links.json"),
       guests: join(
@@ -627,7 +631,12 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     });
     await settled(second);
     // Several sync ticks later: still none.
-    await second.syncs.next(3);
+    {
+      const before = second.syncs.count;
+      await vi.advanceTimersByTimeAsync(120); // the original 120 ms window
+      expect(second.syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
+    await second.h.quiet();
     expect(second.hubB.of("guest_up")).toEqual([]);
     expect(existsSync(files.guests)).toBe(false);
   });

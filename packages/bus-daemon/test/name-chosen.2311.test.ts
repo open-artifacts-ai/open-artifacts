@@ -5,10 +5,16 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+});
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const write = (d: string, over: object = {}) =>
   writeFileSync(
@@ -54,8 +60,14 @@ const helloOk = (caps: string[]) => ({
 /** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
 let syncs = eventCounter();
 let cur: Awaited<ReturnType<typeof daemonHarness>>;
-const settle = async (_unused?: number) => {
-  await syncs.next(3);
+/**
+ * Moves the fake sync interval over the window the test covers and checks the
+ * syncs really ran, then fences what they sent: "it looked again and did nothing".
+ */
+const settle = async (ms: number = 150) => {
+  const before = syncs.count;
+  await vi.advanceTimersByTimeAsync(ms);
+  expect(syncs.count - before).toBeGreaterThanOrEqual(Math.floor(ms / 20));
   await cur.quiet();
 };
 

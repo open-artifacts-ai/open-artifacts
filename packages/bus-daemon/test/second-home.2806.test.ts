@@ -2,11 +2,17 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { busHome } from "@oa/bus-adapter-claude-code";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isDefaultHome } from "../src/config.ts";
 import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+});
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const writeSession = (d: string, pid: number) =>
   writeFileSync(
@@ -35,12 +41,17 @@ const shared = (running: Set<number>) => {
     },
   };
 };
-/** Several finished syncs of `h`, then what they sent has arrived: an announcement would have gone by now. */
+/**
+ * The fake sync interval moved over the 150 ms the test covers (checked: the
+ * syncs ran), then what they sent has arrived: an announcement would have gone by now.
+ */
 const ticks = async (
   syncs: ReturnType<typeof eventCounter>,
   h: { quiet: () => Promise<void> },
 ) => {
-  await syncs.next(3);
+  const before = syncs.count;
+  await vi.advanceTimersByTimeAsync(150);
+  expect(syncs.count - before).toBeGreaterThanOrEqual(7);
   await h.quiet();
 };
 

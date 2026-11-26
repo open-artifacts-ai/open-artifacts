@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MACHINE_CAP_COPY, MEMBER_CAP_COPY } from "../src/routes.ts";
 import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 /** A harness whose log says when the daemon has marked an agent rate-limited. */
 async function limitHarness(over: Parameters<typeof daemonHarness>[0] = {}) {
@@ -80,6 +83,10 @@ describe("a rate-limited agent_up", () => {
 
   it("is not retried in a loop", async () => {
     const syncs = eventCounter();
+    // The sync interval and the retry timer: both on a clock moved by hand.
+    vi.useFakeTimers({
+      toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"],
+    });
     const h = await limitHarness({
       claude: { syncMs: 20, onSync: () => syncs.hook() },
       limitedRetryMs: 60_000,
@@ -89,7 +96,9 @@ describe("a rate-limited agent_up", () => {
     h.toDaemon(limited(up.id));
     await h.marked("A"); // the daemon took the limit; the retry timer is armed
     // Several syncs after the limit: each would have announced A again.
-    await syncs.next(3);
+    const before = syncs.count;
+    await vi.advanceTimersByTimeAsync(300); // the original 300 ms window
+    expect(syncs.count - before).toBeGreaterThanOrEqual(14); // the window really ran
     await h.quiet();
     expect(h.of("agent_up")).toHaveLength(1);
   });

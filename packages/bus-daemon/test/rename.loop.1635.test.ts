@@ -6,12 +6,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+});
 afterEach(async () => {
-  vi.useRealTimers();
   await stopAll();
+  vi.useRealTimers();
 });
 
 const write = (
@@ -71,8 +74,14 @@ async function start(
 /** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
 let syncs = eventCounter();
 let cur: Awaited<ReturnType<typeof daemonHarness>>;
-const settle = async (_unused?: number) => {
-  await syncs.next(3);
+/**
+ * Moves the fake sync interval over the window the test covers and checks the
+ * syncs really ran, then fences what they sent: "it looked again and did nothing".
+ */
+const settle = async (ms: number = 250) => {
+  const before = syncs.count;
+  await vi.advanceTimersByTimeAsync(ms);
+  expect(syncs.count - before).toBeGreaterThanOrEqual(Math.floor(ms / 20));
   await cur.quiet();
 };
 
@@ -106,18 +115,21 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
   });
 
   it("after rate_limited to a rename, no further frames for that ref within the hour", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const logs: string[] = [];
     let ticks = 0;
     const { h, d } = await start(
       (m) => logs.push(m),
       () => ticks++,
     );
-    const ticksAfter = (n: number) => {
+    // The sync interval is fake: n ticks are n steps of it, and each is counted.
+    const ticksAfter = async (n: number) => {
       const goal = ticks + n;
-      return vi.waitFor(() => expect(ticks).toBeGreaterThanOrEqual(goal));
+      await vi.advanceTimersByTimeAsync(20 * n);
+      expect(ticks).toBeGreaterThanOrEqual(goal);
     };
     write(d, 4242, "s-a", "A1");
+    await ticksAfter(1); // the tick that reads the new name
     const first = await h.next("rename");
     expect(first.proposed_name).toBe("A1");
     h.toDaemon({
@@ -216,7 +228,7 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
   });
 
   it("a name flipping every tick sends at most 3 frames a minute, then the latest after the window", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const { h, d } = await start();
     for (let i = 0; i < 8; i++) {
       write(d, 4242, "s-a", i % 2 ? "Even" : `Odd${i}`);
@@ -232,7 +244,7 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
   });
 
   it("a name the hub refused with rate_limited goes again after the hour, with no new change", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const { h, d } = await start();
     write(d, 4242, "s-a", "OA Bus");
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
