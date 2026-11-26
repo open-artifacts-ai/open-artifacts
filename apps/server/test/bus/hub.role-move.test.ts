@@ -402,12 +402,13 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     await s.clock(t0 + 60_000);
     await s.setRole(role, b.id);
     expect(await listed(s, b.ref)).toEqual([x]);
-    // The unfollow's D1 delete is held while the role moves on, then let go.
+    // The queued follow work (the unfollow's D1 delete) is held while the
+    // role moves on, then let go.
     let release = () => {};
     const gate = new Promise<void>((r) => {
       release = r;
     });
-    await runInDurableObject(s.hub, (i) => BusHub.setTestUnfollowGate(i, gate));
+    await runInDurableObject(s.hub, (i) => BusHub.setTestFollowGate(i, gate));
     const u = id("f");
     s.d.send({
       v: 1,
@@ -420,9 +421,53 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     await s.clock(t0 + 120_000);
     await s.setRole(role, c.id);
     release();
-    await runInDurableObject(s.hub, (i) => BusHub.setTestUnfollowGate(i, null));
+    await runInDurableObject(s.hub, (i) => BusHub.setTestFollowGate(i, null));
     expect(await listed(s, c.ref)).toEqual([]);
     expect(await listed(s, b.ref)).toEqual([]);
+  });
+
+  it("an unfollow received while a move's re-key is pending keeps its place: a later move gives the page to nobody", async () => {
+    const s = await setup();
+    const x = await artifactOf(s.m.userId);
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const c = await s.reg(uniq("c"));
+    const role = uniq("platform");
+    const t0 = Date.now() - 600_000;
+    // A role-only follow: A follows X while it holds the role.
+    await follow(s, a.ref, x);
+    await e.DB.prepare(
+      "update follows set created_at = ? where user_id = ? and artifact_id = ? and agent_name = ?",
+    )
+      .bind(t0 + 1, s.m.userId, x, a.name)
+      .run();
+    await s.clock(t0);
+    await s.setRole(role, a.id);
+    // Hold the follow queue: A to B's re-key is pending.
+    let release = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    await runInDurableObject(s.hub, (i) => BusHub.setTestFollowGate(i, gate));
+    await s.clock(t0 + 60_000);
+    await s.setRole(role, b.id);
+    // B unfollows X now (the frame is handled: a later frame's reply proves
+    // it), then the role moves on to C, all before the queue runs.
+    s.d.send({
+      v: 1,
+      id: id("f"),
+      type: "unfollow",
+      from_ref: b.ref,
+      artifact: x,
+    } as never);
+    await ask(s, { type: "list", from_ref: b.ref }, "roster");
+    await s.clock(t0 + 120_000);
+    await s.setRole(role, c.id);
+    release();
+    await runInDurableObject(s.hub, (i) => BusHub.setTestFollowGate(i, null));
+    expect(await listed(s, c.ref)).toEqual([]);
+    expect(await listed(s, b.ref)).toEqual([]);
+    expect(await listed(s, a.ref)).toEqual([]);
   });
 
   it("a session that still holds another role keeps its mail", async () => {
