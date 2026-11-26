@@ -1169,6 +1169,41 @@ describe("pins", () => {
       expect(pin()?.getAttribute("aria-label")).toBeNull();
     });
 
+    it("an ask pin outranks the face it shows, in both themes (#3048)", async () => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          pinThread({
+            ask: true,
+            badge: {
+              icon: '<circle cx="3" cy="3" r="2"/>',
+              color: "#5f6670",
+              dashed: true,
+              label: "Comment by Claude Code",
+            },
+          }),
+        ],
+      });
+      const p = pin();
+      // Both looks are asked for; the stylesheet decides which colour reads.
+      expect(p?.classList.contains("ask")).toBe(true);
+      expect(p?.classList.contains("face")).toBe(true);
+      expect(p?.style.getPropertyValue("--face")).toBe("#5f6670");
+      const css = roots.at(-1)?.querySelector("style")?.textContent ?? "";
+      const rule = (sel: string) => {
+        const re = new RegExp(`${sel.replace(/\./g, "\\.")}\\{([^}]*)\\}`);
+        return re.exec(css)?.[1] ?? "";
+      };
+      // --face carries the face's colour, so a rule that paints an ask pin from
+      // it (a face's grey won, #3048) hides the amber the ask look is made of.
+      expect(rule(".pin.ask.face")).toContain("background:#e0a000");
+      expect(rule(".pin.ask.face")).not.toContain("var(--face");
+      expect(rule(".dark .pin.ask.face")).toContain("background:#f2b51d");
+      // The dashed robot's own grey goes with the amber, not against it.
+      expect(rule(".pin.ask.face.dashed svg")).toContain("stroke:#1b1300");
+    });
+
     it("clicking an ask pin opens its thread: comment.open carries the id only (#3048)", async () => {
       await start("select");
       await send({ type: "shell.protocol", protocol: 7 });

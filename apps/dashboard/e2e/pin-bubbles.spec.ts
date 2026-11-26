@@ -3,6 +3,7 @@
 // run `pnpm --filter @oa/runtime build` first. Shots only when PINS_SHOTS_DIR is set.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PROTOCOL_VERSION } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page, an image or a pdf under ?mock=pins
@@ -34,7 +35,7 @@ function frameHtml(kind: "image" | "pdf", schemas: string) {
   // The renderer says hello once the runtime's comments chunk is up; so does this
   // stand-in (the same module, already loaded by the runtime, so its handlers
   // are registered by the time this resolves).
-  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:6,kind:"${kind}",nonce:window.__nonce},"*"),0))`;
+  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:${PROTOCOL_VERSION},kind:"${kind}",nonce:window.__nonce},"*"),0))`;
   return `<!doctype html><meta name="oa-format" content="${kind}"><body style="margin:0;background:#eceef1">${body}<div style="height:900px"></div><script>window.__nonce=new URLSearchParams(location.hash.slice(1)).get("oa")</script><script src="/_oa/runtime.js"></script><script>${hello}</script>`;
 }
 
@@ -110,6 +111,33 @@ for (const kind of ["image"] as const)
     ).toBeVisible({ timeout: 15_000 });
     await shot(page, `1280-${kind}-open`);
   });
+
+test("image: a pin whose thread has an open ask for the viewer is amber (#3048)", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280);
+  const ask = frame.getByRole("button", { name: "Ask: answer here" });
+  await expect(ask).toBeVisible({ timeout: 15_000 });
+  // The pin carries a face, whose colour lives in --face (grey for an agent
+  // with no animal): the ask look is amber over it, never the face's colour.
+  await expect(ask).toHaveClass(/\bask\b/);
+  await expect(ask).toHaveClass(/\bface\b/);
+  expect(await ask.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    "rgb(224, 160, 0)",
+  );
+  await shot(page, "1280-image-ask-pin");
+});
+
+test("image: an ask pin is the dark theme's amber too (#3048)", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280, "dark");
+  const ask = frame.getByRole("button", { name: "Ask: answer here" });
+  await expect(ask).toBeVisible({ timeout: 15_000 });
+  expect(await ask.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
+    "rgb(242, 181, 29)",
+  );
+});
 
 test("image: click-to-comment opens the box beside the flag on a wide screen", async ({
   page,

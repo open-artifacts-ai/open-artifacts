@@ -109,10 +109,15 @@ button.pin{border:0;padding:0}
 .askchip:focus-visible{outline:2px solid #1b1300;outline-offset:2px}
 .mark.ask{width:auto;height:14px;padding:0 6px;font:700 10.5px/14px system-ui,sans-serif;color:#1b1300;background:#e0a000;border:0}
 .pin.ask{background:#e0a000;color:#1b1300;box-shadow:0 0 0 2px #fff,0 0 0 4px #1b1300,0 3px 8px rgba(0,0,0,.3)}
-.pin.ask.face{background:var(--face,#e0a000)}
+/* #3048: an ask outranks the face. A pin on an image or pdf shows a face, and
+   its colour lives in --face; an ask pin is amber whatever face it carries, or
+   the face (grey for an agent with no animal) wins and the ask look is lost. */
+.pin.ask.face{background:#e0a000}
 .pin.ask svg{stroke:#1b1300}
+/* The dashed robot's own grey would be unreadable on amber. */
+.pin.ask.face.dashed svg{stroke:#1b1300}
 .dark .askchip,.dark .mark.ask{background:#f2b51d;color:#1b1300}
-.dark .pin.ask{background:#f2b51d;box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
+.dark .pin.ask,.dark .pin.ask.face{background:#f2b51d;box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}::highlight(oa-comment-ask){background:rgba(245,158,11,.45);text-decoration:underline;text-decoration-color:#b45309;text-decoration-thickness:2px}";
