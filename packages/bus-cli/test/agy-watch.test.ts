@@ -1,11 +1,22 @@
 // agy S3: `oa-bus agy-watch` against a real daemon (the bus-daemon test
 // harness, a fake hub) and a fake agy: `send` records each agentapi
-// send-message call and puts what agy took in a fake agy mailbox, the
+// send-message call and writes what agy took into a fake agy data folder,
+// laid out as agy keeps its mailbox, read by the real mailbox reader; the
 // process table is a map. No sleeps: every wait is a signal with a deadline.
-import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type AgyConversation,
+  agyMailboxHas,
   agyStateDir,
   agyWatchLive,
   readAgyWatch,
@@ -34,6 +45,8 @@ const AGY = 4242;
 const SHELL = 5150;
 const W1 = 5151;
 const W2 = 5152;
+/** The `agy agentapi` process a hand-off starts. */
+const CALL = 6161;
 const ENV = {
   ANTIGRAVITY_LS_ADDRESS: "127.0.0.1:1",
   ANTIGRAVITY_CSRF_TOKEN: "test-token-not-a-secret",
@@ -42,6 +55,7 @@ const ENV = {
 const table: Record<number, { ppid: number; name: string }> = {
   [W1]: { ppid: SHELL, name: "node" },
   [W2]: { ppid: SHELL, name: "node" },
+  [CALL]: { ppid: W1, name: "/Users/u/.local/bin/agy" },
   [SHELL]: { ppid: AGY, name: "/bin/zsh" },
   [AGY]: { ppid: 1, name: "/Users/u/.local/bin/agy" },
 };
@@ -93,14 +107,38 @@ async function setup() {
   // What the S2 hook leaves behind at the first message.
   writeAgyConversation(ctx.home, conv, () => true);
   const calls: { bin: string; conversation: string; text: string }[] = [];
-  /** agy's mailbox: every message agentapi took, as agy keeps it. */
-  const box = { took: [] as string[], readable: true };
+  /** agy's data folder: its mailbox holds every message agentapi took. */
+  const appData = mkdtempSync(join(tmpdir(), "ob-agy-app-"));
+  const mailDir = join(appData, "brain", A, ".system_generated", "messages");
+  mkdirSync(join(appData, "brain", A, ".system_generated"), {
+    recursive: true,
+  });
+  const box = { readable: true };
+  const took = () =>
+    existsSync(mailDir)
+      ? readdirSync(mailDir).map(
+          (n) =>
+            JSON.parse(readFileSync(join(mailDir, n), "utf8"))
+              .content as string,
+        )
+      : [];
   const inBox = (id: string) =>
-    box.took.filter((t) => t.includes(`(msg_id ${id})`)).length;
+    took().filter((t) => t.includes(`(msg_id ${id})`)).length;
   /** agy takes it: what a real agentapi send-message does before it returns. */
   const agyTakes = (bin: string, conversation: string, text: string) => {
     calls.push({ bin, conversation, text });
-    box.took.push(text);
+    mkdirSync(mailDir, { recursive: true });
+    const uuid = randomUUID();
+    writeFileSync(
+      join(mailDir, `${uuid}.json`),
+      JSON.stringify({
+        id: uuid,
+        recipient: conversation,
+        sender: conversation,
+        renderDetails: { messageTitle: AGY_MESSAGE_TITLE },
+        content: text,
+      }),
+    );
   };
   /** One watcher process: its own pid, its own link, its own liveness tick. */
   const start = (pid: number, send?: AgyWatchDeps["send"]) => {
@@ -110,6 +148,8 @@ async function setup() {
     const failed: string[] = [];
     const unknown: string[] = [];
     const slept: number[] = [];
+    /** The text of each push the daemon made to this watcher. */
+    const pushes: string[] = [];
     const run = agyWatch(ctx, {
       proc: (p) => table[p] ?? null,
       procStart: (p) => starts.get(p) ?? null,
@@ -122,12 +162,10 @@ async function setup() {
           agyTakes(bin, conversation, text);
           return { ok: true };
         }),
-      mailbox: (conversation, text) =>
-        !box.readable
-          ? "unreadable"
-          : conversation === A && box.took.includes(text)
-            ? "present"
-            : "absent",
+      mailbox: (conversation, msgId) =>
+        box.readable
+          ? agyMailboxHas(appData, conversation, AGY_MESSAGE_TITLE, msgId)
+          : "unreadable",
       now: () => 1_000_000,
       connect: async (hello) => {
         // A killed watcher process never reaches the daemon again.
@@ -143,6 +181,12 @@ async function setup() {
           unknown.push(id);
           notSure(id);
         };
+        const on = c.onAgyDeliver;
+        c.onAgyDeliver = (cb) =>
+          on((f) => {
+            pushes.push(f.text);
+            cb(f);
+          });
         clients.push(c);
         return c;
       },
@@ -172,6 +216,7 @@ async function setup() {
       failed,
       unknown,
       slept,
+      pushes,
       tick: () => tick?.(),
     };
   };
@@ -213,6 +258,15 @@ async function setup() {
     starts.delete(pid);
     for (const c of w.clients) c.close();
   };
+  /** The hub renamed the session (it got a title): later pushes say the new name. */
+  const rename = (bus_name: string) =>
+    h.toDaemon({
+      v: 1,
+      id: `rn-${bus_name}`,
+      type: "renamed",
+      agent_ref: A,
+      bus_name,
+    });
   return {
     h,
     ctx,
@@ -220,6 +274,7 @@ async function setup() {
     start,
     send,
     again,
+    rename,
     kill,
     acked,
     calls,
@@ -386,6 +441,110 @@ describe("oa-bus agy-watch (agy S3)", () => {
     starts.delete(AGY);
     w2.tick();
     expect(await w2.run).toBe(0);
+  });
+
+  it("the session is renamed between a hand-off that reached agy and the next push: only acked, never sent again", async () => {
+    const {
+      start,
+      send,
+      again,
+      rename,
+      kill,
+      acked,
+      calls,
+      box,
+      inBox,
+      agyTakes,
+      up,
+    } = await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    const w1 = start(W1, async (bin, conversation, text) => {
+      agyTakes(bin, conversation, text);
+      reached();
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    // The next watcher cannot tell yet: the receipt stays pending.
+    box.readable = false;
+    const w2 = start(W2);
+    await until(() => expect(w2.unknown).toContain(id));
+    // agy titled the conversation; the hub renamed the session.
+    rename("release-prep");
+    box.readable = true;
+    again(id);
+    await until(() => expect(acked(id)).toBe(1));
+    // The push carried the new name, agy's copy the old: still the same message.
+    expect(w2.pushes.at(-1)).toContain("to you (release-prep)");
+    expect(calls[0]?.text).toContain("to you (agy)");
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    expect(w2.logs.join("\n")).toContain(
+      `delivered ${id} (agy already had it)`,
+    );
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("a watcher killed outright leaves its agentapi call running: the next one waits for that call to end, then sends only if agy lacks it", async () => {
+    const { start, send, again, kill, acked, calls, inBox, up } = await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    // The call starts, then hangs: agy has not taken the message yet.
+    const w1 = start(W1, async (_bin, _conversation, _text, started) => {
+      starts.set(CALL, "c1");
+      started?.(CALL);
+      reached();
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    expect(inBox(id)).toBe(0);
+    // The orphaned call still runs: it may yet reach agy.
+    const w2 = start(W2);
+    await until(() => expect(w2.unknown).toContain(id));
+    expect(acked(id)).toBe(0);
+    expect(calls).toHaveLength(0);
+    // It ends without reaching agy; the hub delivers again: sent once.
+    starts.delete(CALL);
+    again(id);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("agy said no but its mailbox cannot be read after: unknown, not given back for a retry", async () => {
+    const { start, send, acked, calls, box, up } = await setup();
+    const w = start(W1, async (bin, conversation, text) => {
+      calls.push({ bin, conversation, text });
+      box.readable = false;
+      return { ok: false, detail: "exit status 1" };
+    });
+    await up();
+    await until(() => expect(w.clients).toHaveLength(1));
+    const id = send();
+    await until(() => expect(w.unknown).toContain(id));
+    expect(w.failed).not.toContain(id);
+    expect(acked(id)).toBe(0);
+    expect(calls).toHaveLength(1);
+    starts.delete(AGY);
+    w.tick();
+    await w.run;
   });
 
   it("a hand-off that timed out is delivered only if agy's mailbox has it, else unknown", async () => {

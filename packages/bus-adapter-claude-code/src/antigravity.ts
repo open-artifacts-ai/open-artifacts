@@ -314,6 +314,9 @@ export function agyWatchLive(
   return procStart(w.pid) === w.procStart;
 }
 
+/** A begun hand-off: when, and the `agy agentapi` process it started. */
+type AgyTry = { at: number; child?: { pid: number; start: string } };
+
 /** The most msg ids a watcher remembers handing to agy. */
 export const AGY_SENT_MAX = 1000;
 
@@ -322,14 +325,16 @@ export const AGY_SENT_MAX = 1000;
  * of each msg id it handed to agy for that agy process. `ids`: agy's agentapi
  * said it took them (written after agy said so). `trying`: a hand-off began
  * then (written before the call), and agy's answer was never recorded; only
- * agy's mailbox can say whether it got one of those. A watcher started again
+ * agy's mailbox can say whether it got one of those, and only once the
+ * `agy agentapi` process that call started (its pid and start time, written
+ * right after it starts) is gone. A watcher started again
  * for the same agy process reads the file; a file for an earlier agy process
  * with that pid counts for nothing.
  */
 export class AgySentIds {
   readonly #file: string;
   #ids: string[];
-  #trying: Record<string, number>;
+  #trying: Record<string, AgyTry>;
   constructor(
     private readonly busHome: string,
     agyPid: number,
@@ -346,8 +351,15 @@ export class AgySentIds {
         : [];
     this.#trying = {};
     if (ours && doc.trying && typeof doc.trying === "object")
-      for (const [k, v] of Object.entries(doc.trying))
-        if (typeof v === "number" && Number.isFinite(v)) this.#trying[k] = v;
+      for (const [k, v] of Object.entries(doc.trying)) {
+        const t = (v ?? {}) as { at?: unknown; child?: unknown };
+        if (typeof t.at !== "number" || !Number.isFinite(t.at)) continue;
+        const c = (t.child ?? {}) as { pid?: unknown; start?: unknown };
+        this.#trying[k] =
+          Number.isInteger(c.pid) && typeof c.start === "string"
+            ? { at: t.at, child: { pid: c.pid as number, start: c.start } }
+            : { at: t.at };
+      }
   }
   /** agy said it took this id. */
   has(id: string): boolean {
@@ -355,11 +367,23 @@ export class AgySentIds {
   }
   /** When a hand-off of this id began whose answer was never recorded. */
   tryingSince(id: string): number | undefined {
-    return this.#trying[id];
+    return this.#trying[id]?.at;
+  }
+  /** The `agy agentapi` process that hand-off started, if it got that far. */
+  tryingChild(id: string): { pid: number; start: string } | undefined {
+    return this.#trying[id]?.child;
+  }
+  /** The hand-off's `agy agentapi` process started: written at once ("" when its start time could not be read). */
+  child(id: string, pid: number, start: string): void {
+    const t = this.#trying[id];
+    if (!t) return;
+    t.child = { pid, start };
+    this.#save();
   }
   /** A hand-off begins: written before agy is called. */
   begin(id: string, at: number): void {
-    this.#trying[id] = at;
+    delete this.#trying[id];
+    this.#trying[id] = { at };
     const keys = Object.keys(this.#trying);
     for (const k of keys.slice(0, Math.max(0, keys.length - AGY_SENT_MAX)))
       delete this.#trying[k];
@@ -417,22 +441,26 @@ const AGY_MAILBOX_FILE_MAX = 1_048_576;
 const AGY_MAILBOX_MAX = 20_000;
 
 /**
- * Whether agy holds this exact message for `conversationId`, read from agy's
- * own mailbox: `<app data>/brain/<conversation>/.system_generated/messages/
- * <uuid>.json`, one JSON file per message agentapi took (recipient,
+ * Whether agy holds the bus message `msgId` for `conversationId`, read from
+ * agy's own mailbox: `<app data>/brain/<conversation>/.system_generated/
+ * messages/<uuid>.json`, one JSON file per message agentapi took (recipient,
  * renderDetails.messageTitle, content). agy writes the file before
  * `agentapi send-message` returns, and keeps it after the message lands in
  * the transcript, so it is agy's own receipt (seen live, agy CLI 1.5.17 and
- * 1.5.18, idle and mid-turn). `present`: a file with exactly this content
- * and our title. `absent`: the mailbox reads and has none. `unreadable`:
- * the conversation's folder is missing, a message file cannot be read, or
- * one that names this msg id cannot be parsed, so nothing can be said.
+ * 1.5.18, idle and mid-turn). `present`: a file for this conversation with
+ * our title whose first line is the bus's header for this msg id
+ * (`[oa-bus] … (msg_id <id>)`). Only that line is matched: the rest of the
+ * header (the session's bus name, its namespace) can change between two
+ * pushes of one message, and the body comes after it, so a peer body that
+ * quotes the header is never taken for it. `absent`: the mailbox reads and
+ * has none. `unreadable`: the conversation's folder is missing, a message
+ * file cannot be read, or one that names this msg id cannot be parsed, so
+ * nothing can be said.
  */
 export function agyMailboxHas(
   appDataDir: string,
   conversationId: string,
   title: string,
-  text: string,
   msgId: string,
 ): AgyMailboxState {
   if (!AgentRefSchema.safeParse(conversationId).success) return "unreadable";
@@ -451,6 +479,7 @@ export function agyMailboxHas(
       return "unreadable";
     }
   }
+  const tail = ` (msg_id ${msgId})`;
   let seen = 0;
   for (const name of names) {
     if (!/^[0-9a-f-]{8,64}\.json$/i.test(name)) continue;
@@ -487,14 +516,20 @@ export function agyMailboxHas(
       renderDetails?: { messageTitle?: unknown };
     };
     if (
-      d.recipient === conversationId &&
-      d.content === text &&
-      d.renderDetails?.messageTitle === title
+      d.recipient !== conversationId ||
+      d.renderDetails?.messageTitle !== title ||
+      typeof d.content !== "string"
     )
+      continue;
+    const first = d.content.split("\n", 1)[0] as string;
+    if (first.startsWith(AGY_HEADER_START) && first.endsWith(tail))
       return "present";
   }
   return "absent";
 }
+
+/** How the bus's header on every message it hands agy begins. */
+export const AGY_HEADER_START = "[oa-bus] ";
 
 /** The name an agy session proposes when its conversation has no title yet. */
 export const AGY_DEFAULT_NAME = "agy";

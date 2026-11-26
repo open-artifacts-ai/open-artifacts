@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ChildProcess, execFile } from "node:child_process";
 import {
   type AgyConversation,
   type AgyMailboxState,
@@ -41,7 +41,7 @@ export const AGY_MESSAGE_TITLE = "Open Artifacts bus";
 
 type AgyDeliver = Extract<DaemonFrame, { type: "agy_deliver" }>;
 
-/** `ok: false` with `unknown` when the call may have reached agy (a timeout or a kill). */
+/** `ok: false` with `unknown` when the call may have reached agy (a timeout or a signal). */
 export type SendResult =
   | { ok: true }
   | { ok: false; unknown?: true; detail: string };
@@ -53,11 +53,15 @@ export type AgyWatchDeps = {
   ppid: number;
   pid: number;
   env: Record<string, string | undefined>;
-  /** `agy agentapi send-message <conversation> <text>`, with agy's own env. */
+  /**
+   * `agy agentapi send-message <conversation> <text>`, with agy's own env.
+   * `started` gets the agentapi process's pid as soon as it runs.
+   */
   send: (
     agyBin: string,
     conversation: string,
     text: string,
+    started?: (pid: number) => void,
   ) => Promise<SendResult>;
   /** The watcher's own link to the daemon. */
   connect: (hello: Hello) => Promise<DaemonClient>;
@@ -66,14 +70,10 @@ export type AgyWatchDeps = {
   /** Resolves after `ms`, or at once when `abort` fires. */
   sleep: (ms: number, abort: AbortSignal) => Promise<void>;
   /**
-   * Whether agy's own mailbox holds this exact message for the conversation:
+   * Whether agy's own mailbox holds this bus message for the conversation:
    * agy's receipt, written before agentapi returns.
    */
-  mailbox: (
-    conversation: string,
-    text: string,
-    msgId: string,
-  ) => AgyMailboxState;
+  mailbox: (conversation: string, msgId: string) => AgyMailboxState;
   /** Now, in ms. */
   now: () => number;
   /** Calls `fn` every `ms` until the returned stop is called. */
@@ -99,11 +99,14 @@ export function agyErrorLine(
   return line.slice(0, 200);
 }
 
+/** The `agy agentapi` calls running now: a stopping watcher ends them first. */
+const inFlight = new Set<ChildProcess>();
+
 const execSend =
   (env: Record<string, string | undefined>): AgyWatchDeps["send"] =>
-  (bin, conversation, text) =>
+  (bin, conversation, text, started) =>
     new Promise((resolve) => {
-      execFile(
+      const child = execFile(
         bin,
         [
           "agentapi",
@@ -115,15 +118,22 @@ const execSend =
         // agy's own env: its agentapi address and token, never printed.
         { env, timeout: SEND_TIMEOUT_MS, maxBuffer: 256 * 1024 },
         (err, _stdout, stderr) => {
+          inFlight.delete(child);
           if (!err) return resolve({ ok: true });
-          const e = err as NodeJS.ErrnoException & { killed?: boolean };
+          const e = err as NodeJS.ErrnoException & {
+            killed?: boolean;
+            signal?: string | null;
+          };
           resolve({
             ok: false,
-            ...(e.killed ? { unknown: true as const } : {}),
+            // Ended by a signal (our timeout or anyone's): it may have reached agy.
+            ...(e.killed || e.signal ? { unknown: true as const } : {}),
             detail: agyErrorLine(String(stderr || e.message), env),
           });
         },
       );
+      inFlight.add(child);
+      if (child.pid !== undefined) started?.(child.pid);
     });
 
 const defaults = (ctx: Ctx): AgyWatchDeps => ({
@@ -133,12 +143,11 @@ const defaults = (ctx: Ctx): AgyWatchDeps => ({
   pid: process.pid,
   env: process.env,
   send: execSend(process.env),
-  mailbox: (conversation, text, msgId) =>
+  mailbox: (conversation, msgId) =>
     agyMailboxHas(
       agyAppDataDir(process.env),
       conversation,
       AGY_MESSAGE_TITLE,
-      text,
       msgId,
     ),
   now: Date.now,
@@ -173,6 +182,9 @@ const defaults = (ctx: Ctx): AgyWatchDeps => ({
   onStop: (fn) => {
     for (const sig of ["SIGTERM", "SIGHUP", "SIGINT"] as const)
       process.once(sig, () => {
+        // An agentapi call left running could reach agy after the next
+        // watcher found agy's mailbox without it, and agy would get it twice.
+        for (const c of inFlight) c.kill("SIGKILL");
         fn();
         process.exit(0);
       });
@@ -275,7 +287,7 @@ export async function agyWatch(
     if (sent.has(id)) return via.ack(id);
     handing.add(id);
     const to = () => client ?? via;
-    const box = () => deps.mailbox(f.conversation_id, f.text, id);
+    const box = () => deps.mailbox(f.conversation_id, id);
     const took = (why: string) => {
       sent.add(id);
       deps.log(`oa-bus agy-watch: delivered ${id}${why}`);
@@ -298,15 +310,28 @@ export async function agyWatch(
       }
       const before = box();
       if (before === "present") return took(" (agy already had it)");
-      if (since !== undefined && before === "unreadable")
-        return unknown("agy's mailbox cannot be read");
+      if (since !== undefined) {
+        if (before === "unreadable")
+          return unknown("agy's mailbox cannot be read");
+        // A watcher killed outright leaves its agentapi call running, with
+        // no timeout: until that process is gone it may still reach agy.
+        // (No start time was read for it: any process with that pid counts.)
+        const c = sent.tryingChild(id);
+        const now = c && deps.procStart(c.pid);
+        if (c && now != null && (c.start === "" || now === c.start))
+          return unknown("an earlier agy call still runs");
+      }
       // Written first: a watcher that dies mid-call leaves the mark behind.
       sent.begin(id, deps.now());
-      const r = await deps.send(agyBin, f.conversation_id, f.text);
+      const r = await deps.send(agyBin, f.conversation_id, f.text, (pid) => {
+        sent.child(id, pid, deps.procStart(pid) ?? "");
+      });
       if (r.ok) return took("");
       const after = box();
       if (after === "present") return took(" (agy has it)");
       if (r.unknown) return unknown(r.detail);
+      if (after === "unreadable")
+        return unknown(`${r.detail}; agy's mailbox cannot be read`);
       // agy said no: nothing of it reached the session; the daemon retries.
       sent.delete(id);
       deps.log(`oa-bus agy-watch: agy did not take ${id}: ${r.detail}`);

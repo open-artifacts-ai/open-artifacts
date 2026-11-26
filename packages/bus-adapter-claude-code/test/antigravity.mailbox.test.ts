@@ -41,7 +41,7 @@ const put = (box: string, name: string, text: string) => {
 };
 
 describe("agy's mailbox as the receipt (agy S3)", () => {
-  it("present: a message file with exactly this text and our title", () => {
+  it("present: a message file with our title whose header line names this msg id", () => {
     const { dir, box } = appDir();
     put(
       box,
@@ -50,18 +50,30 @@ describe("agy's mailbox as the receipt (agy S3)", () => {
     );
     put(box, "read.json", '{"aa4477eb-08dd-4360-bc4c-6d2905d5ffd8":true}');
     put(box, "aa4477eb-08dd-4360-bc4c-6d2905d5ffd8.json", message());
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("present");
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("present");
+  });
+
+  it("present: the same message pushed again after the session was renamed (another header, same msg id)", () => {
+    const { dir, box } = appDir();
+    put(
+      box,
+      "aa4477eb-08dd-4360-bc4c-6d2905d5ffd8.json",
+      message({
+        content: TEXT.replace("to you (agy)", "to you (release-prep)"),
+      }),
+    );
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("present");
   });
 
   it("absent: no mailbox yet, or none of its files is this message", () => {
     const { dir, box } = appDir();
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("absent");
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("absent");
     put(
       box,
       "58e777c9-56e3-46a2-9159-6a7b1079e642.json",
       message({ content: "other" }),
     );
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("absent");
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("absent");
   });
 
   it("absent: a peer's body that quotes this message, another title, another conversation", () => {
@@ -81,25 +93,33 @@ describe("agy's mailbox as the receipt (agy S3)", () => {
       "11111111-0000-4000-8000-000000000003.json",
       message({ recipient: "5d1c9e2a-3b4f-4a6d-8e7f-0a1b2c3d4e5f" }),
     );
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("absent");
+    // Another message whose body quotes this one's header line.
+    put(
+      box,
+      "11111111-0000-4000-8000-000000000004.json",
+      message({
+        content: `[oa-bus] Message from probe to you (agy). (msg_id other0000000001)\n\n${TEXT}`,
+      }),
+    );
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("absent");
   });
 
   it("unreadable: the conversation's folder is missing, or a file naming the id does not parse", () => {
     const { dir, box } = appDir();
-    expect(agyMailboxHas(join(dir, "nope"), CONV, TITLE, TEXT, ID)).toBe(
+    expect(agyMailboxHas(join(dir, "nope"), CONV, TITLE, ID)).toBe(
       "unreadable",
     );
-    expect(agyMailboxHas(dir, "../x", TITLE, TEXT, ID)).toBe("unreadable");
+    expect(agyMailboxHas(dir, "../x", TITLE, ID)).toBe("unreadable");
     // A file that does not name the id never matters, parsed or not.
     put(box, "22222222-0000-4000-8000-000000000001.json", "{not json");
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("absent");
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("absent");
     // Half written while agy took it: no answer either way.
     put(
       box,
       "22222222-0000-4000-8000-000000000002.json",
       message().slice(0, message().indexOf(ID) + ID.length + 2),
     );
-    expect(agyMailboxHas(dir, CONV, TITLE, TEXT, ID)).toBe("unreadable");
+    expect(agyMailboxHas(dir, CONV, TITLE, ID)).toBe("unreadable");
   });
 
   it("finds agy's data folder from the env agy gives its commands, else the CLI default", () => {
@@ -121,10 +141,13 @@ describe("the watcher's record of hand-offs (agy S3)", () => {
     const home = mkdtempSync(join(tmpdir(), "ob-agy-sent-"));
     const a = new AgySentIds(home, 4242, "t0");
     a.begin("m1", 5);
+    a.child("m1", 777, "c0");
     a.begin("m2", 6);
     a.add("m2");
     const b = new AgySentIds(home, 4242, "t0");
     expect(b.tryingSince("m1")).toBe(5);
+    expect(b.tryingChild("m1")).toEqual({ pid: 777, start: "c0" });
+    expect(b.tryingChild("m2")).toBeUndefined();
     expect(b.has("m1")).toBe(false);
     expect(b.has("m2")).toBe(true);
     expect(b.tryingSince("m2")).toBeUndefined();
