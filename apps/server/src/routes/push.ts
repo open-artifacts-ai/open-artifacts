@@ -14,12 +14,12 @@ import {
   patchSubscription,
   removeSubscription,
 } from "../services/push.js";
-import { pushOn } from "../services/web-push.js";
+import { pushOn, vapidKeys } from "../services/web-push.js";
 import type { AppType } from "./index.js";
 
 /**
- * #2512 S5: browser push. With no VAPID key pair on the instance every route
- * answers 404 push_unavailable. Reading is any signed-in person's own; changing
+ * #2512 S5: browser push. With no SESSION_SECRET (the VAPID pair derives from
+ * it) every route answers 404 push_unavailable. Reading is any signed-in person's own; changing
  * a subscription takes a person in a browser (never a token, a grant or an
  * agent).
  */
@@ -33,9 +33,9 @@ function pushUser(c: Context<AppEnv>, write: boolean) {
 }
 
 export function mountPush(app: AppType): void {
-  app.get(R.mePushKey, (c) => {
+  app.get(R.mePushKey, async (c) => {
     pushUser(c, false);
-    return c.json({ publicKey: (c.env.VAPID_PUBLIC_KEY ?? "").trim() });
+    return c.json({ publicKey: (await vapidKeys(c.env)).publicKey });
   });
 
   app.get(R.mePushSubscriptions, async (c) => {

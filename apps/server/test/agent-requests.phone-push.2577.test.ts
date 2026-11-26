@@ -16,12 +16,8 @@ import { api, login } from "./helpers.js";
 // newly held request queues one browser push with fixed text, never the words.
 
 const E = env as unknown as Env;
-// A VAPID pair so push is on; nothing is sent here, only queued.
-const EP = {
-  ...E,
-  VAPID_PUBLIC_KEY: "pub",
-  VAPID_PRIVATE_KEY: "priv",
-} as Env;
+// Push is on with a SESSION_SECRET; nothing is sent here, only queued.
+const EP = { ...E } as Env;
 const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
 

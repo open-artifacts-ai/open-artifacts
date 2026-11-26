@@ -833,24 +833,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const id = frameId();
     const kind = rec.kind;
     lane.upIds.set(id, { ref: rec.ref, kind });
-    const sent = sendOn(lane, {
-      v: 1,
-      id,
-      type: "agent_up",
-      agent_ref: rec.ref,
-      kind,
-      proposed_name: fitName(rec.proposedName, 64),
-      namespace: rec.namespace,
-      global: rec.global,
-      ...(rec.nameChosen && lane.nameChosen
-        ? { name_chosen: true as const }
-        : {}),
-      // A /clear: the new ref takes over the old address and its mail (#1295).
-      ...(rec.replaces !== undefined && lane.mailbox
-        ? { replaces: rec.replaces }
-        : {}),
-    });
+    const sent = sendOn(
+      lane,
+      {
+        v: 1,
+        id,
+        type: "agent_up",
+        agent_ref: rec.ref,
+        kind,
+        proposed_name: fitName(rec.proposedName, 64),
+        namespace: rec.namespace,
+        global: rec.global,
+        ...(rec.nameChosen && lane.nameChosen
+          ? { name_chosen: true as const }
+          : {}),
+        // A /clear: the new ref takes over the old address and its mail (#1295).
+        ...(rec.replaces !== undefined && lane.mailbox
+          ? { replaces: rec.replaces }
+          : {}),
+      },
+      // #3218: a frame never written is no answer to wait for; the next
+      // link's onOpen announces again.
+      () => {
+        lane.upIds.delete(id);
+      },
+    );
     if (sent) rec.sentName = rec.proposedName;
+    // #3218: a link not open yet sends nothing; a kept id would hold the
+    // update self-check's `local` probe false until it steps back.
+    else lane.upIds.delete(id);
     return sent;
   };
   /**
