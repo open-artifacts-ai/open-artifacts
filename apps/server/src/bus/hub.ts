@@ -5444,13 +5444,12 @@ export class BusHub extends DurableObject<Env> {
       this.#maxRoles,
     );
     logEvent("role_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
-    // #3132: a live holder hears that another session asks for its role, and
-    // how to hand it over at once (bus_role_propose by the holder).
+    // The proposal identifies the intended holder. Its caller may be unlinked.
     const p = r.ok ? r.proposal : null;
     if (p?.action === "repoint" && p.priorAgentId && p.agentName)
       this.#say(
         p.priorAgentId,
-        `${p.agentName} asks to take over your role "${p.name}" in ${p.namespace}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}". To keep it, tell ${p.agentName} on the bus.`,
+        `A proposal would move your role "${p.name}" in ${p.namespace} to ${p.agentName}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}".`,
       );
     return r;
   }
