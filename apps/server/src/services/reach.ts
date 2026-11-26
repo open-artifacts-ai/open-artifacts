@@ -117,6 +117,8 @@ export async function reachOf(
       googleAfterCode = offered.has("email");
     }
   }
+  if (offered.has("github") && row !== null && row.status === "active")
+    methods.push("github");
   if (
     offered.has("email") &&
     (await codeRule(cfg, email, row, shared)).kind !== "none"

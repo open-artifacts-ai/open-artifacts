@@ -86,6 +86,8 @@ export const COOP_EXEMPT: ReadonlySet<string> = new Set([
   SIGN_IN_PAGE,
   AUTH.loginGoogle,
   AUTH.callbackGoogle,
+  AUTH.loginGithub,
+  AUTH.callbackGithub,
 ]);
 
 /**
@@ -96,6 +98,7 @@ export const COOP_EXEMPT: ReadonlySet<string> = new Set([
 export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callback,
   AUTH.callbackGoogle,
+  AUTH.callbackGithub,
   // The silent sign-in ticket (#2026) can ride this URL: never a Referer.
   AUTH.loginGoogle,
   R.directoryCallback,

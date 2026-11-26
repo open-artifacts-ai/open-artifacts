@@ -356,7 +356,10 @@ async function readOidcState(
       typeof o.next !== "string" ||
       typeof o.exp !== "number" ||
       !Number.isFinite(o.exp) ||
-      (o.p !== undefined && o.p !== "access" && o.p !== "google")
+      (o.p !== undefined &&
+        o.p !== "access" &&
+        o.p !== "google" &&
+        o.p !== "github")
     )
       return bad;
     const st = o as OidcState;

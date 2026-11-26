@@ -12,11 +12,13 @@ Open Artifacts logs people in through Cloudflare Access by default. Direct login
 
 | Variable | Kind | Setup flag | Meaning |
 |---|---|---|---|
-| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, or `email`), optionally with `access`. Unset means Access only. |
+| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, `github`, or `email`), optionally with `access`. Unset means Access only. |
 | `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. |
 | `AUTH_DOMAIN_JOIN` | var | `--auth-domain-join` | `member` (anyone in the domain joins) or `invite` (default). |
 | `GOOGLE_CLIENT_ID` | var | `--google-client-id` | Your Google OAuth client id. |
 | `GOOGLE_CLIENT_SECRET` | secret | none | Its secret. |
+| `GITHUB_CLIENT_ID` | var | none | Your GitHub OAuth App client id (self-hosted). |
+| `GITHUB_CLIENT_SECRET` | secret | none | Its secret. |
 | `EMAIL_CODE_DOMAIN` | var | `--email-code-domain` | `on` lets domain members use codes, only while Google is off. |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | var, secret | `--turnstile-site-key` (the key only) | When set, every code request needs a Turnstile token. Required for domain codes. |
 | `CODE_EMAILS_PER_DAY` | var | `--code-emails-per-day` | Daily cap on code emails (default 200, at most 10000), separate from invites (`EMAIL_DAILY_CAP`, default 100). |
@@ -63,6 +65,13 @@ Direct login keys everything it signs from `SESSION_SECRET`: one key per purpose
 2. Add the redirect URI `https://<your app host>/auth/callback/google`.
 3. Use only the `openid`, `email` and `profile` scopes.
 4. Put the client id and secret in the variables above.
+
+## Setting up GitHub
+
+1. In GitHub Settings under **Developer settings** -> **OAuth Apps**, create a new OAuth App.
+2. Set the **Authorization callback URL** to `https://<your app host>/auth/callback/github`.
+3. Set `GITHUB_CLIENT_ID` as a Worker var and put `GITHUB_CLIENT_SECRET` as a Worker secret (`wrangler secret put GITHUB_CLIENT_SECRET`).
+4. Add `github` to `AUTH_PROVIDERS` (for example `google,github,email` or `github,email`). GitHub accounts must have a verified primary email address and only link to existing or invited accounts (the first sign-in links through an emailed one-time code).
 
 ## Switching an existing install
 

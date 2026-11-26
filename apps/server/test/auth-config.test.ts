@@ -38,7 +38,7 @@ describe("authConfig", () => {
     const c = authConfig(base({ AUTH_PROVIDERS: "saml" }));
     expect(c.providers.size).toBe(0);
     expect(c.problems).toContain(
-      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google or email.`,
+      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google, github or email.`,
     );
   });
 
@@ -82,6 +82,42 @@ describe("authConfig", () => {
   test("google without a client id or secret is disabled", () => {
     expect(authConfig(direct({ GOOGLE_CLIENT_ID: "" })).google).toBeNull();
     expect(authConfig(direct({ GOOGLE_CLIENT_SECRET: "" })).google).toBeNull();
+  });
+
+  test("github requires AUTH_PROVIDERS to include github plus client id and secret", () => {
+    expect(authConfig(direct()).github).toBeNull();
+    const ok = authConfig(
+      direct({
+        AUTH_PROVIDERS: "google,github,email",
+        GITHUB_CLIENT_ID: "Iv1.abc",
+        GITHUB_CLIENT_SECRET: "ghs_secret",
+      }),
+    );
+    expect(ok.github).toEqual({ clientId: "Iv1.abc", secret: "ghs_secret" });
+
+    const noId = authConfig(
+      direct({
+        AUTH_PROVIDERS: "github",
+        GITHUB_CLIENT_ID: "",
+        GITHUB_CLIENT_SECRET: "ghs_secret",
+      }),
+    );
+    expect(noId.github).toBeNull();
+    expect(noId.problems).toContain(
+      "GitHub login is on, but GITHUB_CLIENT_ID isn't set, so GitHub isn't offered. Set it, or turn GitHub login off.",
+    );
+
+    const noSecret = authConfig(
+      direct({
+        AUTH_PROVIDERS: "github",
+        GITHUB_CLIENT_ID: "Iv1.abc",
+        GITHUB_CLIENT_SECRET: "",
+      }),
+    );
+    expect(noSecret.github).toBeNull();
+    expect(noSecret.problems).toContain(
+      "GitHub login is on, but GITHUB_CLIENT_SECRET isn't set, so GitHub isn't offered. Set it, or turn GitHub login off.",
+    );
   });
 
   test("invalid domains are dropped with a problem", () => {

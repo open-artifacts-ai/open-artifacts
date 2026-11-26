@@ -15,7 +15,9 @@ import { type AuthConfig, authConfig } from "./config.js";
 export const ACCESS_START = `${AUTH.login}?via=access`;
 
 export const signInMode = (cfg: AuthConfig): "access" | "direct" =>
-  cfg.providers.has("google") || cfg.providers.has("email")
+  cfg.providers.has("google") ||
+  cfg.providers.has("github") ||
+  cfg.providers.has("email")
     ? "direct"
     : "access";
 
@@ -29,6 +31,15 @@ export function googleOffered(cfg: AuthConfig): boolean {
   if (!t) return false;
   if (t.kind === "direct") return t.secret.length > 0;
   return t.url.length > 0 && t.installId.length > 0 && t.signingKey.length > 0;
+}
+
+/** GitHub is offered only when client id and secret are both set (config.ts fails closed). */
+export function githubOffered(cfg: AuthConfig): boolean {
+  return (
+    cfg.github !== null &&
+    cfg.github.clientId.length > 0 &&
+    cfg.github.secret.length > 0
+  );
 }
 
 /** #359 AuthProvidersSchema: only enabled, fully configured providers. */
@@ -46,6 +57,11 @@ export function authProviders(env: Env): AuthProviders {
       id: "google",
       start: AUTH.loginGoogle,
       domains: [...cfg.domains],
+    });
+  if (githubOffered(cfg))
+    providers.push({
+      id: "github",
+      start: AUTH.loginGithub,
     });
   // Only when codes can be sent (cfg.emailCodes): email on without email
   // sending is a problem the owner sees, not a code that never arrives.

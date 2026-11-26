@@ -23,6 +23,7 @@ import {
   safeNext,
 } from "../auth/oidc.js";
 import { accessProvider } from "../auth/providers/access.js";
+import { githubProvider } from "../auth/providers/github.js";
 import { googleProvider } from "../auth/providers/google.js";
 import {
   clearSessionCookie,
@@ -422,6 +423,101 @@ export function mountAuth(app: AppType): void {
       // Anything unexpected (D1, signing): the sign-in page, never a 500.
       logOidcFail("internal");
       return toSignIn("failed", next, clear, "google");
+    }
+  });
+
+  app.get(AUTH.loginGithub, async (c) => {
+    if (!authConfig(c.env).github) throw new ApiError("not_found", "Not found");
+    const { location, stateCookie, evict } = await buildAuthorizeRedirect(
+      c.env,
+      githubProvider,
+      c.req.query("next") ?? "/",
+      {
+        retry: c.req.query("retry") === "1",
+        cookieHeader: c.req.header("cookie"),
+      },
+    );
+    return redirect(location, [...evict, stateCookie]);
+  });
+
+  app.get(AUTH.callbackGithub, async (c) => {
+    if (!authConfig(c.env).github) throw new ApiError("not_found", "Not found");
+    // Single-use state cookie, as for Access and Google.
+    const picked = await pickStateCookie(
+      c.env,
+      c.req.raw,
+      c.req.query("state") ?? "",
+    );
+    const clear = picked ? [clearOidcCookie(c.env, picked.name)] : [];
+    let next = "/";
+    try {
+      const id = await handleCallback(c.env, githubProvider, c.req.raw);
+      next = id.next;
+      const r = await admit(c.env, authConfig(c.env), id);
+      if (!r.ok) {
+        logOidcFail(r.reason);
+        logAuth({ provider: "github", outcome: "refused", stage: r.reason });
+        if (r.reason === "needs_code") {
+          const link = await linkSetCookie(c, {
+            sub: id.subject,
+            email: id.email,
+            hd: null,
+            name: id.name,
+            provider: "github",
+          });
+          if (link)
+            return redirect(
+              `${SIGN_IN_PAGE}?error=needs_code&next=${encodeURIComponent(
+                id.next,
+              )}&link=1`,
+              [...clear, link],
+            );
+        }
+        return toSignIn(r.reason, id.next, clear, "github");
+      }
+      await seedWelcomeAfter(c, r.user);
+      const row = await getUserWithEpoch(c.env, r.user.id);
+      if (!row) {
+        logAuth({ provider: "github", outcome: "error", stage: "no_user" });
+        return toSignIn("failed", id.next, clear, "github");
+      }
+      const sess = sessionCookie(
+        await signSession(c.env, r.user.id, Date.now(), {
+          provider: "github",
+          epoch: row.sessionEpoch,
+        }),
+        c.env,
+      );
+      logAuth({ provider: "github", outcome: "ok", uid: r.user.id });
+      return redirect(id.next, [...clear, sess]);
+    } catch (e) {
+      logAuth({
+        provider: "github",
+        outcome: e instanceof ApiError ? "refused" : "error",
+        stage: catchStage(e),
+      });
+      if (e instanceof OidcStateError) {
+        if (e.retry) return toSignIn("expired", e.next, clear, "github");
+        return redirect(
+          `${AUTH.loginGithub}?next=${encodeURIComponent(e.next)}&retry=1`,
+          clear,
+        );
+      }
+      if (e instanceof OidcRedeemError)
+        return toSignIn(
+          e.stage === "expired" ? e.stage : "failed",
+          e.next,
+          clear,
+          "github",
+        );
+      if (e instanceof ApiError) {
+        const res = toErrorResponse(e);
+        for (const k of clear) res.headers.append("set-cookie", k);
+        res.headers.set("cache-control", "no-store");
+        return res;
+      }
+      logOidcFail("internal");
+      return toSignIn("failed", next, clear, "github");
     }
   });
 

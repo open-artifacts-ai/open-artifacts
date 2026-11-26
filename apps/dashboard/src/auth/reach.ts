@@ -47,6 +47,7 @@ export const inviteRefusedCopy = (
 // The email's phrases (server signInSentence), about the recipient.
 const METHOD_PHRASE: Record<SignInProviderId, string> = {
   google: "their Google account",
+  github: "their GitHub account",
   access: "your organization's single sign-on",
   email: "a one-time code sent to that address",
 };

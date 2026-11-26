@@ -209,12 +209,18 @@ export type InstanceDirectory = z.infer<typeof InstanceDirectorySchema>;
 
 export const SignInModeSchema = z.enum(["access", "direct"]);
 export type SignInMode = z.infer<typeof SignInModeSchema>;
-export const SignInProviderIdSchema = z.enum(["access", "google", "email"]);
+export const SignInProviderIdSchema = z.enum([
+  "access",
+  "google",
+  "github",
+  "email",
+]);
 export type SignInProviderId = z.infer<typeof SignInProviderIdSchema>;
 
 /** The order sign-in methods are named in (emails and UI copy). */
 export const SIGN_IN_METHOD_ORDER: readonly SignInProviderId[] = [
   "google",
+  "github",
   "access",
   "email",
 ];
@@ -241,6 +247,7 @@ export type InstanceSignIn = z.infer<typeof InstanceSignInSchema>;
 export const AuthMethodSchema = z.enum([
   "access",
   "google",
+  "github",
   "code",
   "pat",
   "oauth",

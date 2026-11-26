@@ -590,6 +590,10 @@ export const AUTH = {
   loginGoogle: "/auth/login/google",
   /** GET (OAuth) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=google (SignInVia). */
   callbackGoogle: "/auth/callback/google",
+  /** GET ?next -> 302 to GitHub (404 when GitHub is off). */
+  loginGithub: "/auth/login/github",
+  /** GET (OAuth) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=github (SignInVia). */
+  callbackGithub: "/auth/callback/github",
   /** POST CodeRequest -> 202 CodeRequested. */
   codeRequest: "/auth/code/request",
   /** POST CodeVerify -> 200 CodeVerified. */
