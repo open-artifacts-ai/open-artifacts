@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { BUS_CMD, BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
 import { home } from "./config.ts";
 import {
@@ -10,7 +18,6 @@ import {
   listInstances,
   MAIN_INSTANCE,
 } from "./instances.ts";
-import { gitRecordRoot } from "./namespace.ts";
 import { writePrivate } from "./namespaces.ts";
 import { readOwnFile } from "./own-file.ts";
 
@@ -132,21 +139,27 @@ export function coveringEntry(
   return best;
 }
 
-/** Only inherit if the mapped repository itself lists this checkout. */
-function worktreeEntry(folders: Folders, cwd: string) {
-  const primary = gitRecordRoot(cwd);
-  if (!primary || inside(primary, cwd)) return undefined;
-  const mapped = coveringEntry(folders, primary);
-  if (!mapped) return undefined;
-  const checkout = git(cwd);
-  if (!checkout || !inside(checkout, cwd)) return undefined;
+/** Check the backlink in Git's worktree registry before inheriting a mapping. */
+function worktreeEntry(folders: Folders, checkout: string) {
+  const pointer = join(checkout, ".git");
+  const file = readOwnFile(pointer, undefined, { maxBytes: 8192 });
+  if (file.state !== "ok" || !file.text.startsWith("gitdir: "))
+    return undefined;
   try {
-    const records = execFileSync(
-      "git",
-      ["-C", primary, "worktree", "list", "--porcelain", "-z"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).split("\0\0");
-    if (records.some((r) => r.split("\0", 1)[0] === `worktree ${checkout}`))
+    const admin = realpathSync(resolve(checkout, file.text.slice(8).trimEnd()));
+    const registry = dirname(admin);
+    const common = dirname(registry);
+    if (basename(registry) !== "worktrees") return undefined;
+    const primary = basename(common) === ".git" ? dirname(common) : common;
+    const mapped = coveringEntry(folders, primary);
+    if (!mapped) return undefined;
+    const backlink = readOwnFile(join(admin, "gitdir"), undefined, {
+      maxBytes: 8192,
+    });
+    if (
+      backlink.state === "ok" &&
+      realpathSync(resolve(admin, backlink.text.trimEnd())) === pointer
+    )
       return mapped;
   } catch {}
   return undefined;
@@ -158,7 +171,10 @@ function worktreeEntry(folders: Folders, cwd: string) {
  * folder covers everything below it (longest prefix wins); an unmapped one,
  * or one naming an instance that is gone, is unmapped: no guess.
  */
-export function folderHomeLookup(h: string = home()): HomeLookup {
+export function folderHomeLookup(
+  h: string = home(),
+  keyOf = folderKey,
+): HomeLookup {
   return (cwd) => {
     const list = listInstances(h);
     if (list.length === 1 && list[0]?.main) return { instance: MAIN_INSTANCE };
@@ -169,7 +185,8 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
       real = resolve(cwd);
     }
     const folders = readFolders(h);
-    const hit = coveringEntry(folders, real) ?? worktreeEntry(folders, real);
+    const hit =
+      coveringEntry(folders, real) ?? worktreeEntry(folders, keyOf(cwd));
     if (hit && list.some((i) => i.name === hit.name))
       return { instance: hit.name };
     return { unmapped: true };
@@ -191,13 +208,14 @@ export function unmappedFolderNote(
   h: string = home(),
   /** The folder's key, when the caller already has it (it runs git). */
   known?: string,
+  lookup = folderHomeLookup(h),
 ): string | undefined {
-  if (!("unmapped" in folderHomeLookup(h)(cwd))) return undefined;
+  if (!("unmapped" in lookup(cwd))) return undefined;
   const key = `${h}\0${known ?? folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
   if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
-  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use in this folder.`;
+  return `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`;
 }
 
 /**

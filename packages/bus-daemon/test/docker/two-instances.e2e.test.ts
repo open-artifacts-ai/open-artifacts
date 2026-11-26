@@ -259,9 +259,15 @@ describe("two instances, one bus (#2793)", () => {
     expect(hubB.raw.join("\n")).not.toContain('"su2"');
     const me = await c.request({ type: "self", row: true });
     expect(me).toMatchObject({
-      type: "error",
-      code: "hub_unavailable",
-      message: expect.stringContaining("use in this folder"),
+      type: "agent",
+      agent: {
+        live: false,
+        config_files: [
+          expect.objectContaining({
+            reason: expect.stringContaining("use in this folder"),
+          }),
+        ],
+      },
     });
   });
 });

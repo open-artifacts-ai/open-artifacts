@@ -11,7 +11,6 @@ import {
 import {
   AGENT_CAP_MESSAGES,
   BRIEF_RULES,
-  BUS_CMD,
   type ClientFrame,
   ClientFrameSchema,
   frameId,
@@ -318,16 +317,6 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
-      if (
-        frame.row &&
-        agent.instance === undefined &&
-        ctx.unmapped?.(agent.cwd)
-      )
-        return {
-          type: "error",
-          code: "hub_unavailable",
-          message: `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`,
-        };
       const files = frame.row
         ? (ctx.configFiles?.(
             agent.cwd,
@@ -348,7 +337,9 @@ export function routeLocal(
             ? { namespace_source: agent.namespaceSource }
             : {}),
           kind: agent.kind,
-          live: agent.live,
+          live:
+            agent.live &&
+            !(agent.instance === undefined && ctx.unmapped?.(agent.cwd)),
           global: agent.global,
           ...(files.length > 0 ? { config_files: files } : {}),
           ...(away === undefined ? {} : { owner_away_until: away }),
