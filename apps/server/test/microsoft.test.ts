@@ -34,12 +34,20 @@ const TID = "9188040d-6c67-4c5b-b112-36a304b66dad";
 const OID = "00000000-0000-0000-1111-222222222222";
 const OTHER_TID = "72f988bf-86f1-41af-91ab-2d7cd011db47";
 const APP = "http://app.localhost";
-// Extra JWKS entries (same key pair) carrying Microsoft's `issuer` property.
-const KEY_ISSUERS: Record<string, string> = {
-  "m-tpl": "https://login.microsoftonline.com/{tenantid}/v2.0",
-  "m-own": `https://login.microsoftonline.com/${TID}/v2.0`,
-  "m-other": `https://login.microsoftonline.com/${OTHER_TID}/v2.0`,
-  "m-sts": "https://sts.windows.net/{tenantid}/",
+const TPL_ISSUER = "https://login.microsoftonline.com/{tenantid}/v2.0";
+// Extra JWKS entries (same key pair) varying Microsoft's `issuer` and the
+// key's own signing constraints. m1 (the default) has the template issuer.
+const EXTRA_KEYS: Record<string, Record<string, unknown>> = {
+  "m-tpl": { issuer: TPL_ISSUER },
+  "m-own": { issuer: `https://login.microsoftonline.com/${TID}/v2.0` },
+  "m-other": { issuer: `https://login.microsoftonline.com/${OTHER_TID}/v2.0` },
+  "m-sts": { issuer: "https://sts.windows.net/{tenantid}/" },
+  "m-noiss": {},
+  "m-sig": { issuer: TPL_ISSUER, use: "sig", key_ops: ["verify"] },
+  "m-noalg": { issuer: TPL_ISSUER, alg: undefined },
+  "m-rs384": { issuer: TPL_ISSUER, alg: "RS384" },
+  "m-enc": { issuer: TPL_ISSUER, use: "enc" },
+  "m-ops": { issuer: TPL_ISSUER, key_ops: ["encrypt"] },
 };
 const SESSION = sessionCookieName(env);
 const app = createApp();
@@ -154,11 +162,11 @@ async function fakeMicrosoft() {
       if (req.url === MICROSOFT_JWKS_URL)
         return Response.json({
           keys: [
-            jwk,
-            ...Object.entries(KEY_ISSUERS).map(([kid, issuer]) => ({
+            { ...jwk, issuer: TPL_ISSUER },
+            ...Object.entries(EXTRA_KEYS).map(([kid, over]) => ({
               ...jwk,
               kid,
-              issuer,
+              ...over,
             })),
           ],
         });
@@ -375,7 +383,7 @@ describe("microsoft provider (self-hosted)", () => {
     }
   });
 
-  it("signing key issuer: template and own tenant pass; other tenant and mismatch are refused", async () => {
+  it("signing key issuer: template and own tenant pass; other tenant, mismatch and missing issuer are refused", async () => {
     const e = msEnv();
     const run = async (kid: string) => {
       const b = await begin(e);
@@ -387,10 +395,26 @@ describe("microsoft provider (self-hosted)", () => {
       );
       return handleCallback(e, microsoftProvider, callbackReq(b, code));
     };
-    for (const kid of ["m-tpl", "m-own", "m1"])
+    for (const kid of ["m-tpl", "m-own", "m1", "m-sig", "m-noalg"])
       expect(await run(kid)).toMatchObject({ subject: `${TID}:${OID}` });
-    for (const kid of ["m-other", "m-sts", "no-such-kid"])
+    for (const kid of ["m-other", "m-sts", "m-noiss", "no-such-kid"])
       await expect(run(kid)).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("signing key constraints: alg mismatch, use enc and key_ops without verify are refused", async () => {
+    const e = msEnv();
+    for (const kid of ["m-rs384", "m-enc", "m-ops"]) {
+      const b = await begin(e);
+      const code = ms.issueCode(
+        { nonce: b.nonce },
+        b.challenge,
+        undefined,
+        kid,
+      );
+      await expect(
+        handleCallback(e, microsoftProvider, callbackReq(b, code)),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+    }
   });
 
   it("template key issuer passes for another tenant's matching tid", async () => {

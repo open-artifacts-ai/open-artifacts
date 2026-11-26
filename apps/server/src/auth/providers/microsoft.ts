@@ -21,7 +21,8 @@ import type { OidcProvider, VerifiedIdentity } from "./types.js";
 // Issuer rules for the `common` JWKS (learn.microsoft.com/entra/identity-platform/
 // access-tokens#validate-the-issuer): tid must be a GUID, and when the signing
 // key (picked by kid) carries an `issuer`, that issuer with `{tenantid}` set to
-// the token's tid must equal the token's iss.
+// the token's tid must equal the token's iss. A key with no issuer has no
+// tenant scope and is refused. The key's own alg/use/key_ops are honored.
 // Subject is `${tid}:${oid}` (never `sub` alone). Microsoft does not vouch for
 // email addresses across tenants/personal accounts, so emailVerified is always
 // false and admit() requires an emailed code on first link.
@@ -37,6 +38,15 @@ const CLOCK_TOLERANCE_S = 60;
 const MAX_NAME = 200;
 const TID_GUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Asymmetric RSA signatures only: never "none" or HS*.
+const RSA_SIG_ALGS = new Set([
+  "RS256",
+  "RS384",
+  "RS512",
+  "PS256",
+  "PS384",
+  "PS512",
+]);
 const JWKS_TTL_MS = 60 * 60 * 1000;
 const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
 
@@ -170,20 +180,32 @@ export const microsoftProvider: OidcProvider = {
     const idToken = await exchange(env, m.clientId, m.secret, a);
 
     let kid: unknown;
+    let alg: unknown;
     try {
-      ({ kid } = decodeProtectedHeader(idToken));
+      ({ kid, alg } = decodeProtectedHeader(idToken));
     } catch {
       return fail("jwt_verify");
     }
     if (typeof kid !== "string" || !kid) return fail("jwt_verify");
     const jwk = await signingJwk(kid);
     if (!jwk) return fail("jwt_verify");
+    // The key's own signing constraints: its alg (else RS256), use, key_ops.
+    const keyAlg = jwk.alg ?? "RS256";
+    if (
+      jwk.kty !== "RSA" ||
+      !RSA_SIG_ALGS.has(keyAlg) ||
+      alg !== keyAlg ||
+      (jwk.use !== undefined && jwk.use !== "sig") ||
+      (jwk.key_ops !== undefined &&
+        !(Array.isArray(jwk.key_ops) && jwk.key_ops.includes("verify")))
+    )
+      return fail("key_constraints");
 
     let claims: JWTPayload & Record<string, unknown>;
     try {
-      const key = await importJWK({ ...jwk, alg: "RS256" }, "RS256");
+      const key = await importJWK(jwk, keyAlg);
       ({ payload: claims } = await jwtVerify(idToken, key, {
-        algorithms: ["RS256"],
+        algorithms: [keyAlg],
         audience: m.clientId,
         clockTolerance: CLOCK_TOLERANCE_S,
         requiredClaims: ["iss", "exp", "nonce", "tid", "oid"],
@@ -205,14 +227,12 @@ export const microsoftProvider: OidcProvider = {
     if (typeof tid !== "string" || !TID_GUID.test(tid)) return fail("claims");
     const iss = `https://login.microsoftonline.com/${tid}/v2.0`;
     if (claims.iss !== iss) return fail("jwt_verify");
-    // The signing key's issuer, when present, binds the key to tenants.
-    if (jwk.issuer !== undefined) {
-      if (
-        typeof jwk.issuer !== "string" ||
-        jwk.issuer.replaceAll("{tenantid}", tid) !== iss
-      )
-        return fail("key_issuer");
-    }
+    // The signing key's issuer binds the key to tenants; none means refuse.
+    if (
+      typeof jwk.issuer !== "string" ||
+      jwk.issuer.replaceAll("{tenantid}", tid) !== iss
+    )
+      return fail("key_issuer");
 
     const oid = claims.oid;
     if (typeof oid !== "string" || !oid.trim()) return fail("claims");
