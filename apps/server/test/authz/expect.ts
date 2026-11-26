@@ -347,6 +347,7 @@ const ADMIN_ACTIONS = new Set([
  */
 export const CAPPED_WRITES: readonly string[] = [
   "PATCH /api/v1/me",
+  "DELETE /api/v1/me/sign-in-methods/:provider",
   "POST /api/v1/artifacts/:id/data/:col/query",
   "DELETE /api/v1/tokens/:id",
   "DELETE /api/v1/oauth-clients/:grantId",

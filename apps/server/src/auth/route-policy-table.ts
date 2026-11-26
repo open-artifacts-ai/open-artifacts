@@ -116,6 +116,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public: "OAuth store copy; 404 unless OAUTH_COPY_KEY is set",
   },
   "GET /api/v1/me": { user: "the caller" },
+  // #3087 slice 7: the caller's own sign-in methods; DELETE browser sessions only (handler).
+  "GET /api/v1/me/sign-in-methods": { user: "the caller" },
+  "DELETE /api/v1/me/sign-in-methods/:provider": { user: "the caller" },
   // #2512: the caller's own For you inbox (their open asks).
   "GET /api/v1/me/inbox": { user: "the caller" },
   "POST /api/v1/me/inbox/read": { user: "the caller" },

@@ -1811,6 +1811,13 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     refuse: { req: async () => ({ path: "" }), allow: ok(200) },
     real: { req: () => ({ path: "" }), allow: ok(200) },
   },
+  // #3087 slice 7: the caller's own sign-in methods; an unknown provider is 404 past the auth guard (writes nothing).
+  "DELETE /api/v1/me/sign-in-methods/:provider": {
+    real: {
+      req: () => ({ path: "/api/v1/me/sign-in-methods/unknown" }),
+      allow: code("not_found"),
+    },
+  },
   // #2512 S4: mutes. A body that names nothing is a 400 past the guard; an unmute of nothing is 204.
   "POST /api/v1/me/inbox/mutes": {
     refuse: invalid(),
@@ -2597,6 +2604,8 @@ const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
+  ["GET /api/v1/me/sign-in-methods", U, [200]],
+  ["DELETE /api/v1/me/sign-in-methods/:provider", U],
   ["GET /api/v1/me/inbox", U, [200]],
   ["POST /api/v1/me/inbox/read", U],
   ["POST /api/v1/me/inbox/:id/later", U],

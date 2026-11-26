@@ -1,3 +1,4 @@
+import type { SignInMethodProvider } from "./hosted/auth.js";
 import type { NoticeId } from "./hosted/core.js";
 
 const A = "/api/v1/artifacts";
@@ -12,6 +13,11 @@ const seg = (s: string): string => {
 export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
+  /** GET -> SignInMethods (#3087 slice 7): the caller's linked identities plus "email" when eligible. Any signed-in user, guests included. */
+  meSignInMethods: "/api/v1/me/sign-in-methods",
+  /** DELETE -> SignInMethodRemoved (`{ signedOut }`) (#3087 slice 7): removes one linked identity for the caller (409 conflict `{ reason: "last_method" }` if no other way in remains; 404 for unknown/unlinked provider or non-interactive token). Audited auth.method_removed. */
+  meSignInMethod: (provider: SignInMethodProvider) =>
+    `/api/v1/me/sign-in-methods/${seg(provider)}`,
   /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
   meInbox: "/api/v1/me/inbox",
   /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */

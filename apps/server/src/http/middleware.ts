@@ -513,6 +513,8 @@ export const CSRF_HEADER = "X-OA-Request";
  */
 const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["PATCH", /^\/api\/v1\/me$/],
+  // #3087 slice 7: removing one's own sign-in method (guests and capped callers keep managing their own account).
+  ["DELETE", /^\/api\/v1\/me\/sign-in-methods\/[^/]+$/],
   ["POST", /^\/api\/v1\/artifacts\/[^/]+\/data\/[^/]+\/query$/],
   ["DELETE", /^\/api\/v1\/tokens\/[^/]+$/],
   ["DELETE", /^\/api\/v1\/oauth-clients\/[^/]+$/],

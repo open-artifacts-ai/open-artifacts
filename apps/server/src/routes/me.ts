@@ -22,7 +22,9 @@ import {
   planOfMember,
   requireUser,
 } from "../auth/authz.js";
+import { authConfig } from "../auth/config.js";
 import { isGuestRole, orgCan } from "../auth/policy.js";
+import { clearSessionCookie } from "../auth/session.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
 import { creatorCount, monthOf } from "../billing/creators.js";
 import { refreshPlan } from "../billing/store.js";
@@ -39,6 +41,7 @@ import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busHub, busOn } from "../services/bus.js";
 import { docsState } from "../services/docs-available.js";
+import { listSignInMethods, removeSignInMethod } from "../services/identity.js";
 import {
   deferItem,
   inboxOf,
@@ -271,6 +274,29 @@ export function mountMe(app: AppType): void {
   app.get(R.me, async (c) => {
     const user = requireUser(c);
     return c.json(await toMe(c, user, await getProfile(c.env, user.id)));
+  });
+
+  // #3087 slice 7: the caller's own sign-in methods. Any signed-in user,
+  // guests included; DELETE takes an interactive cookie session (a PAT or
+  // OAuth grant gets 404).
+  app.get(R.meSignInMethods, async (c) => {
+    const user = requireUser(c);
+    return c.json(
+      await listSignInMethods(c.env, authConfig(c.env), user, c.var.authMethod),
+    );
+  });
+  app.delete("/api/v1/me/sign-in-methods/:provider", async (c) => {
+    const user = requireUser(c);
+    if (!interactiveSession(c)) throw new ApiError("not_found", "Not found");
+    const out = await removeSignInMethod(
+      c.env,
+      authConfig(c.env),
+      user,
+      c.req.param("provider"),
+      execCtx(c),
+    );
+    if (out.signedOut) c.header("Set-Cookie", clearSessionCookie(c.env));
+    return c.json(out);
   });
 
   // #2512: the "For you" inbox. Signed-in callers only, like /me; the list is
