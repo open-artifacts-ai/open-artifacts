@@ -28,6 +28,7 @@ import {
   QUIET_DAYS,
   RECONCILE_CALLS,
   RECONCILE_LOGS,
+  RECONCILE_MS,
   RERUN_DAYS,
   type Recorded,
   type RunInfo,
@@ -1502,8 +1503,33 @@ describe("a backlog larger than one reconcile drains over the next events", () =
   };
 
   it("caps one reconcile well inside the job's limit", () => {
-    expect(RECONCILE_CALLS).toBeLessThanOrEqual(300);
-    expect(RECONCILE_LOGS).toBeLessThanOrEqual(40);
+    expect(RECONCILE_MS).toBeLessThanOrEqual(5 * 60 * 1000);
+    expect(RECONCILE_CALLS).toBeLessThanOrEqual(150);
+    expect(RECONCILE_LOGS).toBeLessThanOrEqual(25);
+  });
+
+  it("stops on its time budget, on a fake clock: each gh call takes 2 s", () => {
+    const g = make();
+    let t = 0;
+    const slow: Exec = (cmd, args) => {
+      t += 2000;
+      return g.exec(cmd, args);
+    };
+    const r = reconcile({
+      exec: slow,
+      repo: REPO,
+      nowMs: NOW,
+      ms: 60_000,
+      clock: () => t,
+    });
+    const worked = r.filter((x) => x.result === "tracked").length;
+    expect(worked).toBeGreaterThan(0);
+    expect(worked).toBeLessThan(ids.length);
+    // No run starts after the minute: the last one began before it.
+    expect(t).toBeLessThan(60_000 + 30 * 2000);
+    expect(r.filter((x) => x.result === "left")).toHaveLength(
+      ids.length - worked,
+    );
   });
 
   it("stops starting runs once its log budget is spent, oldest first, and says how many are left", () => {

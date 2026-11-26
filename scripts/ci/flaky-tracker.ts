@@ -9,8 +9,8 @@
 // ago it passed, and tracks each one the store has no `passed` line for,
 // through the same code. So a dropped event is caught by the next completion
 // even when it comes QUIET_DAYS after a rerun on the last allowed day. One
-// reconcile spends at most RECONCILE_CALLS gh calls and RECONCILE_LOGS job
-// logs (always at least one run), oldest first, and logs "backlog: N left":
+// reconcile starts no run after RECONCILE_MS, RECONCILE_CALLS gh calls or
+// RECONCILE_LOGS job logs (it always does one), oldest first, and logs "backlog: N left":
 // each run is saved as it finishes, so the next completion carries on. That line means the run is fully handled: it is written with the run's
 // sightings when nothing is filed, else in its own store comment after every
 // filing succeeded (so a failed filing is retried), and on its own when the
@@ -90,13 +90,15 @@ const STORE_CHAIN_MAX = 10;
  */
 export const WATCHED = ["ci.yml"];
 /**
- * The most gh calls, and job logs, one reconcile spends before it stops
- * starting runs: a few minutes, well inside the job's 10. The rest is the
- * backlog: each run's work is saved in the store as it finishes, and the next
- * CI completion's reconcile carries on, oldest first.
+ * The most time, gh calls and job logs one reconcile spends before it stops
+ * starting runs, well inside the job's 10 minutes (on main, the listing alone
+ * is about 70 calls, and a run about 5 to 12 at 1 to 2 s each). The rest is
+ * the backlog: each run's work is saved in the store as it finishes, and the
+ * next CI completion's reconcile carries on, oldest first.
  */
-export const RECONCILE_CALLS = 300;
-export const RECONCILE_LOGS = 40;
+export const RECONCILE_MS = 4 * 60 * 1000;
+export const RECONCILE_CALLS = 150;
+export const RECONCILE_LOGS = 25;
 /** One gh call that takes longer is killed, and retried like a 5xx. */
 const GH_TIMEOUT_MS = 120_000;
 /** Slack on top of RERUN_DAYS plus QUIET_DAYS in the reconcile's range. */
@@ -1193,8 +1195,8 @@ export type Reconciled = {
  * other read, so it adds nothing and bumps nothing. Each other run goes
  * through loadRun and track like an event would, and is saved (marked) in the
  * store when it finishes, so a job cut off later loses none of it. One run's
- * error doesn't stop the rest. Once `calls` gh calls or `logs` job logs are
- * spent, no further run is started (one always is): those are "left", and the next
+ * error doesn't stop the rest. Once `ms` milliseconds, `calls` gh calls or
+ * `logs` job logs are spent, no further run is started (one always is): those are "left", and the next
  * reconcile (the next CI completion) takes them, oldest first. Oldest first
  * because the oldest is nearest to leaving the range; a quiet stretch of up
  * to QUIET_DAYS only delays them. `onRun` sees each result as it is made.
@@ -1205,9 +1207,14 @@ export function reconcile(o: {
   nowMs: number;
   calls?: number;
   logs?: number;
+  ms?: number;
+  /** The wall clock the time budget reads (a fake one in tests). */
+  clock?: () => number;
   onRun?: (r: Reconciled) => void;
 }): Reconciled[] {
   const { repo, nowMs } = o;
+  const clock = o.clock ?? Date.now;
+  const start = clock();
   const spent = { calls: 0, logs: 0 };
   const exec: Exec = (cmd, args) => {
     spent.calls++;
@@ -1234,7 +1241,8 @@ export function reconcile(o: {
     if (
       started > 0 &&
       (spent.calls >= (o.calls ?? RECONCILE_CALLS) ||
-        spent.logs >= (o.logs ?? RECONCILE_LOGS))
+        spent.logs >= (o.logs ?? RECONCILE_LOGS) ||
+        clock() - start >= (o.ms ?? RECONCILE_MS))
     ) {
       out.push({ ...base, result: "left" });
       continue;
