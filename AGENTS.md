@@ -49,11 +49,12 @@ advice for contributors.
   attached files, tags and deploys.
 - **Platform releases.** A feature session does not deploy.
 - **Tests control time with fake timers or wait on a signal, never sleep.** A
-  `setTimeout` wait, a `sleep` helper and Playwright's `waitForTimeout` are what
-  makes a suite flaky on a loaded runner. `pnpm check-no-sleeps` fails a test
-  file that adds one; a wait that is genuinely the only way says why with
-  `// sleep-ok: <reason>` and takes its line out of
-  `scripts/ci/test-sleep-baseline.json`.
+  `setTimeout` wait (in a Promise of any shape, or from `node:timers/promises`),
+  a `sleep` helper or shell `sleep`, Playwright's `waitForTimeout` and
+  `toPass`/`expect.poll` with `intervals` are what makes a suite flaky on a
+  loaded runner. `pnpm check-no-sleeps` fails any of them in a test file, with
+  no baseline and no exemption: replace the wait with the event it waits for,
+  or a fake clock; if the code gives no event or clock, fix the code.
 - **Leads act on their own PRs without asking.** Mark your own reviewed PR
   ready, rerun its whole workflow, and merge main into it while it isn't armed
   or queued. Run each `gh` write as one plain command (`gh pr ready 2196`),
