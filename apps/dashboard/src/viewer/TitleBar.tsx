@@ -246,11 +246,13 @@ const PRESSED =
 /** #2622: phone buttons trim their padding so the second row fits 360px. */
 const BARP = `${BAR} max-[600px]:px-2.5`;
 /** #2622: gold means "waiting for you": the Comments button with asks, as the bell's badge. */
+// #2622: the outline variant's own `dark:bg-input/30` wins over a plain bg in
+// dark, which left amber ink on #32363c. Name the fill for dark too.
 const GOLD =
-  "border-[var(--oa-warning)] bg-[var(--oa-warning)] font-semibold text-[var(--oa-surface)] hover:bg-[var(--oa-warning)] hover:text-[var(--oa-surface)]";
+  "border-[var(--oa-warning)] bg-[var(--oa-warning)] font-semibold text-[var(--oa-surface)] hover:bg-[var(--oa-warning)] hover:text-[var(--oa-surface)] dark:bg-[var(--oa-warning)] dark:hover:bg-[var(--oa-warning)]";
 /** #2622: the version pill on an older version turns amber (phone). */
 const OLD =
-  "border-[var(--oa-warning)] bg-[var(--oa-warning-soft)] text-[var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]";
+  "border-[var(--oa-warning)] bg-[var(--oa-warning-soft)] text-[var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)] dark:bg-[var(--oa-warning-soft)] dark:hover:bg-[var(--oa-warning-soft)]";
 
 export function TitleBar({
   artifact,
@@ -388,6 +390,8 @@ export function TitleBar({
         ? versionDate(info.createdAt)
         : "";
   const label = `v${version}${suffix ? ` · ${suffix}` : ""}`;
+  /** #2622: a phone showing an older version: the pill turns amber, and its name is the approved line. */
+  const older = phone && version !== artifact.currentVersion;
   // #2860: mute where the noise is. A signed-in person's page menu, on a server with For you.
   const pageMute = useMuteToggle(
     authed && !outsider ? { kind: "page", id: artifact.id } : null,
@@ -598,14 +602,17 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={`${BARP} ${phone && version !== artifact.currentVersion ? OLD : ""}`}
+            className={`${BARP} ${older ? OLD : ""}`}
+            // #2622: on an older version a phone's name is the approved
+            // "Version 15, not the latest" exactly, so it cannot also start
+            // with the visible "v15"; the visible text leaves the name and a
+            // clipped copy carries it, which keeps label-in-name true.
             aria-label={
-              phone
-                ? // The name starts with the visible "v15" (axe label-in-name).
-                  version === artifact.currentVersion
+              older
+                ? undefined
+                : phone
                   ? `v${version}, the latest version`
-                  : `v${version}, not the latest version`
-                : `Version: ${label}`
+                  : `Version: ${label}`
             }
             aria-expanded={versionsOpen}
             aria-controls={versionsOpen ? VERSIONS_PANEL_ID : undefined}
@@ -613,10 +620,19 @@ export function TitleBar({
             disabled={gone}
             onClick={onVersions}
           >
-            v{version}
-            {/* Phones show the number alone. */}
-            {suffix && (
-              <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
+            {older ? (
+              <>
+                <span aria-hidden="true">v{version}</span>
+                <span className="sr-only">{`Version ${version}, not the latest`}</span>
+              </>
+            ) : (
+              <>
+                v{version}
+                {/* Phones show the number alone. */}
+                {suffix && (
+                  <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
+                )}
+              </>
             )}
             {newer && !gone && <VersionsDot />}
           </ShButton>

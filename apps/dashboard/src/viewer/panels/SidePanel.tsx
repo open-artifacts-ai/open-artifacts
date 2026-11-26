@@ -1,4 +1,4 @@
-import type { ArtifactSummary } from "@oa/shared";
+import type { ArtifactSummary, Capabilities } from "@oa/shared";
 import {
   Button,
   ScrollArea,
@@ -49,11 +49,14 @@ export function SidePanel({
   onClose,
   comments,
   commentsCount,
+  usedCaps,
 }: {
   /** The Comments tab's body; without it the tab is not offered. */
   comments?: ReactNode;
   /** #2486: the open count, shown on the Comments tab (between phones and wide windows). */
   commentsCount?: number;
+  /** #3037: the live data boxes this page's code has used, for the Share panel. */
+  usedCaps?: ReadonlySet<keyof Capabilities>;
   artifact: ArtifactSummary;
   /** The version the viewer shows. */
   version: number;
@@ -228,7 +231,10 @@ export function SidePanel({
           ))}
         {(
           [
-            ["share", <Share key="share" artifact={artifact} />],
+            [
+              "share",
+              <Share key="share" artifact={artifact} usedCaps={usedCaps} />,
+            ],
             ["details", <Details key="details" artifact={artifact} />],
           ] as const
         )

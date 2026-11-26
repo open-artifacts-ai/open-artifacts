@@ -139,9 +139,9 @@ beforeEach(() => {
 });
 
 describe("shrink rules", () => {
-  it("fits the longest side to 2,560px, keeping the shape", () => {
-    expect(fitSide(4000, 3000)).toEqual({ w: 2560, h: 1920 });
-    expect(fitSide(1200, 5120)).toEqual({ w: 600, h: 2560 });
+  it("fits the longest side to 1,568px, keeping the shape", () => {
+    expect(fitSide(4000, 3000)).toEqual({ w: 1568, h: 1176 });
+    expect(fitSide(1200, 5120)).toEqual({ w: 368, h: 1568 });
     expect(fitSide(800, 600)).toEqual({ w: 800, h: 600 });
   });
   it("knows HEIC by type or name", () => {

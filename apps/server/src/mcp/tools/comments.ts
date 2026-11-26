@@ -14,6 +14,7 @@ import {
   type CommentWho,
   editComment,
   listComments,
+  listThread,
   setStatus,
   withdrawAsk,
 } from "../../services/comments.js";
@@ -73,6 +74,35 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   server.registerTool("list_comments", toolConfig("list_comments"), (i) =>
     guard(async () => {
       const { viewer } = await open(i.id, "comments.read");
+      if (i.commentId !== undefined && i.threadId === undefined)
+        throw new ApiError("bad_request", "commentId needs threadId.");
+      if (i.threadId !== undefined) {
+        if (
+          i.answeredSince !== undefined ||
+          i.mentionedSince !== undefined ||
+          i.compact
+        )
+          throw new ApiError(
+            "bad_request",
+            "threadId reads one thread; leave out answeredSince, mentionedSince and compact.",
+          );
+        const one = await listThread(
+          env,
+          i.id,
+          viewer,
+          i.threadId,
+          i.commentId,
+        );
+        const n = one.threads[0]?.comments.length ?? 0;
+        return ok(
+          `Thread ${i.threadId} on ${i.id}: ${plural(n, "comment")}${
+            i.commentId !== undefined
+              ? " (that comment, the one before it and the first)"
+              : ""
+          }.`,
+          one,
+        );
+      }
       if (
         i.compact &&
         i.answeredSince === undefined &&

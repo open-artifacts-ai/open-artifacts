@@ -369,6 +369,11 @@ jobs:
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm --filter @oa/server test:authz
         if: ${{ steps.ro.outputs.release_only != 'true' }}
+      # Red-line split: the same matrix with hosted settings (ENVIRONMENT
+      # production, HOSTED 1, the business tier's FEATURES plus usage_off and
+      # bus), so the live per-route red-line file's hosted proof runs here.
+      - run: pnpm --filter @oa/server test:authz:hosted
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
   build:
     runs-on: ubuntu-latest
     steps:

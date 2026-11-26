@@ -118,7 +118,11 @@ import {
   picturesOf,
   releasePictures,
 } from "./comment-pictures.js";
-import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import {
+  COMMENTS_MAX_REPLIES,
+  type CommentStatus,
+  cleanGuestName,
+} from "./comment-rules.js";
 import {
   addressKey,
   follow,
@@ -1361,6 +1365,57 @@ const mentionHit = (
   since: string,
 ): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
 
+/**
+ * #3139: one thread, the one a comment notice names, so an agent never reads
+ * every thread on a busy page to answer one comment. With `commentId`, only
+ * that comment, the comment just before it and the thread's first comment
+ * (which holds an ask, if any). Masked for the viewer exactly like the full
+ * read (threadViews). `not_found` for an unknown thread or comment.
+ */
+export async function listThread(
+  env: Env,
+  artifactId: string,
+  viewer: CommentViewer,
+  threadId: string,
+  commentId?: string,
+): Promise<CommentList> {
+  // The one thread straight from the store, not the page's capped list, so a
+  // thread past the list's 500-thread or size budget is still found. The store
+  // holds the root plus at most COMMENTS_MAX_REPLIES replies (commentsReply
+  // refuses more), so every stored comment is returned; truncated only if a
+  // row beyond that ever appears.
+  let full: StoredThread;
+  try {
+    full = await call(() => stub(env, artifactId).commentsGet(threadId));
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "not_found")
+      throw new ApiError(
+        "not_found",
+        "No such thread on this artifact. Get threadId from list_comments.",
+      );
+    throw e;
+  }
+  const cap = COMMENTS_MAX_REPLIES + 1;
+  const truncated = full.comments.length > cap;
+  const t = truncated
+    ? { ...full, comments: full.comments.slice(0, cap) }
+    : full;
+  let kept = t;
+  if (commentId !== undefined) {
+    const at = t.comments.findIndex((c) => c.id === commentId);
+    if (at === -1)
+      throw new ApiError("not_found", "No such comment in this thread.");
+    const keep = new Set([0, Math.max(0, at - 1), at]);
+    kept = { ...t, comments: t.comments.filter((_, n) => keep.has(n)) };
+  }
+  const threads = await threadViews(env, artifactId, [kept], viewer);
+  return {
+    threads,
+    open: t.status === "open" ? 1 : 0,
+    truncated,
+  };
+}
+
 /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
 export async function listComments(
   env: Env,
@@ -2074,6 +2129,7 @@ async function deliver(
                 agent,
                 // Only a comment a person typed, to an agent of that same person.
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),
@@ -2583,6 +2639,7 @@ async function threadReply(
                 "thread_reply",
                 agent,
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),

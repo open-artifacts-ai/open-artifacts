@@ -1,6 +1,7 @@
 import {
   type ArtifactPatch,
   type ArtifactSummary,
+  type Capabilities,
   type DataWriters,
   type ShareRole,
   type Share as ShareRow,
@@ -228,8 +229,17 @@ function RoleSelect({
   );
 }
 
-export function Share({ artifact }: { artifact: ArtifactSummary }) {
+export function Share({
+  artifact,
+  usedCaps,
+}: {
+  artifact: ArtifactSummary;
+  /** #3037: the live data boxes this page's code has used (the frame's calls). */
+  usedCaps?: ReadonlySet<keyof Capabilities>;
+}) {
   const { id } = artifact;
+  // #3037: only a page's own code can call the live data boxes.
+  const onPage = artifact.format === "html";
   const can = useCan(artifact);
   const vis = can.setVisibility;
   const people = can.share;
@@ -842,21 +852,45 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
 
       <section>
         <h3 className={H3}>Live data</h3>
-        {CAPS.map(([k, label, hint]) => (
-          <div className="oa-cap" key={k}>
-            <LabelledCheckbox
-              id={`oa-cap-${k}`}
-              describedBy={`oa-cap-${k}-hint`}
-              label={label}
-              checked={artifact.capabilities[k]}
-              disabled={!vis || patch.isPending}
-              onCheckedChange={(on) => setCap(k, on)}
-            />
-            <small id={`oa-cap-${k}-hint`} className="oa-muted">
-              {hint}
-            </small>
-          </div>
-        ))}
+        {/* #3037: usage marks only where a page's own code runs. */}
+        {CAPS.map(([k, label, hint]) => {
+          // #3037: only a page's own code can call these, so only an html page
+          // has marks; a doc, image, pdf or code artifact can't use them.
+          const used = onPage && usedCaps?.has(k);
+          return (
+            <div className="oa-cap" key={k}>
+              <LabelledCheckbox
+                id={`oa-cap-${k}`}
+                describedBy={`oa-cap-${k}-hint`}
+                label={label}
+                checked={artifact.capabilities[k]}
+                disabled={!vis || patch.isPending}
+                onCheckedChange={(on) => setCap(k, on)}
+              />
+              <small id={`oa-cap-${k}-hint`} className="oa-muted">
+                {hint}
+              </small>
+              {onPage && (
+                // #3037 review: a page's own calls set this, so the copy only
+                // reports, in the same muted ink as the hint: it never urges
+                // the owner to widen access on the page's say-so.
+                <small
+                  data-cap-used={used ? "" : undefined}
+                  className="oa-muted"
+                >
+                  {used
+                    ? artifact.capabilities[k]
+                      ? "This page uses it."
+                      : `This page asked for it. It's off.${k === "viewer" ? " Turning it on shows this page each viewer's name and email." : ""}`
+                    : // The marks are calls seen this visit, not a promise about
+                      // the page: a box used on a click or after a delay is not
+                      // "unused", it just has not been used yet.
+                      "Not used yet on this visit."}
+                </small>
+              )}
+            </div>
+          );
+        })}
         {artifact.capabilities.db && (
           <div className="oa-cap">
             <p id="oa-share-writers" className="font-medium">
