@@ -5190,7 +5190,7 @@ export class BusHub extends DurableObject<Env> {
    */
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
-    void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at);
+    void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
     // The old session, if still open, is told it no longer holds the role.
     const role = one<{ name: string }>(
       this.ctx.storage.sql,
@@ -6701,6 +6701,8 @@ export class BusHub extends DurableObject<Env> {
     since?: number,
     /** A role move's time: the moved rows start then (follows.ts moveFollows). */
     startAt?: number,
+    /** #3132: the moved role, whose overlapping pages role_follows keeps. */
+    roleId?: string,
   ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
@@ -6719,10 +6721,29 @@ export class BusHub extends DurableObject<Env> {
             FOLLOW_TIMEOUT_MS,
           );
         });
-        await Promise.race([
-          moveFollows(this.env, userId, from, to, since, startAt),
+        const sql = this.ctx.storage.sql;
+        const carried =
+          roleId === undefined
+            ? []
+            : all<{ a: string }>(
+                sql,
+                "select artifact_id as a from role_follows where role_id = ?",
+                roleId,
+              ).map((r) => r.a);
+        const { overlaps } = await Promise.race([
+          moveFollows(this.env, userId, from, to, since, startAt, carried),
           timeout,
         ]);
+        // The role's part of a page the new holder follows for itself too.
+        if (roleId !== undefined) {
+          sql.exec("delete from role_follows where role_id = ?", roleId);
+          for (const a of overlaps)
+            sql.exec(
+              "insert or ignore into role_follows (role_id, artifact_id) values (?, ?)",
+              roleId,
+              a,
+            );
+        }
       } catch (e) {
         logError("bus_follow_rekey_failed", e);
       } finally {
