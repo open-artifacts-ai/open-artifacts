@@ -15,6 +15,7 @@ import { connectDaemon } from "@oa/bus-ipc";
 import { AGY_STARTING_LABEL, BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type AgyPluginRoute,
   agyPluginHome,
   agyStartingRef,
   parseAgyPids,
@@ -26,7 +27,10 @@ import { home as busHomeNow } from "../src/config.ts";
 import type { DaemonDeps } from "../src/index.ts";
 import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await stopAll();
+});
 
 const A = "0b7e6a9c-1f2d-4c3b-9a8e-7d6c5b4a3f21";
 const AGY = 4242;
@@ -41,8 +45,8 @@ const os = {
   home: new Map<number, string>(),
   /** ps cannot be read right now. */
   psDown: false,
-  /** Where the agy plugin's hook sends sessions; undefined: this daemon's home. */
-  plugin: undefined as string | null | undefined,
+  /** Where the agy plugin's hook sends sessions; undefined: this daemon's home, unpinned. */
+  plugin: undefined as AgyPluginRoute | null | undefined,
 };
 const agyRuns = (pid: number, start: string, cwd: string) => {
   os.alive.add(pid);
@@ -60,9 +64,13 @@ const byFolder = (cwd: string) =>
 
 async function setup(
   over: Partial<DaemonDeps> & {
-    discover?: boolean;
+    /** "flag": the daemon's own default, from OA_BUS_EXPERIMENTAL_AGY. */
+    discover?: boolean | "flag";
     agentsFile?: string;
     pids?: () => Promise<number[] | null>;
+    /** This daemon's bus home, and where it reads the plugin's route. */
+    home?: string;
+    pluginHome?: () => AgyPluginRoute | null;
   } = {},
   fresh = true,
 ) {
@@ -76,7 +84,7 @@ async function setup(
     os.plugin = undefined;
     agyRuns(AGY, "t0", "/w/app");
   }
-  const { discover = true, agentsFile, pids, ...rest } = over;
+  const { discover = true, agentsFile, pids, home, pluginHome, ...rest } = over;
   const h = await daemonHarness({
     ...rest,
     homeLookup: byFolder,
@@ -91,8 +99,15 @@ async function setup(
         os.alive.has(pid) ? (os.start.get(pid) ?? null) : null,
       comm: (pid) => os.comm.get(pid) ?? null,
       procStartTtlMs: 0,
-      discover,
-      pluginHome: () => (os.plugin === undefined ? busHomeNow() : os.plugin),
+      // "flag": undefined overrides the harness's off, so the default runs.
+      discover: discover === "flag" ? undefined : discover,
+      pluginHome:
+        pluginHome ??
+        (() =>
+          os.plugin === undefined
+            ? { home: busHomeNow(), pinned: false }
+            : os.plugin),
+      ...(home !== undefined ? { home } : {}),
       pids:
         pids ??
         (() =>
@@ -258,7 +273,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(hubB.some((f) => f.agent_ref === off)).toBe(false);
   });
 
-  it("a second bus home lists nothing, and an agy started for another home is skipped", async () => {
+  it("lists nothing with discovery off, and skips an agy started for another home when the hook follows its environment", async () => {
     const two = await setup({ discover: false });
     two.h.daemon.syncNow();
     await settled(two.h);
@@ -280,7 +295,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     const elsewhere = await setup();
     await upFor(elsewhere.h, S0);
     // The plugin is rewritten for another home (an --alongside install).
-    os.plugin = "/somewhere/else/.oa-bus";
+    os.plugin = { home: "/somewhere/else/.oa-bus", pinned: true };
     elsewhere.h.daemon.syncNow();
     await settled(elsewhere.h);
     await closedRef(elsewhere.h, S0);
@@ -499,6 +514,115 @@ describe("an agy process is listed at launch (agy S2b)", () => {
   });
 });
 
+/**
+ * The global plugin's hooks.json as `agyHookCommand` writes it: pinned to a
+ * moved home, or following the agy process's OA_BUS_HOME (bus-cli's
+ * antigravity-plugin test parses the real one).
+ */
+const pluginAt = (dir: string) => {
+  const file = join(dir, "hooks.json");
+  const tail = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`;
+  return {
+    route: () => agyPluginHome(file),
+    write: (moved?: string) => {
+      const cmd =
+        moved === undefined ? tail : `export OA_BUS_HOME='${moved}'; ${tail}`;
+      writeFileSync(
+        file,
+        JSON.stringify({
+          "oa-bus": {
+            SessionStart: [{ type: "command", command: cmd }],
+            PreInvocation: [{ type: "command", command: cmd }],
+          },
+        }),
+      );
+    },
+  };
+};
+
+describe("exactly one daemon lists agy at launch: the home the plugin routes to (agy S2b)", () => {
+  const DEFAULT = busHome({});
+  const MOVED = "/tmp/oa-s2b-moved/.oa-bus";
+
+  it("the default home owns it when the plugin pins no home", async () => {
+    const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
+    p.write();
+    const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    await upFor(h, S0);
+  });
+
+  it("a moved home owns it when the plugin is pinned there, whatever the agy's own environment says", async () => {
+    const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
+    p.write(MOVED);
+    // The stock default: the flag turns discovery on in a moved home too.
+    vi.stubEnv("OA_BUS_EXPERIMENTAL_AGY", "1");
+    const { h } = await setup({
+      home: MOVED,
+      pluginHome: p.route,
+      discover: "flag",
+    });
+    await upFor(h, S0);
+    // The pinned hook sends this agy here though its OA_BUS_HOME is unset
+    // or names another home: it is still this home's.
+    agyRuns(7000, "t7", "/w/env");
+    os.home.set(7000, DEFAULT);
+    h.daemon.syncNow();
+    await upFor(h, agyStartingRef(7000, "t7"));
+  });
+
+  it("no plugin installed: no home lists", async () => {
+    const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
+    const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    h.daemon.syncNow();
+    await settled(h);
+    expect(h.of("agent_up")).toEqual([]);
+    expect(h.daemon.agents.all()).toEqual([]);
+  });
+
+  it("a plugin of another home: this home lists nothing", async () => {
+    const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
+    p.write(MOVED);
+    const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    h.daemon.syncNow();
+    await settled(h);
+    expect(h.of("agent_up")).toEqual([]);
+    expect(h.daemon.agents.all()).toEqual([]);
+  });
+
+  it("two daemons running at once on one plugin: only the owner lists, and ownership follows the plugin", async () => {
+    const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
+    p.write(MOVED);
+    vi.stubEnv("OA_BUS_EXPERIMENTAL_AGY", "1");
+    const def = await setup({
+      home: DEFAULT,
+      pluginHome: p.route,
+      discover: "flag",
+    });
+    const moved = await setup(
+      { home: MOVED, pluginHome: p.route, discover: "flag" },
+      false,
+    );
+    def.h.daemon.syncNow();
+    moved.h.daemon.syncNow();
+    await upFor(moved.h, S0);
+    await settled(def.h);
+    expect(def.h.of("agent_up")).toEqual([]);
+    expect(def.h.daemon.agents.all()).toEqual([]);
+    // Reinstalled for the default home: the moved home closes its session
+    // and the default home lists the same process under the same ref.
+    p.write();
+    moved.h.daemon.syncNow();
+    await closedRef(moved.h, S0);
+    def.h.daemon.syncNow();
+    await upFor(def.h, S0);
+    moved.h.daemon.syncNow();
+    await settled(moved.h);
+    expect(
+      moved.h.daemon.agents.all().filter((a) => a.live && a.starting),
+    ).toEqual([]);
+  });
+});
+
 describe("the process reads (agy S2b)", () => {
   it("finds agy by binary name in ps output", () => {
     expect(
@@ -526,12 +650,15 @@ describe("the process reads (agy S2b)", () => {
     // The shape agyHookCommand writes (bus-cli's antigravity-plugin test
     // checks the real one): no moved home is the default one.
     const tail = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`;
-    expect(parseAgyPluginHome(hooks(tail))).toBe(busHome({}));
+    expect(parseAgyPluginHome(hooks(tail))).toEqual({
+      home: busHome({}),
+      pinned: false,
+    });
     expect(
       parseAgyPluginHome(
         hooks(`export OA_BUS_HOME='/tmp/it'\\''s/.oa-bus-2'; ${tail}`),
       ),
-    ).toBe("/tmp/it's/.oa-bus-2");
+    ).toEqual({ home: "/tmp/it's/.oa-bus-2", pinned: true });
     expect(parseAgyPluginHome("{}")).toBeNull();
     expect(parseAgyPluginHome("not json")).toBeNull();
     expect(parseAgyPluginHome(hooks("echo something-else"))).toBeNull();

@@ -95,13 +95,22 @@ export const agyHooksFile = (userHome: string = homedir()): string =>
   join(userHome, ".gemini", "config", "plugins", "oa-bus", "hooks.json");
 
 /**
- * The bus home the agy plugin's hook sends a session to, from its hooks.json
- * (as `agyHookCommand` writes it): the moved home its command exports, else
- * the default home. null when there is no oa-bus hook there: no conversation
- * would ever join, so nothing is listed. A hook that names no home follows
- * the agy process's own OA_BUS_HOME, which procBusHome checks per process.
+ * Where the installed agy plugin's hook sends a session: the bus `home`, and
+ * whether the hook pins it (`export OA_BUS_HOME=...`, written for a moved
+ * home) or follows the agy process's own OA_BUS_HOME (unset: the default
+ * home). A pinned hook ignores the process's environment.
  */
-export function agyPluginHome(file: string = agyHooksFile()): string | null {
+export type AgyPluginRoute = { home: string; pinned: boolean };
+
+/**
+ * The route the agy plugin's hooks.json names (as `agyHookCommand` writes
+ * it), null when there is no oa-bus hook there: no conversation would ever
+ * join, so no daemon lists agy. The plugin is global, so exactly one bus home
+ * on the machine owns agy discovery: the one this names.
+ */
+export function agyPluginHome(
+  file: string = agyHooksFile(),
+): AgyPluginRoute | null {
   let text: string;
   try {
     text = readFileSync(file, "utf8");
@@ -111,8 +120,8 @@ export function agyPluginHome(file: string = agyHooksFile()): string | null {
   return parseAgyPluginHome(text);
 }
 
-/** hooks.json text to the bus home its oa-bus hook names (agyPluginHome). */
-export function parseAgyPluginHome(text: string): string | null {
+/** hooks.json text to the route its oa-bus hook names (agyPluginHome). */
+export function parseAgyPluginHome(text: string): AgyPluginRoute | null {
   let hooks: unknown;
   try {
     hooks = JSON.parse(text);
@@ -129,6 +138,9 @@ export function parseAgyPluginHome(text: string): string | null {
     .find((c): c is string => typeof c === "string" && c.includes("agy-hello"));
   if (command === undefined) return null;
   const m = /^export OA_BUS_HOME='((?:[^']|'\\'')*)'; /.exec(command);
-  if (!m) return busHome({});
-  return busHome({ OA_BUS_HOME: (m[1] as string).replaceAll("'\\''", "'") });
+  if (!m) return { home: busHome({}), pinned: false };
+  return {
+    home: busHome({ OA_BUS_HOME: (m[1] as string).replaceAll("'\\''", "'") }),
+    pinned: true,
+  };
 }

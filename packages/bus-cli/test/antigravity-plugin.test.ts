@@ -147,10 +147,14 @@ describe("the oa-bus agy plugin (agy S2)", () => {
   it("the daemon reads the home the hook sends sessions to: default, or the moved one (agy S2b)", () => {
     const hooks = (moved?: string) =>
       agyPluginFiles(BIN, moved)["hooks.json"] as string;
-    expect(parseAgyPluginHome(hooks())).toBe(busHome({}));
-    expect(parseAgyPluginHome(hooks("/tmp/it's here/.oa-bus-2"))).toBe(
-      "/tmp/it's here/.oa-bus-2",
-    );
+    expect(parseAgyPluginHome(hooks())).toEqual({
+      home: busHome({}),
+      pinned: false,
+    });
+    expect(parseAgyPluginHome(hooks("/tmp/it's here/.oa-bus-2"))).toEqual({
+      home: "/tmp/it's here/.oa-bus-2",
+      pinned: true,
+    });
   });
 
   it("an older plugin of ours is rewritten; doctor sees it as not wired until then", async () => {

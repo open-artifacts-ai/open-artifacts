@@ -61,6 +61,7 @@ import {
   withLinkHash,
 } from "./agents.ts";
 import {
+  type AgyPluginRoute,
   agyPids,
   agyPluginHome,
   agyStartingRef,
@@ -228,7 +229,7 @@ import { startSelfCheck } from "./update/selfcheck.ts";
 import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
-export { parseAgyPluginHome } from "./agy-procs.ts";
+export { type AgyPluginRoute, parseAgyPluginHome } from "./agy-procs.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./codex-names.ts";
@@ -474,18 +475,21 @@ export type DaemonDeps = {
     agentsFile?: string;
     /**
      * agy S2b: list running agy processes with no conversation yet as
-     * "starting". Default: OA_BUS_EXPERIMENTAL_AGY=1 and this is the default
-     * home (#2806: a second home never lists another bus's processes).
+     * "starting". Default: OA_BUS_EXPERIMENTAL_AGY=1, in any home; only the
+     * home the agy plugin routes to lists (pluginHome), so one daemon does.
      */
     discover?: boolean;
     /** agy S2b: the pids running agy, null when unknown; default one async `ps`. */
     pids?: () => number[] | null | Promise<number[] | null>;
     /**
-     * agy S2b: the bus home the installed agy plugin's hook sends sessions
-     * to, null when there is none (agyPluginHome). Only a daemon of that home
-     * lists agy at launch: elsewhere the conversation would join another bus.
+     * agy S2b: where the installed agy plugin's hook sends sessions, null
+     * when there is none (agyPluginHome). Only the daemon of that home lists
+     * agy at launch, whatever home it is: elsewhere the conversation would
+     * join another bus.
      */
-    pluginHome?: () => string | null;
+    pluginHome?: () => AgyPluginRoute | null;
+    /** Tests only: this daemon's bus home, as discovery compares it; default home(). */
+    home?: string;
     /** agy S2b: a pid's working directory, null when unreadable; default cwdOfPid. */
     cwdOf?: (pid: number) => string | null;
     /** agy S2b: the bus home a pid was started for (procBusHome). */
@@ -1098,10 +1102,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ag.procStartTtlMs === undefined ? {} : { ttlMs: ag.procStartTtlMs },
   );
   const agComm = ag.comm ?? commOf;
-  // agy S2b: only the default home lists agy processes it has not met.
-  const agDiscover =
-    ag.discover ??
-    (process.env.OA_BUS_EXPERIMENTAL_AGY === "1" && isDefaultHome());
+  // agy S2b: behind the flag, in every home; agyRoutedHere picks the one
+  // home that lists (the plugin's), so two running daemons never both do.
+  const agDiscover = ag.discover ?? process.env.OA_BUS_EXPERIMENTAL_AGY === "1";
+  const agHome = ag.home ?? home();
   const agPids = ag.pids ?? agyPids;
   const agCwd = ag.cwdOf ?? cwdOfPid;
   const agHomeOf = ag.homeOf ?? procBusHome;
@@ -4244,12 +4248,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let agyScan = false;
   let agyStopped = false;
   /**
-   * agy S2b: the agy plugin does not send sessions to this home (another
-   * home's install, or none), so a conversation never joins here: nothing is
-   * listed, and a session listed before (the plugin moved since) closes.
+   * agy S2b: the agy plugin's route when it sends sessions to this home,
+   * else null: another home's install, or none, so a conversation never
+   * joins here. Then nothing is listed, and a session listed before (the
+   * plugin moved since) closes.
    */
-  const agyRoutedHere = (): boolean => {
-    if (agPluginHome() === home()) return true;
+  const agyRoutedHere = (): AgyPluginRoute | null => {
+    const route = agPluginHome();
+    if (route?.home === agHome) return route;
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "antigravity" || !a.live || !a.starting) continue;
@@ -4260,17 +4266,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ev("agent_leave", agentFields(a, "plugin_elsewhere"));
     }
     if (closed) announceSessions();
-    return false;
+    return null;
   };
   const discoverAgy = () => {
-    if (agyScan || !agyRoutedHere()) return;
+    if (agyScan) return;
+    const route = agyRoutedHere();
+    if (!route) return;
     const got = agPids();
-    if (!(got instanceof Promise)) return listAgy(got);
+    if (!(got instanceof Promise)) return listAgy(got, route);
     agyScan = true;
     got
       .then((pids) => {
-        if (agyStopped || !agyRoutedHere()) return;
-        listAgy(pids);
+        if (agyStopped) return;
+        const now = agyRoutedHere();
+        if (!now) return;
+        listAgy(pids, now);
         persistAgy();
       })
       .catch((e) =>
@@ -4282,7 +4292,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agyScan = false;
       });
   };
-  const listAgy = (pids: number[] | null) => {
+  const listAgy = (pids: number[] | null, route: AgyPluginRoute) => {
     // ps could not be read: unknown, nothing is listed or closed for it.
     if (pids === null) return;
     const running = new Set(pids);
@@ -4316,10 +4326,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           final: final || tries >= AGY_CWD_TRIES,
         });
       };
-      // #2806: an agy started for another bus home is that bus's, where its
-      // OA_BUS_HOME can be read (none set is the default home: ours).
-      const h = agHomeOf(pid);
-      if (typeof h === "string" && h !== home()) {
+      // #2806: a hook that pins no home follows the agy process's own
+      // OA_BUS_HOME, so an agy started for another home is that bus's, where
+      // it can be read (none set is the default home: ours). A pinned hook
+      // sends every agy here whatever its environment says.
+      const h = route.pinned ? undefined : agHomeOf(pid);
+      if (typeof h === "string" && h !== agHome) {
         pass(true);
         continue;
       }
