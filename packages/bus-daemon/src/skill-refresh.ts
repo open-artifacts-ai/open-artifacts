@@ -106,7 +106,11 @@ export function createSkillRefresher(deps: SkillRefreshDeps): SkillRefresher {
     } catch (e) {
       failed.add(version);
       const msg = (e instanceof Error ? e.message : String(e))
-        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .split("")
+        .map((ch) =>
+          ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127 ? " " : ch,
+        )
+        .join("")
         .slice(0, 200);
       deps.log(`skill refresh failed (${msg}) for instance version ${version}`);
     } finally {
