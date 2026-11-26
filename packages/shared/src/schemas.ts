@@ -1132,6 +1132,8 @@ export const BusAgentSchema = z.strictObject({
   namespace: z.string(),
   name: z.string(),
   kind: z.string(),
+  /** The app the kind runs ("Claude Code", "Antigravity"); absent when the server doesn't know the kind. */
+  product: z.string().max(80).optional(),
   machineId: z.string(),
   machineLabel: z.string(),
   global: z.boolean(),
