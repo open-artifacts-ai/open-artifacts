@@ -1544,6 +1544,38 @@ function docSaveField(
  * summed in SQL so oversized manifests are never read. A version's format
  * falls back to the artifact's for rows written before migration 0002.
  */
+/**
+ * listVersions with GET versions' `wait`: the plain read first (so access is
+ * the plain read's, refused before any hold), then, on the first page while
+ * the newest version is not text-indexed, a hold on that version's index job
+ * in the artifact's DO (answers when it settles, or at `waitMs`, capped), and
+ * the list read again, access included, whether the hold ended or failed.
+ * Nothing is written.
+ */
+export async function listVersionsWaiting(
+  env: Env,
+  caller: Caller,
+  id: string,
+  before: number | undefined,
+  waitMs: number,
+): Promise<VersionInfo[]> {
+  const first = await listVersions(env, caller, id, before);
+  const newest = first[0];
+  if (waitMs <= 0 || before !== undefined || !newest || newest.textIndexed)
+    return first;
+  const ns = env.ARTIFACT_RUNTIME;
+  try {
+    await ns
+      .get(ns.idFromName(id))
+      .whenIndexed(newest.version, Math.min(waitMs, LIMITS.indexWaitMaxMs));
+  } catch {
+    // The hold failed, not the read: whatever it did, answer from a fresh read.
+  }
+  // Released, timed out or failed: the answer is current and the access
+  // check is run again (it may have changed while the request waited).
+  return listVersions(env, caller, id, before);
+}
+
 export async function listVersions(
   env: Env,
   caller: Caller,
