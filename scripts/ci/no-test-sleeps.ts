@@ -6,38 +6,51 @@
 //   - a `new Promise(...)` whose executor calls `setTimeout` (arrow or brace
 //     body, one line or many, with or without a type argument), and
 //     `promisify(setTimeout)`;
-//   - `setTimeout`, `setInterval` or `scheduler` from `node:timers/promises`,
-//     and `scheduler.wait(`;
+//   - `timers/promises`: a static or dynamic import or a require of it (but a
+//     lone `setImmediate`), however its `setTimeout` is aliased, and
+//     `scheduler.wait(`; `Atomics.wait(`;
 //   - a `sleep` helper or call;
 //   - Playwright's `waitForTimeout`, and `toPass` / `expect.poll` given
 //     `intervals`;
-//   - a shell `sleep N` in a fixture, or a `sleep` child process.
+//   - a shell `sleep N` in a fixture, or a `sleep` child process;
+//   - Python: `time.sleep`, `asyncio.sleep`, `trio`/`anyio`/`gevent` sleep, and a
+//     `sleep` imported from `time` or `asyncio`.
 // Comments are not code and are not scanned. A fake clock (`vi.useFakeTimers`,
 // `advanceTimersByTime`), a signal wait and `setImmediate` are fine.
+//
+// Every tracked or new file in the repo is a candidate, this checker's own test
+// included: a test file is one under any test, tests, e2e, __tests__ or
+// test-browser folder, or named *.test.*, *.spec.*, test_*.py, *_test.py.
 //
 // Usage: node --experimental-strip-types scripts/ci/no-test-sleeps.ts [--list]
 //   --list prints the hits grouped by file, with counts, and still exits 1 on any.
 
+import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
-const CODE = "ts|tsx|mts|cts|js|jsx|mjs|cjs|sh";
-
-/** Test files and fixtures: under a test, tests or e2e folder, or named *.test / *.spec. */
-export const isTest = (path: string) =>
-  new RegExp(`(^|/)(test|tests|__tests__|e2e)/.+\\.(${CODE})$`).test(path) ||
-  new RegExp(`\\.(test|spec)\\.(${CODE})$`).test(path);
-
-const SKIP = /(^|\/)(node_modules|dist|dist-assets|\.wrangler)\//;
+const CODE = "ts|tsx|mts|cts|js|jsx|mjs|cjs|sh|bash|py";
 
 /**
- * This checker's own test: it holds the shapes as data to prove they are
- * caught, so it is the one file where they are not a wait.
+ * Test files and their fixtures and helpers, anywhere in the repo: under a
+ * test, tests, e2e, __tests__ or test-browser folder, or named *.test.*,
+ * *.spec.*, test_*.py or *_test.py (or conftest.py).
  */
-const SELF_TEST = "scripts/ci/no-test-sleeps.test.ts";
+export const isTest = (path: string) => {
+  const code = new RegExp(`\\.(${CODE})$`);
+  if (!code.test(path)) return false;
+  return (
+    /(^|\/)(test|tests|e2e|__tests__|test-browser)\//.test(path) ||
+    /\.(test|spec)\.[a-z]+$/.test(path) ||
+    /(^|\/)(test_[^/]+|[^/]+_test|conftest)\.py$/.test(path)
+  );
+};
+
+const SKIP =
+  /(^|\/)(node_modules|dist|dist-assets|build|coverage|\.wrangler|\.venv|__pycache__)\//;
 
 export type Hit = { file: string; line: number; why: string; text: string };
 
@@ -46,18 +59,22 @@ export type Hit = { file: string; line: number; why: string; text: string };
  * stay), strings and template literals left as they are: a fixture script in a
  * template literal is code to the checker.
  */
-export function stripComments(text: string): string {
+export function stripComments(text: string, hash = false): string {
   let out = "";
   let i = 0;
   while (i < text.length) {
     const c = text[i] as string;
     const n = text[i + 1];
-    if (c === "/" && n === "/") {
+    if (
+      hash
+        ? c === "#" && (i === 0 || /[\s;]/.test(text[i - 1] as string))
+        : c === "/" && n === "/"
+    ) {
       while (i < text.length && text[i] !== "\n") {
         out += " ";
         i++;
       }
-    } else if (c === "/" && n === "*") {
+    } else if (!hash && c === "/" && n === "*") {
       out += "  ";
       i += 2;
       while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) {
@@ -116,7 +133,7 @@ function* calls(code: string, opener: RegExp) {
   }
 }
 
-const RULES: ((code: string) => Found[])[] = [
+const JS_RULES: ((code: string) => Found[])[] = [
   // new Promise(<executor>) whose executor reaches setTimeout, however it is written.
   (code) => {
     const out: Found[] = [];
@@ -127,31 +144,36 @@ const RULES: ((code: string) => Found[])[] = [
       out.push({ index: m.index as number, why: "setTimeout promise" });
     return out;
   },
-  // node:timers/promises (a timer wait) and scheduler.wait.
+  // timers/promises (a timer wait), however it is imported or aliased, and
+  // scheduler.wait. Only a lone `setImmediate` (a yield) may come from it.
   (code) => {
     const out: Found[] = [];
-    for (const m of code.matchAll(
-      /import\s*(?:\*\s*as\s+\w+|\{([^}]*)\})\s*from\s*["'`](?:node:)?timers\/promises["'`]/g,
-    )) {
-      const names = (m[1] ?? "*")
-        .split(",")
-        .map((n) => n.trim().split(/\s+/)[0]);
-      if (
-        names.some(
-          (n) =>
-            n === "*" ||
-            n === "setTimeout" ||
-            n === "setInterval" ||
-            n === "scheduler",
-        )
-      )
+    const names = (list: string) =>
+      list.split(",").map((n) => n.trim().split(/[\s:]+/)[0] ?? "");
+    for (const m of code.matchAll(/["'`](?:node:)?timers\/promises["'`]/g)) {
+      const before = code.slice(
+        Math.max(0, (m.index as number) - 240),
+        m.index,
+      );
+      const after = code.slice(
+        (m.index as number) + m[0].length,
+        (m.index as number) + m[0].length + 40,
+      );
+      const picked =
+        /import\s*\{([^}]*)\}\s*from\s*$/.exec(before) ??
+        /(?:const|let|var)\s*\{([^}]*)\}\s*=\s*(?:await\s+)?(?:import|require)\s*\(\s*$/.exec(
+          before,
+        );
+      const onlyImmediate =
+        picked !== null
+          ? names(picked[1] as string).every((n) => n === "setImmediate")
+          : /^\s*\)\s*\)\s*\.setImmediate\b/.test(after);
+      if (!onlyImmediate)
         out.push({ index: m.index as number, why: "timers/promises" });
     }
     for (const m of code.matchAll(
-      /\brequire\s*\(\s*["'`](?:node:)?timers\/promises["'`]\s*\)/g,
+      /\bscheduler\.wait\s*\(|\bAtomics\.wait\s*\(/g,
     ))
-      out.push({ index: m.index as number, why: "timers/promises" });
-    for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
     return out;
   },
@@ -174,22 +196,67 @@ const RULES: ((code: string) => Found[])[] = [
         out.push({ index: c.index, why: "poll intervals" });
     return out;
   },
-  // A shell `sleep N` in a fixture, or a `sleep` child process.
+  shellSleep,
+];
+
+/** A shell `sleep N` in a fixture string or script, or a `sleep` child process. */
+function shellSleep(code: string): Found[] {
+  const out: Found[] = [];
+  for (const m of code.matchAll(
+    /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*["'`]sleep["'`]/g,
+  ))
+    out.push({ index: m.index as number, why: "shell sleep" });
+  for (const m of code.matchAll(/(?:^|[\s;&|("'`])sleep\s+\d[\d.]*/gm))
+    out.push({ index: m.index as number, why: "shell sleep" });
+  return out;
+}
+
+const PY_RULES: ((code: string) => Found[])[] = [
+  // time.sleep, asyncio.sleep, trio/anyio/gevent/eventlet sleep, and a `sleep`
+  // imported from them.
   (code) => {
     const out: Found[] = [];
     for (const m of code.matchAll(
-      /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*["'`]sleep["'`]/g,
+      /\b(?:time|asyncio|trio|anyio|gevent|eventlet)\.sleep\s*\(/g,
     ))
-      out.push({ index: m.index as number, why: "shell sleep" });
-    for (const m of code.matchAll(/(?:^|[\s;&|("'`])sleep\s+\d[\d.]*/gm))
-      out.push({ index: m.index as number, why: "shell sleep" });
+      out.push({ index: m.index as number, why: "sleep" });
+    for (const m of code.matchAll(
+      /\bfrom\s+(?:time|asyncio|trio|anyio|gevent|eventlet)\s+import\s+[^\n]*\bsleep\b/g,
+    ))
+      out.push({ index: m.index as number, why: "sleep" });
+    // A bare `sleep(...)` is a wait only where `sleep` came from one of them.
+    if (
+      /\bfrom\s+(?:time|asyncio|trio|anyio|gevent|eventlet)\s+import\s+[^\n]*\bsleep\b/.test(
+        code,
+      )
+    )
+      for (const m of code.matchAll(/^\s*(?:await\s+)?sleep\s*\(/gm))
+        out.push({ index: m.index as number, why: "sleep" });
     return out;
   },
+  // A `sleep` child process: ["sleep", "5"].
+  (code) =>
+    [...code.matchAll(/\[\s*["']sleep["']\s*[,\]]/g)].map((m) => ({
+      index: m.index as number,
+      why: "shell sleep",
+    })),
+  shellSleep,
 ];
+
+const SH_RULES: ((code: string) => Found[])[] = [shellSleep];
+
+/** The rules and the comment style for a file, by extension. */
+const kindOf = (file: string) =>
+  /\.py$/.test(file)
+    ? { rules: PY_RULES, hash: true }
+    : /\.(sh|bash)$/.test(file)
+      ? { rules: SH_RULES, hash: true }
+      : { rules: JS_RULES, hash: false };
 
 /** Every bare wait in `text`, in line order. */
 export function scanText(text: string, file = ""): Hit[] {
-  const code = stripComments(text);
+  const kind = kindOf(file);
+  const code = stripComments(text, kind.hash);
   const lines = text.split("\n");
   const lineStarts: number[] = [];
   let at = 0;
@@ -209,7 +276,7 @@ export function scanText(text: string, file = ""): Hit[] {
   };
   const seen = new Set<string>();
   const out: Hit[] = [];
-  for (const rule of RULES)
+  for (const rule of kind.rules)
     for (const f of rule(code)) {
       const line = lineOf(f.index);
       const key = `${line}:${f.why}`;
@@ -236,21 +303,32 @@ const walk = (dir: string): string[] => {
   return out;
 };
 
-/** The bare waits in the tree. */
+/** Every file the repo tracks or would (new, not ignored), relative to `base`; a plain walk without git. */
+function repoFiles(base: string): string[] {
+  try {
+    const out = execFileSync(
+      "git",
+      ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+      { cwd: base, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+    );
+    return out.split("\0").filter(Boolean);
+  } catch {
+    return walk(base).map((f) => relative(base, f));
+  }
+}
+
+/** The bare waits in the repo's test files and fixtures. */
 export function scan(base: string): Hit[] {
   const hits: Hit[] = [];
-  for (const dir of ["apps", "packages", "scripts", "tests"]) {
-    let files: string[];
+  for (const rel of repoFiles(base)) {
+    if (SKIP.test(rel) || !isTest(rel)) continue;
+    let text: string;
     try {
-      files = walk(join(base, dir));
+      text = readFileSync(join(base, rel), "utf8");
     } catch {
-      continue; // a checkout without that folder
+      continue; // deleted in the work tree, or a directory
     }
-    for (const file of files) {
-      const rel = relative(base, file);
-      if (!isTest(rel) || rel === SELF_TEST) continue;
-      hits.push(...scanText(readFileSync(file, "utf8"), rel));
-    }
+    hits.push(...scanText(text, rel));
   }
   return hits;
 }

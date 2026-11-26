@@ -3,6 +3,7 @@
 import axe from "axe-core";
 import { type Browser, chromium, type Page } from "playwright";
 import { inject } from "vitest";
+import { withDeadline } from "./with-deadline.js";
 
 export type Focus = { id: string; ok: boolean; detail: string } | null;
 
@@ -13,15 +14,10 @@ export async function launch() {
   const server = await chromium.launchServer();
   const browser = await chromium.connect(server.wsEndpoint());
   const close = async () => {
-    let timer: NodeJS.Timeout | undefined;
-    const closed = await Promise.race([
-      server.close().then(() => true),
-      new Promise<false>((r) => {
-        timer = setTimeout(() => r(false), 5_000);
-      }),
-    ]);
-    clearTimeout(timer);
-    if (!closed) await server.kill();
+    // A close still pending after 5 s is killed: the bound, not a wait.
+    await withDeadline(server.close(), 5_000, "browser server close").catch(
+      () => server.kill(),
+    );
   };
   return { browser, close };
 }

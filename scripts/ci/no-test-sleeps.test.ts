@@ -1,198 +1,105 @@
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { isTest, scanText, stripComments } from "./no-test-sleeps.ts";
+import { isTest, scan, scanText, stripComments } from "./no-test-sleeps.ts";
 
-const found = (text: string) => scanText(text).map((h) => h.why);
-const lines = (text: string) => scanText(text).map((h) => h.line);
+// The shapes the checker must catch (and the forms it must leave alone) are
+// data in no-test-sleeps.fixtures/cases.json, not code here: this file is
+// scanned like every other test file, with no exemption, so it holds none.
+type Case = { name: string; file: string; text: string; why: string[] };
+const here = dirname(fileURLToPath(import.meta.url));
+const cases = JSON.parse(
+  readFileSync(join(here, "no-test-sleeps.fixtures/cases.json"), "utf8"),
+) as Case[];
 
-describe("no-test-sleeps: what it finds", () => {
-  it("a setTimeout promise, on one line or in a generic", () => {
-    expect(found("await new Promise((r) => setTimeout(r, 50));")).toEqual([
-      "setTimeout promise",
-    ]);
-    expect(
-      found("await new Promise<void>((resolve) => setTimeout(resolve, 1));"),
-    ).toEqual(["setTimeout promise"]);
+describe("no-test-sleeps: planted shapes are caught, legitimate forms are not", () => {
+  it("has cases for both", () => {
+    expect(cases.filter((c) => c.why.length > 0).length).toBeGreaterThan(20);
+    expect(cases.filter((c) => c.why.length === 0).length).toBeGreaterThan(5);
   });
 
-  it("a brace body, and a Promise whose executor spans lines (#3091)", () => {
-    expect(found("await new Promise((r) => { setTimeout(r, 5); });")).toEqual([
-      "setTimeout promise",
-    ]);
-    const multi = [
-      "const done = new Promise<void>(",
-      "  (resolve, reject) => {",
-      "    const t = setTimeout(() => reject(new Error('no')), 15_000);",
-      "    ws.once('close', () => { clearTimeout(t); resolve(); });",
-      "  },",
-      ");",
-    ].join("\n");
-    expect(found(multi)).toEqual(["setTimeout promise"]);
-    expect(lines(multi)).toEqual([1]);
-  });
-
-  it("promisify(setTimeout)", () => {
-    expect(found("const wait = promisify(setTimeout);")).toEqual([
-      "setTimeout promise",
-    ]);
-  });
-
-  it("node:timers/promises: setTimeout, setInterval, scheduler, a namespace, require", () => {
-    expect(
-      found('import { setTimeout as sleepFor } from "node:timers/promises";'),
-    ).toEqual(["timers/promises"]);
-    expect(found('import { setTimeout } from "timers/promises";')).toEqual([
-      "timers/promises",
-    ]);
-    expect(
-      found('import { scheduler, setImmediate } from "node:timers/promises";'),
-    ).toEqual(["timers/promises"]);
-    expect(found('import * as t from "node:timers/promises";')).toEqual([
-      "timers/promises",
-    ]);
-    expect(
-      found('const { setTimeout } = require("node:timers/promises");'),
-    ).toEqual(["timers/promises"]);
-    expect(found("await scheduler.wait(100);")).toEqual(["timers/promises"]);
-  });
-
-  it("a sleep helper or call", () => {
-    expect(
-      found(
-        [
-          "await sleep(10);",
-          "const sleep = (ms: number) => new Promise((r) => r(ms));",
-          "function sleepFor(ms) { return null; }",
-        ].join("\n"),
-      ),
-    ).toEqual(["sleep", "sleep", "sleep"]);
-  });
-
-  it("Playwright's waitForTimeout", () => {
-    expect(found("await page.waitForTimeout(200);")).toEqual([
-      "waitForTimeout",
-    ]);
-  });
-
-  it("toPass and expect.poll given intervals", () => {
-    expect(
-      found(
-        "await expect(async () => { await a(); }).toPass({ intervals: [100, 250] });",
-      ),
-    ).toEqual(["poll intervals"]);
-    expect(
-      found(
-        [
-          "await expect",
-          "  .poll(() => read(), { intervals: [50], timeout: 5_000 })",
-          "  .toBe(1);",
-        ].join("\n"),
-      ),
-    ).toEqual(["poll intervals"]);
-    expect(
-      found(
-        "await expect.poll(() => read(), { intervals: [50], timeout: 5_000 }).toBe(1);",
-      ),
-    ).toEqual(["poll intervals"]);
-    expect(
-      found("await expect.poll(() => read(), { interval: 50 }).toBe(1);"),
-    ).toEqual(["poll intervals"]);
-  });
-
-  it("a shell sleep in a fixture, and a sleep child process", () => {
-    expect(found('exec("sleep 30");')).toEqual(["shell sleep"]);
-    expect(found("sleep 0.5\ncurl -s localhost")).toEqual(["shell sleep"]);
-    expect(found('spawn("sleep", ["30"]);')).toEqual(["shell sleep"]);
-    expect(found('my $c = fork(); exec("sleep", "60");')).toEqual([
-      "shell sleep",
-    ]);
-    expect(
-      found("const script = `#!/bin/sh\necho up\nsleep 2\necho done\n`;"),
-    ).toEqual(["shell sleep"]);
+  it.each(cases.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(scanText(c.text, c.file).map((h) => h.why)).toEqual(c.why);
   });
 
   it("reports the line of the wait, not of the statement start", () => {
-    expect(
-      lines(["const a = 1;", "", "await page.waitForTimeout(5);"].join("\n")),
-    ).toEqual([3]);
-  });
-
-  it("no longer honours a sleep-ok mark", () => {
-    expect(
-      found(
-        [
-          "await sleep(5); // sleep-ok: the daemon has no ready event yet",
-          "// sleep-ok: the socket close has no other signal",
-          "await sleep(5);",
-        ].join("\n"),
-      ),
-    ).toEqual(["sleep", "sleep"]);
+    const planted = cases.find((c) => c.name === "multi-line executor");
+    expect(planted && scanText(planted.text, planted.file)[0]?.line).toBe(1);
+    const late = cases.find(
+      (c) => c.name === "a wait after a commented-out one",
+    );
+    expect(late && scanText(late.text, late.file)[0]?.line).toBe(2);
   });
 });
 
-describe("no-test-sleeps: what it leaves alone", () => {
-  it("a signal wait, a fake clock and a yield", () => {
-    expect(
-      found(
-        [
-          "await waitFor(() => expect(x).toBe(1));",
-          "vi.useFakeTimers({ toFake: ['Date'] });",
-          "await vi.advanceTimersByTimeAsync(1000);",
-          "vi.advanceTimersByTime(10);",
-          "await new Promise((r) => setImmediate(r));",
-          "await new Promise<void>((r) => ws.once('open', () => r()));",
-          "await new Promise((resolve) => { server.listen(0, resolve); });",
-          'import { setImmediate } from "node:timers/promises";',
-        ].join("\n"),
-      ),
-    ).toEqual([]);
+describe("no-test-sleeps: which files are tests, anywhere", () => {
+  it("any test, tests, e2e, __tests__ or test-browser folder, and the test-named files", () => {
+    for (const p of [
+      "apps/dashboard/test/a.tsx",
+      "apps/dashboard/e2e/a.spec.ts",
+      "apps/dashboard/e2e/doc-room.mjs",
+      "packages/shared/test/a.test.ts",
+      "packages/x/test/fixtures/run.sh",
+      "tests/a.js",
+      "tools/demo/tests/example.test.ts",
+      "tools/demo/tests/helpers.ts",
+      "packages/ui/test-browser/harness.ts",
+      "apps/x/src/__tests__/a.ts",
+      "packages/x/src/a.test.mjs",
+      "packages/bus-adapter-hermes/tests/test_delivery.py",
+      "packages/bus-adapter-hermes/tests/support.py",
+      "pkg/test_thing.py",
+      "pkg/thing_test.py",
+      "pkg/conftest.py",
+    ])
+      expect(isTest(p), p).toBe(true);
+    for (const p of [
+      "apps/dashboard/src/a.tsx",
+      "packages/x/src/index.ts",
+      "scripts/ci/release.sh",
+      "apps/dashboard/test/readme.md",
+      "packages/bus-adapter-hermes/assets/oa_bus/plugin.py",
+    ])
+      expect(isTest(p), p).toBe(false);
   });
 
-  it("a timer that is not inside a Promise executor", () => {
+  it("scans the whole tree: a test outside the four roots, this checker's own test, skips node_modules", () => {
+    const root = mkdtempSync(join(tmpdir(), "oa-sleeps-"));
+    const planted = (rel: string, text: string) => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    const wait = cases.find((c) => c.name === "waitForTimeout")?.text ?? "";
+    const py = cases.find((c) => c.name === "python time.sleep")?.text ?? "";
+    planted("tools/demo/tests/example.test.ts", wait);
+    planted("scripts/ci/no-test-sleeps.test.ts", wait);
+    planted("pkg/tests/test_delivery.py", py);
+    planted("pkg/node_modules/dep/a.test.ts", wait);
+    planted("src/not-a-test.ts", wait);
     expect(
-      found(
-        [
-          "setTimeout(() => ws.close(), 0);",
-          "const t = setTimeout(fn, 10);",
-          "clearTimeout(t);",
-          "await expect(async () => { await a(); }).toPass();",
-          "await expect.poll(() => read()).toBe(1);",
-        ].join("\n"),
-      ),
-    ).toEqual([]);
+      scan(root)
+        .map((h) => h.file)
+        .sort(),
+    ).toEqual([
+      "pkg/tests/test_delivery.py",
+      "scripts/ci/no-test-sleeps.test.ts",
+      "tools/demo/tests/example.test.ts",
+    ]);
   });
 
-  it("a comment, a name that only looks like a sleep, and prose", () => {
+  it("this file holds no wait", () => {
     expect(
-      found(
-        [
-          "// never await new Promise((r) => setTimeout(r, 1));",
-          "/* await sleep(5); */",
-          "/**",
-          " * await page.waitForTimeout(1);",
-          " */",
-          "const sleepers = 3; // agents that sleep",
-          'const title = "the agent sleeps for a while";',
-          "const sleeping = true;",
-        ].join("\n"),
-      ),
-    ).toEqual([]);
-  });
-
-  it("a Promise after a commented-out one", () => {
-    expect(
-      found(
-        [
-          "/* await new Promise((r) => {",
-          "  setTimeout(r, 5);",
-          "}); */",
-          "await new Promise((r) => ws.once('x', r));",
-        ].join("\n"),
+      scanText(
+        readFileSync(fileURLToPath(import.meta.url), "utf8"),
+        "scripts/ci/no-test-sleeps.test.ts",
       ),
     ).toEqual([]);
   });
 });
 
-describe("no-test-sleeps: stripComments and the file filter", () => {
+describe("no-test-sleeps: stripComments", () => {
   it("blanks comments, keeps line count and strings", () => {
     const src =
       'const a = "// not a comment"; // gone\n/* x\ny */ const b = 1;';
@@ -203,24 +110,8 @@ describe("no-test-sleeps: stripComments and the file filter", () => {
     expect(out).toContain("const b = 1;");
   });
 
-  it("knows which files are tests: ts, tsx, mjs, js, sh and the folders", () => {
-    for (const p of [
-      "apps/dashboard/test/a.tsx",
-      "apps/dashboard/e2e/a.spec.ts",
-      "apps/dashboard/e2e/doc-room.mjs",
-      "packages/shared/test/a.test.ts",
-      "packages/x/test/fixtures/run.sh",
-      "tests/a.js",
-      "apps/server/test/bus/helpers.ts",
-      "packages/x/src/a.test.mjs",
-    ])
-      expect(isTest(p), p).toBe(true);
-    for (const p of [
-      "apps/dashboard/src/a.tsx",
-      "packages/x/src/index.ts",
-      "scripts/ci/release.sh",
-      "apps/dashboard/test/readme.md",
-    ])
-      expect(isTest(p), p).toBe(false);
+  it("a hash starts a comment in python and shell, a slash pair does not", () => {
+    const out = stripComments("x = 1  # gone\ny = 4 // 2", true);
+    expect(out).toBe(`x = 1  ${" ".repeat(6)}\ny = 4 // 2`);
   });
 });

@@ -1,0 +1,242 @@
+[
+  {
+    "name": "one-line arrow promise",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => setTimeout(r, 50));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "generic type argument",
+    "file": "a.test.ts",
+    "text": "await new Promise<void>((resolve) => setTimeout(resolve, 1));",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "brace body, one line",
+    "file": "a.test.ts",
+    "text": "await new Promise((r) => { setTimeout(r, 5); });",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "multi-line executor",
+    "file": "a.test.ts",
+    "text": "const done = new Promise<void>(\n  (resolve, reject) => {\n    const t = setTimeout(() => reject(new Error('no')), 15_000);\n    ws.once('close', () => { clearTimeout(t); resolve(); });\n  },\n);",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "promisify(setTimeout)",
+    "file": "a.test.ts",
+    "text": "const wait = promisify(setTimeout);",
+    "why": ["setTimeout promise"]
+  },
+  {
+    "name": "static import, aliased",
+    "file": "a.test.ts",
+    "text": "import { setTimeout as sleepFor } from \"node:timers/promises\";",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "static import without node:",
+    "file": "a.test.ts",
+    "text": "import { setTimeout } from \"timers/promises\";",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "static import with scheduler and setImmediate",
+    "file": "a.test.ts",
+    "text": "import { scheduler, setImmediate } from \"node:timers/promises\";",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "namespace import",
+    "file": "a.test.ts",
+    "text": "import * as t from \"node:timers/promises\";",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "require destructured",
+    "file": "a.test.ts",
+    "text": "const { setTimeout } = require(\"node:timers/promises\");",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import, destructured and aliased",
+    "file": "a.test.ts",
+    "text": "const { setTimeout: nap } = await import(\"node:timers/promises\");\nawait nap(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import, namespace",
+    "file": "a.test.ts",
+    "text": "const t = await import(\"timers/promises\");\nawait t.setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import, member call",
+    "file": "a.test.ts",
+    "text": "await (await import(\"node:timers/promises\")).setTimeout(5);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "dynamic import in a then",
+    "file": "a.test.ts",
+    "text": "import(\"node:timers/promises\").then((m) => m.setTimeout(5));",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "scheduler.wait",
+    "file": "a.test.ts",
+    "text": "await scheduler.wait(100);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "sleep helper, call and definition",
+    "file": "a.test.ts",
+    "text": "await sleep(10);\nconst sleep = (ms: number) => ms;\nfunction sleepFor(ms) { return ms; }",
+    "why": ["sleep", "sleep", "sleep"]
+  },
+  {
+    "name": "waitForTimeout",
+    "file": "a.spec.ts",
+    "text": "await page.waitForTimeout(200);",
+    "why": ["waitForTimeout"]
+  },
+  {
+    "name": "toPass intervals",
+    "file": "a.spec.ts",
+    "text": "await expect(async () => { await a(); }).toPass({ intervals: [100, 250] });",
+    "why": ["poll intervals"]
+  },
+  {
+    "name": "expect.poll intervals",
+    "file": "a.spec.ts",
+    "text": "await expect.poll(() => read(), { intervals: [50], timeout: 5_000 }).toBe(1);",
+    "why": ["poll intervals"]
+  },
+  {
+    "name": "expect.poll interval on a new line",
+    "file": "a.spec.ts",
+    "text": "await expect\n  .poll(() => read(), { interval: 50 })\n  .toBe(1);",
+    "why": ["poll intervals"]
+  },
+  {
+    "name": "shell sleep in an exec string",
+    "file": "a.test.ts",
+    "text": "exec(\"sleep 30\");",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "spawn of a sleep child",
+    "file": "a.test.ts",
+    "text": "spawn(\"sleep\", [\"30\"]);",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "sleep in a template-literal script",
+    "file": "a.test.ts",
+    "text": "const script = `#!/bin/sh\necho up\nsleep 2\necho done\n`;",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell fixture",
+    "file": "fixture.sh",
+    "text": "#!/bin/sh\necho up\nsleep 0.5\ncurl -s localhost",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "python time.sleep",
+    "file": "tests/test_x.py",
+    "text": "import time\n\ndef test_a():\n    time.sleep(0.1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python asyncio.sleep",
+    "file": "tests/test_x.py",
+    "text": "import asyncio\n\nasync def test_a():\n    await asyncio.sleep(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python sleep imported",
+    "file": "tests/test_x.py",
+    "text": "from time import sleep\n\ndef test_a():\n    sleep(1)\n",
+    "why": ["sleep", "sleep"]
+  },
+  {
+    "name": "python anyio sleep",
+    "file": "tests/test_x.py",
+    "text": "import anyio\n\nasync def test_a():\n    await anyio.sleep(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python sleep child",
+    "file": "tests/test_x.py",
+    "text": "subprocess.run([\"sleep\", \"2\"])",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "old sleep-ok mark is not honoured",
+    "file": "a.test.ts",
+    "text": "await sleep(5); // sleep-ok: the daemon has no ready event yet\n// sleep-ok: the socket close has no other signal\nawait sleep(5);",
+    "why": ["sleep", "sleep"]
+  },
+  {
+    "name": "a wait after a commented-out one",
+    "file": "a.test.ts",
+    "text": "/* await sleep(5); */\nawait page.waitForTimeout(5);",
+    "why": ["waitForTimeout"]
+  },
+  {
+    "name": "signal wait, fake clock, yield",
+    "file": "a.test.ts",
+    "text": "await waitFor(() => expect(x).toBe(1));\nvi.useFakeTimers({ toFake: ['Date'] });\nawait vi.advanceTimersByTimeAsync(1000);\nvi.advanceTimersByTime(10);\nawait new Promise((r) => setImmediate(r));\nawait new Promise<void>((r) => ws.once('open', () => r()));\nawait new Promise((resolve) => { server.listen(0, resolve); });",
+    "why": []
+  },
+  {
+    "name": "setImmediate from timers/promises, static",
+    "file": "a.test.ts",
+    "text": "import { setImmediate } from \"node:timers/promises\";\nawait setImmediate();",
+    "why": []
+  },
+  {
+    "name": "setImmediate from timers/promises, dynamic",
+    "file": "a.test.ts",
+    "text": "const { setImmediate } = await import(\"node:timers/promises\");\nawait (await import(\"timers/promises\")).setImmediate();",
+    "why": []
+  },
+  {
+    "name": "a timer outside any Promise executor",
+    "file": "a.test.ts",
+    "text": "setTimeout(() => ws.close(), 0);\nconst t = setTimeout(fn, 10);\nclearTimeout(t);\nawait expect(async () => { await a(); }).toPass();\nawait expect.poll(() => read()).toBe(1);",
+    "why": []
+  },
+  {
+    "name": "comments, lookalike names, prose",
+    "file": "a.test.ts",
+    "text": "// never await new Promise((r) => setTimeout(r, 1));\n/* await sleep(5); */\n/**\n * await page.waitForTimeout(1);\n */\nconst sleepers = 3; // agents that sleep\nconst title = \"the agent sleeps for a while\";\nconst sleeping = true;",
+    "why": []
+  },
+  {
+    "name": "python comments and an injected sleep",
+    "file": "tests/test_x.py",
+    "text": "# time.sleep(1) would be wrong here\ndef test_a(sleep=lambda s: None):\n    sleep(0)  # the stub\n    assert True\n",
+    "why": []
+  },
+  {
+    "name": "shell comment",
+    "file": "fixture.sh",
+    "text": "#!/bin/sh\n# sleep 5 would be a wait\necho ok\n",
+    "why": []
+  },
+  {
+    "name": "withDeadline-style helper",
+    "file": "a.test.ts",
+    "text": "let fail = () => {};\nconst late = new Promise<never>((_, reject) => { fail = reject; });\nconst timer = setTimeout(() => fail(new Error('x')), ms);\nreturn Promise.race([op, late]).finally(() => clearTimeout(timer));",
+    "why": []
+  }
+]
