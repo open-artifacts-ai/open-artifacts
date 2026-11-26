@@ -16,4 +16,12 @@ const c = await connectDaemon({
     attest: {},
   },
 });
-c.request({ type: "list" }).then((r) => console.log(`reply:${r.type}`));
+const answered = c
+  .request({ type: "list" })
+  .then((r) => console.log(`reply:${r.type}`));
+// While the request is pending the socket must hold the loop: a handle that
+// is ref'd shows here, an unref'd one does not.
+console.log(
+  `held:${process.getActiveResourcesInfo().some((r) => /Pipe|TCP/.test(r))}`,
+);
+void answered;

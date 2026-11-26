@@ -214,10 +214,18 @@ describe("Codex proxy: a proof per thread, bound on every call (#1856)", () => {
             } as unknown as DaemonClient);
         }),
     });
-    await t.proxy.call(call(meta(TA, "call_a")));
-    expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    answer();
-    await vi.waitFor(() => expect(closed).toContain(TA));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const done = t.proxy.call(call(meta(TA, "call_a")));
+      // The cap is a timer: move the clock past it instead of waiting.
+      await vi.advanceTimersByTimeAsync(20);
+      await done;
+      expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(false);
+      answer();
+      await vi.waitFor(() => expect(closed).toContain(TA));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("goes unlinked for a subagent: no hello at all, the call still works", async () => {
