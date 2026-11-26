@@ -866,9 +866,13 @@ describe("Agents › Agents (the roster)", () => {
     expect(img("kiro").style.maskImage).toContain(
       encodeURIComponent(">K</text>"),
     );
-    expect(img("oh-my-pi").style.maskImage).toContain(
-      encodeURIComponent(">omp</text>"),
+    // oh-my-pi: its own tile, a bold "o" ring drawn with shapes, no text (#3138).
+    const omp = img("oh-my-pi").style.maskImage;
+    expect(omp).toContain(encodeURIComponent('<mask id="omp">'));
+    expect(omp).toContain(
+      encodeURIComponent('<circle cx="12" cy="12" r="3.2" fill="#fff"/>'),
     );
+    expect(omp).not.toContain(encodeURIComponent("<text"));
     // Nothing loads from outside the page.
     for (const el of within(t).getAllByRole("img"))
       expect(el.getAttribute("src") ?? "data:").toMatch(/^data:/);

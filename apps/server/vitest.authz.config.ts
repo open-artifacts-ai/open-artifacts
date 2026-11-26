@@ -17,24 +17,35 @@ const migrations = await readD1Migrations(
  * callers (test/authz/foreign.ts). FOREIGN_DB and FOREIGN_OAUTH_KV are
  * install A's D1 and OAuth store; the Worker under test (install B) has its
  * own DB and OAUTH_KV and never names these. Only this config binds them.
+ *
+ * `bindings` adds pool bindings (vitest.authz-hosted.config.ts: AUTHZ_HOSTED)
+ * and `include` narrows the files.
  */
-export default defineConfig({
-  ...base,
-  plugins: [
-    cloudflareTest({
-      wrangler: { configPath: "./wrangler.test.jsonc" },
-      miniflare: {
-        bindings: { TEST_MIGRATIONS: migrations },
-        d1Databases: { FOREIGN_DB: "oa-test-foreign-install" },
-        kvNamespaces: { FOREIGN_OAUTH_KV: "oa-kv-test-foreign-install" },
-      },
-    }),
-  ],
-  test: {
-    ...base.test,
-    include: ["test/authz.surface-matrix.test.ts", "test/authz/**/*.test.ts"],
-    exclude: (base.test?.exclude ?? []).filter(
-      (p) => p !== "test/authz.surface-matrix.test.ts" && p !== "test/authz/**",
-    ),
-  },
-});
+export function authzConfig(
+  bindings: Record<string, string> = {},
+  include = ["test/authz.surface-matrix.test.ts", "test/authz/**/*.test.ts"],
+) {
+  return defineConfig({
+    ...base,
+    plugins: [
+      cloudflareTest({
+        wrangler: { configPath: "./wrangler.test.jsonc" },
+        miniflare: {
+          bindings: { TEST_MIGRATIONS: migrations, ...bindings },
+          d1Databases: { FOREIGN_DB: "oa-test-foreign-install" },
+          kvNamespaces: { FOREIGN_OAUTH_KV: "oa-kv-test-foreign-install" },
+        },
+      }),
+    ],
+    test: {
+      ...base.test,
+      include,
+      exclude: (base.test?.exclude ?? []).filter(
+        (p) =>
+          p !== "test/authz.surface-matrix.test.ts" && p !== "test/authz/**",
+      ),
+    },
+  });
+}
+
+export default authzConfig();
