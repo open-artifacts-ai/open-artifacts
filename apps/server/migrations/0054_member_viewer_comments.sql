@@ -1,3 +1,5 @@
+-- oa:additive-reviewed
+-- oa:verify Compare all users and shares before and after migration. Compatibility rows must match exactly the prior owner, admin and member Viewer shares with can_comment = 0.
 -- Preserve the rights attached to pre-3269 Viewer shares without changing
 -- any existing grant. Revoking a share also discards its compatibility row.
 CREATE TABLE legacy_viewer_comments (
