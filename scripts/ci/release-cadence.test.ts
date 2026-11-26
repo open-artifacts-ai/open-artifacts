@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  ACTIONS_APP_ID,
   arm,
   blocker,
   type Exec,
   planStep,
   RELEASE_BRANCH,
+  REQUIRED_CHECKS,
   willWrite,
 } from "./release-cadence.ts";
 
@@ -57,34 +59,33 @@ type Fixture = {
   headNow?: string;
   /** main's manifest and package.json (default: 0.5.0; null: unreadable). */
   main?: { manifest?: string | null; pkg?: string | null };
-  /** ci.yml's runs the runs API lists for the head (default: one green). */
-  ciRuns?: Partial<CiRunRow>[];
+  /** The check runs on the head (default: the five required, green). */
+  checks?: Partial<CheckRow>[];
   release?: { tag_name: string; published_at: string } | null;
   /** What enqueuePullRequest answers (default: the front, jumped). */
   enqueue?: { position: number; jump: boolean } | null;
 };
 
-type CiRunRow = {
+type CheckRow = {
   id: number;
+  name: string;
   status: string;
   conclusion: string | null;
-  event: string;
-  head_branch: string;
+  app: number;
   head_sha: string;
-  created_at: string;
-  repo: string;
+  started_at: string;
 };
-/** A completed CI run of the release PR's head, green unless told. */
-const ciRow = (o: Partial<CiRunRow> = {}): Partial<CiRunRow> => ({
+/** A check run GitHub Actions reported on the head, green unless told. */
+const check = (name: string, o: Partial<CheckRow> = {}): Partial<CheckRow> => ({
   id: 9000,
+  name,
   status: "completed",
   conclusion: "success",
-  event: "pull_request",
-  head_branch: RELEASE_BRANCH,
-  created_at: hoursAgo(0.5),
-  repo: REPO,
+  app: ACTIONS_APP_ID,
+  started_at: hoursAgo(0.5),
   ...o,
 });
+const allGreen = () => REQUIRED_CHECKS.map((n) => check(n));
 
 /** A fake `gh`: answers graphql and the REST/issue commands from the fixture and logs every call. */
 function fake(f: Fixture) {
@@ -161,13 +162,12 @@ function fake(f: Fixture) {
         }),
       );
     }
-    const runs =
-      /\/actions\/workflows\/ci\.yml\/runs\?head_sha=([0-9a-f]+)/.exec(path);
-    if (args[0] === "api" && runs)
+    const checks = /\/commits\/([0-9a-f]+)\/check-runs\?/.exec(path);
+    if (args[0] === "api" && checks)
       return ok(
-        JSON.stringify(
-          (f.ciRuns ?? [ciRow()]).map((r) => ({ head_sha: runs[1], ...r })),
-        ),
+        (f.checks ?? allGreen())
+          .map((r) => `${JSON.stringify({ head_sha: checks[1], ...r })}\n`)
+          .join(""),
       );
     const file = /\/contents\/([^?]+)\?ref=(.+)$/.exec(path);
     if (args[0] === "api" && file) {
@@ -324,58 +324,96 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
     tags: ["v0.252.0", "v0.253.0"],
   };
 
-  it("any event queues a green head: the planner reads its CI runs, not the event", async () => {
+  it("any event queues a green head: the planner reads its required checks, not the event", async () => {
     const g = fake(f3249);
     expect(await go(g)).toEqual({ action: "enqueued", pr: 3249 });
     const list = g.calls
       .map((c) => c.join(" "))
-      .find((c) => c.includes("/actions/workflows/ci.yml/runs?"));
+      .find((c) => c.includes("/check-runs?"));
     expect(list).toContain(
-      `repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}`,
+      `repos/${REPO}/commits/${SHA}/check-runs?filter=latest&per_page=100`,
     );
+    // No run listing: the job has no actions: read.
+    expect(g.calls.some((c) => c.join(" ").includes("/actions/"))).toBe(false);
   });
 
-  it("the newest completed run decides: a newer red run blocks an older green one", async () => {
+  it("the required checks are the ruleset's five, all jobs of ci.yml", () => {
+    expect(REQUIRED_CHECKS).toEqual([
+      "lint",
+      "typecheck",
+      "test",
+      "build",
+      "e2e",
+    ]);
+    const ci = readFileSync(
+      fileURLToPath(new URL("../../.github/workflows/ci.yml", import.meta.url)),
+      "utf8",
+    );
+    for (const j of REQUIRED_CHECKS)
+      expect(ci, j).toMatch(new RegExp(`^  ${j}:$`, "m"));
+  });
+
+  it("the newest run of each check decides: a newer red rerun blocks an older green one", async () => {
+    const rest = REQUIRED_CHECKS.filter((n) => n !== "e2e").map((n) =>
+      check(n),
+    );
     const g = fake({
       ...f3249,
-      ciRuns: [
-        ciRow({ id: 1, created_at: hoursAgo(2) }),
-        ciRow({ id: 2, conclusion: "failure", created_at: hoursAgo(1) }),
-        // Still running: not completed, so it does not count either way.
-        ciRow({
-          id: 3,
-          status: "in_progress",
-          conclusion: null,
-          created_at: hoursAgo(0.1),
-        }),
+      checks: [
+        ...rest,
+        check("e2e", { id: 1, started_at: hoursAgo(2) }),
+        check("e2e", { id: 2, conclusion: "failure", started_at: hoursAgo(1) }),
       ],
     });
     const l = logs();
     expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
-    expect(l.out.join("\n")).toContain("newest completed CI run 2 is failure");
-    // And a newer green rerun after a red one queues it.
+    expect(l.out.join("\n")).toContain("CI has not passed (e2e is failure)");
+    // A newer green rerun after a red one queues it.
     const g2 = fake({
       ...f3249,
-      ciRuns: [
-        ciRow({ id: 2, conclusion: "failure", created_at: hoursAgo(1) }),
-        ciRow({ id: 4, created_at: hoursAgo(0.2) }),
+      checks: [
+        ...rest,
+        check("e2e", { id: 2, conclusion: "failure", started_at: hoursAgo(1) }),
+        check("e2e", { id: 4, started_at: hoursAgo(0.2) }),
       ],
     });
     expect((await go(g2)).action).toBe("enqueued");
   });
 
-  it("no completed CI run of this repo's release-branch pull request counts as untested", async () => {
-    for (const ciRuns of [
-      [],
-      [ciRow({ status: "in_progress", conclusion: null })],
-      // A fork's PR on a branch with the same name.
-      [ciRow({ repo: "mallory/open-artifacts" })],
-      [ciRow({ head_branch: "feat/x" })],
-      [ciRow({ event: "merge_group" })],
-      [ciRow({ head_sha: NEW_SHA })],
-    ]) {
-      const g = fake({ ...f3249, ciRuns });
-      expect((await go(g)).action, JSON.stringify(ciRuns)).toBe("untested");
+  it("a required check missing, pending, red, from another app or on another SHA is untested", async () => {
+    const without = (name: string, ...extra: Partial<CheckRow>[]) => [
+      ...REQUIRED_CHECKS.filter((n) => n !== name).map((n) => check(n)),
+      ...extra,
+    ];
+    for (const [checks, want] of [
+      [[], "lint has not reported"],
+      [without("e2e"), "e2e has not reported"],
+      [
+        without(
+          "test",
+          check("test", { status: "in_progress", conclusion: null }),
+        ),
+        "test is in_progress",
+      ],
+      [
+        without("build", check("build", { conclusion: "cancelled" })),
+        "build is cancelled",
+      ],
+      [
+        without("build", check("build", { conclusion: "skipped" })),
+        "build is skipped",
+      ],
+      // Another app posting a check named "lint" proves nothing.
+      [without("lint", check("lint", { app: 999 })), "lint has not reported"],
+      [
+        without("lint", check("lint", { head_sha: NEW_SHA })),
+        "lint has not reported",
+      ],
+    ] as const) {
+      const g = fake({ ...f3249, checks: [...checks] });
+      const l = logs();
+      expect((await go(g, l)).action, want).toBe("untested");
+      expect(l.out.join("\n"), want).toContain(want);
       expect(enqueues(g)).toEqual([]);
     }
   });
@@ -621,7 +659,7 @@ describe("arm: what it leaves alone", () => {
     expect(await ww({})).toBe(false);
     expect(await ww({ pr: {} })).toBe(true);
     expect(await ww({ pr: {}, queue: codePrs(4) })).toBe(true);
-    expect(await ww({ pr: {}, ciRuns: [] })).toBe(false);
+    expect(await ww({ pr: {}, checks: [] })).toBe(false);
     expect(await ww({ pr: { state: "PENDING" } })).toBe(false);
     expect(await ww({ pr: { queued: true } })).toBe(false);
   });

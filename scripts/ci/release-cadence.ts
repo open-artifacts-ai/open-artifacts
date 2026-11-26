@@ -204,48 +204,65 @@ export type ArmResult =
   | { action: "refused"; pr: number; reasons: string[] }
   | { action: "enqueued"; pr: number };
 
-/** A run of this repo's CI workflow, as the runs API lists it. */
-type CiRun = {
+/** The checks the main ruleset requires: ci.yml's roll-up jobs. */
+export const REQUIRED_CHECKS = ["lint", "typecheck", "test", "build", "e2e"];
+/** GitHub Actions' app id, as the ruleset names it for those checks. */
+export const ACTIONS_APP_ID = 15368;
+
+type CheckRow = {
   id: number;
+  name: string;
   status: string;
   conclusion: string | null;
-  event: string;
-  head_branch: string;
+  app: number;
   head_sha: string;
-  created_at: string;
-  repo: string;
+  started_at: string | null;
 };
 
 /**
- * The newest completed run of this repo's CI workflow (ci.yml, by file, never
- * by run-name) on the release branch's pull request for this exact head, read
- * through the API on every event. So any later event (another PR's CI
- * completing, release-please finishing, a dispatch) recovers a release PR
- * whose own CI event was dropped or replaced in the concurrency queue, and
- * still only a head CI tested is queued.
+ * Whether CI passed on this exact head: each check the ruleset requires,
+ * reported by GitHub Actions on this SHA, in its newest run, completed with
+ * success. Read through the check-runs API (checks: read) on every event, so
+ * any later event (another PR's CI completing, release-please finishing, a
+ * dispatch) recovers a release PR whose own CI event was dropped or replaced
+ * in the concurrency queue, and still only a head CI passed is queued.
+ * Returns the checks that are missing or not green ([] means passed).
  */
-export async function ciRunFor(
+export async function ciProblems(
   exec: Exec,
   repo: string,
   sha: string,
-): Promise<CiRun | undefined> {
+): Promise<string[]> {
   const out = await gh(exec, [
     "api",
-    `repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`,
+    "--paginate",
+    `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`,
     "--jq",
-    "[.workflow_runs[] | {id, status, conclusion, event, head_branch, head_sha, created_at, repo: .head_repository.full_name}]",
+    ".check_runs[] | {id, name, status, conclusion, app: .app.id, head_sha, started_at} | @json",
   ]);
-  const runs = (JSON.parse(out) as CiRun[]).filter(
-    (r) =>
-      r.head_sha === sha &&
-      r.head_branch === RELEASE_BRANCH &&
-      r.repo === repo &&
-      r.event === "pull_request" &&
-      r.status === "completed",
-  );
-  return runs
-    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id)
-    .at(-1);
+  const rows = out
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as CheckRow)
+    .filter((r) => r.head_sha === sha && r.app === ACTIONS_APP_ID);
+  const problems: string[] = [];
+  for (const name of REQUIRED_CHECKS) {
+    const newest = rows
+      .filter((r) => r.name === name)
+      .sort(
+        (a, b) =>
+          String(a.started_at ?? "").localeCompare(
+            String(b.started_at ?? ""),
+          ) || a.id - b.id,
+      )
+      .at(-1);
+    if (!newest) problems.push(`${name} has not reported`);
+    else if (newest.status !== "completed")
+      problems.push(`${name} is ${newest.status}`);
+    else if (newest.conclusion !== "success")
+      problems.push(`${name} is ${newest.conclusion}`);
+  }
+  return problems;
 }
 
 type Opts = { exec: Exec; repo: string };
@@ -371,19 +388,17 @@ async function plan(o: Opts): Promise<Plan> {
       result: { action: "not-green", pr: pr.number, state: pr.rollup },
       msg: `release PR #${pr.number} checks are ${pr.rollup}, not queueing`,
     };
-  // Only a head that CI tested green is queued: its newest completed CI run,
-  // looked up by head SHA on every event, not taken from this event.
+  // Only a head CI passed is queued: the required checks on that exact SHA,
+  // looked up on every event, not taken from this event.
   const sha = pr.oid;
-  const run = /^[0-9a-f]{40}$/.test(sha)
-    ? await ciRunFor(o.exec, o.repo, sha)
-    : undefined;
-  if (run?.conclusion !== "success")
+  const ci = /^[0-9a-f]{40}$/.test(sha)
+    ? await ciProblems(o.exec, o.repo, sha)
+    : ["no head commit"];
+  if (ci.length)
     return {
       do: "none",
       result: { action: "untested", pr: pr.number },
-      msg: run
-        ? `release PR #${pr.number} head ${sha}: its newest completed CI run ${run.id} is ${run.conclusion}, not queueing`
-        : `release PR #${pr.number} head ${sha} has no completed CI run yet: its CI completion queues it`,
+      msg: `release PR #${pr.number} head ${sha}: CI has not passed (${ci.join(", ")}), not queueing`,
     };
   const reasons = await versionProblems(o.exec, o.repo, {
     title: pr.title,

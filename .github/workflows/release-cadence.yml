@@ -9,9 +9,9 @@ on:
   # PR ready is an event here:
   # - CI completing: the release PR's own checks (CI is the only workflow it
   #   needs), so it is queued the moment it goes green. Any event (another
-  #   PR's CI too) looks up the release head's newest completed CI run by SHA,
-  #   so a release CI event replaced in the one-slot concurrency queue is
-  #   recovered by the next event.
+  #   PR's CI too) reads the required checks on the release head's SHA
+  #   (checks: read), so a release CI event replaced in the one-slot
+  #   concurrency queue is recovered by the next event.
   # - release-please completing: the release PR was opened or got a new head,
   #   or a release shipped (closes a stale blocker).
   # (check_suite does not fire for Actions suites, so workflow_run stands in.)
@@ -29,8 +29,6 @@ jobs:
     if: ${{ github.repository == 'open-artifacts-ai/open-artifacts' }}
     runs-on: ubuntu-latest
     permissions:
-      # actions: read lists the release head's CI runs on every event.
-      actions: read
       contents: read
       issues: write
       pull-requests: read
