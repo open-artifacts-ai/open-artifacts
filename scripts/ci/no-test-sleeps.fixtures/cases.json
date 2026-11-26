@@ -238,5 +238,95 @@
     "file": "a.test.ts",
     "text": "let fail = () => {};\nconst late = new Promise<never>((_, reject) => { fail = reject; });\nconst timer = setTimeout(() => fail(new Error('x')), ms);\nreturn Promise.race([op, late]).finally(() => clearTimeout(timer));",
     "why": []
+  },
+  {
+    "name": "python module alias",
+    "file": "tests/test_demo.py",
+    "text": "import time as clock\n\ndef test_a():\n    clock.sleep(0.017)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python asyncio alias",
+    "file": "tests/test_demo.py",
+    "text": "import asyncio as aio\n\nasync def test_a():\n    await aio.sleep(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python several imports, one aliased",
+    "file": "tests/test_demo.py",
+    "text": "import os, time as t, sys\n\ndef test_a():\n    t.sleep(2)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python from-import aliased",
+    "file": "tests/test_demo.py",
+    "text": "from time import sleep as nap\n\ndef test_a():\n    nap(1)\n",
+    "why": ["sleep", "sleep"]
+  },
+  {
+    "name": "python from-import in parentheses",
+    "file": "tests/test_demo.py",
+    "text": "from asyncio import (\n    gather,\n    sleep as pause,\n)\n\nasync def test_a():\n    await pause(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "python dynamic import",
+    "file": "tests/test_demo.py",
+    "text": "def test_a():\n    __import__(\"time\").sleep(1)\n",
+    "why": ["sleep"]
+  },
+  {
+    "name": "shell sleep with a variable",
+    "file": "tests/timing.sh",
+    "text": "#!/bin/sh\ndelay=0.017\nsleep \"$delay\"\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell sleep, bare variable",
+    "file": "tests/timing.sh",
+    "text": "sleep $D\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell sleep, braces",
+    "file": "tests/timing.sh",
+    "text": "sleep \"${N}\"\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell sleep, arithmetic",
+    "file": "tests/timing.sh",
+    "text": "sleep $(( x + 1 ))\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell sleep, variable with a unit",
+    "file": "tests/timing.sh",
+    "text": "sleep \"$T\"s\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "shell sleep after a command",
+    "file": "tests/timing.sh",
+    "text": "start_server && sleep $WAIT\n",
+    "why": ["shell sleep"]
+  },
+  {
+    "name": "python alias of a module that is not a sleeper",
+    "file": "tests/test_demo.py",
+    "text": "import json as clock\n\ndef test_a():\n    clock.sleep(1)  # not time's\n",
+    "why": []
+  },
+  {
+    "name": "python sleep name that is not imported from a sleeper",
+    "file": "tests/test_demo.py",
+    "text": "def test_a(sleep=lambda s: None):\n    sleep(0)\n",
+    "why": []
+  },
+  {
+    "name": "shell sleep as a word",
+    "file": "tests/timing.sh",
+    "text": "echo \"the daemon will sleep on it\"\n",
+    "why": []
   }
 ]

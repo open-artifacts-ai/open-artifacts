@@ -206,32 +206,63 @@ function shellSleep(code: string): Found[] {
     /\b(?:spawn|spawnSync|exec|execSync|execFile|execFileSync)\s*\(\s*["'`]sleep["'`]/g,
   ))
     out.push({ index: m.index as number, why: "shell sleep" });
-  for (const m of code.matchAll(/(?:^|[\s;&|("'`])sleep\s+\d[\d.]*/gm))
+  // `sleep` then any argument: a number, a variable, "$T"s, $(( x )), ${N}.
+  for (const m of code.matchAll(/(?:^|[\s;&|("'`])sleep\s+[\d$"'`(.{]/gm))
     out.push({ index: m.index as number, why: "shell sleep" });
   return out;
 }
 
+/** The modules whose `sleep` is a wait. */
+const PY_SLEEPERS = ["time", "asyncio", "trio", "anyio", "gevent", "eventlet"];
+
+/**
+ * The names a Python file gives them: module aliases (`import time as t`,
+ * `import asyncio as aio, time`) and `sleep` imported under any name
+ * (`from time import sleep as nap`), found per file.
+ */
+function pySleepNames(code: string) {
+  const modules = new Set<string>();
+  const funcs = new Set<string>();
+  for (const m of code.matchAll(/^[ \t]*import[ \t]+([^\n#]+)/gm))
+    for (const part of (m[1] as string).split(",")) {
+      const [, mod, as] = /^\s*([\w.]+)(?:\s+as\s+(\w+))?\s*$/.exec(part) ?? [];
+      if (mod && PY_SLEEPERS.includes(mod)) modules.add(as ?? mod);
+    }
+  for (const m of code.matchAll(
+    /^[ \t]*from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]+)/gm,
+  )) {
+    if (!PY_SLEEPERS.includes(m[1] as string)) continue;
+    for (const part of (m[2] as string).replace(/[()]/g, "").split(",")) {
+      const [, name, as] =
+        /^\s*(\w+|\*)(?:\s+as\s+(\w+))?\s*$/.exec(part) ?? [];
+      if (name === "sleep") funcs.add(as ?? name);
+    }
+  }
+  return { modules, funcs };
+}
+
 const PY_RULES: ((code: string) => Found[])[] = [
-  // time.sleep, asyncio.sleep, trio/anyio/gevent/eventlet sleep, and a `sleep`
-  // imported from them.
+  // time.sleep, asyncio.sleep, trio/anyio/gevent/eventlet sleep, under any
+  // alias, `sleep` imported (and aliased) from them, and __import__("time").sleep.
   (code) => {
     const out: Found[] = [];
-    for (const m of code.matchAll(
-      /\b(?:time|asyncio|trio|anyio|gevent|eventlet)\.sleep\s*\(/g,
-    ))
-      out.push({ index: m.index as number, why: "sleep" });
+    const { modules, funcs } = pySleepNames(code);
+    for (const mod of modules)
+      for (const m of code.matchAll(
+        new RegExp(`(?<![\\w.])${mod}\\.sleep\\s*\\(`, "g"),
+      ))
+        out.push({ index: m.index as number, why: "sleep" });
     for (const m of code.matchAll(
       /\bfrom\s+(?:time|asyncio|trio|anyio|gevent|eventlet)\s+import\s+[^\n]*\bsleep\b/g,
     ))
       out.push({ index: m.index as number, why: "sleep" });
-    // A bare `sleep(...)` is a wait only where `sleep` came from one of them.
-    if (
-      /\bfrom\s+(?:time|asyncio|trio|anyio|gevent|eventlet)\s+import\s+[^\n]*\bsleep\b/.test(
-        code,
-      )
-    )
-      for (const m of code.matchAll(/^\s*(?:await\s+)?sleep\s*\(/gm))
+    for (const fn of funcs)
+      for (const m of code.matchAll(new RegExp(`(?<![\\w.])${fn}\\s*\\(`, "g")))
         out.push({ index: m.index as number, why: "sleep" });
+    for (const m of code.matchAll(
+      /(?:__import__|import_module)\(\s*["'](?:time|asyncio|trio|anyio|gevent|eventlet)["']\s*\)\s*\.sleep\b/g,
+    ))
+      out.push({ index: m.index as number, why: "sleep" });
     return out;
   },
   // A `sleep` child process: ["sleep", "5"].
@@ -313,6 +344,7 @@ function repoFiles(base: string): string[] {
     );
     return out.split("\0").filter(Boolean);
   } catch {
+    // No git: a plain walk, leaving out dependency and build folders.
     return walk(base).map((f) => relative(base, f));
   }
 }
@@ -321,7 +353,7 @@ function repoFiles(base: string): string[] {
 export function scan(base: string): Hit[] {
   const hits: Hit[] = [];
   for (const rel of repoFiles(base)) {
-    if (SKIP.test(rel) || !isTest(rel)) continue;
+    if (!isTest(rel)) continue;
     let text: string;
     try {
       text = readFileSync(join(base, rel), "utf8");

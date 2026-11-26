@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -86,6 +87,37 @@ describe("no-test-sleeps: which files are tests, anywhere", () => {
       "pkg/tests/test_delivery.py",
       "scripts/ci/no-test-sleeps.test.ts",
       "tools/demo/tests/example.test.ts",
+    ]);
+  });
+
+  it("a tracked test under build/ is scanned; an ignored one is not", () => {
+    const root = mkdtempSync(join(tmpdir(), "oa-sleeps-git-"));
+    const git = (...a: string[]) => execFileSync("git", a, { cwd: root });
+    git("init", "-q");
+    const planted = (rel: string, text: string) => {
+      mkdirSync(dirname(join(root, rel)), { recursive: true });
+      writeFileSync(join(root, rel), text);
+    };
+    const wait = cases.find((c) => c.name === "waitForTimeout")?.text ?? "";
+    const sh =
+      cases.find((c) => c.name === "shell sleep with a variable")?.text ?? "";
+    writeFileSync(join(root, ".gitignore"), "ignored/\n");
+    planted("build/tests/example.test.ts", wait);
+    planted("dist/tests/example.test.ts", wait);
+    planted("tests/timing.sh", sh);
+    planted("ignored/tests/example.test.ts", wait);
+    git("add", "-A");
+    // Untracked and not ignored counts too: a new file is a candidate.
+    planted("new/tests/example.test.ts", wait);
+    expect(
+      scan(root)
+        .map((h) => h.file)
+        .sort(),
+    ).toEqual([
+      "build/tests/example.test.ts",
+      "dist/tests/example.test.ts",
+      "new/tests/example.test.ts",
+      "tests/timing.sh",
     ]);
   });
 
