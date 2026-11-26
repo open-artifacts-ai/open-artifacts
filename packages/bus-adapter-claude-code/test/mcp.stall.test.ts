@@ -56,10 +56,8 @@ describe("claude mcp server against a stalled daemon", () => {
       requestTimeoutMs: 200,
     });
     try {
-      const outcome = await Promise.race([
-        callTool("list_agents", {}, client),
-        new Promise((r) => setTimeout(() => r("hung"), 5_000)),
-      ]);
+      // A hang fails the test at its own 10 s timeout.
+      const outcome = await callTool("list_agents", {}, client);
       expect(outcome).toMatchObject({ isError: true });
       expect(JSON.stringify(outcome)).toMatch(/timed out/);
     } finally {

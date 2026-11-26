@@ -77,8 +77,14 @@ describe.each([
       });
       await page.goto(`${base}/`, { waitUntil: "load" });
       await page.evaluate(() => document.fonts.ready);
-      // Let the scripts lay out (the feature story moves its mocks on wide screens).
-      await page.waitForTimeout(300);
+      // Let the scripts lay out (the feature story moves its mocks on wide
+      // screens): they render on animation frames, so wait for two of them.
+      await page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
       const r = await page.evaluate(() => {
         const w = document.documentElement.clientWidth;
         const nav = document

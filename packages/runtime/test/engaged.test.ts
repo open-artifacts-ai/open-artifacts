@@ -48,11 +48,16 @@ describe("engaged", () => {
     async (id) => {
       (document.getElementById(id) as HTMLElement).focus();
       await flush();
-      (document.getElementById(id) as HTMLElement).blur();
-      // Leaving is checked once focus has landed (a task later).
-      await new Promise((r) => setTimeout(r, 0));
-      await flush();
-      expect(engaged()).toEqual([true, false]);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        (document.getElementById(id) as HTMLElement).blur();
+        // Leaving is checked once focus has landed (a timer at 0 ms).
+        await vi.advanceTimersByTimeAsync(0);
+        await flush();
+        expect(engaged()).toEqual([true, false]);
+      } finally {
+        vi.useRealTimers();
+      }
     },
   );
 

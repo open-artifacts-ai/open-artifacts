@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { type Hello, serveDaemon } from "@oa/bus-ipc";
 import { build } from "esbuild";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus.ts";
 import { realConnect } from "../src/link.ts";
-import { caller, flush } from "./support.ts";
+import { caller } from "./support.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -62,8 +62,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     stateDir: () => "/state/.openclaw",
   });
   bus.buildPrompt(caller({ runId: "w", workspaceDir: "/work/space" }));
-  await new Promise((r) => setTimeout(r, 300));
-  expect(push).toBeDefined();
+  await vi.waitFor(() => expect(push).toBeDefined());
   expect(hellos).toHaveLength(1);
   expect(hellos[0]).toMatchObject({
     kind: "openclaw",
@@ -84,9 +83,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "r1", outcome: "completed" },
   );
-  await flush();
-  await flush();
-  expect(acks).toEqual(["mmmmmmmmmmmmmmm1"]);
+  await vi.waitFor(() => expect(acks).toEqual(["mmmmmmmmmmmmmmm1"]));
   bus.closeAll();
 });
 
