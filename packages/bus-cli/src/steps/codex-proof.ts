@@ -61,6 +61,12 @@ export type CxEntryIo = {
   /** Writes the config (atomically). */
   write: (text: string) => void;
   writeMoved: (data: string) => void;
+  /**
+   * #3108: where the entries oa-bus does not proxy are recorded (names and the
+   * origin, never a value), for the daemon's server check; and how it is written.
+   */
+  entries: string;
+  writeEntries: (data: string) => void;
   /** The proxy's command line start: [oa-bus] or [node, entry]. */
   busBin: string[];
   /** OA_BUS_HOME when the bus lives elsewhere. */
@@ -212,6 +218,8 @@ function otherSwapped(
 
 type Plan =
   | { kind: "none" }
+  /** #3108: an entry that signs in by itself (OAuth): left as it is, linked by the daemon's server check. */
+  | { kind: "link" }
   | { kind: "note"; note: string }
   | { kind: "ours"; name: string; entry: Doc }
   | { kind: "swap"; name: string; entry: Doc; cred: Cred };
@@ -297,11 +305,9 @@ function plan(doc: Doc, origin: string, patFile?: string): Plan {
     // exactly as it is, untouched, and oa-bus uninstall puts the entry back.
     if (blocker === undefined && patFile !== undefined && existsSync(patFile))
       return { kind: "swap", name, entry: e, cred: { tokenFile: patFile } };
-    return left(
-      patFile === undefined
-        ? "it signs in with `codex mcp login` or another kind of token that oa-bus can't pass on."
-        : `it signs in with \`codex mcp login\` or another kind of token that oa-bus can't pass on, and there is no PAT at ${patFile} for the proxy to use. Save one there (see the connect guide) and run oa-bus install again.`,
-    );
+    // #3108: no PAT is asked for. The entry stays untouched; the daemon links
+    // its calls by asking the server which call it saw.
+    return { kind: "link" };
   }
   return { kind: "none" };
 }
@@ -376,10 +382,69 @@ export type Outcome = { notes: string[] };
  * config that cannot be read. The caller has checked the Codex version.
  */
 export function installEntry(io: CxEntryIo, origin: string): Outcome {
+  const out = swapEntry(io, origin);
+  // #3108: whatever is left as a remote entry for the instance is recorded,
+  // from the config as it is now (a swapped entry is no longer one).
+  recordEntries(io, origin);
+  return out;
+}
+
+/** Entry keys in the config whose url is the instance's /mcp, as they stand. */
+function remoteEntries(io: CxEntryIo, origin: string): string[] {
+  const { doc } = readToml(io.file);
+  return Object.entries(servers(doc))
+    .filter(
+      ([name, e]) =>
+        name !== CODEX_ENTRY &&
+        isRecord(e) &&
+        e.enabled !== false &&
+        isInstance(e, origin) &&
+        ourEntry(e, origin) === undefined,
+    )
+    .map(([name]) => name);
+}
+
+/**
+ * Writes the instance's entry in the recorded list, names and origin only.
+ * Nothing is written when it is already as it should be; an empty list for
+ * the last instance removes the file.
+ */
+export function recordEntries(io: CxEntryIo, origin: string): void {
+  try {
+    const names = remoteEntries(io, origin);
+    let had: { origin: string; names: string[] }[] = [];
+    let before: string | undefined;
+    try {
+      before = readFileSync(io.entries, "utf8");
+      const v: unknown = JSON.parse(before);
+      const list = isRecord(v) ? v.instances : undefined;
+      if (Array.isArray(list))
+        had = list.filter(
+          (i): i is { origin: string; names: string[] } =>
+            isRecord(i) &&
+            typeof i.origin === "string" &&
+            Array.isArray(i.names) &&
+            i.names.every((n) => typeof n === "string"),
+        );
+    } catch {}
+    const next = [
+      ...had.filter((i) => i.origin !== origin),
+      ...(names.length > 0 ? [{ origin, names }] : []),
+    ];
+    if (next.length === 0) {
+      if (before !== undefined) rmSync(io.entries, { force: true });
+      return;
+    }
+    const text = `${JSON.stringify({ instances: next }, null, 2)}\n`;
+    if (text !== before) io.writeEntries(text);
+  } catch {}
+}
+
+function swapEntry(io: CxEntryIo, origin: string): Outcome {
   const { text, doc } = readToml(io.file);
   const p = plan(doc, origin, io.patFile);
   if (p.kind === "note") return { notes: [p.note] };
-  if (p.kind === "none") return { notes: [] };
+  if (p.kind === "none" || p.kind === "link") return { notes: [] };
   if (p.kind === "swap") {
     const other = otherSwapped(io, doc, p.name);
     if (other !== undefined)
@@ -454,7 +519,10 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
  */
 export function restoreEntry(io: CxEntryIo): boolean {
   const m = readMoved(io.moved);
-  if (!m) return false;
+  if (!m) {
+    rmSync(io.entries, { force: true });
+    return false;
+  }
   let put = false;
   if (existsSync(io.file)) {
     const { text, doc } = readToml(io.file);
@@ -484,6 +552,7 @@ export function restoreEntry(io: CxEntryIo): boolean {
     }
   }
   rmSync(io.moved, { force: true });
+  rmSync(io.entries, { force: true });
   return put;
 }
 

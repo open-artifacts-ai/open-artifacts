@@ -146,6 +146,7 @@ describe("reply ids in the daemon", () => {
       "guest",
       "mail_expiry",
       "sessions_gone",
+      "codex_check",
     ]);
   });
 
