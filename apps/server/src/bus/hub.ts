@@ -6826,15 +6826,23 @@ export class BusHub extends DurableObject<Env> {
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
           : f.type === "unfollow"
-            ? unfollow(this.env, userId, to, f.artifact).then(
-                (r) =>
-                  ({
-                    v: 1,
-                    id: f.id,
-                    type: "unfollowed",
-                    removed: r.removed,
-                  }) as const,
-              )
+            ? unfollow(this.env, userId, to, f.artifact).then((r) => {
+                // #3132: the holder's unfollow ends the role's part too, so a
+                // later move gives the page to nobody.
+                this.ctx.storage.sql.exec(
+                  `delete from role_follows where artifact_id = ?
+                     and role_id in (select id from roles where org_id = ? and agent_id = ?)`,
+                  r.artifactId,
+                  OWNER_ORG_ID,
+                  agent.id,
+                );
+                return {
+                  v: 1,
+                  id: f.id,
+                  type: "unfollowed",
+                  removed: r.removed,
+                } as const;
+              })
             : following(this.env, userId, to).then(
                 (l) =>
                   ({
