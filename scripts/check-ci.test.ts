@@ -1845,7 +1845,12 @@ describe("release cadence", () => {
   it("runs on events only, never on a timer: after release-please and CI, on a push to main, and on dispatch (cloud #264)", () => {
     expect("schedule" in w.on).toBe(false);
     expect(triggers(w).sort()).toEqual(
-      ["push", "workflow_dispatch", "workflow_run"].sort(),
+      [
+        "pull_request_target",
+        "push",
+        "workflow_dispatch",
+        "workflow_run",
+      ].sort(),
     );
     // A queued PR landing on main may drain the queue: re-check right then.
     expect(w.on.push).toEqual({ branches: ["main"] });
@@ -1858,6 +1863,24 @@ describe("release cadence", () => {
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       "${{ github.repository == 'open-artifacts-ai/open-artifacts' }}",
     );
+  });
+
+  it("re-checks when a PR leaves the merge queue without merging, using main's code only", () => {
+    // The last queued PR can be removed by hand, or dropped before its
+    // merge-group CI starts: no push and no CI completion follow, so the
+    // dequeue itself is the event that says the queue may have drained.
+    expect(w.on.pull_request_target).toEqual({
+      types: ["dequeued"],
+      branches: ["main"],
+    });
+    // pull_request (not _target) would run the PR's own copy of this file and
+    // get no App secrets on a fork PR; only the trusted main copy may run.
+    expect("pull_request" in w.on).toBe(false);
+    // Nothing reads the PR's code or refs: the run plans from main's script
+    // against live GitHub state, whatever PR left the queue.
+    const text = read(".github/workflows/release-cadence.yml");
+    expect(text).not.toContain("github.event.pull_request");
+    expect(text).not.toContain("github.head_ref");
   });
 
   it("re-runs after every workflow whose checks the release PR needs", () => {

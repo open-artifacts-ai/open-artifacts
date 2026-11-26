@@ -11,8 +11,16 @@ on:
   # - push to main: a queued PR merged, so the queue may have just drained.
   # - release-please completing: the release PR was opened or got a new head,
   #   or a release shipped (closes a stale blocker).
+  # - a PR leaving the merge queue without merging (removed by hand, or
+  #   dropped before its merge-group CI started): the queue may have just
+  #   drained with no push and no CI completion to follow.
+  #   pull_request_target runs this file and the checkout from main, never the
+  #   PR's code, so a fork PR leaving the queue is handled by trusted code.
   # (check_suite does not fire for Actions suites, so workflow_run stands in.)
   push:
+    branches: [main]
+  pull_request_target:
+    types: [dequeued]
     branches: [main]
   workflow_dispatch:
   workflow_run:
