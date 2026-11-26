@@ -33,6 +33,7 @@ describe("Library", () => {
       const router = mount(`/?view=${view}`);
       const select = await screen.findByRole("button", { name: "Select" });
       fireEvent.click(select);
+      expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
       const checkboxes = (await screen.findAllByRole(
         "checkbox",
       )) as HTMLInputElement[];
@@ -59,9 +60,8 @@ describe("Library", () => {
       name: "Actions for Landing page",
     });
     fireEvent.keyDown(menu, { key: "ArrowDown" });
-    expect(
-      await screen.findByRole("menuitem", { name: "Archive" }),
-    ).toHaveAttribute("aria-disabled", "true");
+    await screen.findByRole("menuitem", { name: "Share…" });
+    expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
     expect(
       screen.queryByRole("menuitem", { name: "Move to folder…" }),
     ).toBeNull();

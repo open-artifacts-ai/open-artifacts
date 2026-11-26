@@ -65,19 +65,17 @@ export function LibraryItems({
             className="z-10 flex items-center gap-2 rounded-md border bg-card p-2 max-[600px]:fixed max-[600px]:inset-x-2 max-[600px]:bottom-[max(.5rem,env(safe-area-inset-bottom))]"
           >
             <span aria-live="polite">{picked.length} selected</span>
-            <Button variant="outline" size="sm" disabled>
-              Archive
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={picked.length !== 1}
-              onClick={() => {
-                if (picked[0]) confirm(picked[0]);
-              }}
-            >
-              Delete
-            </Button>
+            {picked.length === 1 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  if (picked[0]) confirm(picked[0]);
+                }}
+              >
+                Delete
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
               Cancel
             </Button>
@@ -146,12 +144,9 @@ export function LibraryItems({
                     </DropdownMenuItem>
                   )}
                   {can.delete && (
-                    <>
-                      <DropdownMenuItem disabled>Archive</DropdownMenuItem>
-                      <DropdownMenuItem onSelect={() => confirm(a)}>
-                        Delete
-                      </DropdownMenuItem>
-                    </>
+                    <DropdownMenuItem onSelect={() => confirm(a)}>
+                      Delete
+                    </DropdownMenuItem>
                   )}
                 </DropdownMenuContent>
               </DropdownMenu>
