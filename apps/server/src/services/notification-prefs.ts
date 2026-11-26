@@ -1,8 +1,3 @@
-// #2512 S4, #3024: a member's notification choices (R.meNotificationPrefs), the
-// one set for every device: browser notifications for what needs them (Updates
-// are list-only: their browser setting is always off), one quiet-hours window in their time zone, and whether the lock screen shows
-// details. No row is the defaults: Needs you is ON (every ask and mention
-// interrupts; browserAllAsks is kept for the API but no longer narrows push). Email stays exactly as before.
 import { type NotificationPrefs, NotificationPrefsSchema } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
@@ -14,7 +9,11 @@ import { instantAt, wall } from "./zone-time.js";
 /** Saves one member may make per day (a person flipping switches, never a loop). */
 export const PREFS_WRITES_PER_DAY = 100;
 
-export const DEFAULT_PREFS: NotificationPrefs = {
+type AccountPrefs = Required<NotificationPrefs>;
+
+export const DEFAULT_PREFS: AccountPrefs = {
+  interrupt: "mentions",
+  pausedUntil: null,
   needsYou: { inApp: true, browser: true },
   updates: { inApp: true, browser: false },
   browserAllAsks: true,
@@ -24,7 +23,8 @@ export const DEFAULT_PREFS: NotificationPrefs = {
 };
 
 type Row = {
-  needs_you_browser: number;
+  interrupt: AccountPrefs["interrupt"];
+  paused_until: number | null;
   browser_all_asks: number;
   quiet_start: string | null;
   quiet_end: string | null;
@@ -35,17 +35,20 @@ type Row = {
 export async function getPrefs(
   env: Env,
   userId: string,
-): Promise<NotificationPrefs> {
+): Promise<AccountPrefs> {
   const r = await stmt(
     env.DB,
-    `select needs_you_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail
+    `select interrupt, paused_until, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail
        from notification_prefs where user_id = ?1`,
   )
     .bind(userId)
     .first<Row>();
   if (!r) return DEFAULT_PREFS;
   return {
-    needsYou: { inApp: true, browser: r.needs_you_browser === 1 },
+    interrupt: r.interrupt,
+    pausedUntil:
+      r.paused_until === null ? null : new Date(r.paused_until).toISOString(),
+    needsYou: { inApp: true, browser: r.interrupt !== "none" },
     // Updates are list-only (#3024): never a browser notification.
     updates: { inApp: true, browser: false },
     browserAllAsks: r.browser_all_asks === 1,
@@ -77,35 +80,54 @@ export async function putPrefs(
   env: Env,
   userId: string,
   body: unknown,
-): Promise<NotificationPrefs> {
+): Promise<AccountPrefs> {
   const p = NotificationPrefsSchema.safeParse(body);
   if (!p.success)
     throw new ApiError("bad_request", "Invalid request body", p.error.issues);
-  const next = p.data;
-  if (!validZone(next.timeZone))
+  const input = p.data;
+  if (!validZone(input.timeZone))
     throw new ApiError("bad_request", "Unknown time zone", {
       path: "timeZone",
       reason: "invalid",
     });
-  if (next.quietHours && next.quietHours.start === next.quietHours.end)
+  if (input.quietHours && input.quietHours.start === input.quietHours.end)
     throw new ApiError("bad_request", "Quiet hours need a start and an end", {
       path: "quietHours",
       reason: "empty",
     });
   const before = await getPrefs(env, userId);
+  const interrupt =
+    input.interrupt ??
+    (input.needsYou.browser
+      ? before.interrupt === "none"
+        ? "mentions"
+        : before.interrupt
+      : "none");
+  const pausedUntil =
+    input.pausedUntil === undefined
+      ? before.pausedUntil
+      : input.pausedUntil === null
+        ? null
+        : new Date(input.pausedUntil).toISOString();
+  const next: AccountPrefs = {
+    ...input,
+    interrupt,
+    pausedUntil,
+    needsYou: { inApp: true, browser: interrupt !== "none" },
+    updates: { inApp: true, browser: false },
+  };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
   const diff = (k: string, from: unknown, to: unknown) => {
     if (JSON.stringify(from) !== JSON.stringify(to)) changes[k] = { from, to };
   };
-  // Updates are list-only (#3024): their browser setting is not saved, whatever is sent.
+  diff("interrupt", before.interrupt, next.interrupt);
+  diff("pausedUntil", before.pausedUntil, next.pausedUntil);
   diff("browser", before.needsYou.browser, next.needsYou.browser);
   diff("browserAllAsks", before.browserAllAsks, next.browserAllAsks);
   diff("quietHours", before.quietHours, next.quietHours);
   diff("timeZone", before.timeZone, next.timeZone);
   diff("lockScreenDetail", before.lockScreenDetail, next.lockScreenDetail);
   if (Object.keys(changes).length === 0) return before;
-  // The reply shows what is stored and read: Updates browser stays off.
-  next.updates.browser = false;
   const day = new Date().toISOString().slice(0, 10);
   if (
     (await takeAll(env, [[`prefs:u:${userId}`, PREFS_WRITES_PER_DAY, day]])) !==
@@ -116,18 +138,24 @@ export async function putPrefs(
       "Too many changes today. Try again tomorrow.",
     );
   const now = Date.now();
+  const pauseEnd = pausedUntil === null ? null : Date.parse(pausedUntil);
+  const activePause =
+    interrupt !== "none" && pauseEnd !== null && pauseEnd > now
+      ? pauseEnd
+      : null;
   await env.DB.batch([
     stmt(
       env.DB,
       `insert into notification_prefs
-         (user_id, needs_you_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail, updated_at)
-       values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         (user_id, needs_you_browser, browser_all_asks, quiet_start, quiet_end, time_zone, lock_detail, updated_at, interrupt, paused_until)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
        on conflict (user_id) do update set
          needs_you_browser = excluded.needs_you_browser,
          browser_all_asks = excluded.browser_all_asks,
          quiet_start = excluded.quiet_start, quiet_end = excluded.quiet_end,
          time_zone = excluded.time_zone, lock_detail = excluded.lock_detail,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         interrupt = excluded.interrupt, paused_until = excluded.paused_until`,
     ).bind(
       userId,
       next.needsYou.browser ? 1 : 0,
@@ -137,7 +165,17 @@ export async function putPrefs(
       next.timeZone,
       next.lockScreenDetail ? 1 : 0,
       now,
+      interrupt,
+      pauseEnd,
     ),
+    // Persist the queue hold in the same transaction as the account choice.
+    // Keep the release time for stale-row cleanup after a long pause.
+    stmt(
+      env.DB,
+      `update push_pending set pause_until = coalesce(?2, min(pause_until, ?3))
+         where user_id = ?1 and (?2 is not null or pause_until > ?3)
+           and pause_until is not ?2`,
+    ).bind(userId, activePause, now),
     audit(
       env,
       "settings.change",

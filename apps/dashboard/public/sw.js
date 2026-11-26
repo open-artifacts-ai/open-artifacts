@@ -36,11 +36,13 @@ self.addEventListener("push", (event) => {
   const ok = p && p.v === 1 && typeof p.title === "string";
   // A push must show something; an unreadable one shows the lock-screen line.
   const title = ok ? p.title : "An agent is waiting for your answer";
+  const badge = ok && samePath(p.badge);
   const options = {
     body: ok && typeof p.body === "string" ? p.body : "",
     tag: ok && typeof p.tag === "string" ? p.tag : "oa-inbox",
     renotify: true,
-    icon: "/apple-touch-icon.png",
+    icon: (ok && samePath(p.icon)) || "/icon-192.png",
+    ...(badge ? { badge } : {}),
     data: { href: (ok && samePath(p.href)) || "/" },
     // No actions: a notification is information, never a yes.
   };

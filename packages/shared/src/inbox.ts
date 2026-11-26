@@ -133,6 +133,9 @@ export const InboxLaterBodySchema = z.object({
 export type InboxLaterBody = z.infer<typeof InboxLaterBodySchema>;
 
 export const NotificationPrefsSchema = z.object({
+  /** Optional on legacy writes. The server always returns both fields. */
+  interrupt: z.enum(["mentions", "everything", "none"]).optional(),
+  pausedUntil: Iso.nullable().optional(),
   /** The browser preference is shared by every enrolled device. */
   needsYou: z.object({ inApp: z.literal(true), browser: z.boolean() }),
   /** Updates appear in For you. The server always returns browser false. */
@@ -198,6 +201,8 @@ export const PushPayloadSchema = z.object({
   body: z.string(),
   href: SameOriginPath,
   tag: z.string(),
+  icon: SameOriginPath.optional(),
+  badge: SameOriginPath.optional(),
   count: z.number().int().optional(),
 });
 export type PushPayload = z.infer<typeof PushPayloadSchema>;

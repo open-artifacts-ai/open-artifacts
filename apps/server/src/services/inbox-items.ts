@@ -22,7 +22,7 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
-import { queueMentionPush } from "./push.js";
+import { queueMentionPush, queuePush } from "./push.js";
 import { getUsers } from "./users.js";
 import { pushOn } from "./web-push.js";
 
@@ -130,25 +130,35 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // Updates stay in the inbox. Only personal mentions can need a delivery.
-    const mentions = rows.filter(isPersonalMention);
-    if (!pushOn(env) || mentions.length === 0) return;
+    const pushItems = rows.filter(
+      (r) => isPersonalMention(r) || r.kind === "reply" || r.kind === "share",
+    );
+    if (!pushOn(env) || pushItems.length === 0) return;
     const enrolled = await stmt(
       env.DB,
       "select distinct user_id from push_subscriptions where user_id in (select value from json_each(?1))",
     )
-      .bind(JSON.stringify([...new Set(mentions.map((r) => r.userId))]))
+      .bind(JSON.stringify([...new Set(pushItems.map((r) => r.userId))]))
       .all<{ user_id: string }>();
     const hasDevice = new Set(enrolled.results.map((r) => r.user_id));
-    for (const r of mentions) {
+    for (const r of pushItems) {
       if (!hasDevice.has(r.userId)) continue;
-      await queueMentionPush(env, r.userId, {
+      const item = {
         key: r.key,
         artifactId: r.artifactId,
         threadId: r.threadId ?? "",
         askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
         excerpt: r.excerpt,
-      });
+      };
+      if (isPersonalMention(r)) {
+        await queueMentionPush(env, r.userId, item);
+      } else {
+        await queuePush(env, [r.userId], {
+          ...item,
+          kind: "ask",
+          agentKey: r.actor.agent?.identity?.identityId ?? null,
+        });
+      }
     }
   } catch (e) {
     logWarn("inbox_items_write_failed", e);

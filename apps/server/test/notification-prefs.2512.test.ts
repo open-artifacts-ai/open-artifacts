@@ -39,6 +39,7 @@ describe("GET and PUT /me/notification-prefs", () => {
     expect(g.status).toBe(200);
     expect(await g.json()).toEqual(DEFAULT_PREFS);
     const next = prefs({
+      interrupt: "none",
       needsYou: { inApp: true, browser: false },
       updates: { inApp: true, browser: true },
       browserAllAsks: false,
@@ -62,6 +63,7 @@ describe("GET and PUT /me/notification-prefs", () => {
     expect(Object.keys(changes).sort()).toEqual([
       "browser",
       "browserAllAsks",
+      "interrupt",
       "lockScreenDetail",
       "quietHours",
       "timeZone",
@@ -101,6 +103,60 @@ describe("GET and PUT /me/notification-prefs", () => {
     // An unchanged save writes no audit row.
     await put(a.cookie, { ...next, quietHours: null });
     expect((await mine(a.userId)).results).toHaveLength(2);
+  });
+
+  it("round-trips interrupt and pause and accepts legacy settings writes", async () => {
+    const a = await mk("interrupt");
+    const pausedUntil = "2030-10-05T12:00:00.000Z";
+    const legacy = {
+      needsYou: { inApp: true, browser: true },
+      updates: { inApp: true, browser: false },
+      browserAllAsks: true,
+      quietHours: null,
+      timeZone: "UTC",
+      lockScreenDetail: false,
+    };
+    expect(
+      await (await api(app, R.meNotificationPrefs, a.cookie)).json(),
+    ).toMatchObject({
+      interrupt: "mentions",
+      pausedUntil: null,
+    });
+    expect(
+      await (
+        await put(a.cookie, { ...legacy, interrupt: "everything", pausedUntil })
+      ).json(),
+    ).toMatchObject({
+      interrupt: "everything",
+      pausedUntil,
+      needsYou: { browser: true },
+    });
+    expect(
+      await (await put(a.cookie, { ...legacy, lockScreenDetail: true })).json(),
+    ).toMatchObject({
+      interrupt: "everything",
+      pausedUntil,
+    });
+    expect(
+      await (
+        await put(a.cookie, {
+          ...legacy,
+          pausedUntil: null,
+          needsYou: { inApp: true, browser: false },
+        })
+      ).json(),
+    ).toMatchObject({
+      interrupt: "none",
+      pausedUntil: null,
+      needsYou: { browser: false },
+    });
+    expect(await (await put(a.cookie, legacy)).json()).toMatchObject({
+      interrupt: "mentions",
+      needsYou: { browser: true },
+    });
+    expect(
+      (await put(a.cookie, { ...legacy, pausedUntil: "tomorrow" })).status,
+    ).toBe(400);
   });
 
   it("is each person's own", async () => {

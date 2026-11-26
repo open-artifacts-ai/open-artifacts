@@ -61,6 +61,8 @@ describe("sw.js", () => {
         body: "Ship the landing with the waitlist?",
         href: "/a/Cd5fGhJkLm6nPqRs?comment=c1",
         tag: "ask:c1",
+        icon: "/icon-192.png",
+        badge: "/badge.png",
       }),
     );
     expect(w.shown).toHaveLength(1);
@@ -70,6 +72,8 @@ describe("sw.js", () => {
     expect(n?.options.data).toEqual({
       href: "/a/Cd5fGhJkLm6nPqRs?comment=c1",
     });
+    expect(n?.options.icon).toBe("/icon-192.png");
+    expect(n?.options.badge).toBe("/badge.png");
     expect(n?.options).not.toHaveProperty("actions");
   });
 

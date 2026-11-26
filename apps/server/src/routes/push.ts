@@ -13,6 +13,7 @@ import {
   listSubscriptions,
   patchSubscription,
   removeSubscription,
+  sendTestPush,
 } from "../services/push.js";
 import { pushOn, vapidKeys } from "../services/web-push.js";
 import type { AppType } from "./index.js";
@@ -36,6 +37,11 @@ export function mountPush(app: AppType): void {
   app.get(R.mePushKey, async (c) => {
     pushUser(c, false);
     return c.json({ publicKey: (await vapidKeys(c.env)).publicKey });
+  });
+
+  app.post(R.mePushTest, async (c) => {
+    const user = pushUser(c, true);
+    return c.json(await sendTestPush(c.env, user.id));
   });
 
   app.get(R.mePushSubscriptions, async (c) => {

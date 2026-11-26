@@ -92,7 +92,7 @@ const savePrefs = (needsYouBrowser: boolean) =>
     method: "PUT",
     body: {
       ...DEFAULT_PREFS,
-      needsYou: { inApp: true, browser: needsYouBrowser },
+      interrupt: needsYouBrowser ? "mentions" : "none",
     },
   });
 /** One enrolled device: a subscription row, nothing else. */

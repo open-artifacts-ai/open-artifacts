@@ -1,13 +1,3 @@
-// #2512 S5, #3024: browser push for what needs a member. One set of account
-// choices (notification prefs: Needs you, every ask, quiet hours, lock screen).
-// A subscription row is one enrolled device (an address, keys, a label); an
-// endpoint belongs to one member at a time. A new Needs-you item (or one back
-// from Later) is queued for a member whose account Needs you is on and who has a
-// device, and the cron tick sends what is due to every device: held for the
-// 10-minute bundle and for quiet hours, one notification for everything due.
-// Updates never push. The text is written here and never taken from a client:
-// by default only "An agent is waiting for your answer"; the asker and the
-// question show only with lockScreenDetail.
 import {
   newId,
   type PushPayload,
@@ -20,6 +10,7 @@ import {
 import { accessLevels, callerOf, capOfCaller } from "../auth/authz.js";
 import { capsReads } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
+import { takeAll } from "../email/send.js";
 import { orgName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -42,7 +33,7 @@ const TICK_ROWS = 500;
 /** A pending row older than this is stale and dropped unsent. */
 const STALE_MS = 24 * 3600_000;
 
-export const DEFAULT_BODY = "An agent is waiting for your answer";
+const PUSH_ICON = "/icon-192.png";
 
 // ---------------------------------------------------------- subscriptions
 
@@ -187,7 +178,8 @@ export async function removeSubscription(
 export type PushItem = {
   /** One row per (member, key): "ask:<comment id>", "later:<item id>:<until>". */
   key: string;
-  /** Both are Needs-you: "ask" is new, "later" is back from Later. Updates never push. */
+  /** "ask" stores new deliveries; the key distinguishes Inbox items from asks.
+   * "later" stores items returning from Later. */
   kind: "ask" | "later";
   artifactId: string;
   threadId: string;
@@ -204,7 +196,15 @@ const IN_CHUNK = 90;
 type Recipient = { id: string; waiting: number | null; last: number | null };
 type LaterRow = { user_id: string; item_id: string; until: number };
 
-async function recipients(env: Env, ids: string[]): Promise<Recipient[]> {
+/** Inbox replies and shares are opt-in. Their keys match the source Inbox item. */
+const isInboxUpdate = ({ key }: { key: string }): boolean =>
+  key.startsWith("reply:") || key.startsWith("share:");
+
+async function recipients(
+  env: Env,
+  ids: string[],
+  everything = false,
+): Promise<Recipient[]> {
   const marks = ids.map((_, i) => `?${i + 1}`).join(",");
   const { results } = await env.DB.prepare(
     `select p.user_id as id,
@@ -212,7 +212,7 @@ async function recipients(env: Env, ids: string[]): Promise<Recipient[]> {
        (select max(last_sent_at) from push_subscriptions s where s.user_id = p.user_id) as last
      from (select distinct user_id from push_subscriptions where user_id in (${marks})) p
      left join notification_prefs n on n.user_id = p.user_id
-     where coalesce(n.needs_you_browser, 1) = 1`,
+     where ${everything ? "n.interrupt = 'everything'" : "coalesce(n.interrupt, 'mentions') <> 'none'"}`,
   )
     .bind(...ids)
     .all<Recipient>();
@@ -229,13 +229,16 @@ async function pendingInsert(
   const next =
     to.waiting ?? (to.last === null ? now : Math.max(now, to.last + BUNDLE_MS));
   const quiet = quietState(await getPrefs(env, to.id), now);
+  const interrupt = isInboxUpdate(item) ? "= 'everything'" : "<> 'none'";
   return stmt(
     env.DB,
     `insert into push_pending
-       (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, send_after, created_at)
-     select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
-     where ?13 is null or exists (
-       select 1 from inbox_later where user_id = ?2 and item_id = ?13 and until = ?14 and pushed_at is null)
+       (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, send_after, created_at, pause_until)
+     select ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+       (select paused_until from notification_prefs where user_id = ?2 and paused_until > ?12)
+     where coalesce((select interrupt from notification_prefs where user_id = ?2), 'mentions') ${interrupt}
+       and (?13 is null or exists (
+         select 1 from inbox_later where user_id = ?2 and item_id = ?13 and until = ?14 and pushed_at is null))
      on conflict (user_id, key) do nothing`,
   ).bind(
     newId(),
@@ -256,9 +259,8 @@ async function pendingInsert(
 }
 
 /**
- * Queues `item` for each of `userIds` whose account Needs you is on and who has
- * a device. Held for the bundle (a push in the last 10 minutes, or items
- * already waiting, set the time) and for quiet hours. Best effort: never throws.
+ * Queues the item for enrolled recipients whose interrupt level allows it.
+ * Held for bundling, quiet hours and pause. Best effort: never throws.
  */
 export async function queuePush(
   env: Env,
@@ -267,12 +269,12 @@ export async function queuePush(
   now = Date.now(),
 ): Promise<void> {
   if (!pushOn(env) || userIds.length === 0) return;
-  // Only Needs-you ever queues; a row of any other kind (an old caller) is refused.
+  // Pre-upgrade Update deliveries are no longer accepted.
   if (item.kind !== "ask" && item.kind !== "later") return;
   try {
     for (let i = 0; i < userIds.length; i += IN_CHUNK) {
       const chunk = userIds.slice(i, i + IN_CHUNK);
-      for (const to of await recipients(env, chunk)) {
+      for (const to of await recipients(env, chunk, isInboxUpdate(item))) {
         const insert = await pendingInsert(env, to, item, now);
         await insert.run();
       }
@@ -343,9 +345,6 @@ type Sub = {
   auth: string;
 };
 
-/** #2781: a person's @-mention of the member (Needs you), without lock-screen detail. */
-export const DEFAULT_MENTION_BODY = "Someone mentioned you";
-
 /** #2577: a request held for the member to allow: its key is "held:<request id>". Fixed text, never the words. */
 export const HELD_PUSH_PREFIX = "held:";
 export const DEFAULT_HELD_BODY = "A request is waiting for you to allow it";
@@ -365,10 +364,7 @@ const isLaterMention = (r: { key: string }): boolean =>
 const isMention = (r: { key: string }): boolean =>
   isPersonMention(r) || isLaterMention(r);
 
-/**
- * The one notification for everything due to one device: fixed text, a link to
- * the latest item. The count is everything in it. Needs-you only.
- */
+/** A bundle shows counts and links to its newest item. */
 export function pushPayload(
   items: Pick<
     Pending,
@@ -381,33 +377,38 @@ export function pushPayload(
   const lead = items[n - 1] as (typeof items)[number];
   let body: string;
   let heading = title;
-  const mentions = items.filter(isMention).length;
   if (n > 1) {
-    // Design v10, "Several at once": counts only, safe on a lock screen too.
-    const asks = n - mentions;
-    const parts = [
-      asks > 0 ? `${asks} ${asks === 1 ? "ask" : "asks"}` : "",
-      mentions > 0
-        ? `${mentions} ${mentions === 1 ? "mention" : "mentions"}`
-        : "",
-    ].filter(Boolean);
+    const mentions = items.filter(isMention).length;
+    const replies = items.filter((r) => r.key.startsWith("reply:")).length;
+    const shares = items.filter((r) => r.key.startsWith("share:")).length;
+    const asks = n - mentions - replies - shares;
+    const counts = [
+      [asks, "ask", "asks"],
+      [mentions, "mention", "mentions"],
+      [replies, "reply", "replies"],
+      [shares, "share", "shares"],
+    ] as const;
     heading = `${n} things need you`;
-    body = parts.join(", ");
+    body = counts
+      .filter(([count]) => count > 0)
+      .map(
+        ([count, singular, plural]) =>
+          `${count} ${count === 1 ? singular : plural}`,
+      )
+      .join(", ");
+  } else if (isHeldPush(lead)) {
+    body = DEFAULT_HELD_BODY;
+  } else if (isMention(lead)) {
+    body = detail ? lead.excerpt : `${lead.asker_name} mentioned you`;
+  } else if (isInboxUpdate(lead)) {
+    const action = lead.key.startsWith("reply:")
+      ? "replied in your thread"
+      : "shared a page with you";
+    body = `${lead.asker_name} ${action}`;
   } else {
-    const mention = isMention(lead);
-    const asks = detail
-      ? mention
-        ? `${lead.asker_name} mentioned you: ${lead.excerpt}`
-        : `${lead.asker_name} asks: ${lead.excerpt}`
-      : "";
-    // One item (several are the counts above).
-    body = isHeldPush(lead)
-      ? DEFAULT_HELD_BODY
-      : detail
-        ? asks
-        : mention
-          ? DEFAULT_MENTION_BODY
-          : DEFAULT_BODY;
+    body = detail
+      ? `${lead.asker_name} asks: ${lead.excerpt}`
+      : `${lead.asker_name} asked you something`;
   }
   return {
     v: 1,
@@ -417,21 +418,12 @@ export function pushPayload(
       ? `${viewerPath(lead.artifact_id)}?thread=${encodeURIComponent(lead.thread_id)}`
       : viewerPath(lead.artifact_id),
     tag: "needs-you",
+    icon: PUSH_ICON,
     ...(n > 1 ? { count: n } : {}),
   };
 }
 
-/**
- * Sends what is due (the cron tick; one read when nothing is). Per member:
- * account Needs you off drops their rows (and a queued Update is always
- * dropped); quiet hours hold them to when quiet ends; otherwise their rows are
- * claimed (deleted) and sent as one notification to each enrolled device:
- * under Needs you every ask, held request and mention interrupts (browserAllAsks
- * no longer narrows push). A row dropped unsent logs one push_dropped line per
- * member per tick with counts by reason. A 404 or 410 removes the device;
- * other failures are logged and dropped. Never throws. Resolves to the
- * notifications sent.
- */
+/** Sends due notifications on the cron tick after checking for Later returns. */
 export async function drainPush(env: Env, now = Date.now()): Promise<number> {
   if (!pushOn(env)) return 0;
   let sent = 0;
@@ -440,7 +432,8 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
     const { results } = await stmt(
       env.DB,
       `select id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
-         from push_pending where send_after <= ?1 order by user_id, created_at limit ?2`,
+         from push_pending where send_after <= ?1 and (pause_until is null or pause_until <= ?1)
+         order by user_id, created_at limit ?2`,
     )
       .bind(now, TICK_ROWS)
       .all<Pending>();
@@ -448,23 +441,24 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
     // Every stale row goes, not just those in this tick's selection; each is counted per member.
     const gone = await stmt(
       env.DB,
-      "delete from push_pending where created_at < ?1 returning user_id",
+      `delete from push_pending where created_at < ?1
+         and (pause_until is null or pause_until < ?1) returning id, user_id`,
     )
       .bind(now - STALE_MS)
-      .all<{ user_id: string }>();
+      .all<{ id: string; user_id: string }>();
+    const staleIds = new Set(gone.results.map((r) => r.id));
     const stale = new Map<string, number>();
     for (const g of gone.results)
       stale.set(g.user_id, (stale.get(g.user_id) ?? 0) + 1);
     const byUser = new Map<string, Pending[]>();
     for (const r of results) {
-      if (r.created_at < now - STALE_MS) continue;
+      if (staleIds.has(r.id)) continue;
       const l = byUser.get(r.user_id) ?? [];
       l.push(r);
       byUser.set(r.user_id, l);
     }
     for (const [userId, n] of stale) logDrops(userId, { stale: n });
-    const settings = await getSettings(env).catch(() => null);
-    const title = orgName(settings?.name, env.APP_HOST);
+    const title = await pushTitle(env);
     for (const [userId, rows] of [...byUser].slice(0, TICK_MEMBERS)) {
       try {
         sent += await drainMember(env, userId, rows, title, now);
@@ -524,7 +518,8 @@ async function stillWanted(
     (r) =>
       (r.kind === "ask" || r.kind === "later") &&
       !isMention(r) &&
-      !isHeldPush(r),
+      !isHeldPush(r) &&
+      !isInboxUpdate(r),
   );
   // A held request waits on its own items: at least one still held and in time.
   const stillHeld = new Set<string>();
@@ -592,6 +587,22 @@ async function stillWanted(
       byId.set(r.id, r);
     }
   }
+  const updates = kept.filter(isInboxUpdate);
+  const inboxUpdates = new Set<string>();
+  if (updates.length > 0) {
+    const { results } = await stmt(
+      env.DB,
+      `select key, artifact_id, thread_id from inbox_items
+         where user_id = ?1 and read_at is null and kind in ('reply', 'share')
+           and key in (select value from json_each(?2))`,
+    )
+      .bind(userId, JSON.stringify(updates.map((r) => r.key)))
+      .all<{ key: string; artifact_id: string; thread_id: string | null }>();
+    for (const r of results)
+      inboxUpdates.add(
+        JSON.stringify([r.key, r.artifact_id, r.thread_id ?? ""]),
+      );
+  }
   const out: Pending[] = [];
   for (const r of kept) {
     if (r.kind === "update") continue;
@@ -605,6 +616,9 @@ async function stillWanted(
       const m = byId.get(laterMentionId(r));
       if (!m || m.artifact_id !== r.artifact_id) continue;
       out.push({ ...r, excerpt: m.excerpt, thread_id: m.thread_id ?? "" });
+    } else if (isInboxUpdate(r)) {
+      if (inboxUpdates.has(JSON.stringify([r.key, r.artifact_id, r.thread_id])))
+        out.push(r);
     } else if (r.kind === "ask" || r.kind === "later") {
       const a = open.get(cid(r));
       if (a === undefined) continue;
@@ -639,16 +653,20 @@ async function drainMember(
   now: number,
 ): Promise<number> {
   const prefs = await getPrefs(env, userId);
-  // The account's Needs you is the one switch: off drops the rows. An Update
-  // never sends, even one queued before Updates stopped pushing.
   const live = rows.filter(
-    (r) => r.kind !== "update" && prefs.needsYou.browser,
+    (r) =>
+      r.kind !== "update" &&
+      prefs.interrupt !== "none" &&
+      (!isInboxUpdate(r) || prefs.interrupt === "everything"),
   );
   const off = rows.filter((r) => !live.includes(r));
   if (off.length > 0) await dropRows(env, off);
+  const updates = off.filter((r) => r.kind === "update").length;
   const drops: Record<string, number> = {
-    needs_you_off: off.filter((r) => r.kind !== "update").length,
-    update: off.filter((r) => r.kind === "update").length,
+    needs_you_off: prefs.interrupt === "none" ? off.length - updates : 0,
+    interrupt_filtered:
+      prefs.interrupt === "mentions" ? off.length - updates : 0,
+    update: updates,
   };
   if (live.length === 0) {
     logDrops(userId, drops);
@@ -668,20 +686,17 @@ async function drainMember(
     logDrops(userId, drops);
     return 0;
   }
-  const { results: subs } = await stmt(
-    env.DB,
-    "select id, endpoint, p256dh, auth from push_subscriptions where user_id = ?1",
-  )
-    .bind(userId)
-    .all<Sub>();
+  const { results: subs } = await subscriptionsForSend(env, userId);
   // Overlapping ticks may read the same rows. Only the tick that removes a
   // still-due row may send it.
   const claimed = await stmt(
     env.DB,
     `delete from push_pending where user_id = ?1 and send_after <= ?2
+       and (pause_until is null or pause_until <= ?2)
+       and coalesce((select interrupt from notification_prefs where user_id = ?1), 'mentions') = ?4
        and id in (select value from json_each(?3)) returning id`,
   )
-    .bind(userId, now, JSON.stringify(live.map((r) => r.id)))
+    .bind(userId, now, JSON.stringify(live.map((r) => r.id)), prefs.interrupt)
     .all<{ id: string }>();
   const claimedIds = new Set(claimed.results.map((r) => r.id));
   if (subs.length === 0 || claimedIds.size === 0) {
@@ -705,44 +720,92 @@ async function drainMember(
     logDrops(userId, drops);
     return 0;
   }
-  let ok = 0;
-  let removed = 0;
-  for (const s of subs) {
-    // Every enrolled device gets it; one device's failure never stops the others.
-    let r: Awaited<ReturnType<typeof sendPush>>;
-    try {
-      r = await sendPush(
-        env,
-        s,
-        pushPayload(due, prefs.lockScreenDetail, title),
-        now,
-      );
-    } catch (e) {
-      logWarn("push_send_failed", e, { subscription: s.id });
-      continue;
-    }
-    if (r === "sent") {
-      ok++;
-      await stmt(
-        env.DB,
-        "update push_subscriptions set last_sent_at = ?1 where id = ?2",
-      )
-        .bind(now, s.id)
-        .run();
-    } else if (r === "gone" || r === "unusable") {
-      await stmt(env.DB, "delete from push_subscriptions where id = ?1")
-        .bind(s.id)
-        .run();
-      removed++;
-    } else logWarn("push_send_failed", undefined, { subscription: s.id });
-  }
+  const { sent, removed } = await deliverPush(
+    env,
+    subs,
+    pushPayload(due, prefs.lockScreenDetail, title),
+    now,
+  );
   // No device took it: the notification is gone, so say so in the same line.
-  if (ok === 0) {
+  if (sent === 0) {
     drops.send_failed = due.length;
     drops.devices_removed = removed;
   }
   logDrops(userId, drops);
-  return ok > 0 ? 1 : 0;
+  return sent > 0 ? 1 : 0;
+}
+
+const subscriptionsForSend = (env: Env, userId: string) =>
+  stmt(
+    env.DB,
+    "select id, endpoint, p256dh, auth from push_subscriptions where user_id = ?1",
+  )
+    .bind(userId)
+    .all<Sub>();
+
+async function pushTitle(env: Env): Promise<string> {
+  const settings = await getSettings(env).catch(() => null);
+  return orgName(settings?.name, env.APP_HOST);
+}
+
+async function deliverPush(
+  env: Env,
+  subs: Sub[],
+  payload: PushPayload,
+  now: number,
+) {
+  let sent = 0;
+  let removed = 0;
+  for (const s of subs) {
+    // Every enrolled device gets it; one device's failure never stops the others.
+    try {
+      const result = await sendPush(env, s, payload, now);
+      if (result === "sent") {
+        sent++;
+        await stmt(
+          env.DB,
+          "update push_subscriptions set last_sent_at = ?1 where id = ?2 and (last_sent_at is null or last_sent_at < ?1)",
+        )
+          .bind(now, s.id)
+          .run();
+      } else if (result === "gone" || result === "unusable") {
+        await stmt(env.DB, "delete from push_subscriptions where id = ?1")
+          .bind(s.id)
+          .run();
+        removed++;
+      } else logWarn("push_send_failed", undefined, { subscription: s.id });
+    } catch (e) {
+      logWarn("push_send_failed", e, { subscription: s.id });
+    }
+  }
+  return { sent, removed };
+}
+
+/** An explicit test click goes directly to the member's enrolled devices. */
+export async function sendTestPush(env: Env, userId: string, now = Date.now()) {
+  const hour = new Date(now).toISOString().slice(0, 13);
+  if ((await takeAll(env, [[`prefs:push_test:${userId}`, 10, hour]])) !== -1)
+    throw new ApiError(
+      "rate_limited",
+      "Too many test notifications. Try again later.",
+    );
+  const { results: subs } = await subscriptionsForSend(env, userId);
+  const { sent } = await deliverPush(
+    env,
+    subs,
+    {
+      v: 1,
+      title: await pushTitle(env),
+      body: "Test notification. It works.",
+      href: "/",
+      tag: "oa-push-test",
+      icon: PUSH_ICON,
+    },
+    now,
+  );
+  const devices = subs.length;
+  logInfo("push_test", { userId, sent, devices });
+  return { sent, devices };
 }
 
 /** A put-off item returns no later than this after its time, or its push is skipped (a long outage). */

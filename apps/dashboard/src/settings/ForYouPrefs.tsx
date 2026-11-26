@@ -288,6 +288,7 @@ function NeedsYouBrowser({
         await save.mutateAsync({
           ...prefs,
           needsYou: { ...prefs.needsYou, browser: true },
+          interrupt: "mentions",
           timeZone: browserTimeZone(),
         });
     } catch (e) {

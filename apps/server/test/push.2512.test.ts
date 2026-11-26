@@ -17,9 +17,7 @@ import {
 import { DEFAULT_PREFS, putPrefs } from "../src/services/notification-prefs.js";
 import {
   BUNDLE_MS,
-  DEFAULT_BODY,
   DEFAULT_HELD_BODY,
-  DEFAULT_MENTION_BODY,
   drainPush,
   HELD_PUSH_PREFIX,
   MAX_SUBSCRIPTIONS,
@@ -184,6 +182,8 @@ const prefs = (over: Partial<NotificationPrefs> = {}): NotificationPrefs => ({
   needsYou: { inApp: true, browser: true },
   browserAllAsks: true,
   ...over,
+  interrupt:
+    over.interrupt ?? (over.needsYou?.browser === false ? "none" : "mentions"),
 });
 const subscribe = (E: Env, cookie: string, body: unknown) =>
   api(app, R.mePushSubscriptions, cookie, { method: "POST", body }, E);
@@ -624,7 +624,7 @@ describe("the routes", () => {
 // ---------------------------------------------------------------- sending
 
 describe("sending", () => {
-  it("the default text hides the question: one fixed line, a link to the ask, no actions", async () => {
+  it("the default text hides the question: names the asker, a link to the ask, no actions", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
@@ -640,12 +640,12 @@ describe("sending", () => {
     expect(p).toEqual({
       v: 1,
       title: "Open Artifacts",
-      body: DEFAULT_BODY,
+      body: "Scout asked you something",
       href: `/a/${PUB}?thread=th1`,
       tag: "needs-you",
+      icon: "/icon-192.png",
     });
     expect(JSON.stringify(p)).not.toContain("Ship the draft");
-    expect(JSON.stringify(p)).not.toContain("Scout");
     expect(await pendingCount(u.userId)).toBe(0);
     // lastSentAt shows on the list.
     const l = (await (
@@ -656,7 +656,7 @@ describe("sending", () => {
     expect(l.items[0]?.lastSentAt).toBe(new Date(T0).toISOString());
   });
 
-  it("Axe 3: the asker and the question show only with lockScreenDetail, written by the server (controls stripped, cut)", async () => {
+  it("Axe 3: the question shows only with lockScreenDetail, written by the server (controls stripped, cut)", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E, { lockScreenDetail: true });
     const { sent } = fakePush();
@@ -841,11 +841,7 @@ describe("sending", () => {
     const { sent } = fakePush();
     await queuePush(E, [off.u.userId], item("ask:off1"), T0);
     await queuePush(E, [off.u.userId], item("ask:off2"), T0);
-    await putPrefs(
-      E,
-      off.u.userId,
-      prefs({ needsYou: { inApp: true, browser: false } }),
-    );
+    await putPrefs(E, off.u.userId, prefs({ interrupt: "none" }));
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await drainPush(E, T0);
     expect(sent).toHaveLength(0);
@@ -1187,7 +1183,7 @@ describe("devices, one set of account choices, Updates, mutes and Back from late
     const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
     expect(p.count).toBeUndefined();
     expect(p.tag).toBe("needs-you");
-    expect(p.body).toBe(DEFAULT_BODY);
+    expect(p.body).toBe("Scout asked you something");
     expect(await pendingCount(u.userId)).toBe(0);
   });
 
@@ -1202,7 +1198,9 @@ describe("devices, one set of account choices, Updates, mutes and Back from late
     expect(sent).toHaveLength(2);
     for (const x of [b, second]) {
       const s = sent.find((y) => y.url === x.body.endpoint) as Sent;
-      expect(JSON.parse(await decrypt(s.body, x)).body).toBe(DEFAULT_BODY);
+      expect(JSON.parse(await decrypt(s.body, x)).body).toBe(
+        "Scout asked you something",
+      );
     }
     expect(await subsOf(E, u.cookie)).toHaveLength(2);
   });
@@ -1456,7 +1454,7 @@ describe("what interrupts under Needs you (#3024)", () => {
       expect(sentTo(sent, x)).toHaveLength(1);
       expect(
         JSON.parse(await decrypt((sentTo(sent, x)[0] as Sent).body, x)).body,
-      ).toBe(DEFAULT_MENTION_BODY);
+      ).toBe("Ann mentioned you");
     }
   });
 
@@ -1523,7 +1521,7 @@ describe("a person's @mention back from Later (#3024)", () => {
     await drainPush(E, T0);
     expect(sentTo(sent, b)).toHaveLength(1);
     const p = JSON.parse(await decrypt((sentTo(sent, b)[0] as Sent).body, b));
-    expect(p.body).toBe(DEFAULT_MENTION_BODY);
+    expect(p.body).toBe("Ann mentioned you");
     expect(p.href).toBe(`/a/${PUB}?thread=th-m`);
     // One claim: the next ticks queue and send nothing more.
     await drainPush(E, T0 + 2 * BUNDLE_MS);
@@ -1595,7 +1593,7 @@ describe("a person's @mention back from Later (#3024)", () => {
     const deliveries = sentTo(sent, b);
     expect(deliveries).toHaveLength(1);
     const payload = JSON.parse(await decrypt((deliveries[0] as Sent).body, b));
-    expect(payload.body).toBe(DEFAULT_MENTION_BODY);
+    expect(payload.body).toBe("Ann mentioned you");
     expect(payload.count).toBeUndefined();
   });
 
@@ -1988,7 +1986,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     n = 0,
   ) => JSON.parse(await decrypt((mineOf(sent, b)[n] as Sent).body, b));
 
-  it("writing the item queues a Needs-you push; the lock screen says only that someone mentioned you", async () => {
+  it("writing the item queues a Needs-you push; the lock screen says who mentioned you", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
@@ -2003,10 +2001,9 @@ describe("a person's @-mention of the member (#2781)", () => {
     await drainPush(E, Date.now());
     expect(mineOf(sent, b)).toHaveLength(1);
     const p = await bodyOf(sent, b);
-    expect(p.body).toBe(DEFAULT_MENTION_BODY);
+    expect(p.body).toBe("Ann mentioned you");
     expect(p.tag).toBe("needs-you");
     expect(p.href).toBe(`/a/${PUB}?thread=th-m`);
-    expect(JSON.stringify(p)).not.toContain("Ann");
     expect(JSON.stringify(p)).not.toContain("yearly");
     // Not also queued as an Update.
     expect(await pendingCount(u.userId)).toBe(0);
@@ -2022,7 +2019,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     });
     await drainPush(E, Date.now());
     const p = await bodyOf(sent, b);
-    expect(p.body).toBe("Ann mentioned you: Can you check the yearly numbers?");
+    expect(p.body).toBe("Can you check the yearly numbers?");
   });
 
   it("not queued with the Needs-you switch off or no browser", async () => {
@@ -2056,7 +2053,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     const morning = Date.UTC(2026, 10, 19, 7, 0, 5);
     await drainPush(E, morning);
     expect(mineOf(sent, b)).toHaveLength(1);
-    expect((await bodyOf(sent, b)).body).toBe(DEFAULT_MENTION_BODY);
+    expect((await bodyOf(sent, b)).body).toBe("Ann mentioned you");
   });
 
   it("'Interrupt me for': a person's mention pushes under either choice, it is Needs you", async () => {
@@ -2148,9 +2145,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     });
     await env.DB.prepare("update push_pending set send_after = 0").run();
     await drainPush(E, Date.now());
-    expect((await bodyOf(sent, b)).body).toBe(
-      "Ann mentioned you: edited words",
-    );
+    expect((await bodyOf(sent, b)).body).toBe("edited words");
   });
 
   it("a bundle that holds a mention: 'N things need you', 'X asks, Y mentions', counts only, even with lock-screen detail", async () => {
@@ -2168,7 +2163,6 @@ describe("a person's @-mention of the member (#2781)", () => {
       const p = await bodyOf(sent, b);
       expect(p.title).toBe("4 things need you");
       expect(p.body).toBe("3 asks, 1 mention");
-      expect(JSON.stringify(p)).not.toContain("Ann");
       expect(JSON.stringify(p)).not.toContain("waiting for your answer");
     }
   });
@@ -2199,5 +2193,207 @@ describe("a person's @-mention of the member (#2781)", () => {
     await drainPush(E, T0 + 2 * BUNDLE_MS);
     p = await bodyOf(sent, b, 2);
     expect([p.title, p.body]).toEqual(["2 things need you", "2 asks"]);
+  });
+});
+
+describe("notification settings (#3024 step 3)", () => {
+  it.each(["mentions", "everything", "none"] as const)(
+    "%s delivers only the selected categories and keeps all Inbox items",
+    async (interrupt) => {
+      const { E } = await world();
+      const { u, b } = await enroll(E, { interrupt });
+      const { sent } = fakePush();
+      const now = Date.now();
+      const actor = { kind: "user" as const, ref: "someone-else", name: "Ann" };
+      await writeInboxItems(E, [
+        {
+          userId: u.userId,
+          key: "reply:settings",
+          kind: "reply",
+          artifactId: PUB,
+          threadId: "settings",
+          actor,
+          excerpt: "Reply words",
+          at: now,
+        },
+        {
+          userId: u.userId,
+          key: "person:settings",
+          kind: "mention",
+          artifactId: PUB,
+          threadId: "settings",
+          actor,
+          excerpt: "Mention words",
+          at: now,
+        },
+      ]);
+      const member = await getUser(E, u.userId);
+      await recordShareItem(E, {
+        artifactId: PUB,
+        title: "Roadmap",
+        email: member?.email ?? "",
+        sharer: actor.ref,
+        sharerName: actor.name,
+        createdAt: now,
+      });
+      await queuePush(E, [u.userId], item("ask:settings"), now);
+      const expected = { none: 0, mentions: 2, everything: 4 }[interrupt];
+      const inbox = await E.DB.prepare(
+        "select kind from inbox_items where user_id = ? order by kind",
+      )
+        .bind(u.userId)
+        .all<{ kind: string }>();
+      expect(inbox.results.map((r) => r.kind)).toEqual([
+        "mention",
+        "reply",
+        "share",
+      ]);
+      expect(await pendingCount(u.userId)).toBe(expected);
+      await drainPush(E, Date.now());
+      expect(sentTo(sent, b)).toHaveLength(expected ? 1 : 0);
+      if (expected) {
+        const payload = JSON.parse(
+          await decrypt((sentTo(sent, b)[0] as Sent).body, b),
+        );
+        expect(payload.count).toBe(expected);
+        expect(payload.body).toBe(
+          interrupt === "everything"
+            ? "1 ask, 1 mention, 1 reply, 1 share"
+            : "1 ask, 1 mention",
+        );
+      }
+    },
+  );
+
+  it("an everything reply still observes page mutes and quiet hours", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      interrupt: "everything",
+      quietHours: { start: "12:00", end: "13:00" },
+    });
+    vi.spyOn(Date, "now").mockReturnValue(T0);
+    const { sent } = fakePush();
+    const actor = { kind: "user" as const, ref: "someone-else", name: "Ann" };
+    await writeInboxItems(
+      E,
+      [PUB, MUTED].map((artifactId) => ({
+        userId: u.userId,
+        key: `reply:${artifactId}`,
+        kind: "reply",
+        artifactId,
+        threadId: "settings",
+        actor,
+        excerpt: "Reply words",
+        at: T0,
+      })),
+    );
+    await E.DB.prepare(
+      "insert into inbox_mutes (user_id, kind, target_id, created_at) values (?, 'page', ?, ?)",
+    )
+      .bind(u.userId, MUTED, T0)
+      .run();
+    expect(await pendingCount(u.userId)).toBe(2);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(0);
+    await drainPush(E, T0 + 3600_000);
+    expect(sentTo(sent, b)).toHaveLength(1);
+    expect(
+      JSON.parse(await decrypt((sentTo(sent, b)[0] as Sent).body, b)),
+    ).toMatchObject({
+      body: "Ann replied in your thread",
+      href: `/a/${PUB}?thread=settings`,
+    });
+    expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it("holds existing and new rows through a pause longer than the stale window", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E);
+    const { sent } = fakePush();
+    const now = Date.now();
+    const end = now + 30 * 3600_000;
+    await queuePush(E, [u.userId], item("ask:pre-pause"), now);
+    await putPrefs(
+      E,
+      u.userId,
+      prefs({ pausedUntil: new Date(end).toISOString() }),
+    );
+    await queuePush(E, [u.userId], item("ask:in-pause"), now);
+    const other = await enroll(E);
+    await queuePush(E, [other.u.userId], item("ask:other"), end - 1);
+    await drainPush(E, end - 1);
+    expect(sentTo(sent, b)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(2);
+    await drainPush(E, end);
+    expect(sentTo(sent, b)).toHaveLength(1);
+    expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it.each([null, "2020-01-01T00:00:00.000Z"])(
+    "setting pause to %s releases queued rows on the next tick",
+    async (pausedUntil) => {
+      const { E } = await world();
+      const { u, b } = await enroll(E, {
+        pausedUntil: new Date(Date.now() + 3600_000).toISOString(),
+      });
+      const { sent } = fakePush();
+      await queuePush(E, [u.userId], item("ask:clear-pause"));
+      await drainPush(E);
+      expect(sentTo(sent, b)).toHaveLength(0);
+      await putPrefs(E, u.userId, prefs({ pausedUntil }));
+      await drainPush(E);
+      expect(sentTo(sent, b)).toHaveLength(1);
+    },
+  );
+
+  it("POST push test sends to each enrolled device despite quiet hours and pause, with a per-member hourly cap", async () => {
+    const { E } = await world();
+    const now = Date.parse("2026-11-18T12:01:00Z");
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    const { u, b } = await enroll(E, {
+      quietHours: { start: "12:00", end: "13:00" },
+      pausedUntil: new Date(now + 3600_000).toISOString(),
+      interrupt: "none",
+    });
+    const second = await browser();
+    expect((await subscribe(E, u.cookie, second.body)).status).toBe(201);
+    const other = await enroll(E);
+    await E.DB.prepare(
+      "insert into settings (key, value) values ('name', 'Test Workspace') on conflict (key) do update set value = excluded.value",
+    ).run();
+    const { sent } = fakePush();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const send = (cookie: string) =>
+      api(app, R.mePushTest, cookie, { method: "POST" }, E);
+    for (let i = 0; i < 10; i++) {
+      const response = await send(u.cookie);
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result).toEqual({ sent: 2, devices: 2 });
+    }
+    expect((await send(u.cookie)).status).toBe(429);
+    const attempts = log.mock.calls
+      .map(([line]) => JSON.parse(String(line)))
+      .filter((line) => line.evt === "push_test" && line.userId === u.userId);
+    expect(attempts).toHaveLength(10);
+    expect(attempts[0]).toMatchObject({ sent: 2, devices: 2 });
+    for (const device of [b, second]) {
+      const pushes = sentTo(sent, device);
+      expect(pushes).toHaveLength(10);
+      expect(
+        JSON.parse(await decrypt((pushes[0] as Sent).body, device)),
+      ).toMatchObject({
+        title: "Test Workspace",
+        body: "Test notification. It works.",
+        icon: "/icon-192.png",
+      });
+    }
+    expect(sentTo(sent, other.b)).toHaveLength(0);
+    expect(await (await send(other.u.cookie)).json()).toEqual({
+      sent: 1,
+      devices: 1,
+    });
+    clock.mockReturnValue(now + 3600_000);
+    expect((await send(u.cookie)).status).toBe(200);
   });
 });

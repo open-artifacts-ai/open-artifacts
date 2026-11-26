@@ -134,6 +134,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "PUT /api/v1/me/notification-prefs": { user: "the caller" },
   // #2512 S5: the caller's own browsers; 404 push_unavailable with no VAPID key; changes need a browser session (handler).
   "GET /api/v1/me/push/key": { user: "the caller" },
+  "POST /api/v1/me/push/test": { user: "the caller" },
   "GET /api/v1/me/push/subscriptions": { user: "the caller" },
   "POST /api/v1/me/push/subscriptions": { user: "the caller" },
   "PATCH /api/v1/me/push/subscriptions/:id": { user: "the caller" },

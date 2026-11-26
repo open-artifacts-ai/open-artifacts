@@ -794,13 +794,17 @@ export const pickAssertions = sqliteTable(
 );
 
 // #2512 S4: a member's notification choices. No row: the defaults (browser
-// off, quiet hours off, time zone UTC, lock screen hides details). quiet_*
+// mentions, quiet hours off, time zone UTC, lock screen hides details). quiet_*
 // are both set or both null; time_zone is an IANA name (checked on write).
 export const notificationPrefs = sqliteTable("notification_prefs", {
   userId: text("user_id")
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  interrupt: text("interrupt", { enum: ["mentions", "everything", "none"] })
+    .notNull()
+    .default("mentions"),
+  pausedUntil: integer("paused_until"),
   // Legacy (#3024): Updates are list-only; never read or written. Dropped in step 8.
   updatesBrowser: integer("updates_browser").notNull().default(0),
   browserAllAsks: integer("browser_all_asks").notNull().default(0),
@@ -875,13 +879,14 @@ export const pushPending = sqliteTable(
     kind: text("kind").notNull(),
     artifactId: text("artifact_id").notNull(),
     threadId: text("thread_id").notNull(),
-    // Plain text, control characters stripped, only shown with lockScreenDetail.
+    // Plain text, control characters stripped.
     askerName: text("asker_name").notNull(),
     excerpt: text("excerpt").notNull(),
     // Set when the asker is the member's own agent: who waits on whom.
     askerRef: text("asker_ref"),
     agentKey: text("agent_key"),
     sendAfter: integer("send_after").notNull(),
+    pauseUntil: integer("pause_until"),
     createdAt: integer("created_at").notNull(),
   },
   (t) => [

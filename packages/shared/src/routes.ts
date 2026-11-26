@@ -33,6 +33,8 @@ export const R = {
   meOnboardingListensAsked: "/api/v1/me/onboarding/listens-asked",
   /** GET -> PushKey (`{ publicKey }`); 404 push_unavailable when the server has no push key. */
   mePushKey: "/api/v1/me/push/key",
+  /** POST an immediate test notification to my enrolled devices. */
+  mePushTest: "/api/v1/me/push/test",
   /** GET -> PushSubscriptions; POST PushSubscribeBody -> 201 `{ id }`. */
   mePushSubscriptions: "/api/v1/me/push/subscriptions",
   /** PATCH PushSubscriptionPatchBody (`{ needsYou?, updates? }`) -> 200 { needsYou, updates }: this browser's switches. DELETE -> 204: removes it. The caller's own subscription only (404 otherwise); a person in a browser (a token gets 404). */
