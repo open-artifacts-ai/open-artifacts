@@ -275,9 +275,14 @@ async function readLink(c: Context<AppEnv>): Promise<LinkValue | null> {
     if (!json) return null;
     const out = JSON.parse(json) as Partial<LinkValue>;
     if (typeof out.s !== "string" || typeof out.e !== "string") return null;
-    // An unknown provider is refused, never read as Google.
-    const provider = out.p ?? "google";
-    if (!LINK_PROVIDERS.includes(provider)) return null;
+    // Only a missing p (a cookie from before #3087) reads as Google; null or
+    // an unknown provider is refused, never read as Google.
+    const provider = "p" in out ? out.p : "google";
+    if (
+      typeof provider !== "string" ||
+      !LINK_PROVIDERS.includes(provider as LinkProvider)
+    )
+      return null;
     // The sealed address must be the one this key was made for.
     if (p.ek !== (await emailKey(c.env, out.e))) return null;
     return {
