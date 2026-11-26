@@ -591,6 +591,8 @@ describe("C5 hardening: session files", () => {
     writeSession(d, 4242, { sessionId: "sX" });
     const running = new Set([4242]);
     const syncs = eventCounter();
+    // The sync interval is fake: each window is crossed by moving the clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: {
         sessionsDir: d,
@@ -602,21 +604,32 @@ describe("C5 hardening: session files", () => {
       },
     });
     await h.next("agent_up");
+    const base = syncs.count;
     for (const pid of [1111, 5151, 9999]) {
       writeSession(d, pid, { sessionId: "sX" });
       running.add(pid);
     }
+    // The original 5 x 25 ms: after each step, the ticks that fit have run.
     for (let i = 0; i < 5; i++) {
-      await syncs.next(); // a whole sync tick ran
+      await vi.advanceTimersByTimeAsync(25);
+      expect(syncs.count - base).toBeGreaterThanOrEqual(
+        Math.floor(((i + 1) * 25) / 20),
+      );
       expect(h.daemon.agents.byRef("sX")?.pid).toBe(4242);
     }
     running.delete(4242);
+    await vi.advanceTimersByTimeAsync(20); // the next tick sees it gone
     await vi.waitFor(() =>
       expect(h.daemon.agents.byRef("sX")?.pid).not.toBe(4242),
     );
     const next = h.daemon.agents.byRef("sX")?.pid;
-    await syncs.next(3); // more whole ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // it really ran
+    }
     expect(h.daemon.agents.byRef("sX")?.pid).toBe(next);
+    await stopAll(); // clear the daemon's interval while it is still the fake one
   });
 
   it("accepts the resumed session's MCP hello before the next sync tick", async () => {
