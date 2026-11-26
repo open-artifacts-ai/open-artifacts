@@ -222,7 +222,19 @@ export function setJsoncValue(
 
 /** Removes the member at `path`: the inverse of `setJsoncValue` for a member it added. */
 export function removeJsoncValue(text: string, path: JSONPath): string {
-  return verified(removeAt(text, path), path, undefined);
+  const index = path.at(-1);
+  const parent = path.slice(0, -1);
+  const before =
+    typeof index === "number" ? jsoncValue(text, parent) : undefined;
+  const out = removeAt(text, path);
+  // Removing an array element shifts its successors into the same index.
+  if (Array.isArray(before))
+    return verified(
+      out,
+      parent,
+      before.filter((_, i) => i !== index),
+    );
+  return verified(out, path, undefined);
 }
 
 /** The value at `path`, or undefined; the text must parse. */

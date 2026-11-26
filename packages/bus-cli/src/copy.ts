@@ -853,6 +853,14 @@ export function copy(
     // agy S3, doctor: the one rule that lets a session start its watcher without asking.
     agyRulePresent: () =>
       done("Antigravity may start the bus watcher without asking"),
+    agyToolsMissing: (rules: string[]) => [
+      warn(
+        `Antigravity bus tool grants missing or restricted: ${rules.join(", ")}`,
+      ),
+      next(
+        `Run ${bus} to restore missing grants. Review any explicit ask or deny entries in Antigravity settings.`,
+      ),
+    ],
     agyRuleMissing: () => [
       warn("Antigravity will ask before it starts the bus watcher"),
       next(

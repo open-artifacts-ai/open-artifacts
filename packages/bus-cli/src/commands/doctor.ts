@@ -397,6 +397,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
             ? undefined
             : agyWatchCommand(bin, resolve(ctx.home)),
         );
+        if (rule.missingTools.length)
+          warn(c.agyToolsMissing(rule.missingTools));
         if (rule.state === "present") pass(c.agyRulePresent());
         else if (rule.state === "missing") warn(c.agyRuleMissing());
         else warn(c.agyRuleAltered(tilde(ctx, rule.file)));
