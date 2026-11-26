@@ -54,6 +54,7 @@ import {
   uninstallProof,
 } from "./claude-proof.ts";
 import {
+  CODEX_HOOK_ENABLED,
   CODEX_HOOK_TRUST_LINE,
   codexConfig,
   codexEntry,
@@ -270,6 +271,13 @@ const homeLine = (ob: string) =>
   `process.env.OA_BUS_HOME ||= ${JSON.stringify(ob)};`;
 const withHome = (text: string, ob: string | undefined) =>
   ob === undefined ? text : `${homeLine(ob)}\n${text}`;
+const homed = (file: string, ob: string | undefined): boolean => {
+  if (!existsSync(file)) return false;
+  const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+  return ob === undefined
+    ? !first.startsWith("process.env.OA_BUS_HOME ||=")
+    : first === homeLine(ob);
+};
 
 export const paths = (deps: AdapterDeps) => {
   const env = deps.env ?? {};
@@ -1032,7 +1040,7 @@ const install: Record<Harness, Step> = {
     }
     await codexEntryStep(deps, notes);
     const hooksPath = codexHooks(deps.home, deps.env ?? {});
-    if (habitsOff(p.busDir)) {
+    if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED) {
       const hook = uninstallCodexHook(hooksPath);
       if (hook.note) notes.push(hook.note);
     } else {
@@ -1384,14 +1392,7 @@ export function checkAdapters(
     typeof env === "object" && env !== null
       ? ((env as Doc).OA_BUS_HOME as string | undefined)
       : undefined;
-  const homed = (file: string) => {
-    if (!existsSync(file)) return false;
-    const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
-    const ob = movedHome(deps);
-    return ob === undefined
-      ? !first.startsWith("process.env.OA_BUS_HOME ||=")
-      : first === homeLine(ob);
-  };
+  const ob = movedHome(deps);
   const state = (h: Harness, ok: () => boolean): AdapterState =>
     !(h === "omp"
       ? hasOmp(deps)
@@ -1427,10 +1428,10 @@ export function checkAdapters(
           parseJsonc(readFileSync(p.opencodeCli, "utf8"), p.opencodeCli),
           p.opencodePlugin,
         ) &&
-        homed(join(p.opencodePlugin, "tui.js")),
+        homed(join(p.opencodePlugin, "tui.js"), ob),
     ),
-    pi: state("pi", () => homed(p.pi)),
-    omp: state("omp", () => homed(p.omp)),
+    pi: state("pi", () => homed(p.pi, ob)),
+    omp: state("omp", () => homed(p.omp, ob)),
     codex: state("codex", () =>
       entryIs(
         codexEntryOf(readToml(p.codex).doc),
@@ -1540,6 +1541,98 @@ export function skippedProxyEntries(
       out.push({ harness: "OpenCode", note });
   } catch {}
   return out;
+}
+
+export type RefreshResult = { refreshed: Harness[]; skipped: Skipped[] };
+
+/**
+ * #3174: on daemon start (so after every auto-update restart), brings the
+ * wiring install copied up to this version: the Pi / oh-my-pi extension file,
+ * OpenCode's TUI plugin file, the Codex SessionStart hook, and the Hermes and
+ * OpenClaw plugin folders. Only what is already there and ours; never adds a
+ * harness, never edits a harness config, never restarts a service, never
+ * prompts. OpenCode's MCP entry runs `<busHome>/bin`, so it is new already.
+ * Never throws.
+ */
+export async function refreshAdapters(
+  deps: AdapterDeps,
+): Promise<RefreshResult> {
+  if (deps.busBin.length === 0) return { refreshed: [], skipped: [] };
+  const refreshed: Harness[] = [];
+  const skipped: Skipped[] = [];
+  const p = paths(deps);
+  const ob = movedHome(deps);
+  const refreshFile = (file: string, text: string): boolean => {
+    if (!homed(file, ob)) return false;
+    if (readFileSync(file, "utf8") === text) return false;
+    writeAtomic(file, text, 0o644);
+    return true;
+  };
+  const step = async (
+    harness: Harness,
+    fn: () => Promise<boolean> | boolean,
+  ) => {
+    try {
+      if (await fn()) refreshed.push(harness);
+    } catch (e) {
+      skipped.push({
+        harness,
+        reason: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  await step("opencode", () =>
+    refreshFile(
+      join(p.opencodePlugin, "tui.js"),
+      withHome(deps.assets.opencodePlugin, ob),
+    ),
+  );
+  await step("pi", () => refreshFile(p.pi, withHome(deps.assets.pi, ob)));
+  if (p.omp !== p.pi)
+    await step("omp", () => refreshFile(p.omp, withHome(deps.assets.pi, ob)));
+  await step("codex", () => {
+    if (!present(p.codex)) return false;
+    if (
+      !entryIs(
+        codexEntryOf(readToml(p.codex).doc),
+        codexEntry(deps.busBin, deps.home, p.busDir),
+        true,
+      )
+    )
+      return false;
+    const hooksPath = codexHooks(deps.home, deps.env ?? {});
+    if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED)
+      return uninstallCodexHook(hooksPath).removed;
+    const hook = installCodexHook(
+      hooksPath,
+      codexHookCommand(deps.busBin, deps.home, p.busDir),
+    );
+    return hook.status === "added" || hook.status === "updated";
+  });
+  await step("hermes", async () => {
+    const dest = hermesPluginDir(deps.home, deps.env ?? {});
+    if (
+      deps.assets.hermes === undefined ||
+      pluginState(dest, deps.assets.hermes) !== "stale"
+    )
+      return false;
+    return (await installHermes(deps)) === "done";
+  });
+  await step("openclaw", async () => {
+    if (
+      openclawNix(deps.env) ||
+      deps.assets.openclaw === undefined ||
+      openclawPluginState(
+        openclawPluginDir(deps.home, deps.env ?? {}),
+        deps.assets.openclaw,
+      ) !== "stale"
+    )
+      return false;
+    return (
+      (await installOpenclaw(deps, [], habitsOptedOut(p.busDir))) === "done"
+    );
+  });
+  return { refreshed, skipped };
 }
 
 /**

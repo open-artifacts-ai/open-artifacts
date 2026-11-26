@@ -516,6 +516,13 @@ const HOOK_SUFFIX = "rules codex-hook";
 const HOOK_MATCHER = "startup|resume";
 const HOOK_TIMEOUT = 10;
 
+/**
+ * The one switch for the Codex SessionStart hook (#3043), pending the decision
+ * on Codex's one-time trust step. false: install and the daemon's refresh never
+ * add the hook, and remove one an earlier install added.
+ */
+export const CODEX_HOOK_ENABLED: boolean = true;
+
 export const CODEX_HOOK_TRUST_LINE =
   "Codex: open /hooks once and trust the Open Artifacts bus hook, so each session gets the bus rules.";
 
