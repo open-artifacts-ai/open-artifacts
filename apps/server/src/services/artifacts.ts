@@ -1438,6 +1438,7 @@ function versionFace(
 ): {
   linked?: boolean;
   product?: string;
+  appKind?: string;
   animal?: { id: string; color: number };
 } {
   // Unlinked, to a viewer who may see faces: linked false (a dashed tile), as comments do.
