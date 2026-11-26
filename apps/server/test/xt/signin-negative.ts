@@ -12,7 +12,7 @@ import {
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
-import { buffered, settleOtp } from "./settled-otp.js";
+import { buffered, type SettleOtp, settleOtp } from "./settled-otp.js";
 
 export type Install = {
   /** App origin, e.g. https://stg-a.example.com. */
@@ -243,10 +243,20 @@ const OTP_QUICK_MAX = 20;
  * at once. An install whose hook answers "pending" at once, again and again,
  * does not hold requests (an older build): that fails rather than spins.
  */
-function settledOtp(to: Install, email: string): Promise<Response> {
+export function settledOtp(
+  to: Install,
+  email: string,
+  /** The clock and deadline signal, for a test to drive. */
+  seams: Pick<SettleOtp<Response>, "now" | "signalFor"> = {},
+): Promise<Response> {
   return settleOtp({
-    ask: (wait, signal) =>
-      hook(to, TEST_HOOKS.otpLatest, { email, wait }, signal),
+    ...seams,
+    // The body is read inside the ask: the bound covers it, not only the headers.
+    ask: async (wait, signal) =>
+      buffered(
+        await hook(to, TEST_HOOKS.otpLatest, { email, wait }, signal),
+        signal,
+      ),
     outcome: otpOutcome,
     deadlineMs: OTP_DEADLINE_MS,
     holdMs: OTP_HOLD_MS,
