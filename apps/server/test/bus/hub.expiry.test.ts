@@ -199,6 +199,7 @@ async function setup() {
 async function offline(d: Daemon) {
   d.close();
   await d.closed;
+  // sleep-ok: absence — the hub's own bookkeeping after a close emits no frame
   await new Promise((r) => setTimeout(r, 50));
 }
 
