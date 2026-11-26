@@ -514,6 +514,49 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(await listed(s, a.ref)).toEqual([]);
   });
 
+  it("an unfollow whose delete fails keeps the role's part: the next move still hands the page on", async () => {
+    const s = await setup();
+    const x = await artifactOf(s.m.userId);
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const c = await s.reg(uniq("c"));
+    const role = uniq("platform");
+    const t0 = Date.now() - 600_000;
+    await follow(s, b.ref, x);
+    await follow(s, a.ref, x);
+    await e.DB.batch([
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ? and agent_name = ?",
+      ).bind(t0 - 1, s.m.userId, x, b.name),
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ? and agent_name = ?",
+      ).bind(t0 + 1, s.m.userId, x, a.name),
+    ]);
+    await s.clock(t0);
+    await s.setRole(role, a.id);
+    await s.clock(t0 + 60_000);
+    await s.setRole(role, b.id);
+    expect(await listed(s, b.ref)).toEqual([x]);
+    // The D1 delete fails: the unfollow is refused and nothing changes.
+    await e.DB.prepare("alter table follows rename to follows_x").run();
+    try {
+      s.d.send({
+        v: 1,
+        id: id("f"),
+        type: "unfollow",
+        from_ref: b.ref,
+        artifact: x,
+      } as never);
+      expect((await waitFor(s.d, "error")).code).toBe("internal");
+    } finally {
+      await e.DB.prepare("alter table follows_x rename to follows").run();
+    }
+    await s.clock(t0 + 120_000);
+    await s.setRole(role, c.id);
+    expect(await listed(s, c.ref)).toEqual([x]);
+    expect(await listed(s, b.ref)).toEqual([x]);
+  });
+
   it("a session that still holds another role keeps its mail", async () => {
     const s = await setup();
     const a = await s.reg(uniq("a"));
