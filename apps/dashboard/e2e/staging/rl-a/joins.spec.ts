@@ -131,7 +131,7 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", {
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member outside the domain signs in by code: a member session in the library", {
+test("an invited member outside the domain signs in by code: a member session that opens their Welcome", {
   tag: "@gate",
 }, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
@@ -177,9 +177,19 @@ test("an invited member outside the domain signs in by code: a member session in
     .fill(`T19 ${RUN} invited`);
   await ask.getByRole("button", { name: "Save" }).click();
   await expect(ask).toHaveCount(0);
+  // A member's first Library visit opens their own seeded Welcome page once
+  // (#2632, apps/dashboard/src/library/useWelcomeRedirect.ts); a guest never
+  // gets one (their home is Shared with you). So this lands on the Welcome
+  // they own, inside the Library.
   await expect(
-    page.getByRole("heading", { level: 1, name: "Library" }),
+    page.getByRole("heading", { level: 1, name: "Welcome" }),
   ).toBeVisible();
+  await expect(
+    page
+      .getByRole("navigation", { name: "Breadcrumb" })
+      .getByRole("link", { name: "Library" }),
+  ).toBeVisible();
+  await expect(page).not.toHaveURL(/\/shared$/);
 
   // The API agrees on the code session: the invited row, a member, uncapped.
   const me = (await (
