@@ -108,13 +108,11 @@ describe("upload hardening", () => {
     );
     await waitFor(() => expect(api.putRaw).toHaveBeenCalled());
     ac.abort();
-    const r = await Promise.race([
-      p.then(
-        () => "resolved",
-        (e: Error) => e.name,
-      ),
-      new Promise((res) => setTimeout(() => res("hung"), 200)),
-    ]);
+    // A hang is the test's own timeout; there is no wall-clock wait here.
+    const r = await p.then(
+      () => "resolved",
+      (e: Error) => e.name,
+    );
     expect(r).toBe("AbortError");
   });
 

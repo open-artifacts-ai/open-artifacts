@@ -15,10 +15,12 @@ import { describe, expect, it, vi } from "vitest";
 import { allowedText, endDate, leftoverText } from "../src/foryou/held";
 import { agentAsksOn, forYouVariant } from "../src/mockForYou";
 import { MentionMenu } from "../src/viewer/comments/asks";
+import { installClock, settle } from "./clock";
 import { calls, events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+installClock();
 
 const asks = (...first: HttpHandler[]) =>
   server.use(
@@ -259,7 +261,7 @@ describe("the held-request notice", () => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(within(panel).queryByText(/The words changed/)).toBeNull();
     expect(panel.querySelector("[data-changed]")).toBeNull();
   });

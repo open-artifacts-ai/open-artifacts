@@ -11,9 +11,11 @@ import {
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COPIED, upgradePrompt } from "../src/layout/update";
+import { installClock } from "./clock";
 import { installHarness, mount, mountHosted, server, wait } from "./harness";
 
 installHarness();
+installClock();
 
 const NEWER: InstanceUpdate = {
   latestVersion: "0.15.0",

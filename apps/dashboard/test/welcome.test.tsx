@@ -5,6 +5,7 @@ import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { calendarDaysTo, chipLabel, chipPlan } from "../src/layout/PlanChip";
 import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
+import { installClock } from "./clock";
 import {
   calls,
   installHarness,
@@ -15,6 +16,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 beforeEach(resetWelcomeRedirect);
 
 const WELCOME = "WmCnEfGhJk4mNpQr";

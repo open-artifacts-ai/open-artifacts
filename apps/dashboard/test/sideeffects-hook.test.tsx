@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { installClock } from "./clock";
 
 const getMock = vi.fn();
 const putBody = vi.fn(async () => {});
@@ -29,7 +30,9 @@ const art = (o: Partial<ArtifactSummary> = {}) =>
     capabilities: { db: true, viewer: true, storage: false },
     ...o,
   }) as unknown as ArtifactSummary;
-const flush = () => new Promise((r) => setTimeout(r, 0));
+installClock();
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 
 describe("side-effects hook", () => {
   it("text that arrives before version info loads is still sent once info lands", async () => {

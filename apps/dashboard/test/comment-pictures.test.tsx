@@ -19,6 +19,7 @@ import {
   usePictureDrawer,
 } from "../src/viewer/comments/pictures/drawer";
 import { fitSide, isHeic } from "../src/viewer/comments/pictures/shrink";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mount, mountHosted, server } from "./harness";
 
 // jsdom draws nothing: shrinking is the browser's, so it is stood in for here.
@@ -86,6 +87,7 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+installClock();
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -351,7 +353,7 @@ describe("in the viewer", () => {
       user: { ...m.user, role: "guest" },
     }));
     await col();
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(document.querySelector("[data-attach-picture]")).toBeNull();
   });
 

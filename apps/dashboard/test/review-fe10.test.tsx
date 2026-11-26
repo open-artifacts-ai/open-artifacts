@@ -2,9 +2,11 @@ import { R } from "@oa/shared";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { delay, HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { installClock, settle } from "./clock";
 import { installHarness, lastClient, mount, server } from "./harness";
 
 installHarness();
+installClock();
 
 const usage = (metrics: { key: string; used: number; limit: number }[]) =>
   server.use(
@@ -98,7 +100,7 @@ describe("instance review", () => {
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     if (!input.disabled) {
       fireEvent.change(input, { target: { value: "First Second" } });
-      await new Promise((r) => setTimeout(r, 400));
+      await settle(400);
       expect(input.value).toBe("First Second");
     }
   });

@@ -15,6 +15,7 @@ import {
 } from "../src/foryou/push";
 import { pushSwitchHandlers } from "../src/mockPushSwitches";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -26,6 +27,7 @@ import {
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+installClock();
 
 const ME_ID = fixtures.me.user.id;
 
@@ -846,7 +848,7 @@ describe("a subscription left by someone else (Axe)", () => {
     );
     mount("/settings/notifications");
     await needs();
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(await f.pushManager.getSubscription()).not.toBeNull();
     expect(localStorage.getItem(KEY)).not.toBeNull();
   });
