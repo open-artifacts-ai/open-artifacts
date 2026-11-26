@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.248.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.247.0...v0.248.0) (2026-11-26)
+
+
+### Features
+
+* **dashboard:** a mistyped link says so at sign-in and lands on the Library ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3111](https://github.com/open-artifacts-ai/open-artifacts/issues/3111)) ([948830c](https://github.com/open-artifacts-ai/open-artifacts/commit/948830c807b2c79ed7408e74a8bba00541099187))
+
+## [0.247.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.1...v0.247.0) (2026-11-26)
+
+
+### Features
+
+* **bus-protocol:** hub accepts agent kind antigravity (agy S1a) ([#3104](https://github.com/open-artifacts-ai/open-artifacts/issues/3104)) ([f030030](https://github.com/open-artifacts-ai/open-artifacts/commit/f030030a14f87fe00a74611b20c835093ea9d0f8))
+* **bus:** oa-bus install wires Antigravity behind OA_BUS_EXPERIMENTAL_AGY (agy S1b) ([#3106](https://github.com/open-artifacts-ai/open-artifacts/issues/3106)) ([113422c](https://github.com/open-artifacts-ai/open-artifacts/commit/113422c1473d60916d5920541222ff5682f99060))
+
 ## [0.246.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.0...v0.246.1) (2026-11-25)
 
 
