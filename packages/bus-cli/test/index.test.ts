@@ -306,6 +306,15 @@ s.on("data", () => {});
     );
   });
 
+  it("an argument execFile rejects fails like any command, not by rejecting", async () => {
+    const g = await gate();
+    const oc = script(g);
+    const r = await makeExec(300)(oc, ["a\0b"]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/ERR_INVALID_ARG_VALUE/);
+  });
+
   it("returns the output collected before the timeout", async () => {
     const g = await gate();
     const oc = script(g);

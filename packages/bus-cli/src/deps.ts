@@ -96,26 +96,33 @@ export const makeExec =
         );
         return resolve({ code: 1, stdout: "", stderr: String(e) });
       }
-      const child = execFile(
-        resolveCmd(cmd),
-        args,
-        {
-          ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
-          maxBuffer: 8 * 1024 * 1024,
-        },
-        (e, stdout, stderr) => {
-          clearTimeout(timer);
-          if (!e) return resolve({ code: 0, stdout, stderr });
-          const err = e as { code?: number | string };
-          resolve({
-            code: typeof err.code === "number" ? err.code : 1,
-            stdout: stdout ?? "",
-            stderr: timedOut
-              ? `timed out after ${ms} ms`
-              : (stderr ?? String(e)),
-          });
-        },
-      );
+      let child: ReturnType<typeof execFile>;
+      // execFile throws synchronously on input it rejects (a NUL byte in an
+      // argument, say): that fails like any other command, as it always did.
+      try {
+        child = execFile(
+          resolveCmd(cmd),
+          args,
+          {
+            ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+            maxBuffer: 8 * 1024 * 1024,
+          },
+          (e, stdout, stderr) => {
+            clearTimeout(timer);
+            if (!e) return resolve({ code: 0, stdout, stderr });
+            const err = e as { code?: number | string };
+            resolve({
+              code: typeof err.code === "number" ? err.code : 1,
+              stdout: stdout ?? "",
+              stderr: timedOut
+                ? `timed out after ${ms} ms`
+                : (stderr ?? String(e)),
+            });
+          },
+        );
+      } catch (e) {
+        return resolve({ code: 1, stdout: "", stderr: String(e) });
+      }
       const timer =
         ms > 0
           ? setTimeout(() => {
