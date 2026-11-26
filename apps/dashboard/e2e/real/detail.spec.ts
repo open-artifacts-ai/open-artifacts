@@ -65,28 +65,42 @@ async function expectDetail(
 }
 
 /**
- * Opens a library page and returns once it has stopped moving: the member's
- * onboarding answer is in (it decides whether the Get started card takes room
- * above the results, and a connected member's shorter card closes the gap) and
- * the page has painted the result. A box measured earlier is a box in the wrong
- * place for a click aimed by coordinates.
+ * Opens a library page and returns once it has stopped moving. This member has
+ * a card still open (an agent connected, steps left), so the settled page is
+ * the one where the card has rendered (`data-member`): its answer decides how
+ * much room it takes above the results, and a connected member's card is
+ * shorter than its placeholder, so the results move up when it commits. A box
+ * measured before that is in the wrong place for a click aimed by coordinates.
  */
 async function openLibrary(page: Page, path: string) {
-  const answered = page.waitForResponse(
-    (r) =>
-      new URL(r.url()).pathname === R.onboarding &&
-      r.request().method() === "GET",
-  );
   await page.goto(path);
-  await answered;
+  await expect(page.locator("section[data-member]")).toBeVisible();
   await expect(page.locator("[data-member-slot]")).toHaveCount(0);
-  // The answer renders on the next frames.
-  await page.evaluate(
-    () =>
-      new Promise<void>((done) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => done())),
-      ),
+}
+
+/**
+ * Holds the member's onboarding body until `release()`: `reached` resolves once
+ * the request is in flight, so a test controls when the card arrives.
+ */
+async function holdOnboarding(page: Page) {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let reached: () => void = () => {};
+  const seen = new Promise<void>((r) => {
+    reached = r;
+  });
+  await page.route(
+    (u) => u.pathname === R.onboarding,
+    async (route) => {
+      const response = await route.fetch();
+      reached();
+      await gate;
+      await route.fulfill({ response });
+    },
   );
+  return { release, reached: seen };
 }
 
 /** A click aimed at the box's centre that waits for the navigation it causes. */
@@ -114,6 +128,34 @@ async function inView(l: Locator) {
   if (!box) throw new Error("no box");
   return box as { x: number; y: number; width: number; height: number };
 }
+
+test("a thumbnail click after a late onboarding answer still opens the detail", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
+  const a = {
+    title: `Late ${uniq()}`,
+    heading: "Hello late",
+  };
+  const made = await publishViaApi(member.pat, {
+    title: a.title,
+    format: "html",
+    content: `<!doctype html><h1>${a.heading}</h1>`,
+  });
+  const held = await holdOnboarding(page);
+  const opened = openLibrary(page, "/");
+  // The page is up and asking; its card arrives only when the test lets it.
+  await held.reached;
+  held.release();
+  await opened;
+  const thumb = await inView(
+    page
+      .locator("article.lib-card")
+      .filter({ hasText: a.title })
+      .locator(".lib-thumb"),
+  );
+  await clickToDetail(page, made.id, thumb);
+  await expectDetail(page, made.id, a.title, a.heading);
+});
 
 test("library → detail: card, thumbnail and deep links", {
   tag: "@smoke",
