@@ -24,6 +24,7 @@ const bound: Answer = () => ({ type: "link_proofed", bound: true });
 async function daemon(caps: string[] | undefined, answer: Answer = bound) {
   const frames: Frame[][] = [];
   let proofs = 0;
+  let settledSeq = 0;
   const server = createServer((sock) => {
     const mine: Frame[] = [];
     frames.push(mine);
@@ -49,7 +50,8 @@ async function daemon(caps: string[] | undefined, answer: Answer = bound) {
         else if (f.type === "link_proof") {
           const a = answer(proofs++, String(f.hash));
           if (a) send(a);
-        }
+        } else if (f.type === "self")
+          send({ type: "agent", agent: { name: "x", global: false } });
       }
     });
   });
@@ -62,7 +64,43 @@ async function daemon(caps: string[] | undefined, answer: Answer = bound) {
     proofFrames: () =>
       frames.flatMap((c) => c.filter((f) => f.type === "link_proof")),
     drop: () => sockets.at(-1)?.destroy(),
+    /**
+     * Ends an absence check on an event, not a wait: a delivery is pushed to
+     * the newest session link and its ack comes back after every frame that
+     * link wrote before it, and after the daemon's answers were handled.
+     */
+    settled: async () => {
+      const n = frames.length - 1;
+      const msg_id = `settle-${++settledSeq}`;
+      sockets
+        .at(-1)
+        ?.write(
+          `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "p", namespace: "ns", body: "settle" })}\n`,
+        );
+      await vi.waitFor(() =>
+        expect(
+          frames[n]?.some((f) => f.type === "ack" && f.msg_id === msg_id),
+        ).toBe(true),
+      );
+    },
   };
+}
+
+/**
+ * Advances the faked clock in steps until `done`; the 3 s reconnect timer and
+ * the real socket close settle in between. Bounded at 10 s of faked time.
+ */
+async function advanceUntil(done: () => boolean) {
+  let faked = 0;
+  await vi.waitFor(
+    async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      faked += 500;
+      expect(faked).toBeLessThanOrEqual(10_000);
+      expect(done()).toBe(true);
+    },
+    { timeout: 5_000, interval: 5 },
+  );
 }
 
 const ENTRY = {
@@ -173,12 +211,16 @@ describe("pi session proof on /mcp (#1856)", () => {
 
   it("registers no header before the daemon has answered", async () => {
     writeEntry();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     // The daemon takes the frame and never answers.
-    await daemon(["link"], () => undefined);
+    const d = await daemon(["link"], () => undefined);
     const p = pi();
     await p.emit("session_start");
-    await vi.waitFor(() => expect(p.regs.length).toBeGreaterThanOrEqual(1));
-    await new Promise((r) => setTimeout(r, 150));
+    await vi.waitFor(() => expect(d.proofFrames()).toHaveLength(1));
+    for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
+    // Past the 2 s the session waits for an answer: it gives up, still plain.
+    await vi.advanceTimersByTimeAsync(2_001);
+    expect(p.regs.length).toBeGreaterThanOrEqual(1);
     for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
   });
 
@@ -218,7 +260,7 @@ describe("pi session proof on /mcp (#1856)", () => {
     await p.emit("session_start");
     await vi.waitFor(() => expect(p.regs.length).toBeGreaterThanOrEqual(1));
     await vi.waitFor(() => expect(d.frames).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled();
     expect(d.proofFrames()).toHaveLength(0);
     for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
   });
@@ -232,6 +274,7 @@ describe("pi session proof on /mcp (#1856)", () => {
   });
 
   it("a link loss keeps the last header (no Pi reconnect), and the next bind replaces it", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     writeEntry();
     const d = await daemon(["link"]);
     const p = pi();
@@ -240,10 +283,7 @@ describe("pi session proof on /mcp (#1856)", () => {
     const first = p.regs.map(proofOf).find(Boolean) as string;
     d.drop();
     // The link comes back after the retry delay (3 s) with a new proof.
-    await vi.waitFor(
-      () => expect(p.regs.map(proofOf).filter(Boolean).length).toBe(2),
-      { timeout: 8000 },
-    );
+    await advanceUntil(() => p.regs.map(proofOf).filter(Boolean).length === 2);
     const second = p.regs.map(proofOf).filter(Boolean)[1] as string;
     expect(second).not.toBe(first);
     expect(d.proofFrames().map((f) => f.hash)).toEqual([
@@ -253,7 +293,7 @@ describe("pi session proof on /mcp (#1856)", () => {
     // Never a plain registration in between: that would reconnect the MCP server.
     const seq = p.regs.map((r) => proofOf(r) ?? "-");
     expect(seq.slice(seq.indexOf(first))).toEqual([first, second]);
-  }, 15_000);
+  });
 
   it("two sessions in one process get different proofs, each hashed to its own link", async () => {
     writeEntry();
@@ -298,13 +338,15 @@ describe("pi session proof on /mcp (#1856)", () => {
   });
 
   it("a proof answered after the link closed is never registered", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     writeEntry();
     const d = await daemon(["link"], () => undefined);
     const p = pi();
     await p.emit("session_start");
     await vi.waitFor(() => expect(d.proofFrames()).toHaveLength(1));
     d.drop();
-    await new Promise((r) => setTimeout(r, 150));
+    // The lost link's offer has ended once the session offers on its new link.
+    await advanceUntil(() => d.proofFrames().length === 2);
     for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
   });
 
@@ -324,7 +366,7 @@ describe("pi session proof on /mcp (#1856)", () => {
     const none = pi();
     await none.emit("session_start");
     await vi.waitFor(() => expect(d.frames).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled();
     expect(none.regs).toHaveLength(0);
     expect(d.proofFrames()).toHaveLength(0);
     // The entry exists: omp and an old Pi still link and send no proof.
@@ -334,7 +376,7 @@ describe("pi session proof on /mcp (#1856)", () => {
     const old = pi({ mcp: false });
     await old.emit("session_start", ctx("old-1"));
     await vi.waitFor(() => expect(d.frames).toHaveLength(3));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled();
     expect(omp.regs).toHaveLength(0);
     expect(d.proofFrames()).toHaveLength(0);
   });
@@ -376,7 +418,7 @@ describe("pi session proof on /mcp (#1856)", () => {
       await p.emit("session_start");
       await vi.waitFor(() => expect(d.frames).toHaveLength(1));
       await vi.waitFor(() => expect(p.regs.length).toBeGreaterThan(0));
-      await new Promise((r) => setTimeout(r, 100));
+      await d.settled();
       expect(d.proofFrames()).toHaveLength(0);
       for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
       await p.emit("session_shutdown");
@@ -388,16 +430,18 @@ describe("pi session proof on /mcp (#1856)", () => {
   });
 
   it("an entry file it cannot use leaves Pi as it was", async () => {
-    await daemon(["link"]);
-    for (const bad of [
+    const d = await daemon(["link"]);
+    const bads = [
       "not json",
       JSON.stringify({ name: "bad name!", config: {} }),
       JSON.stringify({ name: "x", config: "nope" }),
-    ]) {
+    ];
+    for (const [i, bad] of bads.entries()) {
       writeFileSync(join(home, "pi-mcp-entry.json"), bad);
       const p = pi();
       await p.emit("session_start");
-      await new Promise((r) => setTimeout(r, 50));
+      await vi.waitFor(() => expect(d.frames).toHaveLength(i + 1));
+      await d.settled();
       expect(p.regs).toHaveLength(0);
     }
   });

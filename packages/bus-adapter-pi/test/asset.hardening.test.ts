@@ -24,6 +24,9 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
+/** One turn of the event loop: no wall time. */
+const turn = () => new Promise<void>((r) => setImmediate(r));
+
 /** Polls on setImmediate, which fake timers leave alone. */
 async function until(cond: () => boolean, tries = 2000) {
   for (let i = 0; i < tries && !cond(); i++)
@@ -37,9 +40,12 @@ const ctx = () => ({
 });
 
 async function setup(
-  o: { refuse?: () => boolean; hangUp?: boolean; selfDelayMs?: number } = {},
+  o: { refuse?: () => boolean; hangUp?: boolean; holdSelf?: boolean } = {},
 ) {
   const conns: Socket[] = [];
+  // With holdSelf, a `self` is answered only when the test calls releaseSelf().
+  const heldSelf: (() => void)[] = [];
+  let selfAsked = 0;
   const server = createServer((sock) => {
     conns.push(sock);
     sockets.push(sock);
@@ -55,13 +61,12 @@ async function setup(
         }
         buf = buf.slice(i + 1);
         i = buf.indexOf("\n");
-        if (f.type === "self" && o.selfDelayMs) {
-          setTimeout(
-            () =>
-              sock.write(
-                `${JSON.stringify({ v: 1, id: f.id, type: "agent", agent: { name: "p", global: false } })}\n`,
-              ),
-            o.selfDelayMs,
+        if (f.type === "self") selfAsked++;
+        if (f.type === "self" && o.holdSelf) {
+          heldSelf.push(() =>
+            sock.write(
+              `${JSON.stringify({ v: 1, id: f.id, type: "agent", agent: { name: "p", global: false } })}\n`,
+            ),
           );
           continue;
         }
@@ -107,7 +112,18 @@ async function setup(
     `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "peer", namespace: "ns", body })}\n`;
   const acks = () =>
     conns.flatMap((c) => (c as Socket & { acks?: string[] }).acks ?? []);
-  return { sock: () => conns[0], conns, sent, deliver, acks };
+  const releaseSelf = () => {
+    for (const answer of heldSelf.splice(0)) answer();
+  };
+  return {
+    sock: () => conns[0],
+    conns,
+    sent,
+    deliver,
+    acks,
+    releaseSelf,
+    selfAsked: () => selfAsked,
+  };
 }
 
 describe("pi asset hardening", () => {
@@ -115,8 +131,10 @@ describe("pi asset hardening", () => {
     const { sock, sent, deliver } = await setup();
     const buf = Buffer.from(deliver("héllo 😀 wörld"), "utf8");
     const cut = buf.indexOf(Buffer.from("😀")) + 2; // mid-emoji
-    sock().write(buf.subarray(0, cut));
-    await new Promise((r) => setTimeout(r, 30));
+    await new Promise((r) => sock().write(buf.subarray(0, cut), () => r(null)));
+    // Let the first half be read as a chunk of its own: two loop turns.
+    await turn();
+    await turn();
     sock().write(buf.subarray(cut));
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toContain("héllo 😀 wörld");
@@ -157,14 +175,25 @@ describe("pi asset hardening", () => {
     sock().write(deliver("once", "m-dup"));
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     sock().write(deliver("once", "m-dup"));
-    await new Promise((r) => setTimeout(r, 100));
-    expect(sent).toHaveLength(1);
+    // The link handles frames in order: once the next message is shown, the
+    // repeat before it has been handled, and it showed nothing.
+    sock().write(deliver("next", "m-next"));
+    await vi.waitFor(() =>
+      expect(sent.some((m) => m.includes("next"))).toBe(true),
+    );
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toContain("once");
   });
 
   it("a repeat while the first is still being shown is neither shown twice nor acked early", async () => {
-    const { sock, sent, deliver, acks } = await setup({ selfDelayMs: 80 });
-    sock().write(deliver("once", "m-race"));
-    sock().write(deliver("once", "m-race"));
+    const { sock, sent, deliver, acks, releaseSelf, selfAsked } = await setup({
+      holdSelf: true,
+    });
+    // One write: both frames are handled in the same turn, while the first
+    // still waits on the held `self` answer.
+    sock().write(deliver("once", "m-race") + deliver("once", "m-race"));
+    await vi.waitFor(() => expect(selfAsked()).toBe(1));
+    releaseSelf();
     await vi.waitFor(() => expect(acks()).toEqual(["m-race"]));
     expect(sent).toHaveLength(1);
     // A later repeat is acked again, still not shown.
