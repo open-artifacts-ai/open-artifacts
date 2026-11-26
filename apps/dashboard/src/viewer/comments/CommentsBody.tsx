@@ -297,14 +297,29 @@ export const FIELD_MAX = FIELD_MAX_LINES * FIELD_LINE + FIELD_CHROME;
 export const FIELD_MAX_PHONE =
   FIELD_MAX_LINES * FIELD_LINE_PHONE + FIELD_CHROME;
 
+/**
+ * The cap the field's own CSS gives it, in px: `max-height` is written in `em`
+ * at the field's line-height, so it follows whatever font the field really got
+ * (16px on a coarse pointer, 14px elsewhere). Reading it from the element keeps
+ * this fallback in step with that rule instead of re-deciding the font by
+ * width — an iPad is coarse and wider than 767px, and guessed 228px there
+ * (8.75 lines) while rendering at 16px.
+ */
+export function cssCap(el: HTMLElement, win = window): number {
+  const own = Number.parseFloat(getComputedStyle(el).maxHeight);
+  if (Number.isFinite(own) && own > 0) return own;
+  // No usable max-height (an old stylesheet): fall back to the width guess.
+  const phone = win.matchMedia?.("(max-width: 767px)").matches === true;
+  return phone ? FIELD_MAX_PHONE : FIELD_MAX;
+}
+
 /** Fallback for browsers without `field-sizing: content`: size to the text, capped. */
 export function growField(el: HTMLTextAreaElement | null) {
   if (!el) return;
   if (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))
     return;
-  const phone = !!window.matchMedia?.("(max-width: 767px)").matches;
   // #2239: 40% of what is visible, so the iOS keyboard counts.
-  const max = fieldCap(phone ? FIELD_MAX_PHONE : FIELD_MAX);
+  const max = fieldCap(cssCap(el));
   // Measuring with height:auto shortens the list and clamps the scroller:
   // put its scrollTop back.
   const box = scrollerOf(el);

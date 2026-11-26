@@ -88,6 +88,50 @@ describe("#2234: the caps are ten lines plus the field's own chrome", () => {
   });
 });
 
+describe("#2234 review: the cap comes from the field's own CSS, not from the width", () => {
+  beforeEach(() => {
+    vi.stubGlobal("CSS", { supports: () => false });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("a coarse pointer at 768px or wider uses the field's 16px cap, not the desktop one", () => {
+    // iPad: coarse pointer, wider than the phone breakpoint. The field's CSS
+    // (em, following its 16px font) caps it at 258px; a width guess said 228.
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const el = box(900);
+    el.style.maxHeight = `${FIELD_MAX_PHONE}px`;
+    growField(el);
+    expect(el.style.height).toBe(`${FIELD_MAX_PHONE}px`);
+  });
+
+  it("without a usable max-height it still falls back to the width", () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === "(max-width: 767px)",
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const el = box(900);
+    expect(el.style.maxHeight).toBe("");
+    growField(el);
+    expect(el.style.height).toBe(`${FIELD_MAX_PHONE}px`);
+  });
+});
+
 describe("composer scroll and measure (#2234)", () => {
   beforeEach(() => {
     vi.stubGlobal("CSS", { supports: () => false });
