@@ -19,7 +19,11 @@ import {
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
 import { checkMemberComments } from "../staging/happy-path/member-comments";
-import { approveMachine, freshSignInUrl } from "./bus-confirm";
+import {
+  approveMachine,
+  freshSignInUrl,
+  spendDeviceCodes,
+} from "./bus-confirm";
 import {
   APP,
   createToken,
@@ -29,6 +33,7 @@ import {
   test,
   uniq,
 } from "./fixtures";
+import { findFrame } from "./frame-wait";
 import { mcpWithToken } from "./mcp-client";
 
 type Frame = Record<string, unknown>;
@@ -61,18 +66,9 @@ async function agentSocket(token: string, namespace: string) {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("socket error")));
   });
-  const next = async (type: string): Promise<Frame> => {
-    const end = Date.now() + 15_000;
-    for (;;) {
-      const f = frames.find((x) => x.type === type);
-      if (f) return f;
-      if (Date.now() > end) throw new Error(`no ${type} frame`);
-      await new Promise<void>((r) => {
-        waiters.push(r);
-        setTimeout(r, 500);
-      });
-    }
-  };
+  const next = (pred: (f: Frame) => boolean, label: string): Promise<Frame> =>
+    findFrame(frames, waiters, pred, `a ${label} frame`);
+  let seq = 0;
   ws.send(
     JSON.stringify({
       v: 1,
@@ -83,7 +79,7 @@ async function agentSocket(token: string, namespace: string) {
       caps: ["roles", "rename", "follow", "notice_ack", "notice_meta"],
     }),
   );
-  await next("hello_ok");
+  await next((f) => f.type === "hello_ok", "hello_ok");
   ws.send(
     JSON.stringify({
       v: 1,
@@ -96,12 +92,35 @@ async function agentSocket(token: string, namespace: string) {
       global: false,
     }),
   );
-  const ok = await next("agent_ok");
+  const ok = await next((f) => f.type === "agent_ok", "agent_ok");
   return {
     name: String(ok.bus_name),
     /** Count server deliveries to this agent for this page. */
     seen: (pageId: string) =>
       arrivals.filter((n) => n.artifact_id === pageId).length,
+    /** Round-trip through the hub so any earlier delivery on this socket has arrived. */
+    flush: async () => {
+      const id = `fence-${++seq}`;
+      ws.send(JSON.stringify({ v: 1, id, type: "list", from_ref: "r1" }));
+      await next((f) => f.type === "roster" && f.id === id, `roster(${id})`);
+    },
+    /** #3164: a mention no longer makes an agent follow the page; follow it over the bus. */
+    follow: async (pageId: string) => {
+      const id = `follow-${++seq}`;
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          id,
+          type: "follow",
+          from_ref: "r1",
+          artifact: pageId,
+        }),
+      );
+      await next(
+        (f) => f.type === "followed" && f.id === id,
+        `followed(${id})`,
+      );
+    },
     close: () => ws.close(),
   };
 }
@@ -141,7 +160,8 @@ async function newPage(label: string, withGuest = false) {
     });
     expect(r.ok(), await r.text()).toBe(true);
   }
-  // A mention makes an agent follow (#1535): each member mentions their own.
+  // Each member mentions their own agent, and each agent follows the page
+  // (#3164: a mention alone no longer follows it).
   const keyOf = async (p: Page, owner: "mine" | "theirs") =>
     (await agents(p, id)).find((a) =>
       owner === "mine" ? a.owner == null : a.owner != null,
@@ -152,6 +172,8 @@ async function newPage(label: string, withGuest = false) {
   expect(bKey, "B's agent is on B's list").toBeTruthy();
   await mention(pa, id, aKey, "A follows");
   await mention(pb, id, bKey, "B follows");
+  await agentA.follow(id);
+  await agentB.follow(id);
   // Both agents now show on both lists.
   await expect
     .poll(async () => (await agents(pb, id)).length, { timeout: 15_000 })
@@ -212,13 +234,22 @@ const setSwitch = async (on: boolean) => {
   });
   expect(r.ok(), await r.text()).toBe(true);
 };
-/** Waits for A's agent to be sent something about the page; or, with `none`, that nothing comes. */
+/** Waits for A's agent to be sent something about the page. */
 const woken = async (id: string, before: number) =>
   expect
     .poll(() => agentA.seen(id), { timeout: 15_000 })
     .toBeGreaterThan(before);
+/**
+ * Nothing about the page reached A's agent. The server's window for this is
+ * not a time: a mention that A's agent is not to hear is dropped from the
+ * delivery list (held, services/comments.ts) or refused (403 for a guest or a
+ * switched-off person) before the POST answers, so no send is ever started.
+ * The caller has already seen that outcome on the response or the held list
+ * (the end event); this then fences the socket, so anything sent earlier has
+ * arrived, and checks the count.
+ */
 const quiet = async (id: string, before: number) => {
-  await new Promise((r) => setTimeout(r, 3_000));
+  await agentA.flush();
   expect(agentA.seen(id)).toBe(before);
 };
 
@@ -258,6 +289,7 @@ test.beforeEach(async ({ browser }) => {
 });
 
 test.afterEach(async () => {
+  await spendDeviceCodes();
   agentA?.close();
   agentB?.close();
   await Promise.all([pa, pb, pg].map((p) => p?.context().close()));
@@ -286,9 +318,12 @@ test("2. an unlisted B's mention is held, nothing wakes A's agent, and A is told
   expect(await askStateOf(pb, id, aKey)).toBe("held");
   await mention(pb, id, aKey, "first question");
   await mention(pb, id, aKey, "second question");
-  await quiet(id, before);
+  // The hold is the server's own record of the decision, made before the POST
+  // answered: both mentions are on A's held list.
   const [r, ...rest] = await held(id);
   expect(rest).toHaveLength(0);
+  expect(r?.items).toHaveLength(2);
+  await quiet(id, before);
   expect(r?.sender.name).toBe(`E2E ${bEmail.split("@")[0]}`);
   expect(r?.items.map((i) => i.body)).toEqual([
     "first question",
@@ -421,8 +456,8 @@ test("3c. Not now keeps the request held and quiets the sender: nothing wakes, n
   // Quiet means off Needs you for the day (inbox.ts heldRequestRows).
   expect((await requestItems(id)).length).toBe(0);
   await mention(pb, id, aKey, "pls again");
-  await quiet(id, before);
   expect((await held(id))[0]?.items).toHaveLength(2);
+  await quiet(id, before);
   expect((await requestItems(id)).length).toBe(0);
   // B reads the same as before: still queued behind the hold.
   expect(await askStateOf(pb, id, aKey)).toBe("held");

@@ -37,6 +37,9 @@ import {
 // the otp/latest hook. Each address asks once a run: a second request inside
 // the 60 s resend window would null the first code.
 
+/** How long one otp/latest call asks the host to hold it. */
+const OTP_HOLD_MS = 8_000;
+
 test.beforeAll(async () => {
   // Earlier runs from this IP count against the per-IP code caps.
   await hook(TEST_HOOKS.codeCapsReset, {});
@@ -44,8 +47,9 @@ test.beforeAll(async () => {
 test.afterAll(cleanup);
 
 /**
- * The otp/latest hook for `address`, read once a second while it says
- * "pending" (the send runs after the 202): the code, or the final no_code
+ * The otp/latest hook for `address`: each call is held by the host while the
+ * send is "pending" (it runs after the 202), up to OTP_HOLD_MS (the host caps a hold at 8 s), and a call
+ * that ends still pending is asked again. The code, or the final no_code
  * outcome (TestOtpOutcome). No budget of its own: the test's timeout bounds
  * it, and a refusal (readOtp throws with the status) fails at once.
  */
@@ -61,7 +65,10 @@ const otp = (
 async function readOtp(
   address: string,
 ): Promise<{ code: string } | { outcome: TestOtpOutcome }> {
-  const res = await hookRes(TEST_HOOKS.otpLatest, { email: address });
+  const res = await hookRes(TEST_HOOKS.otpLatest, {
+    email: address,
+    wait: OTP_HOLD_MS,
+  });
   const body = (await res.json().catch(() => ({}))) as {
     code?: string;
     error?: { details?: { reason?: string; outcome?: TestOtpOutcome } };

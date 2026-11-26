@@ -1444,6 +1444,18 @@ describe("daemon command", () => {
     expect(f.stop).toHaveBeenCalledOnce();
   });
 
+  it("hands the daemon a skill refresher (#3203)", async () => {
+    const f = fake();
+    const done = daemon(fakeCtx(), f.run as never, f.signals);
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalled());
+    const d = f.run.mock.calls[0]?.[0] as {
+      skillRefresh?: { onHello?: unknown };
+    };
+    expect(typeof d.skillRefresh?.onHello).toBe("function");
+    f.signals.emit("SIGTERM");
+    expect(await done).toBe(0);
+  });
+
   it("exits 78, once, when the machine is revoked", async () => {
     const f = fake();
     const done = daemon(fakeCtx(), f.run as never, f.signals);

@@ -370,7 +370,6 @@ describe("an agy conversation survives a daemon restart (agy S2)", () => {
     expect(await upFor(two.h, A)).toMatchObject({ kind: "antigravity" });
   });
 });
-
 describe("the bus rules for an agy conversation (agy S4, #3043)", () => {
   /** What the hook does at SessionStart: hello, then the rules, then close. */
   const rulesAfterHello = async (h: H) => {

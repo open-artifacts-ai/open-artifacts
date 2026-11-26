@@ -52,6 +52,12 @@ export type BusNotice = {
    * delivery by name, as before.
    */
   toIdentity?: string;
+  /**
+   * #3132: when what the notice is about began (ms): the ask's post time for
+   * an answer, the follow's start for a page notice. A role's mail follows a
+   * moved role only for things begun while the session held it. Absent: now.
+   */
+  originAt?: number;
   /** The fixed template (the server's noticeText). */
   text: string;
   /** Waiting notices with the same (to, coalesceKey) replace each other: the artifact id. */

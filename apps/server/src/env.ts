@@ -63,10 +63,8 @@ export interface Env {
    */
   INSTALL_OPTOUT_KEY?: string;
   /**
-   * The instance's Web Push key pair (#2512 S5), base64url: the 65-byte
-   * uncompressed P-256 public point and the 32-byte private scalar. Secrets
-   * the platform sets on hosted and setup sets on self-host; the code never
-   * makes one. Either missing: push is off and every push route answers 404.
+   * Legacy (#2512 S5), ignored since #3024: the Web Push key pair now derives
+   * from SESSION_SECRET. Optional and unread; push is on iff SESSION_SECRET is set.
    */
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;
@@ -108,6 +106,13 @@ export interface Env {
    * `ratelimits`; ANON_WRITES_PER_MIN does not change it.
    */
   RL_ANON_WRITES?: RateLimit;
+  /**
+   * The test hooks' own limiter (apps/server/src/test-hooks), keyed like
+   * RL_ANON, 600 a minute. Charged only for a call whose hook key verified; a
+   * wrong or absent key still spends RL_ANON. Unbound (a build or config from
+   * before it): a right key spends RL_ANON too, as it did.
+   */
+  RL_HOOKS?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
   /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */

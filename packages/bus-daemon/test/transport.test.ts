@@ -1,10 +1,18 @@
 import { createServer } from "node:http";
+import { connect as tcpConnect } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HubConnection } from "../src/hub.ts";
-import { closeAll, deliver, opts, servers, wsServer } from "./helpers.ts";
+import {
+  closeAll,
+  deliver,
+  opts,
+  PROBE,
+  probeWs,
+  servers,
+  wsServer,
+} from "./helpers.ts";
 
 afterEach(closeAll);
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 describe("hub transport hardening", () => {
   it("a revoked token refused with HTTP 401 at upgrade stops reconnecting and reports revoked", async () => {
@@ -15,24 +23,46 @@ describe("hub transport hardening", () => {
       hits++;
       sock.end("HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
     });
+    let tcp = 0;
+    srv.on("connection", () => tcp++);
     servers.push(srv);
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
-    const url = `ws://127.0.0.1:${(srv.address() as { port: number }).port}/hub`;
-    const onRevoked = vi.fn();
-    const hub = new HubConnection(opts(url, { onRevoked }));
-    hub.start();
-    await vi.waitFor(() => expect(onRevoked).toHaveBeenCalled());
-    await sleep(100); // absence: a stray reconnect would land within this window
-    expect(hub.reconnecting).toBe(false);
-    hub.stop();
-    expect(hits).toBe(1);
-    expect(onRevoked).toHaveBeenCalled();
+    const port = (srv.address() as { port: number }).port;
+    const url = `ws://127.0.0.1:${port}/hub`;
+    let revoked!: () => void;
+    const gotRevoked = new Promise<void>((r) => {
+      revoked = r;
+    });
+    const onRevoked = vi.fn(revoked);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const hub = new HubConnection(opts(url, { onRevoked }));
+      hub.start();
+      await gotRevoked;
+      // Absence: a stray reconnect timer would fire in this minute, and its
+      // connect would be accepted before a probe made after it.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await new Promise<void>((r) => {
+        const probe = tcpConnect(port, "127.0.0.1", () => {
+          probe.destroy();
+          r();
+        });
+      });
+      expect(hub.reconnecting).toBe(false);
+      hub.stop();
+      expect(tcp).toBe(2); // the one upgrade, and the probe
+      expect(hits).toBe(1);
+      expect(onRevoked).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("start() twice keeps one socket and delivers each frame once", async () => {
     const { wss, url } = await wsServer();
     let conns = 0;
-    wss.on("connection", (ws) => {
+    wss.on("connection", (ws, req) => {
+      if (req.url === PROBE) return;
       conns++;
       ws.on("message", (d) => {
         if (JSON.parse(String(d)).type === "sessions")
@@ -44,7 +74,9 @@ describe("hub transport hardening", () => {
     hub.start();
     hub.start();
     await vi.waitFor(() => expect(onFrame).toHaveBeenCalled());
-    await sleep(100); // absence: a duplicate socket would deliver again within this window
+    // Absence: a duplicate socket was begun with the first and is accepted
+    // before a probe made now.
+    await probeWs(url);
     hub.stop();
     expect(conns).toBe(1);
     expect(onFrame).toHaveBeenCalledTimes(1);
@@ -54,21 +86,43 @@ describe("hub transport hardening", () => {
     const { wss, url } = await wsServer();
     let conns = 0;
     let first = true;
-    wss.on("connection", (ws) => {
+    let second!: () => void;
+    const secondConn = new Promise<void>((r) => {
+      second = r;
+    });
+    wss.on("connection", (ws, req) => {
+      if (req.url === PROBE) return;
       conns++;
       if (first) {
         first = false;
         ws.close(1011);
-      }
+      } else second();
     });
-    const hub = new HubConnection(opts(url, { backoffMs: () => 150 }));
-    hub.start();
-    await vi.waitFor(() => expect(hub.reconnecting).toBe(true));
-    hub.start();
-    await vi.waitFor(() => expect(conns).toBe(2));
-    await sleep(300); // absence: a second reconnect would land within this window
-    hub.stop();
-    expect(conns).toBe(2);
+    let closed!: () => void;
+    const gotClose = new Promise<void>((r) => {
+      closed = r;
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const hub = new HubConnection(
+        opts(url, { backoffMs: () => 150, onClose: closed }),
+      );
+      hub.start();
+      await gotClose;
+      await Promise.resolve(); // the close handler ran on: the backoff is set
+      expect(hub.reconnecting).toBe(true);
+      hub.start();
+      await vi.advanceTimersByTimeAsync(150);
+      await secondConn;
+      // Absence: a second reconnect would have fired in this minute, and been
+      // accepted before a probe made after it.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await probeWs(url);
+      hub.stop();
+      expect(conns).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a throwing sessions() provider does not crash the process", async () => {
@@ -76,6 +130,10 @@ describe("hub transport hardening", () => {
     let connected = false;
     wss.on("connection", () => {
       connected = true;
+    });
+    let opened!: () => void;
+    const gotOpen = new Promise<void>((r) => {
+      opened = r;
     });
     const errors: unknown[] = [];
     const h = (e: unknown) => errors.push(e);
@@ -88,11 +146,14 @@ describe("hub transport hardening", () => {
           sessions: () => {
             throw new Error("boom");
           },
+          onOpen: opened,
         }),
       );
       hub.start();
-      await vi.waitFor(() => expect(connected).toBe(true));
-      await sleep(100); // the throw would surface right after open
+      await gotOpen; // after the throwing sessions() call
+      // An uncaught exception surfaces within a turn of the event loop.
+      await new Promise<void>((r) => setImmediate(r));
+      expect(connected).toBe(true);
       hub.stop();
     } finally {
       process.removeListener("uncaughtException", h);
@@ -197,13 +258,16 @@ describe("hub transport hardening", () => {
   it("stop() while connecting closes the pending socket", async () => {
     const { wss, url } = await wsServer();
     let conns = 0;
-    wss.on("connection", () => conns++);
+    wss.on("connection", (_ws, req) => {
+      if (req.url !== PROBE) conns++;
+    });
     const hub = new HubConnection(opts(url));
     hub.start();
     hub.stop();
-    await sleep(200);
+    // Absence: a connect begun before the stop is accepted before a probe made now.
+    await probeWs(url);
     expect(hub.open).toBe(false);
-    expect(wss.clients.size).toBe(0);
+    expect(conns).toBe(0);
   });
 
   it("send() on an open socket returns true", async () => {

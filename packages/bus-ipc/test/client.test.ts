@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { connectDaemon } from "../src/client.ts";
-import { fakeDaemon, hello, tmpSock, welcomeLine, within } from "./helpers.ts";
+import { fakeDaemon, hello, tmpSock, welcomeLine } from "./helpers.ts";
 
 const deliverLine = (msg_id: string) =>
   `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "peer", namespace: "n", body: "hi" })}\n`;
@@ -13,7 +13,7 @@ describe("client", () => {
     });
     const c = await connectDaemon({ path, hello: hello() });
     const got = new Promise((r) => c.onDeliver((f) => r(f.msg_id)));
-    expect(await within(got, 300)).toBe("m1");
+    expect(await got).toBe("m1");
     c.close();
   });
 
@@ -23,12 +23,10 @@ describe("client", () => {
       if (l.type === "hello") sock.write(welcomeLine());
       if (l.type === "self") {
         sock.write(deliverLine("m2"));
-        setTimeout(
-          () =>
-            sock.write(
-              `${JSON.stringify({ v: 1, id: l.id, type: "agent", agent: null })}\n`,
-            ),
-          50,
+        setImmediate(() =>
+          sock.write(
+            `${JSON.stringify({ v: 1, id: l.id, type: "agent", agent: null })}\n`,
+          ),
         );
       }
     });
@@ -50,7 +48,6 @@ describe("client", () => {
         sock.write(welcomeLine() + deliverLine("a") + deliverLine("b"));
     });
     const c = await connectDaemon({ path, hello: hello() });
-    await new Promise((r) => setTimeout(r, 30));
     const seen: string[] = [];
     c.onDeliver((f) => seen.push(f.msg_id));
     expect(seen).toEqual(["a", "b"]);
@@ -89,7 +86,7 @@ describe("client", () => {
     });
     const c = await connectDaemon({ path, hello: hello() });
     expect(c.ack("m1")).toBeUndefined();
-    expect(await within(c.request({ type: "self" }), 300)).toMatchObject({
+    expect(await c.request({ type: "self" })).toMatchObject({
       type: "agent",
     });
     expect(lines[1]).toMatchObject({ v: 1, type: "ack", msg_id: "m1" });
@@ -105,19 +102,25 @@ describe("client", () => {
           `${JSON.stringify({ v: 1, id: l.id, type: "agent", agent: null })}\n`,
         );
     });
-    const c = await connectDaemon({
-      path,
-      hello: hello(),
-      requestTimeoutMs: 100,
-    });
-    await expect(within(c.request({ type: "list" }), 1000)).rejects.toThrow(
-      /timed out/,
-    );
-    // The connection still serves later requests.
-    expect(
-      await within(c.request({ type: "self", id: "late" }), 300),
-    ).toMatchObject({ type: "agent" });
-    c.close();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const c = await connectDaemon({
+        path,
+        hello: hello(),
+        requestTimeoutMs: 100,
+      });
+      const never = c.request({ type: "list" });
+      never.catch(() => {});
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(never).rejects.toThrow(/timed out/);
+      // The connection still serves later requests.
+      expect(await c.request({ type: "self", id: "late" })).toMatchObject({
+        type: "agent",
+      });
+      c.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("requests time out after 20 s by default: above the daemon's 10 s hub wait plus 5 s for delivered", async () => {

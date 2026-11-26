@@ -1,4 +1,5 @@
-// #2512 S5: browser push. Keys are generated here, per run; none is committed.
+// #2512 S5, #3024: browser push. Keys are generated here, per run; none is committed.
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type NotificationPrefs, newId, R } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -17,23 +18,26 @@ import { DEFAULT_PREFS, putPrefs } from "../src/services/notification-prefs.js";
 import {
   BUNDLE_MS,
   DEFAULT_BODY,
+  DEFAULT_HELD_BODY,
   DEFAULT_MENTION_BODY,
-  DEFAULT_UPDATE_BODY,
   drainPush,
+  HELD_PUSH_PREFIX,
   MAX_SUBSCRIPTIONS,
   queueAskPush,
-  queueBackFromLater,
+  queueLaterReturns,
   queuePush as rawQueuePush,
-  queueUpdatePush as rawQueueUpdatePush,
 } from "../src/services/push.js";
 import { getUser } from "../src/services/users.js";
 import {
   b64u,
   encryptPayload,
   pushEndpointOk,
+  pushOn,
   unb64u,
   vapidHeader,
+  vapidKeys,
 } from "../src/services/web-push.js";
+import { hubOf } from "./bus/helpers.js";
 import { api, login } from "./helpers.js";
 
 const app = createApp();
@@ -43,25 +47,19 @@ const dec = new TextDecoder();
 
 // ------------------------------------------------------------------ keys
 
-async function vapidKeys() {
-  const kp = (await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  )) as CryptoKeyPair;
-  const jwk = (await crypto.subtle.exportKey(
-    "jwk",
-    kp.privateKey,
-  )) as JsonWebKey;
-  const pub = new Uint8Array([
-    4,
-    ...unb64u(jwk.x as string),
-    ...unb64u(jwk.y as string),
-  ]);
+// The instance's VAPID pair derives from SESSION_SECRET (#3024); the test only
+// reads the public half, as a verify key.
+async function verifyKeys(e: Env) {
+  const { publicKey: VAPID_PUBLIC_KEY } = await vapidKeys(e);
   return {
-    VAPID_PUBLIC_KEY: b64u(pub),
-    VAPID_PRIVATE_KEY: jwk.d as string,
-    publicKey: kp.publicKey,
+    VAPID_PUBLIC_KEY,
+    publicKey: await crypto.subtle.importKey(
+      "raw",
+      unb64u(VAPID_PUBLIC_KEY),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    ),
   };
 }
 
@@ -177,14 +175,8 @@ function fakePush(status: (url: string) => number = () => 201) {
 afterEach(() => vi.restoreAllMocks());
 
 async function world() {
-  const keys = await vapidKeys();
-  const E = {
-    ...(env as Env),
-    APP_HOST: "app.localhost",
-    VAPID_PUBLIC_KEY: keys.VAPID_PUBLIC_KEY,
-    VAPID_PRIVATE_KEY: keys.VAPID_PRIVATE_KEY,
-  } as Env;
-  return { E, keys };
+  const E = { ...(env as Env), APP_HOST: "app.localhost" } as Env;
+  return { E, keys: await verifyKeys(E) };
 }
 const mk = (p: string) => login(`${p}-${tag}@x.com`, "member");
 const prefs = (over: Partial<NotificationPrefs> = {}): NotificationPrefs => ({
@@ -252,37 +244,40 @@ async function seed(
           it.excerpt,
         )
         .run();
-    else if (it.kind === "update")
-      await env.DB.prepare(
-        `insert or replace into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, created_at)
-         values (?, ?, 'comment', 'update', ?, ?, ?, ?, '{"kind":"user","ref":"x"}', ?, ?)`,
-      )
-        .bind(
-          newId(),
-          userId,
-          it.key,
-          it.artifactId,
-          it.threadId,
-          it.key.split(":")[1],
-          it.excerpt,
-          T0,
-        )
-        .run();
   }
 }
 const queuePush = async (e: Env, users: string[], it: QItem, now?: number) => {
   await seed(users, it);
   return rawQueuePush(e, users, it, now);
 };
-const queueUpdatePush = async (
-  e: Env,
-  user: string,
-  it: Omit<QItem, "kind">,
-  now?: number,
-) => {
-  await seed([user], { ...it, kind: "update" });
-  return rawQueueUpdatePush(e, user, it, now);
-};
+/** A row queued before Updates stopped pushing (what the 0053 migration also deletes). */
+const legacyUpdateRow = (userId: string, key: string, sendAfter: number) =>
+  env.DB.prepare(
+    `insert into push_pending (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, send_after, created_at)
+     values (?, ?, ?, 'update', ?, 'th1', 'Scout', 'Ship the draft?', ?, ?)`,
+  )
+    .bind(newId(), userId, key, PUB, sendAfter, sendAfter)
+    .run();
+/** `userId`'s hub holds a live agent of theirs with this identity that says it waits on them. */
+async function waitingAgent(userId: string, identityId: string) {
+  await env.DB.prepare(
+    "insert or ignore into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, 0, 1)",
+  )
+    .bind(`m-${userId}`, userId, `h-${userId}`)
+    .run();
+  await runInDurableObject(await hubOf(userId), (_i, st) => {
+    st.storage.sql.exec(
+      `insert into agents (id, org_id, namespace, name, kind, machine_id, native_ref, live, updated_at, status, status_at, identity_id)
+       values (?, 'owner', 'ns', 'Scout', 'claude-code', ?, ?, 1, ?, 'waiting_on_owner', ?, ?)`,
+      `ag-${identityId}`,
+      `m-${userId}`,
+      `ref-${identityId}`,
+      T0,
+      T0,
+      identityId,
+    );
+  });
+}
 const pendingCount = async (userId: string) =>
   (
     await env.DB.prepare(
@@ -363,6 +358,29 @@ describe("the encrypted payload (RFC 8291) and the VAPID header (RFC 8292)", () 
   });
 });
 
+describe("the derived VAPID key (#3024)", () => {
+  const S1 = { SESSION_SECRET: "synthetic-secret-one-0123456789abcdef" } as Env;
+  const S2 = { SESSION_SECRET: "synthetic-secret-two-0123456789abcdef" } as Env;
+
+  it("is stable for one secret and differs for another", async () => {
+    const a = (await vapidKeys(S1)).publicKey;
+    expect((await vapidKeys({ ...S1 } as Env)).publicKey).toBe(a);
+    expect((await vapidKeys(S2)).publicKey).not.toBe(a);
+    // Rotation takes effect in a warm worker: back to S1 is the same key again.
+    expect((await vapidKeys(S1)).publicKey).toBe(a);
+  });
+
+  it("the public key is a 65-byte uncompressed point, and the general key API refuses its label", async () => {
+    const { deriveKey } = await import("../src/auth/keys.js");
+    const pub = (await vapidKeys(S1)).publicKey;
+    expect(unb64u(pub)).toHaveLength(65);
+    expect(unb64u(pub)[0]).toBe(4);
+    await expect(deriveKey(S1, "oa:push-vapid" as never)).rejects.toThrow(
+      "is not a SESSION_SECRET label",
+    );
+  });
+});
+
 describe("the endpoint guard (SSRF)", () => {
   it("accepts only https on a known push service, the default port, no credentials", () => {
     for (const ok of [
@@ -394,21 +412,33 @@ describe("the endpoint guard (SSRF)", () => {
 // ---------------------------------------------------------------- routes
 
 describe("the routes", () => {
-  it("with no VAPID key pair every push route answers 404 push_unavailable", async () => {
-    const u = await mk("off");
-    const b = await browser();
-    for (const [path, method, body] of [
-      [R.mePushKey, "GET", undefined],
-      [R.mePushSubscriptions, "GET", undefined],
-      [R.mePushSubscriptions, "POST", b.body],
-      [R.mePushSubscription("x"), "DELETE", undefined],
-    ] as const) {
-      const r = await api(app, path, u.cookie, { method, body });
-      expect(r.status, `${method} ${path}`).toBe(404);
-      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
-        "push_unavailable",
-      );
+  it("with no SESSION_SECRET push is off and no key derives", async () => {
+    for (const s of [undefined, ""]) {
+      const off = { ...(env as Env), SESSION_SECRET: s } as unknown as Env;
+      expect(pushOn(off)).toBe(false);
+      await expect(vapidKeys(off)).rejects.toThrow("SESSION_SECRET is not set");
     }
+    expect(pushOn(env as Env)).toBe(true);
+  });
+
+  it("the key route answers 200 with the derived key and no legacy VAPID env at all (#3024)", async () => {
+    const E = { ...(env as Env) } as Env;
+    expect(E.VAPID_PUBLIC_KEY).toBeUndefined();
+    expect(E.VAPID_PRIVATE_KEY).toBeUndefined();
+    const u = await mk("derived");
+    const r = await api(app, R.mePushKey, u.cookie, {}, E);
+    expect(r.status).toBe(200);
+    const { publicKey } = (await r.json()) as { publicKey: string };
+    expect(publicKey).toBe((await vapidKeys(E)).publicKey);
+    expect(unb64u(publicKey)).toHaveLength(65);
+    // Legacy values are ignored, not echoed.
+    const legacy = {
+      ...E,
+      VAPID_PUBLIC_KEY: "legacy-pub",
+      VAPID_PRIVATE_KEY: "legacy-priv",
+    } as Env;
+    const r2 = await api(app, R.mePushKey, u.cookie, {}, legacy);
+    expect(await r2.json()).toEqual({ publicKey });
   });
 
   it("with a key pair: the public key, subscribe, list, remove; 201 { id }, 204", async () => {
@@ -713,6 +743,34 @@ describe("sending", () => {
     expect(JSON.parse(await decrypt((sent[0] as Sent).body, b)).count).toBe(2);
   });
 
+  it("in quiet hours a legacy Update is dropped with one push_dropped line and the live ask is held, not dropped", async () => {
+    const { E } = await world();
+    const { u } = await enroll(E);
+    fakePush();
+    const night = Date.UTC(2026, 10, 18, 23, 0);
+    await queuePush(E, [u.userId], item("ask:q1"), night);
+    await legacyUpdateRow(u.userId, "update:q", night);
+    // Quiet hours begin after both were queued, so both are due at drain time.
+    await putPrefs(
+      E,
+      u.userId,
+      prefs({ quietHours: { start: "22:00", end: "07:30" } }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, night);
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(u.userId))
+      .map((l) => JSON.parse(l));
+    expect(lines).toEqual([expect.objectContaining({ update: 1 })]);
+    expect(lines[0]).not.toHaveProperty("needs_you_off");
+    expect(await pendingCount(u.userId)).toBe(1);
+    // Held rows would otherwise send in a later test's drain.
+    await env.DB.prepare("delete from push_pending where user_id = ?")
+      .bind(u.userId)
+      .run();
+  });
+
   it("quiet hours that start after an item was queued still hold it at drain time", async () => {
     const { E } = await world();
     const { u } = await enroll(E);
@@ -750,14 +808,108 @@ describe("sending", () => {
     expect(await pendingCount(on.u.userId)).toBe(0);
   });
 
-  it("with 'asks waiting for you' only, an ask from someone else is dropped unsent", async () => {
+  it("with browserAllAsks false, a plain ask (nobody waiting) is still sent: Needs you interrupts for every ask (#3024)", async () => {
     const { E } = await world();
-    const { u } = await enroll(E, { browserAllAsks: false });
+    const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
     await queuePush(E, [u.userId], item("ask:other"), T0);
     await drainPush(E, T0);
-    expect(sent).toHaveLength(0);
+    expect(sentTo(sent, b)).toHaveLength(1);
     expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it("a member with a device and no prefs row gets a plain ask from another member's agent", async () => {
+    const { E } = await world();
+    const u = await mk(`norow-${newId().slice(0, 5)}`);
+    const b = await browser();
+    expect((await subscribe(E, u.cookie, b.body)).status).toBe(201);
+    const { sent } = fakePush();
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:norow", { askerRef: "someone-else", agentKey: "idn-theirs" }),
+      T0,
+    );
+    expect(await pendingCount(u.userId)).toBe(1);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(1);
+  });
+
+  it("Needs you explicitly off sends nothing and one push_dropped line counts the drop; no line when nothing drops", async () => {
+    const { E } = await world();
+    const off = await enroll(E);
+    const { sent } = fakePush();
+    await queuePush(E, [off.u.userId], item("ask:off1"), T0);
+    await queuePush(E, [off.u.userId], item("ask:off2"), T0);
+    await putPrefs(
+      E,
+      off.u.userId,
+      prefs({ needsYou: { inApp: true, browser: false } }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    expect(sent).toHaveLength(0);
+    const drops = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(off.u.userId));
+    expect(drops).toHaveLength(1);
+    expect(JSON.parse(drops[0] as string)).toMatchObject({
+      evt: "push_dropped",
+      userId: off.u.userId,
+      needs_you_off: 2,
+    });
+    // A member whose rows all send logs nothing.
+    const on = await enroll(E);
+    await queuePush(E, [on.u.userId], item("ask:on1"), T0);
+    log.mockClear();
+    await drainPush(E, T0);
+    expect(
+      log.mock.calls.filter((c) => String(c[0]).includes("push_dropped")),
+    ).toHaveLength(0);
+  });
+
+  it("when no device takes the send, one push_dropped line counts send_failed and the devices removed", async () => {
+    const { E } = await world();
+    const gone = await enroll(E);
+    const flaky = await enroll(E);
+    fakePush((url) => (url === gone.b.body.endpoint ? 410 : 500));
+    await queuePush(E, [gone.u.userId, flaky.u.userId], item("ask:sf"), T0);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    const lineOf = (id: string) =>
+      log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("push_dropped") && l.includes(id))
+        .map((l) => JSON.parse(l));
+    expect(lineOf(gone.u.userId)).toEqual([
+      expect.objectContaining({ send_failed: 1, devices_removed: 1 }),
+    ]);
+    expect(lineOf(flaky.u.userId)).toEqual([
+      expect.objectContaining({ send_failed: 1 }),
+    ]);
+  });
+
+  it("a stale row outside this tick's selection is deleted and logged per member", async () => {
+    const { E } = await world();
+    const stale = await enroll(E);
+    const live = await enroll(E);
+    fakePush();
+    await env.DB.prepare(
+      `insert into push_pending (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, send_after, created_at)
+       values (?, ?, 'ask:old', 'ask', ?, 'th1', 'Scout', 'x', ?, ?)`,
+    )
+      .bind(newId(), stale.u.userId, PUB, T0 + 10 ** 9, T0 - 25 * 3600_000)
+      .run();
+    await queuePush(E, [live.u.userId], item("ask:fresh"), T0);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    expect(await pendingCount(stale.u.userId)).toBe(0);
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(stale.u.userId));
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      expect.objectContaining({ stale: 1 }),
+    ]);
   });
 
   it("a 410 or 404 removes that browser; another failure keeps it and drops the item; a send never throws", async () => {
@@ -807,11 +959,7 @@ describe("sending", () => {
   it("no key pair: nothing is queued and nothing is sent", async () => {
     const { E } = await world();
     const { u } = await enroll(E);
-    const bare = {
-      ...E,
-      VAPID_PUBLIC_KEY: undefined,
-      VAPID_PRIVATE_KEY: undefined,
-    } as Env;
+    const bare = { ...E, SESSION_SECRET: undefined } as unknown as Env;
     const { sent } = fakePush();
     await queuePush(bare, [u.userId], item("ask:np"), T0);
     expect(await pendingCount(u.userId)).toBe(0);
@@ -870,55 +1018,87 @@ describe("sending", () => {
   });
 });
 
-describe("per-browser switches, Updates, mutes and Back from later (design v10)", () => {
+describe("devices, one set of account choices, Updates, mutes and Back from later (#3024)", () => {
   const patch = (E: Env, cookie: string, id: string, body: unknown) =>
     api(app, R.mePushSubscription(id), cookie, { method: "PATCH", body }, E);
-  const subOf = async (E: Env, cookie: string) =>
+  type SubItem = { id: string; needsYou: boolean; updates: boolean };
+  const subsOf = async (E: Env, cookie: string) =>
     (
       (await (await api(app, R.mePushSubscriptions, cookie, {}, E)).json()) as {
-        items: { id: string; needsYou: boolean; updates: boolean }[];
+        items: SubItem[];
       }
-    ).items[0] as { id: string; needsYou: boolean; updates: boolean };
+    ).items;
+  const prefsOf = async (cookie: string) =>
+    (await (
+      await api(app, R.meNotificationPrefs, cookie)
+    ).json()) as NotificationPrefs;
 
-  it("a new browser starts with Needs-you on and Updates as the member's default; PATCH changes this browser only", async () => {
+  it("enrolling a device never changes the account choices; the list projects Needs you on and Updates off", async () => {
     const { E } = await world();
     const u = await mk("sw");
-    await putPrefs(
-      E,
-      u.userId,
-      prefs({ updates: { inApp: true, browser: true } }),
-    );
-    const a = await browser();
-    const b = await browser();
-    await subscribe(E, u.cookie, a.body);
-    await subscribe(E, u.cookie, b.body);
-    const list = (
-      (await (
-        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
-      ).json()) as {
-        items: { id: string; needsYou: boolean; updates: boolean }[];
-      }
-    ).items;
-    expect(list.map((i) => [i.needsYou, i.updates])).toEqual([
-      [true, true],
-      [true, true],
-    ]);
-    const r = await patch(E, u.cookie, list[0]?.id as string, {
-      updates: false,
-    });
-    expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ needsYou: true, updates: false });
-    const after = (
-      (await (
-        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
-      ).json()) as {
-        items: { needsYou: boolean; updates: boolean }[];
-      }
-    ).items;
-    expect(after.map((i) => [i.needsYou, i.updates])).toEqual([
+    const before = await prefsOf(u.cookie);
+    expect(before).toEqual(DEFAULT_PREFS);
+    await subscribe(E, u.cookie, (await browser()).body);
+    await subscribe(E, u.cookie, (await browser()).body);
+    expect(await prefsOf(u.cookie)).toEqual(before);
+    expect(
+      (await subsOf(E, u.cookie)).map((i) => [i.needsYou, i.updates]),
+    ).toEqual([
       [true, false],
-      [true, true],
+      [true, false],
     ]);
+    // Even a member who has Updates saved on (an old row) sees it off, and a new device is not on for it.
+    await env.DB.prepare(
+      "update notification_prefs set updates_browser = 1 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
+    await subscribe(E, u.cookie, (await browser()).body);
+    expect((await prefsOf(u.cookie)).updates.browser).toBe(false);
+    expect((await subsOf(E, u.cookie)).every((i) => !i.updates)).toBe(true);
+  });
+
+  it("PATCH needsYou: false removes only this caller's device; true and updates change nothing", async () => {
+    const { E } = await world();
+    const u = await mk("pt");
+    const other = await mk("pt-other");
+    await subscribe(E, u.cookie, (await browser()).body);
+    await subscribe(E, u.cookie, (await browser()).body);
+    await subscribe(E, other.cookie, (await browser()).body);
+    const [a, b] = await subsOf(E, u.cookie);
+    const accountBefore = await prefsOf(u.cookie);
+    // Nothing to switch on a device: Needs you stays on, Updates stay off.
+    for (const body of [
+      { needsYou: true },
+      { updates: true },
+      { updates: false },
+      { needsYou: true, updates: true },
+    ]) {
+      const r = await patch(E, u.cookie, (a as SubItem).id, body);
+      expect(r.status).toBe(200);
+      expect(await r.json()).toEqual({ needsYou: true, updates: false });
+    }
+    expect(await subsOf(E, u.cookie)).toHaveLength(2);
+    // Off removes that device alone.
+    const off = await patch(E, u.cookie, (a as SubItem).id, {
+      needsYou: false,
+    });
+    expect(off.status).toBe(200);
+    expect(await off.json()).toEqual({ needsYou: false, updates: false });
+    expect((await subsOf(E, u.cookie)).map((i) => i.id)).toEqual([
+      (b as SubItem).id,
+    ]);
+    expect(await subsOf(E, other.cookie)).toHaveLength(1);
+    expect(await prefsOf(u.cookie)).toEqual(accountBefore);
+    // Gone: a second off is 404, and nobody else's device can be removed.
+    expect(
+      (await patch(E, u.cookie, (a as SubItem).id, { needsYou: false })).status,
+    ).toBe(404);
+    const theirs = (await subsOf(E, other.cookie))[0] as SubItem;
+    expect(
+      (await patch(E, u.cookie, theirs.id, { needsYou: false })).status,
+    ).toBe(404);
+    expect(await subsOf(E, other.cookie)).toHaveLength(1);
   });
 
   it("PATCH is the owner's, in a browser: another person or a token gets 404; an empty body is 400", async () => {
@@ -926,116 +1106,110 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     const a = await mk("pa");
     const b2 = await mk("pb");
     await subscribe(E, a.cookie, (await browser()).body);
-    const id = (await subOf(E, a.cookie)).id;
+    const id = ((await subsOf(E, a.cookie))[0] as SubItem).id;
     expect((await patch(E, b2.cookie, id, { updates: true })).status).toBe(404);
     const pat = (await createPat(E, a.userId, "p")).token;
-    expect((await patch(E, pat, id, { updates: true })).status).toBe(404);
+    expect((await patch(E, pat, id, { needsYou: false })).status).toBe(404);
     expect((await patch(E, a.cookie, id, {})).status).toBe(400);
     expect((await patch(E, a.cookie, "nope", { updates: true })).status).toBe(
       404,
     );
-    expect((await subOf(E, a.cookie)).updates).toBe(false);
+    expect(await subsOf(E, a.cookie)).toHaveLength(1);
   });
 
-  it("an Update is pushed only with the member-wide Updates switch and the browser's, with the fixed text", async () => {
+  it("an Update is never queued or sent, whatever was saved; a row queued before the upgrade is dropped unsent", async () => {
     const { E } = await world();
+    // Updates browser sent as on is not saved; the member has Needs you on.
     const { u, b } = await enroll(E, {
       updates: { inApp: true, browser: true },
     });
-    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    expect((await prefsOf(u.cookie)).updates.browser).toBe(false);
+    // An old stored value is no switch either.
+    await env.DB.prepare(
+      "update notification_prefs set updates_browser = 1 where user_id = ?",
+    )
+      .bind(u.userId)
+      .run();
     const { sent } = fakePush();
-    await queueUpdatePush(E, u.userId, item("reply:1", { kind: "update" }), T0);
-    await drainPush(E, T0);
-    const mine = sent.filter((x) => x.url === b.body.endpoint);
-    expect(mine).toHaveLength(1);
-    const p = JSON.parse(await decrypt((mine[0] as Sent).body, b));
-    expect(p.body).toBe(DEFAULT_UPDATE_BODY);
-    expect(p.tag).toBe("updates");
-    expect(JSON.stringify(p)).not.toContain("Ship the draft");
-    // This browser's Updates off: queued only if some browser wants it, so nothing.
-    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: false });
-    await queueUpdatePush(E, u.userId, item("reply:2"), T0 + BUNDLE_MS * 2);
-    expect(await pendingCount(u.userId)).toBe(0);
-    // Member-wide off: nothing either.
-    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
-    await putPrefs(
+    // Writing an Update item for them: written and visible, nothing queued.
+    const owner = await mk("upd-owner");
+    const om = await getUser(E, owner.userId);
+    const { id: art } = await publish(
       E,
-      u.userId,
-      prefs({ updates: { inApp: true, browser: false } }),
+      om as never,
+      { title: "Roadmap", format: "markdown", content: "x" } as never,
+      null,
+      undefined,
+      "create",
     );
-    await queueUpdatePush(E, u.userId, item("reply:3"), T0 + BUNDLE_MS * 3);
+    const email = ((await getUser(E, u.userId)) as { email: string }).email;
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(art, email, owner.userId, Date.now())
+      .run();
+    await recordShareItem(E, {
+      artifactId: art,
+      title: "Roadmap",
+      email,
+      sharer: owner.userId,
+      sharerName: "Ann",
+      createdAt: Date.now(),
+    });
+    const written = await env.DB.prepare(
+      "select level from inbox_items where user_id = ? and artifact_id = ?",
+    )
+      .bind(u.userId, art)
+      .all<{ level: string }>();
+    expect(written.results.map((r) => r.level)).toEqual(["update"]);
     expect(await pendingCount(u.userId)).toBe(0);
-    expect(sent.filter((x) => x.url === b.body.endpoint)).toHaveLength(1);
+    // A row created before the upgrade, already due: never sent, and gone.
+    await legacyUpdateRow(u.userId, "reply:old", T0);
+    expect(await pendingCount(u.userId)).toBe(1);
+    await drainPush(E, T0);
+    expect(sent.filter((x) => x.url === b.body.endpoint)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(0);
   });
 
-  it("Updates use the same bundle and quiet hours as Needs-you, and a bundle of both is one notification", async () => {
+  it("a legacy Update row due with a Needs-you item goes out as the Needs-you item alone", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E, {
-      updates: { inApp: true, browser: true },
       quietHours: { start: "22:00", end: "07:30" },
     });
-    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
     const { sent } = fakePush();
     const night = Date.UTC(2026, 10, 18, 23, 0);
-    await queueUpdatePush(E, u.userId, item("c:1"), night);
-    await queuePush(
-      E,
-      [u.userId],
-      item("ask:q", { kind: "ask" }),
-      night + 1000,
-    );
+    await legacyUpdateRow(u.userId, "comment:c1", night);
+    await queuePush(E, [u.userId], item("ask:q"), night + 1000);
     await drainPush(E, night + 3_600_000);
     expect(sent).toHaveLength(0);
     await drainPush(E, Date.UTC(2026, 10, 19, 7, 30));
     expect(sent).toHaveLength(1);
     const p = JSON.parse(await decrypt((sent[0] as Sent).body, b));
-    expect(p.count).toBe(2);
+    expect(p.count).toBeUndefined();
     expect(p.tag).toBe("needs-you");
     expect(p.body).toBe(DEFAULT_BODY);
+    expect(await pendingCount(u.userId)).toBe(0);
   });
 
-  it("a browser with only Updates off gets only the Needs-you part", async () => {
+  it("every device of a member gets the notification; each stays enrolled", async () => {
     const { E } = await world();
-    const { u, b } = await enroll(E, {
-      updates: { inApp: true, browser: true },
-    });
+    const { u, b } = await enroll(E);
     const second = await browser();
     await subscribe(E, u.cookie, second.body);
-    const subs = (
-      (await (
-        await api(app, R.mePushSubscriptions, u.cookie, {}, E)
-      ).json()) as {
-        items: { id: string }[];
-      }
-    ).items;
-    // First browser: Needs-you only. Second: Updates only.
-    await patch(E, u.cookie, subs[0]?.id as string, {
-      needsYou: true,
-      updates: false,
-    });
-    await patch(E, u.cookie, subs[1]?.id as string, {
-      needsYou: false,
-      updates: true,
-    });
     const { sent } = fakePush();
-    await queuePush(E, [u.userId], item("ask:s", { kind: "ask" }), T0);
-    await queueUpdatePush(E, u.userId, item("u:s"), T0);
+    await queuePush(E, [u.userId], item("ask:s"), T0);
     await drainPush(E, T0);
     expect(sent).toHaveLength(2);
-    const first = sent.find((x) => x.url === b.body.endpoint) as Sent;
-    const secondSent = sent.find((x) => x.url === second.body.endpoint) as Sent;
-    expect(JSON.parse(await decrypt(first.body, b)).body).toBe(DEFAULT_BODY);
-    expect(JSON.parse(await decrypt(secondSent.body, second)).body).toBe(
-      DEFAULT_UPDATE_BODY,
-    );
+    for (const x of [b, second]) {
+      const s = sent.find((y) => y.url === x.body.endpoint) as Sent;
+      expect(JSON.parse(await decrypt(s.body, x)).body).toBe(DEFAULT_BODY);
+    }
+    expect(await subsOf(E, u.cookie)).toHaveLength(2);
   });
 
-  it("a muted page and a muted agent are not pushed (asks and updates), the rest still are", async () => {
+  it("a muted page and a muted agent are not pushed, the rest still are", async () => {
     const { E } = await world();
-    const { u, b } = await enroll(E, {
-      updates: { inApp: true, browser: true },
-    });
-    await patch(E, u.cookie, (await subOf(E, u.cookie)).id, { updates: true });
+    const { u, b } = await enroll(E);
     await env.DB.prepare(
       `insert into inbox_mutes (user_id, kind, target_id, name, created_at) values (?, 'page', '${MUTED}', null, ?), (?, 'agent', 'idn-muted', 'Scout', ?)`,
     )
@@ -1049,7 +1223,6 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
       item("ask:m2", { agentKey: "idn-muted", askerRef: u.userId }),
       T0,
     );
-    await queueUpdatePush(E, u.userId, item("u:m3", { artifactId: MUTED }), T0);
     await drainPush(E, T0);
     expect(sent).toHaveLength(0);
     expect(await pendingCount(u.userId)).toBe(0);
@@ -1059,41 +1232,6 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     expect(JSON.parse(await decrypt((sent[0] as Sent).body, b)).href).toContain(
       PUB,
     );
-  });
-
-  it("writing an Update item queues its push for a member who turned Updates on", async () => {
-    const { E } = await world();
-    const { u } = await enroll(E, { updates: { inApp: true, browser: true } });
-    await env.DB.prepare(
-      "update push_subscriptions set updates = 1 where user_id = ?",
-    )
-      .bind(u.userId)
-      .run();
-    const owner = await mk("own-pub");
-    const member = await getUser(E, owner.userId);
-    const mine = await getUser(E, u.userId);
-    const { id } = await publish(
-      E,
-      member as never,
-      { title: "Roadmap", format: "markdown", content: "x" } as never,
-      null,
-      undefined,
-      "create",
-    );
-    await env.DB.prepare(
-      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
-    )
-      .bind(id, (mine as { email: string }).email, owner.userId, Date.now())
-      .run();
-    await recordShareItem(E, {
-      artifactId: id,
-      title: "Roadmap",
-      email: (mine as { email: string }).email,
-      sharer: owner.userId,
-      sharerName: "Ann",
-      createdAt: Date.now(),
-    });
-    expect(await pendingCount(u.userId)).toBe(1);
   });
 
   it("a put-off item whose time has come is pushed once; a closed ask, an old return and a returned one are not", async () => {
@@ -1143,20 +1281,494 @@ describe("per-browser switches, Updates, mutes and Back from later (design v10)"
     await drainPush(E, T0 + 3_600_000 + 1000);
     expect(mine()).toHaveLength(2);
   });
+});
 
-  it("Back from later is queued like an ask and kept by the waiting-only filter, which is for asks", async () => {
+/** The Needs-you item #2770 writes for a mentioned person, through the real writer. */
+const writePersonMention = (
+  E: Env,
+  userId: string,
+  id: string,
+  over: { artifactId?: string; excerpt?: string; name?: string } = {},
+) =>
+  writeInboxItems(E, [
+    {
+      userId,
+      kind: "mention",
+      key: `person:${id}`,
+      artifactId: over.artifactId ?? PUB,
+      threadId: "th-m",
+      commentId: id,
+      actor: { kind: "user", ref: "someone-else", name: over.name ?? "Ann" },
+      excerpt: over.excerpt ?? "Can you check the yearly numbers?",
+      at: T0,
+    },
+  ]);
+const inboxIdOf = async (userId: string, commentId: string) =>
+  (
+    await env.DB.prepare(
+      "select id from inbox_items where user_id = ? and key = ?",
+    )
+      .bind(userId, `person:${commentId}`)
+      .first<{ id: string }>()
+  )?.id as string;
+const sentTo = (sent: Sent[], b: { body: { endpoint: string } }) =>
+  sent.filter((x) => x.url === b.body.endpoint);
+
+describe("what interrupts under Needs you (#3024)", () => {
+  /** Enrolls a member, lets `setup` queue something (resolving to the time to drain), and says how many notifications went to their device. */
+  async function sends(
+    over: Partial<NotificationPrefs>,
+    setup: (E: Env, userId: string) => Promise<number>,
+  ) {
+    const { E } = await world();
+    const { u, b } = await enroll(E, over);
+    const { sent } = fakePush();
+    const at = await setup(E, u.userId);
+    await drainPush(E, at);
+    return sentTo(sent, b).length;
+  }
+  const waitingOnly = { browserAllAsks: false } as const;
+
+  it("a plain ask goes whether browserAllAsks is off or on", async () => {
+    const plain = async (E: Env, userId: string) => {
+      await queuePush(E, [userId], item(`ask:${newId()}`), T0);
+      return T0;
+    };
+    expect(await sends(waitingOnly, plain)).toBe(1);
+    expect(await sends({ browserAllAsks: true }, plain)).toBe(1);
+  });
+
+  it("an ask from the person's own agent goes whether or not the agent is waiting", async () => {
+    expect(
+      await sends(waitingOnly, async (E, userId) => {
+        await waitingAgent(userId, `idn-w-${userId}`);
+        await queuePush(
+          E,
+          [userId],
+          item(`ask:${newId()}`, {
+            askerRef: userId,
+            agentKey: `idn-w-${userId}`,
+          }),
+          T0,
+        );
+        return T0;
+      }),
+    ).toBe(1);
+    expect(
+      await sends(waitingOnly, async (E, userId) => {
+        await queuePush(
+          E,
+          [userId],
+          item(`ask:${newId()}`, { askerRef: userId, agentKey: "idn-idle" }),
+          T0,
+        );
+        return T0;
+      }),
+    ).toBe(1);
+  });
+
+  it("an open approval (artifact_asks.confirm) goes without 'every ask'; once answered, it does not", async () => {
+    const approval = (answer: boolean) => async (E: Env, userId: string) => {
+      const cid = newId();
+      await queuePush(E, [userId], item(`ask:${cid}`), T0);
+      await env.DB.prepare(
+        "update artifact_asks set confirm = 1 where comment_id = ?",
+      )
+        .bind(cid)
+        .run();
+      if (answer)
+        await env.DB.prepare(
+          "update artifact_asks set open = 0, answered = 1 where comment_id = ?",
+        )
+          .bind(cid)
+          .run();
+      return T0;
+    };
+    expect(await sends(waitingOnly, approval(false))).toBe(1);
+    expect(await sends(waitingOnly, approval(true))).toBe(0);
+  });
+
+  it("a held request goes to every device without 'every ask', with the fixed text; once nothing is held, it does not", async () => {
+    const held = (stillHeld: boolean) => async (E: Env, userId: string) => {
+      const sender = await mk(`hs-${newId().slice(0, 5)}`);
+      const rid = newId();
+      await env.DB.prepare(
+        "insert into held_requests (id, receiver_id, sender_id, artifact_id, created_at, last_at) values (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(rid, userId, sender.userId, PUB, T0, T0)
+        .run();
+      await env.DB.prepare(
+        `insert into held_request_items (id, request_id, thread_id, comment_id, agent_key, way, state, created_at, expires_at)
+         values (?, ?, 'th1', ?, 'k1', 'mention', ?, ?, ?)`,
+      )
+        .bind(
+          newId(),
+          rid,
+          newId(),
+          stillHeld ? "held" : "allowed",
+          T0,
+          Date.now() + 86_400_000,
+        )
+        .run();
+      await rawQueuePush(
+        E,
+        [userId],
+        {
+          key: `${HELD_PUSH_PREFIX}${rid}`,
+          kind: "ask",
+          artifactId: PUB,
+          threadId: "",
+          askerName: "Someone",
+          excerpt: "A request is waiting for you to allow it",
+        },
+        T0,
+      );
+      return T0;
+    };
+    expect(await sends(waitingOnly, held(true))).toBe(1);
+    expect(await sends(waitingOnly, held(false))).toBe(0);
+    // Two devices, both told, never the words.
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      ...waitingOnly,
+      lockScreenDetail: true,
+    });
+    const second = await browser();
+    await subscribe(E, u.cookie, second.body);
+    const { sent } = fakePush();
+    const at = await held(true)(E, u.userId);
+    await drainPush(E, at);
+    for (const x of [b, second]) {
+      const s = sentTo(sent, x)[0] as Sent;
+      expect(JSON.parse(await decrypt(s.body, x)).body).toBe(DEFAULT_HELD_BODY);
+    }
+  });
+
+  it("a person's @mention goes without 'every ask', to every device", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, waitingOnly);
+    const second = await browser();
+    await subscribe(E, u.cookie, second.body);
+    const { sent } = fakePush();
+    await writePersonMention(E, u.userId, "cat-m1");
+    await drainPush(E, Date.now() + 1000);
+    for (const x of [b, second]) {
+      expect(sentTo(sent, x)).toHaveLength(1);
+      expect(
+        JSON.parse(await decrypt((sentTo(sent, x)[0] as Sent).body, x)).body,
+      ).toBe(DEFAULT_MENTION_BODY);
+    }
+  });
+
+  it("with the account's Needs you off nothing goes, for any category", async () => {
+    expect(
+      await sends(
+        { needsYou: { inApp: true, browser: false } },
+        async (E, userId) => {
+          await writePersonMention(E, userId, "cat-off");
+          await queuePush(E, [userId], item(`ask:${newId()}`), T0);
+          return Date.now() + 1000;
+        },
+      ),
+    ).toBe(0);
+  });
+});
+
+describe("a person's @mention back from Later (#3024)", () => {
+  const putOff = (userId: string, itemId: string, until: number) =>
+    env.DB.prepare(
+      "insert into inbox_later (user_id, item_id, until, used, created_at) values (?, ?, ?, 1, ?)",
+    )
+      .bind(userId, `mention:${itemId}`, until, until - 3_600_000)
+      .run();
+  const pendingKeys = async (userId: string) =>
+    (
+      await env.DB.prepare(
+        "select key, kind, artifact_id, thread_id, send_after from push_pending where user_id = ?",
+      )
+        .bind(userId)
+        .all<{
+          key: string;
+          kind: string;
+          artifact_id: string;
+          thread_id: string;
+          send_after: number;
+        }>()
+    ).results;
+  /** A member with a mention written, its original push row cleared (the member had put it off). */
+  async function putOffMention(over: Partial<NotificationPrefs> = {}) {
+    const { E } = await world();
+    const e = await enroll(E, { browserAllAsks: false, ...over });
+    const cid = `lm-${newId().slice(0, 6)}`;
+    await writePersonMention(E, e.u.userId, cid);
+    await env.DB.prepare("delete from push_pending where user_id = ?")
+      .bind(e.u.userId)
+      .run();
+    return { E, ...e, cid, id: await inboxIdOf(e.u.userId, cid) };
+  }
+
+  it("is queued once under the original item id and its page and thread, and sent without 'every ask'", async () => {
+    const { E, u, b, id } = await putOffMention();
+    const { sent } = fakePush();
+    await putOff(u.userId, id, T0 - 1000);
+    await queueLaterReturns(E, T0);
+    expect(await pendingKeys(u.userId)).toEqual([
+      expect.objectContaining({
+        key: `later:mention:${id}:${T0 - 1000}`,
+        kind: "later",
+        artifact_id: PUB,
+        thread_id: "th-m",
+      }),
+    ]);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(1);
+    const p = JSON.parse(await decrypt((sentTo(sent, b)[0] as Sent).body, b));
+    expect(p.body).toBe(DEFAULT_MENTION_BODY);
+    expect(p.href).toBe(`/a/${PUB}?thread=th-m`);
+    // One claim: the next ticks queue and send nothing more.
+    await drainPush(E, T0 + 2 * BUNDLE_MS);
+    await queueLaterReturns(E, T0 + 3 * BUNDLE_MS);
+    expect(sentTo(sent, b)).toHaveLength(1);
+    expect(await pendingKeys(u.userId)).toEqual([]);
+    expect(
+      (
+        await env.DB.prepare(
+          "select pushed_at from inbox_later where user_id = ? and item_id = ?",
+        )
+          .bind(u.userId, `mention:${id}`)
+          .first<{ pushed_at: number }>()
+      )?.pushed_at,
+    ).toBe(T0);
+  });
+
+  it("is claimed once even with two ticks at the same moment", async () => {
+    const { E, u, b, id } = await putOffMention();
+    const { sent } = fakePush();
+    await putOff(u.userId, id, T0 - 1000);
+    await Promise.all([queueLaterReturns(E, T0), queueLaterReturns(E, T0)]);
+    expect(await pendingKeys(u.userId)).toHaveLength(1);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(1);
+  });
+
+  it("while it is put off, its first push row does not send; only the return does", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
-    const lx = item(`later:ask:lx2:${T0}`);
-    await seed([u.userId], { ...lx, kind: "later" });
-    await queueBackFromLater(E, u.userId, lx, T0);
+    await writePersonMention(E, u.userId, "lm-away");
+    const id = await inboxIdOf(u.userId, "lm-away");
+    const until = Date.now() + 3_600_000;
+    await putOff(u.userId, id, until);
+    await drainPush(E, Date.now() + 1000);
+    expect(sentTo(sent, b)).toHaveLength(0);
+    expect(await pendingKeys(u.userId)).toEqual([]);
+    await drainPush(E, until + 1000);
+    expect(sentTo(sent, b)).toHaveLength(1);
+  });
+
+  it("retries the Later return if its transaction fails after inserting the notification", async () => {
+    const { E, u, id } = await putOffMention();
+    await putOff(u.userId, id, T0);
+    await env.DB.prepare(`create trigger test_later_retry before update of pushed_at on inbox_later
+      begin select raise(abort, 'simulated transaction failure'); end`).run();
+    try {
+      await queueLaterReturns(E, T0);
+      expect(await pendingKeys(u.userId)).toEqual([]);
+    } finally {
+      await env.DB.prepare("drop trigger test_later_retry").run();
+    }
+    await queueLaterReturns(E, T0 + 1);
+    expect(await pendingKeys(u.userId)).toHaveLength(1);
+  });
+
+  it("sends one return when the original is still queued and two ticks overlap", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    await writePersonMention(E, u.userId, "delayed");
+    const id = await inboxIdOf(u.userId, "delayed");
+    const until = Date.now() + 3_600_000;
+    await putOff(u.userId, id, until);
+    await queueLaterReturns(E, until);
+    expect(await pendingKeys(u.userId)).toHaveLength(2);
+    await Promise.all([drainPush(E, until), drainPush(E, until)]);
+    const deliveries = sentTo(sent, b);
+    expect(deliveries).toHaveLength(1);
+    const payload = JSON.parse(await decrypt((deliveries[0] as Sent).body, b));
+    expect(payload.body).toBe(DEFAULT_MENTION_BODY);
+    expect(payload.count).toBeUndefined();
+  });
+
+  it("is not queued when the item is read, gone, another member's, an agent mention, or not Needs you", async () => {
+    const { E, u, id } = await putOffMention();
+    const { sent } = fakePush();
+    // Read.
+    await env.DB.prepare("update inbox_items set read_at = ? where id = ?")
+      .bind(T0, id)
+      .run();
+    await putOff(u.userId, id, T0 - 1000);
+    // Gone.
+    await putOff(u.userId, "no-such-item", T0 - 1000);
+    // Another member's item id in this member's Later row.
+    const other = await enroll(E);
+    await writePersonMention(E, other.u.userId, "lm-theirs");
+    const theirs = await inboxIdOf(other.u.userId, "lm-theirs");
+    await env.DB.prepare("delete from push_pending where user_id = ?")
+      .bind(other.u.userId)
+      .run();
+    await putOff(u.userId, theirs, T0 - 1000);
+    // An agent's mention (not a person's) and an Update.
+    for (const [iid, kind, level, key] of [
+      ["lm-agent", "mention", "update", "mention:lm-agent-c"],
+      ["lm-upd", "comment", "update", "comment:lm-upd-c"],
+      ["lm-nn", "mention", "needs_you", "mention:lm-nn-c"],
+    ])
+      await env.DB.prepare(
+        `insert into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, created_at)
+         values (?, ?, ?, ?, ?, ?, 'th-m', 'c', '{"kind":"user","ref":"x"}', 'x', ?)`,
+      )
+        .bind(iid, u.userId, kind, level, key, PUB, T0)
+        .run()
+        .then(() => putOff(u.userId, iid as string, T0 - 1000));
     await drainPush(E, T0);
-    const mine = sent.filter((x) => x.url === b.body.endpoint);
-    expect(mine).toHaveLength(1);
-    expect(JSON.parse(await decrypt((mine[0] as Sent).body, b)).tag).toBe(
-      "needs-you",
+    expect(await pendingKeys(u.userId)).toEqual([]);
+    expect(await pendingKeys(other.u.userId)).toEqual([]);
+    expect(sent).toHaveLength(0);
+    // Every one was claimed: none is retried.
+    expect(
+      (
+        await env.DB.prepare(
+          "select count(*) n from inbox_later where user_id = ? and pushed_at is null",
+        )
+          .bind(u.userId)
+          .first<{ n: number }>()
+      )?.n,
+    ).toBe(0);
+  });
+
+  it("is dropped at send time when the item was read, deleted, or the page stopped being readable meanwhile", async () => {
+    const { E, u, b, id } = await putOffMention();
+    const { sent } = fakePush();
+    // Queued (an hour from sending), then read before it goes.
+    await putOff(u.userId, id, T0 - 1000);
+    await queueLaterReturns(E, T0);
+    expect(await pendingKeys(u.userId)).toHaveLength(1);
+    await env.DB.prepare("update inbox_items set read_at = ? where id = ?")
+      .bind(T0, id)
+      .run();
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(0);
+    expect(await pendingCount(u.userId)).toBe(0);
+
+    // Deleted while queued.
+    const two = await putOffMention();
+    await putOff(two.u.userId, two.id, T0 - 1000);
+    await queueLaterReturns(two.E, T0);
+    await env.DB.prepare("delete from inbox_items where id = ?")
+      .bind(two.id)
+      .run();
+    await drainPush(two.E, T0);
+    expect(sentTo(sent, two.b)).toHaveLength(0);
+    expect(await pendingCount(two.u.userId)).toBe(0);
+
+    // The page is no longer readable.
+    const three = await putOffMention();
+    const owner = await mk(`own-${newId().slice(0, 4)}`);
+    const om = await getUser(three.E, owner.userId);
+    const me = await getUser(three.E, three.u.userId);
+    const { id: priv } = await publish(
+      three.E,
+      om as never,
+      { title: "Private", format: "markdown", content: "x" } as never,
+      null,
+      undefined,
+      "create",
     );
+    await env.DB.prepare(
+      "insert into shares (artifact_id, email, role, created_by, created_at) values (?, ?, 'viewer', ?, ?)",
+    )
+      .bind(priv, (me as { email: string }).email, owner.userId, Date.now())
+      .run();
+    await env.DB.prepare("update inbox_items set artifact_id = ? where id = ?")
+      .bind(priv, three.id)
+      .run();
+    await putOff(three.u.userId, three.id, T0 - 1000);
+    await queueLaterReturns(three.E, T0);
+    expect(await pendingKeys(three.u.userId)).toHaveLength(1);
+    await env.DB.prepare("delete from shares where artifact_id = ?")
+      .bind(priv)
+      .run();
+    await drainPush(three.E, T0);
+    expect(sentTo(sent, three.b)).toHaveLength(0);
+    expect(await pendingCount(three.u.userId)).toBe(0);
+  });
+
+  it("is dropped at send time when the item's page changed from the queued one", async () => {
+    const { E, u, b, id } = await putOffMention();
+    const { sent } = fakePush();
+    await putOff(u.userId, id, T0 - 1000);
+    await queueLaterReturns(E, T0);
+    await env.DB.prepare("update inbox_items set artifact_id = ? where id = ?")
+      .bind(MUTED, id)
+      .run();
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(0);
+  });
+
+  it("returns during quiet hours are held to when they end, then re-checked: read meanwhile sends nothing, still unread sends once", async () => {
+    const night = Date.UTC(2026, 10, 18, 23, 0);
+    const morning = Date.UTC(2026, 10, 19, 7, 30);
+    const quiet = { quietHours: { start: "22:00", end: "07:30" } };
+    const { sent } = fakePush();
+
+    const unread = await putOffMention(quiet);
+    await putOff(unread.u.userId, unread.id, night - 1000);
+    await drainPush(unread.E, night);
+    expect(await pendingKeys(unread.u.userId)).toEqual([
+      expect.objectContaining({
+        key: `later:mention:${unread.id}:${night - 1000}`,
+        send_after: morning,
+      }),
+    ]);
+    expect(sentTo(sent, unread.b)).toHaveLength(0);
+    await drainPush(unread.E, morning - 1);
+    expect(sentTo(sent, unread.b)).toHaveLength(0);
+    await drainPush(unread.E, morning);
+    expect(sentTo(sent, unread.b)).toHaveLength(1);
+
+    const read = await putOffMention(quiet);
+    await putOff(read.u.userId, read.id, night - 1000);
+    await drainPush(read.E, night);
+    expect(await pendingKeys(read.u.userId)).toHaveLength(1);
+    await env.DB.prepare("update inbox_items set read_at = ? where id = ?")
+      .bind(night + 1000, read.id)
+      .run();
+    await drainPush(read.E, morning);
+    expect(sentTo(sent, read.b)).toHaveLength(0);
+    expect(await pendingKeys(read.u.userId)).toEqual([]);
+  });
+
+  it("an ask put off and back still uses its own path and 'later' handling", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E, { browserAllAsks: false });
+    const { sent } = fakePush();
+    await env.DB.prepare(
+      `insert or replace into artifact_asks (artifact_id, thread_id, comment_id, addressee, open, answered, question, asker, asked_at, confirm)
+       values (?, 'thl', 'lm-ask', ?, 1, 0, 'Still there?', '{"kind":"user","ref":"x","name":"Scout"}', '2026-11-18T10:00:00Z', 0)`,
+    )
+      .bind(PUB, u.userId)
+      .run();
+    await env.DB.prepare(
+      "insert into inbox_later (user_id, item_id, until, used, created_at) values (?, 'ask:lm-ask', ?, 1, ?)",
+    )
+      .bind(u.userId, T0 - 1000, T0 - 3_600_000)
+      .run();
+    await queueLaterReturns(E, T0);
+    expect((await pendingKeys(u.userId)).map((r) => r.key)).toEqual([
+      `later:ask:lm-ask:${T0 - 1000}`,
+    ]);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(1);
   });
 });
 
@@ -1232,25 +1844,11 @@ describe("checked again at send time", () => {
     expect(body).not.toContain("Old words");
   });
 
-  it("a comment deleted while queued is not sent; one edited shows the new words, at send time and in the queue", async () => {
+  it("a comment deleted while queued takes its queued ask, and a deleted thread takes its queued items", async () => {
     const { E } = await world();
-    const { u, b } = await enroll(E, {
-      ...detail,
-      updates: { inApp: true, browser: true },
-    });
-    await env.DB.prepare(
-      "update push_subscriptions set updates = 1 where user_id = ?",
-    )
-      .bind(u.userId)
-      .run();
-    const { sent } = fakePush();
-    // Deleted.
-    await queueUpdatePush(
-      E,
-      u.userId,
-      item("comment:dl1", { excerpt: "Oops" }),
-      T0,
-    );
+    const { u } = await enroll(E, detail);
+    await queuePush(E, [u.userId], item("ask:dl1", { excerpt: "Oops" }), T0);
+    expect(await pendingCount(u.userId)).toBe(1);
     await forgetCommentItems(E, {
       artifactId: PUB,
       threadId: "th1",
@@ -1258,47 +1856,11 @@ describe("checked again at send time", () => {
       root: false,
     });
     expect(await pendingCount(u.userId)).toBe(0);
-    // Removed from the inbox but still queued (a race): dropped at send time.
-    await queueUpdatePush(
-      E,
-      u.userId,
-      item("comment:dl2", { excerpt: "Gone" }),
-      T0,
-    );
-    await env.DB.prepare(
-      "delete from inbox_items where key = 'comment:dl2'",
-    ).run();
-    await drainPush(E, T0);
-    expect(mineOf(sent, b)).toHaveLength(0);
-    // Edited while queued.
-    await queueUpdatePush(
-      E,
-      u.userId,
-      item("comment:ed1", { excerpt: "Typo" }),
-      T0 + BUNDLE_MS * 2,
-    );
-    await refreshCommentItems(E, {
-      artifactId: PUB,
-      commentId: "ed1",
-      body: "Fixed words",
-    });
-    const row = await env.DB.prepare(
-      "select excerpt from push_pending where key = 'comment:ed1'",
-    ).first<{
-      excerpt: string;
-    }>();
-    expect(row?.excerpt).toBe("Fixed words");
-    await drainPush(E, T0 + BUNDLE_MS * 2);
-    const m = mineOf(sent, b);
-    expect(m).toHaveLength(1);
-    expect(JSON.parse(await decrypt((m[0] as Sent).body, b)).body).toContain(
-      "Fixed words",
-    );
     // A deleted thread takes its queued items too.
-    await queueUpdatePush(
+    await queuePush(
       E,
-      u.userId,
-      item("reply:th9", { threadId: "thX" }),
+      [u.userId],
+      item("ask:th9", { threadId: "thX" }),
       T0 + BUNDLE_MS * 5,
     );
     await forgetCommentItems(E, {
@@ -1312,24 +1874,14 @@ describe("checked again at send time", () => {
 });
 
 describe("the topic and bad keys", () => {
-  it("the topic follows the payload's tag, so Updates can't replace a waiting Needs-you push", async () => {
+  it("the topic follows the payload's tag: Needs you only", async () => {
     const { E } = await world();
-    const { u } = await enroll(E, { updates: { inApp: true, browser: true } });
-    await env.DB.prepare(
-      "update push_subscriptions set updates = 1 where user_id = ?",
-    )
-      .bind(u.userId)
-      .run();
+    const { u, b } = await enroll(E);
     const { sent } = fakePush();
     await queuePush(E, [u.userId], item("ask:tp1"), T0);
     await drainPush(E, T0);
-    await queueUpdatePush(E, u.userId, item("comment:tp2"), T0 + BUNDLE_MS);
-    await drainPush(E, T0 + BUNDLE_MS);
-    const mine = sent.filter((x) => x.url.includes("/fcm/send/")).slice(-2);
-    expect(mine.map((x) => x.headers.get("topic"))).toEqual([
-      "needs-you",
-      "updates",
-    ]);
+    const mine = sent.filter((x) => x.url === b.body.endpoint);
+    expect(mine.map((x) => x.headers.get("topic"))).toEqual(["needs-you"]);
   });
 
   it("subscribing with keys that can't be encrypted to is a 400: off the curve, wrong length, bad auth", async () => {
@@ -1394,7 +1946,7 @@ describe("the cron tick", () => {
       await Promise.all(pending);
       return pending.length;
     };
-    const off = { ...E, VAPID_PUBLIC_KEY: undefined } as Env;
+    const off = { ...E, SESSION_SECRET: undefined } as unknown as Env;
     const base = await run(off, T0);
     await queuePush(E, [u.userId], item("ask:cr"), T0);
     // Push off: the due item stays.
@@ -1418,7 +1970,6 @@ describe("a person's @-mention of the member (#2781)", () => {
       {
         userId,
         kind: "mention",
-        level: "needs_you",
         key: `person:${id}`,
         artifactId: over.artifactId ?? PUB,
         threadId: "th-m",
@@ -1508,7 +2059,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     expect((await bodyOf(sent, b)).body).toBe(DEFAULT_MENTION_BODY);
   });
 
-  it("'Interrupt me for': a mention pushes only with 'every ask put to me'; 'waiting asks and approvals' drops it", async () => {
+  it("'Interrupt me for': a person's mention pushes under either choice, it is Needs you", async () => {
     const { E } = await world();
     const every = await enroll(E, { browserAllAsks: true });
     const waiting = await enroll(E, { browserAllAsks: false });
@@ -1518,8 +2069,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     await env.DB.prepare("update push_pending set send_after = 0").run();
     await drainPush(E, Date.now());
     expect(mineOf(sent, every.b)).toHaveLength(1);
-    expect(mineOf(sent, waiting.b)).toHaveLength(0);
-    // Dropped, not held: nothing left waiting for the second member.
+    expect(mineOf(sent, waiting.b)).toHaveLength(1);
     expect(await pendingCount(waiting.u.userId)).toBe(0);
   });
 

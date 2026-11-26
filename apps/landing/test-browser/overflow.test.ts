@@ -20,21 +20,15 @@ const TYPES: Record<string, string> = {
 const WIDTHS = [390, 1280, 1440, 1920];
 
 // Mirrors packages/ui/test-browser/harness.ts: the browser runs as a server so
-// teardown has its process. Closing can stall on a loaded runner, so it gets
-// 5s before the process is killed; afterAll allows 15s.
+// teardown has its process, and teardown kills it outright (a graceful close
+// that can stall would need a wall-clock watchdog).
 async function launch(engine: BrowserType) {
   const server = await engine.launchServer();
   const browser = await engine.connect(server.wsEndpoint());
+  // Kill the server outright: it is a throwaway one, and a graceful close
+  // that could hang would need a wall-clock watchdog.
   const close = async () => {
-    let timer: NodeJS.Timeout | undefined;
-    const closed = await Promise.race([
-      server.close().then(() => true),
-      new Promise<false>((r) => {
-        timer = setTimeout(() => r(false), 5_000);
-      }),
-    ]);
-    clearTimeout(timer);
-    if (!closed) await server.kill();
+    await server.kill();
   };
   return { browser, close };
 }
@@ -77,8 +71,14 @@ describe.each([
       });
       await page.goto(`${base}/`, { waitUntil: "load" });
       await page.evaluate(() => document.fonts.ready);
-      // Let the scripts lay out (the feature story moves its mocks on wide screens).
-      await page.waitForTimeout(300);
+      // Let the scripts lay out (the feature story moves its mocks on wide
+      // screens): they render on animation frames, so wait for two of them.
+      await page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
       const r = await page.evaluate(() => {
         const w = document.documentElement.clientWidth;
         const nav = document

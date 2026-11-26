@@ -331,6 +331,27 @@ describe("systemService: launchd", () => {
     });
   });
 
+  it("passes OA_BUS_EXPERIMENTAL_AGY to the daemon only when the install runs with it (agy S2b)", async () => {
+    const { d, userHome } = deps("darwin");
+    const s = systemService({
+      ...d,
+      env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: "1" },
+    });
+    await s.ensure();
+    expect(readFileSync(plistOf(userHome), "utf8")).toContain(
+      "<key>OA_BUS_EXPERIMENTAL_AGY</key><string>1</string>",
+    );
+    expect(s.env?.()).toMatchObject({ OA_BUS_EXPERIMENTAL_AGY: "1" });
+    const t = systemService({
+      ...d,
+      env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: "yes" },
+    });
+    await t.ensure();
+    expect(readFileSync(plistOf(userHome), "utf8")).not.toContain(
+      "OA_BUS_EXPERIMENTAL_AGY",
+    );
+  });
+
   it("boots out and writes the same label under a symlinked, missing home", async () => {
     const { d, calls, userHome } = deps("darwin");
     const target = mkdtempSync(join(tmpdir(), "ob-real-"));

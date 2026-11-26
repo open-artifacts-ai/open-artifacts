@@ -51,6 +51,19 @@ export type DaemonClient = {
   ) => void;
   /** Open Artifacts bus notices (expired or refused mail) the daemon pushes to this session. */
   onNotice: (cb: (text: string) => void) => void;
+  /** agy S3, a watcher's connection: the messages to hand to agy. */
+  onAgyDeliver: (
+    cb: (frame: Extract<DaemonFrame, { type: "agy_deliver" }>) => void,
+  ) => void;
+  /** agy S3: agy did not take `msg_id`; the daemon may push it again. */
+  agyFailed: (msg_id: string) => void;
+  /**
+   * agy S3: whether agy got `msg_id` is unknown (an earlier hand-off may
+   * have reached it); the receipt stays pending, never delivered.
+   */
+  agyUnknown: (msg_id: string) => void;
+  /** Called once when the connection closes, for any reason. */
+  onClose: (cb: () => void) => void;
   close: () => void;
 };
 
@@ -101,6 +114,11 @@ export async function connectDaemon(opts: {
   const early: Deliver[] = [];
   let notice: ((text: string) => void) | undefined;
   const earlyNotices: string[] = [];
+  type AgyDeliver = Extract<DaemonFrame, { type: "agy_deliver" }>;
+  let agyDeliver: ((f: AgyDeliver) => void) | undefined;
+  const earlyAgy: AgyDeliver[] = [];
+  const closers: (() => void)[] = [];
+  let closedOnce = false;
   const report =
     opts.onError ?? ((e: unknown) => console.error("onDeliver threw", e));
   const dispatch = (f: Deliver) => {
@@ -133,6 +151,16 @@ export async function connectDaemon(opts: {
           else early.push(frame);
           continue;
         }
+        if (frame.type === "agy_deliver") {
+          if (!agyDeliver) earlyAgy.push(frame);
+          else
+            try {
+              agyDeliver(frame);
+            } catch (e) {
+              report(e);
+            }
+          continue;
+        }
         if (frame.type === "notice") {
           if (notice) {
             try {
@@ -158,7 +186,12 @@ export async function connectDaemon(opts: {
     }
   });
   sock.on("error", (e) => failAll(e));
-  sock.on("close", () => failAll(new Error("daemon connection closed")));
+  sock.on("close", () => {
+    failAll(new Error("daemon connection closed"));
+    if (closedOnce) return;
+    closedOnce = true;
+    for (const cb of closers.splice(0)) cb();
+  });
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   const welcomeRaw = await new Promise<DaemonFrame>((resolve, reject) => {
@@ -222,6 +255,26 @@ export async function connectDaemon(opts: {
     onNotice: (cb) => {
       notice = cb;
       for (const t of earlyNotices.splice(0)) cb(t);
+    },
+    onAgyDeliver: (cb) => {
+      agyDeliver = cb;
+      for (const f of earlyAgy.splice(0)) cb(f);
+    },
+    agyFailed: (msg_id) => {
+      if (state === "closed") return;
+      sock.write(
+        `${JSON.stringify({ v: 1, type: "agy_failed", id: `agyf-${++seq}`, msg_id })}\n`,
+      );
+    },
+    agyUnknown: (msg_id) => {
+      if (state === "closed") return;
+      sock.write(
+        `${JSON.stringify({ v: 1, type: "agy_failed", id: `agyf-${++seq}`, msg_id, outcome: "unknown" })}\n`,
+      );
+    },
+    onClose: (cb) => {
+      if (closedOnce) cb();
+      else closers.push(cb);
     },
     close: () => sock.destroy(),
   };

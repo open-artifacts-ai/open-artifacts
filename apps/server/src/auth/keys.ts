@@ -1,5 +1,5 @@
 import type { Env } from "../env.js";
-import { b64urlEncode } from "../util/crypto.js";
+import { b64urlDecode, b64urlEncode } from "../util/crypto.js";
 
 /**
  * Per-purpose HMAC keys derived from SESSION_SECRET, so a key used for one
@@ -63,7 +63,15 @@ const HKDF_SALT = "open-artifacts/hkdf/v1";
 const enc = new TextEncoder();
 const cache = new Map<string, Promise<string>>();
 
-async function derive(secret: string, label: KeyLabel): Promise<string> {
+/**
+ * The one HKDF-SHA256 call (v1 salt) behind every derived key here: `bytes`
+ * of output for `info`. The caller owns the returned buffer.
+ */
+async function hkdfBits(
+  secret: string,
+  info: string,
+  bytes: number,
+): Promise<Uint8Array<ArrayBuffer>> {
   const ikm = await crypto.subtle.importKey(
     "raw",
     enc.encode(secret),
@@ -71,17 +79,22 @@ async function derive(secret: string, label: KeyLabel): Promise<string> {
     false,
     ["deriveBits"],
   );
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: enc.encode(HKDF_SALT),
-      info: enc.encode(label),
-    },
-    ikm,
-    256,
+  return new Uint8Array(
+    await crypto.subtle.deriveBits(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: enc.encode(HKDF_SALT),
+        info: enc.encode(info),
+      },
+      ikm,
+      bytes * 8,
+    ),
   );
-  return b64urlEncode(new Uint8Array(bits));
+}
+
+async function derive(secret: string, label: KeyLabel): Promise<string> {
+  return b64urlEncode(await hkdfBits(secret, label, 32));
 }
 
 /**
@@ -127,6 +140,107 @@ export function contentKey(
       new Error("CONTENT_SIGNING_KEY must be at least 32 characters"),
     );
   return cached(k, label);
+}
+
+const VAPID_LABEL = "oa:push-vapid";
+/** 48 bytes: the bias of reducing 384 bits mod the 256-bit P-256 order is negligible. */
+const P256_HKDF_BYTES = 48;
+/**
+ * The order n of the P-256 group (NIST SP 800-186 section 3.2.1.3, secp256r1;
+ * SEC 2 section 2.4.2). A fixed constant, not a parameter.
+ */
+const P256_ORDER =
+  0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+/**
+ * PKCS#8 PrivateKeyInfo (RFC 5208) for id-ecPublicKey / prime256v1 around an
+ * RFC 5915 ECPrivateKey (version 1, the 32-byte scalar, no public key); the
+ * scalar follows. Fixed DER, so no ASN.1 code is needed.
+ */
+const P256_PKCS8_PREFIX = Uint8Array.from([
+  0x30, 0x41, 0x02, 0x01, 0x00, 0x30, 0x13, 0x06, 0x07, 0x2a, 0x86, 0x48, 0xce,
+  0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,
+  0x04, 0x27, 0x30, 0x25, 0x02, 0x01, 0x01, 0x04, 0x20,
+]);
+const P256_ALG = { name: "ECDSA", namedCurve: "P-256" } as const;
+
+/** The scalar for `label`: 48 HKDF bytes mod n, retried as `label\0<counter>` on a (practically never) zero result. Big-endian, 32 bytes. */
+async function p256Scalar(secret: string): Promise<Uint8Array> {
+  for (let counter = 0; counter < 8; counter++) {
+    const bits = await hkdfBits(
+      secret,
+      counter === 0 ? VAPID_LABEL : `${VAPID_LABEL}\u0000${counter}`,
+      P256_HKDF_BYTES,
+    );
+    let n = 0n;
+    for (const b of bits) n = (n << 8n) | BigInt(b);
+    bits.fill(0);
+    n %= P256_ORDER;
+    if (n === 0n) continue;
+    const out = new Uint8Array(32);
+    for (let i = 31; i >= 0; i--) {
+      out[i] = Number(n & 0xffn);
+      n >>= 8n;
+    }
+    return out;
+  }
+  throw new Error("p256 derivation failed");
+}
+
+/**
+ * A P-256 signing pair derived from SESSION_SECRET (same HKDF, v1 salt),
+ * with WebCrypto only: the scalar is wrapped in fixed PKCS#8 and imported
+ * once extractable, to read the public point from its JWK x/y, and once
+ * non-extractable for signing. Returns the 65-byte SEC1 uncompressed public
+ * key (04|x|y) and the non-extractable signing key; nothing private is kept
+ * or put in an error, and the private byte buffers are zeroed on the way out.
+ */
+export async function deriveVapidPair(
+  env: Pick<Env, "SESSION_SECRET">,
+): Promise<{ publicKey: Uint8Array<ArrayBuffer>; signKey: CryptoKey }> {
+  const secret = env.SESSION_SECRET;
+  if (typeof secret !== "string" || secret.length === 0)
+    throw new Error("SESSION_SECRET is not set");
+  let scalar: Uint8Array | undefined;
+  const der = new Uint8Array(P256_PKCS8_PREFIX.length + 32);
+  try {
+    scalar = await p256Scalar(secret);
+    der.set(P256_PKCS8_PREFIX, 0);
+    der.set(scalar, P256_PKCS8_PREFIX.length);
+    let x: Uint8Array | null;
+    let y: Uint8Array | null;
+    try {
+      const probe = await crypto.subtle.importKey(
+        "pkcs8",
+        der,
+        P256_ALG,
+        true,
+        ["sign"],
+      );
+      const jwk = await crypto.subtle.exportKey("jwk", probe);
+      x = typeof jwk.x === "string" ? b64urlDecode(jwk.x) : null;
+      y = typeof jwk.y === "string" ? b64urlDecode(jwk.y) : null;
+    } catch {
+      throw new Error("p256 key import failed");
+    }
+    if (x?.length !== 32 || y?.length !== 32)
+      throw new Error("p256 public coordinates invalid");
+    const publicKey = new Uint8Array(65);
+    publicKey[0] = 4;
+    publicKey.set(x, 1);
+    publicKey.set(y, 33);
+    let signKey: CryptoKey;
+    try {
+      signKey = await crypto.subtle.importKey("pkcs8", der, P256_ALG, false, [
+        "sign",
+      ]);
+    } catch {
+      throw new Error("p256 key import failed");
+    }
+    return { publicKey, signKey };
+  } finally {
+    scalar?.fill(0);
+    der.fill(0);
+  }
 }
 
 /** DIRECTORY_TOKEN_KEY's minimum length (setup and provisioning generate 32 random bytes). */

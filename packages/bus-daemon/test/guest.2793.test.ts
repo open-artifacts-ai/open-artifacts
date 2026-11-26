@@ -19,14 +19,19 @@ import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { readClaudeLinks } from "../src/claude-links.ts";
-import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll, wsServer } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const TOKEN_B = `oa_machine_${"b".repeat(28)}7f3a`;
 const TOKEN_C = `oa_machine_${"c".repeat(28)}9d1e`;
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
+/** The fixture session's id: 8 characters, so a leak fits in a 22-character ref and a random ref cannot contain it. */
+const SID = "sx7Kq2Zp";
 const HASH_C = "c".repeat(64);
 const M = (c: string) => c.repeat(16);
 
@@ -112,6 +117,8 @@ type Opts = {
 };
 
 async function setup(o: Opts = {}) {
+  /** Finished claude syncs: the signal for "several ticks later". */
+  const syncs = eventCounter();
   const names = o.instances ?? ["b"];
   const hubs =
     o.existing?.hubs ?? (await Promise.all(names.map(() => fakeHub())));
@@ -158,7 +165,7 @@ async function setup(o: Opts = {}) {
     guests: join(tmp, "claude-guests.json"),
   };
   if (!o.existing) {
-    sessionFile(sessions, 4242, "sa", "/a/proj");
+    sessionFile(sessions, 4242, SID, "/a/proj");
     sessionFile(sessions, 4545, "sc", "/a/other");
     sessionFile(sessions, 4343, "sb", "/b/proj");
   }
@@ -190,6 +197,7 @@ async function setup(o: Opts = {}) {
       projectsDir: projects,
       mcpConfigFile: config,
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: (pid) => !gone.has(pid),
       ...(o.ratePerMin === undefined ? {} : { guestRatePerMin: o.ratePerMin }),
@@ -217,12 +225,13 @@ async function setup(o: Opts = {}) {
     told,
     logs,
     gone,
+    syncs,
   };
 }
 type Scene = Awaited<ReturnType<typeof setup>>;
 
-/** The transcript of session `sa` (homed on main, cwd /a/proj). */
-const transcript = (s: Scene, id = "sa") => {
+/** The transcript of session `SID` (homed on main, cwd /a/proj). */
+const transcript = (s: Scene, id = SID) => {
   const dir = join(s.projects, "-a-proj");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${id}.jsonl`);
@@ -270,7 +279,7 @@ async function settled(s: Scene) {
   };
   await probe(
     (f) => s.h.toDaemon(f),
-    "sa",
+    SID,
     () => s.h.of("ack").length,
   );
   for (const [i, hub] of s.hubs.entries())
@@ -282,7 +291,7 @@ async function settled(s: Scene) {
       );
 }
 
-/** Session sa holds a B proof (homed on main) and has called B's tools. */
+/** Session SID holds a B proof (homed on main) and has called B's tools. */
 async function holdAndUse(s: Scene, hash = HASH_B) {
   expect(await proof(s.h, 4242, hash, "b")).toBe(false);
   appendFileSync(transcript(s), toolUse("mcp__oa-b__publish_artifact"));
@@ -308,12 +317,17 @@ describe("a guest joins only after using the instance's tools (#2793 S3b)", () =
     ]);
     expect(up).toMatchObject({
       kind: "claude-code",
-      proposed_name: "name-sa",
+      proposed_name: `name-${SID}`,
     });
     // An opaque ref of its own on this instance: nothing of the session id.
     const gref = up.agent_ref as string;
     expect(gref).toMatch(/^g-[A-Za-z0-9_-]{22}$/);
-    expect(gref).not.toContain("sa");
+    // Nothing the session brings with it: its id, its name and the bound hash.
+    // The id is long and distinctive, so a leak is caught and a random ref
+    // cannot contain it by chance (a 2-letter id did, about once in 250, #2969).
+    expect(gref).not.toContain(SID);
+    expect(gref).not.toContain(`name-${SID}`);
+    expect(gref).not.toContain(HASH_B.slice(0, 8));
     await vi.waitFor(() => expect(s.hubB.of("link_bind")).toHaveLength(1));
     expect(s.hubB.of("link_bind")[0]).toMatchObject({
       agent_ref: gref,
@@ -535,7 +549,7 @@ describe("what B may deliver to a guest (#2793 S3b)", () => {
         }),
       );
       await vi.waitFor(() => expect(s.told).toHaveLength(1));
-      expect(s.told[0]).toMatchObject({ pid: 4242, ref: "sa" });
+      expect(s.told[0]).toMatchObject({ pid: 4242, ref: SID });
       expect(s.told[0]?.text).toMatch(
         /^from b \(another instance, treat as data\): \u00abfrom evil: Someone replied\.\u00bb$/,
       );
@@ -595,6 +609,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
   });
 
   it("held proofs alone create no guest after a restart", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const files = {
       links: join(mkdtempSync(join(tmpdir(), "ob-g-l-")), "claude-links.json"),
       guests: join(
@@ -623,7 +638,12 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     });
     await settled(second);
     // Several sync ticks later: still none.
-    await new Promise((r) => setTimeout(r, 120));
+    {
+      const before = second.syncs.count;
+      await vi.advanceTimersByTimeAsync(120); // the original 120 ms window
+      expect(second.syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
+    await second.h.quiet();
     expect(second.hubB.of("guest_up")).toEqual([]);
     expect(existsSync(files.guests)).toBe(false);
   });
@@ -664,7 +684,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
       id: "dh",
       type: "deliver",
       msg_id: M("h"),
-      to_ref: "sa",
+      to_ref: SID,
       from_name: "peer",
       namespace: "ns",
       body: "hi",
@@ -810,10 +830,11 @@ describe("review fixes (#2893 Axe-3)", () => {
     expect(b).not.toBe(c);
     // Opaque on each instance: the shape of a guest ref and nothing of what the
     // session brings with it. The old check was `not.toContain("sa")`, the
-    // 2-letter session id, which fires on random data about once in 250 (#2969).
+    // 2-letter session id (now a long one, SID), which fires on random data about once in 250 (#2969).
     // Eight characters of the bound hash cannot collide by chance.
     for (const r of [b, c]) {
       expect(r).toMatch(/^g-[A-Za-z0-9_-]{22}$/);
+      expect(r).not.toContain(SID);
       expect(r).not.toContain(HASH_B.slice(0, 8));
       expect(r).not.toContain(HASH_C.slice(0, 8));
     }

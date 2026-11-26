@@ -822,6 +822,23 @@ export function copy(
       warn("Antigravity has the oa-bus plugin turned off"),
       next("Turn it on with: agy plugin enable oa-bus"),
     ],
+    // agy S3, doctor: the one rule that lets a session start its watcher without asking.
+    agyRulePresent: () =>
+      done("Antigravity may start the bus watcher without asking"),
+    agyRuleMissing: () => [
+      warn("Antigravity will ask before it starts the bus watcher"),
+      next(
+        `Run ${bus} to save the one rule that lets it start without asking.`,
+      ),
+    ],
+    agyRuleAltered: (file: string) => [
+      warn(
+        `Antigravity's rule for the bus watcher was changed in ${clip(file, 33)}`,
+      ),
+      next(
+        `Run ${bus} to put it back, and remove any other rule that names agy-watch.`,
+      ),
+    ],
     // Doctor, when our entry is in agy's config but turned off there.
     agyDisabled: () => [
       warn("Antigravity has the bus turned off"),
@@ -835,6 +852,14 @@ export function copy(
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    // #3108: a Codex entry that signs in by itself, linked through the server check.
+    codexLinked: (name: string, ago: string) =>
+      done(`Codex's ${clip(name, 50)} entry is linked (last call ${ago}).`),
+    codexLinksOnFirstCall: (name: string) =>
+      p(
+        "muted",
+        `Codex's ${clip(name, 50)} entry links on its first Open Artifacts call.`,
+      ),
     // The Claude Code plugins (#2095). Drafts for OA Product: wording is theirs.
     outputStyleOn: () => [
       done("Turned on the Artifacts Teammate output style"),

@@ -519,8 +519,8 @@ describe("bus rows outlive the index window (#1299)", () => {
   });
 
   // #1749: a hung index stalls no hub-started close. The hub's bound is
-  // lowered to 50 ms for the test (a real timer: setTimeout cannot be pinned
-  // in the DO); the signal is the close call resolving while `gone` is still
+  // lowered to 0 for the test (the DO's own timer cannot be faked, so it is
+  // made immediate rather than waited out); the signal is the close call resolving while `gone` is still
   // gated, and indexInFlight (read inside the DO) staying 1 until it settles.
   async function hungIndex(userId: string) {
     const hub = await hubOf(userId);
@@ -551,7 +551,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     await runInDurableObject(hub, (inst: BusHub) => {
       const h = inst as unknown as { env: object };
       h.env = Object.assign(Object.create(h.env), { USER_PRESENCE: hungNs });
-      BusHub.setIndexGoneTimeoutForTests(inst, 50);
+      BusHub.setIndexGoneTimeoutForTests(inst, 0);
     });
     const inFlight = () =>
       runInDurableObject(hub, (inst: BusHub) => inst.indexInFlight);

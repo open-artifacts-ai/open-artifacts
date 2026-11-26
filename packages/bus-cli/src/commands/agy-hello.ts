@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type AgyConversation,
   agyHello as agyHelloFrame,
   agyTitle,
+  agyWatchLive,
   daemonSocketPath,
   findAgy,
   nameFromTitle,
@@ -23,6 +25,7 @@ import {
 } from "@oa/bus-ipc";
 import { BRIEF_RULES_MAX_BYTES } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
+import { AGY_WATCH_FILE, agyPluginDir } from "../steps/antigravity.ts";
 
 /** The most the hook waits for agy's payload on stdin. */
 const STDIN_WAIT_MS = 5000;
@@ -56,8 +59,37 @@ export type AgyHelloDeps = {
   localRules: () => string | null;
   /** The hook's parent: the shell agy ran the hook in, or agy itself. */
   ppid: number;
+  /** agy S3: whether a watcher runs for this agy process now. */
+  watcherLive: (agy: number, procStart: string) => boolean;
+  /** agy S3: the watcher's command line, as install wrote it into the plugin. */
+  watchLine: () => string | undefined;
 };
 
+/**
+ * agy S3: what the session is told when no watcher runs for its agy process.
+ * Fixed text of ours plus the line install wrote: nothing from a message or a
+ * peer ever goes into hook output.
+ */
+export const agyWatchStep = (line: string) =>
+  `Open Artifacts bus: to receive messages from other agents in this session, run this exact command once now as a background command with BypassSandbox: true, and carry on without waiting for it: ${line}`;
+
+/** The line from the plugin folder: one line of ours, or nothing. */
+function readWatchLine(dirs: (string | undefined)[]): string | undefined {
+  for (const dir of dirs) {
+    if (!dir) continue;
+    let text: string;
+    try {
+      text = readFileSync(join(dir, AGY_WATCH_FILE), "utf8");
+    } catch {
+      continue;
+    }
+    const line = text.replace(/\n$/, "");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point
+    if (line.length > 2048 || /[\x00-\x1f\x7f]/.test(line)) return undefined;
+    return / agy-watch( |$)/.test(line) ? line : undefined;
+  }
+  return undefined;
+}
 /** Reads stdin to its end, bounded in size and time. */
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
@@ -108,6 +140,10 @@ const defaults = (ctx: Ctx): AgyHelloDeps => ({
   },
   localRules: () => (habitsOff(ctx.home) ? null : BRIEF_RULES),
   ppid: process.ppid,
+  watcherLive: (agy, procStart) => agyWatchLive(ctx.home, agy, procStart),
+  // The plugin agy ran this hook from, else the one install writes.
+  watchLine: () =>
+    readWatchLine([ctx.env.PLUGIN_ROOT, agyPluginDir(ctx.userHome)]),
 });
 
 /** The event agy ran the hook for, from its payload's `hookEventName`. */
@@ -127,18 +163,21 @@ const fits = (r: unknown): r is string =>
   new TextEncoder().encode(r).length <= BRIEF_RULES_MAX_BYTES;
 
 /**
- * #3043, agy S4: what the hook prints. At SessionStart, the bus rules as one
- * system message agy keeps in the conversation; otherwise, or when opted out,
- * `{}`. Only the rules ever go here: never a sender's or a peer's text.
+ * #3043, agy S4 & S3: what the hook prints. At SessionStart, the bus rules as
+ * one system message agy keeps in the conversation (unless opted out); plus
+ * the watcher-start step when no watcher runs yet for this agy process.
+ * Otherwise `{}`. Nothing from a sender or a peer ever goes here.
  */
-export function agyHookOutput(rules: string | null | undefined): string {
-  return fits(rules)
-    ? JSON.stringify({
-        injectSteps: [{ systemMessage: { systemMessage: rules } }],
-      })
-    : "{}";
+export function agyHookOutput(
+  rules: string | null | undefined,
+  watchLine?: string,
+): string {
+  const steps: { systemMessage: { systemMessage: string } }[] = [];
+  if (fits(rules)) steps.push({ systemMessage: { systemMessage: rules } });
+  if (watchLine !== undefined)
+    steps.push({ systemMessage: { systemMessage: agyWatchStep(watchLine) } });
+  return steps.length > 0 ? JSON.stringify({ injectSteps: steps }) : "{}";
 }
-
 /**
  * agy S2: the hook of the oa-bus agy plugin. agy runs it at a conversation's
  * first message (SessionStart, again after /clear) and before a model call
@@ -153,8 +192,9 @@ export function agyHookOutput(rules: string | null | undefined): string {
  * agy S4 (#3043): at SessionStart it also hands agy the bus rules, which agy
  * keeps in the conversation as a system message: the daemon's, asked over the
  * same connection, else the bundled text. Opted out (`habits.optedOut`), it
- * prints `{}`. No file holds them. PreInvocation never adds them: it runs
- * again after a failed join, and a conversation keeps its start's rules.
+ * prints `{}` (unless S3 asks to start the watcher). No file holds them.
+ * PreInvocation never adds them: it runs again after a failed join, and a
+ * conversation keeps its start's rules.
  */
 export async function agyHello(
   ctx: Ctx,
@@ -164,6 +204,8 @@ export async function agyHello(
   const fields: Record<string, string | number> = {};
   let atStart = false;
   let rules: string | null | undefined;
+  let watchLine: string | undefined;
+  let watchCode: string | undefined;
   try {
     const text = await deps.stdin();
     atStart = eventOf(text) === "SessionStart";
@@ -196,6 +238,13 @@ export async function agyHello(
           // Only once the daemon took it: the MCP server then speaks for this
           // conversation, and the hook's shell skips Node until it changes.
           writeAgyConversation(ctx.home, conv);
+          // agy S3: no watcher yet for this agy process: the session starts one.
+          if (!deps.watcherLive(agy, procStart)) {
+            watchLine = deps.watchLine();
+            // `code`: one of the event log's allow-listed fields.
+            watchCode =
+              watchLine === undefined ? "watch_no_line" : "watch_asked";
+          }
         } catch (e) {
           fields.reason =
             e instanceof HelloRefused
@@ -209,8 +258,7 @@ export async function agyHello(
   } catch {
     fields.reason ??= "error";
   }
-  // agy reads the hook's answer from stdout.
-  let out = "{}";
+  // agy reads the hook's answer from stdout: nothing else goes into the turn.
   if (atStart) {
     // Which rules went out, for the log: the daemon's, the bundled ones, none.
     let from = "rules_daemon";
@@ -223,10 +271,12 @@ export async function agyHello(
     } catch {
       rules = undefined;
     }
-    out = agyHookOutput(rules);
-    fields.code = out === "{}" ? "rules_none" : from;
+    const rulesCode = fits(rules) ? from : "rules_none";
+    fields.code = watchCode ? `${rulesCode},${watchCode}` : rulesCode;
+  } else if (watchCode) {
+    fields.code = watchCode;
   }
-  say(ctx, out);
+  say(ctx, agyHookOutput(atStart ? rules : undefined, watchLine));
   try {
     const events = createEventLog(join(ctx.home, "logs", "events.log"));
     events(AGY_HELLO_EVENT, fields);

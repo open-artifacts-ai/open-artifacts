@@ -6,10 +6,24 @@ import { connectDaemon, type DaemonClient, type Hello } from "@oa/bus-ipc";
 import type { ClientFrame as DaemonToHub } from "@oa/bus-protocol";
 import { PING, PONG } from "@oa/bus-protocol";
 import { expect, vi } from "vitest";
-import { type WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import type { HubOptions } from "../src/hub.ts";
 import { type DaemonDeps, runDaemon } from "../src/index.ts";
 
+/**
+ * A connection made now is accepted after any connect the client began before
+ * it (one listen backlog, in order): once it is in, a reconnect that was on its
+ * way would already have been counted. Probes are not counted by the servers.
+ */
+export const PROBE = "/probe";
+export async function probeWs(url: string) {
+  const ws = new WebSocket(url.replace(/\/hub$/, PROBE));
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  ws.close();
+}
 export const servers: { close: (cb: () => void) => void }[] = [];
 export async function closeAll() {
   await Promise.all(
@@ -107,7 +121,6 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     socketPath: path,
     attest: () => ({ ok: true }),
     resolveNamespace: () => ({ namespace: "ns", global: false, source: "cwd" }),
-    hub: { backoffMs: () => 0 },
     sentFile: join(mkdtempSync(join(tmpdir(), "ob-sf-")), "sent.json"),
     // #3028: never the real ~/.oa-bus/announced.json: a temp one, unless a test
     // brings its own (a restart test shares one across two runs).
@@ -118,6 +131,14 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     // A queued send answers at once unless a test waits for delivered (C17).
     deliveredWaitMs: 0,
     ...over,
+    // Reconnects at once, and no frame waits for a pacing token: a frame the
+    // daemon wrote is on the wire, so `quiet()` fences it. A test of pacing
+    // brings its own `pace`.
+    hub: {
+      backoffMs: () => 0,
+      pace: { burst: 10_000, rate: 10_000 },
+      ...over.hub,
+    },
     // Never the real ~/.claude/sessions or ~/.oa-bus: temp ones, unless a test brings its own.
     claude: {
       sessionsDir: mkdtempSync(join(tmpdir(), "ob-cs-")),
@@ -182,6 +203,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         mkdtempSync(join(tmpdir(), "ob-ag-")),
         "antigravity-agents.json",
       ),
+      // agy S2b: never the machine's real process table.
+      discover: false,
+      pids: () => [],
+      pluginHome: () => null,
       ...over.antigravity,
     },
   });
@@ -244,9 +269,20 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       ws.once("pong", () => resolve());
       ws.ping();
     });
+  /**
+   * Fences the frames sent to the daemon so far: the daemon's websocket
+   * receiver answers a ping only after it dispatched every message before it,
+   * so once this resolves the daemon's synchronous (and microtask-only)
+   * reaction to each earlier frame has run, and what it sent the hub has
+   * arrived. Valid only for a reaction that needs no timer and no later I/O;
+   * anything that does waits on its own window (fake time, or the event that
+   * ends it), never on this.
+   */
+  const quiet = () => barrier();
   return {
     daemon,
     barrier,
+    quiet,
     onFrame,
     socketPath: path,
     wss,

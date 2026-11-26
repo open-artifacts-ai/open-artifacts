@@ -10,6 +10,7 @@ import {
   type AgyHelloDeps,
   agyHello,
   agyHookOutput,
+  agyWatchStep,
 } from "../src/commands/agy-hello.ts";
 import { fakeCtx } from "./fake.ts";
 
@@ -50,6 +51,7 @@ const run = async (
       title: async () => undefined,
       hello,
       localRules: () => BRIEF_RULES,
+      watcherLive: () => true,
       ppid: 300,
       ...over,
     }),
@@ -139,6 +141,29 @@ describe("the bus rules at an agy conversation's start (agy S4, #3043)", () => {
     });
     expect(agyHookOutput(null)).toBe("{}");
     expect(agyHookOutput(undefined)).toBe("{}");
+  });
+
+  it("SessionStart with no watcher live combines rules and watcher step in one injectSteps", async () => {
+    const line = "/h/.oa-bus/bin/oa-bus agy-watch";
+    const both = await run("SessionStart", {
+      watcherLive: () => false,
+      watchLine: () => line,
+    });
+    expect(JSON.parse(both.out[0] as string)).toEqual({
+      injectSteps: [
+        { systemMessage: { systemMessage: BRIEF_RULES } },
+        { systemMessage: { systemMessage: agyWatchStep(line) } },
+      ],
+    });
+    // Opted out: only the watcher step goes out.
+    const optedOut = await run("SessionStart", {
+      hello: async () => ({ name: "agy", rules: null }),
+      watcherLive: () => false,
+      watchLine: () => line,
+    });
+    expect(JSON.parse(optedOut.out[0] as string)).toEqual({
+      injectSteps: [{ systemMessage: { systemMessage: agyWatchStep(line) } }],
+    });
   });
 });
 
