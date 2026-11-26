@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -26,6 +26,7 @@ const write = (d: string, pid: number, sessionId: string, name: string) =>
   );
 
 async function start(fakeTick = false) {
+  syncs = eventCounter();
   const d = mkdtempSync(join(tmpdir(), "ob-rename-"));
   write(d, 4242, "s-a", "open-artifacts-9e");
   const h = await daemonHarness({
@@ -33,10 +34,12 @@ async function start(fakeTick = false) {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: () => true,
     },
   });
+  cur = h;
   h.toDaemon({
     id: "w",
     type: "hello_ok",
@@ -52,7 +55,13 @@ async function start(fakeTick = false) {
   );
   return { h, d };
 }
-const settle = () => new Promise((r) => setTimeout(r, 150));
+/** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
+let syncs = eventCounter();
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+const settle = async (_unused?: number) => {
+  await syncs.next(3);
+  await cur.quiet();
+};
 
 describe("session rename after connect (#1635)", () => {
   it("sends one rename when the file name changes, and none when it does not", async () => {

@@ -236,9 +236,20 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       ws.once("pong", () => resolve());
       ws.ping();
     });
+  /**
+   * The end of what the daemon was sent: the ping rides the same ordered
+   * stream, so every frame sent before it has been read, and a few turns of the
+   * event loop let what those frames set going (promise chains, no timers)
+   * finish. The signal for "nothing happened": check after it, no clock.
+   */
+  const quiet = async () => {
+    await barrier();
+    for (let i = 0; i < 3; i++) await new Promise<void>((r) => setImmediate(r));
+  };
   return {
     daemon,
     barrier,
+    quiet,
     onFrame,
     socketPath: path,
     wss,

@@ -19,7 +19,7 @@ import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import { readClaudeLinks } from "../src/claude-links.ts";
-import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll, wsServer } from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -112,6 +112,8 @@ type Opts = {
 };
 
 async function setup(o: Opts = {}) {
+  /** Finished claude syncs: the signal for "several ticks later". */
+  const syncs = eventCounter();
   const names = o.instances ?? ["b"];
   const hubs =
     o.existing?.hubs ?? (await Promise.all(names.map(() => fakeHub())));
@@ -190,6 +192,7 @@ async function setup(o: Opts = {}) {
       projectsDir: projects,
       mcpConfigFile: config,
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: (pid) => !gone.has(pid),
       ...(o.ratePerMin === undefined ? {} : { guestRatePerMin: o.ratePerMin }),
@@ -217,6 +220,7 @@ async function setup(o: Opts = {}) {
     told,
     logs,
     gone,
+    syncs,
   };
 }
 type Scene = Awaited<ReturnType<typeof setup>>;
@@ -623,7 +627,7 @@ describe("a guest across a restart, an end, and a revoke (#2793 S3b)", () => {
     });
     await settled(second);
     // Several sync ticks later: still none.
-    await new Promise((r) => setTimeout(r, 120));
+    await second.syncs.next(3);
     expect(second.hubB.of("guest_up")).toEqual([]);
     expect(existsSync(files.guests)).toBe(false);
   });

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -36,6 +36,7 @@ async function start(
   log?: (msg: string) => void,
   onTick: () => void = () => {},
 ) {
+  syncs = eventCounter();
   const d = mkdtempSync(join(tmpdir(), "ob-rename-loop-"));
   write(d, 4242, "s-a", "OA Contributions");
   const h = await daemonHarness({
@@ -44,6 +45,7 @@ async function start(
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: (pid: number) => `t${pid}`,
       // Asked once per live file on every sync tick: the tick signal.
       isRunning: () => {
@@ -52,6 +54,7 @@ async function start(
       },
     },
   });
+  cur = h;
   h.toDaemon({
     id: "w",
     type: "hello_ok",
@@ -65,7 +68,13 @@ async function start(
   );
   return { h, d };
 }
-const settle = (ms = 250) => new Promise((r) => setTimeout(r, ms));
+/** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
+let syncs = eventCounter();
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+const settle = async (_unused?: number) => {
+  await syncs.next(3);
+  await cur.quiet();
+};
 
 describe("a session's unchanged name never loops renames (#1635)", () => {
   it("two live files with one sessionId, one nameless: no rename over many ticks", async () => {

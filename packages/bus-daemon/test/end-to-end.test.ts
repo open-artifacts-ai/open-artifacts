@@ -121,6 +121,20 @@ async function fakeHub() {
     bad,
     routeSends: true,
     toDaemon,
+    /**
+     * The end of what the daemon was sent: the ping rides the same ordered
+     * stream, so earlier frames were read; a few turns of the event loop let
+     * what they set going finish. Check "nothing happened" after it.
+     */
+    quiet: async () => {
+      await new Promise<void>((resolve) => {
+        const ws = sock as WebSocket;
+        ws.once("pong", () => resolve());
+        ws.ping();
+      });
+      for (let i = 0; i < 3; i++)
+        await new Promise<void>((r) => setImmediate(r));
+    },
     of: <T extends ClientFrame["type"]>(type: T) =>
       frames.filter(
         (f): f is Extract<ClientFrame, { type: T }> => f.type === type,
@@ -194,7 +208,7 @@ async function boot() {
   const logs: string[] = [];
   const daemon: Daemon = await runDaemon({
     log: (m) => logs.push(m),
-    hub: { backoffMs: () => 20 },
+    hub: { backoffMs: () => 0 },
     deliveredWaitMs: 300,
     transports: { "claude-code": claudeT, opencode: opencodeT },
     // The default home: it adopts the sessions it scans (#2806).
@@ -398,7 +412,7 @@ describe("daemon end to end, one machine, three harnesses", () => {
     // #2110: the Claude process still runs and its file is only gone: a
     // liveness close, so its mail stays pending for the reopen's flush (a
     // refuse is final at the hub). Pi's connection closing is final.
-    await new Promise((r) => setTimeout(r, 100));
+    await e.hub.quiet();
     expect(e.hub.of("refuse")).toEqual([
       expect.objectContaining({
         msg_id: ids(902),
@@ -442,7 +456,7 @@ describe("daemon end to end, one machine, three harnesses", () => {
     await vi.waitFor(() => expect(notices).toHaveLength(1));
     // The same update again is about mail already told: nothing more.
     e.hub.toDaemon({ ...expired, id: "u2" });
-    await new Promise((r) => setTimeout(r, 150));
+    await e.hub.quiet();
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatch(
       /^×\s+Expired: your message to claude, "please review/,

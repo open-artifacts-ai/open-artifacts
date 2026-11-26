@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { busHome } from "@oa/bus-adapter-claude-code";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isDefaultHome } from "../src/config.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -35,8 +35,14 @@ const shared = (running: Set<number>) => {
     },
   };
 };
-/** Several sync ticks: an announcement would have gone by now. */
-const ticks = () => new Promise((r) => setTimeout(r, 150));
+/** Several finished syncs of `h`, then what they sent has arrived: an announcement would have gone by now. */
+const ticks = async (
+  syncs: ReturnType<typeof eventCounter>,
+  h: { quiet: () => Promise<void> },
+) => {
+  await syncs.next(3);
+  await h.quiet();
+};
 
 describe("a second bus home claims only its own Claude sessions (#2806)", () => {
   it("decides the default home from the resolved path alone", () => {
@@ -49,11 +55,12 @@ describe("a second bus home claims only its own Claude sessions (#2806)", () => 
     const { d, deps } = shared(running);
     writeSession(d, 4242);
     const main = await daemonHarness({ claude: { ...deps, discover: true } });
+    const syncs = eventCounter();
     const second = await daemonHarness({
-      claude: { ...deps, discover: false },
+      claude: { ...deps, discover: false, onSync: () => syncs.hook() },
     });
     expect(await main.next("agent_up")).toMatchObject({ agent_ref: "s4242" });
-    await ticks();
+    await ticks(syncs, second);
     expect(second.of("agent_up")).toEqual([]);
     expect(second.daemon.agents.byRef("s4242")).toBeUndefined();
   });
@@ -80,16 +87,18 @@ describe("a second bus home claims only its own Claude sessions (#2806)", () => 
     const { d, deps } = shared(running);
     writeSession(d, 4242);
     writeSession(d, 4343);
+    const syncs = eventCounter();
     const main = await daemonHarness({
       claude: {
         ...deps,
         discover: true,
+        onSync: () => syncs.hook(),
         homeOf: (pid: number) =>
           pid === 4343 ? join(tmpdir(), ".oa-bus-other") : undefined,
       },
     });
     expect(await main.next("agent_up")).toMatchObject({ agent_ref: "s4242" });
-    await ticks();
+    await ticks(syncs, main);
     expect(main.of("agent_up").map((f) => f.agent_ref)).toEqual(["s4242"]);
   });
 });

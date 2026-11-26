@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -27,6 +27,7 @@ const write = (d: string, over: object = {}) =>
   );
 
 async function start(over: object = {}) {
+  syncs = eventCounter();
   const d = mkdtempSync(join(tmpdir(), "ob-chosen-"));
   write(d, over);
   const h = await daemonHarness({
@@ -34,10 +35,12 @@ async function start(over: object = {}) {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: () => true,
     },
   });
+  cur = h;
   return { h, d };
 }
 const helloOk = (caps: string[]) => ({
@@ -48,7 +51,13 @@ const helloOk = (caps: string[]) => ({
   server_version: "1",
   caps,
 });
-const settle = () => new Promise((r) => setTimeout(r, 150));
+/** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
+let syncs = eventCounter();
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+const settle = async (_unused?: number) => {
+  await syncs.next(3);
+  await cur.quiet();
+};
 
 describe("name_chosen (#2311)", () => {
   it("is sent after hello_ok for a session already live at connect", async () => {
