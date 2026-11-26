@@ -301,6 +301,24 @@ describe("Agents settings", () => {
     expect(dump()).not.toContain(SECRET);
   });
 
+  it("an outside click keeps the dialog and token while the token shows", async () => {
+    serveCreate();
+    mount("/settings/connections");
+    const dlg = await openCreate();
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    const shown = await screen.findByRole("dialog");
+    await within(shown).findAllByText(SECRET);
+    const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+    if (!overlay) throw new Error("no overlay");
+    fireEvent.pointerDown(overlay);
+    fireEvent.pointerUp(overlay);
+    fireEvent.click(overlay);
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+    expect(within(shown).getAllByText(SECRET)).toHaveLength(1);
+    fireEvent.keyDown(shown, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("shows the save command on one non-wrapping line with Copy beside it, and Done in a footer outside the scrolling body", async () => {
     serveCreate();
     mount("/settings/connections");

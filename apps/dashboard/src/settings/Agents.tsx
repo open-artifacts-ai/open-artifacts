@@ -330,6 +330,7 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
       onClose={() => !busy && onClose()}
       wide
       stickyFooter
+      blockOutside={!!created}
       title={created ? "Token created" : "Create token"}
       description={
         created

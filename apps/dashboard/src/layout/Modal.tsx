@@ -24,6 +24,7 @@ export function Modal({
   sheetOnPhone = false,
   wide = false,
   stickyFooter = false,
+  blockOutside = false,
 }: {
   open?: boolean;
   onClose: () => void;
@@ -37,6 +38,8 @@ export function Modal({
   wide?: boolean;
   /** The body scrolls and the footer stays in view at the bottom. */
   stickyFooter?: boolean;
+  /** A click outside the card does not close it (Esc and the X still do). */
+  blockOutside?: boolean;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -50,6 +53,7 @@ export function Modal({
         className={`max-h-[calc(100dvh-2rem)] gap-[var(--oa-space-4)] ${
           stickyFooter ? "flex flex-col overflow-hidden" : "overflow-y-auto"
         } ${wide ? "sm:max-w-[720px]" : "sm:max-w-[440px]"} ${sheetOnPhone ? SHEET : ""}`}
+        onInteractOutside={(e) => blockOutside && e.preventDefault()}
         // No Radix Trigger (the dialog is controlled), so put focus back on
         // whatever opened it, as a trigger would.
         onOpenAutoFocus={() => {
