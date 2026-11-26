@@ -30,6 +30,19 @@ const EntrySchema = z.strictObject({
     .string()
     .regex(/^[a-z0-9-]{1,32}$/)
     .optional(),
+  /** #3208: this closed ref can never reopen (a starting agy whose process ended). */
+  gone: z.literal(true).optional(),
+  /**
+   * #3208: a starting agy's process, so a restart can tell that it ended (or
+   * its pid now runs another process) while the daemon was down: then the
+   * restored close is gone. Pid and start time only.
+   */
+  agy: z
+    .strictObject({
+      pid: z.number().int().positive(),
+      procStart: z.string().min(1).max(64),
+    })
+    .optional(),
 });
 export type AnnouncedRef = z.infer<typeof EntrySchema>;
 

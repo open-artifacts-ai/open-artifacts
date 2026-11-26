@@ -2,11 +2,16 @@
 // the URL fragment, so the page script is what reads it, posts it in a body,
 // and keeps it across the sign-in. A failure in that script would break every
 // confirm, which the server tests can't see.
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { Page } from "@playwright/test";
+import { withDeadline } from "../staging/with-deadline";
 import {
   approveMachine,
   freshSignInUrl,
   openAgent,
   proposeRole,
+  spendDeviceCodes,
 } from "./bus-confirm";
 import { APP, expect, freshEmail, loginAs, test, uniq } from "./fixtures";
 
@@ -18,6 +23,155 @@ const KINDS = [
     done: "Role updated",
   },
 ] as const;
+
+/**
+ * Holds the approve POST's BODY until `release()`, after the browser has its
+ * status and headers: the request goes to a tiny local server that asks the
+ * real one, writes status and headers (flushed), and ends the body only when
+ * the test lets it. `reached` resolves once the headers are out.
+ */
+async function holdApproveBody(page: Page, status?: number) {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let reached: () => void = () => {};
+  const headersOut = new Promise<void>((r) => {
+    reached = r;
+  });
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", async () => {
+      const headers: Record<string, string> = {};
+      for (const k of ["content-type", "x-oa-request", "accept"])
+        if (typeof req.headers[k] === "string")
+          headers[k] = req.headers[k] as string;
+      const cookie = req.headers["x-forward-cookie"];
+      if (typeof cookie === "string") headers.cookie = cookie;
+      const up = await fetch(`${APP}/bus/approve`, {
+        method: "POST",
+        headers,
+        body: Buffer.concat(chunks),
+        redirect: "manual",
+      });
+      const body = await up.text();
+      res.writeHead(status ?? up.status, {
+        "content-type": up.headers.get("content-type") ?? "application/json",
+        "cache-control": "no-store",
+        "access-control-allow-origin": APP,
+        "access-control-allow-credentials": "true",
+      });
+      // Headers and the first bytes go out (a navigation commits on its first
+      // bytes); the rest of the body waits for the test.
+      const cut = Math.max(1, Math.floor(body.length / 2));
+      res.write(body.slice(0, cut));
+      reached();
+      await gate;
+      res.end(body.slice(cut));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+  await page.route(
+    (u) => u.pathname === "/bus/approve",
+    async (route) => {
+      // Only the decision (step "decide") is held; typing the code is not.
+      if (
+        route.request().method() !== "POST" ||
+        !(route.request().postData() ?? "").includes("decide")
+      )
+        return route.continue();
+      // The cookie jar, not the request's headers: WebKit's route omits it.
+      const cookie = (await page.context().cookies(APP))
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
+      return route.continue({
+        url: `http://127.0.0.1:${port}/bus/approve`,
+        headers: { ...route.request().headers(), "x-forward-cookie": cookie },
+      });
+    },
+  );
+  return {
+    release,
+    reached: headersOut,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+// Every code a test leaves outstanding is spent after it, bounded.
+test.afterEach(async () => {
+  await spendDeviceCodes();
+});
+
+test("a refused approval fails at once with its status, while the body and the device token are held", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  await loginAs(page, freshEmail(`refused-${info.project.name}`), "member");
+  const held = await holdApproveBody(page, 403);
+  // /bus/device/token never answers until released: nothing on the failure
+  // path may wait for it.
+  const realFetch = globalThis.fetch;
+  let unhold: () => void = () => {};
+  const tokenGate = new Promise<void>((r) => {
+    unhold = r;
+  });
+  let tokenCalls = 0;
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init) => {
+    if (String(input).endsWith("/bus/device/token")) {
+      tokenCalls++;
+      await tokenGate;
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+  try {
+    const refused = approveMachine(page).then(
+      () => "approved",
+      (e: Error) => e.message,
+    );
+    await held.reached;
+    // The 403's body is still out and the token call is held: the failure
+    // comes from the headers alone, and the failure path made no token call.
+    expect(await withDeadline(refused, 15_000, "the refused approval")).toMatch(
+      /POST \/bus\/approve: 403/,
+    );
+    expect(tokenCalls).toBe(0);
+    // The teardown's spend is the one token call; with it let go, it ends.
+    // (That it ends at its bound when the call stays held is a unit test on a
+    // fake clock: test/spend-codes.test.ts.)
+    unhold();
+    await spendDeviceCodes();
+    expect(tokenCalls).toBe(1);
+  } finally {
+    globalThis.fetch = realFetch;
+    unhold();
+    held.release();
+    await held.close();
+  }
+});
+
+test("approving a machine does not wait for the approve response's body", async ({
+  page,
+}, info) => {
+  test.setTimeout(120_000);
+  await loginAs(
+    page,
+    freshEmail(`approve-body-${info.project.name}`),
+    "member",
+  );
+  const held = await holdApproveBody(page);
+  try {
+    // The 200's body stays out until the test releases it: the machine token
+    // must still come, because only the status and the first token request count.
+    const approved = approveMachine(page);
+    await held.reached;
+    expect(await approved).toBeTruthy();
+  } finally {
+    held.release();
+    await held.close();
+  }
+});
 
 for (const k of KINDS) {
   test(`${k.kind}: open the fragment link logged out, log in, confirm; the secret stays out of every request`, async ({

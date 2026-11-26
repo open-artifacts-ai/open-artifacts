@@ -152,6 +152,14 @@ export const BUS_CAPS = {
    */
   guest: "guest",
   /**
+   * Sessions gone (#3208): the client may send `sessions.gone` (refs of closed
+   * sessions that will never reopen, a subset of `closed`); the hub expires
+   * their pending mail as `recipient_closed` and drops their away
+   * reservations. The hub lists it in `hello_ok.caps`; a client sends it only
+   * after `hello_ok.caps` listed it (older hubs refuse the key).
+   */
+  sessionsGone: "sessions_gone",
+  /**
    * #3108: the hub may send `codex_call_check` (a /mcp tools/call signed in
    * as this member, with no proof, named a Codex thread and call) and the
    * daemon answers `codex_call_checked`. Sent only to a socket whose hello
