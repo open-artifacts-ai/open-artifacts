@@ -51,7 +51,9 @@ for (const theme of ["light", "dark"] as const) {
       table.getByRole("columnheader", { name: "App" }),
     ).toBeVisible();
     for (const app of APPS)
-      await expect(table.getByRole("img", { name: app, exact: true })).toBeVisible();
+      await expect(
+        table.getByRole("img", { name: app, exact: true }),
+      ).toBeVisible();
     if (OUT) {
       mkdirSync(OUT, { recursive: true });
       await page.screenshot({ path: `${OUT}/agents-${theme}.png` });
