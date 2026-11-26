@@ -8,11 +8,10 @@ import {
 } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
-import { useDeleteArtifact } from "../api/queries";
 import { artifactPermissions, useHosted } from "../auth/permissions";
-import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
+import { LibraryDeleteDialog } from "./LibraryDeleteDialog";
 import { GRID, LIST } from "./ui";
 
 export function LibraryItems({
@@ -30,10 +29,7 @@ export function LibraryItems({
   const navigate = useNavigate();
   const [selected, setSelected] = useState<Set<string> | null>(null);
   const anchor = useRef<string | null>(null);
-  const [target, setTarget] = useState<ArtifactSummary | null>(null);
-  const [error, setError] = useState("");
-  const deleting = useRef(false);
-  const del = useDeleteArtifact(target?.id ?? "");
+  const [targets, setTargets] = useState<ArtifactSummary[]>([]);
   const manageable = items.filter((a) => artifactPermissions(a, hosted).delete);
   const picked = manageable.filter((a) => selected?.has(a.id));
   function toggle(id: string, range: boolean) {
@@ -52,10 +48,6 @@ export function LibraryItems({
     anchor.current = id;
     setSelected(next);
   }
-  function confirm(a: ArtifactSummary) {
-    setError("");
-    setTarget(a);
-  }
   return (
     <>
       {manageable.length > 0 &&
@@ -65,6 +57,14 @@ export function LibraryItems({
             className="z-10 flex items-center gap-2 rounded-md border bg-card p-2 max-[600px]:fixed max-[600px]:inset-x-2 max-[600px]:bottom-[max(.5rem,env(safe-area-inset-bottom))]"
           >
             <span aria-live="polite">{picked.length} selected</span>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={!picked.length}
+              onClick={() => setTargets(picked)}
+            >
+              Delete
+            </Button>
             <Button variant="ghost" size="sm" onClick={() => setSelected(null)}>
               Cancel
             </Button>
@@ -133,7 +133,7 @@ export function LibraryItems({
                     </DropdownMenuItem>
                   )}
                   {can.delete && (
-                    <DropdownMenuItem onSelect={() => confirm(a)}>
+                    <DropdownMenuItem onSelect={() => setTargets([a])}>
                       Delete
                     </DropdownMenuItem>
                   )}
@@ -149,38 +149,16 @@ export function LibraryItems({
           );
         })}
       </div>
-      {target && (
-        <ConfirmDialog
-          open
-          onClose={() => {
-            if (!deleting.current) setTarget(null);
-          }}
-          title="Delete artifact?"
-          body={
-            <>
-              <p>
-                “{target.title}” will be recoverable from Trash for 30 days.
-              </p>
-              {error && <p role="alert">{error}</p>}
-            </>
-          }
-          confirm="Delete"
-          danger
-          pending="Deleting…"
-          busy={del.isPending}
-          onConfirm={() => {
-            if (deleting.current) return;
-            deleting.current = true;
-            del.mutate(undefined, {
-              onSuccess: () => {
-                setTarget(null);
-                setSelected(null);
-              },
-              onError: () =>
-                setError("Couldn’t delete this artifact. Try again."),
-              onSettled: () => {
-                deleting.current = false;
-              },
+      {targets.length > 0 && (
+        <LibraryDeleteDialog
+          artifacts={targets}
+          onClose={() => setTargets([])}
+          onDeleted={(ids) => {
+            setSelected((current) => {
+              if (!current) return null;
+              const next = new Set(current);
+              for (const id of ids) next.delete(id);
+              return next.size ? next : null;
             });
           }}
         />

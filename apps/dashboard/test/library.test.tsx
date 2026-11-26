@@ -5,6 +5,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import {
   arts,
+  calls,
   installHarness,
   intersect,
   mount,
@@ -42,7 +43,7 @@ describe("Library", () => {
       if (!first) throw new Error("Expected an owned artifact");
       fireEvent.click(first);
       expect(screen.getByText("1 selected")).toBeVisible();
-      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
       expect(router.state.location.pathname).toBe("/");
       const last = allowed.at(-1);
       if (last && last !== first) {
@@ -86,6 +87,75 @@ describe("Library", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(await link("Landing page")).toBeVisible();
+  });
+
+  it("counts distinct recipients, identifies public links and retries only failed deletes", async () => {
+    const titles = ["Landing page", "Q4 report"];
+    const attempts: string[] = [];
+    const report = arts.find((a) => a.title === "Q4 report");
+    if (!report) throw new Error("Missing report fixture");
+    server.use(
+      http.get("*/api/v1/artifacts/:id/shares", () =>
+        HttpResponse.json([
+          {
+            email: "sam@example.com",
+            role: "viewer",
+            createdAt: "2026-11-01T00:00:00Z",
+          },
+        ]),
+      ),
+      http.delete("*/api/v1/artifacts/:id", ({ params }) => {
+        const id = String(params.id);
+        attempts.push(id);
+        if (id === report.id && attempts.filter((x) => x === id).length === 1)
+          return new HttpResponse(null, { status: 503 });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    for (const title of titles)
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: `Select ${title}` }),
+      );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(
+      await screen.findByRole("alertdialog", { name: "Delete 2 artifacts?" }),
+    ).toHaveTextContent("Trash for 30 days");
+    expect(
+      await screen.findByText(/1 directly shared recipient loses access/),
+    ).toHaveTextContent("1 public link stops working");
+    expect(screen.getByText(`/a/${report.id}`)).toBeVisible();
+    expect(attempts).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Delete 2" }));
+    expect(await screen.findByText(/Couldn’t delete Q4 report/)).toBeVisible();
+    const retry = screen.getByRole("button", { name: "Delete 1" });
+    await screen.findByText(/1 directly shared recipient loses access/);
+    fireEvent.click(retry);
+    await screen.findByRole("button", { name: "Select" });
+    expect(attempts.filter((x) => x === report.id)).toHaveLength(2);
+    expect(attempts).toHaveLength(3);
+  });
+
+  it("keeps deletion unavailable when sharing details cannot be checked", async () => {
+    const deletes = calls("DELETE");
+    server.use(
+      http.get(
+        "*/api/v1/artifacts/:id/shares",
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    mount("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select Landing page" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(
+      await screen.findByRole("button", { name: "Retry access check" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Delete 1" })).toBeDisabled();
+    expect(deletes).toHaveLength(0);
   });
 
   it("format filter updates the URL and the request", async () => {
