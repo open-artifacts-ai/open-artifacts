@@ -1,6 +1,6 @@
 // #2287: the first open of Welcome (once, 404-safe) and the Solo trial chip.
 import type { Me } from "@oa/shared";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { calendarDaysTo, chipLabel, chipPlan } from "../src/layout/PlanChip";
@@ -164,6 +164,66 @@ describe("first open of Welcome", () => {
     expect(
       puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
     ).toEqual([{ welcomeOpened: true }]);
+  });
+
+  // #3130: /a/* has no app shell, so the name prompt goes first.
+  describe("a member with no name yet", () => {
+    // The server's row: no name until the PATCH saves one.
+    let saved: string | null = null;
+    beforeEach(() => {
+      sessionStorage.clear();
+      saved = null;
+    });
+    const unnamed = (m: Me): Me => ({
+      ...m,
+      user: { ...m.user, role: "member" },
+      displayName: saved,
+      suggestedName: null,
+      needsDisplayName: saved === null,
+    });
+    const named = http.patch("*/api/v1/me", async ({ request }) => {
+      saved = ((await request.json()) as { displayName: string }).displayName;
+      // The GET's answer, now named (through the same mocks).
+      return HttpResponse.json(
+        await (await fetch(new URL("/api/v1/me", request.url))).json(),
+      );
+    });
+    const ask = () =>
+      screen.findByRole("dialog", { name: "What do you like to be called?" });
+
+    it("names themselves on the Library, then goes to Welcome", async () => {
+      const router = mountHosted("/", true, unnamed, [
+        state(),
+        welcomeArtifact(),
+        putOnboarding(),
+        named,
+      ]);
+      const dialog = await ask();
+      await wait(400);
+      expect(router.state.location.pathname).toBe("/");
+      fireEvent.change(within(dialog).getByLabelText("Your name"), {
+        target: { value: "Ada" },
+      });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/a/${WELCOME}`),
+      );
+    });
+
+    it("goes to Welcome after Not now", async () => {
+      const router = mountHosted("/", true, unnamed, [
+        state(),
+        welcomeArtifact(),
+        putOnboarding(),
+      ]);
+      const dialog = await ask();
+      await wait(200);
+      expect(router.state.location.pathname).toBe("/");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Not now" }));
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe(`/a/${WELCOME}`),
+      );
+    });
   });
 
   it("does not redirect a guest (a guest has no steps)", async () => {

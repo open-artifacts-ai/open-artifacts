@@ -131,7 +131,7 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", {
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member outside the domain signs in by code: a member session in the library", {
+test("an invited member outside the domain signs in by code: a member session, named, on their Welcome", {
   tag: "@gate",
 }, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
@@ -179,22 +179,23 @@ test("an invited member outside the domain signs in by code: a member session in
   expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
   expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
 
-  // A new row may have no name, and the first page would ask for one. The
-  // guest test drives that prompt; here the name is set through the API (as
-  // the prompt does, PATCH me), so this test checks only the member session.
+  // The name prompt shows only when the server says a name is needed (an
+  // invite may already carry one); /me decides, so the test never races it.
+  // It comes first on the Library: the Welcome redirect waits for it (#3130).
   if (me.needsDisplayName) {
-    const named = await page.request.patch(`${A.app}${R.me}`, {
-      headers: { "x-oa-request": "1" },
-      data: { displayName: `T19 ${RUN} invited` },
+    const ask = page.getByRole("dialog", {
+      name: "What do you like to be called?",
     });
-    expect(named.status()).toBe(200);
+    const name = ask.getByRole("textbox", { name: "Your name" });
+    await name.fill(`T19 ${RUN} invited`);
+    await expect(name).toHaveValue(`T19 ${RUN} invited`);
+    await ask.getByRole("button", { name: "Save" }).click();
+    await expect(ask).toHaveCount(0);
   }
-  await page.goto("/");
+  // A new member's first Library opens their own Welcome (#2632).
+  await page.waitForURL(/\/a\//);
   await expect(
-    page.getByRole("dialog", { name: "What do you like to be called?" }),
-  ).toHaveCount(0);
-  await expect(
-    page.getByRole("heading", { level: 1, name: "Library" }),
+    page.getByRole("heading", { level: 1, name: "Welcome" }),
   ).toBeVisible();
 });
 
