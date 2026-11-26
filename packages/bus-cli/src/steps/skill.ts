@@ -161,6 +161,24 @@ export const skillFolder = (text: string): string | undefined => {
   return name && /^[a-z0-9][a-z0-9-]{0,62}$/.test(name) ? name : undefined;
 };
 
+/** The frontmatter's `version` (in a SKILL.md or inside our Codex AGENTS.md block). */
+export const skillVersion = (text: string): string | undefined => {
+  const t = text.replace(/\r\n/g, "\n");
+  let src = t;
+  const lines = t.split("\n");
+  const start = lineIndex(lines, CODEX_BEGIN);
+  if (start !== -1) {
+    const end = lineIndex(lines, CODEX_END, start + 1);
+    if (end !== -1) src = lines.slice(start + 1, end).join("\n");
+  }
+  const fm = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src);
+  if (!fm?.[1]) return undefined;
+  const m = /^\s*version:\s*(.+?)\s*$/m.exec(fm[1]);
+  if (!m?.[1]) return undefined;
+  const v = m[1].replace(/^["']|["']$/g, "").trim();
+  return v || undefined;
+};
+
 /** Split a served skill into its frontmatter block and the rest. */
 const withMarker = (text: string): string => {
   const end = text.startsWith("---\n") ? text.indexOf("\n---\n", 3) : -1;

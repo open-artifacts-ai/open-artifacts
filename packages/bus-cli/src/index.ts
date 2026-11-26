@@ -17,7 +17,13 @@ export type Command = (
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "add"; address: string; name?: string; noOpen: boolean }
   | { cmd: "use"; name?: string; none: boolean }
-  | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
+  | {
+      cmd: "skill";
+      hub?: string;
+      check: boolean;
+      json?: boolean;
+      refresh?: boolean;
+    }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
@@ -102,7 +108,7 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   add: ["name", "no-open"],
   use: ["none"],
-  skill: ["instance", "check", "json"],
+  skill: ["instance", "check", "json", "refresh"],
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
@@ -135,6 +141,7 @@ export function parse(argv: string[]): Command {
       none: { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
+      refresh: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
       alongside: { type: "boolean", default: false },
       habits: { type: "boolean", default: false },
@@ -271,6 +278,7 @@ type Values = {
   none: boolean;
   yes: boolean;
   check: boolean;
+  refresh: boolean;
   "no-service": boolean;
   alongside: boolean;
   habits: boolean;
@@ -304,6 +312,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
         hub: values.instance,
         check: values.check,
         ...(values.json ? { json: true } : {}),
+        ...(values.refresh ? { refresh: true } : {}),
       };
     case "daemon":
       return { cmd, hub: values.instance };
