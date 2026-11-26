@@ -27,6 +27,8 @@ export class Lane {
   runCap = false;
   /** #2793 S3b: this hub listed the guest cap: proof_seen and guest deliveries come, guest_up goes. */
   guest = false;
+  /** #3208: this hub listed sessions_gone: sessions frames may carry gone refs. */
+  sessionsGone = false;
   /** #3108: this hub listed the codex check cap: codex_call_check frames come. */
   codexCheck = false;
   ever = false;
@@ -62,6 +64,7 @@ export class Lane {
     this.ackConfirm = has(BUS_CAPS.ackConfirm);
     this.runCap = has(BUS_CAPS.runVersion);
     this.guest = has(BUS_CAPS.guest);
+    this.sessionsGone = has(BUS_CAPS.sessionsGone);
     this.codexCheck = has(BUS_CAPS.codexCheck);
     this.helloed = true;
   }
@@ -83,6 +86,7 @@ export class Lane {
     this.helloed = false;
     this.runCap = false;
     this.guest = false;
+    this.sessionsGone = false;
     this.codexCheck = false;
   }
 }

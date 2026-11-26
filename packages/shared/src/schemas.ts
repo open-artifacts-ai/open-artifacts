@@ -1154,6 +1154,21 @@ export const BusAgentSchema = z.strictObject({
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
 /**
+ * agy S2b: an Antigravity session the bus found running before its first
+ * message. The daemon marks it with this status label (state `idle`); it is
+ * the bus's word, not the agent's. Same value as bus-protocol's
+ * AGY_STARTING_LABEL.
+ */
+export const BUS_STARTING_LABEL = "starting";
+export const busAgentStarting = (
+  a: Pick<BusAgent, "kind" | "state" | "status" | "statusLabel">,
+): boolean =>
+  a.kind === "antigravity" &&
+  a.state === "live" &&
+  a.status === "idle" &&
+  a.statusLabel === BUS_STARTING_LABEL;
+
+/**
  * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
  * `droppedNotices` (#1317): notices for the caller's own bus that found no
  * agent today (UTC), 0 when none (or from an older server).
