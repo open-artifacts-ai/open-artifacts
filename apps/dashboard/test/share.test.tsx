@@ -142,7 +142,7 @@ describe("share panel", () => {
   it.each([
     // #2590: only an old Editor share on a guest keeps the caption; a
     // viewer or commenter guest's picker says Can view or Can comment.
-    ["editor", "Editor", "Guest · can only view for now"],
+    ["editor", "Can edit", "Guest · can only view for now"],
   ])(
     "a guest's row with stored %s: email, caption, then the select and Remove",
     async (role, shown, caption) => {
@@ -201,7 +201,7 @@ describe("share panel", () => {
       const select = screen.getByRole("combobox", {
         name: "Role for dan@example.com",
       });
-      expect(select).toHaveTextContent("Editor");
+      expect(select).toHaveTextContent("Can edit");
       expect(caption.parentElement).toContainElement(select);
       expect(caption.parentElement).toContainElement(
         screen.getByRole("button", { name: "Remove dan@example.com" }),
@@ -253,7 +253,7 @@ describe("share panel", () => {
         await screen.findByRole("combobox", { name: "Invite role" }),
         { key: "Enter" },
       );
-      fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
+      fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
       fireEvent.change(screen.getByLabelText("Email"), {
         target: { value: "bob@example.com" },
       });
@@ -270,7 +270,7 @@ describe("share panel", () => {
   describe("a guest invited as Editor", () => {
     const LINE =
       "Guests can only view. If they become a member, they'll be able to edit.";
-    const invite = async (email: string, role: "Editor" | "Viewer") => {
+    const invite = async (email: string, role: "Can edit" | "Can comment") => {
       fireEvent.keyDown(
         await screen.findByRole("combobox", { name: "Invite role" }),
         { key: "Enter" },
@@ -307,7 +307,7 @@ describe("share panel", () => {
         }),
       ];
       mountHosted(panel(OWNED), CODES, undefined, guestRows);
-      await invite(who, "Editor");
+      await invite(who, "Can edit");
       const line = await screen.findByText(LINE);
       expect(line).toHaveAttribute("role", "status");
       expect(screen.getByTitle(who).closest("li")).toContainElement(line);
@@ -334,7 +334,7 @@ describe("share panel", () => {
       fireEvent.change(screen.getByLabelText("Email"), {
         target: { value: "" },
       });
-      await invite("dan@example.com", "Editor");
+      await invite("dan@example.com", "Can edit");
       expect(screen.queryByText(LINE)).toBeNull();
     });
   });
@@ -345,11 +345,11 @@ describe("share panel", () => {
       name: "Role for bob@example.com",
     });
     fireEvent.keyDown(trigger, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("option", { name: "Editor" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Can edit" }));
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "Role for bob@example.com" }),
-      ).toHaveTextContent("Editor"),
+      ).toHaveTextContent("Can edit"),
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Remove bob@example.com" }),

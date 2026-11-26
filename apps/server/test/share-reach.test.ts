@@ -229,7 +229,7 @@ describe("the share email names the level the recipient will have", () => {
     const m = sent.find((x) => x.to === email);
     // The outside email (#2590) carries no role line; the level is the row's.
     expect(m?.text).not.toContain("Your role");
-    expect(m?.html).not.toContain("Editor");
+    expect(m?.html).not.toContain("Can edit");
   });
 
   it("Access-only (self-host, no login domains): every address is outside, so no role line", async () => {
@@ -245,7 +245,7 @@ describe("the share email names the level the recipient will have", () => {
     await share(email, "editor");
     // The normal share email keeps its role line (an outside one has none).
     expect(sent.find((x) => x.to === email)?.text).toContain(
-      "Your role: Editor",
+      "Your role: Can edit",
     );
   });
 });
@@ -331,7 +331,10 @@ describe("guest on a share row, and the email, from one rule", () => {
     // domains, Access-only, has every address outside.)
     expect(outsideMail).toBe(domain === OUT || name === "Access-only");
     if (outsideMail) expect(text).not.toContain("Your role");
-    else expect(text).toContain(`Your role: ${guest ? "Commenter" : "Editor"}`);
+    else
+      expect(text).toContain(
+        `Your role: ${guest ? "Can comment" : "Can edit"}`,
+      );
   });
 
   it("once a shared address has a member row, the row's role decides", async () => {

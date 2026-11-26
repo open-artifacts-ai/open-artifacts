@@ -195,26 +195,28 @@ function RecipientLine({
 
 /**
  * A share's role. #2590: an outsider's choices are Can comment and Can view
- * (OA Product); a member's stay Viewer and Editor.
+ * (OA Product); a member viewer can comment while page comments are on.
  */
 function RoleSelect({
   label,
   value,
   onChange,
   outsider = false,
+  comments,
 }: {
   label: string;
   value: ShareRole;
   onChange: (r: ShareRole) => void;
   outsider?: boolean;
+  comments?: boolean;
 }) {
-  const options = roleOptions(outsider, value);
+  const options = roleOptions(outsider, value, comments);
   return (
     <Select value={value} onValueChange={(v) => onChange(v as ShareRole)}>
       <SelectTrigger
         aria-label={label}
         size="sm"
-        className={`${outsider ? "w-[140px]" : "w-[96px]"} flex-none ${TEXT}`}
+        className={`w-[140px] flex-none ${TEXT}`}
       >
         <SelectValue />
       </SelectTrigger>
@@ -579,6 +581,7 @@ export function Share({
               }}
             />
             <RoleSelect
+              comments={artifact.comments}
               label="Invite role"
               outsider={typedOutside}
               value={pick}
@@ -729,6 +732,7 @@ export function Share({
             const controls = people ? (
               <>
                 <RoleSelect
+                  comments={artifact.comments}
                   label={`Role for ${s.email}`}
                   outsider={s.guest === true}
                   value={s.role}
@@ -760,7 +764,7 @@ export function Share({
               </>
             ) : (
               <span className="text-muted-foreground">
-                {roleLabel(s.role, s.guest === true)}
+                {roleLabel(s.role, s.guest === true, artifact.comments)}
               </span>
             );
             // Guests first; then a member who can only view (never why),

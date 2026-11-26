@@ -82,6 +82,15 @@ export type Role = z.infer<typeof RoleSchema>;
  */
 export const ShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
 export type ShareRole = z.infer<typeof ShareRoleSchema>;
+
+/** Display a page share using the recipient's commenting rights. */
+export function shareRoleLabel(
+  role: ShareRole,
+  viewerCanComment: boolean,
+): string {
+  if (role === "editor") return "Can edit";
+  return role === "commenter" || viewerCanComment ? "Can comment" : "Can view";
+}
 /**
  * The caller's level on one artifact. "owner": the personal owner only;
  * "manager": a space manager on a shared-space artifact (same actions as owner

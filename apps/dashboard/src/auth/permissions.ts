@@ -4,6 +4,7 @@ import {
   type Me,
   MeSchema,
   R,
+  shareRoleLabel,
 } from "@oa/shared";
 import { useQuery } from "@tanstack/react-query";
 import { ApiClientError, api } from "../api/client";
@@ -113,19 +114,20 @@ const LABEL = {
 
 export const accessLabel = (level: AccessLevel) => LABEL[level];
 
-/**
- * #2932: what the signed-in visitor's own access reads as in the title bar. An
- * outsider (a guest) reads it as the Share panel says it: the server returns a
- * Can comment share as access "viewer" with can.comment. Members keep their role.
- */
+/** The title bar names the signed-in visitor's effective page access. */
 export const ownAccessLabel = (
-  a: { access: AccessLevel; can?: { comment?: boolean } | null },
+  a: {
+    access: AccessLevel;
+    comments?: boolean;
+    can?: { comment?: boolean } | null;
+  },
   outsider: boolean,
 ) =>
-  outsider && a.access === "viewer"
-    ? a.can?.comment === true
-      ? "Can comment"
-      : "Can view"
+  a.access === "viewer" || a.access === "editor"
+    ? shareRoleLabel(
+        a.access,
+        a.comments !== false && (a.can?.comment ?? !outsider),
+      )
     : LABEL[a.access];
 
 /**

@@ -1,5 +1,5 @@
 // #2590: sharing with someone outside the instance offers only "Can comment"
-// and "Can view", starting at Can comment; members keep Viewer and Editor.
+// and "Can view", starting at Can comment; members keep Can comment and Can edit.
 // The hosted mocks list example.com as the login domain, so a Gmail address
 // is outside. At 1280 and 390, light and dark, with axe. Writes PNGs to
 // SHOTS_DIR when set.
@@ -57,13 +57,16 @@ for (const [scheme, width] of [["light", 1280]] as const) {
       page,
     }, info) => {
       await open(page);
-      // A member's address keeps Viewer and Editor.
+      // A member's address keeps Can comment and Can edit.
       await page
         .getByRole("textbox", { name: "Email" })
         .fill("maya@example.com");
-      await expect(inviteRole(page)).toHaveText("Viewer");
+      await expect(inviteRole(page)).toHaveText("Can comment");
       await inviteRole(page).click();
-      await expect(page.getByRole("option")).toHaveText(["Viewer", "Editor"]);
+      await expect(page.getByRole("option")).toHaveText([
+        "Can comment",
+        "Can edit",
+      ]);
       await page.keyboard.press("Escape");
       // Outside: Can comment, with only the two outsider choices.
       await page.getByRole("textbox", { name: "Email" }).fill("sam@gmail.com");

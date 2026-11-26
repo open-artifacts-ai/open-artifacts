@@ -247,7 +247,7 @@ describe("Settings: Who asked what", () => {
 
 describe("Share: the tick box", () => {
   const panel = (aid: string) => `${viewerPath(aid)}?panel=open&tab=share`;
-  const typeBob = async (role: "Editor" | "Viewer") => {
+  const typeBob = async (role: "Can edit" | "Can comment") => {
     await pickOption("Invite role", role);
     fireEvent.change(screen.getByLabelText("Email"), {
       target: { value: "bob@example.com" },
@@ -259,7 +259,7 @@ describe("Share: the tick box", () => {
     asks();
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
-    await typeBob("Editor");
+    await typeBob("Can edit");
     const box = await screen.findByRole("checkbox", {
       name: "bob@example.com can ask my agents about this page",
     });
@@ -294,7 +294,7 @@ describe("Share: the tick box", () => {
     asks();
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
-    await typeBob("Editor");
+    await typeBob("Can edit");
     await screen.findByRole("checkbox", { name: /can ask my agents/ });
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() =>
@@ -318,7 +318,7 @@ describe("Share: the tick box", () => {
     );
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
-    await typeBob("Editor");
+    await typeBob("Can edit");
     fireEvent.click(
       await screen.findByRole("checkbox", { name: /can ask my agents/ }),
     );
@@ -343,7 +343,7 @@ describe("Share: the tick box", () => {
     );
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
-    await typeBob("Editor");
+    await typeBob("Can edit");
     await waitFor(() =>
       expect(screen.getByLabelText("Email")).toHaveValue("bob@example.com"),
     );
@@ -368,7 +368,7 @@ describe("Share: the tick box", () => {
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
     await screen.findByTitle("gus@elsewhere.test");
-    await typeBob("Editor");
+    await typeBob("Can edit");
     await waitFor(() =>
       expect(screen.getByLabelText("Email")).toHaveValue("bob@example.com"),
     );
@@ -381,7 +381,7 @@ describe("Share: the tick box", () => {
     asks();
     mount(panel(LANDING));
     await screen.findByRole("combobox", { name: "Invite role" });
-    await typeBob("Viewer");
+    await typeBob("Can comment");
     expect(
       screen.queryByRole("checkbox", { name: /can ask my agents/ }),
     ).toBeNull();

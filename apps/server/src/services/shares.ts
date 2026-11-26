@@ -317,7 +317,15 @@ export async function putShare(
     memberId: await memberIdOfEmail(env, row.email),
     ...(guest ? { guest: true } : {}),
     ...(await emailed(created, () =>
-      emailShare(env, user, artifact, email, role, reach),
+      emailShare(
+        env,
+        user,
+        artifact,
+        email,
+        role,
+        !guest && artifact.comments === 1,
+        reach,
+      ),
     )),
     ...(reach.recipient ? { recipient: reach.recipient } : {}),
     // The list the share email names (reach.ts), so the UI and email agree.
@@ -361,9 +369,15 @@ export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL = 20;
 async function emailShare(
   env: Env,
   user: Member,
-  artifact: { id: string; title: string; format: string; doc: number },
+  artifact: {
+    id: string;
+    title: string;
+    format: string;
+    doc: number;
+  },
   email: string,
   role: ShareRole,
+  viewerCanComment: boolean,
   /** The methods that admit the recipient and, with none, why (shareReach). */
   reach: { methods: SignInProvider[]; recipient?: ShareRecipient },
 ): Promise<{
@@ -517,6 +531,7 @@ async function emailShare(
               path: viewerPath(artifact.id),
               format: apiFormat(artifact.format, artifact.doc),
               role,
+              viewerCanComment,
               signIn: reach.methods,
               cantSignIn: reach.recipient?.reason,
             }),
