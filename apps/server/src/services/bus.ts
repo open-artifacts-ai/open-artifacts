@@ -38,7 +38,7 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
-import type { PutRoleResult, RoleMove } from "../bus/roles.js";
+import type { HandOverResult, PutRoleResult, RoleMove } from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -173,6 +173,13 @@ export type BusHubRpc = {
     name: string,
     agentId: string | null,
   ): Promise<PutRoleResult>;
+  /** #3132: the holder hands a role on at once; null when the caller isn't its holder. */
+  handOverRole(
+    identityId: string,
+    namespace: string,
+    name: string,
+    agent: string,
+  ): Promise<HandOverResult>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -1022,6 +1029,43 @@ export async function putBusRole(
   throw refuse(r.reason);
 }
 
+/**
+ * #3132 MCP bus_role_propose by a linked session: when that session is the
+ * role's live holder, it hands the role to its open agent `agent` at once,
+ * audited as bus.role.moved. Null when it is not the holder (or the bus is
+ * off or has no machine): the caller then only proposes. Refusals as
+ * putBusRole, plus 409 ambiguous.
+ */
+export async function handOverBusRole(
+  env: Env,
+  userId: string,
+  identityId: string,
+  input: { namespace: string; name: string; agent: string },
+): Promise<BusRole | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  const r = await roleCall(
+    hub.handOverRole(identityId, input.namespace, input.name, input.agent),
+  );
+  if (r.ok) {
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    return r.role;
+  }
+  if (r.reason === "not_holder") return null;
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  if (r.reason === "ambiguous")
+    throw new ApiError("conflict", PROPOSAL_REFUSALS.ambiguous, {
+      reason: r.reason,
+    });
+  throw new ApiError("conflict", ROLE_REFUSALS[r.reason], {
+    reason: r.reason,
+  });
+}
+
 /** #1296: removes the member's role `id`. Idempotent: unknown is fine. */
 export async function deleteBusRole(
   env: Env,
@@ -1312,15 +1356,24 @@ const PROPOSAL_REFUSALS: Record<
 
 const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
 
-/** #3132: a role moved between sessions, by the member. Ids only. */
-const auditMove = (env: Env, userId: string, m: RoleMove) =>
-  audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
-    detail: {
-      roleId: m.roleId,
-      fromAgentId: m.fromAgentId,
-      toAgentId: m.toAgentId,
-    },
-  }).run();
+/**
+ * #3132: a role moved between sessions, by the member or its holder. Ids
+ * only. The move has happened by now: a failed write is logged, never
+ * reported as nothing changed.
+ */
+async function auditMove(env: Env, userId: string, m: RoleMove): Promise<void> {
+  try {
+    await audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
+      detail: {
+        roleId: m.roleId,
+        fromAgentId: m.fromAgentId,
+        toAgentId: m.toAgentId,
+      },
+    }).run();
+  } catch (e) {
+    logError("bus_role_move_audit_failed", e);
+  }
+}
 
 /** An audit row's detail: ids and enums, the absent ones left out. */
 const detailOf = (a: ProposalAudit, why?: string) => ({

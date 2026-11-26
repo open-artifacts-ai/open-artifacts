@@ -136,6 +136,8 @@ import {
 import {
   deleteRole,
   formerReservedSql,
+  type HandOverResult,
+  handOver,
   listRoles,
   type PutRoleResult,
   putRole,
@@ -4207,6 +4209,40 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    return r;
+  }
+
+  /**
+   * #3132: the role's live holder, the session linked as `identityId`, hands
+   * it to its open agent `agent` at once (roles.ts handOver). not_holder:
+   * that session doesn't hold the role, so nothing changed. Worker only, from the
+   * MCP bus_role_propose of a linked session.
+   */
+  async handOverRole(
+    identityId: string,
+    namespace: string,
+    name: string,
+    agent: string,
+  ): Promise<HandOverResult> {
+    const r = this.#withReachNotice(() =>
+      handOver(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        identityId,
+        namespace,
+        name,
+        agent,
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      ),
+    );
+    if (!r.ok && r.reason === "not_holder") return r;
+    logEvent("role_handed_over", r.ok ? { ok: 1 } : { reason: r.reason });
+    if (r.ok) {
+      this.#noteNamed();
+      if (r.moved !== null) this.#roleMoved(r.moved);
+    }
     return r;
   }
 

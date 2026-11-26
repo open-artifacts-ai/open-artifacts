@@ -275,6 +275,56 @@ export function putRole(
 }
 
 /**
+ * #3132: the role's live holder hands it to its open agent `agentName`, at
+ * once (Leo's pick, 2026-11-26: "The holder hands it over, or you
+ * approve"). not_holder when the session with `identityId` is not the
+ * role's live holder, or names itself: then nothing is handed over and the
+ * caller only proposes. Otherwise putRole's answer (ambiguous: two open agents have the
+ * name).
+ */
+export type HandOverResult =
+  | PutRoleResult
+  | { ok: false; reason: "ambiguous" | "not_holder" };
+
+export function handOver(
+  sql: SqlStorage,
+  orgId: string,
+  identityId: string,
+  namespace: string,
+  name: string,
+  agentName: string,
+  now: number,
+  newId: () => string,
+  max: number = BUS_ROLE_MAX,
+): HandOverResult {
+  const notHolder = { ok: false, reason: "not_holder" } as const;
+  const role = roleRow(sql, orgId, namespace, name.toLowerCase());
+  if (role?.agentId == null) return notHolder;
+  const holder = one<{ id: string }>(
+    sql,
+    `select id from agents where org_id = ? and id = ? and live = 1 and identity_id = ?
+       and (namespace = ? or global = 1)`,
+    orgId,
+    role.agentId,
+    identityId,
+    namespace,
+  );
+  if (holder === null) return notHolder;
+  const named = all<{ id: string }>(
+    sql,
+    `select id from agents where org_id = ? and lower(name) = ? and live = 1
+       and (namespace = ? or global = 1) limit 2`,
+    orgId,
+    agentName.toLowerCase(),
+    namespace,
+  );
+  if (named.length > 1) return { ok: false, reason: "ambiguous" };
+  const to = named[0]?.id ?? "";
+  if (to === holder.id) return notHolder;
+  return putRole(sql, orgId, namespace, name, to, now, newId, max);
+}
+
+/**
  * #3132: records that role `roleId` moved from agent `fromId` to `toId`,
  * with the from-session's address and identity as they are now (its agents
  * row may be gone later). Null when either row is already gone: there is no
