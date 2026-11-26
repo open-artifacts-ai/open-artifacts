@@ -630,6 +630,8 @@ export function writeHabits(
 function dropBlocks(
   deps: HabitsDeps,
   paths: string[],
+  /** Rewrite the record even when no block came out (removeHabits always has). */
+  always = true,
 ): { files: string[]; notes: string[] } {
   const files: string[] = [];
   const notes: string[] = [];
@@ -657,7 +659,11 @@ function dropBlocks(
   }
   // Uninstall must not create a record in a folder that has none (it would make
   // a foreign OA_BUS_HOME look like ours to --purge).
-  if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
+  if (
+    (always || files.length > 0) &&
+    deps.busHome &&
+    existsSync(join(deps.busHome, "install.json"))
+  )
     saveRecord(deps.busHome, { files: kept });
   return { files, notes };
 }
@@ -699,7 +705,7 @@ export const agyHabitsFiles = (home: string): string[] => [
 ];
 
 export const removeAgyHabits = (deps: HabitsDeps): HabitsResult =>
-  dropBlocks(deps, agyHabitsFiles(deps.home));
+  dropBlocks(deps, agyHabitsFiles(deps.home), false);
 
 /** Files that hold the current or an older block, across every harness. */
 export function habitsOn(deps: HabitsDeps): string[] {
