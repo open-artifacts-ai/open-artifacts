@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.258.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.0...v0.258.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** hide revoked machines from list after 24 hours ([#3123](https://github.com/open-artifacts-ai/open-artifacts/issues/3123)) ([#3281](https://github.com/open-artifacts-ai/open-artifacts/issues/3281)) ([50e587a](https://github.com/open-artifacts-ai/open-artifacts/commit/50e587aaed83ec7cb234a75cf8676d2baabdcb31))
+
 ## [0.258.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.257.0...v0.258.0) (2026-11-26)
 
 
