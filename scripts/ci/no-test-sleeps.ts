@@ -299,7 +299,8 @@ const JS_RULES: ((code: string) => Found[])[] = [
     flag(/\bpolling\s*:\s*\d/g);
     return out;
   },
-  // A busy wait on the clock: while (Date.now() < end) with an empty or awaited body.
+  // A busy wait on the clock: while (Date.now() < end) with an empty body or a
+  // no-op yield (await Promise.resolve(), null, 0); awaiting anything else is a real wait.
   (code) => {
     const out: Found[] = [];
     for (const c of calls(code, /\bwhile\s*\(/g)) {
@@ -311,7 +312,11 @@ const JS_RULES: ((code: string) => Found[])[] = [
       if (
         /\b(?:Date\.now|performance\.now)\s*\(\s*\)/.test(c.body) &&
         /[<>]/.test(c.body) &&
-        (body === "" || body === ";" || /^await\s[^;]*;?$/.test(body))
+        (body === "" ||
+          body === ";" ||
+          /^await\s+(?:Promise\s*\.\s*resolve\s*\([^)]*\)|null|undefined|void\s+0|0)\s*;?$/.test(
+            body,
+          ))
       )
         out.push({ index: c.index, why: "sleep" });
     }
@@ -391,7 +396,7 @@ const PY_RULES: ((code: string) => Found[])[] = [
     return out;
   },
   // A busy wait on the clock: `while time.time() < end: pass` (or continue, `...`,
-  // or one awaited call), under any alias of time, or datetime.now().
+  // or a no-op await: asyncio.sleep, None), under any alias of time, or datetime.now().
   (code) => {
     const out: Found[] = [];
     const clockFns = ["time", "monotonic", "perf_counter", "process_time"];
@@ -440,7 +445,11 @@ const PY_RULES: ((code: string) => Found[])[] = [
       const idle = body
         .map((b) => b.trim())
         .filter((b) => b !== "")
-        .every((b) => /^(pass|continue|\.\.\.|await\s+[^=]*)$/.test(b));
+        .every((b) =>
+          /^(pass|continue|\.\.\.|await\s+(?:None|(?:asyncio|trio|anyio)\s*\.\s*sleep\s*\([^)]*\)))$/.test(
+            b,
+          ),
+        );
       if (idle && body.length <= 1)
         out.push({ index: starts[i] as number, why: "sleep" });
     });

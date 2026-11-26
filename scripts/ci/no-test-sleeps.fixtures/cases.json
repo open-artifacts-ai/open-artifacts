@@ -624,10 +624,10 @@
     "why": ["sleep"]
   },
   {
-    "name": "python busy wait with an awaited call",
+    "name": "python busy wait with a no-op yield",
     "file": "tests/test_x.py",
-    "text": "import time\n\nasync def test_a(t):\n    while time.time() < t:\n        await idle()\n",
-    "why": ["sleep"]
+    "text": "import asyncio\nimport time\n\nasync def test_a(t):\n    while time.time() < t:\n        await asyncio.sleep(0)\n",
+    "why": ["sleep", "sleep"]
   },
   {
     "name": "python deadline loop that does real work",
@@ -646,5 +646,47 @@
     "file": "tests/test_x.py",
     "text": "import time\n\ndef test_a(end):\n    while time.time() < end:\n        poll_once()\n",
     "why": []
+  },
+  {
+    "name": "python clock guard around a queue wait (the reviewer's repro)",
+    "file": "tests/test_x.py",
+    "text": "import time\n\nasync def test_a(queue, deadline):\n    while time.monotonic() < deadline:\n        await queue.get()\n",
+    "why": []
+  },
+  {
+    "name": "python clock guard around an event wait",
+    "file": "tests/test_x.py",
+    "text": "import time\n\nasync def test_a(event, deadline):\n    while time.monotonic() < deadline:\n        await event.wait()\n",
+    "why": []
+  },
+  {
+    "name": "python clock guard around one awaited call, one line",
+    "file": "tests/test_x.py",
+    "text": "import time\n\nasync def test_a(deadline):\n    while time.time() < deadline: await step()\n",
+    "why": []
+  },
+  {
+    "name": "js clock guard around a real await",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await next();",
+    "why": []
+  },
+  {
+    "name": "js clock guard around a queue read",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) {\n  await queue.get();\n}",
+    "why": []
+  },
+  {
+    "name": "js clock guard around await null",
+    "file": "a.test.ts",
+    "text": "while (Date.now() < end) await null;",
+    "why": ["sleep"]
+  },
+  {
+    "name": "js clock guard around await Promise.resolve in braces",
+    "file": "a.test.ts",
+    "text": "while (performance.now() < end) {\n  await Promise.resolve();\n}",
+    "why": ["sleep"]
   }
 ]
