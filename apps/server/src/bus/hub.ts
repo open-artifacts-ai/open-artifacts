@@ -5181,7 +5181,7 @@ export class BusHub extends DurableObject<Env> {
    */
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
-    void this.#moveFollowRows(m.from, m.to, m.heldFrom);
+    void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at);
     // The old session, if still open, is told it no longer holds the role.
     const role = one<{ name: string }>(
       this.ctx.storage.sql,
@@ -6690,6 +6690,8 @@ export class BusHub extends DurableObject<Env> {
     after: { namespace: string; name: string },
     /** Only rows created since then (ms); absent: all of them. */
     since?: number,
+    /** A role move's time: the moved rows start then (follows.ts moveFollows). */
+    startAt?: number,
   ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
@@ -6709,7 +6711,7 @@ export class BusHub extends DurableObject<Env> {
           );
         });
         await Promise.race([
-          moveFollows(this.env, userId, from, to, since),
+          moveFollows(this.env, userId, from, to, since, startAt),
           timeout,
         ]);
       } catch (e) {
