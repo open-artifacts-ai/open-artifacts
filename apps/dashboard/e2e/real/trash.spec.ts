@@ -1,14 +1,14 @@
 // Red-line port (later.spec.ts "#766: Delete an artifact, find it in Trash,
 // and restore it"): the same flow against the real server, so the staging
 // copy can go. Delete from the viewer menu (the API then answers 404), find
-// it in Trash, Restore, and it is no longer deleted.
+// it in Trash, Restore, and it is no longer deleted. Tagged @smoke so it
+// runs on every pull request, not only in the merge queue.
 import { type ArtifactSummary, R } from "@oa/shared";
 import { APP, expect, publishViaApi, test, uniq } from "./fixtures";
 
-test("#766: delete from the viewer, find it in Trash, Restore", async ({
-  page,
-  member,
-}) => {
+test("#766: delete from the viewer, find it in Trash, Restore", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
   const title = `Trash ${uniq()}`;
   const { id } = await publishViaApi(member.pat, {
     title,
