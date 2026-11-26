@@ -65,3 +65,26 @@ export async function settleOtp<R extends { status: number }>(
       );
   }
 }
+
+/**
+ * A response with its body read in full, inside the ask: the headers having
+ * come on time is not enough, so the body is read here (and cut off with the
+ * ask's signal) before the ask counts as answered. What is returned has the
+ * body in memory, so a later read of it takes no time.
+ */
+export async function buffered(
+  r: Response,
+  signal: AbortSignal,
+): Promise<Response> {
+  const cut = new Promise<never>((_, reject) =>
+    signal.addEventListener("abort", () => reject(signal.reason), {
+      once: true,
+    }),
+  );
+  const body = await Promise.race([r.arrayBuffer(), cut]);
+  return new Response(body, {
+    status: r.status,
+    statusText: r.statusText,
+    headers: r.headers,
+  });
+}

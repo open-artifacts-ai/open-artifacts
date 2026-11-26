@@ -12,7 +12,7 @@ import {
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
-import { settleOtp } from "./settled-otp.js";
+import { buffered, settleOtp } from "./settled-otp.js";
 
 export type Install = {
   /** App origin, e.g. https://stg-a.example.com. */
