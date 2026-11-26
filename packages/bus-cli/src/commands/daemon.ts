@@ -11,7 +11,7 @@ import {
 import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, sayErr } from "../context.ts";
 import { originOf, readMachine } from "../machine.ts";
-import { reapplyClaudeProof } from "../steps/adapters.ts";
+import { reapplyClaudeProof, reapplyCodexEntries } from "../steps/adapters.ts";
 import { readRecord } from "../steps/claude-proof.ts";
 import { PROOF_EVENT } from "../steps/claude-proof-check.ts";
 import { REVOKED_EXIT } from "../steps/service.ts";
@@ -68,6 +68,14 @@ export async function daemon(
       },
       (c) => events(PROOF_EVENT, { name: c.entry, kind: c.scope }),
     );
+  // #3108: the same for the Codex entries the server check links.
+  if (m.state === "ok")
+    reapplyCodexEntries({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+      hub: originOf(m.hub),
+    });
   return new Promise<number>((resolve) => {
     let running: Daemon | undefined;
     let ended = false;

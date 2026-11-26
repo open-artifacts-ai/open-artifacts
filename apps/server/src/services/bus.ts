@@ -1,4 +1,10 @@
 import {
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
+  canonicalArgsSha256,
   LINK_PROOF_ARG,
   LINK_PROOF_HEADER,
   LinkProofSchema,
@@ -114,6 +120,8 @@ export type BusHubRpc = {
   runVersionChanged(): Promise<void>;
   /** #2759: the member saved their prefs; tell their cap'd sockets when quiet hours end. */
   ownerAwayChanged(): Promise<void>;
+  /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
+  codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -805,6 +813,99 @@ function bodyHasToolsCall(text: string | undefined): boolean {
 /** Not JSON: the handler answers it with its usual parse error. */
 const UNPARSEABLE = "{";
 
+/** #3108: Codex `thread_source` values of threads Codex spawned itself (mirrors SPAWNED_SOURCES in @oa/bus-ipc); never linked. */
+export const CODEX_SPAWNED_SOURCES: ReadonlySet<string> = new Set([
+  "subagent",
+  "guardian_review",
+  "memory_consolidation",
+]);
+
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+
+/**
+ * #3108: the check a proof-less /mcp body asks of the member's daemons, or
+ * null. Exactly one tools/call (never a batch) whose `_meta` carries Codex's
+ * thread, call and (code mode) item ids. Every field is validated with the
+ * protocol's schemas; nothing from `_meta` is ever logged.
+ */
+async function codexCheckOf(
+  bodyText: string | undefined,
+): Promise<Record<string, unknown> | null> {
+  if (bodyText === undefined) return null;
+  let msg: unknown;
+  try {
+    msg = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  const m = asRecord(msg);
+  if (!m || m.method !== "tools/call") return null;
+  const params = asRecord(m.params);
+  const meta = asRecord(params?._meta);
+  if (!params || !meta) return null;
+  const thread = CodexThreadIdSchema.safeParse(meta.threadId);
+  const tool = CodexToolNameSchema.safeParse(params.name);
+  if (!thread.success || !tool.success) return null;
+  let turn: unknown = meta["x-codex-turn-metadata"];
+  if (typeof turn === "string")
+    try {
+      turn = JSON.parse(turn);
+    } catch {
+      return null;
+    }
+  const t = asRecord(turn);
+  if (!t || t.thread_id !== thread.data) return null;
+  if (
+    typeof t.thread_source === "string" &&
+    CODEX_SPAWNED_SOURCES.has(t.thread_source)
+  )
+    return null;
+  const exec = CodexExecCallIdSchema.safeParse(meta.callId);
+  const item = CodexItemIdSchema.safeParse(meta.itemId);
+  if (exec.success && item.success)
+    return {
+      thread_id: thread.data,
+      tool: tool.data,
+      mode: { kind: "code", call_id: exec.data, item_id: item.data },
+    };
+  const direct = CodexDirectCallIdSchema.safeParse(meta.callId);
+  if (!direct.success) return null;
+  const args_sha256 = await canonicalArgsSha256(params.arguments ?? {});
+  if (!args_sha256) return null;
+  return {
+    thread_id: thread.data,
+    tool: tool.data,
+    mode: { kind: "direct", call_id: direct.data, args_sha256 },
+  };
+}
+
+/** #3108: the identity of the Codex session behind a proof-less tools/call, or undefined (unlinked, the call still works). Never throws, never logs a value. */
+async function codexLink(
+  env: Env,
+  userId: string,
+  bodyText: string | undefined,
+): Promise<AgentIdentity | undefined> {
+  try {
+    const check = await codexCheckOf(bodyText);
+    if (!check) return undefined;
+    const id = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub ? await hub.codexCallCheck(check) : null;
+      })(),
+      PROOF_LOOKUP_MS,
+    );
+    return id ?? undefined;
+  } catch (e) {
+    logError("bus_codex_link_failed", e);
+    return undefined;
+  }
+}
+
 /**
  * #1822: the /mcp auth step's one link function. Takes the proof header off
  * the request (always, so no tool or handler ever sees it); #1856: also takes
@@ -861,8 +962,14 @@ export async function linkRequest(
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
   // No proof at all: nothing was looked up, so nothing is logged; the note says so.
-  if (proof === undefined)
+  if (proof === undefined) {
+    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
+    const identity = busOn(env)
+      ? await codexLink(env, userId, bodyText)
+      : undefined;
+    if (identity) return { req: out, identity };
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+  }
   const r = await lookupProof(
     env,
     userId,

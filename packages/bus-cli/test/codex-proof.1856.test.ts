@@ -13,13 +13,19 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { CODEX_PROXY_ENTRY_FILE } from "@oa/bus-daemon";
+import { dirname, join } from "node:path";
+import {
+  CODEX_OA_ENTRIES_FILE,
+  CODEX_PROXY_ENTRY_FILE,
+  instanceOrigin,
+} from "@oa/bus-daemon";
 import { parse } from "smol-toml";
 import { describe, expect, it } from "vitest";
+import { originOf } from "../src/machine.ts";
 import {
   type AdapterDeps,
   installAdapters,
+  reapplyCodexEntries,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
 
@@ -94,6 +100,12 @@ function setup(
       },
   };
 }
+
+/** #3108: what install recorded for the daemon's server check (names and origin only). */
+const recorded = (t: { moved: string }) =>
+  JSON.parse(
+    readFileSync(join(dirname(t.moved), CODEX_OA_ENTRIES_FILE), "utf8"),
+  ).instances;
 
 /** #2954: `<home>/.open-artifacts/<host slug>-pat-token`, as the guide names it. */
 const patFile = (t: { h: string }): string =>
@@ -255,17 +267,23 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
           .mcp_servers["open-artifacts"],
       );
       expect(existsSync(t.moved)).toBe(false);
-      await uninstallAdapters(t.deps);
-      expect(t.toml().mcp_servers["open-artifacts"]).toBeDefined();
+      const notes = out.notes.join("\n");
+      // #3108: with no token variable the entry is linked through the daemon's
+      // server check: no note, no PAT asked for, and the entry is recorded.
       if (
         kind.startsWith("OAuth") ||
         kind.startsWith("a literal") ||
-        kind.startsWith("static") ||
         kind.startsWith("env") ||
-        kind.startsWith("a header") ||
-        kind.startsWith("an oauth")
-      )
-        expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
+        kind.startsWith("a header")
+      ) {
+        expect(notes).not.toMatch(/left the open-artifacts entry|PAT/);
+        expect(recorded(t)).toEqual([
+          { origin: HUB, names: ["open-artifacts"] },
+        ]);
+      } else if (kind.startsWith("static") || kind.startsWith("an oauth"))
+        expect(notes).toMatch(/left the open-artifacts entry/);
+      await uninstallAdapters(t.deps);
+      expect(t.toml().mcp_servers["open-artifacts"]).toBeDefined();
     });
 
   it("swaps an entry that signs in another way when a PAT file is there, and keeps its own sign-in (#2954)", async () => {
@@ -323,7 +341,15 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
           .mcp_servers["open-artifacts"],
       );
       expect(existsSync(t.moved)).toBe(false);
-      expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
+      if (kind === "an auth block")
+        expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
+      else {
+        // #3108: not swapped, not asked for anything: recorded for the server check.
+        expect(out.notes.join("\n")).not.toMatch(/PAT|left the/);
+        expect(recorded(t)).toEqual([
+          { origin: HUB, names: ["open-artifacts"] },
+        ]);
+      }
     });
 
   it("keeps a token-variable entry on its variable when a PAT file is also there (#2954)", async () => {
@@ -368,7 +394,7 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
     expect(t.read()).toBe(original);
   });
 
-  it("leaves an entry that signs in another way alone when there is no PAT file, and says what to do (#2954)", async () => {
+  it("records an entry that signs in another way and leaves config.toml byte-identical, asking for no PAT (#3108)", async () => {
     const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
     const t = setup(original);
     const out = await installAdapters(t.deps);
@@ -379,7 +405,36 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
       ],
     );
     expect(existsSync(t.moved)).toBe(false);
-    expect(out.notes.join("\n")).toContain(patFile(t));
+    expect(out.notes.join("\n")).not.toMatch(/PAT|pat-token|connect guide/);
+    const file = join(dirname(t.moved), CODEX_OA_ENTRIES_FILE);
+    expect(recorded(t)).toEqual([{ origin: HUB, names: ["open-artifacts"] }]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    // Names and the origin only: never a url path, a token or a header value.
+    expect(readFileSync(file, "utf8")).not.toMatch(/mcp"|Bearer|oa_pat/);
+    // A second install changes nothing; uninstall removes the record.
+    const config = t.read();
+    await installAdapters(t.deps);
+    expect(t.read()).toBe(config);
+    await uninstallAdapters(t.deps);
+    expect(existsSync(file)).toBe(false);
+  });
+
+  it("records the entries again at daemon start, with no install, and never edits the config (#3108)", () => {
+    const original = `${PREFIX}[mcp_servers.open-artifacts]\nurl = "${HUB}/mcp"\n${SUFFIX}`;
+    const t = setup(original);
+    const busHome = join(t.h, ".oa-bus");
+    mkdirSync(busHome, { recursive: true });
+    reapplyCodexEntries({
+      home: t.h,
+      busHome,
+      env: t.deps.env,
+      hub: HUB,
+    });
+    expect(
+      JSON.parse(readFileSync(join(busHome, CODEX_OA_ENTRIES_FILE), "utf8"))
+        .instances,
+    ).toEqual([{ origin: HUB, names: ["open-artifacts"] }]);
+    expect(t.read()).toBe(original);
   });
 
   it("swaps an entry whose environment_id is local", async () => {
@@ -478,5 +533,20 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
     await installAdapters(t.deps);
     expect(t.read()).not.toMatch(/Bearer/);
     expect(t.read()).toContain('env_vars = ["OA_TOKEN"]');
+  });
+});
+
+describe("the origin install records is the one the daemon looks up (#3108)", () => {
+  it("originOf and the daemon's instanceOrigin agree on every hub form", () => {
+    for (const h of [
+      "wss://oa.example.com",
+      "wss://oa.example.com/",
+      "wss://oa.example.com:8443/hub",
+      "ws://127.0.0.1:5",
+      "https://oa.example.com",
+      "http://localhost:8787/",
+      "not a url",
+    ])
+      expect(instanceOrigin(h)).toBe(originOf(h));
   });
 });

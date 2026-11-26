@@ -7,6 +7,11 @@ import {
   BUS_CAPS,
   BusNameSchema,
   type ClientFrame,
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
   candidateName,
   decodeClientFrame,
   droppedRefusedChars,
@@ -63,6 +68,7 @@ import {
   type BusCloseKind,
   busCloseKind,
   MAX_ACTIVE_MACHINES,
+  PROOF_LOOKUP_MS,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { agentKey } from "../services/comment-agents.js";
@@ -377,12 +383,26 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.codexCheck,
 ];
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
 const guestGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.guest);
+};
+
+/** #3108: Codex call checks one hub starts per window, the most links one code-mode item gets, how long a miss is remembered, and the bound on each in-memory map. */
+const CODEX_CHECKS_PER_WINDOW = 120;
+const CODEX_CHECK_WINDOW_MS = 60_000;
+const CODEX_ITEM_LINKS = 50;
+const CODEX_MISS_MS = 5_000;
+const CODEX_MAP_MAX = 2048;
+
+/** #3108: `codex_call_check` goes to, and `codex_call_checked` comes from, only a socket whose hello listed BUS_CAPS.codexCheck. */
+const codexCheckGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.codexCheck);
 };
 
 /** #2759: `owner_away` goes only to a socket whose hello listed BUS_CAPS.ownerAway. */
@@ -4721,6 +4741,209 @@ export class BusHub extends DurableObject<Env> {
     return n;
   }
 
+  // ------------------------------------------------- #3108 Codex call check
+
+  /**
+   * In-memory, per hub (one member), bounded; lost on eviction, which is safe:
+   * the daemon also admits each (thread, call_id) once, and a refused check
+   * only leaves the call unlinked.
+   */
+  #codexPending = new Map<
+    string,
+    { ws: WebSocket; done: (ok: boolean) => void }
+  >();
+  #codexStarts: number[] = [];
+  #codexMiss = new Map<string, number>();
+  #codexFlight = new Map<string, Promise<AgentIdentity | null>>();
+  #codexAdmitted = new Set<string>();
+  #codexItems = new Map<string, number>();
+
+  /**
+   * #3108: the Codex session a /mcp tools/call came from, or null. The Worker
+   * names a thread and a call; this hub asks its own daemons (only those whose
+   * hello listed the cap) whether that exact call is open in a live Codex
+   * thread, and the identity comes only from the agent row the ANSWERING socket
+   * registered for that thread, never from the request. Single-flight, rate
+   * limited, a short miss cache, one link per (thread, call_id), at most
+   * CODEX_ITEM_LINKS per item. Never logs a thread, call, item or hash.
+   * Worker only.
+   */
+  async codexCallCheck(check: unknown): Promise<AgentIdentity | null> {
+    const c = check as {
+      thread_id?: unknown;
+      tool?: unknown;
+      mode?: {
+        kind?: unknown;
+        call_id?: unknown;
+        item_id?: unknown;
+        args_sha256?: unknown;
+      };
+    } | null;
+    const thread = CodexThreadIdSchema.safeParse(c?.thread_id);
+    const tool = CodexToolNameSchema.safeParse(c?.tool);
+    if (!thread.success || !tool.success || !c?.mode) return null;
+    let mode:
+      | { kind: "direct"; call_id: string; args_sha256: string }
+      | { kind: "code"; call_id: string; item_id: string };
+    if (c.mode.kind === "code") {
+      const call = CodexExecCallIdSchema.safeParse(c.mode.call_id);
+      const item = CodexItemIdSchema.safeParse(c.mode.item_id);
+      if (!call.success || !item.success) return null;
+      mode = { kind: "code", call_id: call.data, item_id: item.data };
+    } else if (c.mode.kind === "direct") {
+      const call = CodexDirectCallIdSchema.safeParse(c.mode.call_id);
+      const hash = LinkProofHashSchema.safeParse(c.mode.args_sha256);
+      if (!call.success || !hash.success) return null;
+      mode = { kind: "direct", call_id: call.data, args_sha256: hash.data };
+    } else return null;
+    const key = `${thread.data}\n${mode.call_id}`;
+    const now = this.#now();
+    if (this.#codexAdmitted.has(key)) return null;
+    if (
+      mode.kind === "code" &&
+      (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
+    )
+      return null;
+    const missUntil = this.#codexMiss.get(key);
+    if (missUntil !== undefined && missUntil > now) return null;
+    const running = this.#codexFlight.get(key);
+    if (running) return running;
+    this.#codexStarts = this.#codexStarts.filter(
+      (t) => t > now - CODEX_CHECK_WINDOW_MS,
+    );
+    if (this.#codexStarts.length >= CODEX_CHECKS_PER_WINDOW) {
+      logInfo("bus_codex_check_none", { reason: "rate" });
+      return null;
+    }
+    this.#codexStarts.push(now);
+    const p = this.#codexAsk(thread.data, tool.data, mode).then(
+      (id) => {
+        if (id) {
+          this.#codexAdmitted.add(key);
+          if (this.#codexAdmitted.size > CODEX_MAP_MAX)
+            this.#codexAdmitted.delete(
+              this.#codexAdmitted.values().next().value as string,
+            );
+          if (mode.kind === "code") {
+            this.#codexItems.set(
+              mode.item_id,
+              (this.#codexItems.get(mode.item_id) ?? 0) + 1,
+            );
+            if (this.#codexItems.size > CODEX_MAP_MAX)
+              this.#codexItems.delete(
+                this.#codexItems.keys().next().value as string,
+              );
+          }
+        } else {
+          this.#codexMiss.set(key, this.#now() + CODEX_MISS_MS);
+          if (this.#codexMiss.size > CODEX_MAP_MAX)
+            this.#codexMiss.delete(
+              this.#codexMiss.keys().next().value as string,
+            );
+        }
+        return id;
+      },
+      (e) => {
+        logError("bus_codex_check_failed", e);
+        return null;
+      },
+    );
+    this.#codexFlight.set(key, p);
+    void p.finally(() => this.#codexFlight.delete(key));
+    return p;
+  }
+
+  async #codexAsk(
+    thread: string,
+    tool: string,
+    mode:
+      | { kind: "direct"; call_id: string; args_sha256: string }
+      | { kind: "code"; call_id: string; item_id: string },
+  ): Promise<AgentIdentity | null> {
+    const asked: WebSocket[] = [];
+    const waits: Promise<WebSocket | null>[] = [];
+    const frameIds: string[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((r) => {
+      timer = setTimeout(() => r(null), PROOF_LOOKUP_MS);
+    });
+    try {
+      for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
+        if (ws.readyState !== OPEN || isReplaced(ws) || !codexCheckGated(ws))
+          continue;
+        const id = frameId();
+        const answered = new Promise<WebSocket | null>((resolve) => {
+          this.#codexPending.set(id, {
+            ws,
+            done: (ok) => resolve(ok ? ws : null),
+          });
+        });
+        if (
+          !trySendFrame(ws, {
+            v: 1,
+            id,
+            type: "codex_call_check",
+            thread_id: thread,
+            tool,
+            mode,
+          } as ServerFrame)
+        ) {
+          this.#codexPending.delete(id);
+          continue;
+        }
+        asked.push(ws);
+        frameIds.push(id);
+        waits.push(answered);
+      }
+      if (waits.length === 0) {
+        logInfo("bus_codex_check_none", { reason: "no_daemon" });
+        return null;
+      }
+      // The first ok from an asked socket wins; every "no" must arrive to give up early.
+      const first = new Promise<WebSocket | null>((resolve) => {
+        let left = waits.length;
+        for (const w of waits)
+          void w.then((ws) => {
+            if (ws) resolve(ws);
+            else if (--left === 0) resolve(null);
+          });
+      });
+      const ws = await Promise.race([first, late]);
+      if (!ws) {
+        logInfo("bus_codex_check_none", { reason: "refused_or_timeout" });
+        return null;
+      }
+      const machineId = attachmentOf(ws)?.machineId;
+      if (!machineId || isReplaced(ws) || ws.readyState !== OPEN) return null;
+      // A Codex session that never bound a proof has no identity yet; mint it
+      // here, as bindProof does at a first bind (the hub's own row, one write).
+      this.ctx.storage.sql.exec(
+        `update agents set identity_id = ? where machine_id = ? and native_ref = ?
+            and kind = 'codex' and live = 1 and org_id = ? and identity_id is null`,
+        randomHex(32),
+        machineId,
+        thread,
+        OWNER_ORG_ID,
+      );
+      const id = one<AgentIdentity>(
+        this.ctx.storage.sql,
+        `select a.identity_id as identityId, a.namespace, a.name, a.kind
+           from agents a
+          where a.machine_id = ? and a.native_ref = ? and a.kind = 'codex'
+            and a.live = 1 and a.org_id = ? and a.identity_id is not null
+            and not exists (select 1 from machines m where m.id = a.machine_id and m.revoked_at is not null)`,
+        machineId,
+        thread,
+        OWNER_ORG_ID,
+      );
+      if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
+      return id;
+    } finally {
+      clearTimeout(timer);
+      for (const id of frameIds) this.#codexPending.delete(id);
+    }
+  }
+
   /**
    * Why `hash` resolves to no session (agentByProof gave null), for the log
    * only: "unbound" (no session holds it), "closed" (its session is closed or
@@ -5672,6 +5895,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #3108: as unknown as it is to an older hub without the cap.
+    if (f.type === "codex_call_checked" && !codexCheckGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // #2552: as unknown as it is to an older hub without the cap.
     if (f.type === "update_report" && !runVersionGated(ws)) {
       reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
@@ -5743,14 +5972,17 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
-          hasCap(f, BUS_CAPS.guest)
+          hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.codexCheck)
             ? // Everything the hub always listed, plus owner_away only to a
               // daemon that listed it: an older daemon decodes at most 16
               // caps, and HUB_CAPS outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
-                    (c !== BUS_CAPS.ownerAway && c !== BUS_CAPS.guest) ||
+                    (c !== BUS_CAPS.ownerAway &&
+                      c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.codexCheck) ||
                     hasCap(f, c),
                 ),
               }
@@ -5951,6 +6183,16 @@ export class BusHub extends DurableObject<Env> {
           counts: waitingByRef(sql, machineId, f.agent_refs),
         });
         return;
+      case "codex_call_checked": {
+        // #3108: counts only for a check this very socket was asked; anything
+        // else is ignored without a reply.
+        const w = this.#codexPending.get(f.re);
+        if (w && w.ws === ws) {
+          this.#codexPending.delete(f.re);
+          w.done(f.ok);
+        }
+        return;
+      }
       case "guest_up": {
         // #2793 S3b: the name and the kind only. A row of its own, on no roster.
         const name = candidateName(f.proposed_name, { harness: true });
