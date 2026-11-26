@@ -304,6 +304,43 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect((await waitFor(s.d, "deliver")).to_ref).toBe(c.ref);
   });
 
+  it("a page both the role and its next holder follow keeps both: on the next move the role's part goes on, the holder's own stays", async () => {
+    const s = await setup();
+    const x = await artifactOf(s.m.userId);
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const c = await s.reg(uniq("c"));
+    const role = uniq("platform");
+    const t0 = Date.now() - 600_000;
+    await follow(s, b.ref, x);
+    await follow(s, a.ref, x);
+    await e.DB.batch([
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ? and agent_name = ?",
+      ).bind(t0 - 1, s.m.userId, x, b.name),
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ? and agent_name = ?",
+      ).bind(t0 + 1, s.m.userId, x, a.name),
+    ]);
+    await s.clock(t0);
+    await s.setRole(role, a.id);
+    await s.clock(t0 + 60_000);
+    await s.setRole(role, b.id);
+    expect(await listed(s, b.ref)).toEqual([x]);
+    expect(await listed(s, a.ref)).toEqual([]);
+    await s.clock(t0 + 120_000);
+    await s.setRole(role, c.id);
+    expect(await listed(s, c.ref)).toEqual([x]);
+    expect(await listed(s, b.ref)).toEqual([x]);
+    // One notice each: B for its own follow, C for the role's.
+    await notifyChanged(e, x, 2, s.m.userId, Date.now());
+    const got = [
+      (await waitFor(s.d, "deliver")).to_ref,
+      (await waitFor(s.d, "deliver")).to_ref,
+    ].sort();
+    expect(got).toEqual([b.ref, c.ref].sort());
+  });
+
   it("a session that still holds another role keeps its mail", async () => {
     const s = await setup();
     const a = await s.reg(uniq("a"));
