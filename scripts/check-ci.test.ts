@@ -1842,14 +1842,37 @@ describe("release cadence", () => {
   const job = w.jobs.cadence;
   const steps: Step[] = job.steps;
 
-  it("runs every 15 minutes, on dispatch, and after release-please and CI (no check_suite)", () => {
-    expect(w.on.schedule).toEqual([{ cron: "*/15 * * * *" }]);
+  it("runs on events only, never on a timer: after release-please and CI, on a push to main, and on dispatch (cloud #264)", () => {
+    expect("schedule" in w.on).toBe(false);
     expect(triggers(w).sort()).toEqual(
-      ["schedule", "workflow_dispatch", "workflow_run"].sort(),
+      ["push", "workflow_dispatch", "workflow_run"].sort(),
     );
+    // A queued PR landing on main may drain the queue: re-check right then.
+    expect(w.on.push).toEqual({ branches: ["main"] });
     expect(w.on.workflow_run.workflows).toEqual(["release-please", "CI"]);
     expect(w.on.workflow_run.types).toEqual(["completed"]);
     expect(w.concurrency.group).toBe("release-cadence");
+    expect(w.concurrency["cancel-in-progress"]).toBe(false);
+    // Only in the real repository, never a fork.
+    expect(job.if).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.repository == 'open-artifacts-ai/open-artifacts' }}",
+    );
+  });
+
+  it("re-runs after every workflow whose checks the release PR needs", () => {
+    // The release PR changes only package.json, CHANGELOG.md and the
+    // manifest. Every pull_request workflow either re-triggers the cadence
+    // when it completes or cannot run on those files.
+    const dir = join(root, ".github/workflows");
+    const named = new Set<string>(w.on.workflow_run.workflows);
+    const others: Record<string, unknown> = {};
+    for (const f of readdirSync(dir).filter((n) => /\.ya?ml$/.test(n))) {
+      const x = wf(f);
+      if (!x.on || !("pull_request" in x.on) || named.has(x.name)) continue;
+      others[f] = x.on.pull_request?.paths;
+    }
+    expect(others).toEqual({ "landing-preview.yml": ["apps/landing/**"] });
   });
 
   it("checks out the default branch only, without persisting credentials", () => {

@@ -3,10 +3,17 @@ name: release-cadence
 # keeps one `blocker` issue open while a release is stuck. A manual cut still works:
 # arm the release PR yourself at any time.
 on:
-  # The retry loop: every 15 minutes (also covers the daily 15:00 pass), plus right
-  # after CI and release-please finish. (check_suite does not fire for Actions suites.)
-  schedule:
-    - cron: "*/15 * * * *"
+  # Events only, no timer (cloud #264). Every change that can make the release PR
+  # armable is an event here:
+  # - CI completing: the release PR's own checks (CI is the only workflow it
+  #   needs), and each merge-group run, so the queue draining and the 30-minute
+  #   drain cap are both re-checked as queued PRs move.
+  # - push to main: a queued PR merged, so the queue may have just drained.
+  # - release-please completing: the release PR was opened or got a new head,
+  #   or a release shipped (closes a stale blocker).
+  # (check_suite does not fire for Actions suites, so workflow_run stands in.)
+  push:
+    branches: [main]
   workflow_dispatch:
   workflow_run:
     workflows: [release-please, CI]
@@ -17,6 +24,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   cadence:
+    # The real repository only: a fork's push to its own main does nothing.
+    if: ${{ github.repository == 'open-artifacts-ai/open-artifacts' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
