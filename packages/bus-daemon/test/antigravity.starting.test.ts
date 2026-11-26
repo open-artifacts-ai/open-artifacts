@@ -791,6 +791,11 @@ describe("the process reads (agy S2b)", () => {
       home: busHome({}),
       pinned: true,
     });
+    // The same literal bus-cli's antigravity-plugin test pins agyHookCommand
+    // to, so this copy can't drift from what install writes.
+    expect(pinnedHook("/tmp/it's here/.oa-bus")).toBe(
+      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; f="$OA_BUS_HOME/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
+    );
     expect(parseAgyPluginHome("{}")).toBeNull();
     expect(parseAgyPluginHome("not json")).toBeNull();
     expect(parseAgyPluginHome(hooks("echo something-else"))).toBeNull();

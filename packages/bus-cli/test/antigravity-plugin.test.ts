@@ -153,12 +153,59 @@ describe("the oa-bus agy plugin (agy S2)", () => {
       pinned: false,
     });
     expect(checkAdapters(deps).antigravity).toBe("missing");
+    // The bus's argv unknown (doctor without it): still stale, not current.
+    const argvUnknown = { ...deps, busBin: undefined };
+    expect(checkAdapters(argvUnknown).antigravity).toBe("missing");
     await installAdapters(deps);
     expect(parseAgyPluginHome(read(join(dir, "hooks.json")))).toEqual({
       home: join(h, ".oa-bus"),
       pinned: true,
     });
     expect(checkAdapters(deps).antigravity).toBe("configured");
+    expect(checkAdapters(argvUnknown).antigravity).toBe("configured");
+  });
+
+  it("default install, agy started with OA_BUS_HOME=alt: its oa_bus tools read the home its hook joined (agy S2b)", async () => {
+    const { h, deps, dir } = setup();
+    await installAdapters(deps);
+    const alt = join(h, ".oa-bus-alt");
+    // The agy process's own environment, which the hook and its MCP servers inherit.
+    const agyEnv = { PATH: "/usr/bin:/bin", HOME: h, OA_BUS_HOME: alt };
+    const cmd = hooksOf(dir)["oa-bus"].SessionStart[0].command as string;
+    const joined = execFileSync(
+      "/bin/sh",
+      ["-c", cmd.replace(/exec '.*'; fi$/, "printenv OA_BUS_HOME; fi")],
+      { encoding: "utf8", env: agyEnv },
+    ).trim();
+    expect(joined).toBe(join(h, ".oa-bus"));
+    // agy starts the stdio server with its env, the entry's env on top.
+    const entry = JSON.parse(read(join(h, ".gemini/config/mcp_config.json")))
+      .mcpServers.oa_bus;
+    const serverHome = busHome({ ...agyEnv, ...entry.env });
+    expect(serverHome).toBe(joined);
+    // What agy-hello records there is what the server reads.
+    mkdirSync(join(joined, "antigravity"), { recursive: true });
+    writeFileSync(
+      join(joined, "antigravity", `${process.pid}.json`),
+      JSON.stringify({
+        pid: process.pid,
+        procStart: "t0",
+        conversationId: REF,
+        cwd: "/w",
+      }),
+    );
+    expect(readAgyConversation(serverHome, process.pid)?.conversationId).toBe(
+      REF,
+    );
+    expect(readAgyConversation(alt, process.pid)).toBeUndefined();
+  });
+
+  it("the hook text is the one the daemon's launch-and-join matrix runs", () => {
+    // packages/bus-daemon/test/antigravity.starting.test.ts copies this shape
+    // (pinnedHook); a change here must change it there.
+    expect(agyHookCommand(["/bin/oa-bus"], "/tmp/it's here/.oa-bus")).toBe(
+      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; f="$OA_BUS_HOME/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
+    );
   });
 
   it("the hook's shell runs agy-hello only when the conversation is not the one recorded", () => {

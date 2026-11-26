@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseAgyPluginHome } from "@oa/bus-daemon";
 
 /** The plugin's folder name, which agy also keys its on/off switch by. */
 export const AGY_PLUGIN_NAME = "oa-bus";
@@ -153,8 +154,9 @@ export function agyPluginState(
   if (!present(dir)) return "absent";
   if (!isDir(dir) || !present(join(dir, AGY_PLUGIN_MARKER))) return "foreign";
   if (files === undefined)
-    // The bus's argv unknown: only that the hook runs `agy-hello`.
-    return /agy-hello/.test(readOr(join(dir, "hooks.json")) ?? "")
+    // The bus's argv unknown: only that the hook runs `agy-hello`, pinned to
+    // a home (an earlier build's unpinned hook is stale, agy S2b).
+    return parseAgyPluginHome(readOr(join(dir, "hooks.json")) ?? "")?.pinned
       ? "current"
       : "stale";
   return Object.entries(files).every(

@@ -1061,7 +1061,9 @@ const install: Record<Harness, Step> = {
     const p = paths(deps);
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
-    const home = movedHome(deps);
+    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+    // read the conversation file the hook wrote, whatever agy's own env says.
+    const home = agyHookHome(deps);
     const next = upsertAgyMcp(text, NAME, server, home);
     target(p.agyMcp);
     const record = readRecord(p.record);
@@ -1465,7 +1467,7 @@ export function checkAdapters(
         agyEntryIs(
           parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
           deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-          movedHome(deps),
+          agyHookHome(deps),
         ) &&
         // agy S2: and the plugin whose hook joins each conversation.
         agyPluginState(
