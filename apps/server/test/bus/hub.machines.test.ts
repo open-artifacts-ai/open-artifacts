@@ -78,6 +78,7 @@ const mirror = (h: BusHubStub) =>
 const RPC_ALLOWLIST = [
   "agentByProof",
   "closeAll",
+  "codexCallCheck",
   "decideLinkProposal",
   "decideReachProposal",
   "decideRoleProposal",
