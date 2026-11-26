@@ -103,16 +103,21 @@ const cookieVal = (r: Response, name: string) =>
 
 // One signing key per test isolate: the verifier caches Microsoft's JWKS at
 // module scope (as in production).
-let signing:
-  | Promise<{ kp: CryptoKeyPair; jwk: Record<string, unknown> }>
-  | undefined;
+// Plus one RS384 and one PS256 pair, published with a matching JWK alg.
+const OTHER_ALGS = ["RS384", "PS256"] as const;
+type Pair = { kp: CryptoKeyPair; jwk: Record<string, unknown> };
+let signing: Promise<Pair & { others: Record<string, Pair> }> | undefined;
+const pair = async (alg: string, kid: string): Promise<Pair> => {
+  const kp = await generateKeyPair(alg, { extractable: true });
+  return { kp, jwk: { ...(await exportJWK(kp.publicKey)), kid, alg } };
+};
 const signingKey = () =>
   (signing ??= (async () => {
-    const kp = await generateKeyPair("RS256", { extractable: true });
-    return {
-      kp,
-      jwk: { ...(await exportJWK(kp.publicKey)), kid: "m1", alg: "RS256" },
-    };
+    const main = await pair("RS256", "m1");
+    const others: Record<string, Pair> = {};
+    for (const alg of OTHER_ALGS)
+      others[alg] = await pair(alg, `m-pair-${alg}`);
+    return { ...main, others };
   })());
 
 type CodeEntry = {
@@ -120,10 +125,11 @@ type CodeEntry = {
   claims: Record<string, unknown>;
   key?: CryptoKey;
   kid?: string;
+  alg?: string;
 };
 
 async function fakeMicrosoft() {
-  const { kp, jwk } = await signingKey();
+  const { kp, jwk, others } = await signingKey();
   const codes = new Map<string, CodeEntry>();
   const tokenCalls: URLSearchParams[] = [];
   let tokenStatus = 200;
@@ -168,6 +174,10 @@ async function fakeMicrosoft() {
               kid,
               ...over,
             })),
+            ...Object.values(others).map((o) => ({
+              ...o.jwk,
+              issuer: TPL_ISSUER,
+            })),
           ],
         });
       if (req.url === MICROSOFT_TOKEN_URL && req.method === "POST") {
@@ -193,6 +203,7 @@ async function fakeMicrosoft() {
           id_token: await mint(entry.claims, {
             key: entry.key,
             kid: entry.kid,
+            alg: entry.alg,
           }),
           access_token: "ms-access-token-secret",
           token_type: "Bearer",
@@ -208,14 +219,16 @@ async function fakeMicrosoft() {
       challenge: string,
       key?: CryptoKey,
       kid?: string,
+      alg?: string,
     ): string {
       const code = `ms-code-${crypto.randomUUID()}`;
-      codes.set(code, { challenge, claims, key, kid });
+      codes.set(code, { challenge, claims, key, kid, alg });
       return code;
     },
     setTokenStatus(s: number) {
       tokenStatus = s;
     },
+    others,
     restore: () => spy.mockRestore(),
   };
 }
@@ -410,6 +423,25 @@ describe("microsoft provider (self-hosted)", () => {
         b.challenge,
         undefined,
         kid,
+      );
+      await expect(
+        handleCallback(e, microsoftProvider, callbackReq(b, code)),
+      ).rejects.toMatchObject({ code: "unauthorized" });
+    }
+  });
+
+  it("only RS256: a matching RS384 or PS256 key and token pair is refused", async () => {
+    const e = msEnv();
+    for (const alg of OTHER_ALGS) {
+      const o = ms.others[alg];
+      if (!o) throw new Error(alg);
+      const b = await begin(e);
+      const code = ms.issueCode(
+        { nonce: b.nonce },
+        b.challenge,
+        o.kp.privateKey,
+        o.jwk.kid as string,
+        alg,
       );
       await expect(
         handleCallback(e, microsoftProvider, callbackReq(b, code)),

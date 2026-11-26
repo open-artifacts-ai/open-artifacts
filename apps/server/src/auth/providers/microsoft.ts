@@ -38,15 +38,9 @@ const CLOCK_TOLERANCE_S = 60;
 const MAX_NAME = 200;
 const TID_GUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-// Asymmetric RSA signatures only: never "none" or HS*.
-const RSA_SIG_ALGS = new Set([
-  "RS256",
-  "RS384",
-  "RS512",
-  "PS256",
-  "PS384",
-  "PS512",
-]);
+// Microsoft's common discovery lists only RS256 for ID tokens: the header
+// alg and any JWK alg must be RS256 (never "none", HS*, other RS*/PS*).
+const ID_TOKEN_ALG = "RS256";
 const JWKS_TTL_MS = 60 * 60 * 1000;
 const JWKS_REFETCH_COOLDOWN_MS = 30 * 1000;
 
@@ -189,12 +183,11 @@ export const microsoftProvider: OidcProvider = {
     if (typeof kid !== "string" || !kid) return fail("jwt_verify");
     const jwk = await signingJwk(kid);
     if (!jwk) return fail("jwt_verify");
-    // The key's own signing constraints: its alg (else RS256), use, key_ops.
-    const keyAlg = jwk.alg ?? "RS256";
+    // The key's own signing constraints (alg, use, key_ops), RS256 pinned.
     if (
       jwk.kty !== "RSA" ||
-      !RSA_SIG_ALGS.has(keyAlg) ||
-      alg !== keyAlg ||
+      alg !== ID_TOKEN_ALG ||
+      (jwk.alg !== undefined && jwk.alg !== ID_TOKEN_ALG) ||
       (jwk.use !== undefined && jwk.use !== "sig") ||
       (jwk.key_ops !== undefined &&
         !(Array.isArray(jwk.key_ops) && jwk.key_ops.includes("verify")))
@@ -203,9 +196,9 @@ export const microsoftProvider: OidcProvider = {
 
     let claims: JWTPayload & Record<string, unknown>;
     try {
-      const key = await importJWK(jwk, keyAlg);
+      const key = await importJWK(jwk, ID_TOKEN_ALG);
       ({ payload: claims } = await jwtVerify(idToken, key, {
-        algorithms: [keyAlg],
+        algorithms: [ID_TOKEN_ALG],
         audience: m.clientId,
         clockTolerance: CLOCK_TOLERANCE_S,
         requiredClaims: ["iss", "exp", "nonce", "tid", "oid"],
