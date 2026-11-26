@@ -18,6 +18,7 @@ import {
   member,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const CAP = [BUS_CAPS.runVersion];
 const CORE = "0.1.0";
@@ -56,7 +57,7 @@ async function setup(n: number) {
     const pongs = () => d.raw.filter((t) => t === PONG).length;
     const n = pongs();
     d.ws.send(PING);
-    await vi.waitFor(() => expect(pongs()).toBeGreaterThan(n));
+    await eventually(() => expect(pongs()).toBeGreaterThan(n));
     // The hello's own answer is the first run_version frame.
     return framesSeen(d).filter((f) => f.type === "run_version").length - 1;
   };

@@ -124,8 +124,6 @@ const PRODUCTS: Record<string, string> = {
   omp: "omp",
   hermes: "Hermes",
   openclaw: "OpenClaw",
-  // agy S6: the Antigravity CLI. A plain string key, so this is safe before the
-  // protocol names the kind (agy S1a).
   antigravity: "Antigravity",
 };
 

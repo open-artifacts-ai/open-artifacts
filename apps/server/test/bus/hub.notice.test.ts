@@ -34,6 +34,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 /** A hello from a daemon that lists BUS_CAPS.follow (v0.139.0+), the notice gate. */
 const hello = (hid: string) =>
@@ -135,7 +136,7 @@ async function goOffline(
 ): Promise<void> {
   d.close();
   await d.closed;
-  await vi.waitFor(
+  await eventually(
     async () =>
       expect(
         await inHub(
@@ -650,7 +651,7 @@ describe("a socket that refuses the frame (#1752)", () => {
     await breakSockets(s.userId);
     d2.send(up(id("u"), s.ref, s.name, s.namespace));
     // The agent is live again once its agent_up was handled, flush included.
-    await vi.waitFor(
+    await eventually(
       async () =>
         expect(
           await inHub(
@@ -1225,7 +1226,7 @@ describe("a notice to a role address (#1752)", () => {
       type: "agent_down",
       agent_ref: yRef,
     } as never);
-    await vi.waitFor(async () => {
+    await eventually(async () => {
       const live = await inHub(
         m.userId,
         (_i, st) =>
