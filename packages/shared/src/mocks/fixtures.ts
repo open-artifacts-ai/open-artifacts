@@ -429,7 +429,7 @@ export const fixtures: {
       namespace: "notes",
       name: "pi-2",
       kind: "pi",
-      product: "Pi",
+      product: "pi",
       machineId: "BmB2nPqRsTu4vWxY",
       machineLabel: "home-desktop",
       global: false,

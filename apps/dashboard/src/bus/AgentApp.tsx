@@ -1,11 +1,11 @@
 // agy S6: the app an agent runs (Claude Code, Codex, Antigravity...), with its
 // mark from @oa/ui, the same one the landing page shows. A kind the server
-// doesn't know shows its own token with the neutral mark.
+// doesn't know shows its own token with a tile of its first letter.
 import { agentMark, agentMarkUrl } from "@oa/ui/agent-marks";
 import { cn } from "@oa/ui/shadcn";
 
 /** A hub-supplied token, shown as text: control characters dropped, at most 32. */
-const tidyToken = (kind: string): string =>
+export const tidyToken = (kind: string): string =>
   [...kind]
     .filter((c) => {
       const n = c.codePointAt(0) ?? 0;
@@ -19,17 +19,23 @@ const tidyToken = (kind: string): string =>
 export const appName = (a: { kind: string; product?: string }): string =>
   a.product ?? (tidyToken(a.kind) || "Agent");
 
-/** The mark, named for screen readers: an image with alt, or a mono mask with aria-label. */
+/**
+ * The mark, named for screen readers: an image with alt, or a mono mask with
+ * aria-label. Without a product of its own, a tile of the kind's first letter.
+ */
 export function AppMark({
   product,
+  kind,
   name,
   className,
 }: {
   product: string | undefined;
+  /** The hub kind token, for the letter tile when the app has no mark. */
+  kind?: string;
   name: string;
   className?: string;
 }) {
-  const m = agentMark(product);
+  const m = agentMark(product, kind);
   const box = cn("inline-block size-[16px] flex-none align-[-3px]", className);
   if ("png" in m)
     return (
@@ -68,7 +74,7 @@ export function AgentApp({ a }: { a: { kind: string; product?: string } }) {
   const name = appName(a);
   return (
     <span className="inline-flex min-w-0 items-center gap-[6px]">
-      <AppMark product={a.product} name={name} />
+      <AppMark product={a.product} kind={a.kind} name={name} />
       <span className="truncate" aria-hidden="true">
         {name}
       </span>

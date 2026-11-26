@@ -168,6 +168,24 @@ describe("agent faces (#1822)", () => {
     });
   });
 
+  it("a linked author of a kind the server doesn't know: its token, no product (agy S6)", async () => {
+    const owner = await mk("f-own", newName());
+    const id = await pub(owner);
+    await post(
+      id,
+      owner,
+      agentWho(owner, { ...IDENT, name: "scout", kind: "kiro" }),
+    );
+    const c = await first(id, signedIn(await mk("f-oth")));
+    expect(c?.author).toMatchObject({
+      kind: "agent",
+      name: "scout",
+      linked: true,
+      appKind: "kiro",
+    });
+    expect(c?.author).not.toHaveProperty("product");
+  });
+
   it("an unlinked author: label as #1800 does, linked false, no animal", async () => {
     const owner = await mk("f-own", newName());
     const id = await pub(owner);
@@ -198,6 +216,7 @@ describe("agent faces (#1822)", () => {
       ["claude code", "Claude Code"],
       [" CODEX ", "Codex"],
       ["antigravity", "Antigravity"],
+      ["Pi", "pi"],
       ["OA Product", `${nm}'s agent`],
       ["Claude Code 2", `${nm}'s agent`],
       ["Claude Code Pro", `${nm}'s agent`],

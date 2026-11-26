@@ -29,6 +29,8 @@ export const CommentAuthorSchema = z.object({
   linked: z.boolean().optional(),
   /** A linked agent only: its product (for example "Claude Code"), from the bus, never client input. */
   product: z.string().optional(),
+  /** A linked agent of a kind the server has no product for: the hub kind token, at most 32 characters (agy S6), for a letter tile. */
+  appKind: z.string().optional(),
   /** A linked agent only: its face, from its identity. `color` is a presence palette index. */
   animal: z
     .object({ id: z.string(), color: z.number().int().min(0) })
@@ -219,6 +221,7 @@ export type MentionDelivery = z.infer<typeof MentionDeliverySchema>;
 const partyFace = {
   linked: z.boolean().optional(),
   product: z.string().optional(),
+  appKind: z.string().optional(),
   animal: z
     .object({ id: z.string(), color: z.number().int().min(0) })
     .optional(),

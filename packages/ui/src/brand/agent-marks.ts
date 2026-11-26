@@ -3,7 +3,8 @@
 // (or Hermes's own PNG, inline); nothing loads from outside the page.
 // `mono` marks draw in the text colour (currentColor), so they read in light
 // and dark; the others carry their own colours. Antigravity's mark is our own
-// glyph (a chevron lifting off a dot), not Google's logo.
+// glyph (a chevron lifting off a dot), not Google's logo; oh-my-pi's is our own
+// "omp" tile. A kind with no mark of its own gets a tile with its first letter.
 
 export type SvgMark = {
   viewBox: string;
@@ -13,7 +14,7 @@ export type SvgMark = {
   crisp?: true;
   /** Drawn in the text colour. */
   mono: boolean;
-  /** The SVG's inner markup: constant, never user data. */
+  /** The SVG's inner markup: constant, never user data (a letter tile's letter is A-Z or 0-9). */
   body: string;
 };
 export type PngMark = { png: string };
@@ -42,7 +43,7 @@ export const AGENT_MARKS = {
     mono: true,
     body: '<path d="M22 24H2V0h20zM17 4.8H7v14.4h10z"/>',
   },
-  Pi: {
+  pi: {
     viewBox: "0 0 4 4",
     crisp: true,
     mono: false,
@@ -67,7 +68,13 @@ export const AGENT_MARKS = {
     mono: true,
     body: '<path d="M12 1.5l9.5 9.5-3.2 3.2L12 7.9l-6.3 6.3-3.2-3.2z"/><circle cx="12" cy="19.5" r="3"/>',
   },
-  /** Any other agent: a plain tile, in the text colour. */
+  /** Our own tile: "omp" knocked out of a filled square, in the text colour. */
+  "oh-my-pi": {
+    viewBox: "0 0 24 24",
+    mono: true,
+    body: '<mask id="omp"><rect width="24" height="24" fill="#fff"/><text x="12" y="15.6" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="-0.6" fill="#000">omp</text></mask><rect x="1" y="1" width="22" height="22" rx="5" mask="url(#omp)"/>',
+  },
+  /** An agent with no name at all: a plain tile, in the text colour. */
   Agent: {
     viewBox: "0 0 24 24",
     mono: true,
@@ -77,13 +84,37 @@ export const AGENT_MARKS = {
 
 export type AgentMarkName = keyof typeof AGENT_MARKS;
 
-/** The mark for an app name; the neutral mark for one without its own. */
-export const agentMark = (product: string | undefined): AgentMark =>
-  product !== undefined && Object.hasOwn(AGENT_MARKS, product)
-    ? AGENT_MARKS[product as AgentMarkName]
-    : AGENT_MARKS.Agent;
+/** The first letter or digit of a kind token, upper case; null when it has none. */
+const firstLetter = (kind: string | undefined): string | null =>
+  /[A-Za-z0-9]/.exec(kind ?? "")?.[0]?.toUpperCase() ?? null;
 
-/** Whether the mark has its own mark (not the neutral one). */
+/** A kind with no mark of its own: an outlined tile with its first letter, in the text colour. */
+export const letterMark = (letter: string): SvgMark => ({
+  viewBox: "0 0 24 24",
+  mono: true,
+  body: `<rect x="2" y="2" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><text x="12" y="16.4" text-anchor="middle" font-family="system-ui,-apple-system,Segoe UI,Roboto,sans-serif" font-size="12.5" font-weight="700">${/^[A-Z0-9]$/.test(letter) ? letter : "?"}</text>`,
+});
+
+/**
+ * The mark for an app name. An app without its own mark gets a letter tile
+ * from its hub kind token (`kind`), and the plain tile when the token has no
+ * letter or digit.
+ */
+export const agentMark = (
+  product: string | undefined,
+  kind?: string,
+): AgentMark => {
+  if (
+    product !== undefined &&
+    product !== "Agent" &&
+    Object.hasOwn(AGENT_MARKS, product)
+  )
+    return AGENT_MARKS[product as AgentMarkName];
+  const letter = firstLetter(kind);
+  return letter ? letterMark(letter) : AGENT_MARKS.Agent;
+};
+
+/** Whether the app has its own mark (not a letter tile or the plain one). */
 export const hasOwnMark = (product: string | undefined): boolean =>
   product !== undefined &&
   product !== "Agent" &&
@@ -91,7 +122,7 @@ export const hasOwnMark = (product: string | undefined): boolean =>
 
 /** A standalone SVG document for a mark, in `color` where it is mono. */
 export const agentMarkSvg = (m: SvgMark, color = "#000"): string =>
-  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${m.viewBox}"${m.crisp ? ' shape-rendering="crispEdges"' : ""} fill="${m.fill ?? color}">${m.body}</svg>`;
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${m.viewBox}"${m.crisp ? ' shape-rendering="crispEdges"' : ""} fill="${m.fill ?? color}" color="${m.fill ?? color}">${m.body}</svg>`;
 
 /** A data: URL for a mark, for an <img> or a CSS mask. */
 export const agentMarkUrl = (m: AgentMark, color?: string): string =>

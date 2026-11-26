@@ -6,6 +6,7 @@ import {
   agentMarkSvg,
   agentMarkUrl,
   hasOwnMark,
+  letterMark,
 } from "../src/brand/agent-marks";
 
 describe("agent marks", () => {
@@ -14,7 +15,8 @@ describe("agent marks", () => {
       "Claude Code",
       "Codex",
       "OpenCode",
-      "Pi",
+      "pi",
+      "oh-my-pi",
       "Hermes",
       "OpenClaw",
       "Antigravity",
@@ -22,10 +24,30 @@ describe("agent marks", () => {
       expect(hasOwnMark(p), p).toBe(true);
       expect(agentMark(p)).toBe(AGENT_MARKS[p as keyof typeof AGENT_MARKS]);
     }
-    for (const p of [undefined, "kiro", "oh-my-pi", "toString", "Agent"]) {
+    for (const p of [undefined, "kiro", "Pi", "toString", "Agent"]) {
       expect(hasOwnMark(p), String(p)).toBe(false);
       expect(agentMark(p)).toBe(AGENT_MARKS.Agent);
     }
+  });
+
+  it("an unknown kind gets a tile with its first letter; oh-my-pi has its own (agy S6)", () => {
+    expect(agentMark(undefined, "kiro")).toEqual(letterMark("K"));
+    expect(agentMark(undefined, "-9lives")).toEqual(letterMark("9"));
+    expect(agentMark(undefined, "émoji ✨ zed")).toEqual(letterMark("M"));
+    expect(agentMark(undefined, "<>")).toBe(AGENT_MARKS.Agent);
+    expect(agentMark(undefined, "")).toBe(AGENT_MARKS.Agent);
+    // A known product wins over the kind.
+    expect(agentMark("Codex", "codex")).toBe(AGENT_MARKS.Codex);
+    const k = agentMarkSvg(letterMark("K"), "#123456");
+    expect(k).toContain(">K</text>");
+    expect(k).toContain('color="#123456"');
+    // A letter tile never draws anything but one A-Z or 0-9.
+    expect(letterMark("<b>").body).toContain(">?</text>");
+    // oh-my-pi's tile is not the plain tile, nor a letter tile.
+    const omp = AGENT_MARKS["oh-my-pi"];
+    expect(omp.body).toContain(">omp</text>");
+    expect(omp).not.toEqual(AGENT_MARKS.Agent);
+    expect(omp).not.toEqual(letterMark("O"));
   });
 
   it("text-colour marks are mono; colour marks keep their own colours", () => {
@@ -33,7 +55,14 @@ describe("agent marks", () => {
       .filter(([, m]) => "mono" in m && m.mono)
       .map(([n]) => n);
     expect(mono.sort()).toEqual(
-      ["Agent", "Antigravity", "Codex", "Cursor", "OpenCode"].sort(),
+      [
+        "Agent",
+        "Antigravity",
+        "Codex",
+        "Cursor",
+        "OpenCode",
+        "oh-my-pi",
+      ].sort(),
     );
     expect(agentMarkSvg(AGENT_MARKS["Claude Code"])).toContain(
       'fill="#D97757"',

@@ -17,7 +17,7 @@ You can set `OA_BUS_INSTANCE` instead of passing `--instance`. Once a machine is
 The install does four things, in order:
 
 1. **Approves this machine.** It opens your browser to your instance. It also prints a short code. Type the code on the approval page and approve. If no browser opens, open the printed URL on any machine. The code expires if you wait too long. Run the install again for a new one. Add `--no-open` to skip opening the browser.
-2. **Sets up your agent tools.** It adds the bus to each of these it finds: Claude Code, Codex, OpenCode, Pi, oh-my-pi, Hermes, and OpenClaw. It also writes the bus skill next to each one. It skips any tool that is not installed.
+2. **Sets up your agent tools.** It adds the bus to each of these it finds: Claude Code, Codex, OpenCode, pi, oh-my-pi, Hermes, and OpenClaw. It also writes the bus skill next to each one. It skips any tool that is not installed.
 3. **Starts the bus in the background.** This is a small service (launchd on macOS, systemd on Linux) that keeps your agents connected after a reboot.
 4. **Asks about habits.** It shows a few short lines it can add to your agents' instruction files, so sessions on the bus message each other well. Nothing is written until you say yes. If an agent ran the install, it asks you instead. `--habits` says yes, and `--no-habits` says no.
 

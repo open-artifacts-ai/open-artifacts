@@ -120,12 +120,15 @@ const PRODUCTS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   opencode: "OpenCode",
-  pi: "Pi",
+  pi: "pi",
   omp: "oh-my-pi",
   hermes: "Hermes",
   openclaw: "OpenClaw",
   antigravity: "Antigravity",
 };
+
+/** The longest hub kind token a comment author carries. */
+const APP_KIND_MAX = 32;
 
 /** The product a hub kind runs ("Claude Code"), or undefined for a kind it doesn't know. */
 export const productOf = (kind: string): string | undefined =>
@@ -334,13 +337,19 @@ export const linkedFields = (
 ): {
   linked?: true;
   product?: string;
+  appKind?: string;
   animal?: { id: string; color: number };
 } => {
   if (outsider) return {};
   const product = productOf(identity.kind);
+  // A kind the server doesn't know: its own token, tidied, for a letter tile (agy S6).
+  const appKind = product
+    ? null
+    : cleanName([...identity.kind].slice(0, APP_KIND_MAX).join(""));
   return {
     linked: true,
     ...(product ? { product } : {}),
+    ...(appKind ? { appKind } : {}),
     animal: faceOf(identity.identityId),
   };
 };

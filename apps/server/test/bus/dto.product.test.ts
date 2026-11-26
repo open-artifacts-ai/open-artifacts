@@ -23,7 +23,7 @@ describe("agent list app (agy S6)", () => {
     ["claude-code", "Claude Code"],
     ["codex", "Codex"],
     ["opencode", "OpenCode"],
-    ["pi", "Pi"],
+    ["pi", "pi"],
     ["omp", "oh-my-pi"],
     ["hermes", "Hermes"],
     ["openclaw", "OpenClaw"],

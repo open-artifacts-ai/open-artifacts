@@ -795,8 +795,10 @@ describe("Agents › Agents (the roster)", () => {
       .slice(1);
     expect(rows).toHaveLength(A.length);
     const m = agentNamed("oa-manager");
+    // The app shows twice in the DOM: under the name (narrow) and in the App
+    // column (wide); a container query shows one (agent-apps-shots.spec.ts).
     expect(rows[0]).toHaveTextContent(
-      `${m.name} · open-artifactsClaude CodeLive${m.statusLabel}${m.machineLabel}`,
+      `${m.name} · open-artifactsClaude CodeClaude CodeLive${m.statusLabel}${m.machineLabel}`,
     );
     expect(
       screen.getByText("Live agents receive at once.", { exact: false }),
@@ -809,7 +811,7 @@ describe("Agents › Agents (the roster)", () => {
       ["claude-code", "Claude Code"],
       ["codex", "Codex"],
       ["opencode", "OpenCode"],
-      ["pi", "Pi"],
+      ["pi", "pi"],
       ["omp", "oh-my-pi"],
       ["hermes", "Hermes"],
       ["openclaw", "OpenClaw"],
@@ -839,19 +841,34 @@ describe("Agents › Agents (the roster)", () => {
     kinds.forEach(([kind, product], i) => {
       const row = rows[i] as HTMLElement;
       const app = product ?? kind;
+      // Narrow, the app sits under the name; wide, in the App column. Same mark.
+      const [nameCell, appCell] = within(row).getAllByRole("cell");
+      expect(
+        within(nameCell as HTMLElement).getByRole("img", { name: app }),
+      ).toBeInTheDocument();
       // The mark carries the app's name; the visible word repeats it.
-      expect(within(row).getByRole("img", { name: app })).toBeInTheDocument();
+      expect(
+        within(appCell as HTMLElement).getByRole("img", { name: app }),
+      ).toBeInTheDocument();
       expect(row).toHaveTextContent(`agent-${kind}`);
       expect(row).toHaveTextContent(app);
     });
     // Colour marks are images; text-colour marks are masks in currentColor.
-    const img = (name: string) => within(t).getByRole("img", { name });
+    const img = (name: string) =>
+      within(t).getAllByRole("img", { name })[0] as HTMLElement;
     expect(img("Claude Code").tagName).toBe("IMG");
     expect(img("Hermes").getAttribute("src")).toMatch(
       /^data:image\/png;base64,/,
     );
     for (const n of ["Codex", "OpenCode", "Antigravity", "kiro", "oh-my-pi"])
       expect(img(n).tagName, n).toBe("SPAN");
+    // A kind with no mark of its own: a tile of its first letter, not the plain tile.
+    expect(img("kiro").style.maskImage).toContain(
+      encodeURIComponent(">K</text>"),
+    );
+    expect(img("oh-my-pi").style.maskImage).toContain(
+      encodeURIComponent(">omp</text>"),
+    );
     // Nothing loads from outside the page.
     for (const el of within(t).getAllByRole("img"))
       expect(el.getAttribute("src") ?? "data:").toMatch(/^data:/);
