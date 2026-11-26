@@ -43,6 +43,10 @@ export const SECRET_NAMES: readonly string[] = [
   "auth.json",
   "token",
   "*.token",
+  "*.p8",
+  "service-account*.json",
+  "*-pat-token",
+  ".htpasswd",
 ];
 
 /** Directory segments (case-insensitive; slash-separated for adjacent pairs) treated as sensitive. */
@@ -77,11 +81,13 @@ export type PathCheck =
 
 const ENV_ALLOWED = new Set([".env.example", ".env.sample", ".env.template"]);
 
-const HOME_SECRET_PATHS = new Set([
-  ".claude/.credentials.json",
-  ".codex/auth.json",
-  ".pi/agent/auth.json",
-]);
+/** Under the home folder: these files, and everything in these folders (harness and bus credentials). */
+export const HOME_SECRET_FILES: readonly string[] = [".pi/agent/auth.json"];
+export const HOME_SECRET_DIRS: readonly string[] = [
+  ".claude",
+  ".codex",
+  ".open-artifacts",
+];
 
 function globToRegex(pattern: string): RegExp {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
@@ -155,15 +161,9 @@ export function isSecretPath(realPath: string): boolean {
   }
 
   for (const rel of homeRelativePaths(normalized)) {
-    if (HOME_SECRET_PATHS.has(rel)) return true;
-    if (
-      rel.startsWith(".claude/") &&
-      (base === "settings.json" ||
-        base.startsWith("settings.") ||
-        base.includes("credentials"))
-    ) {
+    if (HOME_SECRET_FILES.includes(rel)) return true;
+    if (HOME_SECRET_DIRS.some((d) => rel === d || rel.startsWith(`${d}/`)))
       return true;
-    }
   }
 
   return false;
@@ -209,7 +209,11 @@ export async function checkPublishPath(
   try {
     realRoot = await realpath(root);
   } catch {
-    realRoot = resolve(root);
+    return {
+      ok: false,
+      code: "bad_path",
+      message: `Cannot resolve the working folder for path: ${path}`,
+    };
   }
 
   let real: string;
@@ -296,7 +300,11 @@ export async function readPublishFile(
 > {
   let fh: Awaited<ReturnType<typeof open>>;
   try {
-    fh = await open(check.real, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK: a file swapped for a FIFO must not hang the open; fstat refuses it next.
+    fh = await open(
+      check.real,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") {
@@ -329,14 +337,22 @@ export async function readPublishFile(
         message: `File exceeds the ${PUBLISH_FILE_MAX} byte limit: ${check.real}`,
       };
     }
-    const bytes = await fh.readFile();
-    if (bytes.length > PUBLISH_FILE_MAX) {
+    // Bounded: st.size is under the cap; one byte more is read only to see growth.
+    const buf = Buffer.alloc(st.size + 1);
+    let n = 0;
+    while (n < buf.length) {
+      const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
+      if (bytesRead === 0) break;
+      n += bytesRead;
+    }
+    if (n !== st.size) {
       return {
         ok: false,
-        code: "too_large",
-        message: `File exceeds the ${PUBLISH_FILE_MAX} byte limit: ${check.real}`,
+        code: "changed",
+        message: `File changed while reading: ${check.real}`,
       };
     }
+    const bytes = buf.subarray(0, n);
     return { ok: true, bytes };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

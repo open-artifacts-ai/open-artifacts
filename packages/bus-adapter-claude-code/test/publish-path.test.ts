@@ -1,4 +1,6 @@
+import { execFileSync } from "node:child_process";
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   open,
@@ -185,6 +187,13 @@ describe("checkPublishPath", () => {
     }
   });
 
+  it("refuses when the working folder cannot be resolved", async () => {
+    const root = await makeTempDir();
+    const r = await checkPublishPath("a.html", join(root, "missing"));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("bad_path");
+  });
+
   it("refuses a missing file as not_found", async () => {
     const root = await makeTempDir();
 
@@ -240,6 +249,30 @@ describe("isSecretPath", () => {
     expect(isSecretPath(join(home, ".claude", "settings.json"))).toBe(true);
     expect(isSecretPath(join(home, ".codex", "auth.json"))).toBe(true);
     expect(isSecretPath(join(home, ".pi", "agent", "auth.json"))).toBe(true);
+  });
+
+  it("flags everything under the home harness and bus credential folders", () => {
+    const home = homedir();
+    expect(isSecretPath(join(home, ".claude", "notes.md"))).toBe(true);
+    expect(isSecretPath(join(home, ".codex", "config.toml"))).toBe(true);
+    expect(
+      isSecretPath(join(home, ".open-artifacts", "laptop-pat-token")),
+    ).toBe(true);
+  });
+
+  it("does not flag a project's own .claude folder", () => {
+    expect(isSecretPath("/work/repo/.claude/agents/x.md")).toBe(false);
+  });
+
+  it("flags the extra secret names", () => {
+    for (const n of [
+      "AuthKey_X.p8",
+      "service-account-prod.json",
+      "staging-pat-token",
+      ".htpasswd",
+    ])
+      expect(isSecretPath(`/work/${n}`), n).toBe(true);
+    expect(isSecretPath("/work/page.html")).toBe(false);
   });
 
   it("does not flag non-adjacent .config and gcloud segments", () => {
@@ -304,6 +337,36 @@ describe("readPublishFile", () => {
     if (!read.ok) {
       expect(read.code).toBe("changed");
     }
+  });
+
+  it("returns changed, without hanging, when the file is swapped for a FIFO", async () => {
+    const root = await makeTempDir();
+    const file = join(root, "swap.txt");
+    await writeFile(file, "original");
+    const check = await checkPublishPath(file, root);
+    if (!check.ok) throw new Error("check failed");
+    await unlink(file);
+    execFileSync("mkfifo", [file]);
+    const read = await readPublishFile(check);
+    expect(read.ok).toBe(false);
+    if (!read.ok) expect(read.code).toBe("changed");
+  });
+
+  it("reads a file that grew after the check, and refuses one grown past the cap", async () => {
+    const root = await makeTempDir();
+    const file = join(root, "grow.txt");
+    await writeFile(file, "short");
+    const check = await checkPublishPath(file, root);
+    if (!check.ok) throw new Error("check failed");
+    await appendFile(file, " and longer");
+    const grown = await readPublishFile(check);
+    expect(grown.ok && grown.bytes.toString()).toBe("short and longer");
+    const fh = await open(file, "r+");
+    await fh.truncate(PUBLISH_FILE_MAX + 1);
+    await fh.close();
+    const big = await readPublishFile(check);
+    expect(big.ok).toBe(false);
+    if (!big.ok) expect(big.code).toBe("too_large");
   });
 
   it("returns not_found when the file is removed before reading", async () => {
