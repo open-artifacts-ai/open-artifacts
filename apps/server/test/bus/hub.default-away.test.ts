@@ -7,7 +7,7 @@ import {
   encodeFrame,
   newId,
 } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { isDefaultAgentName } from "../../src/bus/default-names.js";
 import {
   AUTHZ_AT_HEADER,
@@ -19,6 +19,7 @@ import {
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { e, trackSocket } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 type Stub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -84,6 +85,8 @@ const alarms = async (h: Stub, n: number) => {
   await inHub(h, (_, s) => s.storage.setAlarm(Date.now() + 1));
   for (let k = 0; k < n; k++) {
     await runDurableObjectAlarm(h);
+    // sleep-ok: absence — the alarm's own writes land before it resolves; this
+    // only lets the hub finish its post-alarm bookkeeping, which emits nothing
     await new Promise((r) => setTimeout(r, 2));
   }
 };
@@ -309,12 +312,13 @@ describe("agent_up name_chosen (#2311)", () => {
       namespace: "ns",
       global: false,
     });
-    for (
-      let i = 0;
-      i < 100 && types.filter((t) => t === "agent_ok").length < 2;
-      i++
-    )
-      await new Promise((r) => setTimeout(r, 20));
+    await eventually(
+      () =>
+        expect(
+          types.filter((t) => t === "agent_ok").length,
+        ).toBeGreaterThanOrEqual(2),
+      { interval: 20 },
+    );
     const flags = await inHub(h, (_, s) =>
       s.storage.sql
         .exec<{ n: string; c: number }>(
@@ -343,12 +347,13 @@ describe("agent_up name_chosen (#2311)", () => {
       proposed_name: "Title B",
       name_chosen: false,
     });
-    for (
-      let i = 0;
-      i < 100 && types.filter((t) => t === "renamed").length < 2;
-      i++
-    )
-      await new Promise((r) => setTimeout(r, 20));
+    await eventually(
+      () =>
+        expect(
+          types.filter((t) => t === "renamed").length,
+        ).toBeGreaterThanOrEqual(2),
+      { interval: 20 },
+    );
     const flagsNow = () =>
       inHub(h, (_, s) =>
         s.storage.sql
@@ -368,12 +373,13 @@ describe("agent_up name_chosen (#2311)", () => {
       agent_ref: "ref_d",
       proposed_name: "Chosen B",
     });
-    for (
-      let i = 0;
-      i < 100 && types.filter((t) => t === "renamed").length < 3;
-      i++
-    )
-      await new Promise((r) => setTimeout(r, 20));
+    await eventually(
+      () =>
+        expect(
+          types.filter((t) => t === "renamed").length,
+        ).toBeGreaterThanOrEqual(3),
+      { interval: 20 },
+    );
     expect((await flagsNow()).find((x) => x.n === "ref_d")?.c).toBe(1);
   });
 });

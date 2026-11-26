@@ -26,6 +26,7 @@ import {
   waitFor,
   workerFetch,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const seen: (string | null)[] = [];
 
@@ -115,7 +116,7 @@ describe("/mcp entry points ask the credential owner's hub (#1822)", () => {
     const r = await callWorker(mcpReq(pat.token, proof), ev);
     expect(r.status).toBe(200);
     // The lookup may start after the answer (it is bounded, not cancelled).
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
     expect(seen).toEqual([null]);
@@ -136,7 +137,7 @@ describe("/mcp entry points ask the credential owner's hub (#1822)", () => {
     const r = await callWorker(mcpReq(accessToken, proof), ev);
     expect(r.status).toBe(200);
     // The lookup may start after the answer (it is bounded, not cancelled).
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
     expect(seen).toEqual([null]);
@@ -226,7 +227,7 @@ function spyResolve() {
   // The lookup runs after a D1 read and is not cancelled when the bound fires,
   // so it can start after the call has answered: wait for the ask itself.
   const settled = (n: number) =>
-    vi.waitFor(() => expect(hashes.length).toBeGreaterThanOrEqual(n), {
+    eventually(() => expect(hashes.length).toBeGreaterThanOrEqual(n), {
       timeout: 5000,
     });
   return { asked, hashes, settled, ev: E({ BUS_HUB }) };
@@ -483,7 +484,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
         ev as never,
       );
       expect(r.status).toBe(200);
-      await vi.waitFor(() => expect(hubCalls).toBe(1), { timeout: 5000 });
+      await eventually(() => expect(hubCalls).toBe(1), { timeout: 5000 });
       expect(Date.now() - t0).toBeLessThan(2500);
       expect(await bodies[0]?.text()).not.toContain(proof);
     }
