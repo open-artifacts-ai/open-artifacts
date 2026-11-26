@@ -37,6 +37,7 @@ import {
   up,
   upgrade,
 } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 // ------------------------------------------------------------------ helpers
 //
@@ -86,10 +87,13 @@ function wire<T>(ws: WebSocket, parse: (t: string) => T | null) {
   const next = () => {
     const f = queue.shift();
     if (f !== undefined) return Promise.resolve(f);
-    // A frame that never comes fails by the test's own timeout.
-    return new Promise<T>((resolve) => {
-      waiting.push(resolve);
-    });
+    return withDeadline(
+      new Promise<T>((resolve) => {
+        waiting.push(resolve);
+      }),
+      15_000,
+      "a frame from the hub",
+    );
   };
   return { seen, next, closed };
 }

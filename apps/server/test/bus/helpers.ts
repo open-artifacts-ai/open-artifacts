@@ -24,6 +24,7 @@ import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { login } from "../helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 export const e = env as unknown as Env;
 
@@ -96,11 +97,18 @@ export async function workerFetch(
   return r;
 }
 
+/**
+ * How long `next` waits for a frame before failing the test: a ceiling for
+ * a missing frame, never a delay (OpenBus's 2 s timed out under full-suite
+ * load on the flood tests).
+ */
+const FRAME_WAIT_MS = 15_000;
+
 export type Daemon = {
   ws: WebSocket;
   /** Every raw text message received, in order (frames and PONGs). */
   raw: string[];
-  /** No deadline of its own: a missing frame fails at the test's timeout. */
+  /** Fails by name after FRAME_WAIT_MS with no frame (withDeadline). */
   next: () => Promise<ServerFrame>;
   send: (f: ClientFrame) => void;
   close: () => void;
@@ -134,7 +142,8 @@ export function upgrade(
 
 /** Room for the index to settle when the whole suite loads the worker pool. */
 const INDEX_SETTLE_MS = 20_000;
-const HOOK_MS = 10_000 + 2 * INDEX_SETTLE_MS + 5_000;
+const CLOSE_WAIT_MS = 10_000;
+const HOOK_MS = CLOSE_WAIT_MS + 2 * INDEX_SETTLE_MS + 5_000;
 
 const opened = new Set<Daemon>();
 /** Users whose hub this file may have opened a socket on. */
@@ -179,7 +188,14 @@ afterAll(async () => {
   // that never arrives fails the file at the hook's own timeout: the hook ends
   // only once every socket is closed, so the worker cannot tear down with the
   // hub's `gone` RPC still in flight.
-  await Promise.all(closes);
+  // A close that never arrives fails the file with a clear message, inside the
+  // hook's own timeout (giving up silently is what let the worker tear down
+  // with the hub's `gone` RPC still in flight).
+  await withDeadline(
+    Promise.all(closes),
+    CLOSE_WAIT_MS,
+    `bus sockets still open ${CLOSE_WAIT_MS} ms after the file's afterAll closed them`,
+  );
   opened.clear();
   rawSockets.clear();
   const ns = e.USER_PRESENCE;
@@ -278,7 +294,11 @@ export async function daemon(
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve) => waiting.push(resolve));
+    return withDeadline(
+      new Promise<ServerFrame>((resolve) => waiting.push(resolve)),
+      FRAME_WAIT_MS,
+      "a frame from the hub",
+    );
   };
   const d: Daemon = {
     ws,

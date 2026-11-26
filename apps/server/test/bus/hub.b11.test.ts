@@ -29,6 +29,7 @@ import {
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
 import { e, hello, idleOf, ns, trackSocket, up } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -78,7 +79,11 @@ function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve) => waiting.push(resolve));
+    return withDeadline(
+      new Promise<ServerFrame>((resolve) => waiting.push(resolve)),
+      15_000,
+      "a frame from the hub",
+    );
   };
   return { ws, seen, next, closed, isClosed: () => done };
 }
