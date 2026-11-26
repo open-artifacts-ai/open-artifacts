@@ -51,7 +51,9 @@ export function leftoverTargets(deps: Deps): {
       join(piDir, "extensions"),
       skill("opencode"),
       skill("openclaw"),
-      // agy's config folders, when install made them for its mcp_config.json.
+      // agy's config folders, when install made them for its mcp_config.json
+      // and the oa-bus plugin (agy S2).
+      join(deps.home, ".gemini", "config", "plugins"),
       join(deps.home, ".gemini", "config"),
       join(deps.home, ".gemini"),
     ],

@@ -21,6 +21,7 @@ export type Command = (
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
+  | { cmd: "agy-hello" }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -62,6 +63,7 @@ const COMMANDS = new Set([
   "daemon",
   "mcp",
   "mcp-proof",
+  "agy-hello",
   "mcp-proxy",
   "status",
   "logs",
@@ -168,7 +170,9 @@ export function parse(argv: string[]): Command {
           : 2
         : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+    throw new Error(
+      `usage: ${BUS_CMD} mcp <claude|opencode|codex|pi|antigravity>`,
+    );
   if (cmd === "add" && rest.length === 0)
     throw new Error(`usage: ${BUS_CMD} add <address> [--name <name>]`);
   if (cmd === "use" && rest[0] !== undefined && values.none)
@@ -313,10 +317,14 @@ function route(cmd: string, values: Values, positionals: string[]) {
       };
     case "daemon":
       return { cmd, hub: values.instance };
+    case "agy-hello":
+      return { cmd };
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
-        throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+        throw new Error(
+          `usage: ${BUS_CMD} mcp <claude|opencode|codex|pi|antigravity>`,
+        );
       return { cmd, harness: harness as Harness };
     }
     case "uninstall":

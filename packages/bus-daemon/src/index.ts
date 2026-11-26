@@ -445,6 +445,14 @@ export type DaemonDeps = {
     /** Prompts that timed out below the prompt-id floor; default ~/.oa-bus/opencode-uncertain.json. */
     uncertainFile?: string;
   };
+  /**
+   * agy S2: an Antigravity (agy) record lives as long as its agy process, not
+   * a connection (its hook says hello once, its MCP server per tool call).
+   */
+  antigravity?: {
+    procStart?: (pid: number) => string | null;
+    isRunning?: (pid: number) => boolean;
+  };
   codex?: CodexAttestDeps & {
     /** Every this many syncs, each live thread's lock is proven again; default 15 (30 s). */
     relockEvery?: number;
@@ -1041,6 +1049,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ttlMs: cl.syncMs ?? 2000,
     jitter: 0,
   });
+  const ag = deps.antigravity ?? {};
+  const agRunning = ag.isRunning ?? isRunning;
+  // agy's attest reads lstart (procStartOf); cached so a tick never runs ps per record.
+  const agStart = cachedProcStart(ag.procStart ?? procStartOf, agRunning);
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -1402,6 +1414,44 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           Number(b.live) - Number(a.live) ||
           (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
       )[0];
+  /**
+   * agy S2: the conversation an agy process showed before `ref` (a /clear or a
+   * new conversation in the same process): `ref` takes over its address, as a
+   * Claude /clear does (#1295). The live one, else the one seen last.
+   */
+  const agySwitchedFrom = (
+    ref: string,
+    pid: number,
+    procStart: string,
+  ): AgentRecord | undefined =>
+    agents
+      .all()
+      .filter(
+        (a) =>
+          a.kind === "antigravity" &&
+          a.pid === pid &&
+          a.procStart === procStart &&
+          a.ref !== ref &&
+          !takenOver.has(a.ref),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.live) - Number(a.live) ||
+          (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+      )[0];
+  /** agy S2: closes every other live conversation of `rec`'s agy process. */
+  const closeAgySiblings = (rec: AgentRecord) => {
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live || a.ref === rec.ref) continue;
+      if (a.pid !== rec.pid) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "conversation_switched"));
+    }
+    if (closed) announceSessions();
+  };
   /** Sessions whose address a later session of the same process took over. */
   const takenOver = new Set<string>();
   /** Order in which this process's sessions were last seen (higher is later). */
@@ -3256,6 +3306,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const mine = files.find(
           (x) => x.ref === hello.agent_ref && x.pid === pid,
         );
+        // agy S2: the start time the attest just checked, for liveness.
+        const agyStart =
+          hello.kind === "antigravity" ? hello.attest.proc_start : undefined;
         const old =
           mine && !prev
             ? clearedFrom(
@@ -3264,7 +3317,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 mine.procStart,
                 new Set(files.map((x) => x.ref)),
               )
-            : undefined;
+            : agyStart !== undefined && !prev
+              ? agySwitchedFrom(hello.agent_ref, pid, agyStart)
+              : undefined;
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
@@ -3283,9 +3338,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // #2861: a lookup that misses keeps the start time the record had.
           ...(mine
             ? { procStart: mine.procStart }
-            : prev?.pid === pid && prev.procStart !== undefined
-              ? { procStart: prev.procStart }
-              : {}),
+            : agyStart !== undefined
+              ? { procStart: agyStart }
+              : prev?.pid === pid && prev.procStart !== undefined
+                ? { procStart: prev.procStart }
+                : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
@@ -3301,6 +3358,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(prev ? { state: "revived" } : {}),
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
+        // agy S2: one agy process shows one conversation at a time. A new one
+        // (the first message, /clear, a resumed one) closes the others there.
+        if (rec.kind === "antigravity") closeAgySiblings(rec);
         if (rec.kind === "codex") {
           persistCodex();
           trackAway();
@@ -3956,11 +4016,34 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     persistCodex();
   };
 
+  /**
+   * agy S2: an Antigravity record closes when its agy process ends, or its
+   * pid now runs something started at another time. A start time that cannot
+   * be read right now (a loaded machine) is unknown, not gone.
+   */
+  const syncAntigravity = () => {
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live) continue;
+      const gone = !agRunning(a.pid);
+      const start = gone ? null : agStart(a.pid);
+      const moved =
+        start !== null && a.procStart !== undefined && start !== a.procStart;
+      if (!gone && !moved) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "process_gone"));
+    }
+    if (closed) announceSessions();
+  };
+
   const sync = () => {
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],
       ["codex", syncCodex],
+      ["antigravity", syncAntigravity],
     ] as const) {
       try {
         fn();
