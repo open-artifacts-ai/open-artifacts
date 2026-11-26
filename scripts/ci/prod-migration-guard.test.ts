@@ -294,7 +294,11 @@ describe("prod-migration-guard.sh detect", () => {
         `0.252.1-dev+${untaggedSha}`,
         "0.252.1-dev+deadbee",
       ]) {
-        const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push", PROD_VERSION });
+        const d = r.run("detect", {
+          TAG: "v1.1.0",
+          EVENT: "push",
+          PROD_VERSION,
+        });
         expect(d.code).toBe(0);
         expect(d.out).toMatch(
           /^hold=true\nguarded=false\nreason=could not read the version prod runs \(got '[^']+'\)\n$/,
