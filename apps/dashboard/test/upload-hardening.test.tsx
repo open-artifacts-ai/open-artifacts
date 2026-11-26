@@ -107,13 +107,24 @@ describe("upload hardening", () => {
       ac.signal,
     );
     await waitFor(() => expect(api.putRaw).toHaveBeenCalled());
-    ac.abort();
-    // A hang is the test's own timeout; there is no wall-clock wait here.
-    const r = await p.then(
-      () => "resolved",
-      (e: Error) => e.name,
+    // The abort must settle within 200 ms, measured on fake time (no wall wait).
+    let outcome: string | undefined;
+    void p.then(
+      () => {
+        outcome = "resolved";
+      },
+      (e: Error) => {
+        outcome = e.name;
+      },
     );
-    expect(r).toBe("AbortError");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      ac.abort();
+      await vi.advanceTimersByTimeAsync(199);
+      expect(outcome).toBe("AbortError");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failed PUT names the file", async () => {
