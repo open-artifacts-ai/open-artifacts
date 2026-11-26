@@ -878,6 +878,48 @@ describe("Agents › Agents (the roster)", () => {
       expect(el.getAttribute("src") ?? "data:").toMatch(/^data:/);
   });
 
+  it("an Antigravity session found before its first message shows as Starting, not as something it said (agy S2b)", async () => {
+    withBus();
+    const m = agentNamed("oa-manager");
+    const starting: BusAgent = {
+      ...m,
+      id: "BaS9nPqRsTu4vWxY",
+      name: "agy",
+      kind: "antigravity",
+      product: "Antigravity",
+      status: "idle",
+      statusLabel: "starting",
+    };
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          agents: [starting, m],
+          live: true,
+          droppedNotices: 0,
+        }),
+      ),
+    );
+    mount("/agents");
+    const rows = within(await roster())
+      .getAllByRole("row")
+      .slice(1);
+    // Cells: Agent, App, Status, Agent says, Machine, Updated.
+    const cells = (i: number) =>
+      within(rows[i] as HTMLElement).getAllByRole("cell");
+    const s = cells(0);
+    expect(s[0]).toHaveTextContent("agy");
+    expect(
+      within(s[1] as HTMLElement).getByRole("img", { name: "Antigravity" }),
+    ).toBeInTheDocument();
+    expect(s[2]).toHaveTextContent(/^Starting$/);
+    expect(s[3]).toHaveTextContent(/^—$/);
+    expect(rows[0]).not.toHaveTextContent("starting");
+    // Every other agent keeps its badge and its own words.
+    const o = cells(1);
+    expect(o[2]).toHaveTextContent(/^Live$/);
+    expect(o[3]).toHaveTextContent(m.statusLabel as string);
+  });
+
   it("an org in the rail scopes the roster and its summary", async () => {
     withBus();
     mount("/agents");

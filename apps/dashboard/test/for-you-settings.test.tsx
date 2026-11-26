@@ -343,6 +343,20 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(updates).toBeEnabled();
   });
 
+  it("removes the enrolled device from the cache after the server turns it off", async () => {
+    const sub = subscribed({ needsYou: true, updates: false });
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const device = await page();
+    await waitFor(() => expect(device).toHaveAttribute("aria-checked", "true"));
+    fireEvent.click(device);
+    await waitFor(() => expect(sub.patches).toEqual([{ needsYou: false }]));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Updates in this browser" }),
+      ).toBeDisabled(),
+    );
+  });
+
   it("a toggle PATCHes the switch at once and keeps it", async () => {
     const sub = subscribed();
     server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));

@@ -187,8 +187,9 @@ export const InboxLaterBodySchema = z.object({
 export type InboxLaterBody = z.infer<typeof InboxLaterBodySchema>;
 
 export const NotificationPrefsSchema = z.object({
+  /** The browser preference is shared by every enrolled device. */
   needsYou: z.object({ inApp: z.literal(true), browser: z.boolean() }),
-  /** `browser` on both: the default a new browser starts with (each browser has its own switches, PushSubscriptions). */
+  /** Updates appear in For you. The server always returns browser false. */
   updates: z.object({ inApp: z.literal(true), browser: z.boolean() }),
   browserAllAsks: z.boolean(),
   quietHours: z.object({ start: Hhmm, end: Hhmm }).nullable(),
@@ -223,7 +224,7 @@ export const PushSubscriptionsSchema = z.object({
       label: z.string().nullable(),
       createdAt: Iso,
       lastSentAt: Iso.nullable(),
-      /** This browser's own switches: Needs-you and Updates notifications on it. */
+      /** Existing clients read these as true and false for every enrolled device. */
       needsYou: z.boolean(),
       updates: z.boolean(),
     }),
@@ -231,7 +232,7 @@ export const PushSubscriptionsSchema = z.object({
 });
 export type PushSubscriptions = z.infer<typeof PushSubscriptionsSchema>;
 
-/** PATCH R.mePushSubscription(id): this browser's switches; at least one. */
+/** Legacy device PATCH. Setting needsYou false unenrolls the device. */
 export const PushSubscriptionPatchBodySchema = z
   .strictObject({
     needsYou: z.boolean().optional(),
