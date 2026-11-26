@@ -4,9 +4,11 @@ import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { qk } from "../src/api/queries";
+import { installClock } from "./clock";
 import { installHarness, lastClient, mount, server, wait } from "./harness";
 
 installHarness();
+installClock();
 
 const TITLE = "What do you like to be called?";
 const needsName = (over: Partial<Me> = {}): Me => ({
