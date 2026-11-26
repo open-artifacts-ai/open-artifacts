@@ -3,11 +3,13 @@ import type { Me } from "@oa/shared";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
+import { qk } from "../src/api/queries";
 import { calendarDaysTo, chipLabel, chipPlan } from "../src/layout/PlanChip";
 import { resetWelcomeRedirect } from "../src/library/useWelcomeRedirect";
 import {
   calls,
   installHarness,
+  lastClient,
   mount,
   mountHosted,
   server,
@@ -190,17 +192,31 @@ describe("first open of Welcome", () => {
     });
     const ask = () =>
       screen.findByRole("dialog", { name: "What do you like to be called?" });
+    /**
+     * The Library has rendered with the onboarding answer (the Get started
+     * card comes from it, in the same commit as the redirect's effect), and
+     * that effect started nothing: it would fetch the Welcome and save
+     * welcomeOpened synchronously.
+     */
+    const heldOnLibrary = async (router: {
+      state: { location: { pathname: string } };
+    }) => {
+      // hidden: the modal name prompt makes the page behind it aria-hidden.
+      await screen.findByRole("heading", { name: "Get started", hidden: true });
+      expect(lastClient.getQueryState(qk.artifact(WELCOME))).toBeUndefined();
+      expect(lastClient.getMutationCache().getAll()).toHaveLength(0);
+      expect(router.state.location.pathname).toBe("/");
+    };
 
     it("names themselves on the Library, then goes to Welcome", async () => {
       const router = mountHosted("/", true, unnamed, [
-        state(),
+        state({ dismissed: false }),
         welcomeArtifact(),
         putOnboarding(),
         named,
       ]);
       const dialog = await ask();
-      await wait(400);
-      expect(router.state.location.pathname).toBe("/");
+      await heldOnLibrary(router);
       fireEvent.change(within(dialog).getByLabelText("Your name"), {
         target: { value: "Ada" },
       });
@@ -212,13 +228,12 @@ describe("first open of Welcome", () => {
 
     it("goes to Welcome after Not now", async () => {
       const router = mountHosted("/", true, unnamed, [
-        state(),
+        state({ dismissed: false }),
         welcomeArtifact(),
         putOnboarding(),
       ]);
       const dialog = await ask();
-      await wait(200);
-      expect(router.state.location.pathname).toBe("/");
+      await heldOnLibrary(router);
       fireEvent.click(within(dialog).getByRole("button", { name: "Not now" }));
       await waitFor(() =>
         expect(router.state.location.pathname).toBe(`/a/${WELCOME}`),
