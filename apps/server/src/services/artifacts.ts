@@ -39,6 +39,7 @@ import {
   capOfCaller,
   checkListSpace,
   firstThumbnailEligible,
+  inheritedCommentAccess,
   levelSql,
   listFilterSql,
   planOfMember,
@@ -1024,10 +1025,19 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null, r.shareRole);
+    return decorate(
+      env,
+      caller,
+      out,
+      r.level,
+      null,
+      null,
+      r.shareRole,
+      r.spaceRank,
+    );
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
-    .select(spaceCols(caller, true, sql`${spaces.id}`))
+    .select(spaceCols(caller, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
@@ -1045,19 +1055,16 @@ export type SpaceCols = {
 
 /**
  * The joined space's columns for a list, search or get SELECT (no extra
- * statement). `rank` is computed only when the row is decorated (`on`).
+ * statement). Its rank also supplies comment access independently of a share.
  */
 export const spaceCols = (
   c: Caller,
-  on: boolean,
   spaceId: SQL = sql`${artifacts.spaceId}`,
 ) => ({
   kind: spaces.kind,
   name: spaces.name,
   publicLinks: spaces.publicLinks,
-  rank: on
-    ? sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c, spaceId)} else 0 end`
-    : sql<number>`0`,
+  rank: sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c, spaceId)} else 0 end`,
 });
 
 /**
@@ -1068,12 +1075,22 @@ export const spaceCols = (
 function canComment(
   caller: Caller,
   level: AccessLevel,
-  out: Pick<ArtifactSummary, "comments" | "commenters">,
-  shareRole: ShareRole | null = null,
+  out: Pick<ArtifactSummary, "visibility" | "comments" | "commenters">,
+  shareRole: ShareRole | null,
+  spaceRank: number,
 ): boolean {
   const cap = capOfCaller(caller);
   if (
-    !can(level, "comments.write", { personal: false, cap, shareRole }) ||
+    !can(level, "comments.write", {
+      personal: false,
+      cap,
+      shareRole,
+      inheritedCommentAccess: inheritedCommentAccess(
+        caller,
+        out.visibility,
+        spaceRank,
+      ),
+    }) ||
     out.comments === false
   )
     return false;
@@ -1134,7 +1151,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, level, out, shareRole);
+  out.can.comment = canComment(caller, level, out, shareRole, sp?.rank ?? 0);
   if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
@@ -1176,6 +1193,7 @@ export function withCan<T extends ArtifactSummary>(
   out: T,
   level: AccessLevel,
   shareRole: ShareRole | null = null,
+  spaceRank = 0,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1185,7 +1203,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, level, out, shareRole),
+    comment: canComment(caller, level, out, shareRole, spaceRank),
   };
   if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, true));
@@ -1203,6 +1221,7 @@ export function decorate<T extends ArtifactSummary>(
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
   shareRole: ShareRole | null = null,
+  spaceRank = sp?.rank ?? 0,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1213,7 +1232,7 @@ export function decorate<T extends ArtifactSummary>(
   }
   return decorates(env, caller)
     ? withSpace(caller, out, level, spaceId, sp, shareRole)
-    : withCan(caller, out, level, shareRole);
+    : withCan(caller, out, level, shareRole, spaceRank);
 }
 
 // --------------------------------------------------------------------- list
@@ -1316,7 +1335,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
-      space: spaceCols(caller, decorates(env, caller)),
+      space: spaceCols(caller),
     })
     .from(artifacts)
     .innerJoin(users, eq(users.id, artifacts.ownerId))

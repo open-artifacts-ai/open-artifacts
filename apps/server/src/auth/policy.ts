@@ -149,6 +149,8 @@ export type CanCtx = {
   dataWriters?: DataWriters;
   /** Direct page grant, independent of any space role. */
   shareRole?: DecisionInput["shareRole"];
+  /** A space, team or public grant independently lets this caller comment. */
+  inheritedCommentAccess?: boolean;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
   /**
@@ -427,7 +429,9 @@ export function can(
       // A Viewer grant limits members to reading unless they also have higher access.
       return capped
         ? ctx.cap === "guest" && ctx.shareRole === "commenter"
-        : level !== "viewer" || ctx.shareRole !== "viewer";
+        : level !== "viewer" ||
+            ctx.shareRole !== "viewer" ||
+            ctx.inheritedCommentAccess === true;
     case "comments.moderate":
       return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":

@@ -195,6 +195,7 @@ type Access = {
   artifact: ArtifactRow;
   personal: boolean;
   shareRole: ShareRole | null;
+  spaceRank: number;
 };
 const prefetched = new AsyncLocalStorage<Map<string, Access | null>>();
 const accessKey = (c: Caller, id: string, opts: { allowDeleted?: boolean }) =>
@@ -230,10 +231,9 @@ function accessQuery(env: Env, c: Caller, artifactId: string) {
       shareRole: shareRoleSql(),
       kind: spaces.kind,
       publicLinks: spaces.publicLinks,
-      allMembersRole: spaces.allMembersRole,
-      // allMembersRole is decide()'s to add: it knows guests and the cap.
+      // Effective rank includes the space's all-members grant when eligible.
       spaceRank: user
-        ? sql<number>`case when ${spaces.kind} = 'shared' then ${spaceRankSql(user.id)} else 0 end`
+        ? sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c)} else 0 end`
         : sql<number>`0`,
     })
     .from(artifacts)
@@ -262,7 +262,7 @@ function accessOf(
   const space: SpaceInput = {
     kind: row.kind,
     publicLinks: row.publicLinks,
-    allMembersRole: row.allMembersRole,
+    allMembersRole: null, // Already included in spaceRank.
     role: RANK_ROLE[row.spaceRank] ?? null,
   };
   const level = rowLevel(c, row.a, row.shareRole, space, opts);
@@ -272,6 +272,7 @@ function accessOf(
         artifact: row.a,
         personal: space.kind !== "shared",
         shareRole: row.shareRole,
+        spaceRank: row.spaceRank,
       }
     : null;
 }
@@ -433,6 +434,19 @@ export function levelSql(
     else ${rest} end)`;
 }
 
+/** Comment access independent of a direct share. The policy applies caller caps separately. */
+export function inheritedCommentAccess(
+  c: Caller,
+  visibility: string,
+  spaceRank: number,
+): boolean {
+  return (
+    spaceRank > 0 ||
+    visibility === "public" ||
+    (visibility === "team" && c.kind === "user" && isTeamRole(c.user.role))
+  );
+}
+
 /** The levels that may read an artifact's share list (GET R.shares). */
 const SHARE_LEVELS = (["owner", "manager", "editor", "viewer"] as const).filter(
   (l) => can(l, "share", { cap: null, personal: true }),
@@ -581,6 +595,11 @@ export async function authorize(
     ...base,
     personal: r.personal,
     shareRole: r.shareRole,
+    inheritedCommentAccess: inheritedCommentAccess(
+      c,
+      r.artifact.visibility,
+      r.spaceRank,
+    ),
     ...opts.ctx,
     anonymous: base.anonymous,
     dataWriters: base.dataWriters,

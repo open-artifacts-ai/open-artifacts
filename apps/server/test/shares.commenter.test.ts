@@ -388,6 +388,39 @@ describe("can.comment on the artifact summary (#2590)", () => {
     ];
   };
 
+  it.each(["team", "public"] as const)(
+    "keeps %s comment access when a member also has a Viewer share",
+    async (visibility) => {
+      const id = await page({ visibility });
+      expect(await can(id, member)).toEqual([true, true]);
+      await share(id, member.email, "viewer");
+      expect(await can(id, member)).toEqual([true, true]);
+      expect((await comment(id, member)).status).toBe(201);
+      await share(id, guest.email, "viewer");
+      expect((await comment(id, guest)).status).toBe(404);
+    },
+  );
+
+  it("keeps a space viewer’s comment access on a private page with a direct Viewer share", async () => {
+    const id = await page();
+    await share(id, member.email, "viewer");
+    const space = newId();
+    await E.DB.batch([
+      E.DB.prepare(
+        "INSERT INTO spaces (id, kind, name, created_at) VALUES (?, 'shared', 'Design', 1)",
+      ).bind(space),
+      E.DB.prepare(
+        "INSERT INTO space_members (space_id, user_id, role, source, created_at) VALUES (?, ?, 'viewer', 'manual', 1)",
+      ).bind(space, member.userId),
+      E.DB.prepare("UPDATE artifacts SET space_id = ? WHERE id = ?").bind(
+        space,
+        id,
+      ),
+    ]);
+    expect(await can(id, member)).toEqual([true, true]);
+    expect((await comment(id, member)).status).toBe(201);
+  });
+
   it.each([
     ["member", "viewer", false, false],
     ["member", "commenter", true, false],

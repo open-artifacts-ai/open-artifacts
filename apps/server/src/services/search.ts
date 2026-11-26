@@ -23,7 +23,6 @@ import { ApiError } from "../http/errors.js";
 import {
   agentViaSql,
   decorate,
-  decorates,
   lastPublisherSql,
   redact,
   shownLastAgent,
@@ -539,7 +538,7 @@ export function searchQuery(
       level: levelSql(caller),
       shareRole: shareRoleSql(),
       // The joined space, for `space` and `can` (withSpace).
-      space: spaceCols(caller, decorates(env, caller)),
+      space: spaceCols(caller),
       sb: snip(3),
       sd: snip(2),
       st: snip(1),
