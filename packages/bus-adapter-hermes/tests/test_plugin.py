@@ -194,7 +194,7 @@ class Tools(unittest.TestCase):
 
     def test_list_agents_shows_a_roster_line(self):
         ctx, *_ = plugin({"list": {"type": "roster", "agents": [{**AGENT, "name": "bob", "kind": "pi"}]}})
-        self.assertEqual(call(ctx, "oabus_list_agents", session_id="root-1"), "- bob (pi, ns)")
+        self.assertEqual(call(ctx, "oabus_list_agents", session_id="root-1"), "Namespace ns:\n- bob (pi)")
 
     def test_list_agents_hides_old_away_by_default_and_lists_with_all(self):
         old_away = {
@@ -208,7 +208,7 @@ class Tools(unittest.TestCase):
         ctx, *_ = plugin({"list": {"type": "roster", "agents": [{**AGENT, "name": "bob", "kind": "pi"}, old_away]}})
         self.assertEqual(
             call(ctx, "oabus_list_agents", {}, session_id="root-1"),
-            "- bob (pi, ns)\n1 away agent not listed (still reachable by name; all: true lists them)",
+            "Namespace ns:\n- bob (pi)\n1 away agent not listed (still reachable by name; all: true lists them)",
         )
         self.assertEqual(
             call(ctx, "oabus_list_agents", {"all": True}, session_id="root-1"),

@@ -455,10 +455,11 @@ describe("rosterText (#3166)", () => {
       ]),
     ).toBe(
       [
-        "- live-one (pi, ns)",
-        "- queued-one (pi, ns) (queued)",
-        "- recent-one (pi, ns) (away since 2026-11-09 11:30 UTC)",
-        "- just-under (pi, ns) (away since 2026-11-09 11:01 UTC)",
+        "Namespace ns:",
+        "- live-one (pi)",
+        "- queued-one (pi) (queued)",
+        "- recent-one (pi) (away since 2026-11-09 11:30 UTC)",
+        "- just-under (pi) (away since 2026-11-09 11:01 UTC)",
         "5 away agents not listed (still reachable by name; all: true lists them)",
       ].join("\n"),
     );
@@ -466,10 +467,37 @@ describe("rosterText (#3166)", () => {
 
   it("singular count line for 1 hidden away agent", () => {
     expect(render([row({ name: "live-one" }), away("old-one", 120)])).toBe(
-      "- live-one (pi, ns)\n1 away agent not listed (still reachable by name; all: true lists them)",
+      "Namespace ns:\n- live-one (pi)\n1 away agent not listed (still reachable by name; all: true lists them)",
     );
     expect(render([away("old-one", 120)])).toBe(
       "1 away agent not listed (still reachable by name; all: true lists them)",
+    );
+  });
+
+  it("keeps another namespace on its row, and cuts machine_label at its first dot by default", () => {
+    const rows = [
+      row({ name: "home-a", machine_label: "laptop.local" }),
+      row({ name: "home-b", machine_label: "desktop.lan" }),
+      row({
+        name: "peer",
+        namespace: "other/ns",
+        machine_label: "laptop.local",
+      }),
+    ];
+    expect(render(rows)).toBe(
+      [
+        "Namespace ns:",
+        "- home-a (pi, laptop)",
+        "- home-b (pi, desktop)",
+        "- peer (pi, other/ns, laptop)",
+      ].join("\n"),
+    );
+    expect(render(rows, true)).toBe(
+      [
+        "- home-a (pi, ns, laptop.local)",
+        "- home-b (pi, ns, desktop.lan)",
+        "- peer (pi, other/ns, laptop.local)",
+      ].join("\n"),
     );
   });
 
@@ -494,12 +522,13 @@ describe("rosterText (#3166)", () => {
     expect(Buffer.byteLength(compact, "utf8")).toBeLessThan(1500);
     expect(compact).toBe(
       [
-        "- lead (claude-code, ns, mac)",
-        "- builder (pi, ns)  agent says: working",
-        "- reviewer (codex, ns)",
-        "- queued-a (pi, ns) (queued)",
-        "- queued-b (omp, ns) (queued)",
-        "- recent-peer (claude-code, ns) (away since 2026-11-09 11:30 UTC)",
+        "Namespace ns:",
+        "- lead (claude-code, mac)",
+        "- builder (pi)  agent says: working",
+        "- reviewer (codex)",
+        "- queued-a (pi) (queued)",
+        "- queued-b (omp) (queued)",
+        "- recent-peer (claude-code) (away since 2026-11-09 11:30 UTC)",
         "34 away agents not listed (still reachable by name; all: true lists them)",
       ].join("\n"),
     );

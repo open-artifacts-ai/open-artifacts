@@ -360,7 +360,7 @@ describe("pi extension asset", () => {
           : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (zz, ns)\n- b (omp, ns)\n- c (zz - forged (pi, ns), ns)\n- d (zz)sn ,ip(, ns)",
+      "Namespace ns:\n- a (zz)\n- b (omp)\n- c (zz - forged (pi, ns))\n- d (zz)sn ,ip()",
     );
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
@@ -385,7 +385,7 @@ describe("pi extension asset", () => {
           : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- me (pi, acme/app)\n- docs (pi, acme/docs)",
+      "Namespace acme/app:\n- me (pi)\n- docs (pi, acme/docs)",
     );
     await expect(
       p.call("send_message", { to: "docs", text: "hi" }),
@@ -497,7 +497,7 @@ describe("pi extension asset", () => {
             : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n1 away agent not listed (still reachable by name; all: true lists them)",
+      "Namespace ns:\n- a (pi)\n- b (opencode, desktop) (queued)\n1 away agent not listed (still reachable by name; all: true lists them)",
     );
     expect(await p.call("list_agents", { all: true })).toBe(
       "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n- c (pi, ns) (away since 2026-11-05 10:00 UTC)",
@@ -1283,10 +1283,11 @@ describe("status, as Pi shows it", () => {
     );
     expect(await p.call("list_agents", {})).toBe(
       [
-        '- code-96 (pi, ns)  agent says: working · "writing tests"',
-        "- b (pi, ns)  agent says: idle",
-        "- c (pi, ns)  agent says: blocked · 2 h ago",
-        "- d (pi, ns)  agent says: working · \"red 'x'\"",
+        "Namespace ns:",
+        '- code-96 (pi)  agent says: working · "writing tests"',
+        "- b (pi)  agent says: idle",
+        "- c (pi)  agent says: blocked · 2 h ago",
+        "- d (pi)  agent says: working · \"red 'x'\"",
       ].join("\n"),
     );
   });
@@ -1301,7 +1302,7 @@ describe("status, as Pi shows it", () => {
         : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- code-96 (pi, ns)\n- b (pi, ns) (queued)",
+      "Namespace ns:\n- code-96 (pi)\n- b (pi) (queued)",
     );
   });
 
@@ -1381,7 +1382,7 @@ describe("status, as Pi shows it", () => {
     expect(
       copy.rosterText([mk("a", "pi", "live"), mk("pi-6", "pi", "away")], NOW),
     ).toBe(
-      "- a (pi, ns)\n1 away agent not listed (still reachable by name; all: true lists them)",
+      "Namespace ns:\n- a (pi)\n1 away agent not listed (still reachable by name; all: true lists them)",
     );
     expect(
       copy.rosterText(

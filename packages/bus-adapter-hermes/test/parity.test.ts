@@ -307,6 +307,15 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
         mk("agent", "pi", "away"),
         mk("kept", "pi", "away"),
       ],
+      [
+        { ...mk("home-a", "pi", "live"), machine_label: "laptop.local" },
+        { ...mk("home-b", "pi", "live"), machine_label: "desktop.lan" },
+        {
+          ...mk("peer", "pi", "live"),
+          namespace: "other/ns",
+          machine_label: "laptop.local",
+        },
+      ],
     ];
     same([
       ...sets.map((s): Case => ["rosterText", [s, NOW]]),

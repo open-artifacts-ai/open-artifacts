@@ -467,11 +467,21 @@ def away_time(iso):
     return d.strftime("%Y-%m-%d %H:%M") + " UTC"
 
 
-def roster_line(a, now_ms):
-    """One list_agents line. `a` carries name, kind, namespace, queued and optionally machine_label, away."""
+def roster_line(a, now_ms, home=None):
+    """One list_agents line. `a` carries name, kind, namespace, queued and optionally machine_label, away.
+
+    #3166: with `home`, the short row: no namespace when it is `home`, the host to its first label.
+    """
     says = status_says_text(a, now_ms)
     machine = a.get("machine_label")
-    where = f", {machine}" if isinstance(machine, str) and machine else ""
+    host = ""
+    if isinstance(machine, str) and machine:
+        host = (machine.split(".")[0] or machine) if home is not None else machine
+    parts = [display_kind(a["kind"])]
+    if home is None or a["namespace"] != home:
+        parts.append(a["namespace"])
+    if host:
+        parts.append(host)
     away = a.get("away")
     if away is not None:
         mark = f" (away since {away_time(away)})" if away else " (away)"
@@ -480,7 +490,7 @@ def roster_line(a, now_ms):
     else:
         mark = ""
     tail = f"  {says}" if says else ""
-    return f"- {a['name']} ({display_kind(a['kind'])}, {a['namespace']}{where}){mark}{tail}"
+    return f"- {a['name']} ({', '.join(parts)}){mark}{tail}"
 
 
 def is_fallback_name(name, kind):
@@ -513,6 +523,7 @@ def roster_text(agents, now_ms, show_all=False):
         return "No agents in your namespace and linked ones."
     lines = []
     hidden = 0
+    shown = []
     for a in agents:
         away = a.get("state") == "away"
         if away and (
@@ -521,6 +532,21 @@ def roster_text(agents, now_ms, show_all=False):
         ):
             hidden += 1
             continue
+        shown.append(a)
+    # #3166: by default the most common namespace is named once, on top, and
+    # left out of its rows. `show_all` keeps the long rows as before.
+    counts = {}
+    for a in shown:
+        counts[a["namespace"]] = counts.get(a["namespace"], 0) + 1
+    home = None
+    for ns, n in counts.items():
+        if home is None or n > counts[home]:
+            home = ns
+    short = home if not show_all else None
+    if short is not None:
+        lines.append(f"Namespace {short}:")
+    for a in shown:
+        away = a.get("state") == "away"
         lines.append(
             roster_line(
                 {
@@ -529,6 +555,7 @@ def roster_text(agents, now_ms, show_all=False):
                     "away": str(a.get("since", "")) if away else None,
                 },
                 now_ms,
+                short,
             )
         )
     if hidden:

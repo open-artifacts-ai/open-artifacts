@@ -346,7 +346,9 @@ describe("status in OpenCode", () => {
         row({ name: "docs", namespace: "acme/docs" }),
       ],
     }));
-    expect(text).toBe("- a (opencode, ns)\n- docs (opencode, acme/docs)");
+    expect(text).toBe(
+      "Namespace ns:\n- a (opencode)\n- docs (opencode, acme/docs)",
+    );
     const empty = await run("list_agents", {}, () => ({
       type: "roster",
       agents: [],
@@ -408,7 +410,8 @@ describe("status in OpenCode", () => {
     }));
     expect(compact.text).toBe(
       [
-        "- live-one (opencode, ns)",
+        "Namespace ns:",
+        "- live-one (opencode)",
         "4 away agents not listed (still reachable by name; all: true lists them)",
       ].join("\n"),
     );

@@ -554,9 +554,22 @@ function rosterLine(
     away?: string | undefined;
   },
   now = Date.now(),
+  /** #3166: the short row: no namespace when it is `home`, the host to its first label. */
+  short?: { home: string },
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  const host =
+    typeof a.machine_label === "string" && a.machine_label
+      ? short
+        ? a.machine_label.split(".")[0] || a.machine_label
+        : a.machine_label
+      : "";
+  const where = [
+    displayKind(a.kind),
+    ...(short && a.namespace === short.home ? [] : [a.namespace]),
+    ...(host ? [host] : []),
+  ].join(", ");
+  return `- ${a.name} (${where})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** @oa/bus-protocol isFallbackName: a name only the harness gave the session. */
@@ -603,15 +616,26 @@ function rosterText(
   if (!agents.length) return "No agents in your namespace and linked ones.";
   const lines: string[] = [];
   let hidden = 0;
-  for (const a of agents) {
+  const shown = agents.filter((a) => {
     const away = a.state === "away";
-    if (
+    const hide =
       away &&
-      (isFallbackName(a.name, a.kind) || (!all && !isRecentAway(a.since, now)))
-    ) {
-      hidden++;
-      continue;
-    }
+      (isFallbackName(a.name, a.kind) || (!all && !isRecentAway(a.since, now)));
+    if (hide) hidden++;
+    return !hide;
+  });
+  // #3166: by default the most common namespace is named once, on top, and
+  // left out of its rows. `all` keeps the long rows as before.
+  const counts = new Map<string, number>();
+  for (const a of shown)
+    counts.set(a.namespace, (counts.get(a.namespace) ?? 0) + 1);
+  let home: string | undefined;
+  for (const [ns, n] of counts)
+    if (home === undefined || n > (counts.get(home) ?? 0)) home = ns;
+  const short = !all && home !== undefined ? { home } : undefined;
+  if (short) lines.push(`Namespace ${short.home}:`);
+  for (const a of shown) {
+    const away = a.state === "away";
     lines.push(
       rosterLine(
         {
@@ -620,6 +644,7 @@ function rosterText(
           away: away ? String(a.since ?? "") : undefined,
         },
         now,
+        short,
       ),
     );
   }

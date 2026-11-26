@@ -205,7 +205,7 @@ describe("claude mcp tools", () => {
       vi.setSystemTime(Date.parse("2026-11-09T12:00:00.000Z"));
       const compact = await callTool("list_agents", {}, c);
       expect(compact.content[0].text).toBe(
-        "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n1 away agent not listed (still reachable by name; all: true lists them)",
+        "Namespace ns:\n- alpha (pi)\n- beta (claude-code) (queued)\n1 away agent not listed (still reachable by name; all: true lists them)",
       );
       const full = await callTool("list_agents", { all: true }, c);
       expect(full.content[0].text).toBe(
@@ -255,7 +255,7 @@ describe("claude mcp tools", () => {
         row("gamma", "away"),
       ]);
       expect(merged.content[0].text).toBe(
-        "- claude-1262814 (claude-code, ns)\n3 away agents not listed (still reachable by name; all: true lists them)",
+        "Namespace ns:\n- claude-1262814 (claude-code)\n3 away agents not listed (still reachable by name; all: true lists them)",
       );
       const one = await roster(
         [row("alpha", "live"), row("claude-1", "away")],
@@ -267,7 +267,7 @@ describe("claude mcp tools", () => {
         "- alpha (claude-code, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
       );
       const none = await roster([row("alpha", "live")]);
-      expect(none.content[0].text).toBe("- alpha (claude-code, ns)");
+      expect(none.content[0].text).toBe("Namespace ns:\n- alpha (claude-code)");
     } finally {
       vi.useRealTimers();
     }
@@ -294,7 +294,7 @@ describe("claude mcp tools", () => {
         ],
       })),
     );
-    expect(r.content[0].text).toBe("- alpha (pi, ns, desktop)");
+    expect(r.content[0].text).toBe("Namespace ns:\n- alpha (pi, desktop)");
   });
 
   it("returns isError instead of throwing when the daemon is down", async () => {
@@ -492,7 +492,9 @@ describe("an unknown kind over the socket (C26h)", () => {
 
   it("list_agents and self show zz unchanged", async () => {
     const c = await connected(true);
-    expect(await say(c, "list_agents")).toBe("- alpha (zz, ns)\n- b (omp, ns)");
+    expect(await say(c, "list_agents")).toBe(
+      "Namespace ns:\n- alpha (zz)\n- b (omp)",
+    );
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
   });
 });
@@ -583,7 +585,7 @@ describe("linked projects (#1567)", () => {
       })),
     );
     expect(r.content[0].text).toBe(
-      "- me (claude, github.com/acme/app)\n- docs (claude, github.com/acme/docs)",
+      "Namespace github.com/acme/app:\n- me (claude)\n- docs (claude, github.com/acme/docs)",
     );
     const empty = await callTool(
       "list_agents",
