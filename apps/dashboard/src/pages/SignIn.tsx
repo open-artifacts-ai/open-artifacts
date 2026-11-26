@@ -218,12 +218,20 @@ const startHref = (start: string, next: string) => {
  * Today's page: the self-hosted install and every Access-mode instance. An
  * older server (or one that cannot answer) lands here too.
  */
-function AccessSignIn({ failed }: { failed: boolean }) {
+function AccessSignIn({
+  failed,
+  deadLink,
+}: {
+  failed: boolean;
+  /** #3029: the dashboard had no route for the address asked. */
+  deadLink?: boolean;
+}) {
   const name = useInstanceName();
   return (
     <>
       <h1>Log in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
+      {deadLink && !failed && <Notice tone="info">{DEAD_LINK}</Notice>}
       {failed && (
         <Notice tone="danger" title="Login didn't finish.">
           The login link expired or was cancelled. Try again.
@@ -620,7 +628,7 @@ export function SignIn({
     // empty panel, never a claim about the mode that may change in a moment.
     return providers.isError ? (
       <Shell hosted={false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     ) : (
       <Shell hosted={null} />
@@ -631,7 +639,7 @@ export function SignIn({
   if (data.mode === "access")
     return (
       <Shell hosted={data.hosted ?? false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     );
   // Direct mode covers hosted and self-hosted installs alike; an older server
