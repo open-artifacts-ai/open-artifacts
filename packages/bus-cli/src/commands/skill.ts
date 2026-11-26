@@ -16,7 +16,8 @@ import {
   skillVersion,
 } from "../steps/skill.ts";
 
-type Opts = { hub?: string; check: boolean; json?: boolean };
+/** refresh (#3203, the daemon's run): rewrite only copies already saved for this instance. */
+type Opts = { hub?: string; check: boolean; json?: boolean; refresh?: boolean };
 
 /** Harnesses found on this machine, wired or not: the skill does not need the bus. */
 const detected = (ctx: Ctx): Harness[] =>
@@ -50,7 +51,32 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     ]);
     return 1;
   }
-  const harnesses = detected(ctx);
+  let harnesses = detected(ctx);
+  if (opts.refresh && harnesses.length > 0) {
+    // Never adds a skill where none was saved: only the instance's own folder, already there.
+    let liveFolder: string | undefined;
+    try {
+      liveFolder = skillFolder(
+        await fetchSkillText(ctx.fetch, `${origin}/skill.md`),
+      );
+    } catch {
+      liveFolder = undefined;
+    }
+    if (!liveFolder) {
+      sayErr(
+        ctx,
+        `Could not read this instance's skill from ${origin}/skill.md.`,
+      );
+      return 1;
+    }
+    const folder = liveFolder;
+    harnesses = harnesses.filter(
+      (h) =>
+        savedSkill({ home: ctx.userHome, env: ctx.env }, h, folder) !==
+        undefined,
+    );
+    if (harnesses.length === 0) return 0;
+  }
   if (harnesses.length === 0) {
     sayErr(ctx, [
       "No harness the bus knows was found here.",

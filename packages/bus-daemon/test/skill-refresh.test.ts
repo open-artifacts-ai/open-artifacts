@@ -158,6 +158,40 @@ describe("createSkillRefresher", () => {
   });
 });
 
+describe("refresh limits (#3203 review)", () => {
+  it("ignores a version that is not a plain release string", async () => {
+    const run = vi.fn(async () => 0);
+    const r = createSkillRefresher({
+      readStored: () => undefined,
+      writeStored: vi.fn(),
+      run,
+      log: vi.fn(),
+    });
+    await r.refresh("1.0.0\nforged log line");
+    await r.refresh("x".repeat(65));
+    await r.refresh("\u001b[31m1.0");
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("tries a failed version once per daemon, and a new version again", async () => {
+    const run = vi.fn(async () => 1);
+    const logs: string[] = [];
+    const r = createSkillRefresher({
+      readStored: () => undefined,
+      writeStored: vi.fn(),
+      run,
+      log: (m) => logs.push(m),
+    });
+    await r.refresh("2.0.0");
+    await r.refresh("2.0.0");
+    await r.refresh("2.0.0");
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(logs).toHaveLength(1);
+    await r.refresh("2.0.1");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("skill-version file helpers", () => {
   it("writes mode 0600 and reads back the stored version", () => {
     const dir = mkdtempSync(join(tmpdir(), "oa-skill-ver-"));

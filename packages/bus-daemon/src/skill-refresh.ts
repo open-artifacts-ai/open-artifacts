@@ -40,14 +40,24 @@ export function writeSkillVersion(file: string, version: string): void {
   }
 }
 
-/** Runs the CLI's `skill` command using the same node and entry as the daemon. */
+/** A release version as the hub sends it; anything else never reaches a log or a file. */
+export const SKILL_VERSION_RE = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
+
+/** How long one refresh may run before the child is killed. */
+export const SKILL_REFRESH_DEADLINE_MS = 60_000;
+
+/**
+ * Runs the CLI's `skill --refresh` with the same node and entry as the daemon:
+ * fixed arguments, no shell, killed at the deadline.
+ */
 export function runSkillCommand(
-  execPath = process.execPath,
-  entry = process.argv[1],
+  execPath: string,
+  entry: string | undefined,
+  deadlineMs = SKILL_REFRESH_DEADLINE_MS,
 ): Promise<number> {
   if (!entry) return Promise.resolve(1);
   return new Promise((resolve) => {
-    const child = spawn(execPath, [entry, "skill"], {
+    const child = spawn(execPath, [entry, "skill", "--refresh"], {
       stdio: "ignore",
       shell: false,
       env: process.env,
@@ -56,8 +66,14 @@ export function runSkillCommand(
     const done = (code: number) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       resolve(code);
     };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      done(124);
+    }, deadlineMs);
+    timer.unref?.();
     child.once("error", () => done(1));
     child.once("exit", (code) => done(code ?? 1));
   });
@@ -69,22 +85,29 @@ export function runSkillCommand(
  */
 export function createSkillRefresher(deps: SkillRefreshDeps): SkillRefresher {
   let inFlight = false;
+  // A version that failed is not tried again until the daemon restarts, so a
+  // reconnect storm starts at most one child per version.
+  const failed = new Set<string>();
   const refresh = async (serverVersion: string | undefined): Promise<void> => {
     const version = serverVersion?.trim();
-    if (!version || inFlight) return;
-    if (deps.readStored() === version) return;
+    if (!version || !SKILL_VERSION_RE.test(version) || inFlight) return;
+    if (failed.has(version) || deps.readStored() === version) return;
     inFlight = true;
     try {
       const code = await deps.run();
       if (code === 0) {
         deps.writeStored(version);
       } else {
+        failed.add(version);
         deps.log(
           `skill refresh failed (exit ${code}) for instance version ${version}`,
         );
       }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      failed.add(version);
+      const msg = (e instanceof Error ? e.message : String(e))
+        .replace(/[\u0000-\u001f\u007f]/g, " ")
+        .slice(0, 200);
       deps.log(`skill refresh failed (${msg}) for instance version ${version}`);
     } finally {
       inFlight = false;
