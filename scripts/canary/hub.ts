@@ -1,11 +1,13 @@
 // The Open Artifacts instance the canary runs against, and the few calls it
-// makes to it: the bus agent list and a published page's versions, and for a
-// local server also a dev sign-in, a token and a machine approval through the
-// real approval form.
+// makes to it: a member signed in, a token, a machine approval through the
+// real approval form, the bus agent list and a published page's versions.
 //
-// Staging (the scheduled default) is the dedicated canary member on
-// https://staging.open-artifacts.com, by its personal token; its two machines
-// were approved ahead (README). The local server, for development only, is
+// Staging (the scheduled default) is rl-a, the staging install with test
+// hooks (https://rl-a.open-artifacts-staging.app): each run signs in a new
+// member through TEST_HOOKS.session, as the dashboard's staging e2e does
+// (apps/dashboard/e2e/staging/rl-a/fixtures.ts), and approves its machines on
+// the real /bus/approve page. A passing run erases that member again through
+// TEST_HOOKS.peoplePurge. The local server, for development only, is
 // `wrangler dev` with ENVIRONMENT=dev on a fresh local D1, R2, KV and Durable
 // Objects, as the dashboard's real-server e2e starts it
 // (apps/dashboard/e2e/real/fixtures.ts).
@@ -38,6 +40,9 @@ export const PATHS = {
   device: "/bus/device",
   deviceToken: "/bus/device/token",
   approve: "/bus/approve",
+  healthz: "/healthz",
+  hookSession: "/__test/session",
+  hookPurge: "/__test/people-purge",
   connect: "/bus/connect",
   mcp: "/mcp",
 } as const;
@@ -180,25 +185,112 @@ export async function startServer(
   return { origin, stop };
 }
 
-/** The staging instance; CANARY_STAGING_URL (a repo variable) may name another. */
-export const STAGING_URL = "https://staging.open-artifacts.com";
+/** rl-a, the staging install with test hooks; CANARY_STAGING_URL (a repo variable) may name another. */
+export const STAGING_URL = "https://rl-a.open-artifacts-staging.app";
+/** The address domain rl-a's hooks may sign in (its TEST_DOMAIN); CANARY_STAGING_TEST_DOMAIN may name another. */
+export const STAGING_TEST_DOMAIN = "oa-redline-a.fyi";
+/** The session cookie on an https install (apps/server/src/auth/session.ts). */
+export const STAGING_COOKIE = "__Host-oa_session";
 
 /**
- * The staging canary member, by its personal token. A token staging refuses
- * fails here, by the secret's name, before anything else starts.
+ * The staging origin, refused unless it is a bare https origin one label
+ * under open-artifacts-staging.app (the staging test-hooks installs), so the
+ * hook key and the tokens are never sent anywhere else.
  */
-export async function tokenMember(
-  origin: string,
-  pat: string,
-): Promise<Session> {
-  const s = new Session(origin, { bearer: pat });
-  const me = await s.fetch(PATHS.me);
-  if (me.status === 401 || me.status === 403)
+export function stagingOrigin(v: string | undefined): string {
+  const raw = v || STAGING_URL;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    throw new Error(`CANARY_STAGING_URL is not a URL: ${raw}`);
+  }
+  if (
+    u.protocol !== "https:" ||
+    u.origin !== raw ||
+    !/^[a-z0-9-]+\.open-artifacts-staging\.app$/.test(u.hostname)
+  )
     throw new Error(
-      `${origin} refused STAGING_CANARY_PAT (HTTP ${me.status}): make a new token as the canary member and update the secret`,
+      `CANARY_STAGING_URL must be a bare https origin one label under open-artifacts-staging.app, not ${raw}`,
     );
-  if (!me.ok) throw new Error(`${origin}${PATHS.me}: HTTP ${me.status}`);
+  return raw;
+}
+
+/** Hook calls fail by status only: a refusal body is never printed. */
+async function hookPost(
+  origin: string,
+  key: string,
+  path: string,
+  body: unknown,
+): Promise<Response> {
+  return fetch(`${origin}${path}`, {
+    method: "POST",
+    redirect: "manual",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(FETCH_MS),
+  });
+}
+
+/**
+ * A new member on rl-a, signed in through TEST_HOOKS.session, with a display
+ * name. The install must report test hooks on before the key is sent.
+ */
+export async function hookMember(
+  origin: string,
+  key: string,
+  email: string,
+): Promise<Session> {
+  const h = await fetch(`${origin}${PATHS.healthz}`, {
+    signal: AbortSignal.timeout(FETCH_MS),
+  });
+  const health = h.ok ? ((await h.json()) as { testHooks?: boolean }) : {};
+  if (health.testHooks !== true)
+    throw new Error(
+      `${origin} does not report test hooks on (/healthz testHooks): the canary sends its hook key only to a test-hooks install`,
+    );
+  const res = await hookPost(origin, key, PATHS.hookSession, {
+    email,
+    role: "member",
+  });
+  if (res.status === 404)
+    throw new Error(
+      `${origin} refused the session hook (HTTP 404): check CANARY_RL_A_HOOK_KEY is rl-a's TEST_HOOK_KEY, and that ${email.split("@")[1]} is its TEST_DOMAIN`,
+    );
+  if (!res.ok) throw new Error(`session hook: HTTP ${res.status}`);
+  const { cookie } = (await res.json()) as { cookie: string };
+  const s = new Session(origin, { cookies: { [STAGING_COOKIE]: cookie } });
+  const me = await s.fetch(PATHS.me, {
+    method: "PATCH",
+    headers: { "X-OA-Request": "1", "content-type": "application/json" },
+    body: JSON.stringify({ displayName: "Client canary" }),
+  });
+  if (!me.ok) throw new Error(`set name: HTTP ${me.status}`);
   return s;
+}
+
+/**
+ * Erases the members whose address starts with `prefix` (a t19- prefix: the
+ * only one the hook acts on), their pages, tokens and machines with them.
+ * How many it erased.
+ */
+export async function purgeMembers(
+  origin: string,
+  key: string,
+  prefix: string,
+): Promise<number> {
+  const res = await hookPost(origin, key, PATHS.hookPurge, {
+    prefix,
+    before: Date.now(),
+    limit: 5,
+  });
+  if (!res.ok) throw new Error(`people purge hook: HTTP ${res.status}`);
+  const r = (await res.json()) as { erased: number; failed: number };
+  if (r.failed > 0) throw new Error(`people purge: ${r.failed} not erased`);
+  return r.erased;
 }
 
 /** A member signed in through the dev login (ENVIRONMENT=dev only), with a display name. */
@@ -237,6 +329,10 @@ const csrfOf = (html: string): string => {
 /** Approves `userCode` the way a person does on /bus/approve: type the code, then Approve. */
 export async function approveCode(s: Session, userCode: string): Promise<void> {
   const entry = await s.fetch(PATHS.approve);
+  if (entry.status === 404)
+    throw new Error(
+      `approval page: HTTP 404 on ${s.origin}: the bus is off there (hosted installs need the bus feature on)`,
+    );
   if (!entry.ok) throw new Error(`approval page: HTTP ${entry.status}`);
   const post = (form: Record<string, string>) =>
     s.fetch(PATHS.approve, {

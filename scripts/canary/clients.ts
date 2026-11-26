@@ -255,23 +255,20 @@ export const MODEL_KEYS = [
 ];
 
 /**
- * Where the canary runs. staging (the scheduled default) is a dedicated
- * canary member on the staging instance; local is a `wrangler dev` server on
- * the runner, for development only (CANARY_TARGET=local or --target local).
+ * Where the canary runs. staging (the scheduled default) is rl-a, the staging
+ * install with test hooks, as a new member each run; local is a `wrangler
+ * dev` server on the runner, for development only (CANARY_TARGET=local or
+ * --target local).
  */
 export type Target = "staging" | "local";
 
 /**
- * What staging needs, each a repo secret: the canary member's personal token
- * (reads its agent list and pages, and is the client's pages token), and two
- * machines approved ahead by that member, one for the client's daemon and one
- * for the probe. scripts/canary/README.md says how to make each one.
+ * What staging needs, a repo secret: rl-a's test hook key (its TEST_HOOK_KEY),
+ * which signs in the run's member. That member then makes its own token and
+ * approves its own machines on the real approval page. scripts/canary/README.md
+ * says where the value comes from.
  */
-export const STAGING_SECRETS = [
-  "STAGING_CANARY_PAT",
-  "STAGING_CANARY_MACHINE",
-  "STAGING_CANARY_PROBE",
-] as const;
+export const STAGING_SECRETS = ["CANARY_RL_A_HOOK_KEY"] as const;
 
 /** Every secret the canary takes: the model keys and the staging ones. */
 export const CANARY_SECRETS = [...MODEL_KEYS, ...STAGING_SECRETS];

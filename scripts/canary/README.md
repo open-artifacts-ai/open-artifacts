@@ -13,18 +13,31 @@ request: pull requests keep the fake-client contract tests.
 
 ## Where it runs
 
-On **staging** (`https://staging.open-artifacts.com`), as a dedicated canary
-member that only the canary uses. Its two machines are approved once, ahead of
-time: one for the client's `oa-bus daemon` (`STAGING_CANARY_MACHINE`) and one
-for the probe, the canary's own agent (`STAGING_CANARY_PROBE`). The approval
-page needs a person signed in, so a run cannot approve a new machine itself.
-The hub keeps one connection per machine, so the four client jobs take turns.
-The repo variable `CANARY_STAGING_URL` may point it at another staging
-instance.
+On **rl-a** (`https://rl-a.open-artifacts-staging.app`), the staging install
+with test hooks that the dashboard's staging e2e uses. Each run signs in a new
+member through its session hook (`TEST_HOOKS.session`, as
+`apps/dashboard/e2e/staging/rl-a/fixtures.ts` does), named
+`t19-canary-<run>-<client>@oa-redline-a.fyi`. That member makes its own token,
+then approves the client's machine and the probe's machine (the canary's own
+agent) on the real `/bus/approve` page, as a person does. So every run checks
+the approval path too. No machine or token is kept between runs.
+
+A passing run erases its member again (`TEST_HOOKS.peoplePurge`), with its
+pages, token and machines. A failed run keeps them to look at; the staging
+e2e's own sweep erases `t19-` people older than two hours, so nothing piles up.
+Each client job has its own member, so the jobs run side by side.
+
+The canary sends its hook key only to a bare https origin one label under
+`open-artifacts-staging.app` that reports test hooks on at `/healthz`. The repo
+variables `CANARY_STAGING_URL` and `CANARY_STAGING_TEST_DOMAIN` may point it at
+another such install.
+
+rl-a needs the bus feature on (`FEATURES` includes `bus`): without it the
+approval page answers 404 and the run fails, saying so.
 
 A local server (`wrangler dev` on the runner) is for development only: set
-`CANARY_TARGET=local` or pass `--target local`. That mode also approves a new
-machine on the real approval page each run.
+`CANARY_TARGET=local` or pass `--target local`. It signs in with the dev login
+instead of the hook.
 
 ## What it checks
 
@@ -44,7 +57,9 @@ it with `oa-bus install`, starts it headless with a cheap model, and checks:
 
 Each client's version is recorded as run, and again at the end: a client that
 updates itself during the run shows both. Instance-driven `oa-bus` updates are
-off, so the `oa-bus` under test is the one built from the commit.
+turned off (the run fails if that does not work), so the `oa-bus` under test is
+the one built from the commit. Its version is recorded at the start and the
+end too, and the run fails if it changed.
 
 The job summary has one table per client. When a client fails, the report job
 opens one issue for it and its channel (pinned or latest), labelled
@@ -65,22 +80,10 @@ It is never skipped.
 | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | Claude Code, OpenCode, Pi | An Anthropic API key, console.anthropic.com |
 | `OPENAI_API_KEY` | Codex | An OpenAI API key, platform.openai.com |
-| `STAGING_CANARY_PAT` | every client | The canary member's personal access token on staging: Settings, Agents (`/settings/agents`), Create token |
-| `STAGING_CANARY_MACHINE` | every client | A machine the canary member approved (below) |
-| `STAGING_CANARY_PROBE` | every client | A second machine the canary member approved (below) |
+| `CANARY_RL_A_HOOK_KEY` | every client | rl-a's test hook key: its `TEST_HOOK_KEY`, the same value the staging e2e reads as `REDLINE_RL_A_HOOK_KEY` in open-artifacts-cloud |
 
-The canary member is a member account on staging used only by the canary (an
-address you own, such as a `+canary` alias). Sign in to staging as it in your
-browser, then make each machine with the real approval page. Each command
-prints a code; approve it at `https://staging.open-artifacts.com/bus/approve`
-as the canary member. The token goes from the file straight to the secret and
-is never printed:
-
-    H=$(mktemp -d) && npx -y @open-artifacts/bus login --home "$H" --instance https://staging.open-artifacts.com --no-open && node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1] + "/machine.json", "utf8")).machine_token)' "$H" | gh secret set STAGING_CANARY_MACHINE --repo open-artifacts-ai/open-artifacts
-
-Then the same with `STAGING_CANARY_PROBE`. The client jobs get only their own
-model key. npm install gets no secret, and the report job none but its own
-GitHub token.
+The client jobs get only their own model key and the hook key. npm install
+gets no secret, and the report job none but its own GitHub token.
 
 Each client uses its cheapest model. To change one, set the repo variable
 `CANARY_MODEL_<CLIENT>` (for example `CANARY_MODEL_CODEX`).
@@ -99,6 +102,6 @@ extension that `oa-bus install` writes, against a local server:
 
 `--fake-break steer` makes the stand-in miss the mid-turn message, which turns
 that check red. `--hub http://localhost:<port>` reuses a local server you
-already run. Without `--target local` it runs on staging and needs the staging
-secrets in the environment. Everything happens under a scratch home in the
+already run. Without `--target local` it runs on rl-a and needs
+`CANARY_RL_A_HOOK_KEY` in the environment. Everything happens under a scratch home in the
 temp folder, never in your own home.

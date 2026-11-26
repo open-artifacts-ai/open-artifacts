@@ -7,9 +7,9 @@
 //   --channel <c>       pinned (default) or latest: which client release to install
 //   --target <t>        staging (the default, and what the schedule runs) or
 //                       local (development only). CANARY_TARGET sets it too.
-//                       Staging needs STAGING_CANARY_PAT, STAGING_CANARY_MACHINE
-//                       and STAGING_CANARY_PROBE (README); CANARY_STAGING_URL
-//                       names another staging instance.
+//                       Staging is rl-a and needs CANARY_RL_A_HOOK_KEY (README);
+//                       CANARY_STAGING_URL names another staging test-hooks
+//                       install, CANARY_STAGING_TEST_DOMAIN its TEST_DOMAIN.
 //   --client-bin <dir>  use the client binary in <dir> instead of installing one
 //                       (the tests put a fake client there)
 //   --hub <origin>      local: a server that is already running (else one is started)
@@ -75,15 +75,18 @@ import {
   approveProbeMachine,
   busAgents,
   createToken,
+  hookMember,
   PATHS,
   publishedBy,
+  purgeMembers,
   ROOT,
-  STAGING_URL,
+  STAGING_TEST_DOMAIN,
   signIn,
+  stagingOrigin,
   startServer,
-  tokenMember,
 } from "./hub.ts";
 import {
+  busVersionText,
   type CheckResult,
   type ClientResult,
   marker,
@@ -238,6 +241,8 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   const checks: CheckResult[] = [];
   let version = "";
   let versionAfter = "";
+  let busVersion = "";
+  let busVersionAfter = "";
   const result = (): ClientResult => {
     const r: ClientResult = {
       client: client.id,
@@ -246,11 +251,16 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       target,
       version,
       ...(versionAfter && versionAfter !== version ? { versionAfter } : {}),
+      ...(busVersion ? { busVersion } : {}),
+      ...(busVersionAfter && busVersionAfter !== busVersion
+        ? { busVersionAfter }
+        : {}),
       status: overall(checks),
       checks,
     };
     r.notes = [
       `Version as run: ${versionText(r) || "unknown (the client was not installed)"}`,
+      ...(busVersion ? [`oa-bus as run: ${busVersionText(r)}`] : []),
       steeringNote(o.nextTurn ? { ...client, steering: false } : client),
     ];
     return r;
@@ -287,6 +297,9 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   let session: Proc | undefined;
   let probe: Probe | undefined;
   let clientVersion: (() => string) | undefined;
+  let busVersionNow: (() => string) | undefined;
+  /** Staging: the hook key and this run's member prefix, for the purge. */
+  let purge: { origin: string; key: string; prefix: string } | undefined;
   /** Values a copied log must never hold. */
   const secrets = [...client.secrets, ...STAGING_SECRETS].flatMap(
     (k) => o.env[k] ?? [],
@@ -336,25 +349,28 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     version = clientVersion();
     o.log(`${client.id} version as run: ${version || "unknown"}`);
 
-    // 2. The instance, the member, and the member's token file.
+    // 2. The instance, a new member, and the member's token file. Staging:
+    // signed in through rl-a's session hook, as its staging e2e does. Local:
+    // the dev login.
     let member: Session;
-    let pat: string;
     if (target === "staging") {
-      const origin = (o.env.CANARY_STAGING_URL || STAGING_URL).replace(
-        /\/+$/,
-        "",
-      );
+      const origin = stagingOrigin(o.env.CANARY_STAGING_URL);
       server = { origin, stop: async () => {} };
-      pat = o.env.STAGING_CANARY_PAT as string;
-      member = await tokenMember(origin, pat);
+      const key = o.env.CANARY_RL_A_HOOK_KEY as string;
+      // t19-: the only prefix the purge hook erases (T19's own sweep of old
+      // runs takes a failed run's member too).
+      const prefix = `t19-canary-${marker()}-${client.id}`;
+      const domain = o.env.CANARY_STAGING_TEST_DOMAIN || STAGING_TEST_DOMAIN;
+      member = await hookMember(origin, key, `${prefix}@${domain}`);
+      purge = { origin, key, prefix };
     } else {
       server = o.hub
         ? { origin: o.hub, stop: async () => {} }
         : await startServer(o.port);
       member = await signIn(server.origin, `canary-${client.id}@canary.test`);
-      pat = await createToken(member, `canary ${client.id}`);
-      secrets.push(pat);
     }
+    const pat = await createToken(member, `canary ${client.id}`);
+    secrets.push(pat);
     const origin = server.origin;
     const tokenFile = join(home, ".open-artifacts/canary-pat-token");
     mkdirSync(join(home, ".open-artifacts"), { recursive: true, mode: 0o700 });
@@ -389,25 +405,32 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         throw new Error(`${r.cmd} ${r.args[0]} failed (exit ${out.status})`);
     }
 
-    // 3. oa-bus install. Local: approved on the approval page by the member.
-    // Staging: the machine the member approved ahead (STAGING_CANARY_MACHINE),
-    // since that page needs a person signed in; install keeps it and wires
-    // the client. Instance-driven updates are off, so the oa-bus under test
-    // stays the one built from this commit.
-    if (target === "staging") {
-      const busHome = join(home, ".oa-bus");
-      mkdirSync(busHome, { recursive: true, mode: 0o700 });
-      writeFileSync(
-        join(busHome, "machine.json"),
-        `${JSON.stringify({ hub: origin, label: "canary-client", machine_token: o.env.STAGING_CANARY_MACHINE }, null, 2)}\n`,
-        { mode: 0o600 },
-      );
-    }
-    spawnSync("oa-bus", ["auto-update", "off"], {
+    // 3. oa-bus install, approved by the member on the real approval page.
+    // Instance-driven updates are off, so the oa-bus under test stays the one
+    // built from this commit; its version is read now and again at the end.
+    busVersionNow = () => {
+      const v = spawnSync("oa-bus", ["--version"], {
+        cwd: work,
+        env,
+        encoding: "utf8",
+        timeout: LIMITS.command,
+      });
+      return (v.stdout || "").trim().split("\n")[0] ?? "";
+    };
+    busVersion = busVersionNow();
+    o.log(`oa-bus version as run: ${busVersion || "unknown"}`);
+    // auto-update off writes into the bus home, which a fresh home lacks.
+    mkdirSync(join(home, ".oa-bus"), { recursive: true, mode: 0o700 });
+    const off = spawnSync("oa-bus", ["auto-update", "off"], {
       cwd: work,
       env,
+      encoding: "utf8",
       timeout: LIMITS.command,
     });
+    if (off.status !== 0)
+      throw new Error(
+        `oa-bus auto-update off exited ${off.status}: the oa-bus under test could update itself from ${origin}`,
+      );
     const installLog = join(logs, "install.log");
     install = startProc(
       "oa-bus",
@@ -418,14 +441,12 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         log: installLog,
       },
     );
-    if (target === "local") {
-      const code = await until(
-        "oa-bus install to show a code",
-        () => USER_CODE.exec(plain(readFileSync(installLog, "utf8")))?.[1],
-        { ms: 60_000 },
-      );
-      await approveCode(member, code);
-    }
+    const code = await until(
+      "oa-bus install to show a code",
+      () => USER_CODE.exec(plain(readFileSync(installLog, "utf8")))?.[1],
+      { ms: 60_000 },
+    );
+    await approveCode(member, code);
     await until(
       "oa-bus install to finish",
       () => (install?.exited() ? true : undefined),
@@ -440,9 +461,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     step(
       "install",
       "pass",
-      target === "local"
-        ? `oa-bus install approved on ${origin} and wired ${client.label}`
-        : `oa-bus install connected to ${origin} with the canary machine and wired ${client.label}`,
+      `oa-bus install approved on ${origin} and wired ${client.label}`,
     );
 
     // 4. The daemon, run by hand (no service on a runner), then habits.
@@ -483,11 +502,8 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         `doctor says ${line ? `"${line}"` : "nothing about habits"}`,
       );
 
-    // 5. The probe: a second machine on the same bus.
-    const probeToken =
-      target === "staging"
-        ? (o.env.STAGING_CANARY_PROBE as string)
-        : await approveProbeMachine(member, "canary-probe");
+    // 5. The probe: a second machine on the same bus, approved the same way.
+    const probeToken = await approveProbeMachine(member, "canary-probe");
     secrets.push(probeToken);
     probe = await Probe.open(origin, probeToken, "canary-probe");
     // Sessions a run before this one left on the list are never taken for this one.
@@ -581,6 +597,26 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     } catch {}
     if (versionAfter && versionAfter !== version)
       o.log(`${client.id} updated itself during the run: ${versionAfter}`);
+    try {
+      busVersionAfter = busVersionNow?.() ?? "";
+    } catch {}
+    if (busVersionAfter && busVersionAfter !== busVersion)
+      step(
+        "oa-bus unchanged",
+        "fail",
+        `oa-bus was ${busVersion} as the run started and ${busVersionAfter} as it ended: the run did not test the oa-bus built from this commit`,
+      );
+    // A passing staging run erases its member, and its pages and machines with
+    // it. A failed one keeps them to look at; T19's sweep of runs older than
+    // two hours takes them later.
+    if (purge && overall(checks) === "pass") {
+      try {
+        const n = await purgeMembers(purge.origin, purge.key, purge.prefix);
+        o.log(`erased the run's member on ${purge.origin} (${n})`);
+      } catch (e) {
+        o.log(`could not erase the run's member: ${(e as Error).message}`);
+      }
+    }
     if (overall(checks) !== "fail") {
       try {
         rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });

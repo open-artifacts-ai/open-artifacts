@@ -20,7 +20,7 @@ export class Probe {
   #n = 0;
   /**
    * The hub refuses a frame id a machine already used, across connections.
-   * A staging machine serves every run, so each probe takes its own prefix.
+   * Each probe takes its own prefix, so a reused machine never collides.
    */
   #idPrefix = `p${randomBytes(6).toString("hex")}-`;
 

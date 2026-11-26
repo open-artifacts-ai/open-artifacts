@@ -10,6 +10,8 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +27,13 @@ import {
   steeringNote,
   withoutSecrets,
 } from "./clients.ts";
-import { type ClientResult, overall, summaryMarkdown } from "./lib.ts";
+import { hookMember, STAGING_URL, stagingOrigin } from "./hub.ts";
+import {
+  busVersionText,
+  type ClientResult,
+  overall,
+  summaryMarkdown,
+} from "./lib.ts";
 import type { Mail } from "./probe.ts";
 import { LABEL, readResults, report, titleFor, withMissing } from "./report.ts";
 import {
@@ -99,10 +107,13 @@ describe("client-canary.yml", () => {
     expect(JSON.stringify(wf.jobs.report)).not.toContain("secrets.");
   });
 
-  it("targets staging, one leg at a time, and alerts the owner's login", () => {
+  it("targets staging, legs side by side, and alerts the owner's login", () => {
     expect(wf.env.CANARY_TARGET).toBe("staging");
     expect(wf.env.CANARY_STAGING_URL).toBe("${{ vars.CANARY_STAGING_URL }}");
-    expect(wf.jobs.canary.strategy["max-parallel"]).toBe(1);
+    expect(wf.env.CANARY_STAGING_TEST_DOMAIN).toBe(
+      "${{ vars.CANARY_STAGING_TEST_DOMAIN }}",
+    );
+    expect(wf.jobs.canary.strategy["max-parallel"]).toBeUndefined();
     expect(workflowText).not.toContain("@oa/server build");
     const reportStep = wf.jobs.report.steps.at(-1);
     expect(reportStep.env.NOTIFY).toBe("${{ vars.OA_ALERT_GITHUB_LOGIN }}");
@@ -173,7 +184,7 @@ describe("client-canary.yml", () => {
 });
 
 describe("a missing secret fails, never skips", () => {
-  it("each client names the keys it needs; staging adds its own three", () => {
+  it("each client names the keys it needs; staging adds the hook key", () => {
     for (const c of Object.values(CLIENTS)) {
       expect(c.secrets.length).toBeGreaterThan(0);
       expect(missingSecrets(c, {}, "local")).toEqual(c.secrets);
@@ -204,7 +215,7 @@ describe("a missing secret fails, never skips", () => {
       },
     ]);
     expect(r.checks[0]?.detail).toContain(
-      "MISSING SECRET: add the repo secret STAGING_CANARY_PAT and STAGING_CANARY_MACHINE and STAGING_CANARY_PROBE to run Codex on staging",
+      "MISSING SECRET: add the repo secret CANARY_RL_A_HOOK_KEY to run Codex on staging",
     );
     expect(summaryMarkdown(r)).toContain(
       "### Codex (pinned, on staging): FAIL",
@@ -240,7 +251,7 @@ describe("a missing secret fails, never skips", () => {
     expect(r.status, r.stderr).toBe(1);
     expect(readFileSync(gho, "utf8")).toBe("run=false\n");
     expect(readFileSync(sum, "utf8")).toContain(
-      "MISSING SECRET: add the repo secret ANTHROPIC_API_KEY and STAGING_CANARY_PAT",
+      "MISSING SECRET: add the repo secret ANTHROPIC_API_KEY and CANARY_RL_A_HOOK_KEY",
     );
     expect(r.stdout).toContain("::error::MISSING SECRET:");
     expect((JSON.parse(readFileSync(out, "utf8")) as ClientResult).status).toBe(
@@ -268,9 +279,7 @@ describe("a missing secret fails, never skips", () => {
       );
     const staging = check({
       ANTHROPIC_API_KEY: "placeholder",
-      STAGING_CANARY_PAT: "placeholder",
-      STAGING_CANARY_MACHINE: "placeholder",
-      STAGING_CANARY_PROBE: "placeholder",
+      CANARY_RL_A_HOOK_KEY: "placeholder",
     });
     expect(staging.status, staging.stderr).toBe(0);
     expect(staging.stdout.trim()).toBe("run=true");
@@ -750,10 +759,58 @@ describe("logs", () => {
       PATH: "/bin",
       ANTHROPIC_API_KEY: "a",
       OPENAI_API_KEY: "b",
-      STAGING_CANARY_PAT: "c",
-      STAGING_CANARY_MACHINE: "d",
-      STAGING_CANARY_PROBE: "e",
+      CANARY_RL_A_HOOK_KEY: "c",
     });
     expect(env).toEqual({ PATH: "/bin" });
+  });
+});
+
+describe("staging is rl-a, through its test hooks", () => {
+  it("the hook key goes only to a bare https origin under open-artifacts-staging.app", () => {
+    expect(stagingOrigin(undefined)).toBe(STAGING_URL);
+    expect(stagingOrigin("")).toBe(STAGING_URL);
+    expect(stagingOrigin("https://rl-b.open-artifacts-staging.app")).toBe(
+      "https://rl-b.open-artifacts-staging.app",
+    );
+    for (const bad of [
+      "http://rl-a.open-artifacts-staging.app",
+      "https://rl-a.open-artifacts-staging.app/",
+      "https://rl-a.open-artifacts-staging.app/x",
+      "https://staging.open-artifacts.com",
+      "https://a.b.open-artifacts-staging.app",
+      "https://open-artifacts-staging.app.evil.example",
+      "not a url",
+    ])
+      expect(() => stagingOrigin(bad), bad).toThrow("CANARY_STAGING_URL");
+  });
+
+  it("sends no hook call to an install that does not report test hooks on", async () => {
+    const seen: string[] = [];
+    const server = createServer((req, res) => {
+      seen.push(`${req.method} ${req.url} ${req.headers.authorization ?? ""}`);
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const { port } = server.address() as AddressInfo;
+    try {
+      await expect(
+        hookMember(`http://127.0.0.1:${port}`, "k".repeat(40), "a@b.test"),
+      ).rejects.toThrow("does not report test hooks on");
+      expect(seen).toEqual(["GET /healthz "]);
+    } finally {
+      await new Promise((r) => server.close(r));
+    }
+  });
+
+  it("the oa-bus as run says when it changed during the run", () => {
+    const r = { busVersion: "oa-bus 0.247.0" } as ClientResult;
+    expect(busVersionText(r)).toBe("oa-bus 0.247.0");
+    expect(busVersionText({ ...r, busVersionAfter: "oa-bus 0.247.0" })).toBe(
+      "oa-bus 0.247.0",
+    );
+    expect(busVersionText({ ...r, busVersionAfter: "oa-bus 0.248.0" })).toBe(
+      "oa-bus 0.247.0, then oa-bus 0.248.0 as the run ended",
+    );
   });
 });

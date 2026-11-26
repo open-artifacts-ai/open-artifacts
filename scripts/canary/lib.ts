@@ -15,6 +15,9 @@ export type ClientResult = {
   version: string;
   /** Its `--version` again as the run ended, when that differs (it updated itself). */
   versionAfter?: string;
+  /** `oa-bus --version` as the run started, and as it ended when that differs. */
+  busVersion?: string;
+  busVersionAfter?: string;
   status: Status;
   checks: CheckResult[];
   /** Plain lines for the summary: the steering expectation, the versions. */
@@ -54,16 +57,22 @@ export async function until<T>(
 export const FETCH_MS = 30_000;
 
 /**
- * Fetch with one cookie jar, what a signed-in browser would send; or, with a
- * `bearer` token, what an API client sends (the staging canary member's token).
+ * Fetch with one cookie jar, what a signed-in browser would send (seeded with
+ * `cookies`, such as a test-hook session); or, with a `bearer` token, what an
+ * API client sends.
  */
 export class Session {
   #cookies = new Map<string, string>();
   #bearer: string | undefined;
   readonly origin: string;
-  constructor(origin: string, opts: { bearer?: string } = {}) {
+  constructor(
+    origin: string,
+    opts: { bearer?: string; cookies?: Record<string, string> } = {},
+  ) {
     this.origin = origin;
     this.#bearer = opts.bearer;
+    for (const [k, v] of Object.entries(opts.cookies ?? {}))
+      this.#cookies.set(k, v);
   }
 
   async fetch(path: string, init: RequestInit = {}): Promise<Response> {
@@ -110,6 +119,12 @@ export const versionText = (r: ClientResult): string =>
   r.versionAfter && r.versionAfter !== r.version
     ? `${r.version || "unknown"}, updated itself to ${r.versionAfter} during the run`
     : r.version;
+
+/** The oa-bus as run: "oa-bus 1.2.0", or "oa-bus 1.2.0, then oa-bus 1.3.0 as the run ended". */
+export const busVersionText = (r: ClientResult): string =>
+  r.busVersionAfter && r.busVersionAfter !== r.busVersion
+    ? `${r.busVersion || "unknown"}, then ${r.busVersionAfter} as the run ended`
+    : (r.busVersion ?? "");
 
 /** The job summary: one line per client, then one row per check. Never a secret. */
 export function summaryMarkdown(r: ClientResult): string {
