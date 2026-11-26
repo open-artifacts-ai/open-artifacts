@@ -103,6 +103,8 @@ export function readLocal(userId: string | undefined): OnboardingPatch {
 }
 export function keepLocal(userId: string, patch: OnboardingPatch) {
   const next = { ...readLocal(userId), ...patch };
+  // Show it again clears the session's own Hide, not a "false" to keep.
+  if (patch.dismissed === false) delete next.dismissed;
   try {
     sessionStorage.setItem(LOCAL(userId), JSON.stringify(next));
   } catch {
