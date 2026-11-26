@@ -14,6 +14,12 @@ import { sessionCookieName } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import worker from "../src/index.js";
 import { noteTestOtp } from "../src/test-hooks/index.js";
+import {
+  OTP_WAIT_CAP_MS,
+  otpChanged,
+  otpVersion,
+  otpWaitAfter,
+} from "../src/test-hooks/otp-wait.js";
 import { direct, mailer, seedUser, uniq } from "./auth-helpers.js";
 
 // Every deliverCode outcome logs exactly one code_send line (never the
@@ -461,5 +467,145 @@ describe("otp/latest reports the last outcome after the key", () => {
     await requestCode(e, off);
     expect(m.codeFor(off)).toBeTruthy();
     expect(await copyOf(e, off)).toBeUndefined();
+  });
+});
+
+describe("otp/latest wait: the hold is an event, not a poll", () => {
+  const on = (e: Env) => ({ ...e, ...ON }) as Env;
+  const waitFor = (e: Env, email: string, wait: number) =>
+    call(
+      e,
+      TEST_HOOKS.otpLatest,
+      { email, wait },
+      { authorization: `Bearer ${KEY}` },
+    );
+
+  it("a request held while the send is pending is answered the moment the send lands", async () => {
+    const email = uniq("hold", TD);
+    await seedUser(email, "guest");
+    const m = mailer();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const gated = {
+      ...m.env,
+      EMAIL: {
+        send: async (x: unknown) => {
+          await gate;
+          return (m.env.EMAIL as unknown as { send(x: unknown): unknown }).send(
+            x,
+          );
+        },
+      } as unknown as SendEmail,
+    };
+    const e = on({ ...direct(), ...gated } as Env);
+    // The code request, its delivery left pending (the gate holds the mail).
+    const waits: Promise<unknown>[] = [];
+    const req = await worker.fetch(
+      new Request(`http://app.localhost${AUTH.codeRequest}`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "cf-connecting-ip": "198.51.100.201",
+          "x-oa-request": "1",
+          "sec-fetch-site": "same-origin",
+        },
+        body: JSON.stringify({ email }),
+      }) as never,
+      e,
+      {
+        waitUntil: (p: Promise<unknown>) => waits.push(p),
+        passThroughOnException() {},
+      } as never,
+    );
+    expect(req.status).toBe(202);
+    const t0 = Date.now();
+    // The mail goes only once the hook has begun to hold: the hook's own call
+    // into the DO releases it (this env's binding wraps the real one).
+    const real = env.DIRECTORY_SYNC;
+    if (!real) throw new Error("DIRECTORY_SYNC unbound");
+    const holding = {
+      ...e,
+      DIRECTORY_SYNC: {
+        idFromName: (n: string) => real.idFromName(n),
+        get: (id: DurableObjectId) => {
+          const stub = real.get(id);
+          return {
+            testOtpVersion: (k: string) => stub.testOtpVersion(k),
+            testOtpChanged: (k: string) => stub.testOtpChanged(k),
+            testOtpWait: (k: string, v: number, ms: number) => {
+              const w = stub.testOtpWait(k, v, ms);
+              release();
+              return w;
+            },
+          };
+        },
+      },
+    } as unknown as Env;
+    const held = waitFor(holding, email, OTP_WAIT_CAP_MS);
+    await Promise.all(waits);
+    const r = await held;
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { code: string }).code).toBe(m.codeFor(email));
+    // Answered by the send landing, not by the hold running out its bound.
+    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+  });
+
+  it("a final answer is not held", async () => {
+    const email = uniq("final", TD);
+    await seedUser(email, "guest");
+    const e = on(withMail(direct()));
+    await requestCode(e, email);
+    const t0 = Date.now();
+    const r = await waitFor(e, email, OTP_WAIT_CAP_MS);
+    expect(r.status).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+  });
+
+  it("the DO signal wakes a waiter a note makes; a change since the version taken wakes at once", async () => {
+    const e = on(direct());
+    const email = uniq("do", TD);
+    const ek = await emailKey(e, email);
+    const since = otpVersion(ek);
+    // The waiter is registered before the note (same module state as the DO).
+    const woke = otpWaitAfter(ek, since, OTP_WAIT_CAP_MS);
+    await noteTestOtp(e, email, ek, "sent", "12345678");
+    await woke;
+    // A change after `since` is already past: no wait at all.
+    const t0 = Date.now();
+    await otpWaitAfter(ek, since, OTP_WAIT_CAP_MS);
+    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+    expect(otpVersion(ek)).toBeGreaterThan(since);
+  });
+
+  it("the bound ends a hold nobody answered, on the fake clock", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let done = false;
+      void otpWaitAfter("bound-key", otpVersion("bound-key"), 5_000).then(
+        () => {
+          done = true;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(done).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(done).toBe(true);
+      // The cap holds even when more is asked.
+      let capped = false;
+      void otpWaitAfter(
+        "cap-key",
+        otpVersion("cap-key"),
+        10 * OTP_WAIT_CAP_MS,
+      ).then(() => {
+        capped = true;
+      });
+      await vi.advanceTimersByTimeAsync(OTP_WAIT_CAP_MS);
+      expect(capped).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    otpChanged("bound-key");
   });
 });

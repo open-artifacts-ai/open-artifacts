@@ -11,7 +11,6 @@ import {
   TEST_HOOKS,
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
-import { vi } from "vitest";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
 
 export type Install = {
@@ -220,38 +219,44 @@ async function otpOutcome(r: Response): Promise<string | null> {
   return TEST_OTP_OUTCOMES.find((x) => x === o) ?? null;
 }
 
+/** The most one hold of the hook asks for (the server holds up to its own cap). */
+const OTP_HOLD_MS = 8_000;
+/** Quick "pending" answers in a row before the hook is judged not to hold requests. */
+const OTP_QUICK_MAX = 20;
+
 /**
- * The OTP hook's answer once the send is final: asked once a second while the
- * hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. A code, or a
- * 404 with a recognized final outcome, is returned as it is; a 404 with no
- * recognized outcome is malformed and fails at once.
+ * The OTP hook's answer once the send is final: each ask is held by the
+ * install while the hook's 404 says the send is "pending" and answers the
+ * moment its outcome is final (an event, not a timed re-ask), up to
+ * OTP_DEADLINE_MS in all. A code, or a 404 with a recognized final outcome, is
+ * returned as it is; a 404 with no recognized outcome is malformed and fails
+ * at once. An install whose hook answers "pending" at once, again and again,
+ * does not hold requests (an older build): that fails rather than spins.
  */
 async function settledOtp(to: Install, email: string): Promise<Response> {
-  let final: Response | undefined;
-  let malformed = false;
-  await vi
-    .waitFor(
-      async () => {
-        const r = await hook(to, TEST_HOOKS.otpLatest, { email });
-        if (r.status === 404) {
-          const outcome = await otpOutcome(r);
-          if (outcome === "pending") throw new Error("otp send still pending");
-          if (outcome === null) malformed = true;
-        }
-        final = r;
-      },
-      { timeout: OTP_DEADLINE_MS, interval: 1000 },
-    )
-    .catch(() => {
+  const end = Date.now() + OTP_DEADLINE_MS;
+  let quick = 0;
+  for (;;) {
+    const hold = Math.max(0, Math.min(end - Date.now(), OTP_HOLD_MS));
+    const asked = Date.now();
+    const r = await hook(to, TEST_HOOKS.otpLatest, { email, wait: hold });
+    if (r.status !== 404) return r;
+    const outcome = await otpOutcome(r);
+    if (outcome === null)
+      throw new Refusal(
+        `otp hook on ${to.origin}: 404 with no recognized outcome`,
+      );
+    if (outcome !== "pending") return r;
+    if (Date.now() >= end)
       throw new Refusal(
         `otp hook on ${to.origin}: still pending after ${OTP_DEADLINE_MS} ms`,
       );
-    });
-  if (malformed)
-    throw new Refusal(
-      `otp hook on ${to.origin}: 404 with no recognized outcome`,
-    );
-  return final as Response;
+    quick = Date.now() - asked < hold / 2 ? quick + 1 : 0;
+    if (quick > OTP_QUICK_MAX)
+      throw new Refusal(
+        `otp hook on ${to.origin}: answers "pending" without holding the request`,
+      );
+  }
 }
 
 /** The OTP hook's code (it is mailed after the response); a final 404 fails with its outcome. */

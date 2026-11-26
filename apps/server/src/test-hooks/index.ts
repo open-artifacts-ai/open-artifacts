@@ -47,6 +47,7 @@ import {
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode, sameKey } from "../util/crypto.js";
 import { type HookEnv, testHooksOn } from "./on.js";
+import { OTP_WAIT_CAP_MS } from "./otp-wait.js";
 
 // /__test/* (P2 T14): hooks P5's cross-tenant suite uses against stg-a and
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
@@ -144,7 +145,9 @@ export async function noteTestOtp(
     ]);
   } catch {
     log("otp_note_failed");
+    return;
   }
+  await signalOtp(env, ek);
 }
 
 /**
@@ -162,6 +165,21 @@ export async function forgetTestOtp(env: Env, email: string, ek: string) {
     ]);
   } catch {
     log("otp_note_failed");
+    return;
+  }
+  await signalOtp(env, ek);
+}
+
+/** The install's one DirectorySync DO: it holds the otp/latest wait signal (otp-wait.ts). */
+const syncDo = (env: Env) =>
+  env.DIRECTORY_SYNC?.get(env.DIRECTORY_SYNC.idFromName(SYNC_DO_NAME));
+
+/** The row for `ek` changed: wakes the hook holding a request on it. Never throws. */
+async function signalOtp(env: Env, ek: string): Promise<void> {
+  try {
+    await syncDo(env)?.testOtpChanged(ek);
+  } catch {
+    log("otp_signal_failed");
   }
 }
 
@@ -692,7 +710,32 @@ export function mountTestHooks(app: AppType): void {
         await audit(env, hook, ip, "refused", email ? { email } : {});
         return refused("bad_input");
       }
-      const got = await readTestOtp(env, await emailKey(env, email));
+      const ek = await emailKey(env, email);
+      // `wait`: while the send is "pending", hold the request until its row
+      // changes (the DO's signal, taken before each read so no change slips
+      // between them) or the bound: never a repeated read on a timer.
+      const deadline =
+        Date.now() +
+        Math.min(input.success ? (input.data.wait ?? 0) : 0, OTP_WAIT_CAP_MS);
+      const sync = syncDo(env);
+      let since = sync ? await sync.testOtpVersion(ek).catch(() => 0) : 0;
+      let got = await readTestOtp(env, ek);
+      while (
+        sync &&
+        !("code" in got) &&
+        got.outcome === "pending" &&
+        deadline > Date.now()
+      ) {
+        const woke = await sync
+          .testOtpWait(ek, since, deadline - Date.now())
+          .then(
+            () => true,
+            () => false,
+          );
+        if (!woke) break;
+        since = await sync.testOtpVersion(ek).catch(() => 0);
+        got = await readTestOtp(env, ek);
+      }
       await audit(env, hook, ip, "code" in got ? "ok" : "none", { email });
       return "code" in got
         ? c.json({ code: got.code })
