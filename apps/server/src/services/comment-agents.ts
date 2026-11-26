@@ -127,9 +127,13 @@ type OwnAgents = {
   known: boolean;
 };
 
-/** #2311: an offline agent still on a harness default name is no mention target. */
+/**
+ * #2311: an offline agent still on a harness default name is no mention
+ * target. #3132: nor is a session that handed its role on: the @ list offers
+ * the role, held by another session now.
+ */
 const hiddenUnnamed = (a: BusAgent): boolean =>
-  !a.running && a.unnamed === true;
+  (!a.running && a.unnamed === true) || a.handedOver === true;
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 

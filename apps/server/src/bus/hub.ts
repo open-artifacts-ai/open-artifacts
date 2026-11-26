@@ -2622,7 +2622,9 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
-     and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleName`;
+     and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleName,
+  (exists (select 1 from role_moves rm where rm.org_id = a.org_id and rm.from_agent_id = a.id)
+     and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents

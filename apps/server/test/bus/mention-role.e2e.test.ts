@@ -76,7 +76,10 @@ describe("an @-mention of a role (#3132)", () => {
     const all = Array.isArray(agents) ? agents : agents.agents;
     const entry = all.find((a) => a.name === role);
     expect(entry).toMatchObject({ name: role, session: names[1] });
+    // The role shows once; neither session shows by its own name.
+    expect(all.filter((a) => a.name === role)).toHaveLength(1);
     expect(all.some((a) => a.name === names[1])).toBe(false);
+    expect(all.some((a) => a.name === names[0])).toBe(false);
 
     const posted = await api(app, R.comments(id), m.cookie, {
       method: "POST",

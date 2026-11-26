@@ -1148,6 +1148,8 @@ export const BusAgentSchema = z.strictObject({
   unnamed: z.boolean().optional(),
   /** #3132: the role it holds in its own namespace: the address to @-mention it by. */
   role: z.string().optional(),
+  /** #3132: it handed its role on and holds none: the @ list leaves it out (its mail follows the role). */
+  handedOver: z.boolean().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 

@@ -31,6 +31,8 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   roleHolder?: number;
   /** #3132: the role it holds in its own namespace, by name. */
   roleName?: string | null;
+  /** #3132: it handed a role on and holds none now. */
+  handedOver?: number;
 };
 
 /**
@@ -66,6 +68,7 @@ export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => {
       : {}),
     ...statusFields(a),
     ...(a.roleName ? { role: a.roleName } : {}),
+    ...(a.handedOver === 1 ? { handedOver: true } : {}),
   };
 };
 
