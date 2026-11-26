@@ -28,8 +28,8 @@ beforeEach(() => {
   settles = eventCounter();
 });
 afterEach(async () => {
+  await stopAll(); // clears the daemon's interval while it is still the fake one
   vi.useRealTimers();
-  await stopAll();
   await Promise.all(
     servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
   );
@@ -262,6 +262,8 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242);
     const running = new Set([4242]);
+    // The sync interval is fake: each absence window is crossed by moving the clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({ claude: syncDeps(d, running) });
     expect(await h.next("agent_up")).toMatchObject({
       agent_ref: "s4242",
@@ -273,16 +275,26 @@ describe("runDaemon claude session sync", () => {
       pid: 4242,
       live: true,
     });
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window: 5 ticks
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
 
     running.delete(4242);
+    await vi.advanceTimersByTimeAsync(20); // the next tick sees it gone
     await vi.waitFor(() =>
       expect(h.of("sessions").at(-1)).toMatchObject({ closed: ["s4242"] }),
     );
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
     const downs = h.of("sessions").length;
-    await syncs.next(3);
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
     await h.barrier();
     expect(h.of("sessions")).toHaveLength(downs); // reported once
   });
@@ -512,6 +524,7 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242, { messagingSocketPath: undefined });
     const running = new Set([4242]);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: { ...syncDeps(d, running), syncMs: 100 },
     });
@@ -519,7 +532,11 @@ describe("runDaemon claude session sync", () => {
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
     expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
     expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("delivery");
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(400); // the original 400 ms window: 4 ticks
+      expect(syncs.count - before).toBeGreaterThanOrEqual(4); // the window really ran
+    }
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
