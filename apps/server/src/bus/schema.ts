@@ -509,6 +509,31 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     sql.exec("alter table roles add column held_since integer");
     sql.exec("update roles set held_since = set_at");
   }
+  // #3132: who moved a role (member: a browser or API write; holder: the
+  // holding session handed it over) and whether its bus.role.moved audit row
+  // is written. A move is recorded unaudited and settled once D1 has the row;
+  // a failed write keeps the request's credential here and is retried
+  // (services/bus.ts auditRoleMoves). Rows from before these columns were
+  // audited best effort and count as done.
+  const moveCols = new Set(
+    sql
+      .exec<{ name: string }>(
+        "select name from pragma_table_info('role_moves')",
+      )
+      .toArray()
+      .map((r) => r.name),
+  );
+  for (const [col, type] of [
+    ["moved_by", "text not null default 'member'"],
+    ["audited", "integer not null default 1"],
+    ["cred_kind", "text"],
+    ["cred_id", "text"],
+  ] as const)
+    if (!moveCols.has(col))
+      sql.exec(`alter table role_moves add column ${col} ${type}`);
+  sql.exec(
+    "create index if not exists role_moves_unaudited on role_moves(at) where audited = 0",
+  );
   // #1822: the session link. identity_id is opaque and random, minted at the
   // first accepted link_bind; proof_hash is the sha256 of the session's
   // current proof, null unless the session is live and bound.

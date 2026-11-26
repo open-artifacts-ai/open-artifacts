@@ -12,6 +12,7 @@ import {
   semverGte,
 } from "@oa/bus-protocol";
 import {
+  AuditCredKindSchema,
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
@@ -25,6 +26,7 @@ import {
   type BusRoleProposeInput,
   parseFeatures,
 } from "@oa/shared";
+import type { Cred } from "../auth/cred.js";
 import type {
   LinkDecideResult,
   LinkProposalAction,
@@ -45,7 +47,12 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
-import type { HandOverResult, PutRoleResult, RoleMove } from "../bus/roles.js";
+import type {
+  HandOverResult,
+  MoveAudit,
+  PutRoleResult,
+  RoleMove,
+} from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -65,7 +72,13 @@ import {
   type Via,
   viaKey,
 } from "./agent-usage.js";
-import { type AuditActor, audit, auditText, userActor } from "./audit.js";
+import {
+  type AuditActor,
+  audit,
+  auditText,
+  credOf,
+  userActor,
+} from "./audit.js";
 import type {
   DeliveryOutcome,
   DeliveryScope,
@@ -194,6 +207,13 @@ export type BusHubRpc = {
     name: string,
     agent: string,
   ): Promise<HandOverResult>;
+  /** #3132: role moves whose audit row D1 does not have yet, oldest first. */
+  pendingRoleMoveAudits(max?: number): Promise<MoveAudit[]>;
+  /** #3132: marks move audits written (done) or keeps a failed write's credential (held). */
+  settleRoleMoveAudits(
+    done: string[],
+    held: { id: string; cred: { kind: string; id: string | null } | null }[],
+  ): Promise<void>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -1118,6 +1138,8 @@ export async function listBusRoles(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return none;
   const hub = busHub(env, userId);
   if (!hub) return none;
+  // #3132: a Roles read retries move audits a failed write left behind.
+  await auditRoleMoves(env, userId, hub, null);
   try {
     const r = await within(
       Promise.all([hub.listRoles(), hub.listRoleProposals()]),
@@ -1154,7 +1176,7 @@ export async function putBusRole(
   if (!hub) throw refuse("no_bus");
   const r = await roleCall(hub.putRole(namespace, name, agentId));
   if (r.ok) {
-    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
     return r.role;
   }
   if (r.reason === "invalid")
@@ -1184,7 +1206,7 @@ export async function handOverBusRole(
     hub.handOverRole(identityId, input.namespace, input.name, input.agent),
   );
   if (r.ok) {
-    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
     return r.role;
   }
   if (r.reason === "not_holder") return null;
@@ -1496,17 +1518,85 @@ const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
  * only. The move has happened by now: a failed write is logged, never
  * reported as nothing changed.
  */
-async function auditMove(env: Env, userId: string, m: RoleMove): Promise<void> {
+/**
+ * #3132 "Every move is in the audit log": writes bus.role.moved for `fresh`
+ * (the move this request just made) and for every earlier move whose row D1
+ * does not have yet. The hub records each move unaudited (role_moves); a row
+ * D1 accepted is settled there, so a failed write is retried on the next role
+ * write or Roles read. The audit row's id is the move's, so a retry after a
+ * write whose answer was lost adds nothing. The actor is the member, with the
+ * moving request's credential (a holder's hand-over: its MCP token or grant;
+ * kept in the hub when the first write fails), and detail.by says who moved
+ * it: member (a browser or API write) or holder (the holding session handed
+ * it over, with its link identity). A retry that lost the credential records
+ * a system one. Never throws: the move stands either way.
+ */
+async function auditRoleMoves(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+  fresh: RoleMove | null,
+): Promise<void> {
+  let pending: MoveAudit[] = [];
   try {
-    await audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
-      detail: {
-        roleId: m.roleId,
-        fromAgentId: m.fromAgentId,
-        toAgentId: m.toAgentId,
+    pending =
+      (await within(hub.pendingRoleMoveAudits(), BUS_HUB_TIMEOUT_MS)) ?? [];
+  } catch (e) {
+    logError("bus_role_move_audit_read_failed", e);
+  }
+  if (fresh !== null && !pending.some((p) => p.id === fresh.id))
+    pending.unshift({ ...fresh, cred: null });
+  if (pending.length === 0) return;
+  const mine = fresh === null ? null : credOf(userActor(userId));
+  const stmts = pending.map((p) => {
+    const kept = AuditCredKindSchema.safeParse(p.cred?.kind);
+    const cred: Cred | null = kept.success
+      ? { kind: kept.data, id: p.cred?.id ?? null }
+      : p.id === fresh?.id
+        ? mine
+        : null;
+    return audit(
+      env,
+      "bus.role.moved",
+      auditTarget(userId),
+      { kind: "user", id: userId, cred: cred ?? { kind: "system", id: null } },
+      {
+        id: p.id,
+        detail: {
+          roleId: p.roleId,
+          fromAgentId: p.fromAgentId,
+          toAgentId: p.toAgentId,
+          by: p.by,
+          movedAt: p.at,
+          ...(p.by === "holder" && p.fromIdentity !== null
+            ? { identityId: p.fromIdentity }
+            : {}),
+        },
       },
-    }).run();
+    );
+  });
+  let written = false;
+  try {
+    await env.DB.batch(stmts);
+    written = true;
   } catch (e) {
     logError("bus_role_move_audit_failed", e);
+  }
+  try {
+    await within(
+      written
+        ? hub.settleRoleMoveAudits(
+            pending.map((p) => p.id),
+            [],
+          )
+        : hub.settleRoleMoveAudits(
+            [],
+            fresh === null ? [] : [{ id: fresh.id, cred: mine }],
+          ),
+      BUS_HUB_TIMEOUT_MS,
+    );
+  } catch (e) {
+    logError("bus_role_move_audit_settle_failed", e);
   }
 }
 
@@ -1800,7 +1890,7 @@ export async function decideBusRoleProposal(
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
   } else if (r.proposal !== null)
     // A link already used or expired is a refusal too; an unknown one has
     // nothing to name (the page answers the same).
