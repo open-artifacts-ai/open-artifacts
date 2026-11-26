@@ -8,7 +8,11 @@
 //     `promisify(setTimeout)`;
 //   - `timers/promises`: a static or dynamic import or a require of it (but a
 //     lone `setImmediate`), however its `setTimeout` is aliased, and
-//     `scheduler.wait(`; `Atomics.wait` / `waitAsync` with a finite timeout;
+//     `scheduler.wait(`; `Atomics.wait` / `waitAsync` with a finite timeout,
+//     always, whatever notifies it (write a bounded signal wait as an untimed
+//     wait under the deadline helper: `withDeadline(Atomics.waitAsync(ia, i,
+//     v).value, ms, label)`; no timeout, Infinity, `undefined` and `void 0`
+//     are not flagged);
 //   - a `sleep` helper or call;
 //   - Playwright's `waitForTimeout`, and `toPass` / `expect.poll` given
 //     `intervals`;
@@ -277,56 +281,22 @@ const JS_RULES: ((code: string) => Found[])[] = [
     }
     for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
-    // Atomics.wait / waitAsync with a finite timeout is a sleep only when
-    // nothing can notify it: the array is made inline in the call, or it is an
-    // identifier that no `Atomics.notify(<it>` in the file names and that is
-    // never handed (it, or the buffer it views) to a Worker / postMessage /
-    // workerData. No timeout, Infinity, or an explicit undefined / void 0 (the
-    // same as omitted) waits for a notify; a notifiable one with a finite
-    // timeout is a bounded signal wait, a deadline on a real signal.
-    const seg = "[A-Za-z_$][\\w$]*";
-    const chain = new RegExp(`^${seg}(?:\\s*\\.\\s*${seg})*$`);
-    // A member chain as a pattern: whitespace around the dots is free.
-    const pattern = (text: string) =>
-      text
-        .split(".")
-        .map((x) => x.trim().replace(/\$/g, "\\$"))
-        .join("\\s*\\.\\s*");
+    // Atomics.wait / waitAsync with a finite timeout is always flagged: a static
+    // scan cannot tell a sleep on a buffer nothing notifies from a bounded wait
+    // on a real signal (names do not scope). A bounded signal wait is written
+    // as an untimed wait under the sanctioned deadline helper:
+    // `withDeadline(Atomics.waitAsync(ia, i, v).value, ms, label)`. No timeout,
+    // Infinity, or an explicit undefined / void 0 (the same as omitted) waits
+    // for a notify and is not flagged.
     for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
-      const args = topLevelArgs(c.body.slice(1));
-      const timeout = args[3]?.trim();
+      const timeout = topLevelArgs(c.body.slice(1))[3]?.trim();
       if (
-        !timeout ||
-        /^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
+        timeout &&
+        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
           timeout,
         )
       )
-        continue;
-      const arr = (args[0] ?? "").trim();
-      if (chain.test(arr)) {
-        const names = [arr];
-        // the buffer the array views: `arr = new Int32Array(buf)`
-        const view = code.match(
-          new RegExp(
-            `(?<![\\w$.])${pattern(arr)}\\s*=\\s*new\\s+\\w+Array\\s*\\(\\s*(${seg}(?:\\s*\\.\\s*${seg})*)`,
-          ),
-        );
-        if (view) names.push((view[1] as string).replace(/\s+/g, ""));
-        // `.buffer` of the array is the same memory, and is covered by the
-        // array's own text appearing inside it.
-        const mentions = (text: string) =>
-          names.some((n) =>
-            new RegExp(`(?<![\\w$.])${pattern(n)}(?![\\w$])`).test(text),
-          );
-        const notified = [...calls(code, /\bAtomics\s*\.\s*notify\s*\(/g)].some(
-          (n) => mentions(topLevelArgs(n.body.slice(1))[0] ?? ""),
-        );
-        const shared = [
-          ...calls(code, /\b(?:new\s+Worker|postMessage|workerData)\s*\(/g),
-        ].some((w) => mentions(w.body));
-        if (notified || shared) continue;
-      }
-      out.push({ index: c.index, why: "timers/promises" });
+        out.push({ index: c.index, why: "timers/promises" });
     }
     return out;
   },

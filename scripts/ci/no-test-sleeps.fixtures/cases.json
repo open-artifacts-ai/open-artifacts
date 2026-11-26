@@ -798,22 +798,16 @@
     "why": []
   },
   {
-    "name": "Atomics.waitAsync bounded, resolved by a notify in the file (pass)",
+    "name": "Atomics.waitAsync bounded, resolved by a notify in the file (flag: use withDeadline)",
     "file": "a.test.ts",
     "text": "const r = Atomics.waitAsync(ia, 0, 0, 5000);\nAtomics.notify(ia, 0);\nexpect(await r.value).toBe(\"ok\");",
-    "why": []
+    "why": ["timers/promises"]
   },
   {
-    "name": "Atomics.wait bounded, buffer shared with a Worker (pass)",
+    "name": "Atomics.wait bounded, buffer shared with a Worker (flag)",
     "file": "a.test.ts",
     "text": "const sab = new SharedArrayBuffer(4);\nconst ia = new Int32Array(sab);\nnew Worker(f, { workerData: { sab } });\nAtomics.wait(ia, 0, 0, 5000);",
-    "why": []
-  },
-  {
-    "name": "Atomics.wait bounded, array posted to a worker (pass)",
-    "file": "a.test.ts",
-    "text": "w.postMessage({ ia });\nAtomics.wait(ia, 0, 0, 5000);",
-    "why": []
+    "why": ["timers/promises"]
   },
   {
     "name": "Atomics.wait timeout-only on a local nothing notifies (flag)",
@@ -828,57 +822,27 @@
     "why": ["timers/promises"]
   },
   {
-    "name": "Atomics.notify of a different array does not count (flag)",
+    "name": "a notify in one block masks a timeout-only sleep on a same-named local in another (flag)",
     "file": "a.test.ts",
-    "text": "Atomics.notify(other, 0);\nAtomics.wait(ia, 0, 0, 50);",
+    "text": "{\n  const a = new Int32Array(sab);\n  Atomics.notify(a, 0);\n}\n{\n  const a = new Int32Array(new SharedArrayBuffer(4));\n  Atomics.wait(a, 0, 0, 50);\n}",
     "why": ["timers/promises"]
   },
   {
-    "name": "Atomics.wait bounded on this.ia, notified as this.ia (pass)",
+    "name": "Atomics.wait bounded on a member chain, notified (flag)",
     "file": "a.test.ts",
     "text": "Atomics.wait(this.ia, 0, 0, 5000);\nAtomics.notify(this.ia, 0);",
-    "why": []
-  },
-  {
-    "name": "Atomics.waitAsync bounded on ctx.ia, notified as ctx . ia (pass)",
-    "file": "a.test.ts",
-    "text": "const r = Atomics.waitAsync(ctx.ia, 0, 0, 5000);\nAtomics.notify(ctx . ia, 0);",
-    "why": []
-  },
-  {
-    "name": "Atomics.wait bounded on state.buf.ia, array posted to a worker (pass)",
-    "file": "a.test.ts",
-    "text": "w.postMessage({ ia: state.buf.ia });\nAtomics.wait(state.buf.ia, 0, 0, 5000);",
-    "why": []
-  },
-  {
-    "name": "Atomics.wait bounded on this.ia, its buffer shared with a Worker (pass)",
-    "file": "a.test.ts",
-    "text": "this.ia = new Int32Array(this.sab);\nnew Worker(f, { workerData: this.sab });\nAtomics.wait(this.ia, 0, 0, 5000);",
-    "why": []
-  },
-  {
-    "name": "Atomics.wait bounded on this.ia, notified through its .buffer (pass)",
-    "file": "a.test.ts",
-    "text": "Atomics.notify(new Int32Array(this.ia.buffer), 0);\nAtomics.wait(this.ia, 0, 0, 5000);",
-    "why": []
-  },
-  {
-    "name": "Atomics.wait bounded on this.ia, never notified (flag)",
-    "file": "a.test.ts",
-    "text": "this.ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.wait(this.ia, 0, 0, 50);",
     "why": ["timers/promises"]
   },
   {
-    "name": "Atomics.wait bounded on ctx.ia, a different member notified (flag)",
+    "name": "Atomics.waitAsync bounded, written as an untimed wait under withDeadline (pass)",
     "file": "a.test.ts",
-    "text": "Atomics.notify(ctx.other, 0);\nAtomics.wait(ctx.ia, 0, 0, 50);",
-    "why": ["timers/promises"]
+    "text": "await withDeadline(Atomics.waitAsync(ia, 0, 0).value, 5000, \"worker notify\");",
+    "why": []
   },
   {
-    "name": "Atomics.wait bounded on state.buf.ia, only state.buf.iab notified (flag)",
+    "name": "Atomics.wait untimed on a member chain (pass)",
     "file": "a.test.ts",
-    "text": "Atomics.notify(state.buf.iab, 0);\nAtomics.wait(state.buf.ia, 0, 0, 50);",
-    "why": ["timers/promises"]
+    "text": "Atomics.wait(this.ia, 0, 0);",
+    "why": []
   }
 ]
