@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** a moved role takes the old session's notices and follows ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3228](https://github.com/open-artifacts-ai/open-artifacts/issues/3228)) ([0ef0989](https://github.com/open-artifacts-ai/open-artifacts/commit/0ef0989bcf4b849d14a5c0af1933977c4a1f60ab))
+
+
+### Bug Fixes
+
+* **bus:** a Codex entry signed in with codex mcp login links with no token ([#3108](https://github.com/open-artifacts-ai/open-artifacts/issues/3108)) ([#3125](https://github.com/open-artifacts-ai/open-artifacts/issues/3125)) ([3670730](https://github.com/open-artifacts-ai/open-artifacts/commit/3670730a5be9b2113016602e7a2d2368b99613da))
+
 ## [0.252.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.1...v0.252.0) (2026-11-26)
 
 
