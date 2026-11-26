@@ -530,11 +530,12 @@ describe("skill.md drift", () => {
         "Use only these tools:",
         "publish this instance's pages with publish_artifact and the other tools here",
         "If your harness has its own artifact or page tool, it publishes somewhere else",
-        "A page or file under",
-        "is one call: read the file and pass its text as content",
-        "That is the default for pages you edit over time",
-        "If you pass size, it is the exact byte count of the file as it will be sent",
-        "never estimate it",
+        "A file already on disk",
+        "publish it by upload, so its text never passes through you",
+        "Do not read it into your context or paste it as content",
+        "curl -sS --fail -T <file> '<url>' -o /dev/null -w '%{http_code}\\n'",
+        "Text you are writing in this turn, with no file on disk, goes inline as content",
+        "size is optional: if you pass it, it is the exact byte count (measure it, for example wc -c), never an estimate.",
         "An upload id works once",
         "create a new upload instead of reusing that id",
       ])
@@ -863,10 +864,10 @@ describe("query_too_large is documented (review item 23)", () => {
   });
 });
 
-it("teaches client checksums and unchanged-byte uploads in the served skill", () => {
-  expect(SKILL_TEMPLATE).toContain("sha256sum file");
+it("teaches client checksums and exact-byte uploads in the served skill", () => {
   expect(SKILL_TEMPLATE).toContain("shasum -a 256 file");
-  expect(SKILL_TEMPLATE).toContain("do not modify the file after hashing");
+  expect(SKILL_TEMPLATE).toContain("hex SHA-256 of the exact bytes");
+  expect(SKILL_TEMPLATE).toContain("R2 verifies it and keeps a content hash");
 });
 
 describe("edit_doc in the skill is per install (#2578)", () => {
