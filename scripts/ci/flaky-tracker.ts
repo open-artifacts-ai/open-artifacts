@@ -3,9 +3,10 @@
 // reruns nothing and blocks nothing. flaky-tracker.yml runs it when a CI run
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
 // group, queued). An hourly reconcile (--reconcile) catches any run that
-// event missed: it lists the last RECONCILE_HOURS of CI runs that passed on
-// attempt 2 or later and tracks each one the store has no `passed` line for,
-// through the same code. That line means the run is fully handled: it is
+// event missed: it lists the CI runs created in the last RERUN_DAYS that
+// passed on attempt 2 or later and were updated in the last RECONCILE_HOURS,
+// and tracks each one the store has no `passed` line for, through the same
+// code. That line means the run is fully handled: it is
 // written with the run's sightings when nothing is filed, else in its own
 // store comment after every filing succeeded, so a failed filing is retried.
 // Every test that failed on an earlier attempt of that run, with the same
@@ -79,8 +80,13 @@ const STORE_CHAIN_MAX = 10;
  * workflow's name, so it is never read.
  */
 export const WATCHED = ["ci.yml"];
-/** How far back the hourly reconcile looks for a run the event missed. */
+/** The hourly reconcile tracks the runs updated in the last this many hours. */
 export const RECONCILE_HOURS = 26;
+/** GitHub lets a run be rerun for this many days after it was created. */
+export const RERUN_DAYS = 30;
+/** list-workflow-runs returns at most this many runs for one query. */
+export const LIST_MAX = 1000;
+const PER_PAGE = 100;
 const DAY_MS = 24 * 3600 * 1000;
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
@@ -1003,38 +1009,89 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   return finish();
 }
 
+const isoSec = (ms: number) =>
+  new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+
+/** A listed run, as listRuns asks the API for it. */
+type RunRow = {
+  id: number;
+  run_attempt: number;
+  conclusion: string | null;
+  updated_at: string;
+};
+
+/**
+ * Every run a list-workflow-runs query (`path`, with no created, page or
+ * per_page) finds created from `from` to `to` (ms, whole seconds, both ends
+ * included). GitHub returns at most LIST_MAX runs for one query, so a range
+ * whose total_count is LIST_MAX or more is halved and each half listed the
+ * same way. A one-second range that still has that many throws: the list
+ * would be incomplete.
+ */
+export function listRuns(
+  exec: Exec,
+  path: string,
+  from: number,
+  to: number,
+): RunRow[] {
+  const range = encodeURIComponent(`${isoSec(from)}..${isoSec(to)}`);
+  const page = (p: number) =>
+    JSON.parse(
+      gh(exec, [
+        "api",
+        `${path}&created=${range}&per_page=${PER_PAGE}&page=${p}`,
+        "--jq",
+        "{total_count, workflow_runs: [.workflow_runs[] | {id, run_attempt, conclusion, updated_at}]}",
+      ]),
+    ) as { total_count: number; workflow_runs: RunRow[] };
+  const first = page(1);
+  if (first.total_count >= LIST_MAX) {
+    if (to - from < 1000)
+      throw new Error(
+        `${first.total_count} runs created at ${isoSec(from)}: GitHub lists at most ${LIST_MAX} for one query, so the reconcile can't see them all`,
+      );
+    const mid = from + Math.floor((to - from) / 2000) * 1000;
+    return [
+      ...listRuns(exec, path, from, mid),
+      ...listRuns(exec, path, mid + 1000, to),
+    ];
+  }
+  const out = [...first.workflow_runs];
+  for (let p = 2; (p - 1) * PER_PAGE < first.total_count; p++)
+    out.push(...page(p).workflow_runs);
+  return out;
+}
+
 /**
  * The runs the reconcile looks at: runs of the watched workflows created in
- * the last WINDOW_DAYS days and updated in the last RECONCILE_HOURS whose latest attempt (2 or later) passed,
- * fork PRs' runs too, oldest first.
+ * the last RERUN_DAYS days (a run can be rerun that long after it was
+ * created) whose latest attempt (2 or later) passed and that were updated in
+ * the last RECONCILE_HOURS, fork PRs' runs too, oldest first. Whether a
+ * failure counts toward two in seven days is decided later, by the failed
+ * job's completion time, never by the run's creation.
  */
 export function recentRuns(
   exec: Exec,
   repo: string,
   nowMs: number,
 ): { runId: number; attempt: number }[] {
-  // Created in the sighting window (WINDOW_DAYS), updated in the last
-  // RECONCILE_HOURS: a run rerun to green days after it was created is found.
-  const since = new Date(nowMs - WINDOW_DAYS * DAY_MS)
-    .toISOString()
-    .replace(/\.\d+Z$/, "Z");
-  const touched = new Date(nowMs - RECONCILE_HOURS * 3600 * 1000)
-    .toISOString()
-    .replace(/\.\d+Z$/, "Z");
+  const to = Math.floor(nowMs / 1000) * 1000;
+  const from = to - RERUN_DAYS * DAY_MS;
+  const touched = nowMs - RECONCILE_HOURS * 3600 * 1000;
   const out = new Map<number, number>();
-  for (const wf of WATCHED) {
-    const lines = gh(exec, [
-      "api",
-      "--paginate",
-      `repos/${repo}/actions/workflows/${wf}/runs?status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`,
-      "--jq",
-      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .updated_at >= "${touched}") | "\\(.id) \\(.run_attempt)"`,
-    ]);
-    for (const l of lines.split("\n")) {
-      const m = /^(\d+) (\d+)$/.exec(l.trim());
-      if (m) out.set(Number(m[1]), Number(m[2]));
-    }
-  }
+  for (const wf of WATCHED)
+    for (const r of listRuns(
+      exec,
+      `repos/${repo}/actions/workflows/${wf}/runs?status=success`,
+      from,
+      to,
+    ))
+      if (
+        r.conclusion === "success" &&
+        r.run_attempt > 1 &&
+        Date.parse(r.updated_at) >= touched
+      )
+        out.set(r.id, r.run_attempt);
   return [...out]
     .map(([runId, attempt]) => ({ runId, attempt }))
     .sort((a, b) => a.runId - b.runId);
@@ -1154,7 +1211,7 @@ function report(lines: string[]) {
 function mainReconcile(repo: string) {
   const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
   const lines = [
-    `Flaky tracker reconcile, the last ${RECONCILE_HOURS} hours: ${all.length} runs passed on attempt 2 or later`,
+    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS} days passed on attempt 2 or later and were updated in the last ${RECONCILE_HOURS} hours`,
   ];
   for (const r of all) {
     lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);

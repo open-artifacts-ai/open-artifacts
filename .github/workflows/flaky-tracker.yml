@@ -12,8 +12,11 @@
 # never checks out or runs a fork's code, and what their runs give it (logs
 # and the test names in them) is only read as text and made inert before it
 # is written to an issue.
-# Hourly, a reconcile tracks any such run created in the last 7 days and updated in the last 26 hours whose event
-# this workflow missed; a run the store already has is skipped. The watched
+# Hourly, a reconcile tracks any such run created in the last 30 days (how
+# long GitHub allows a rerun) and updated in the last 26 hours whose event
+# this workflow missed; a run the store already has is skipped. A listing of
+# 1,000 runs or more (GitHub's limit for one query) is split into smaller
+# creation ranges, and the reconcile fails if one second still has that many. The watched
 # workflow is named by its file (workflow_run.path), never by
 # workflow_run.name: that is the run-name, which a workflow may set to
 # anything (cloud's redline-staging runs are named "redline-staging v0.247.0").

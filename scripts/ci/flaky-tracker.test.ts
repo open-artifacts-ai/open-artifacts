@@ -16,6 +16,7 @@ import {
   inert,
   issueTitle,
   keyOf,
+  LIST_MAX,
   loadRun,
   MAX_FILED_PER_RUN,
   markerBlock,
@@ -25,8 +26,10 @@ import {
   parseStore,
   parseVitest,
   RECONCILE_HOURS,
+  RERUN_DAYS,
   type Recorded,
   type RunInfo,
+  recentRuns,
   reconcile,
   repoDir,
   type Sighting,
@@ -412,13 +415,71 @@ type FakeIssue = {
   closed?: boolean;
 };
 
+type Listed = {
+  id: number;
+  run_attempt: number;
+  conclusion: string;
+  created_at: string;
+  updated_at: string;
+};
+const HOUR = 3600 * 1000;
+const DAY = 24 * HOUR;
+const iso = (ms: number) => new Date(ms).toISOString().replace(/\.\d+Z$/, "Z");
+/** A CI run that passed on `attempt`, created and last updated so long before NOW. */
+const rerun = (
+  id: number,
+  o: { attempt?: number; created?: number; updated?: number } = {},
+): Listed => ({
+  id,
+  run_attempt: o.attempt ?? 2,
+  conclusion: "success",
+  created_at: iso(NOW - (o.created ?? DAY)),
+  updated_at: iso(NOW - (o.updated ?? HOUR)),
+});
+/**
+ * The runs API's list-workflow-runs, as GitHub answers it: the runs created
+ * in the query's range (both ends included), newest first, the full
+ * total_count, but only the first LIST_MAX of them reachable by page.
+ */
+function listPage(runs: Listed[], path: string): string {
+  const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+  const [a, b] = (q.get("created") ?? "").split("..");
+  if (!a || !b) throw new Error(`no created range in ${path}`);
+  const per = Number(q.get("per_page"));
+  const page = Number(q.get("page"));
+  const hit = runs
+    .filter(
+      (r) =>
+        r.created_at >= a &&
+        r.created_at <= b &&
+        (q.get("status") !== "success" || r.conclusion === "success"),
+    )
+    .sort((x, y) => y.created_at.localeCompare(x.created_at));
+  const reachable = hit.slice(0, LIST_MAX);
+  return JSON.stringify({
+    total_count: hit.length,
+    workflow_runs: reachable.slice((page - 1) * per, page * per),
+  });
+}
+/** The created ranges the reconcile listed, in order, once per range. */
+const ranges = (calls: string[][]) => [
+  ...new Set(
+    calls
+      .map((c) => c.find((a) => a.includes("/actions/workflows/")) ?? "")
+      .filter(Boolean)
+      .map((p) =>
+        new URLSearchParams(p.slice(p.indexOf("?") + 1)).get("created"),
+      ),
+  ),
+];
+
 /** A fake GitHub: one failed attempt with the given job log, then the issue API. */
 function fakeGh(o: {
   log: string;
   jobConclusion?: string;
   attemptConclusion?: string;
-  /** The reconcile's run list: `id attempt` lines, after its jq filter. */
-  recentRuns?: string;
+  /** The runs of ci.yml the runs API holds, for the reconcile's listing. */
+  runs?: Listed[];
   headRepo?: string;
   storeComments?: { user: string; body: string; issue?: number }[];
   issues?: FakeIssue[];
@@ -445,7 +506,7 @@ function fakeGh(o: {
     const path = args.find((a) => a.startsWith("repos/")) ?? "";
     if (args[0] === "api") {
       if (/\/actions\/workflows\/ci\.yml\/runs\?/.test(path))
-        return ok(o.recentRuns ?? "");
+        return ok(listPage(o.runs ?? [], path));
       if (/\/attempts\/2$/.test(path))
         return ok(
           JSON.stringify({
@@ -737,7 +798,7 @@ describe("track", () => {
   it("a failed issue create leaves the run unmarked, so the next reconcile files it", () => {
     const g = fakeGh({
       log: ONE_FAIL,
-      recentRuns: "900 2\n",
+      runs: [rerun(900)],
       issues: [STORE],
       storeComments: [
         { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
@@ -945,27 +1006,117 @@ describe("reconcile", () => {
   it(`lists passing reruns updated in the last ${RECONCILE_HOURS} hours, forks' too, in small reads`, () => {
     const g = fakeGh({ log: ONE_FAIL });
     expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
-    const list = g.calls.find((c) =>
+    const list = g.calls.filter((c) =>
       c.some((a) => a.includes("/actions/workflows/ci.yml/runs?")),
     );
-    const path = list?.find((a) => a.startsWith("repos/")) ?? "";
-    expect(path).toContain("per_page=100");
+    expect(list).toHaveLength(1);
+    const path = list[0]?.find((a) => a.startsWith("repos/")) ?? "";
     expect(path).toContain("status=success");
-    // Created in the 7-day window, updated in the last 26 hours: a run
-    // rerun to green days after it was created is still found.
+    expect(path).toContain("per_page=100&page=1");
+    // Created in the last 30 days, when GitHub still allows a rerun.
+    expect(RERUN_DAYS).toBe(30);
     expect(decodeURIComponent(path)).toContain(
-      "created=>=2026-11-19T12:00:00Z",
+      "created=2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
     );
-    const jq = list?.[list.indexOf("--jq") + 1] ?? "";
-    expect(jq).toContain(".run_attempt > 1");
-    expect(jq).toContain('.updated_at >= "2026-11-25T10:00:00Z"');
+    const jq = list[0]?.[list[0].indexOf("--jq") + 1] ?? "";
+    expect(jq).toContain("total_count");
     expect(jq).not.toContain("head_repository");
     // Nothing to do: no store read, no write.
     expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
   });
 
+  it("finds a run created days ago that passed on a rerun in the last 26 hours", () => {
+    const runs = [
+      // Created 4 days ago, passed on attempt 3 two hours ago.
+      rerun(901, { attempt: 3, created: 4 * DAY, updated: 2 * HOUR }),
+      // Created 25 days ago: still inside GitHub's 30-day rerun period.
+      rerun(902, { created: 25 * DAY, updated: 3 * HOUR }),
+      // Created 31 days ago: GitHub can't rerun it any more.
+      rerun(903, { created: 31 * DAY, updated: 3 * HOUR }),
+      // Updated 27 hours ago: an earlier reconcile had it.
+      rerun(904, { created: 2 * DAY, updated: 27 * HOUR }),
+      // Passed on its first attempt: nothing to track.
+      rerun(905, { attempt: 1, created: 2 * DAY }),
+    ];
+    const g = fakeGh({ log: ONE_FAIL, runs });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([
+      { runId: 901, attempt: 3 },
+      { runId: 902, attempt: 2 },
+    ]);
+  });
+
+  it("counts a 25-day-old run's failure by its job's completion time, not the run's creation", () => {
+    // Run 900 was created 25 days ago; attempt 1's job failed at
+    // 2026-11-26T10:00:00Z and attempt 2 passed an hour ago. With run 800's
+    // sighting two days earlier, that is twice in 7 days.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(900, { created: 25 * DAY })],
+      issues: [STORE],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
+      ],
+    });
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.result).toBe("tracked");
+    expect(r?.done).toEqual([{ action: "create", id: ID }]);
+    expect(parseStore(g.comments[0]?.body ?? "")).toEqual([
+      { key: keyOf(ID), run: 900, attempt: 1, at: "2026-11-26T10:00:00Z" },
+    ]);
+  });
+
+  it("splits a range whose listing reaches 1,000 runs, so none is missed", () => {
+    // 999 runs that passed first time in the last day, and the oldest one, a
+    // rerun from 20 days ago: 1,000 in the 30 days, GitHub's limit.
+    const runs = [
+      ...Array.from({ length: LIST_MAX - 1 }, (_, i) =>
+        rerun(10_000 + i, { attempt: 1, created: HOUR + i * 60_000 }),
+      ),
+      rerun(901, { created: 20 * DAY }),
+    ];
+    const g = fakeGh({ log: ONE_FAIL, runs });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
+    expect(ranges(g.calls)).toEqual([
+      "2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
+      "2026-10-27T12:00:00Z..2026-11-11T12:00:00Z",
+      "2026-11-11T12:00:01Z..2026-11-26T12:00:00Z",
+    ]);
+  });
+
+  it("finds the oldest of 1,145 runs, past the 1,000 one listing returns", () => {
+    // As public CI had for 9 to 15 November: one query reaches only the
+    // newest 1,000.
+    const runs = [
+      ...Array.from({ length: 1144 }, (_, i) =>
+        rerun(10_000 + i, { attempt: 1, created: 2 * DAY + i * 300_000 }),
+      ),
+      rerun(901, { attempt: 3, created: 8 * DAY, updated: 2 * HOUR }),
+    ];
+    const g = fakeGh({ log: ONE_FAIL, runs });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
+    // The whole 30 days held 1,145, so it was split before paging.
+    expect(ranges(g.calls)[0]).toBe(
+      "2026-10-27T12:00:00Z..2026-11-26T12:00:00Z",
+    );
+    expect(ranges(g.calls).length).toBeGreaterThan(1);
+  });
+
+  it("fails loudly when one second holds 1,000 runs", () => {
+    const runs = Array.from({ length: LIST_MAX }, (_, i) =>
+      rerun(10_000 + i, { created: 5 * DAY }),
+    );
+    const g = fakeGh({ log: ONE_FAIL, runs });
+    const at = iso(NOW - 5 * DAY);
+    expect(() => recentRuns(g.exec, REPO, NOW)).toThrow(
+      `1000 runs created at ${at}: GitHub lists at most 1000 for one query`,
+    );
+    expect(() => reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toThrow(
+      /1000 runs created at/,
+    );
+  });
+
   it("records a run the event missed, through the same code", () => {
-    const g = fakeGh({ log: ONE_FAIL, recentRuns: "900 2\n" });
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
     const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
     expect(r).toEqual([
       {
@@ -988,7 +1139,7 @@ describe("reconcile", () => {
     // Run 800 was recorded, and run 900 filed its issue, by their events.
     const g = fakeGh({
       log: ONE_FAIL,
-      recentRuns: "800 2\n900 2\n",
+      runs: [rerun(800), rerun(900)],
       issues: [STORE],
       storeComments: [
         { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
@@ -1014,7 +1165,7 @@ describe("reconcile", () => {
   it("a forged passed line from someone else doesn't hide a run", () => {
     const g = fakeGh({
       log: ONE_FAIL,
-      recentRuns: "900 2\n",
+      runs: [rerun(900)],
       issues: [STORE],
       storeComments: [{ user: "mallory", body: markerBlock(["passed 900/2"]) }],
     });
@@ -1024,7 +1175,7 @@ describe("reconcile", () => {
   });
 
   it("records a fork PR's run like any other", () => {
-    const o = { log: ONE_FAIL, recentRuns: "900 2\n" };
+    const o = { log: ONE_FAIL, runs: [rerun(900)] };
     const fork = fakeGh({ ...o, headRepo: "mallory/open-artifacts" });
     const ours = fakeGh(o);
     const r = reconcile({ exec: fork.exec, repo: REPO, nowMs: NOW });
