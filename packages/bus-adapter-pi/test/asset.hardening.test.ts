@@ -141,7 +141,7 @@ describe("pi asset hardening", () => {
       ev: string,
       ...a: unknown[]
     ) {
-      const ret = emit.call(this, ev, ...a);
+      const ret = Reflect.apply(emit, this, [ev, ...a]) as boolean;
       if (ev === "data" && Buffer.isBuffer(a[0]) && a[0].equals(first))
         firstRead();
       return ret;
