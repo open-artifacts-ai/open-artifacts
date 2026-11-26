@@ -4,6 +4,7 @@ import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { installClock, settle } from "./clock";
 import { installHarness, mount } from "./harness";
 
 installHarness();
@@ -27,6 +28,9 @@ const navigate = (f: HTMLIFrameElement, n = 1) => {
   for (let i = 0; i < n; i++) fireEvent.load(f);
 };
 
+// A clock, not the wall (test/clock.ts).
+installClock();
+
 describe("renavigation notice", () => {
   it("shows for an artifact with a capability, as a polite status", async () => {
     mount(viewerPath(LIVE));
@@ -44,7 +48,7 @@ describe("renavigation notice", () => {
     const f = await frame();
     fireEvent.load(f);
     navigate(f, 2);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(notice()).toBeNull();
   });
 
@@ -75,7 +79,7 @@ describe("renavigation notice", () => {
     expect(nonce).toMatch(/^[\w-]{22}$/);
     expect(nonce).not.toBe(src.split("#oa=")[1]);
     fireEvent.load(second); // ours: no notice
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(notice()).toBeNull();
     navigate(second);
     expect(await screen.findByText(COPY)).toBeTruthy();

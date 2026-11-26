@@ -12,6 +12,7 @@ import { qk } from "../src/api/queries";
 import { reportApiError } from "../src/api/queryClient";
 import { BREAK_GLASS_COPY as C, reauthHref } from "../src/auth/BreakGlass";
 import { parseHostedParam } from "../src/hostedParam";
+import { installClock, settle } from "./clock";
 import {
   type Call,
   calls,
@@ -91,6 +92,9 @@ const openDirectory = async () => {
   fireEvent.click(screen.getByRole("button", { name: C.open }));
 };
 
+// A clock, not the wall (test/clock.ts).
+installClock();
+
 describe("GET /me 401", () => {
   it("a plain 401 still logs out to the login page", async () => {
     server.use(
@@ -123,7 +127,7 @@ describe("GET /me 401", () => {
   it("a plain 401 elsewhere before /me answers doesn't log out", async () => {
     mountHosted("/", stale, undefined, [
       http.get("*/api/v1/me", async () => {
-        await new Promise((r) => setTimeout(r, 150));
+        await settle(150);
         return HttpResponse.json(
           {
             error: {
@@ -153,7 +157,7 @@ describe("GET /me 401", () => {
       lastClient,
       new ApiClientError("unauthorized", "Log in", 401),
     );
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(
       screen.getByRole("heading", { level: 1, name: C.title }),
     ).toBeVisible();
@@ -169,7 +173,7 @@ describe("GET /me 401", () => {
       new ApiClientError("break_glass_required", "x", 401, { fresh: true }),
     );
     await lastClient.cancelQueries({ queryKey: qk.me });
-    await new Promise((r) => setTimeout(r, 0));
+    await settle(0);
     expect(me.state.status).not.toBe("error");
   });
 });

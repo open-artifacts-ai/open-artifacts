@@ -22,6 +22,7 @@ import {
 } from "vitest";
 import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
 import { fullPath } from "../src/viewer/paths";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -181,6 +182,8 @@ const commentsCount = (c: HTMLElement) =>
   within(c)
     .getByRole("tab", { name: "Comments" })
     .querySelector("[data-tabs-count]")?.textContent;
+
+installClock();
 
 describe("comments: layouts", () => {
   it("is a column beside the page at 960px and up, with the open count on the button", async () => {
@@ -406,7 +409,7 @@ describe("comments: layouts", () => {
         outletH = 0; // hidden at the first frame
         await open();
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
-        await new Promise((r) => setTimeout(r, 50));
+        await settle(50);
         expect(spy).not.toHaveBeenCalledWith(
           expect.objectContaining({ behavior: "smooth" }),
         );
@@ -477,7 +480,7 @@ describe("comments: layouts", () => {
       expect(overlay).toHaveAttribute("data-sheet-height", "half");
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       expect(overlay).toHaveAttribute("data-sheet-height", "pin");
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
       expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
       expect(spy).not.toHaveBeenCalledWith(
         expect.objectContaining({ behavior: "smooth" }),
@@ -488,7 +491,7 @@ describe("comments: layouts", () => {
       Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p1"));
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
       expect(spy).not.toHaveBeenCalledWith(
         expect.objectContaining({ behavior: "smooth" }),
       );
@@ -1502,6 +1505,9 @@ describe("comments: errors", () => {
 
 describe("comments: live and logged out", () => {
   it("refetches the list when the events socket says comments changed", async () => {
+    // This one stays on real timers: with the file's fake clock frozen, the
+    // refetch the socket frame asks for is never made.
+    vi.useRealTimers();
     const gets = calls("GET");
     mount(viewerPath(OWNED));
     await col();

@@ -30,8 +30,9 @@ import {
 
 // T19 step 2: how people join rl-a. rl-a signs its domain in with Google
 // (domainCodes off) and admits guests by emailed code. TEST_DOMAIN is outside
-// that domain, so a TEST_DOMAIN address can be an invited member (Google
-// only), a guest someone shared with (codes), or nobody (no code, no account).
+// that domain, so a TEST_DOMAIN address can be an invited member (Google or
+// a code, #3082), a guest someone shared with (codes), or nobody (no code, no
+// account).
 // Every code request goes through the real sign-in UI; the code comes from
 // the otp/latest hook. Each address asks once a run: a second request inside
 // the 60 s resend window would null the first code.
@@ -130,7 +131,7 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", {
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member: Google is their way in, never a code; their session lands in the library", {
+test("an invited member outside the domain signs in by code: a member session in the library", {
   tag: "@gate",
 }, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
@@ -142,22 +143,52 @@ test("an invited member: Google is their way in, never a code; their session lan
     }),
   );
   expect(r).toMatchObject({ email: invited, role: "member" });
-  // TEST_DOMAIN is outside rl-a's Google domain: the invite stands, flagged.
-  expect(r.signIn).toEqual({ status: "uncertain", reason: "outside_domains" });
-  expect(r.signInMethods).toEqual(["google"]);
+  // TEST_DOMAIN is outside rl-a's Google domain, but codes are on: an invited
+  // member there may sign in by code (#3082), so the invite isn't flagged.
+  expect(r.signIn).toBeUndefined();
+  expect(r.signInMethods).toEqual(["google", "email"]);
 
-  await askForCode(browser, invited);
-  expect(await otp(invited)).toEqual({ outcome: "ineligible" });
+  const page = await askForCode(browser, invited);
+  const got = await otp(invited);
+  if (!("code" in got))
+    throw new Error(`no code for the invited member (${got.outcome})`);
+  // The code itself signs them in, in the browser (#3096): the session it
+  // makes must be a working member session, not a capped guest one.
+  const verified = page.waitForResponse(
+    (res) =>
+      res.url().endsWith("/auth/code/verify") &&
+      res.request().method() === "POST",
+  );
+  await page.getByRole("textbox", { name: "Code" }).fill(got.code);
+  await page.getByRole("button", { name: "Verify" }).click();
+  const v = await verified;
+  expect(v.status()).toBe(200);
+  expect(await v.json()).toMatchObject({
+    user: { id: r.id, role: "member" },
+    readOnly: false,
+  });
 
-  // Signed in (the session hook stands in for Google): the invited row, a member.
-  const p = await person(browser, "invited", "member");
-  expect(p.id).toBe(r.id);
-  await p.page.goto("/");
+  // An invited row has no name yet: the first page asks for one.
+  const ask = page.getByRole("dialog", {
+    name: "What do you like to be called?",
+  });
+  await ask
+    .getByRole("textbox", { name: "Your name" })
+    .fill(`T19 ${RUN} invited`);
+  await ask.getByRole("button", { name: "Save" }).click();
+  await expect(ask).toHaveCount(0);
   await expect(
-    p.page.getByRole("heading", { level: 1, name: "Library" }),
+    page.getByRole("heading", { level: 1, name: "Library" }),
   ).toBeVisible();
-  const me = await json<Me>(await api(p, R.me));
-  expect(me.user.role).toBe("member");
+
+  // The API agrees on the code session: the invited row, a member, uncapped.
+  const me = (await (
+    await page.request.get(`${A.app}${R.me}`, {
+      headers: { "x-oa-request": "1" },
+    })
+  ).json()) as Me;
+  expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
+  expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
 });
 
 test("an outside guest logs in by code, sees only Shared with me, and is read-only", {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.246.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.0...v0.246.1) (2026-11-25)
+
+
+### Miscellaneous Chores
+
+* **release:** cut 0.246.1 so the t19 fix reaches the gate ([#3102](https://github.com/open-artifacts-ai/open-artifacts/issues/3102)) ([e472f91](https://github.com/open-artifacts-ai/open-artifacts/commit/e472f91709f2e0da315a28c54afca123136a93eb))
+
 ## [0.246.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.1...v0.246.0) (2026-11-25)
 
 
