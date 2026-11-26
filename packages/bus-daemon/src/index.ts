@@ -799,6 +799,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
         ? { instance: a.instance }
         : {}),
+      // #3208: keep a definitive exit (starting agy) across a restart until the hub takes it.
+      ...(!a.live && a.gone === true ? { gone: true as const } : {}),
     }));
     const text = JSON.stringify(rows);
     if (text === announcedWritten) return;
@@ -811,6 +813,39 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     }
   };
+  const sendSessions = (lane: Lane) => {
+    const body = sessions(lane);
+    const gone = body.gone;
+    let unsent = false;
+    const ok = sendOn(
+      lane,
+      {
+        v: 1,
+        id: frameId(),
+        type: "sessions",
+        ...body,
+      },
+      gone
+        ? () => {
+            unsent = true;
+            // #3208: the frame never left the pacer (link dropped); keep gone for the next link.
+            for (const ref of gone) {
+              const rec = agents.byRef(ref);
+              if (rec && !rec.live) rec.gone = true;
+            }
+            persistAnnounced();
+          }
+        : undefined,
+    );
+    if (ok && !unsent && gone) {
+      // #3208: gone was taken by a sessions_gone link; clear it so later frames and restarts do not resend it.
+      for (const ref of gone) {
+        const rec = agents.byRef(ref);
+        if (rec) delete rec.gone;
+      }
+      persistAnnounced();
+    }
+  };
   const announceSessions = () => {
     // #3028: the file follows the table, so a restart knows every ref the hub
     // may still hold for this machine.
@@ -820,13 +855,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!agents.byRef(ref)?.live) clearLimited(ref);
     for (const m of [renameFrames, renameHeldUntil])
       for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
-    for (const lane of lanes.all())
-      sendOn(lane, {
-        v: 1,
-        id: frameId(),
-        type: "sessions",
-        ...sessions(lane),
-      });
+    for (const lane of lanes.all()) sendSessions(lane);
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
   const limited = new Map<
@@ -2774,6 +2803,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   laneOfRef(rec.ref) === lane
                 )
                   announceUp(rec);
+            // #3208: the open-time sessions frame went before hello_ok, so gone
+            // was omitted; send it now that the hub listed sessions_gone.
+            if (
+              lane.sessionsGone &&
+              agents
+                .all()
+                .some(
+                  (a) =>
+                    !a.live && a.gone === true && laneOfRef(a.ref) === lane,
+                )
+            )
+              sendSessions(lane);
             for (const rec of agents.all()) flushRename(rec);
             // Queued replies go now that the link says what it supports.
             outbox.flush();
@@ -4656,6 +4697,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       cwd: "",
       live: false,
       closedBy: "liveness",
+      // #3208: keep a definitive exit (starting agy) across a restart until the hub takes it.
+      ...(e.gone ? { gone: true } : {}),
     });
   }
   persistAnnounced();
