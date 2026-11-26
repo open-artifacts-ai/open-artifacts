@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { getDb } from "../src/db/client.js";
 import { shares } from "../src/db/schema.js";
-import { INSTRUCTIONS } from "../src/mcp/instructions.js";
+import { INSTRUCTIONS, RUNTIME_DOC } from "../src/mcp/instructions.js";
 import {
   describeTool,
   descriptionFor,
@@ -373,19 +373,19 @@ describe("MCP tools over PAT", () => {
     const { tools } = await client.listTools();
     const d = tools.find((t) => t.name === "publish_artifact")?.description;
     expect(d).toMatch(/image \(\.png, \.jpg, \.jpeg, \.gif, \.webp or \.svg/);
-    expect(client.getInstructions() ?? "").toMatch(
+    expect(RUNTIME_DOC("free")).toMatch(
       /- image: one PNG, JPEG, GIF, WebP or SVG image/,
     );
   });
 
-  it("the instructions and publish_artifact say what is refused", async () => {
+  it("the runtime doc and publish_artifact say what is refused", async () => {
     const { tools } = await client.listTools();
     const d = tools.find((t) => t.name === "publish_artifact")?.description;
     expect(d).toContain("unsupported_format");
     expect(d).toContain("binary_entry");
-    const ins = client.getInstructions() ?? "";
-    expect(ins).toContain("unsupported_format");
-    expect(ins).not.toMatch(/anything else is code/i);
+    const doc = RUNTIME_DOC("free");
+    expect(doc).toContain("unsupported_format");
+    expect(doc).not.toMatch(/anything else is code/i);
   });
 
   it("no access is not_found, never forbidden", async () => {
@@ -526,11 +526,11 @@ describe("MCP tools over PAT", () => {
     expect(d).toContain("data too");
   });
 
-  it("instructions and publish/visibility descriptions carry DATA_WRITERS_NOTE", () => {
+  it("runtime doc and publish/visibility descriptions carry DATA_WRITERS_NOTE", () => {
     const text = (n: string) =>
       TOOL_DEFS.find((t) => t.name === n)?.description ?? "";
     for (const s of [
-      INSTRUCTIONS("free"),
+      RUNTIME_DOC("free"),
       text("publish_artifact"),
       text("set_visibility"),
     ]) {
@@ -538,6 +538,7 @@ describe("MCP tools over PAT", () => {
       expect(s).not.toMatch(/—/);
       expect(s).not.toMatch(/allowAnonymousWrites/);
     }
+    expect(INSTRUCTIONS("free")).not.toMatch(/—/);
   });
 
   it.each(WARN)(
@@ -994,7 +995,7 @@ describe("tool manifest", () => {
     expect(text("create_upload")).toContain(
       "PUT one file from disk (any size up to 25 MB",
     );
-    const ins = INSTRUCTIONS("free");
+    const ins = RUNTIME_DOC("free");
     expect(ins).toContain(`limited to ${kb} per call`);
     expect(ins).toContain(
       `limited to ${kb} per call; over it, publish_artifact fails with too_large`,
@@ -1010,11 +1011,11 @@ describe("tool manifest", () => {
     ).not.toMatch(/\b256 KB\b/);
   });
 
-  it("instructions state the plan's data-doc limit", () => {
-    expect(INSTRUCTIONS("free")).toContain(
+  it("runtime doc states the plan's data-doc limit", () => {
+    expect(RUNTIME_DOC("free")).toContain(
       `${LIMITS.dataDocBytesFree / 1024} KB per document on this instance (free plan; Workers Paid allows ${LIMITS.dataDocBytesPaid / 1024 / 1024} MB)`,
     );
-    expect(INSTRUCTIONS("paid")).toContain(
+    expect(RUNTIME_DOC("paid")).toContain(
       `${LIMITS.dataDocBytesPaid / 1024 / 1024} MB per document on this instance (paid plan),`,
     );
   });
@@ -1096,7 +1097,9 @@ describe("MCP spaces (P3 T10)", () => {
     for (const t of tools)
       expect(t.description ?? "", t.name).not.toMatch(SPACES_WORDS);
     expect(c.getInstructions() ?? "").not.toMatch(SPACES_WORDS);
-    expect(c.getInstructions() ?? "").toContain("for the owner only");
+    expect(RUNTIME_DOC("free", undefined, undefined, false)).toContain(
+      "for the owner only",
+    );
     // A direct call is not a tool there.
     await expect(tool(c, "list_spaces", {})).rejects.toThrow(/not found/);
     await c.close();
@@ -1111,7 +1114,7 @@ describe("MCP spaces (P3 T10)", () => {
     expect(
       onTools.find((t) => t.name === "publish_artifact")?.description,
     ).toContain("spaceId");
-    expect(on.getInstructions() ?? "").toContain("list_spaces");
+    expect(RUNTIME_DOC("free")).toContain("list_spaces");
     await on.close();
   });
 
@@ -1125,11 +1128,14 @@ describe("MCP spaces (P3 T10)", () => {
     expect(INSTRUCTIONS("free", undefined, undefined, false)).not.toMatch(
       SPACES_WORDS,
     );
+    expect(RUNTIME_DOC("free", undefined, undefined, false)).not.toMatch(
+      SPACES_WORDS,
+    );
   });
 
-  it("the skill lists list_spaces and the instructions say owner or space manager", () => {
+  it("the skill lists list_spaces and the runtime doc says owner or space manager", () => {
     expect(TOOL_DEFS.map((t) => t.name)).toContain("list_spaces");
-    expect(INSTRUCTIONS("free")).toContain("owner or space manager");
+    expect(RUNTIME_DOC("free")).toContain("owner or space manager");
   });
 });
 

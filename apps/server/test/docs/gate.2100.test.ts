@@ -159,8 +159,11 @@ describe("a self-host", () => {
         await close(c);
       }
     }
-    const { renderSkill } = await import("../../src/mcp/skill.js");
-    const free = await renderSkill(E({ PLAN: "free", HOSTED: "" }));
+    const { renderSkillPart } = await import("../../src/mcp/skill.js");
+    const free = await renderSkillPart(
+      "tools",
+      E({ PLAN: "free", HOSTED: "" }),
+    );
     expect(free).not.toContain("### edit_doc");
   });
 });
