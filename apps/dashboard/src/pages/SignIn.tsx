@@ -146,8 +146,8 @@ export const INVITE_EXPIRED =
   "This invite has expired. Ask whoever invited you to send a new one.";
 
 /**
- * #3029 item 2 (placeholder copy until OA Product checks it): `next` is a
- * path the dashboard has no route for (a mistyped /invite/x, /connect, /docs).
+ * #3029 item 2: the dashboard had no route for the address asked (a
+ * mistyped /invite/x, /connect, /docs). Copy checked by OA Product.
  */
 export const DEAD_LINK =
   "That link doesn't go to a page here. Log in to go to your Library.";
@@ -612,8 +612,9 @@ export function SignIn({
     error !== undefined ? SignInErrorSchema.safeParse(error) : null;
   const shownError = parsed ? (parsed.success ? parsed.data : "failed") : null;
   // #3029: the dashboard itself sent an anonymous visitor here from a path it
-  // has no route for (?dead=1); server redirects never carry the flag.
-  const deadLink = dead === true;
+  // has no route for (?dead=1); server redirects never carry the flag. A
+  // `next` wins: dead=1 beside one is not ours, so it is ignored.
+  const deadLink = dead === true && !next;
   if (!providers.data)
     // An older server or a network failure: today's page. Still asking: an
     // empty panel, never a claim about the mode that may change in a moment.

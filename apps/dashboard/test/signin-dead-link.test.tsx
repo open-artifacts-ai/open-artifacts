@@ -34,3 +34,12 @@ it("no next shows no line", async () => {
   await google();
   expect(screen.queryByText(DEAD_LINK)).toBeNull();
 });
+
+it("dead=1 beside a next is ignored: no line, next kept", async () => {
+  mountHosted("/sign-in?dead=1&next=%2Fa%2Fabc");
+  expect(await google()).toHaveAttribute(
+    "href",
+    "/auth/login/google?next=%2Fa%2Fabc",
+  );
+  expect(screen.queryByText(DEAD_LINK)).not.toBeInTheDocument();
+});
