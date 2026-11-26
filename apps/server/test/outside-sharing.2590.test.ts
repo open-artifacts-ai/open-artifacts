@@ -262,8 +262,10 @@ describe("the owner's switch", () => {
       // Codes and the Google link.
       expect((await codeEligibility(e, cfg, made)).kind).toBe("none");
       expect((await codeEligibility(e, cfg, newRecipient)).kind).toBe("none");
-      expect((await linkEligibility(e, made)).kind).toBe("none");
-      expect((await linkEligibility(e, newRecipient)).kind).toBe("none");
+      expect((await linkEligibility(e, made, "google")).kind).toBe("none");
+      expect((await linkEligibility(e, newRecipient, "google")).kind).toBe(
+        "none",
+      );
       // An invited guest is not affected.
       expect(await admit(e, cfg, gmail(invited))).toMatchObject({
         ok: true,

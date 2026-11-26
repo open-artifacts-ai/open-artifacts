@@ -248,6 +248,8 @@ export const AuthMethodSchema = z.enum([
   "access",
   "google",
   "microsoft",
+  "github",
+  "apple",
   "code",
   "pat",
   "oauth",

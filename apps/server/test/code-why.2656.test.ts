@@ -30,7 +30,7 @@ const why = async (e: Env, email: string) => {
   return r.kind === "none" ? r.why : r.kind;
 };
 const whyLink = async (email: string) => {
-  const r = await linkEligibility(env, email);
+  const r = await linkEligibility(env, email, "google");
   return r.kind === "none" ? r.why : r.kind;
 };
 const setOutside = (on: boolean) =>

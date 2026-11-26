@@ -197,7 +197,16 @@ export type SessionPayload = {
   uid: string;
   exp: number;
   iat: number;
-  p: "access" | "google" | "microsoft" | "code" | "dev" | "test";
+  /** microsoft, github, apple: a code-verified link of that account (#3087). */
+  p:
+    | "access"
+    | "google"
+    | "microsoft"
+    | "github"
+    | "apple"
+    | "code"
+    | "dev"
+    | "test";
   t?: string;
   /**
    * The signature-checked Google token's `hd` (lowercase), set at the Google

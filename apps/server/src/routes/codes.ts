@@ -22,7 +22,7 @@ import {
   takeRequestSlot,
   verifyCode,
 } from "../auth/codes.js";
-import { authConfig } from "../auth/config.js";
+import { authConfig, type IdentityProvider } from "../auth/config.js";
 import { safeNext } from "../auth/oidc.js";
 import { sessionCookie, signSession } from "../auth/session.js";
 import { requireTurnstile } from "../auth/turnstile.js";
@@ -103,13 +103,15 @@ type LinkValue = {
   p: LinkProvider;
 };
 /**
- * Providers a link cookie may carry: those a session can name (SessionPayload
- * `p`). Google only today; later slices widen it with the session's set.
+ * Providers a link cookie may carry: every identity provider but Access
+ * (which has no identities rows). Each is a session provider too.
  */
-type LinkProvider = "google" | "microsoft";
+type LinkProvider = Exclude<IdentityProvider, "access">;
 const LINK_PROVIDERS: readonly string[] = [
   "google",
   "microsoft",
+  "github",
+  "apple",
 ] satisfies LinkProvider[];
 
 const aesKey = async (c: Context<AppEnv>) =>
@@ -399,11 +401,11 @@ async function verifyLink(
   email: string,
   link: LinkValue,
 ): Promise<Response | null> {
-  let elig = await linkEligibility(c.env, email);
+  let elig = await linkEligibility(c.env, email, link.p);
   if (elig.kind === "none") return null;
   if (elig.userId === null) {
     if (!(await ensureUser(c, email, "guest"))) return null;
-    elig = await linkEligibility(c.env, email);
+    elig = await linkEligibility(c.env, email, link.p);
     if (elig.kind === "none" || elig.userId === null) return null;
   }
   const now = Date.now();
@@ -565,7 +567,7 @@ export function mountCodes(app: AppType): void {
       rid,
       ip,
       Date.now(),
-      linking,
+      link?.p,
     ).catch(async (e: unknown) => {
       logCodeSend("error", errorClass(e));
       if (noteOtp) await noteOtp(c.env, email, ek, "error");
