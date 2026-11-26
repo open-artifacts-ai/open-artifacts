@@ -90,12 +90,6 @@
     "why": ["timers/promises"]
   },
   {
-    "name": "Atomics.wait",
-    "file": "a.test.ts",
-    "text": "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);",
-    "why": ["timers/promises"]
-  },
-  {
     "name": "sleep helper, call and definition",
     "file": "a.test.ts",
     "text": "await sleep(10);\nconst sleep = (ms: number) => ms;\nfunction sleepFor(ms) { return ms; }",
@@ -736,5 +730,47 @@
     "file": "a.test.ts",
     "text": "while (Date.now() < end) await Promise.resolve(void 0);",
     "why": ["sleep"]
+  },
+  {
+    "name": "Atomics.wait with only a timeout (a sleep on a fresh buffer)",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait with an expression timeout",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0, budgetMs - used);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.waitAsync with a finite timeout",
+    "file": "a.test.ts",
+    "text": "await Atomics.waitAsync(ia, 0, 0, 100).value;",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait with no timeout, a worker's notify",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait with an Infinity timeout",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0, Infinity);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait with a POSITIVE_INFINITY timeout",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0, Number.POSITIVE_INFINITY);",
+    "why": []
+  },
+  {
+    "name": "Atomics.waitAsync with no timeout",
+    "file": "a.test.ts",
+    "text": "await Atomics.waitAsync(ia, 0, 0).value;",
+    "why": []
   }
 ]

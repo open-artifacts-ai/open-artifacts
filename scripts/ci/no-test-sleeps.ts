@@ -8,7 +8,7 @@
 //     `promisify(setTimeout)`;
 //   - `timers/promises`: a static or dynamic import or a require of it (but a
 //     lone `setImmediate`), however its `setTimeout` is aliased, and
-//     `scheduler.wait(`; `Atomics.wait(`;
+//     `scheduler.wait(`; `Atomics.wait` / `waitAsync` with a finite timeout;
 //   - a `sleep` helper or call;
 //   - Playwright's `waitForTimeout`, and `toPass` / `expect.poll` given
 //     `intervals`;
@@ -139,6 +139,27 @@ function closeParen(code: string, open: number): number {
   return -1;
 }
 
+/** `a, f(b, c), d` -> ["a", "f(b, c)", "d"]: the arguments at the top level. */
+function topLevelArgs(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i] as string;
+    if (c === '"' || c === "'" || c === "`") {
+      for (i++; i < text.length && text[i] !== c; i++)
+        if (text[i] === "\\") i++;
+    } else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(text.slice(from, i));
+      from = i + 1;
+    }
+  }
+  if (text.slice(from).trim() !== "") out.push(text.slice(from));
+  return out;
+}
+
 type Found = { index: number; why: string };
 
 /** The call bodies `opener(` ... `)` in `code`: where the opener starts and what is inside. */
@@ -254,10 +275,19 @@ const JS_RULES: ((code: string) => Found[])[] = [
       if (!onlyImmediate)
         out.push({ index: m.index as number, why: "timers/promises" });
     }
-    for (const m of code.matchAll(
-      /\bscheduler\.wait\s*\(|\bAtomics\.wait\s*\(/g,
-    ))
+    for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
+    // Atomics.wait / waitAsync with a finite timeout is a sleep (a fresh buffer
+    // nothing notifies); one with no timeout or Infinity waits for a notify.
+    for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
+      const args = topLevelArgs(c.body.slice(1));
+      const timeout = args[3]?.trim();
+      if (
+        timeout &&
+        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY)$/.test(timeout)
+      )
+        out.push({ index: c.index, why: "timers/promises" });
+    }
     return out;
   },
   (code) =>
