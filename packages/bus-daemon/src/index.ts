@@ -478,7 +478,7 @@ export type DaemonDeps = {
   antigravity?: {
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
-    /** agy S3: how long a watcher has to answer a push; default 30 s. */
+    /** agy S3: how long a watcher has to answer a push; default AGY_ANSWER_TIMEOUT_MS (50 s). */
     answerTimeoutMs?: number;
     /** #3205: pauses before an unknown hand-off is pushed again; default 2, 5, 10, then 30 s. */
     recheckMs?: readonly number[];

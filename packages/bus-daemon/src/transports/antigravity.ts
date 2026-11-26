@@ -51,15 +51,25 @@ type InFlight = {
 };
 
 export type AgyTransportOptions = {
-  /** How long a watcher has to answer a push before it is pushed again. Default 30 s. */
+  /** How long a watcher has to answer a push before it is pushed again. Default AGY_ANSWER_TIMEOUT_MS (50 s). */
   answerTimeoutMs?: number;
   /**
-   * #3205: the pauses before an unknown hand-off is pushed again, the last
-   * repeated. Default 2 s, 5 s, 10 s, then every 30 s.
+   * #3205: the pauses before an unknown or failed hand-off is pushed again,
+   * the last repeated. Default 2 s, 5 s, 10 s, then every 30 s.
    */
   recheckMs?: readonly number[];
   log?: (msg: string) => void;
 };
+
+/** How long `agy agentapi send-message` may take; shared with `oa-bus agy-watch`. */
+export const AGY_SEND_TIMEOUT_MS = 20_000;
+/**
+ * How long the daemon waits for a watcher's answer before pushing again.
+ * Strictly greater than 2 x AGY_SEND_TIMEOUT_MS: a replayed hand-off can wait
+ * out an earlier call (up to AGY_SEND_TIMEOUT_MS) and then run its own send
+ * (up to AGY_SEND_TIMEOUT_MS), plus margin for IPC and mailbox checks.
+ */
+export const AGY_ANSWER_TIMEOUT_MS = 2 * AGY_SEND_TIMEOUT_MS + 10_000;
 
 const RECHECK_MS = [2000, 5000, 10_000, 30_000] as const;
 
@@ -161,7 +171,7 @@ export class AgyTransport {
     // S2 records always carry it; without it no watcher can be matched.
     if (procStart === undefined) return { ok: false, reason: "queued" };
     const key = { pid: agent.pid, procStart };
-    let unknowns = 0;
+    let rechecks = 0;
     for (;;) {
       if (this.#stopped || !agent.live)
         return { ok: false, reason: "closed", closedBy: "liveness" };
@@ -178,18 +188,18 @@ export class AgyTransport {
       // The watcher acks only what agy's agentapi or agy's own mailbox says
       // agy took.
       if (got === "ok") return { ok: true };
-      // agy said no (it may be starting up): the deliver chain retries.
-      if (got === "failed")
-        return { ok: false, reason: "timeout", retryable: true };
-      // #3205: an earlier hand-off may have reached agy and its mailbox
-      // cannot say yet. Never acked on a guess: held here, the receipt
-      // pending, and pushed again after a pause (or to a new watcher at
-      // once), whose mailbox check decides then. The watcher never sends an
-      // id twice while that is unclear.
-      if (got === "unknown") {
+      // agy said no (e.g. its language server is restarting) or (#3205) an
+      // earlier hand-off may have reached agy and its mailbox cannot say yet.
+      // Never acked on a guess and never sent through the generic retry chain
+      // (which closes the record on exhaustion, and nothing reopens an
+      // antigravity record): held here, the receipt pending, and pushed again
+      // after a pause (or to a new watcher at once). For unknown, the
+      // watcher's mailbox check decides then and never sends an id twice
+      // while that is unclear.
+      if (got === "failed" || got === "unknown") {
         const pauses = this.opts.recheckMs ?? RECHECK_MS;
-        const ms = pauses[Math.min(unknowns, pauses.length - 1)] ?? 30_000;
-        unknowns += 1;
+        const ms = pauses[Math.min(rechecks, pauses.length - 1)] ?? 30_000;
+        rechecks += 1;
         if ((await this.#wait(agent.ref, key, ms)) === "closed")
           return { ok: false, reason: "closed", closedBy: "liveness" };
         continue;
@@ -240,7 +250,7 @@ export class AgyTransport {
         this.#inflight.delete(msgId);
         this.opts.log?.(`agy watcher did not answer ${msgId} in time`);
         resolve("lost");
-      }, this.opts.answerTimeoutMs ?? 30_000);
+      }, this.opts.answerTimeoutMs ?? AGY_ANSWER_TIMEOUT_MS);
       timer.unref();
       const entry: InFlight = {
         watcher: w,

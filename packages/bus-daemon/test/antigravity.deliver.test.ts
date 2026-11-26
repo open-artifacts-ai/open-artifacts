@@ -14,7 +14,12 @@ import {
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
-import { agyMessageText } from "../src/transports/antigravity.ts";
+import {
+  AGY_ANSWER_TIMEOUT_MS,
+  AGY_SEND_TIMEOUT_MS,
+  AgyTransport,
+  agyMessageText,
+} from "../src/transports/antigravity.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -219,7 +224,7 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
   });
 
   it("pushes again when agy did not take it (agy_failed)", async () => {
-    const { join, watcher, send, acked } = await setup();
+    const { join, watcher, send, acked } = await setup(undefined, [5]);
     await join();
     const { c, got } = await watcher();
     const id = send();
@@ -229,6 +234,70 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
     expect(got[1]?.msg_id).toBe(id);
     c.ack(id);
     await vi.waitFor(() => expect(acked(id)).toBe(1));
+  });
+
+  it("5 agy_failed answers in a row leave the record live and the message held; a later ack delivers it once; the record still closes when the agy process ends", async () => {
+    const { h, join, watcher, send, acked } = await setup(undefined, [5]);
+    await join();
+    const { c, got } = await watcher();
+    const id = send();
+    for (let i = 1; i <= 5; i += 1) {
+      await wait(c, got, i);
+      c.agyFailed(id);
+      expect(h.daemon.agents.byRef(A)?.live).toBe(true);
+    }
+    await wait(c, got, 6);
+    expect(h.daemon.agents.byRef(A)?.live).toBe(true);
+    expect(acked(id)).toBe(0);
+    expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
+    expect(h.of("sessions").some((f) => f.closed.includes(A))).toBe(false);
+    c.ack(id);
+    await vi.waitFor(() => expect(acked(id)).toBe(1));
+    expect(h.daemon.agy.rechecking()).toBe(0);
+    // Process checks still close the record when agy ends.
+    os.start.delete(AGY);
+    await vi.waitFor(() =>
+      expect(h.of("sessions").some((f) => f.closed.includes(A))).toBe(true),
+    );
+    expect(h.daemon.agents.byRef(A)?.live).toBe(false);
+  });
+
+  it("default answer timeout exceeds 2 x SEND_TIMEOUT_MS so a slow replay is not timed out early", async () => {
+    expect(AGY_ANSWER_TIMEOUT_MS).toBeGreaterThan(2 * AGY_SEND_TIMEOUT_MS);
+    vi.useFakeTimers();
+    try {
+      const logs: string[] = [];
+      const t = new AgyTransport({ log: (m) => logs.push(m) });
+      const pushes: DaemonFrame[] = [];
+      const w = t.up({ pid: AGY, procStart: "t0" }, (f) => {
+        pushes.push(f);
+        return true;
+      });
+      const agent = {
+        ref: A,
+        kind: "antigravity" as const,
+        pid: AGY,
+        procStart: "t0",
+        busName: "agy",
+        global: false,
+        live: true,
+      } as never;
+      const done = t.deliver(agent, {
+        msg_id: "m".repeat(15) + "1",
+        from_name: "peer",
+        namespace: "ns",
+        body: "slow replay",
+      });
+      expect(pushes).toHaveLength(1);
+      // Waiting out an earlier call + a full send must not trigger a timeout.
+      await vi.advanceTimersByTimeAsync(2 * AGY_SEND_TIMEOUT_MS);
+      expect(pushes).toHaveLength(1);
+      expect(logs).toHaveLength(0);
+      expect(t.answered("m".repeat(15) + "1", w, "ok")).toBe(true);
+      expect(await done).toEqual({ ok: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("#3205: an unknown answer (agy may have it, its mailbox cannot say) is never delivered or refused, holds nothing else up, and stays held here", async () => {

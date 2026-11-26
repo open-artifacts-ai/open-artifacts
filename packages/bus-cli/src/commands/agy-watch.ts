@@ -18,6 +18,7 @@ import {
   socketDirProblem,
   writeAgyWatch,
 } from "@oa/bus-adapter-claude-code";
+import { AGY_SEND_TIMEOUT_MS } from "@oa/bus-daemon";
 import {
   ADAPTER_CAPS,
   AGY_WATCHER_RUNNING,
@@ -31,7 +32,7 @@ import {
 import { type Ctx, say } from "../context.ts";
 
 /** How long `agentapi send-message` may take; agy answers in ~0.2 s. */
-const SEND_TIMEOUT_MS = 20_000;
+const SEND_TIMEOUT_MS = AGY_SEND_TIMEOUT_MS;
 /** How often the watcher checks that its agy process still runs. */
 const AGY_CHECK_MS = 5_000;
 /** Waits between tries to reach the daemon, capped at the last. */
