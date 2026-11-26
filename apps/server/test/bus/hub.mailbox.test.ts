@@ -564,7 +564,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
         v: 1,
         id: `oc${k}`,
         type: "sessions",
-        open: [],
+        open: ["keeper"],
         closed: [`shot_${k}`],
       });
     }
