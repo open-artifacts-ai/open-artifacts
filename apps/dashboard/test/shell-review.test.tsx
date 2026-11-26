@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import { createAppRouter } from "../src/router";
+import { installClock } from "./clock";
 import { installHarness, seen, server, wait } from "./harness";
 
 // Like the real bridge, the mock loads the frame (Shell ignores earlier loads).
@@ -33,6 +34,7 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+installClock();
 afterEach(() => vi.useRealTimers());
 
 const id = (title: string) =>

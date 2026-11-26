@@ -14,6 +14,7 @@
     "./shadcn.css": "./src/shadcn/shadcn.css",
     "./shadcn-utilities.css": "./src/shadcn/shadcn-utilities.css",
     "./brand": "./src/brand/index.ts",
+    "./agent-marks": "./src/brand/agent-marks.ts",
     "./brand/*": "./src/brand/*"
   },
   "imports": {

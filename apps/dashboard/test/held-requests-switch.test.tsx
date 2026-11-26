@@ -4,6 +4,7 @@ import { createHandlers } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -15,6 +16,7 @@ import {
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+installClock();
 afterEach(() => vi.unstubAllGlobals());
 
 const KEY = http.get(`*${R.mePushKey}`, () =>
@@ -127,7 +129,7 @@ describe("Held requests", () => {
     browser("granted");
     const sw = await open(KEY);
     await waitFor(() => expect(sw).toBeEnabled());
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(document.querySelector("[data-held-blocked]")).toBeNull();
   });
 

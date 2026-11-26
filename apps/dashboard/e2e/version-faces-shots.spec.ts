@@ -19,11 +19,13 @@ for (const width of [1280])
       await page.addStyleTag({
         content: "ol li:nth-child(n+5){display:none}",
       });
-      await page.waitForTimeout(300);
+      await expect(list.locator("li").nth(4)).toBeHidden();
       if (OUT) {
         mkdirSync(OUT, { recursive: true });
+        await page.evaluate(() => document.fonts.ready);
         await (width === 1280 ? list : page).screenshot({
           path: `${OUT}/versions-${width}-${theme}.png`,
+          animations: "disabled",
         });
       }
     });

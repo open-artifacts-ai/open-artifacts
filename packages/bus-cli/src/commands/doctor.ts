@@ -38,6 +38,7 @@ import {
   skippedProxyEntries,
 } from "../steps/adapters.ts";
 import { agyPagesState } from "../steps/agy-proof.ts";
+import { agyPluginProblem } from "../steps/antigravity.ts";
 import {
   claudePluginsState,
   claudeVersion,
@@ -294,8 +295,11 @@ export async function doctor(ctx: Ctx): Promise<number> {
         busHome: ctx.home,
         env: ctx.env,
       });
+      const plugin = agyPluginProblem(ctx.userHome);
       if (bad?.problem === "malformed")
         fail(c.agyMalformed(tilde(ctx, bad.file)));
+      else if (plugin?.problem === "foreign")
+        fail(c.agyPluginForeign(tilde(ctx, plugin.dir)));
       else if (wiring[h] === "configured") pass(c.wired(h));
       else fail(c.notWired(h));
       if (bad?.problem === "disabled" && wiring[h] === "configured")
@@ -322,6 +326,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
               fail(c.agyPagesMissing(l.name, l.program));
             else warn(c.agyPagesLeft(l.note));
         } catch {}
+      if (plugin?.problem === "off" && wiring[h] === "configured")
+        warn(c.agyPluginOff());
       continue;
     }
     let version: string | undefined;
@@ -463,8 +469,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   if (others.length > 0) say(ctx, c.otherHomes(others));
 
   // Not a pass or a warning: the habits are the user's choice either way.
-  const habits = habitsLine(ctx);
-  if (habits) say(ctx, habits);
+  say(ctx, habitsLine(ctx));
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

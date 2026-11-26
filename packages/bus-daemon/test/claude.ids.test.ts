@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-ids-"));
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -60,8 +60,10 @@ async function session(
     join(d, `4242.${sha(sock)}.key`),
     JSON.stringify({ peerToken: "tok", procStart: "t0" }),
   );
+  const lines = eventCounter();
   const h = await daemonHarness({
     claude: {
+      onLineHandled: lines.hook,
       sessionsDir: d,
       socketsDir: join(d, "r"),
       ...(index ? { returnIndexFile: index(d) } : {}),
@@ -79,7 +81,7 @@ async function session(
     ...(hubCaps === undefined ? {} : { caps: hubCaps }),
   });
   await h.next("agent_up");
-  return { h, d, sock, seen };
+  return { h, d, sock, seen, lines };
 }
 
 const reply = (claudeSock: string, text: string) =>
@@ -97,6 +99,21 @@ async function answer(to: string, line: string) {
   const s = connect(to);
   await new Promise<void>((r) => s.once("connect", () => r()));
   s.end(line);
+}
+
+/** `answer`, then waits until the daemon has handled the line and what it wrote to the hub has arrived. */
+async function answerHandled(
+  s: {
+    h: { barrier: () => Promise<void> };
+    lines: ReturnType<typeof eventCounter>;
+  },
+  to: string,
+  line: string,
+) {
+  const handled = s.lines.next();
+  await answer(to, line);
+  await handled;
+  await s.h.barrier();
 }
 
 const deliver = (from_id?: string) => ({
@@ -180,7 +197,7 @@ describe("reply ids in the daemon", () => {
       ),
     );
     expect(seen.map((x) => x.content).join("\n")).not.toContain("pong");
-    await new Promise((r) => setTimeout(r, 50));
+    await h.barrier();
     expect(h.of("send")).toEqual([]);
   });
 
@@ -201,7 +218,8 @@ describe("reply ids in the daemon", () => {
   }
 
   it("a reply made while the link is down waits for hello_ok, then names its agent", async () => {
-    const { h, sock, seen } = await session([BUS_CAPS.ids]);
+    const s = await session([BUS_CAPS.ids]);
+    const { h, sock, seen } = s;
     h.toDaemon(deliver(ALICE));
     await h.next("ack");
     const returnPath = seen[0]?.from as string;
@@ -212,8 +230,7 @@ describe("reply ids in the daemon", () => {
     // A new link, no hello_ok yet. Alice dropped and a newcomer took "alice"
     // meanwhile: the queued reply must still name alice's agent, so the hub
     // refuses it agent_gone.
-    await answer(returnPath, reply(sock, "late answer"));
-    await new Promise((r) => setTimeout(r, 50));
+    await answerHandled(s, returnPath, reply(sock, "late answer"));
     expect(h.of("send")).toEqual([]); // not before the new link's hello_ok
     h.toDaemon(helloOk([BUS_CAPS.ids]));
     expect(await h.next("send")).toMatchObject({
@@ -262,11 +279,11 @@ describe("reply ids in the daemon", () => {
 
   it("a revived id-less reply made before hello_ok is refused when the hub then lists ids", async () => {
     const r = revivedIdless(undefined);
-    const { h, d, seen } = await r.session();
+    const s = await r.session();
+    const { h, d, seen } = s;
     await vi.waitFor(() => expect(existsSync(r.path(d))).toBe(true));
     await reconnect(h);
-    await answer(r.path(d), reply(join(d, "c.sock"), "pong"));
-    await new Promise((x) => setTimeout(x, 50));
+    await answerHandled(s, r.path(d), reply(join(d, "c.sock"), "pong"));
     expect(h.of("send")).toEqual([]); // queued: no hello_ok on the new link yet
     h.toDaemon(helloOk([BUS_CAPS.ids]));
     await vi.waitFor(() =>
@@ -274,7 +291,7 @@ describe("reply ids in the daemon", () => {
         /Information: your reply to alice was not sent/,
       ),
     );
-    await new Promise((x) => setTimeout(x, 50));
+    await h.barrier();
     expect(h.of("send")).toEqual([]);
   });
 

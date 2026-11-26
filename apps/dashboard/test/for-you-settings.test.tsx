@@ -10,22 +10,26 @@ import { muteErrorCopy } from "../src/foryou/prefsContract";
 import {
   dismissNudge,
   nudgeDismissed,
+  pushSubsKey,
   SW_SCOPE,
   SW_URL,
 } from "../src/foryou/push";
 import { pushSwitchHandlers } from "../src/mockPushSwitches";
 import { prefsToSave, thisBrowser } from "../src/settings/ForYouPrefs";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
   findVisibleToast,
   installHarness,
+  lastClient,
   mount,
   server,
 } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+installClock();
 
 const ME_ID = fixtures.me.user.id;
 
@@ -846,7 +850,11 @@ describe("a subscription left by someone else (Axe)", () => {
     );
     mount("/settings/notifications");
     await needs();
-    await new Promise((r) => setTimeout(r, 300));
+    // The list's failure is the event: only after it could anything be removed.
+    await waitFor(() =>
+      expect(lastClient.getQueryState(pushSubsKey)?.status).toBe("error"),
+    );
+    await settle(300);
     expect(await f.pushManager.getSubscription()).not.toBeNull();
     expect(localStorage.getItem(KEY)).not.toBeNull();
   });

@@ -8,9 +8,11 @@ import { describe, expect, it, vi } from "vitest";
 import { useArtifact } from "../src/api/queries";
 import { makeQueryClient } from "../src/api/queryClient";
 import { useArtifactSideEffects } from "../src/viewer/useArtifactSideEffects";
+import { installClock } from "./clock";
 import { installHarness, server, wait } from "./harness";
 
 installHarness();
+installClock();
 
 describe("stale thumbnail upload answered 409", () => {
   it("refetches the summary, logs nothing, does not retry, sends ?v=current", async () => {

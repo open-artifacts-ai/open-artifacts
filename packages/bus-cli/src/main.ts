@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
 import { add } from "./commands/add.ts";
+import { agyHello } from "./commands/agy-hello.ts";
 import { autoUpdate } from "./commands/auto-update.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
@@ -140,6 +141,9 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
         },
         ctx,
       );
+    case "agy-hello":
+      // agy S2: the oa-bus agy plugin's SessionStart hook; OA_BUS_HOME as the adapters read it.
+      return agyHello(ctx);
     case "mcp-proxy": {
       // #1856: OpenCode's or Codex's stand-in for the instance's /mcp; stdio, no listener.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;

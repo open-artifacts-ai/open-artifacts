@@ -1,5 +1,6 @@
 import { type CommentList, R } from "@oa/shared";
 import type { Agent } from "../../real/mcp-client";
+import { withDeadline } from "../with-deadline";
 import {
   api,
   cleanup,
@@ -30,24 +31,11 @@ const STEP_MS = 15_000;
 const SETUP_MS = 55_000;
 
 /** Fails fast and by name: a hung network step says which one hung. */
-async function step<T>(
+const step = <T>(
   name: string,
   fn: () => Promise<T>,
   ms = STEP_MS,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${name} timed out after ${ms / 1000}s`)),
-      ms,
-    );
-  });
-  try {
-    return await Promise.race([fn(), late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+): Promise<T> => withDeadline(fn(), ms, name);
 
 // Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
 let owner: Person;

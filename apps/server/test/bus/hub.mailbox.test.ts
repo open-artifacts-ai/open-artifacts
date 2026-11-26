@@ -21,6 +21,7 @@ import {
 import {
   type Daemon,
   daemon,
+  fence,
   hello,
   hubOf,
   machine,
@@ -564,7 +565,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
         v: 1,
         id: `oc${k}`,
         type: "sessions",
-        open: [],
+        open: ["keeper"],
         closed: [`shot_${k}`],
       });
     }
@@ -660,8 +661,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     const e = await waitFor(p.rcv, "error");
     expect(e.id).toBe("fx");
     expect(e.code).toBe("not_found");
-    // sleep-ok: absence — a fetched-by-id delivery must not be pushed at all
-    await new Promise((res) => setTimeout(res, 50));
+    await fence(p.rcv);
     expect(p.rcv.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     p.rcv.close();
     p.snd.close();

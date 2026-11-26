@@ -6,6 +6,21 @@ export {
   agyConversation,
 } from "./agy-proxy.ts";
 export {
+  AGY_DEFAULT_NAME,
+  type AgyConversation,
+  agyHello,
+  agyStateDir,
+  agyTitle,
+  findAgy,
+  isAgy,
+  nameFromTitle,
+  type Proc,
+  parseSessionStart,
+  readAgyConversation,
+  readProc,
+  writeAgyConversation,
+} from "./antigravity.ts";
+export {
   type CodexCall,
   type CodexDeps,
   codexCall,

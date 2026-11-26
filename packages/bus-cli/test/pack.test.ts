@@ -67,6 +67,9 @@ afterAll(() => {
 describe("the published oa-bus package", () => {
   it("ships dist and assets only", () => {
     expect(files.sort()).toEqual([
+      // agy S2: the oa-bus agy plugin's fixed files.
+      "package/assets/agy-plugin/logo.svg",
+      "package/assets/agy-plugin/plugin.json",
       "package/assets/oa-bus.ts",
       ...[
         "__init__.py",

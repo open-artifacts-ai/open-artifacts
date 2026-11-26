@@ -1,7 +1,13 @@
 // #2234: the composer is an outlined field that grows with its text.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  FIELD_CHROME,
+  FIELD_LINE,
+  FIELD_LINE_PHONE,
   FIELD_MAX,
+  FIELD_MAX_LINES,
+  FIELD_MAX_PHONE,
+  FIELD_MIN_LINES,
   focusField,
   growField,
 } from "../src/viewer/comments/CommentsBody";
@@ -37,6 +43,93 @@ it("#2234: phones get a 16px field so iOS does not zoom on focus", async () => {
   const { FIELD } = await import("../src/viewer/comments/CommentsBody");
   expect(FIELD).toContain("max-[599px]:text-[16px]");
   expect(FIELD).toContain("[@media(pointer:coarse)]:text-[16px]");
+});
+
+it("#2234: two lines empty, ten before it scrolls, and never a resize handle", async () => {
+  const { FIELD } = await import("../src/viewer/comments/CommentsBody");
+  // The lines are em, so the cap follows the field's own font: two lines when
+  // empty (2 x 1.5em = 3em) and ten before it scrolls (10 x 1.5em = 15em).
+  expect(FIELD).toContain("leading-[1.5]");
+  expect(FIELD).toContain(
+    `min-h-[calc(${FIELD_MIN_LINES * 1.5}em_+_${FIELD_CHROME}px)]`,
+  );
+  expect(FIELD).toContain(
+    `max-h-[min(calc(${FIELD_MAX_LINES * 1.5}em_+_${FIELD_CHROME}px),calc(var(--oa-vvh,1svh)*40))]`,
+  );
+  expect(FIELD).toContain("resize-none");
+  expect(FIELD).toContain("overflow-y-auto");
+});
+
+describe("#2234: the caps are ten lines plus the field's own chrome", () => {
+  it("is 210px of text at the body font and 240px on the phone's", () => {
+    expect(FIELD_MAX_LINES * FIELD_LINE).toBe(210);
+    expect(FIELD_MAX_LINES * FIELD_LINE_PHONE).toBe(240);
+    expect(FIELD_CHROME).toBe(18); // 8px + 8px padding, 1px + 1px border
+    expect(FIELD_MAX).toBe(228);
+    expect(FIELD_MAX_PHONE).toBe(258);
+  });
+
+  it("a phone shrinks to the ten-line cap, not to six", () => {
+    vi.stubGlobal("CSS", { supports: () => false });
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === "(max-width: 767px)",
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const el = box(900);
+    growField(el);
+    expect(el.style.height).toBe(`${FIELD_MAX_PHONE}px`);
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+});
+
+describe("#2234 review: the cap comes from the field's own CSS, not from the width", () => {
+  beforeEach(() => {
+    vi.stubGlobal("CSS", { supports: () => false });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("a coarse pointer at 768px or wider uses the field's 16px cap, not the desktop one", () => {
+    // iPad: coarse pointer, wider than the phone breakpoint. The field's CSS
+    // (em, following its 16px font) caps it at 258px; a width guess said 228.
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: false,
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const el = box(900);
+    el.style.maxHeight = `${FIELD_MAX_PHONE}px`;
+    growField(el);
+    expect(el.style.height).toBe(`${FIELD_MAX_PHONE}px`);
+  });
+
+  it("without a usable max-height it still falls back to the width", () => {
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (q: string) =>
+        ({
+          matches: q === "(max-width: 767px)",
+          media: q,
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        }) as unknown as MediaQueryList,
+    );
+    const el = box(900);
+    expect(el.style.maxHeight).toBe("");
+    growField(el);
+    expect(el.style.height).toBe(`${FIELD_MAX_PHONE}px`);
+  });
 });
 
 describe("composer scroll and measure (#2234)", () => {

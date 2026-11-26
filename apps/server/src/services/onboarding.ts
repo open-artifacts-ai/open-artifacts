@@ -471,7 +471,8 @@ export async function ensureWelcome(
 }
 
 /**
- * Turns on the flags in `patch`, for `user` only. When their `completed` is
+ * Sets the flags in `patch`, for `user` only (`dismissed: false` clears the
+ * hide, the owner's install-wide row from before included). When their `completed` is
  * written for the first time, whoever added them (else the owner) gets one
  * inbox line, "{name} is set up".
  */
@@ -483,7 +484,15 @@ export async function setOnboarding(
   const userId = user.id;
   const now = String(Date.now());
   const writes = [
-    patch.dismissed ? stmt(env.DB, SET).bind(dismissedKey(userId), now) : null,
+    patch.dismissed === true
+      ? stmt(env.DB, SET).bind(dismissedKey(userId), now)
+      : null,
+    patch.dismissed === false
+      ? stmt(env.DB, "delete from settings where key in (?1, ?2)").bind(
+          dismissedKey(userId),
+          isInstanceOwner(user) ? DISMISSED_KEY : "",
+        )
+      : null,
     // Only for the user Welcome was seeded for; anyone else's is a no-op.
     patch.welcomeOpened
       ? stmt(
