@@ -641,6 +641,13 @@ function fakeGh(o: {
       );
     }
     if (args[0] === "issue" && args[1] === "create") {
+      // As GitHub does: an issue can't take a label the repo doesn't have.
+      if (!labels.has(val(args, "--label")))
+        return {
+          code: 1,
+          stdout: "",
+          stderr: `could not add label: '${val(args, "--label")}' not found`,
+        };
       if (val(args, "--label") === "flaky" && failCreates > 0) {
         failCreates--;
         return { code: 1, stdout: "", stderr: "HTTP 422: Validation Failed" };
@@ -1777,5 +1784,64 @@ describe("a backlog run that leaves the listing's range while it waits", () => {
     const again = reconcile({ exec: g.exec, repo: REPO, nowMs: later });
     expect(again.map((x) => [x.runId, x.result])).toEqual([[2000, "tracked"]]);
     expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+  });
+});
+
+describe("a pending list while daily events go on", () => {
+  // 32 runs created 2 days before day 0. Fake clock: one CI completion a day.
+  const ids = Array.from({ length: 32 }, (_, i) => 3000 + i);
+  const make = () =>
+    fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id) => rerun(id, { created: 2 * DAY, updated: DAY })),
+    });
+  const marks = (g: ReturnType<typeof make>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+  const day = (g: ReturnType<typeof make>, d: number) => {
+    g.clock.now = NOW + d * DAY;
+    return g.clock.now;
+  };
+
+  it("survives 40 days of daily events that each finish only part of it", () => {
+    const g = make();
+    const left: number[] = [];
+    for (let d = 0; d < 40; d++)
+      left.push(
+        reconcile({
+          exec: g.exec,
+          repo: REPO,
+          nowMs: day(g, d),
+          logs: 1,
+        }).filter((x) => x.result === "left").length,
+      );
+    // One run a day (the log budget is 1; one run always starts).
+    expect(left.slice(0, 3)).toEqual([31, 30, 29]);
+    expect(left.at(-1)).toBe(0);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+  });
+
+  it("is still worked on day 63 after every run failed daily since day 0 and left the listing", () => {
+    const g = make();
+    let broken = true;
+    const exec: Exec = (cmd, args) =>
+      broken && args.some((a) => /\/runs\/\d+\/attempts\/2$/.test(a))
+        ? { code: 1, stdout: "", stderr: "HTTP 404: Not Found" }
+        : g.exec(cmd, args);
+    for (let d = 0; d < 63; d++)
+      reconcile({ exec, repo: REPO, nowMs: day(g, d), calls: 10_000 });
+    expect(marks(g)).toEqual([]);
+    broken = false;
+    const t = day(g, 63);
+    expect(recentRuns(g.exec, REPO, t)).toEqual([]);
+    const r = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: t,
+      logs: 1000,
+      calls: 10_000,
+    });
+    expect(r.filter((x) => x.result === "tracked")).toHaveLength(32);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
   });
 });

@@ -1281,12 +1281,15 @@ export function reconcile(o: {
     .map(([runId, attempt]) => ({ runId, attempt }))
     .sort((a, b) => a.runId - b.runId);
   if (!runs.length) return [];
-  // The pending list is saved whenever it changes: first the whole list of
-  // runs not yet marked, before any run starts, so a job killed at any point
-  // after loses none of them; then, at the end, what is still not marked.
+  // The pending list is saved first, when it changed: the whole list of runs
+  // not yet marked, before any run starts, so a job killed at any point after
+  // loses none of them. At the end, what is still not marked is written
+  // again, as a fresh comment, whenever any is left, even unchanged: the
+  // store is read only over the reconcile's range, so a list never rewritten
+  // would age out of it while its runs still wait.
   let saved = pending.join(" ");
-  const savePending = (list: Passed[]) => {
-    if (list.join(" ") === saved) return;
+  const savePending = (list: Passed[], fresh = false) => {
+    if (list.join(" ") === saved && !(fresh && list.length)) return;
     const { store } = openStore(
       exec,
       repo,
@@ -1335,6 +1338,7 @@ export function reconcile(o: {
   // run leaves it only once it is marked.
   savePending(
     out.filter((r) => r.result === "left" || r.result === "error").map(key),
+    true,
   );
   return out;
 }
