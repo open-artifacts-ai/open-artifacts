@@ -257,6 +257,7 @@ export const AuditActionSchema = z.enum([
   "bus.role.confirmed",
   "bus.role.refused",
   "bus.role.expired",
+  "bus.role.moved",
   "bus.reach.proposed",
   "bus.reach.confirmed",
   "bus.reach.refused",

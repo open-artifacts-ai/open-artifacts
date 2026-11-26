@@ -45,6 +45,7 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import type { PutRoleResult, RoleMove } from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -155,6 +156,11 @@ export type BusHubRpc = {
   namesOf(
     identityIds: string[],
   ): Promise<{ identityId: string; name: string }[]>;
+  /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
+  roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null>;
   /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
   waitingOf(
     identityIds: string[],
@@ -180,11 +186,7 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
     agentId: string | null,
-  ): Promise<
-    | { ok: true; role: BusRole }
-    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
-    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
-  >;
+  ): Promise<PutRoleResult>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -594,6 +596,35 @@ export async function agentNamesOf(
     logError("bus_names_lookup_failed", e);
   }
   return out;
+}
+
+/**
+ * #3132: the live holder of the role the session `identityId` handed on, for
+ * something it began at `originAt` while it held it (bus/roles.ts
+ * roleForward), as an asker address, or null: no such move, no live holder,
+ * or the hub didn't answer (fail closed, #2224). Never throws.
+ */
+export async function roleHolderFor(
+  env: Env,
+  userId: string,
+  identityId: string,
+  originAt: number,
+): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+  try {
+    if (!busOn(env)) return null;
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        return hub.roleHolderFor(identityId, originAt);
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_role_holder_lookup_failed", e);
+    return null;
+  }
 }
 
 /**
@@ -1115,7 +1146,10 @@ export async function putBusRole(
   const hub = busHub(env, userId);
   if (!hub) throw refuse("no_bus");
   const r = await roleCall(hub.putRole(namespace, name, agentId));
-  if (r.ok) return r.role;
+  if (r.ok) {
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    return r.role;
+  }
   if (r.reason === "invalid")
     throw new ApiError("bad_request", `Invalid ${r.field}`, {
       field: r.field,
@@ -1413,6 +1447,16 @@ const PROPOSAL_REFUSALS: Record<
 
 const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
 
+/** #3132: a role moved between sessions, by the member. Ids only. */
+const auditMove = (env: Env, userId: string, m: RoleMove) =>
+  audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
+    detail: {
+      roleId: m.roleId,
+      fromAgentId: m.fromAgentId,
+      toAgentId: m.toAgentId,
+    },
+  }).run();
+
 /** An audit row's detail: ids and enums, the absent ones left out. */
 const detailOf = (a: ProposalAudit, why?: string) => ({
   proposalId: a.proposalId,
@@ -1699,11 +1743,12 @@ export async function decideBusRoleProposal(
   );
   await auditExpired(env, userId, r.expired);
   const actor = userActor(userId);
-  if (r.ok)
+  if (r.ok) {
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-  else if (r.proposal !== null)
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+  } else if (r.proposal !== null)
     // A link already used or expired is a refusal too; an unknown one has
     // nothing to name (the page answers the same).
     await audit(env, "bus.role.refused", auditTarget(userId), actor, {

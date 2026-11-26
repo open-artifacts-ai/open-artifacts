@@ -73,6 +73,7 @@ import {
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { agentKey } from "../services/comment-agents.js";
 import {
+  artifactIdOf,
   follow,
   following,
   knownKey,
@@ -145,8 +146,10 @@ import {
   listRoles,
   type PutRoleResult,
   putRole,
+  type RoleMove,
   resolveRoleAnywhere,
   resolveRoleIn,
+  roleForward,
   roleTakenSql,
 } from "./roles.js";
 import {
@@ -3989,6 +3992,7 @@ function wellFormedNotice(n: BusNotice): boolean {
     typeof n.to.name === "string" &&
     n.to.name.length > 0 &&
     (n.notBefore === undefined || Number.isFinite(n.notBefore)) &&
+    (n.originAt === undefined || Number.isFinite(n.originAt)) &&
     (n.toIdentity === undefined ||
       (typeof n.toIdentity === "string" &&
         n.toIdentity.length > 0 &&
@@ -4055,6 +4059,14 @@ export class BusHub extends DurableObject<Env> {
    */
   static setTestClock(hub: BusHub, ms: number | null): void {
     hub.#clock = ms;
+  }
+
+  /** #3132: a gate the queued follow work (re-keys, unfollows) waits on; null in production. */
+  #followGate: Promise<void> | null = null;
+
+  /** Tests only, like setTestClock: holds queued follow work until `gate` settles. */
+  static setTestFollowGate(hub: BusHub, gate: Promise<void> | null): void {
+    hub.#followGate = gate;
   }
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -4280,6 +4292,7 @@ export class BusHub extends DurableObject<Env> {
     );
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
   }
 
@@ -5107,6 +5120,29 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #3132: the live holder of the role the session linked as `identityId`
+   * handed on, for something it began at `originAt` while it held it
+   * (roles.ts roleForward); null otherwise. Worker only (an ask's answer for
+   * a session that is gone).
+   */
+  async roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+    if (typeof identityId !== "string" || identityId === "") return null;
+    if (!Number.isFinite(originAt)) return null;
+    const sql = this.ctx.storage.sql;
+    const h = roleForward(sql, OWNER_ORG_ID, "", "", identityId, originAt);
+    if (h === null) return null;
+    const identity = identityOfAgent(sql, h.id);
+    return {
+      namespace: h.namespace,
+      name: h.name,
+      ...(identity ? { identityId: identity } : {}),
+    };
+  }
+
+  /**
    * #2512: the agents of `identityIds` in this member's own hub that say they
    * wait on their owner right now (a live row with status waiting_on_owner),
    * and since when (ms). Returns ONLY `{identityId, since}`. At most
@@ -5368,7 +5404,18 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
     // A confirmed set (not a clear) names the holder.
     if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
+  }
+
+  /**
+   * #3132: a role moved between sessions: the pages the old session began
+   * to follow while it held the role move to the new holder (its other
+   * follows stay its own); its later notices forward via roleForward.
+   */
+  #roleMoved(m: RoleMove): void {
+    logEvent("role_moved", {});
+    void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
   }
 
   /**
@@ -6887,24 +6934,66 @@ export class BusHub extends DurableObject<Env> {
     )
       return undefined;
     this.#retargetIdentityNotices(before, after);
+    return this.#moveFollowRows(before, after);
+  }
+
+  /**
+   * The member's follow rows at address `before` (`since`: created then or
+   * later) move to `after` (D1, in the background, one at a time). A
+   * rename's re-key, and #3132 a role move's.
+   */
+  #moveFollowRows(
+    before: { namespace: string; name: string },
+    after: { namespace: string; name: string },
+    /** Only rows created since then (ms); absent: all of them. */
+    since?: number,
+    /** A role move's time: the moved rows start then (follows.ts moveFollows). */
+    startAt?: number,
+    /** #3132: the moved role, whose overlapping pages role_follows keeps. */
+    roleId?: string,
+  ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
       : null;
     if (userId === null) return undefined;
     const from = { namespace: before.namespace, name: before.name };
     const to = { namespace: after.namespace, name: after.name };
+    const gate = this.#followGate;
     const run = async (): Promise<void> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       // Counted like the index calls, so a test's afterAll waits for the D1 work.
       this.indexInFlight++;
       try {
+        if (gate) await gate;
         const timeout = new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("follow re-key timed out")),
             FOLLOW_TIMEOUT_MS,
           );
         });
-        await Promise.race([moveFollows(this.env, userId, from, to), timeout]);
+        const sql = this.ctx.storage.sql;
+        const carried =
+          roleId === undefined
+            ? []
+            : all<{ a: string }>(
+                sql,
+                "select artifact_id as a from role_follows where role_id = ?",
+                roleId,
+              ).map((r) => r.a);
+        const { overlaps } = await Promise.race([
+          moveFollows(this.env, userId, from, to, since, startAt, carried),
+          timeout,
+        ]);
+        // The role's part of a page the new holder follows for itself too.
+        if (roleId !== undefined) {
+          sql.exec("delete from role_follows where role_id = ?", roleId);
+          for (const a of overlaps)
+            sql.exec(
+              "insert or ignore into role_follows (role_id, artifact_id) values (?, ?)",
+              roleId,
+              a,
+            );
+        }
       } catch (e) {
         logError("bus_follow_rekey_failed", e);
       } finally {
@@ -6914,6 +7003,61 @@ export class BusHub extends DurableObject<Env> {
     };
     const p = this.#rekeyed.then(run);
     this.#rekeyed = p;
+    return p;
+  }
+
+  /** #3132: the roles `agent` holds now, by id. */
+  #rolesOf(agent: AgentRow): string[] {
+    return all<{ id: string }>(
+      this.ctx.storage.sql,
+      "select id from roles where org_id = ? and agent_id = ?",
+      OWNER_ORG_ID,
+      agent.id,
+    ).map((r) => r.id);
+  }
+
+  /** #3132: the role part of page `ref` that roles `roleIds` carry ends now. */
+  #endRolePart(roleIds: readonly string[], ref: string): void {
+    const id = artifactIdOf(this.env, ref);
+    if (id && roleIds.length > 0)
+      this.ctx.storage.sql.exec(
+        `delete from role_follows where artifact_id = ?
+           and role_id in (select value from json_each(?))`,
+        id,
+        JSON.stringify(roleIds),
+      );
+  }
+
+  /**
+   * #3132: an unfollow by `agent`, queued on receipt in the same queue as a
+   * role move's re-key, so a move that starts meanwhile runs after it. Once
+   * the D1 delete succeeds, the part of the page the roles it held on receipt
+   * carry ends too, so no later move hands the page on.
+   */
+  #unfollowNow(
+    userId: string,
+    to: { namespace: string; name: string },
+    agent: AgentRow,
+    ref: string,
+  ): Promise<{ removed: boolean } | { error: unknown }> {
+    // The roles it holds as the frame arrives: their part of the page ends
+    // once the delete is done, after any re-key queued before it (which may
+    // add that part), and before any later move. A failed delete keeps it.
+    const roleIds = this.#rolesOf(agent);
+    const gate = this.#followGate;
+    // Never rejects: a refusal (not_found) comes back as `error`, so a queue
+    // link waiting for its answer leaves nothing unhandled.
+    const p = this.#rekeyed.then(async () => {
+      try {
+        if (gate) await gate;
+        const r = await unfollow(this.env, userId, to, ref);
+        this.#endRolePart(roleIds, ref);
+        return r;
+      } catch (error) {
+        return { error };
+      }
+    });
+    this.#rekeyed = p.then(() => undefined);
     return p;
   }
 
@@ -6969,6 +7113,13 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     const to = { namespace: agent.namespace, name: agent.name };
+    // #3132: on receipt, before anything awaits: the role's part ends while
+    // the role is still where the agent held it, and the D1 delete takes its
+    // place in the follow queue ahead of any later move.
+    const unfollowed =
+      f.type === "unfollow"
+        ? this.#unfollowNow(userId, to, agent, f.artifact)
+        : null;
     const wire = (e: {
       artifactId: string;
       url: string;
@@ -6991,15 +7142,17 @@ export class BusHub extends DurableObject<Env> {
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
           : f.type === "unfollow"
-            ? unfollow(this.env, userId, to, f.artifact).then(
-                (r) =>
-                  ({
-                    v: 1,
-                    id: f.id,
-                    type: "unfollowed",
-                    removed: r.removed,
-                  }) as const,
-              )
+            ? (
+                unfollowed as Promise<{ removed: boolean } | { error: unknown }>
+              ).then((r) => {
+                if ("error" in r) throw r.error;
+                return {
+                  v: 1,
+                  id: f.id,
+                  type: "unfollowed",
+                  removed: r.removed,
+                } as const;
+              })
             : following(this.env, userId, to).then(
                 (l) =>
                   ({
@@ -8826,9 +8979,36 @@ export class BusHub extends DurableObject<Env> {
     return ack !== null && noticeAckGated(live) ? "held" : "delivered";
   }
 
-  #acceptNotice(n: BusNotice): DeliveryOutcome {
+  #acceptNotice(n: BusNotice, forwarded = false): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
+    // #3132: a notice for a session that handed its role on (an ask's answer,
+    // a mention, a follow) goes to the role's live holder, as if sent there.
+    // Once only: two sessions that swapped roles never bounce a notice.
+    if (!forwarded) {
+      const holder = roleForward(
+        sql,
+        OWNER_ORG_ID,
+        n.to.namespace,
+        n.to.name.toLowerCase(),
+        n.toIdentity ?? null,
+        n.originAt ?? null,
+      );
+      if (holder !== null) {
+        const identity = identityOfAgent(sql, holder.id);
+        const { toIdentity: _, ...rest } = n;
+        return this.#acceptNotice(
+          {
+            ...rest,
+            to: { namespace: holder.namespace, name: holder.name },
+            ...(n.toIdentity !== undefined && identity !== null
+              ? { toIdentity: identity }
+              : {}),
+          },
+          true,
+        );
+      }
+    }
     // #1752: as a send resolves (role > live > former): a role address in
     // the notice's own namespace reaches its current live holder (same org
     // and namespace scope; a vacant role falls through). A follow row still at
