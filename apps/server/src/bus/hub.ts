@@ -1478,7 +1478,7 @@ function awayHolder(
   // kind itself (codex, opencode, pi, omp, hermes, openclaw...), `<kind>-...`
   // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
   // `claude-<digits>`. An unrelated new thread of that kind must not take
-  // over its mail.
+  // over its name.
   if (isFallbackName(name, kind)) return null;
   const rows = all<{
     agentId: string;
@@ -1556,21 +1556,19 @@ function awayHolder(
 }
 
 /**
- * #1742: the newcomer `toId` takes `name` over from the away agent `fromId`
- * (awayHolder said it may). The away reservation is released, so the name
- * resolves only to the newcomer, and the mail still queued for the old row
- * (pending, inside its session) moves to the newcomer, oldest first, as much
- * as the newcomer's own mailbox caps allow (the rest stays with the old row
- * and expires on its TTL). Moved receipts are renumbered past every rowid,
- * keeping their order, because the newcomer's session boundary
- * (session_start_rowid) is above them: it must receive them, and it must not
- * be able to see anything the old session had acked. Acked bodies never
- * move: they are deleted, the old row keeps none. Returns the moved msg_ids.
- * Bounded by MAILBOX_PENDING_CAP.
+ * #1742, #3208: the newcomer `toId` takes `name` over from the away agent
+ * `fromId` (awayHolder said it may). The away reservation is released, so the
+ * name resolves only to the newcomer, and the old row's roles (#1816) and
+ * same-machine session link (#1822) pass to it. Acked bodies of the old row
+ * are deleted so it keeps none.
  *
- * #1816: the roles the old row held move to the newcomer too, so a restarted
- * lead keeps its role. A role with a reach_grants row stays with the old row
- * (vacant): holding it grants cross-namespace reach, which needs the member's
+ * Mail never follows a name: held mail belongs to the agents row it was sent
+ * to and moves only with an explicit `replaces` handover (takeOver). The old
+ * row's pending receipts are returned here for the caller to expire as
+ * recipient_closed so each sender is told. Bounded by MAILBOX_PENDING_CAP.
+ *
+ * #1816: a role with a reach_grants row stays with the old row (vacant):
+ * holding it grants cross-namespace reach, which needs the member's
  * confirmation (#1346), so it is re-pointed, never passed silently. Only
  * roles in the reclaim's scope move (a global's any, else `namespace`'s).
  */
@@ -1582,7 +1580,7 @@ function takeAwayName(
   namespace: string,
   global: boolean,
   now: number,
-): string[] {
+): { id: string; fromAgent: string }[] {
   sql.exec(
     "delete from former_names where agent_id = ? and kind = 'away' and lname = ? and global = ? and (global = 1 or namespace = ?)",
     fromId,
@@ -1625,43 +1623,12 @@ function takeAwayName(
     );
     sql.exec("delete from agent_proofs where agent_id = ?", fromId);
   }
-  const have = one<{ n: number; b: number }>(
+  return all<{ id: string; fromAgent: string }>(
     sql,
-    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
-    toId,
+    "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' order by rowid limit ?",
+    fromId,
     MAILBOX_PENDING_CAP,
   );
-  const moved = all<{ id: string; rid: number }>(
-    sql,
-    `select id, rid from (
-       select r.id as id, r.rowid as rid, count(*) over w as n, sum(r.size) over w as b
-         from receipts r indexed by receipts_to
-         join agents a on a.id = r.to_agent
-        where r.to_agent = ? and r.state = 'pending' and r.rowid > a.session_start_rowid
-       window w as (order by r.rowid)
-     ) where n <= ? and b <= ? order by rid`,
-    fromId,
-    MAILBOX_PENDING_CAP - (have?.n ?? 0),
-    MAILBOX_BYTES_CAP - (have?.b ?? 0),
-  );
-  const first = moved[0];
-  if (!first) return [];
-  const top =
-    one<{ n: number }>(sql, "select max(rowid) as n from receipts")?.n ?? 0;
-  const ids = JSON.stringify(moved.map((m) => m.id));
-  sql.exec(
-    "update receipts set to_agent = ?, to_name = ?, rowid = rowid + ? where id in (select value from json_each(?))",
-    toId,
-    name,
-    top + 1 - first.rid,
-    ids,
-  );
-  sql.exec(
-    "update mail set to_agent = ? where id in (select value from json_each(?))",
-    toId,
-    ids,
-  );
-  return moved.map((m) => m.id);
 }
 
 /** Random tries at a 4-hex suffix before the suffix grows to 8 hex. */
@@ -1971,8 +1938,8 @@ function agentUp(
   change: RosterChange;
   rowChanged: boolean;
   arms: number[];
-  /** #1742: msg_ids that moved to this agent from an away row it took the name from. */
-  moved: string[];
+  /** #3208: pending receipts of an away row whose name this agent took, to expire as recipient_closed. */
+  orphaned: { id: string; fromAgent: string }[];
 } {
   const existing = one<{
     id: string;
@@ -2152,8 +2119,9 @@ function agentUp(
   // names reserved in the old scope, where they resolve to no one.
   if (existing && !sameScope) keepScopedNames(sql, id, now);
   commitName(sql, id, assigned, to, now);
-  // #1742: a name only an away row of a closed session held.
-  const moved =
+  // #1742, #3208: a name only an away row of a closed session held; its
+  // pending mail expires as recipient_closed instead of moving.
+  const orphaned =
     assigned.reclaim === undefined
       ? []
       : takeAwayName(
@@ -2195,7 +2163,7 @@ function agentUp(
   return {
     rowChanged,
     arms,
-    moved,
+    orphaned,
     reply: {
       v: 1,
       id: f.id,
@@ -5847,11 +5815,13 @@ export class BusHub extends DurableObject<Env> {
           OWNER_ORG_ID,
           this.#now(),
         );
-        const { reply, change, arms, moved } = this.#withReachNotice(() =>
+        const { reply, change, arms, orphaned } = this.#withReachNotice(() =>
           agentUp(sql, machineId, f, this.#now()),
         );
         for (const t of arms) this.#arm(t);
-        this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
+        // #3208: mail never follows a name; the old row's senders are told.
+        for (const r of orphaned)
+          this.#expire(r.id, r.fromAgent, "recipient_closed");
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         // #2478: the harness says a user or a peer named this session.
@@ -6759,8 +6729,9 @@ export class BusHub extends DurableObject<Env> {
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
-    // #1742: the name was an away row's; its queued mail is this agent's now.
-    const moved =
+    // #1742, #3208: the name was an away row's; its pending mail expires as
+    // recipient_closed instead of moving.
+    const orphaned =
       assigned.reclaim === undefined
         ? []
         : takeAwayName(
@@ -6772,24 +6743,13 @@ export class BusHub extends DurableObject<Env> {
             global,
             now,
           );
+    for (const r of orphaned)
+      this.#expire(r.id, r.fromAgent, "recipient_closed");
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
     // #2478: a rename that is not a default re-mint is a chosen name.
     if (f.name_kind !== "default" && f.name_chosen !== false) this.#noteNamed();
-    if (moved.length > 0) {
-      this.#adoptHeld(moved, agent);
-      this.#flush(ws, agent);
-    }
     return this.#rekeyFollows(agent, { namespace: agent.namespace, name });
-  }
-
-  /** #1742: a held (pushed, unacked) body of a moved receipt now belongs to its new recipient. */
-  #adoptHeld(moved: string[], to: AgentRow | null): void {
-    if (to === null) return;
-    for (const id of moved) {
-      const h = this.#held.get(id);
-      if (h) h.toAgent = to.id;
-    }
   }
 
   /**
@@ -7029,9 +6989,9 @@ export class BusHub extends DurableObject<Env> {
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
-    // One exception, after the send: a reply already queued to an away agent
-    // follows its name to a restarted session that reclaims it (#1742,
-    // takeAwayName moves the queued mail), as the sender was told "queued".
+    // A reply already queued to an away agent stays with that agent; if a
+    // restarted session takes the name, the reply expires as recipient_closed
+    // and the sender is told (#3208).
     // Role resolution stays inside resolveTarget, before this check.
     if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
       refuseSend(ws, f.id, "agent_gone");
