@@ -1,0 +1,40 @@
+name: release-title
+# A PR that changes what installs serve to agents (the skill, the upgrade
+# guide, llms.txt, the MCP instructions and tool text) must be titled fix: or
+# feat:. The squash commit takes the PR title, and release-please ships no
+# release for test:, docs: or chore:, so such a change would sit on main and no
+# install would serve it. Runs again when the title is edited, so a retitle
+# clears it. scripts/ci/release-title.ts holds the same path list as `paths`.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+    paths:
+      - "apps/server/src/mcp/**"
+      - "apps/server/scripts/emit-skill.ts"
+      - "apps/server/scripts/emit-upgrade.ts"
+permissions: {}
+concurrency:
+  group: release-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  release-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: a served change opens a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node --experimental-strip-types scripts/ci/release-title.ts --repo "$GITHUB_REPOSITORY"

@@ -1,27 +1,17 @@
 name: release-cadence
-# Arms the release-please PR once it is green and the merge queue has drained, and
-# keeps one `blocker` issue open while a release is stuck. A manual cut still works:
-# arm the release PR yourself at any time.
+# Puts the release-please PR at the front of the merge queue as soon as it is
+# green (GraphQL enqueuePullRequest with jump: true), and keeps one `blocker`
+# issue open while a release is stuck. No wait for the queue to drain and no
+# cap: code PRs already queued, or queued later, go into the next release. A
+# manual cut still works: queue the release PR yourself at any time.
 on:
-  # Events only, no timer (cloud #264). Every change that can make the release PR
-  # armable is an event here:
+  # Events only, no timer (cloud #264). Every change that can make the release
+  # PR ready is an event here:
   # - CI completing: the release PR's own checks (CI is the only workflow it
-  #   needs), and each merge-group run, so the queue draining and the 30-minute
-  #   drain cap are both re-checked as queued PRs move.
-  # - push to main: a queued PR merged, so the queue may have just drained.
+  #   needs), so it is queued the moment it goes green.
   # - release-please completing: the release PR was opened or got a new head,
   #   or a release shipped (closes a stale blocker).
-  # - a PR leaving the merge queue without merging (removed by hand, or
-  #   dropped before its merge-group CI started): the queue may have just
-  #   drained with no push and no CI completion to follow.
-  #   pull_request_target runs this file and the checkout from main, never the
-  #   PR's code, so a fork PR leaving the queue is handled by trusted code.
   # (check_suite does not fire for Actions suites, so workflow_run stands in.)
-  push:
-    branches: [main]
-  pull_request_target:
-    types: [dequeued]
-    branches: [main]
   workflow_dispatch:
   workflow_run:
     workflows: [release-please, CI]
@@ -48,15 +38,15 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-      # Read-only: does arming need to touch the release PR at all?
+      # Read-only: does the release PR need to be queued at all?
       - id: plan
         name: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_SLUG }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts plan --repo "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
-      # The App token exists only right before arming, scoped to the PR merge:
-      # merging with GITHUB_TOKEN would trigger no workflows on the merge commit.
+      # The App token exists only right before queueing, scoped to the PR merge:
+      # a merge started with GITHUB_TOKEN would trigger no workflows on the
+      # merge commit.
       - id: app
         if: ${{ steps.plan.outputs.write == 'true' }}
         uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
@@ -69,7 +59,6 @@ jobs:
         if: ${{ steps.plan.outputs.write == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          RELEASE_APP_LOGIN: ${{ vars.RELEASE_APP_SLUG }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts arm --repo "$GITHUB_REPOSITORY"
       - name: blocker
         if: ${{ !cancelled() }}

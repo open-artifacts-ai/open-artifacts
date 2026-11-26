@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   arm,
   blocker,
-  DRAIN_CAP_MS,
   type Exec,
   RELEASE_BRANCH,
   willWrite,
@@ -29,9 +30,8 @@ type Fixture = {
     createdAt?: string;
     state?: string;
     queued?: boolean;
-    armed?: boolean;
-    armedBy?: string;
     oid?: string;
+    id?: string;
     contexts?: Ctx[];
   };
   queue?: { headRefName: string; number: number }[] | null;
@@ -44,6 +44,8 @@ type Fixture = {
   /** package.json versions at main and at the PR head (default: differ). */
   versions?: { main: string; head: string };
   release?: { tag_name: string; published_at: string } | null;
+  /** What enqueuePullRequest answers (default: the front, jumped). */
+  enqueue?: { position: number; jump: boolean } | null;
 };
 
 /** A fake `gh`: answers graphql and the REST/issue commands from the fixture and logs every call. */
@@ -53,21 +55,33 @@ function fake(f: Fixture) {
     calls.push([cmd, ...args]);
     const ok = (stdout: string) => ({ code: 0, stdout, stderr: "" });
     if (cmd !== "gh") return { code: 127, stdout: "", stderr: "no" };
+    if (
+      args[0] === "api" &&
+      args[1] === "graphql" &&
+      String(args[3]).startsWith("query=mutation")
+    )
+      return ok(
+        JSON.stringify({
+          data: {
+            enqueuePullRequest: {
+              mergeQueueEntry:
+                f.enqueue === undefined
+                  ? { position: 1, jump: true }
+                  : f.enqueue,
+            },
+          },
+        }),
+      );
     if (args[0] === "api" && args[1] === "graphql") {
       const pr = f.pr
         ? [
             {
+              id: f.pr.id ?? "PR_node301",
               number: f.pr.number ?? 301,
               url: `https://github.com/${REPO}/pull/${f.pr.number ?? 301}`,
               title: "chore(main): release 0.6.0",
               createdAt: f.pr.createdAt ?? hoursAgo(1),
               isInMergeQueue: f.pr.queued ?? false,
-              autoMergeRequest: f.pr.armed
-                ? {
-                    enabledAt: hoursAgo(0),
-                    enabledBy: { login: f.pr.armedBy ?? "oa-release" },
-                  }
-                : null,
               commits: {
                 nodes: [
                   {
@@ -133,190 +147,113 @@ const logs = () => {
   return { log: (s: string) => out.push(s), out };
 };
 
-const arm_ = (g: ReturnType<typeof fake>, extra: { capMs?: number } = {}) =>
-  arm({
-    exec: g.exec,
-    repo: REPO,
-    log: logs().log,
-    now: () => NOW,
-    appLogin: "oa-release[bot]",
-    ...extra,
-  });
-const green = (minutesAgo: number): Ctx[] => [
-  {
-    __typename: "CheckRun",
-    name: "a",
-    conclusion: "SUCCESS",
-    completedAt: new Date(NOW - minutesAgo * 60_000).toISOString(),
-  },
-  {
-    __typename: "CheckRun",
-    name: "b",
-    conclusion: "SUCCESS",
-    completedAt: new Date(NOW - (minutesAgo + 20) * 60_000).toISOString(),
-  },
-];
-const QUEUED = [{ number: 11, headRefName: "feat/a" }];
+/** The enqueuePullRequest calls, as their -f fields. */
+const enqueues = (g: ReturnType<typeof fake>) =>
+  g.calls
+    .filter((c) => String(c[4]).startsWith("query=mutation"))
+    .map((c) =>
+      Object.fromEntries(
+        c
+          .filter((_, k) => c[k - 1] === "-f")
+          .map((x) => [
+            x.slice(0, x.indexOf("=")),
+            x.slice(x.indexOf("=") + 1),
+          ]),
+      ),
+    );
+const codePrs = (n: number) =>
+  Array.from({ length: n }, (_, k) => ({
+    number: 11 + k,
+    headRefName: `feat/x${k}`,
+  }));
 
-describe("drain cap and head pinning", () => {
-  it("the cap is 30 minutes", () => {
-    expect(DRAIN_CAP_MS).toBe(30 * 60_000);
-  });
-
-  it("waits while green for less than the cap and code PRs are queued", async () => {
-    const g = fake({ pr: { contexts: green(29) }, queue: QUEUED });
-    expect((await arm_(g)).action).toBe("waiting");
-    expect(g.wrote("pr merge")).toEqual([]);
-  });
-
-  it("arms and logs 'cap hit' once the latest check completed 30 minutes ago", async () => {
-    const g = fake({
-      pr: { contexts: green(30), oid: "def456" },
-      queue: QUEUED,
-    });
-    const l = logs();
-    const r = await arm({
-      exec: g.exec,
-      repo: REPO,
-      log: l.log,
-      now: () => NOW,
-    });
-    expect(r.action).toBe("armed");
-    expect(l.out.join("\n")).toContain("cap hit");
-    expect(g.wrote("pr merge")).toHaveLength(1);
-  });
-
-  it("measures from the LATEST check, not the first", async () => {
-    // latest check finished 10 minutes ago, an older one 50 minutes ago
-    const g = fake({ pr: { contexts: green(10) }, queue: QUEUED });
-    expect((await arm_(g)).action).toBe("waiting");
-  });
-
-  it("the cap is injectable", async () => {
-    const g = fake({ pr: { contexts: green(5) }, queue: QUEUED });
-    expect((await arm_(g, { capMs: 60_000 * 5 })).action).toBe("armed");
-  });
-
-  it("arms with --match-head-commit <sha>", async () => {
-    const g = fake({ pr: { oid: "def456" } });
-    await arm_(g);
-    const [m] = g.wrote("pr merge");
-    expect(m?.[m.indexOf("--match-head-commit") + 1]).toBe("def456");
-    expect(m).toContain("--auto");
-  });
-
-  it("disables auto-merge when armed (not queued), code PRs are queued and the cap is not hit", async () => {
-    const g = fake({ pr: { armed: true, contexts: green(5) }, queue: QUEUED });
-    expect((await arm_(g)).action).toBe("disarmed");
-    expect(g.wrote("pr merge")).toEqual([
-      ["gh", "pr", "merge", "301", "--disable-auto", "--repo", REPO],
-    ]);
-  });
-
-  it("leaves an armed PR alone when the queue is only release PRs, the cap is hit, or it is queued", async () => {
-    for (const f of [
-      { pr: { armed: true }, queue: [] },
-      { pr: { armed: true, contexts: green(31) }, queue: QUEUED },
-      { pr: { armed: true, queued: true }, queue: QUEUED },
-    ]) {
-      const g = fake(f);
-      expect((await arm_(g)).action).toBe("already");
+describe("arm: the release PR jumps the queue as soon as it is green", () => {
+  it("queues a green release PR at the front at once, however many code PRs are queued", async () => {
+    // Leo: "Code merge to release should be 10, maybe 20 mins MAX". No
+    // drain wait and no cap: the first green event queues it.
+    for (const n of [0, 1, 5, 40]) {
+      const g = fake({ pr: {}, queue: codePrs(n) });
+      const l = logs();
+      expect(await arm({ exec: g.exec, repo: REPO, log: l.log })).toEqual({
+        action: "enqueued",
+        pr: 301,
+        jumped: true,
+      });
+      expect(enqueues(g)).toHaveLength(1);
+      expect(l.out).toContain(
+        `queued release PR #301 at the front of the merge queue, ahead of ${n} code PRs`,
+      );
+      // No auto-merge: nothing waits for the queue to drain.
       expect(g.wrote("pr merge")).toEqual([]);
     }
   });
 
-  it("never disarms a human-armed release, nor when the App login is unknown", async () => {
-    const f = {
-      pr: { armed: true, armedBy: "leourbina", contexts: green(5) },
-      queue: QUEUED,
-    };
-    const g = fake(f);
-    expect((await arm_(g)).action).toBe("already");
-    expect(g.wrote("pr merge")).toEqual([]);
-    const g2 = fake({ ...f, pr: { ...f.pr, armedBy: "oa-release" } });
-    expect(
-      (
-        await arm({
-          exec: g2.exec,
-          repo: REPO,
-          log: logs().log,
-          now: () => NOW,
-        })
-      ).action,
-    ).toBe("already");
-    expect(
-      await willWrite({
-        exec: fake(f).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(false);
+  it("jumps, pinned to the head commit it checked and the PR's node id", async () => {
+    const g = fake({ pr: { oid: "def456", id: "PR_kwDOabc" } });
+    await arm({ exec: g.exec, repo: REPO, log: logs().log });
+    const [m] = enqueues(g);
+    expect(m?.id).toBe("PR_kwDOabc");
+    expect(m?.oid).toBe("def456");
+    expect(m?.query).toContain("enqueuePullRequest(input:");
+    expect(m?.query).toContain("jump: true");
+    expect(m?.query).toContain("expectedHeadOid: $oid");
   });
 
-  it("willWrite says whether the run would touch the PR", async () => {
-    expect(
-      await willWrite({
-        exec: fake({}).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(false);
-    expect(
-      await willWrite({
-        exec: fake({ pr: {} }).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(true);
-    expect(
-      await willWrite({
-        exec: fake({ pr: {}, queue: QUEUED }).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(false);
-    expect(
-      await willWrite({
-        exec: fake({ pr: { state: "PENDING" } }).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(false);
-    expect(
-      await willWrite({
-        exec: fake({ pr: { armed: true }, queue: QUEUED }).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(true);
-    expect(
-      await willWrite({
-        exec: fake({ pr: { armed: true } }).exec,
-        repo: REPO,
-        now: () => NOW,
-        appLogin: "oa-release",
-      }),
-    ).toBe(false);
+  it("asks for the PR's node id with the release PR", async () => {
+    const g = fake({ pr: {} });
+    await arm({ exec: g.exec, repo: REPO, log: logs().log });
+    const q = g.calls.find((c) => String(c[4]).startsWith("query=query")) ?? [];
+    expect(q.join(" ")).toMatch(/nodes \{\s+id\s+number/);
+    expect(q.join(" ")).toContain(`head=${RELEASE_BRANCH}`);
+    expect(q.join(" ")).toContain("mergeQueue(branch:");
+    expect(q.join(" ")).toContain("branch=main");
   });
-});
 
-describe("arm", () => {
-  it("does nothing when there is no release PR", async () => {
-    const g = fake({});
+  it("says so when GitHub queues it without letting it jump", async () => {
+    const g = fake({
+      pr: {},
+      queue: codePrs(2),
+      enqueue: { position: 3, jump: false },
+    });
     const l = logs();
     expect(await arm({ exec: g.exec, repo: REPO, log: l.log })).toEqual({
-      action: "none",
+      action: "enqueued",
+      pr: 301,
+      jumped: false,
     });
-    expect(g.wrote("pr merge")).toEqual([]);
+    expect(l.out.join("\n")).toContain(
+      "GitHub did not let it jump (position 3)",
+    );
   });
 
-  it("never re-arms a release PR that already landed while GitHub still reads it open (#2379)", async () => {
+  it("an enqueue that GitHub refuses, or that returns no entry, is an error, not a silent pass", async () => {
+    const g = fake({ pr: {} });
+    const exec: Exec = (cmd, args) =>
+      String(args[3]).startsWith("query=mutation")
+        ? {
+            code: 1,
+            stdout: "",
+            stderr: "Resource not accessible by integration",
+          }
+        : g.exec(cmd, args);
+    await expect(arm({ exec, repo: REPO, log: logs().log })).rejects.toThrow(
+      /not accessible/,
+    );
+    const none = fake({ pr: {}, enqueue: null });
+    await expect(
+      arm({ exec: none.exec, repo: REPO, log: logs().log }),
+    ).rejects.toThrow(/no queue entry/);
+  });
+
+  it("does nothing when there is no release PR", async () => {
+    const g = fake({});
+    expect(await arm({ exec: g.exec, repo: REPO, log: logs().log })).toEqual({
+      action: "none",
+    });
+    expect(enqueues(g)).toEqual([]);
+  });
+
+  it("never queues a release PR that already landed while GitHub still reads it open (#2379)", async () => {
     const g = fake({
       pr: { number: 2376, state: "SUCCESS" },
       versions: { main: "0.168.0", head: "0.168.0" },
@@ -326,122 +263,61 @@ describe("arm", () => {
       action: "landed",
       pr: 2376,
     });
-    expect(g.wrote("pr merge")).toEqual([]);
+    expect(enqueues(g)).toEqual([]);
     expect(l.out.join("\n")).toContain("already landed");
     expect(await willWrite({ exec: g.exec, repo: REPO })).toBe(false);
   });
 
-  it("looks the release PR up by its head branch", async () => {
-    const g = fake({ pr: {} });
-    await arm({ exec: g.exec, repo: REPO, log: logs().log });
-    const q = g.calls.find((c) => c.includes("graphql")) ?? [];
-    expect(q.join(" ")).toContain(`head=${RELEASE_BRANCH}`);
-    expect(q.join(" ")).toContain("mergeQueue(branch:");
-    expect(q.join(" ")).toContain("branch=main");
-  });
-
-  it("arms auto-merge when the rollup is SUCCESS and the queue is empty", async () => {
-    const g = fake({ pr: { number: 301, state: "SUCCESS" } });
-    expect(await arm({ exec: g.exec, repo: REPO, log: logs().log })).toEqual({
-      action: "armed",
-      pr: 301,
-    });
-    expect(g.wrote("pr merge")).toEqual([
-      [
-        "gh",
-        "pr",
-        "merge",
-        "301",
-        "--auto",
-        "--squash",
-        "--match-head-commit",
-        "abc123",
-        "--repo",
-        REPO,
-      ],
-    ]);
-  });
-
-  it("arms when the queue only holds release PRs", async () => {
-    const g = fake({
-      pr: {},
-      queue: [{ number: 299, headRefName: RELEASE_BRANCH }],
-    });
-    expect(
-      (await arm({ exec: g.exec, repo: REPO, log: logs().log })).action,
-    ).toBe("armed");
-  });
-
-  it("does not arm while the queue has other entries, and says how many", async () => {
-    const g = fake({
-      pr: {},
-      queue: [
-        { number: 11, headRefName: "feat/a" },
-        { number: 12, headRefName: "fix/b" },
-        { number: 299, headRefName: RELEASE_BRANCH },
-      ],
-    });
-    const l = logs();
-    expect(await arm({ exec: g.exec, repo: REPO, log: l.log })).toEqual({
-      action: "waiting",
-      entries: 2,
-    });
-    expect(l.out).toContain("waiting for the queue to drain (2 entries)");
-    expect(g.wrote("pr merge")).toEqual([]);
-  });
-
-  it("uses the same wording for any count", async () => {
-    const g = fake({ pr: {}, queue: [{ number: 11, headRefName: "feat/a" }] });
-    const l = logs();
-    await arm({ exec: g.exec, repo: REPO, log: l.log });
-    expect(l.out).toContain("waiting for the queue to drain (1 entries)");
-  });
-
-  it("does not arm a PR whose rollup is not SUCCESS", async () => {
+  it("does not queue a PR whose rollup is not SUCCESS", async () => {
     for (const state of ["PENDING", "FAILURE", "ERROR", "EXPECTED"]) {
-      const g = fake({ pr: { state } });
+      const g = fake({ pr: { state }, queue: codePrs(1) });
       const l = logs();
       expect((await arm({ exec: g.exec, repo: REPO, log: l.log })).action).toBe(
         "not-green",
       );
       expect(l.out.join("\n")).toContain(state);
-      expect(g.wrote("pr merge")).toEqual([]);
+      expect(enqueues(g)).toEqual([]);
     }
   });
 
-  it("does nothing when the PR is already armed or already in the queue", async () => {
-    for (const pr of [{ armed: true }, { queued: true }]) {
-      const g = fake({ pr });
-      expect(
-        (await arm({ exec: g.exec, repo: REPO, log: logs().log })).action,
-      ).toBe("already");
-      expect(g.wrote("pr merge")).toEqual([]);
-    }
+  it("leaves a release PR that is already in the queue alone", async () => {
+    const g = fake({ pr: { queued: true }, queue: codePrs(3) });
+    expect(
+      (await arm({ exec: g.exec, repo: REPO, log: logs().log })).action,
+    ).toBe("already");
+    expect(enqueues(g)).toEqual([]);
   });
 
-  it("a queue that doesn't exist (null) counts as empty", async () => {
+  it("a queue that doesn't exist (null) is no reason to wait", async () => {
     const g = fake({ pr: {}, queue: null });
     expect(
       (await arm({ exec: g.exec, repo: REPO, log: logs().log })).action,
-    ).toBe("armed");
+    ).toBe("enqueued");
   });
 
-  it("a failing gh pr merge is an error, not a silent pass", async () => {
-    const g = fake({ pr: {} });
-    const exec: Exec = (cmd, args) =>
-      args[0] === "pr"
-        ? { code: 1, stdout: "", stderr: "not allowed" }
-        : g.exec(cmd, args);
-    await expect(arm({ exec, repo: REPO, log: logs().log })).rejects.toThrow(
-      /not allowed/,
-    );
+  it("willWrite says whether the run would queue the PR, whatever the queue holds", async () => {
+    const ww = (f: Fixture) => willWrite({ exec: fake(f).exec, repo: REPO });
+    expect(await ww({})).toBe(false);
+    expect(await ww({ pr: {} })).toBe(true);
+    expect(await ww({ pr: {}, queue: codePrs(4) })).toBe(true);
+    expect(await ww({ pr: { state: "PENDING" } })).toBe(false);
+    expect(await ww({ pr: { queued: true } })).toBe(false);
   });
 
-  it("a graphql failure is an error", async () => {
+  it("the read is an error when graphql fails", async () => {
     const exec: Exec = () => ({ code: 1, stdout: "", stderr: "bad token" });
     await expect(arm({ exec, repo: REPO, log: logs().log })).rejects.toThrow(
       /bad token/,
     );
+  });
+
+  it("has no drain wait or cap left in the code", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("./release-cadence.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(src).not.toMatch(/DRAIN_CAP|capMs|waiting for the queue to drain/);
+    expect(src).not.toContain("--auto");
   });
 });
 

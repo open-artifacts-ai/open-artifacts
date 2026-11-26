@@ -1,5 +1,9 @@
-// Release cadence: arm the release-please PR when it is green and the merge
-// queue has drained, and keep one `blocker` issue open while a release is stuck.
+// Release cadence: put the release-please PR at the front of the merge queue
+// as soon as it is green, and keep one `blocker` issue open while a release is
+// stuck. There is no wait for the queue to drain: the release PR jumps ahead of
+// any queued code PRs (GraphQL enqueuePullRequest with jump: true), so its merge
+// group holds only the release and keeps the release-only fast path. Code PRs
+// queued behind it go into the next release.
 // Usage: node --experimental-strip-types scripts/ci/release-cadence.ts <plan|arm|blocker> --repo owner/name
 // `plan` prints `write=true|false` (does arm need the App token?).
 // Needs GH_TOKEN in the environment. `arm` runs with the release App's token
@@ -11,8 +15,6 @@ export const RELEASE_BRANCH =
   "release-please--branches--main--components--open-artifacts";
 const BLOCKED = "Release blocked:";
 const DAY_MS = 24 * 3600_000;
-/** Once the release PR has been green this long, arm it even if code PRs are still queued. */
-export const DRAIN_CAP_MS = 30 * 60_000;
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (
@@ -24,12 +26,12 @@ const QUERY = `query($owner: String!, $name: String!, $head: String!, $branch: S
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, headRefName: $head, first: 1) {
       nodes {
+        id
         number
         url
         title
         createdAt
         isInMergeQueue
-        autoMergeRequest { enabledAt enabledBy { login } }
         commits(last: 1) {
           nodes {
             commit {
@@ -70,20 +72,18 @@ type Context = {
   createdAt?: string | null;
 };
 export type ReleasePr = {
+  /** The GraphQL node id, for enqueuePullRequest. */
+  id: string;
   number: number;
   url: string;
   title: string;
   createdAt: string;
   queued: boolean;
-  armed: boolean;
-  armedBy?: string;
   rollup: string;
   contexts: Context[];
   oid: string;
   /** Main already carries the version this PR's head sets (it landed; GitHub still reads it open). */
   landed?: boolean;
-  /** When the latest check on the current head finished (ms), if known. */
-  settledAt?: number;
 };
 type Snapshot = { pr?: ReleasePr; others: number };
 
@@ -148,24 +148,19 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
     packageVersion(exec, repo, "main"),
     oid ? packageVersion(exec, repo, oid) : "",
   ]);
-  const times = contexts
-    .map((c) => Date.parse(String(c.completedAt ?? c.createdAt ?? "")))
-    .filter((t) => !Number.isNaN(t));
   return {
     others,
     pr: {
+      id: String(n.id ?? ""),
       number: n.number,
       url: n.url,
       title: n.title,
       createdAt: n.createdAt,
       queued: Boolean(n.isInMergeQueue),
-      armed: Boolean(n.autoMergeRequest),
-      armedBy: n.autoMergeRequest?.enabledBy?.login,
       rollup: rollup?.state ?? "NONE",
       contexts,
       oid,
       landed: Boolean(mainV) && mainV === headV,
-      settledAt: times.length ? Math.max(...times) : undefined,
     },
   };
 }
@@ -174,32 +169,15 @@ export type ArmResult =
   | { action: "none" }
   | { action: "already"; pr: number }
   | { action: "not-green"; pr: number; state: string }
-  | { action: "waiting"; entries: number }
-  | { action: "disarmed"; pr: number }
   | { action: "landed"; pr: number }
-  | { action: "armed"; pr: number };
+  | { action: "enqueued"; pr: number; jumped: boolean };
 
-type Opts = {
-  exec: Exec;
-  repo: string;
-  now?: () => number;
-  capMs?: number;
-  /** The release App's bot login; only auto-merge it enabled is ever disabled. */
-  appLogin?: string;
-};
+type Opts = { exec: Exec; repo: string };
 type Plan =
   | { do: "none"; result: ArmResult; msg: string }
-  | { do: "disarm"; pr: ReleasePr }
-  | { do: "arm"; pr: ReleasePr; capHit: boolean };
+  | { do: "enqueue"; pr: ReleasePr; ahead: number };
 
-const bare = (l?: string) => String(l ?? "").replace(/\[bot\]$/, "");
-
-function plan(
-  s: Snapshot,
-  now: number,
-  capMs: number,
-  appLogin?: string,
-): Plan {
+function plan(s: Snapshot): Plan {
   const { pr, others } = s;
   if (!pr)
     return {
@@ -207,105 +185,76 @@ function plan(
       result: { action: "none" },
       msg: "no open release PR",
     };
-  // GitHub can still read a landed release PR as open (#2379): arming it again
+  // GitHub can still read a landed release PR as open (#2379): queueing it again
   // made the queue build an empty commit that got tagged. Leave it alone.
   if (pr.landed)
     return {
       do: "none",
       result: { action: "landed", pr: pr.number },
-      msg: `release PR #${pr.number} already landed (main carries its version), not arming`,
+      msg: `release PR #${pr.number} already landed (main carries its version), not queueing`,
     };
-  const capHit =
-    pr.rollup === "SUCCESS" &&
-    pr.settledAt !== undefined &&
-    now - pr.settledAt >= capMs;
   if (pr.queued)
     return {
       do: "none",
       result: { action: "already", pr: pr.number },
       msg: `release PR #${pr.number} is already queued`,
     };
-  if (pr.armed) {
-    // A fresh head must re-qualify under the drain rule.
-    const ours = Boolean(appLogin) && bare(pr.armedBy) === bare(appLogin);
-    if (ours && others > 0 && !capHit) return { do: "disarm", pr };
-    return {
-      do: "none",
-      result: { action: "already", pr: pr.number },
-      msg: `release PR #${pr.number} is already armed`,
-    };
-  }
   if (pr.rollup !== "SUCCESS")
     return {
       do: "none",
       result: { action: "not-green", pr: pr.number, state: pr.rollup },
-      msg: `release PR #${pr.number} checks are ${pr.rollup}, not arming`,
+      msg: `release PR #${pr.number} checks are ${pr.rollup}, not queueing`,
     };
-  if (others > 0 && !capHit)
-    return {
-      do: "none",
-      result: { action: "waiting", entries: others },
-      msg: `waiting for the queue to drain (${others} entries)`,
-    };
-  return { do: "arm", pr, capHit: others > 0 };
+  return { do: "enqueue", pr, ahead: others };
 }
 
 /** True when `arm` would change the release PR (so it needs the App token). Read-only. */
 export async function willWrite(o: Opts): Promise<boolean> {
-  const p = plan(
-    await snapshot(o.exec, o.repo),
-    (o.now ?? Date.now)(),
-    o.capMs ?? DRAIN_CAP_MS,
-    o.appLogin,
-  );
-  return p.do !== "none";
+  return plan(await snapshot(o.exec, o.repo)).do !== "none";
 }
 
-/** Arms auto-merge on the release PR once it is green and the queue holds nothing but release PRs (or the drain cap is hit). */
+const ENQUEUE = `mutation($id: ID!, $oid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $oid, jump: true}) {
+    mergeQueueEntry { position jump }
+  }
+}`;
+
+/**
+ * Puts the green release PR at the front of the merge queue, pinned to the
+ * head commit it checked (expectedHeadOid), with no wait for queued code PRs.
+ */
 export async function arm(
   o: Opts & { log: (line: string) => void },
 ): Promise<ArmResult> {
-  const p = plan(
-    await snapshot(o.exec, o.repo),
-    (o.now ?? Date.now)(),
-    o.capMs ?? DRAIN_CAP_MS,
-    o.appLogin,
-  );
+  const p = plan(await snapshot(o.exec, o.repo));
   if (p.do === "none") {
     o.log(p.msg);
     return p.result;
   }
-  if (p.do === "disarm") {
-    await gh(o.exec, [
-      "pr",
-      "merge",
-      String(p.pr.number),
-      "--disable-auto",
-      "--repo",
-      o.repo,
-    ]);
-    o.log(
-      `disabled auto-merge on release PR #${p.pr.number} to re-check the drain on its current head`,
-    );
-    return { action: "disarmed", pr: p.pr.number };
-  }
-  if (p.capHit)
-    o.log(
-      `cap hit: release PR #${p.pr.number} has been green for 30 minutes or more, arming despite queued PRs`,
-    );
-  await gh(o.exec, [
-    "pr",
-    "merge",
-    String(p.pr.number),
-    "--auto",
-    "--squash",
-    "--match-head-commit",
-    p.pr.oid,
-    "--repo",
-    o.repo,
+  if (!p.pr.id || !p.pr.oid)
+    throw new Error(`release PR #${p.pr.number}: no node id or head commit`);
+  const out = await gh(o.exec, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${ENQUEUE}`,
+    "-f",
+    `id=${p.pr.id}`,
+    "-f",
+    `oid=${p.pr.oid}`,
   ]);
-  o.log(`armed auto-merge on release PR #${p.pr.number}`);
-  return { action: "armed", pr: p.pr.number };
+  const entry = JSON.parse(out)?.data?.enqueuePullRequest?.mergeQueueEntry;
+  if (!entry)
+    throw new Error(
+      `release PR #${p.pr.number}: enqueuePullRequest returned no queue entry`,
+    );
+  const jumped = entry.jump === true;
+  o.log(
+    jumped
+      ? `queued release PR #${p.pr.number} at the front of the merge queue, ahead of ${p.ahead} code PRs`
+      : `queued release PR #${p.pr.number}, but GitHub did not let it jump (position ${entry.position}); ${p.ahead} code PRs may merge with it`,
+  );
+  return { action: "enqueued", pr: p.pr.number, jumped };
 }
 
 const FAILED = new Set([
@@ -497,20 +446,13 @@ async function main(argv: string[]) {
   }
   if (mode === "plan") {
     // stdout is appended to $GITHUB_OUTPUT: `write=true` when arm needs the App token
-    console.log(
-      `write=${await willWrite({ exec: realExec, repo, appLogin: process.env.RELEASE_APP_LOGIN })}`,
-    );
+    console.log(`write=${await willWrite({ exec: realExec, repo })}`);
     return 0;
   }
   const log = (s: string) => console.log(s);
   const r =
     mode === "arm"
-      ? await arm({
-          exec: realExec,
-          repo,
-          log,
-          appLogin: process.env.RELEASE_APP_LOGIN,
-        })
+      ? await arm({ exec: realExec, repo, log })
       : await blocker({ exec: realExec, repo, now: Date.now, log });
   console.log(JSON.stringify(r));
   return 0;
