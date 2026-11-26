@@ -52,8 +52,11 @@ for (const scheme of ["light", "dark"] as const) {
     const shot = async (page: Page, name: string) => {
       if (!DIR) return;
       mkdirSync(DIR, { recursive: true });
-      await page.waitForTimeout(250);
-      await page.screenshot({ path: `${DIR}/${name}-${scheme}.png` });
+      await page.evaluate(() => document.fonts.ready);
+      await page.screenshot({
+        path: `${DIR}/${name}-${scheme}.png`,
+        animations: "disabled",
+      });
     };
     const box = (page: Page) =>
       page.getByRole("toolbar", { name: "Formatting" }).boundingBox();

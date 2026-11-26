@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.250.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.249.1...v0.250.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** refresh installed skills when the instance version changes ([#3203](https://github.com/open-artifacts-ai/open-artifacts/issues/3203)) ([#3206](https://github.com/open-artifacts-ai/open-artifacts/issues/3206)) ([5510d4c](https://github.com/open-artifacts-ai/open-artifacts/commit/5510d4c82b70696cdaf276159e5c3fe376e0b4a9))
+
 ## [0.249.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.249.0...v0.249.1) (2026-11-26)
 
 

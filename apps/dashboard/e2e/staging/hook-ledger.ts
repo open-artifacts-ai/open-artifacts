@@ -3,12 +3,14 @@
 // the private suite imports it (never the other way), and it has no relative
 // imports, so the suite can import it as a plain file.
 //
-// The server charges every /__test/* call to RL_ANON before it reads the
-// hook key (apps/server/src/test-hooks/index.ts), keyed by install and IP,
-// and a limited call answers the same bare 404 as a wrong key. So each
-// runner keeps one ledger per install (tmpdir, keyed by the target's app
-// origin): every process on the runner that calls that install's hooks
-// draws on it, and different installs never share one.
+// The server charges a /__test/* call whose hook key checks out to RL_HOOKS
+// (600 a minute, keyed by install and IP); a wrong or absent key is charged to
+// RL_ANON (30 a minute) first, and a limited call of either kind answers the
+// same bare 404 as a wrong key. So each runner keeps one ledger per install
+// (tmpdir, keyed by the target's app origin): every process on the runner that
+// calls that install's hooks draws on it, and different installs never share
+// one. The ledger only counts: a call that would be past the budget is refused
+// at once (HookBudgetError), never waited for, so no suite sleeps on it.
 //
 // The ledger is a directory of slot files. A call takes slot n by linking a
 // complete temp file (the call's time) to `s<n>.g<k>`: link fails EEXIST
@@ -34,25 +36,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
- * RL_ANON in apps/server/wrangler.template.jsonc (and wrangler.test.jsonc,
- * which the local pair uses): `"simple": { "limit": 30, "period": 60 }`.
- * test/hook-ledger.test.ts reads both files and fails if either differs.
+ * RL_HOOKS in apps/server/wrangler.template.jsonc (and wrangler.staging.jsonc
+ * and wrangler.test.jsonc): `"simple": { "limit": 600, "period": 60 }`.
+ * test/hook-ledger.test.ts reads all three and fails if any differs.
  */
-export const RL_ANON_LIMIT = 30;
-export const RL_ANON_PERIOD_S = 60;
+export const RL_HOOKS_LIMIT = 600;
+export const RL_HOOKS_PERIOD_S = 60;
 /**
- * Calls kept back from RL_ANON: /__test/* requests nothing paces (none
+ * Calls kept back from RL_HOOKS: /__test/* requests nothing counts (none
  * today) and Cloudflare's limiter being approximate (per location,
  * eventually consistent).
  */
-export const HOOK_MARGIN = 5;
-/** At most this many paced hook calls per install in any HOOK_WINDOW_MS. */
-export const HOOK_LIMIT = RL_ANON_LIMIT - HOOK_MARGIN;
-export const HOOK_WINDOW_MS = RL_ANON_PERIOD_S * 1000;
-/** T19's spread: at most one call per this gap, so a burst never fills the window. */
-export const HOOK_GAP_MS = Math.ceil(HOOK_WINDOW_MS / HOOK_LIMIT);
-/** Added to every computed wait, so the freed call is past the window's edge. */
-const EDGE_MS = 100;
+export const HOOK_MARGIN = 30;
+/** At most this many counted hook calls per install in any HOOK_WINDOW_MS. */
+export const HOOK_LIMIT = RL_HOOKS_LIMIT - HOOK_MARGIN;
+export const HOOK_WINDOW_MS = RL_HOOKS_PERIOD_S * 1000;
 
 /** The ledger's key for a target: its app origin, hashed (as since #1261). */
 export const hookLedgerKey = (app: string): string =>
@@ -72,14 +70,9 @@ export class HookBudgetError extends Error {
 export interface PaceOpts {
   /** Ledger root (default tmpdir()). */
   root?: string;
-  /** Epoch ms by which the call must be made; past it, HookBudgetError. */
-  deadline?: number;
   /** Keep this many calls of the budget free (a 404 that must be the key's). */
   reserve?: number;
-  /** At most one call per HOOK_GAP_MS (T19), besides the window. */
-  spread?: boolean;
   now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
   /** Test seam: runs after a scan that found room, before the slot's create. */
   afterScan?: () => Promise<void>;
 }
@@ -199,19 +192,15 @@ export function hookWindowCount(
 }
 
 /**
- * Waits until a hook call to `app` fits the budget, then records it. Waits
- * are computed from the ledger (the oldest call in the window, and with
- * `spread` the newest), never fixed. Returns the calls in the window,
- * this one included. Throws HookBudgetError when the wait would pass
- * `deadline`.
+ * Records a hook call to `app`, or throws HookBudgetError at once when the
+ * budget (HOOK_LIMIT calls in HOOK_WINDOW_MS, less `reserve`) is spent: it
+ * never waits. Returns the calls in the window, this one included.
  */
 export async function claimHookSlot(
   app: string,
   o: PaceOpts = {},
 ): Promise<number> {
   const now = o.now ?? Date.now;
-  const sleep =
-    o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const reserve = o.reserve ?? 0;
   const room = HOOK_LIMIT - reserve;
   if (room < 1) throw new Error("hook budget: reserve leaves no room");
@@ -223,84 +212,45 @@ export async function claimHookSlot(
       .filter((s) => t - s.at < HOOK_WINDOW_MS)
       .map((s) => s.at)
       .sort((x, y) => x - y);
-    const newest = fresh.at(-1);
-    const waits: number[] = [];
-    // Count: the (fresh - room)-th oldest call must leave the window.
-    if (fresh.length >= room)
-      waits.push(
-        (fresh[fresh.length - room] as number) + HOOK_WINDOW_MS - t + EDGE_MS,
-      );
-    if (o.spread && newest !== undefined && t - newest < HOOK_GAP_MS)
-      waits.push(newest + HOOK_GAP_MS - t);
-    if (waits.length === 0) {
-      await o.afterScan?.();
-      // Fewer than `room` fresh calls, so some slot below HOOK_LIMIT is free.
-      for (let n = 0; n < HOOK_LIMIT; n++) {
-        const s = slots.get(n);
-        if (s && t - s.at < HOOK_WINDOW_MS) continue;
-        const gen = s ? s.gen + 1 : 0;
-        const name = `s${n}.g${gen}`;
-        if (!takeSlot(dir, name, t)) break; // another process took it: scan again
-        // A claim that stalled for windows can take a generation older than
-        // the newest (one already unlinked): never counted, so not a call.
-        if ((scan(dir, t).get(n)?.gen ?? -1) !== gen) {
-          try {
-            unlinkSync(join(dir, name));
-          } catch {}
-          break;
-        }
-        // Older generations of slot n are never read again. The one before
-        // stays, so a claim that scanned it long ago still collides.
-        if (gen >= 2)
-          try {
-            unlinkSync(join(dir, `s${n}.g${gen - 2}`));
-          } catch {}
-        return fresh.length + 1;
-      }
-      continue;
-    }
-    const wait = Math.max(1, ...waits);
-    if (o.deadline !== undefined && t + wait > o.deadline)
+    // Count: the (fresh - room)-th oldest call must leave the window first.
+    if (fresh.length >= room) {
+      const wait = (fresh[fresh.length - room] as number) + HOOK_WINDOW_MS - t;
       throw new HookBudgetError(
         `${fresh.length} of ${HOOK_LIMIT} calls in the last ${HOOK_WINDOW_MS / 1000} s; ` +
-          `the next fits in ${Math.ceil(wait / 1000)} s, past this call's deadline`,
+          `the next fits in ${Math.ceil(wait / 1000)} s`,
       );
-    await sleep(wait);
+    }
+    await o.afterScan?.();
+    // Fewer than `room` fresh calls, so some slot below HOOK_LIMIT is free.
+    for (let n = 0; n < HOOK_LIMIT; n++) {
+      const s = slots.get(n);
+      if (s && t - s.at < HOOK_WINDOW_MS) continue;
+      const gen = s ? s.gen + 1 : 0;
+      const name = `s${n}.g${gen}`;
+      if (!takeSlot(dir, name, t)) break; // another process took it: scan again
+      // A claim that stalled for windows can take a generation older than
+      // the newest (one already unlinked): never counted, so not a call.
+      if ((scan(dir, t).get(n)?.gen ?? -1) !== gen) {
+        try {
+          unlinkSync(join(dir, name));
+        } catch {}
+        break;
+      }
+      // Older generations of slot n are never read again. The one before
+      // stays, so a claim that scanned it long ago still collides.
+      if (gen >= 2)
+        try {
+          unlinkSync(join(dir, `s${n}.g${gen - 2}`));
+        } catch {}
+      return fresh.length + 1;
+    }
   }
 }
 
 /**
  * Whether a bare hook 404 can be read as the hooks' own answer (hooks off,
- * wrong key) rather than RL_ANON's: never while the ledger is at or over the
+ * wrong key) rather than the limiter's: never while the ledger is at or over the
  * budget, where an unpaced call could have tipped the server's bucket.
  */
 export const hook404IsTheKeys = (windowCount: number): boolean =>
   windowCount < HOOK_LIMIT;
-
-/**
- * Waits until no paced call to `app` is in the window (T19's setup, so its
- * spread calls start on an empty budget after the live suite). The wait is
- * computed from the newest call. Throws HookBudgetError past `deadline`.
- */
-export async function waitHookWindowClear(
-  app: string,
-  o: Pick<PaceOpts, "root" | "deadline" | "now" | "sleep"> = {},
-): Promise<void> {
-  const now = o.now ?? Date.now;
-  const sleep =
-    o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const dir = ledgerDir(app, o.root ?? tmpdir());
-  for (;;) {
-    const t = now();
-    const fresh = [...scan(dir, t).values()]
-      .map((s) => s.at)
-      .filter((at) => t - at < HOOK_WINDOW_MS);
-    if (fresh.length === 0) return;
-    const wait = Math.max(...fresh) + HOOK_WINDOW_MS - t + EDGE_MS;
-    if (o.deadline !== undefined && t + wait > o.deadline)
-      throw new HookBudgetError(
-        `${fresh.length} calls still in the window; it clears in ${Math.ceil(wait / 1000)} s, past the deadline`,
-      );
-    await sleep(wait);
-  }
-}
