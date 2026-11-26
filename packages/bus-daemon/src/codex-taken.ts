@@ -136,6 +136,8 @@ export type TakenOptions = {
   ttlMs?: number;
   /** Bytes of one rollout read per record per pass; default TAKEN_SCAN_BUDGET. */
   scanBudget?: number;
+  /** Called after records change on disk or an entry is deleted. */
+  onChange?: () => void;
 };
 
 /** The rollout's first bytes (up to 512): its first line names the session (timestamp, id), so a replacement differs. */
@@ -316,7 +318,10 @@ export class TakenWatch {
     });
     if (this.#save()) return true;
     if (prev) this.#recs.set(id, prev);
-    else this.#recs.delete(id);
+    else {
+      this.#recs.delete(id);
+      this.opts.onChange?.();
+    }
     return false;
   }
 
@@ -611,6 +616,7 @@ export class TakenWatch {
       });
       chmodSync(tmp, 0o600);
       renameSync(tmp, this.opts.file);
+      this.opts.onChange?.();
       return true;
     } catch (e) {
       this.opts.log?.(

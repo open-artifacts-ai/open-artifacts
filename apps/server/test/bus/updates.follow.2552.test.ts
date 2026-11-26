@@ -1,19 +1,14 @@
 // #2552 step 2: with no version named, machines follow the instance. The
-// default is the server's own strict x.y.z release, only once it has run here
-// for 24 h, only forward of the machine's own version, and never while the
-// owner has paused updates. A named version keeps its old meaning.
-import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+// default is the server's own strict x.y.z release, offered at once, only
+// forward of the machine's own version, and never while the owner has paused
+// updates. A named version keeps its old meaning.
+import { runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
-import {
-  RUN_VERSION_KEY,
-  SOAK_MS,
-  UPDATES_PAUSED_KEY,
-  VERSION_SINCE_KEY,
-} from "../../src/bus/updates.js";
+import { RUN_VERSION_KEY, UPDATES_PAUSED_KEY } from "../../src/bus/updates.js";
 import {
   RUN_VERSION_FANOUT_KEY,
   setBusUpdatesPaused,
@@ -52,16 +47,9 @@ const getKey = async (k: string) =>
       .bind(k)
       .first<{ value: string }>()
   )?.value ?? null;
-const since = (version: string, at: number) =>
-  setKey(VERSION_SINCE_KEY, JSON.stringify({ version, since: at }));
 
 afterEach(async () => {
-  for (const k of [
-    RUN_VERSION_KEY,
-    UPDATES_PAUSED_KEY,
-    VERSION_SINCE_KEY,
-    RUN_VERSION_FANOUT_KEY,
-  ])
+  for (const k of [RUN_VERSION_KEY, UPDATES_PAUSED_KEY, RUN_VERSION_FANOUT_KEY])
     await setKey(k, null);
 });
 
@@ -69,7 +57,7 @@ afterEach(async () => {
  * A member on a hub whose server VERSION is `server` and whose clock is NOW,
  * and a machine running `running` that has said hello.
  */
-async function open(server: string, running: string, soakedFor?: number) {
+async function open(server: string, running: string) {
   const who = await member();
   const m = await machine("MacBook", who.userId);
   const stub = await hubOf(who.userId);
@@ -77,7 +65,6 @@ async function open(server: string, running: string, soakedFor?: number) {
     BusHub.setTestServerVersion(i as unknown as BusHub, server);
     BusHub.setTestClock(i as unknown as BusHub, NOW);
   });
-  if (soakedFor !== undefined) await since(server, NOW - soakedFor);
   const d = await daemon(m.token);
   d.send({
     ...hello("h0"),
@@ -117,12 +104,12 @@ const ackOf = async (d: Daemon, f: ClientFrame) => {
 };
 
 describe("following the instance (#2552)", () => {
-  it("nothing named, soaked: an older machine is told the default; same or newer is told nothing to run", async () => {
-    const old = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+  it("a new release is offered at once: an older machine is told the server's release on its first hello, with no wait", async () => {
+    const old = await open("1.2.0", "1.0.0");
     expect(old.target).toBe("1.2.0");
-    const same = await open("1.2.0", "1.2.0", SOAK_MS + 1);
+    const same = await open("1.2.0", "1.2.0");
     expect(same.target).toBeNull();
-    const newer = await open("1.2.0", "1.3.0", SOAK_MS + 1);
+    const newer = await open("1.2.0", "1.3.0");
     expect(newer.target).toBeNull();
     // A later push says the same.
     await old.stub.runVersionChanged();
@@ -131,75 +118,33 @@ describe("following the instance (#2552)", () => {
     expect(pushes(same.d).at(-1)).toBeNull();
   });
 
-  it("not soaked: nothing, and the first sight is recorded once", async () => {
+  it("release offered right after the instance runs it", async () => {
     const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    const row = JSON.parse((await getKey(VERSION_SINCE_KEY)) as string);
-    expect(row).toEqual({ version: "1.2.0", since: NOW });
-    // A second hub on the same VERSION leaves the first record alone.
-    const later = await open("1.2.0", "1.0.0");
-    expect(later.target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string).since).toBe(
-      NOW,
-    );
+    expect(target).toBe("1.2.0");
   });
 
-  it("a malformed first-sight record heals instead of failing every read", async () => {
-    await setKey(VERSION_SINCE_KEY, "{not json");
-    const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string)).toEqual({
-      version: "1.2.0",
-      since: NOW,
-    });
-  });
-
-  it("the soak ends by alarm: the connected machine is then told the default", async () => {
-    const { d, stub } = await open("1.2.0", "1.0.0", SOAK_MS - 60_000);
-    expect(pushes(d)).toEqual([null]);
-    await runInDurableObject(stub, (i) =>
-      BusHub.setTestClock(i as unknown as BusHub, NOW + 61_000),
-    );
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect(pushes(d).at(-1)).toBe("1.2.0");
-  });
-
-  it("a new VERSION restarts the soak", async () => {
-    await since("1.1.0", NOW - 10 * SOAK_MS);
-    const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string)).toEqual({
-      version: "1.2.0",
-      since: NOW,
-    });
-  });
-
-  it("a -dev or pre-release VERSION gives no default and records nothing", async () => {
+  it("a -dev or pre-release VERSION gives no default", async () => {
     for (const v of ["1.2.0-dev+abc1234", "1.2.0-rc.1"]) {
       const { target } = await open(v, "1.0.0");
       expect(target).toBeNull();
     }
-    expect(await getKey(VERSION_SINCE_KEY)).toBeNull();
-    await since("1.2.0", NOW - 2 * SOAK_MS);
-    const dev = await open("1.2.0-dev+abc1234", "1.0.0");
-    expect(dev.target).toBeNull();
   });
 
   it("a server older than the machine leaves the machine alone", async () => {
-    const { target } = await open("1.0.0", "1.5.0", SOAK_MS + 1);
+    const { target } = await open("1.0.0", "1.5.0");
     expect(target).toBeNull();
   });
 
   it("an unreadable machine version gets no default", async () => {
-    const { target } = await open("1.2.0", "unknown-1700", SOAK_MS + 1);
+    const { target } = await open("1.2.0", "unknown-1700");
     expect(target).toBeNull();
   });
 
-  it("named wins: unsoaked, and a lower named version is still a step back", async () => {
+  it("named wins: a lower named version is still a step back", async () => {
     await setKey(RUN_VERSION_KEY, "1.1.0");
     const a = await open("1.2.0", "1.0.0");
     expect(a.target).toBe("1.1.0");
-    const b = await open("1.2.0", "1.2.0", SOAK_MS + 1);
+    const b = await open("1.2.0", "1.2.0");
     expect(b.target).toBe("1.1.0"); // below its own: a deliberate step back
     expect(
       await ackOf(b.d, sw({ from: "1.2.0", to: "1.1.0", reason: "ok" })),
@@ -210,8 +155,8 @@ describe("following the instance (#2552)", () => {
 });
 
 describe("update_ack with the default (#2552)", () => {
-  it("allows exactly the soaked, forward default; refuses anything else", async () => {
-    const { d, m } = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+  it("the forward default is allowed at once; refuses anything else", async () => {
+    const { d, m } = await open("1.2.0", "1.0.0");
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(true);
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.1.0" }))).toBe(false);
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.3.0" }))).toBe(false);
@@ -225,13 +170,7 @@ describe("update_ack with the default (#2552)", () => {
     void m;
   });
 
-  it("not soaked: refused", async () => {
-    const { d } = await open("1.2.0", "1.0.0");
-    expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(false);
-  });
-
   it("a -dev server: refused", async () => {
-    await since("1.2.0", NOW - 2 * SOAK_MS);
     const { d } = await open("1.2.0-dev+abc1234", "1.0.0");
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(false);
   });
@@ -239,7 +178,7 @@ describe("update_ack with the default (#2552)", () => {
 
 describe("pause (#2552)", () => {
   it("pushes the cleared target and refuses every instance-driven switch; resume restores the default", async () => {
-    const { who, d, stub } = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+    const { who, d, stub } = await open("1.2.0", "1.0.0");
     // Page 0: only this member's hub is told. Other tests' hubs run other
     // pretend VERSIONs, and each would rewrite the one first-seen row.
     await setBusUpdatesPaused(e, who.userId, true, 0);

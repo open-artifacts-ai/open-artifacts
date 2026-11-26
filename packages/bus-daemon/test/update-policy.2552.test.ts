@@ -10,10 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  abandonUpdate,
   accept,
   compareVersions,
+  completeUpdate,
   emptyPolicy,
   installNow,
+  installVersion,
   isBusy,
   label,
   MAX_LIST,
@@ -21,8 +24,6 @@ import {
   markNotified,
   markRefused,
   type PolicyState,
-  QUIET_MS,
-  QuietTracker,
   READY_AFTER_MS,
   readPolicy,
   readyDue,
@@ -210,33 +211,7 @@ describe("accept", () => {
   });
 });
 
-describe("quiet", () => {
-  it("needs 30 s of continuous idle", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    expect(q.quiet(T + QUIET_MS - 1)).toBe(false);
-    expect(q.quiet(T + QUIET_MS)).toBe(true);
-  });
-  it("a busy blip restarts the wait", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    q.observe(T + 20_000, true, false);
-    q.observe(T + 21_000, false, false);
-    expect(q.quiet(T + 21_000 + QUIET_MS - 1)).toBe(false);
-    expect(q.quiet(T + 21_000 + QUIET_MS)).toBe(true);
-  });
-  it("login or approval blocks and restarts", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    q.observe(T + 40_000, false, true);
-    expect(q.quiet(T + 40_000)).toBe(false);
-    q.observe(T + 41_000, false, false);
-    expect(q.quiet(T + 50_000)).toBe(false);
-    expect(q.quiet(T + 41_000 + QUIET_MS)).toBe(true);
-  });
-  it("never quiet before the first observation", () => {
-    expect(new QuietTracker().quiet(T + 10 * QUIET_MS)).toBe(false);
-  });
+describe("idle and ready", () => {
   it("busy over pending, outbox and codex queue", () => {
     expect(isBusy({ pending: 0, outbox: 0, codexQueue: 0 })).toBe(false);
     expect(isBusy({ pending: 1, outbox: 0, codexQueue: 0 })).toBe(true);
@@ -273,7 +248,7 @@ describe("quiet", () => {
 
 describe("install now and oa-bus update", () => {
   const staged = { version: "1.6.0", readySince: T };
-  it("install now skips only the quiet wait", () => {
+  it("install now checks staged, login, off, failed and backoff", () => {
     expect(installNow(st({ staged }), T, false)).toEqual(ok);
     expect(installNow(st(), T, false)).toEqual(no("nothing_staged"));
     expect(installNow(st({ staged }), T, true)).toEqual(
@@ -559,5 +534,44 @@ describe("review fixes", () => {
       }),
     );
     expect(readPolicy(h).failed).toHaveLength(MAX_LIST);
+  });
+
+  it("a successful forward switch clears the 6 h backoff", () => {
+    const h = home();
+    const fill = (dir: string) => {
+      mkdirSync(join(dir, "dist"));
+      writeFileSync(join(dir, "dist/index.js"), "// ok\n");
+    };
+    installVersion(h, "1.0.0", fill);
+    installVersion(h, "1.1.0", fill);
+    writeState(h, { armed: true, current: "1.0.0" });
+    recordAttempt(h, T);
+    completeUpdate(h, { from: "1.0.0", to: "1.1.0" }, T + 1000);
+    const s = readPolicy(h);
+    expect(s.lastAt).toBeUndefined();
+    expect(
+      accept(s, { version: "1.2.0" }, T + 3600_000, { running: "1.1.0" }),
+    ).toEqual(ok);
+  });
+
+  it("an abandoned switch keeps the 6 h backoff until it expires", () => {
+    const h = home();
+    const fill = (dir: string) => {
+      mkdirSync(join(dir, "dist"));
+      writeFileSync(join(dir, "dist/index.js"), "// ok\n");
+    };
+    installVersion(h, "1.0.0", fill);
+    installVersion(h, "1.1.0", fill);
+    writeState(h, { armed: true, current: "1.0.0" });
+    abandonUpdate(h, { from: "1.0.0", to: "1.1.0" }, T, "unhealthy", "failed");
+    const s = readPolicy(h);
+    expect(
+      accept(s, { version: "1.2.0" }, T + 3600_000, { running: "1.0.0" }),
+    ).toEqual(no("rate_limited"));
+    expect(
+      accept(s, { version: "1.2.0" }, T + SIX_HOURS_MS + 1, {
+        running: "1.0.0",
+      }),
+    ).toEqual(ok);
   });
 });

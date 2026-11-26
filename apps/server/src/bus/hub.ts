@@ -167,7 +167,6 @@ import {
   readUpdateState,
   recordReport,
   STOPPED_AFTER_MS,
-  soakEnds,
   targetFor,
   type UpdateState,
 } from "./updates.js";
@@ -226,8 +225,6 @@ const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 const REVOKED_AT_KEY = "revoked_at";
 /** meta key: when the earliest `switching` report's 5 minutes end (ms); absent: none waits (#2552). */
 const UPDATE_DUE_KEY = "update_due";
-/** meta: when the default release's 24 h soak ends (#2552): the alarm then re-tells the sockets. */
-const SOAK_DUE_KEY = "update_soak_due";
 /**
  * Latest alarm time ever asked of workerd, which throws past year 2189. A
  * later deadline is clamped here (and re-checked when this alarm fires).
@@ -6209,7 +6206,7 @@ export class BusHub extends DurableObject<Env> {
   // ----------------------------------------------------- #2552 updates
 
   /** The update settings as last read. Stale after RUN_VERSION_TTL_MS. */
-  #updState: UpdateState = { named: null, paused: false, since: null };
+  #updState: UpdateState = { named: null, paused: false };
   #runVersionAt = -Infinity;
   /** The release this hub vouches for as the default; tests swap it. */
   #serverVersion: string = VERSION;
@@ -6221,7 +6218,7 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * What `ws` is told (#2552): paused or nothing to follow: null (clear);
-   * the named version; else the soaked default if newer than the machine.
+   * the named version; else the server's release if newer than the machine.
    * null is what a cleared setting always sent, and the daemon treats it as
    * "nothing the instance names": it drops the version it last heard and
    * swaps nothing in. It never moves a machine; "send nothing" would instead
@@ -6232,7 +6229,6 @@ export class BusHub extends DurableObject<Env> {
       this.#updState,
       this.#serverVersion,
       attachmentOf(ws)?.clientVersion,
-      this.#now(),
     );
   }
   #runVersionFresh(): boolean {
@@ -6264,8 +6260,6 @@ export class BusHub extends DurableObject<Env> {
       // #2719: a failed read leaves the cache stale; push nothing then.
       if (!fresh && !(await this.#refreshRunVersion())) return;
       if (this.#targetFor(ws) !== sent) this.#pushRunVersion(ws);
-      // The soak's alarm was armed by the read above, after this turn's commit.
-      await this.#commitArm();
     } finally {
       this.indexInFlight--;
     }
@@ -6273,13 +6267,8 @@ export class BusHub extends DurableObject<Env> {
 
   async #refreshRunVersion(): Promise<boolean> {
     try {
-      this.#updState = await readUpdateState(
-        this.env,
-        this.#serverVersion,
-        this.#now(),
-      );
+      this.#updState = await readUpdateState(this.env);
       this.#runVersionAt = this.#now();
-      this.#armSoak();
       return true;
     } catch (e) {
       // Keep what we had; a later hello asks again.
@@ -6316,7 +6305,7 @@ export class BusHub extends DurableObject<Env> {
       // Allowed: the person's own request (reason "requested"); a step back
       // (`to` below `from`, e.g. the bus's own after a failed start); else
       // only what the instance says now, read fresh: the named version, or
-      // (not paused, soaked, forward of `from`) the default. Paused refuses
+      // (not paused, forward of `from`) the default. Paused refuses
       // every instance-driven switch.
       let allowed =
         f.reason === "requested" ||
@@ -6326,16 +6315,11 @@ export class BusHub extends DurableObject<Env> {
           semverGte(f.from, f.to));
       if (!allowed) {
         try {
-          const st = await readUpdateState(
-            this.env,
-            this.#serverVersion,
-            this.#now(),
-          );
+          const st = await readUpdateState(this.env);
           this.#updState = st;
           this.#runVersionAt = this.#now();
           allowed =
-            f.to !== "" &&
-            targetFor(st, this.#serverVersion, f.from, this.#now()) === f.to;
+            f.to !== "" && targetFor(st, this.#serverVersion, f.from) === f.to;
         } catch (e) {
           logError("bus_run_version_read_failed", e);
         }
@@ -6404,50 +6388,6 @@ export class BusHub extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
       this.#pushRunVersion(ws);
     await this.#commitArm();
-  }
-
-  /** Remembers (meta, so an eviction forgets nothing) and arms the alarm for the end of the soak. */
-  #armSoak(): void {
-    const end = soakEnds(this.#updState, this.#serverVersion);
-    if (end === null || end <= this.#now()) return;
-    this.ctx.storage.sql.exec(
-      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-      String(end),
-    );
-    this.#arm(end);
-  }
-
-  #soakDue(): number | null {
-    const v = one<{ value: string }>(
-      this.ctx.storage.sql,
-      "select value from meta where org_id = ? and key = ?",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-    )?.value;
-    const n = v === undefined ? Number.NaN : Number(v);
-    return Number.isSafeInteger(n) ? n : null;
-  }
-
-  /** The alarm's part: the soak ended, so every connected machine is told its target again. */
-  async #soakEdge(now: number): Promise<void> {
-    const due = this.#soakDue();
-    if (due === null) return;
-    if (due > now) {
-      this.#arm(due);
-      return;
-    }
-    this.ctx.storage.sql.exec(
-      "delete from meta where org_id = ? and key = ?",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-    );
-    try {
-      await this.runVersionChanged();
-    } catch (e) {
-      logError("bus_update_soak_failed", e);
-    }
   }
 
   #updateDue(): number | null {
@@ -8861,7 +8801,6 @@ export class BusHub extends DurableObject<Env> {
 
     // 7. #2552: a machine that reported `switching` and never said hello again.
     await this.#stoppedMachines(now);
-    await this.#soakEdge(now);
     // 8. #2759: the owner's quiet hours began or ended.
     await this.#ownerAwayEdge(now);
 
@@ -8887,7 +8826,6 @@ export class BusHub extends DurableObject<Env> {
     const ts = [
       want,
       this.#ownerAwayDue(),
-      this.#soakDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       min(
         "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",

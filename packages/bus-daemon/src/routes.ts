@@ -70,6 +70,8 @@ export class Pending {
     private readonly onTimeout?: (hubId: string) => Unframed | undefined,
     /** The clock for the timeout; tests bring a fake one. */
     private readonly after: Timer = unrefTimer,
+    /** Called after an entry leaves the map. */
+    private readonly onChange?: () => void,
   ) {}
 
   open(localId: string, reply: (f: DaemonFrame) => unknown): string {
@@ -166,6 +168,7 @@ export class Pending {
     if (!w) return undefined;
     this.#byHubId.delete(hubId);
     w.stop();
+    this.onChange?.();
     return w;
   }
 }

@@ -16,7 +16,6 @@ import {
   installVersion,
   loginActive,
   markLoginActive,
-  QUIET_MS,
   queueReport,
   readInstallRequest,
   readPolicy,
@@ -75,9 +74,9 @@ describe("the loop is on, for a version the instance names", () => {
       serverVersion: () => undefined,
       exit,
       log: () => {},
-      now: () => T + 10 * QUIET_MS,
+      now: () => T,
     });
-    await u.tick();
+    await u.onIdle();
     await u.tick();
     expect(exit).not.toHaveBeenCalled();
     expect(currentVersion(home)).toBe("1.0.0");
@@ -443,22 +442,22 @@ describe("the updater loop (enabled by a test only)", () => {
   };
   const arm = (w: { home: string }) => readPolicy(w.home);
 
-  it("stages at once, swaps only after 30 s of quiet, then exits non-zero", async () => {
-    const w = make();
+  it("stages at once, swaps when idle with no clock advance, then exits non-zero", async () => {
+    let busy = true;
+    const w = make({ busy: () => busy });
     expect(await w.u.instructFromInstance("1.1.0")).toEqual({
       kind: "staged",
       version: "1.1.0",
     });
     expect(arm(w).staged?.manifest).toBeDefined();
-    // Not yet: bin is still on 1.0.0, and the staged copy has the launcher.
+    // Still busy: bin stays on 1.0.0, and the staged copy has the launcher.
     expect(currentVersion(w.home)).toBe("1.0.0");
     expect(existsSync(join(versionDir(w.home, "1.1.0"), "node"))).toBe(true);
-    await w.u.tick();
-    w.advance(QUIET_MS - 1000);
-    await w.u.tick();
+    await w.u.onIdle();
     expect(w.exit).not.toHaveBeenCalled();
-    w.advance(1000);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
+    expect(w.clock()).toBe(T);
     expect(w.exit).toHaveBeenCalledWith(1);
     expect(currentVersion(w.home)).toBe("1.1.0");
     const p = arm(w);
@@ -474,39 +473,72 @@ describe("the updater loop (enabled by a test only)", () => {
     expect(p.off).toBe(false);
   });
 
-  it("busy resets the wait; a login holds it", async () => {
-    let busy = false;
+  it("busy blocks the install; login holds it until cleared", async () => {
+    let busy = true;
     let login = false;
     const w = make({ busy: () => busy, login: () => login });
     await w.u.instructFromInstance("1.1.0");
-    await w.u.tick();
-    w.advance(QUIET_MS - 1);
-    busy = true;
-    await w.u.tick();
+    await w.u.onIdle();
+    expect(w.exit).not.toHaveBeenCalled();
     busy = false;
-    w.advance(5000);
-    await w.u.tick();
-    w.advance(QUIET_MS - 1);
     login = true;
-    await w.u.tick();
-    login = false;
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.exit).not.toHaveBeenCalled();
-    w.advance(QUIET_MS);
+    login = false;
     await w.u.tick();
-    expect(w.exit).toHaveBeenCalled();
+    expect(w.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("onIdle installs immediately when idle and respects outbox busy count", async () => {
+    const { home } = world();
+    const exit = vi.fn();
+    let outbox = 1;
+    const f = fake("1.1.0");
+    const u = new Updater({
+      home,
+      running: "1.0.0",
+      enabled: true,
+      now: () => T,
+      busy: () => ({ pending: 0, outbox, codexQueue: 0 }),
+      loginActive: () => false,
+      hubReady: () => true,
+      announceSwitch: async () => true,
+      serverVersion: () => "1.2.0",
+      exit,
+      log: () => {},
+      fetch: async () => f.rel,
+      verify: () => f.ver,
+    });
+    expect(await u.instructFromInstance("1.1.0")).toEqual({
+      kind: "staged",
+      version: "1.1.0",
+    });
+    await u.onIdle();
+    expect(exit).not.toHaveBeenCalled();
+    expect(readPolicy(home).pending).toBeUndefined();
+    outbox = 0;
+    await u.onIdle();
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(readPolicy(home).pending).toEqual({
+      from: "1.0.0",
+      to: "1.1.0",
+      startedAt: T,
+      attempts: 0,
+    });
   });
 
   it("off stops everything, and an instruction cannot turn it on", async () => {
-    const w = make();
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
     const j = JSON.parse(readFileSync(join(w.home, "update.json"), "utf8"));
     writeFileSync(
       join(w.home, "update.json"),
       JSON.stringify({ ...j, off: true }),
     );
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    busy = false;
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.exit).not.toHaveBeenCalled();
     expect(await w.u.instruct({ version: "1.2.0" })).toEqual({
@@ -517,12 +549,12 @@ describe("the updater loop (enabled by a test only)", () => {
   });
 
   it("a staged file changed since the proof is refused, dropped and reported", async () => {
-    const w = make();
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
     writeFileSync(join(versionDir(w.home, "1.1.0"), "dist/index.js"), "evil");
-    await w.u.tick();
-    w.advance(QUIET_MS);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
     expect(existsSync(versionDir(w.home, "1.1.0"))).toBe(false);
@@ -533,13 +565,13 @@ describe("the updater loop (enabled by a test only)", () => {
   });
 
   it(".live markers do not count as a change", async () => {
-    const w = make();
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
     mkdirSync(join(versionDir(w.home, "1.1.0"), ".live"));
     writeFileSync(join(versionDir(w.home, "1.1.0"), ".live/4242"), "");
-    await w.u.tick();
-    w.advance(QUIET_MS);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
     expect(w.exit).toHaveBeenCalledWith(1);
   });
 
@@ -554,8 +586,7 @@ describe("the updater loop (enabled by a test only)", () => {
     expect(readReports(w.home)).toMatchObject([
       { event: "needs_you", reason: "needs_you" },
     ]);
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.exit).not.toHaveBeenCalled();
   });
@@ -614,12 +645,12 @@ describe("the updater loop (enabled by a test only)", () => {
     ]);
   });
 
-  it("one attempt per 6 h: the swap counts, the next instruction waits", async () => {
-    const w = make();
+  it("one attempt per 6 h while unconfirmed: the swap counts, the next instruction waits", async () => {
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
-    await w.u.tick();
-    w.advance(QUIET_MS);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
     expect(w.exit).toHaveBeenCalled();
     expect(await w.u.instruct({ version: "1.2.0" })).toMatchObject({
       reason: "rate_limited",
@@ -673,24 +704,27 @@ describe("the updater loop (enabled by a test only)", () => {
 
   // #2719: stopping a rollout.
   it("a staged version swaps only while the instance still names it", async () => {
-    const w = make();
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
     w.u.clearNamed();
-    await w.u.tick();
-    w.advance(QUIET_MS);
+    busy = false;
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
   });
 
   it("naming the running version drops a newer staged one", async () => {
-    const w = make();
+    let busy = true;
+    const w = make({ busy: () => busy });
     await w.u.instructFromInstance("1.1.0");
     expect(readPolicy(w.home).staged?.version).toBe("1.1.0");
     await w.u.instructFromInstance("1.0.0");
     expect(readPolicy(w.home).staged).toBeUndefined();
     expect(existsSync(versionDir(w.home, "1.1.0"))).toBe(false);
-    w.advance(QUIET_MS);
+    busy = false;
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.exit).not.toHaveBeenCalled();
   });
@@ -712,23 +746,27 @@ describe("the updater loop (enabled by a test only)", () => {
   });
 
   it("a clearing during the ack wait stops the swap", async () => {
+    let busy = true;
     let w!: ReturnType<typeof make>;
     w = make({
+      busy: () => busy,
       announce: async () => {
         w.u.clearNamed();
         return true;
       },
     });
     await w.u.instructFromInstance("1.1.0");
-    w.advance(QUIET_MS);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
   });
 
   it("a staged tree changed during the ack wait stops the swap", async () => {
+    let busy = true;
     let w!: ReturnType<typeof make>;
     w = make({
+      busy: () => busy,
       announce: async () => {
         writeFileSync(
           join(versionDir(w.home, "1.1.0"), "dist/index.js"),
@@ -738,8 +776,8 @@ describe("the updater loop (enabled by a test only)", () => {
       },
     });
     await w.u.instructFromInstance("1.1.0");
-    w.advance(QUIET_MS);
-    await w.u.tick();
+    busy = false;
+    await w.u.onIdle();
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
   });

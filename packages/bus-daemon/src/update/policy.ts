@@ -4,7 +4,6 @@
  */
 
 export const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-export const QUIET_MS = 30_000;
 export const READY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /** What update.json holds for the policy, beside the layout's keys. */
@@ -25,10 +24,10 @@ export type PolicyState = {
   failed: string[];
   /** Versions whose proof was refused: retried later with a long backoff. */
   refused: Record<string, { at: number; count: number }>;
-  /** When the last attempt began (ms); a step-back counts. */
+  /** When the last attempt began (ms). Cleared by a successful forward update; stays after a failure, step-back, or unconfirmed switch for the 6 h backoff. */
   lastAt?: number;
   /**
-   * The one staged, proven version waiting for a quiet moment. `manifest` is
+   * The one staged, proven version waiting for an idle moment. `manifest` is
    * the sha256 of every file in its folder, taken at stage time and checked
    * again right before the swap.
    */
@@ -130,7 +129,11 @@ function floor(s: PolicyState, running?: string): string | undefined {
   );
 }
 
-/** The 6 h limit. max(now, lastAt) so a clock set back never frees it early. */
+/**
+ * The 6 h backoff after an attempt that did not succeed (failed, stepped back,
+ * or never confirmed); a successful forward update clears `lastAt`. Uses
+ * max(now, lastAt) so a clock set back never frees it early.
+ */
 export function rateLimited(s: PolicyState, now: number): boolean {
   if (s.lastAt === undefined) return false;
   return Math.max(now, s.lastAt) - s.lastAt < SIX_HOURS_MS;
@@ -145,8 +148,10 @@ export type Instruction = {
 /**
  * May the bus act on an instruction naming `version`? Forward only, except an
  * explicit step-back to the kept previous; never a failed version; never ahead
- * of the instance; one attempt per 6 h (a step-back is exempt, but counts for the next one). The instruction has no field that can
- * touch `off`.
+ * of the instance; 6 h backoff after an attempt that did not succeed (failed,
+ * stepped back, or never confirmed; a successful forward update clears it; a
+ * step-back is exempt, and keeps the backoff for the next forward attempt).
+ * The instruction has no field that can touch `off`.
  */
 export function accept(
   s: PolicyState,
@@ -181,7 +186,7 @@ export function accept(
   return yes;
 }
 
-/** What the daemon sees of itself for the quiet check. */
+/** What the daemon sees of itself for the idle check. */
 export type Busy = {
   pending: number;
   outbox: number;
@@ -191,28 +196,7 @@ export const isBusy = (b: Busy): boolean =>
   b.pending > 0 || b.outbox > 0 || b.codexQueue > 0;
 
 /**
- * Quiet moments: idle for QUIET_MS continuous, and no login or approval in
- * progress. Feed it every poll; a busy poll restarts the wait.
- */
-export class QuietTracker {
-  private idleSince: number | undefined;
-  private login = false;
-  observe(now: number, busy: boolean, loginOrApproval: boolean): void {
-    this.login = loginOrApproval;
-    if (busy || loginOrApproval) this.idleSince = undefined;
-    else if (this.idleSince === undefined) this.idleSince = now;
-  }
-  quiet(now: number): boolean {
-    return (
-      !this.login &&
-      this.idleSince !== undefined &&
-      now - this.idleSince >= QUIET_MS
-    );
-  }
-}
-
-/**
- * True once per staged version when it has waited 24 h without a quiet moment
+ * True once per staged version when it has waited 24 h without an idle moment
  * ("Update ready to install"). The caller records the notice before sending.
  */
 export function readyDue(s: PolicyState, now: number): boolean {
@@ -223,8 +207,10 @@ export function readyDue(s: PolicyState, now: number): boolean {
 }
 
 /**
- * "Install now" from Settings. Skips only the quiet wait. Never during login
- * or approval; the 6 h limit, failed memory and off all still apply.
+ * "Install now" from Settings, and the same rule as the idle install (there is
+ * no quiet wait). Never during login or approval; the 6 h backoff (after an
+ * attempt that did not succeed; cleared by a successful forward update),
+ * failed memory and off all still apply.
  */
 export function installNow(
   s: PolicyState,

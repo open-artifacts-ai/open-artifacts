@@ -48,6 +48,7 @@ export function completeUpdate(
   editPolicy(home, (s) => {
     delete s.pending;
     if (s.staged?.version === p.to) delete s.staged;
+    if (!downgrade) delete s.lastAt;
   });
   prune(home, downgrade ? [p.to] : [p.to, p.from]);
   queueReport(home, {

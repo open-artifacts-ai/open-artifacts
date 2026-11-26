@@ -649,6 +649,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     return undefined;
   };
+  let busyChanged = () => {};
   // A timed-out request still queued is dropped: an adapter's retry must not send twice.
   const pending = new Pending(
     deps.pendingTimeoutMs,
@@ -665,6 +666,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return undefined;
     },
     deps.pendingTimer,
+    () => busyChanged(),
   );
   /** Open local connections per agent_ref; the agent is closed when the last one goes. */
   const conns = new Map<string, number>();
@@ -1181,6 +1183,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
     onTaken: (id, unsent) => sendCodexAck(id, unsent),
     log,
+    onChange: () => busyChanged(),
   });
   const codex = new CodexTransport({
     resolve:
@@ -1376,6 +1379,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
+    onChange: () => busyChanged(),
   });
   const claude = new ClaudeTransport({
     socketsDir: returnDir,
@@ -4376,6 +4380,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       })
     : undefined;
   updaterRef = updater;
+  busyChanged = () => {
+    if (updater) void updater.onIdle();
+  };
   updater?.start();
   // Queued update reports go out on each hello and every few seconds after,
   // so a report queued by the self-check or the updater is not stranded.

@@ -26,7 +26,6 @@ import {
   installNow,
   isBusy,
   parseVersion,
-  QuietTracker,
   type Refusal,
   readyDue,
 } from "./policy.ts";
@@ -126,9 +125,9 @@ const realEvery = (fn: () => void, ms: number) => {
 };
 
 export class Updater {
-  private readonly quiet = new QuietTracker();
   private stopTick: () => void = () => {};
   private working = false;
+  private loginWas = false;
   /** One swap at a time: every switchTo caller goes through this. */
   private switching = false;
   private wanted: { i: Instruction; at: number } | undefined;
@@ -203,7 +202,7 @@ export class Updater {
   /**
    * "Install now" from Settings: a frame with no field. Honored only for the
    * staged version the instance names, never during a login, never past
-   * `off`, the failed list or the 6 h limit. It skips only the quiet wait.
+   * `off`, the failed list or the 6 h failure backoff.
    */
   async installNowFromInstance(): Promise<UpdateOutcome> {
     if (!this.enabled) return { kind: "disabled" };
@@ -216,7 +215,7 @@ export class Updater {
     return this.switchTo(st.version, true);
   }
 
-  /** The version the instance names. Stages it; the swap waits for a quiet moment. */
+  /** The version the instance names. Stages it and swaps once the daemon is idle. */
   async instruct(i: Instruction): Promise<UpdateOutcome> {
     if (!this.enabled) return { kind: "disabled" };
     const { home, running } = this.d;
@@ -230,7 +229,7 @@ export class Updater {
       return { kind: "refused", reason: dec.reason };
     }
     if (i.stepBack === true) {
-      // Back to the kept previous: no download and no quiet wait, but never
+      // Back to the kept previous: no download and no idle wait, but never
       // under a login or approval (the bus's own step back after a failed
       // start is the self-check's and does not wait).
       if (this.d.loginActive() || !this.d.hubReady()) {
@@ -243,10 +242,14 @@ export class Updater {
       return r;
     }
     if (s.staged?.version === i.version && s.staged.manifest) {
-      if (treeMatches(versionDir(home, i.version), s.staged.manifest))
+      if (treeMatches(versionDir(home, i.version), s.staged.manifest)) {
+        void this.onIdle();
         return { kind: "staged", version: i.version };
+      }
     }
-    return this.stage(i, now);
+    const out = await this.stage(i, now);
+    if (out.kind === "staged") void this.onIdle();
+    return out;
   }
 
   private refuse(
@@ -415,23 +418,51 @@ export class Updater {
       });
   }
 
-  /** One poll: quiet tracking, the "ready" notice, the install request, the swap. */
+  /** Installs a staged, named version when the daemon is idle. */
+  async onIdle(): Promise<void> {
+    if (!this.enabled || this.working) return;
+    this.working = true;
+    try {
+      await this.installIfIdle(this.now());
+    } catch (e) {
+      this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.working = false;
+    }
+  }
+
+  private async installIfIdle(now: number): Promise<void> {
+    const login = this.d.loginActive();
+    if (isBusy(this.d.busy()) || login) return;
+    const s = readPolicy(this.d.home);
+    if (s.unreadable || !s.armed || s.off) return;
+    const st = s.staged;
+    // #2719: only the version the instance names now (cleared: none).
+    if (!st || this.named !== st.version) return;
+    if (!installNow(s, now, login).ok) return;
+    await this.switchTo(st.version, true);
+  }
+
+  /** One poll: held step-back, fetch retry, the "ready" notice, the install request, login-end edge. */
   async tick(): Promise<void> {
     if (!this.enabled || this.working) return;
     this.working = true;
     try {
       const now = this.now();
       const login = this.d.loginActive();
+      const loginEnded = this.loginWas && !login;
+      this.loginWas = login;
       if (this.stepBackHeld && !login) {
         const held = this.stepBackHeld;
         this.stepBackHeld = undefined;
         await this.instruct(held);
       }
-      this.quiet.observe(now, isBusy(this.d.busy()), login);
+      let justStaged = false;
       if (this.wanted && now - this.wanted.at >= RETRY_MS) {
         const { i } = this.wanted;
         this.wanted = undefined;
-        await this.instruct(i);
+        const out = await this.instruct(i);
+        if (out.kind === "staged") justStaged = true;
       }
       const s = readPolicy(this.d.home);
       if (s.unreadable || !s.armed || s.off) return;
@@ -448,7 +479,7 @@ export class Updater {
           at: now,
         });
       if (req) {
-        // The person's own command: it passes the 6 h limit and the quiet wait.
+        // The person's own command: it passes the 6 h limit and busy checks.
         if (
           req.version === st.version &&
           !login &&
@@ -457,13 +488,7 @@ export class Updater {
           await this.switchTo(st.version, true, true);
         return;
       }
-      // #2719: only the version the instance names now (cleared: none).
-      if (
-        this.named === st.version &&
-        this.quiet.quiet(now) &&
-        installNow(s, now, login).ok
-      )
-        await this.switchTo(st.version, true);
+      if (loginEnded || justStaged) await this.installIfIdle(now);
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
