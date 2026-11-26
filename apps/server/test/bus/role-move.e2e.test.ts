@@ -1,8 +1,9 @@
 // #3132 end to end, on the real paths: a linked session posts an ask over
 // /mcp, the member moves its role to another session in the dashboard (PUT
 // R.busRoles), the old session closes and is gone from the hub entirely, and
-// the member's answer in the web app reaches the new holder. (What it began
-// before it held the role is hub.role-move.test.ts.) Real hub, real daemon
+// the member's answer in the web app reaches the new holder, and so does a
+// reply in that thread; a reply in a thread it joined before it held the role
+// does not. (The time rules in full are hub.role-move.test.ts.) Real hub, real daemon
 // sockets, real comment and answer routes; waits are frames, never sleeps.
 import { runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, LINK_PROOF_HEADER } from "@oa/bus-protocol";
@@ -115,6 +116,11 @@ describe("a moved role on the real paths (#3132)", () => {
       });
     const role = uniq("Platform");
 
+    // A thread the old session joined before it held the role.
+    const pre = await tool(old, "add_comment", { id, body: "Before the role" });
+    expect(pre.isError, JSON.stringify(pre.content)).toBeFalsy();
+    const preThread = (pre.structuredContent as { thread: { id: string } })
+      .thread.id;
     expect((await put(await idOf(names[0]!))).status).toBe(200);
     const asked = await askOf("Roll the PostHog host?");
     expect((await put(await idOf(names[1]!))).status).toBe(200);
@@ -143,6 +149,24 @@ describe("a moved role on the real paths (#3132)", () => {
       if (f.body?.startsWith("Your role ")) continue;
       expect(f.to_ref).toBe("ref1");
       expect(f.body).toContain(asked.commentId);
+      break;
+    }
+
+    // The member replies in both threads, the old one first. Only the thread
+    // the old session joined while it held the role reaches the new holder.
+    const reply = (threadId: string) =>
+      api(app, R.commentReplies(id, threadId), m.cookie, {
+        method: "POST",
+        body: { body: "Any news?" },
+      });
+    expect((await reply(preThread)).status).toBeLessThan(300);
+    expect((await reply(asked.threadId)).status).toBeLessThan(300);
+    for (;;) {
+      const f = await d.next();
+      if (f.type !== "deliver") continue;
+      expect(f.to_ref).toBe("ref1");
+      expect(f.body).toContain(asked.threadId);
+      expect(f.body).not.toContain(preThread);
       break;
     }
   });
