@@ -1,6 +1,11 @@
 # Changelog
 
-## [0.252.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.252.1) (2026-11-26)
+## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** a moved role takes the old session's notices and follows ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3228](https://github.com/open-artifacts-ai/open-artifacts/issues/3228)) ([0ef0989](https://github.com/open-artifacts-ai/open-artifacts/commit/0ef0989bcf4b849d14a5c0af1933977c4a1f60ab))
 
 
 ### Bug Fixes
