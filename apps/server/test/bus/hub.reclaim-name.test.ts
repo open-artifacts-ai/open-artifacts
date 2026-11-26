@@ -793,7 +793,7 @@ describe("held mail stays with its session (#3208)", () => {
     snd.close();
   });
 
-  it("a chosen-name restart with no handover: the namesake takes the name and its held mail (#1742 unchanged)", async () => {
+  it("a chosen-name restart with no handover: the newcomer gets a suffix and asks; the held mail stays (#3132)", async () => {
     await setClock(base());
     const n = ns("rc");
     const dm = await machine("Work");
@@ -807,14 +807,13 @@ describe("held mail stays with its session (#3208)", () => {
     const m = await send(snd, "snd", name, "for the old lead");
     await close(d, oldRef);
     const newRef = uniq("codex-2");
-    expect(await reg(d, newRef, name, n, { kind: "codex" })).toBe(name);
-    await eventually(() => {
-      const dl = delivers(d).find(
-        (x) => x.to_ref === newRef && x.msg_id === m.msg_id,
-      );
-      expect(dl).toBeDefined();
-    });
-    expect(await pendingOf(oldRef)).toEqual([]);
+    expect(await reg(d, newRef, name, n, { kind: "codex" })).toBe(`${name}-2`);
+    expect(await asksOf(newRef)).toEqual([name]);
+    await fence(d);
+    expect(
+      delivers(d).some((x) => x.to_ref === newRef && x.msg_id === m.msg_id),
+    ).toBe(false);
+    expect(await pendingOf(oldRef)).toEqual([m.msg_id]);
     expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
     d.close();
     snd.close();
