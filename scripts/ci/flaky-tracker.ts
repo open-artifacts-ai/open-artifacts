@@ -1566,7 +1566,8 @@ function mainReconcile(repo: string) {
     onRun: (r) => console.log(runResultLines(r).map(inert).join("\n")),
   });
   report(reconcileLines(all));
-  if (all.some((r) => r.result === "error"))
+  // A run dropped as unreadable fails the job once too, so it is seen.
+  if (all.some((r) => r.result === "error" || r.result === "unreadable"))
     throw new Error("a run failed to reconcile (see above)");
 }
 
