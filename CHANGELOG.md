@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.248.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.247.0...v0.248.0) (2026-11-26)
+
+
+### Features
+
+* **dashboard:** a mistyped link says so at sign-in and lands on the Library ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3111](https://github.com/open-artifacts-ai/open-artifacts/issues/3111)) ([948830c](https://github.com/open-artifacts-ai/open-artifacts/commit/948830c807b2c79ed7408e74a8bba00541099187))
+
 ## [0.247.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.1...v0.247.0) (2026-11-26)
 
 
