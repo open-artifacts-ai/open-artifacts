@@ -689,6 +689,9 @@ describe("a restarted session takes back its own name (#1742)", () => {
         "select r.state as state, a.native_ref as ref from receipts r join agents a on a.id = r.to_agent where r.id = ?",
         r.msg_id,
       );
+      // The assertion is what retries: returning the row alone would let the
+      // first read (still pending) through.
+      expect(rows[0]).toMatchObject({ state: "delivered", ref });
       return rows[0];
     });
     expect(st).toMatchObject({ state: "delivered", ref });

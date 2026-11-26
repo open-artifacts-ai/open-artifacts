@@ -8,7 +8,7 @@ import {
   dataDocTooLargeMessage,
   LIMITS,
 } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/http/errors.js";
 import {
   type ArtifactRuntime,
@@ -418,7 +418,6 @@ describe("ArtifactRuntime websocket", () => {
     );
     return { ws, msgs };
   }
-  const tick = () => new Promise((r) => setTimeout(r, 50));
 
   it("sockets older than signedUrlTtlSec close 4408 on the alarm; younger re-arm it", async () => {
     const s = stubFor();
@@ -448,7 +447,16 @@ describe("ArtifactRuntime websocket", () => {
         t0 + 300_000 + LIMITS.signedUrlTtlSec * 1000,
       );
     });
-    await tick();
+    await vi.waitFor(() => expect(codes.old).toBe(4408));
+    // The room still holds the younger socket open.
+    expect(
+      await inDo(
+        s,
+        (_i, st) =>
+          st.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN)
+            .length,
+      ),
+    ).toBe(1);
     expect(codes).toEqual({ old: 4408 });
     young.ws.close();
   });
@@ -459,21 +467,32 @@ describe("ArtifactRuntime websocket", () => {
     const b = await connect(s, "votes");
     const o = await connect(s, "other");
     const doc = await s.set("votes", "x", { choice: "B" }, "u:1");
-    await tick();
+    await vi.waitFor(() => {
+      expect(a.msgs).toHaveLength(1);
+      expect(b.msgs).toHaveLength(1);
+    });
     expect(b.msgs).toEqual([
       { type: "db.change", collection: "votes", docs: [doc], deleted: [] },
     ]);
     expect(a.msgs).toHaveLength(1);
     expect(DataChangeSchema.safeParse(b.msgs[0]).success).toBe(true);
     await s.delete("votes", "x", "u:1");
-    await tick();
+    await vi.waitFor(() => expect(b.msgs).toHaveLength(2));
     expect(b.msgs[1]).toEqual({
       type: "db.change",
       collection: "votes",
       docs: [],
       deleted: ["x"],
     });
-    expect(o.msgs).toEqual([]);
+    // The other collection's socket heard none of that: its first message is
+    // its own collection's write, which it waits for, and nothing else.
+    const other = await s.set("other", "y", { n: 1 }, "u:1");
+    await vi.waitFor(() => expect(o.msgs).toHaveLength(1));
+    expect(o.msgs).toEqual([
+      { type: "db.change", collection: "other", docs: [other], deleted: [] },
+    ]);
+    expect(a.msgs).toHaveLength(2);
+    expect(b.msgs).toHaveLength(2);
     for (const c of [a, b, o]) c.ws.close();
   });
 

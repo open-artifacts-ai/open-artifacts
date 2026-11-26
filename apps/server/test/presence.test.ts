@@ -3,7 +3,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { mw } from "../src/auth/route-policy.js";
 import type { AppType } from "../src/routes/index.js";
@@ -117,7 +117,18 @@ const inPresence = <T>(
     presence(userId) as unknown as DurableObjectStub<UserPresence>,
     cb,
   );
-const tick = () => new Promise((r) => setTimeout(r, 50));
+/**
+ * Sockets the artifact's runtime still holds open. A socket the runtime
+ * closes is closed in its own state before any client hears of it, so this is
+ * the state to read, not a wait for a close that may never come.
+ */
+const openSocketCount = (id: string) =>
+  runInDurableObject(
+    runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+    (_i, state) =>
+      state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN)
+        .length,
+  );
 
 beforeAll(async () => {
   owner = await mk("pr-owner", "member");
@@ -146,16 +157,16 @@ describe("UserPresence", () => {
     const at = revokedAt as number;
     const before = await direct(art, uid, at - 5);
     const same = await direct(art, uid, at);
-    // The skew-margin boundary: revokedAt + 2000 is refused, + 2001 is not.
+    // The skew-margin boundary: revokedAt + SKEW_MS is refused, + 1 ms more is not.
     expect(SKEW_MS).toBe(2000);
-    const edge = await direct(art, uid, at + 2000);
+    const edge = await direct(art, uid, at + SKEW_MS);
     expect(await before.closed).toBe(4403);
     expect(await same.closed).toBe(4403);
     expect(await edge.closed).toBe(4403);
     // Authorized after the revocation plus the skew margin (a reactivated
     // user): stays open.
-    const after = await direct(art, uid, at + 2001);
-    await tick();
+    const after = await direct(art, uid, at + SKEW_MS + 1);
+    expect(await openSocketCount(art)).toBe(1);
     expect(after.isOpen()).toBe(true);
     after.ws.close();
   });
@@ -164,15 +175,33 @@ describe("UserPresence", () => {
     const u = await mk(`pr-o-${newId().slice(0, 4)}`, "member");
     const art = await pub();
     const mine = await openSockets(u, art);
-    const theirs = await openSockets(member, art);
+    const other = await mk(`pr-t-${newId().slice(0, 4)}`, "member");
+    const theirs = await openSockets(other, art);
     await revokeUserLive(env, u.userId, "suspended");
     expect(await mine.data.closed).toBe(4403);
     expect(await mine.events.closed).toBe(4403);
-    await tick();
+    // Nothing of the fan-out is left to land later: closeAll awaits every
+    // close before it resolves (src/runtime/presence.ts:283-296; the runtime's
+    // closeActor closes synchronously, src/runtime/do.ts:2089-2106) and only
+    // closes past CLOSE_FANOUT or failed ones go to an alarm-driven retry
+    // queue (presence.ts:284-295). That queue is empty for the revoked user.
+    expect(await inPresence(u.userId, (p) => p.pendingRetries())).toEqual([]);
+    // The negative window is that queue's: put the revoked user's presence
+    // clock past the longest backoff and run its alarm, so any queued close
+    // would be re-sent now.
+    await inPresence(u.userId, (p) => {
+      const at = Date.now() + retryBackoffMs(99);
+      p.now = () => at;
+    });
+    await runDurableObjectAlarm(presence(u.userId));
+    // So the runtime still holds the other user's two sockets open.
+    expect(await openSocketCount(art)).toBe(2);
     expect(theirs.data.isOpen()).toBe(true);
     expect(theirs.events.isOpen()).toBe(true);
-    theirs.data.ws.close();
-    theirs.events.ws.close();
+    // And they were live all along: revoking that user closes them too.
+    await revokeUserLive(env, other.userId, "suspended");
+    expect(await theirs.data.closed).toBe(4403);
+    expect(await theirs.events.closed).toBe(4403);
   });
 
   it("a failed closeActor is retried from the queue", async () => {
@@ -300,13 +329,18 @@ describe("UserPresence", () => {
   it("a revocation between the session read and the handler closes the socket 4403", async () => {
     const u = await mk(`pr-mid-${newId().slice(0, 4)}`, "member");
     const art = await pub();
+    // Only Date is faked: the middleware moves the clock past the skew margin.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     // Runs after the policy gate (session read, prefetched access) and
     // before the socket handlers: the revocation lands in between.
     const revokeNow = mw(async (_c: unknown, next: () => Promise<void>) => {
       await revokeUserLive(env, u.userId, "suspended");
       // Past the skew margin: only an authzAt stamped before the session
       // read (not at the handler) is still refused.
-      await new Promise((r) => setTimeout(r, SKEW_MS + 200));
+      vi.setSystemTime(Date.now() + SKEW_MS + 200);
       await next();
     });
     const racing = createApp((a: AppType) => {
@@ -447,8 +481,12 @@ describe("UserPresence", () => {
     if (!r.webSocket) throw new Error(`no websocket (${r.status})`);
     expect(await wrap(r.webSocket).closed).toBe(4403);
     // Authorized after the change plus the skew margin: accepted.
-    const later = await direct(art, `pr-v2-${newId()}`, (at as number) + 2001);
-    await tick();
+    const later = await direct(
+      art,
+      `pr-v2-${newId()}`,
+      (at as number) + SKEW_MS + 1,
+    );
+    expect(await openSocketCount(art)).toBe(1);
     expect(later.isOpen()).toBe(true);
     later.ws.close();
   });
@@ -498,7 +536,7 @@ describe("UserPresence", () => {
       `pr-v3-${newId()}`,
       Date.now() + g.retryAfterMs!,
     );
-    await tick();
+    expect(await openSocketCount(art)).toBe(1);
     expect(later.isOpen()).toBe(true);
     later.ws.close();
   });
@@ -515,13 +553,19 @@ describe("UserPresence", () => {
   it("closeActor closes only that actor's data and events sockets", async () => {
     const art = await pub();
     const a = await openSockets(member, art);
-    const b = await direct(art, `pr-b-${newId()}`, Date.now());
+    const bUser = `pr-b-${newId()}`;
+    const b = await direct(art, bUser, Date.now());
     const n = await runtimeStub(env, art).closeActor(`u:${member.userId}`, "x");
     expect(n).toBe(2);
     expect(await a.data.closed).toBe(4403);
     expect(await a.events.closed).toBe(4403);
-    await tick();
+    // closeActor closes synchronously, inside the call (src/runtime/do.ts:2089-
+    // 2106), so nothing can land after it returned (it counted two); the other
+    // actor's socket is still open in the runtime, and closing that actor
+    // closes it.
+    expect(await openSocketCount(art)).toBe(1);
     expect(b.isOpen()).toBe(true);
-    b.ws.close();
+    expect(await runtimeStub(env, art).closeActor(`u:${bUser}`, "x")).toBe(1);
+    expect(await b.closed).toBe(4403);
   });
 });
