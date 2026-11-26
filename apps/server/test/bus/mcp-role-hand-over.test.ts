@@ -147,6 +147,17 @@ describe("the holder hands its role over (#3132)", () => {
       role: { name: s.role, holderName: next!.name, vacant: false },
     });
     expect(await audits(s.m.userId)).toEqual(["bus.role.moved"]);
+    // The row says the holder moved it, through its own MCP credential.
+    const row = await e.DB.prepare(
+      "select actor_cred_kind as cred, detail from audit_events where target_id = ? and action = 'bus.role.moved'",
+    )
+      .bind(s.m.userId)
+      .first<{ cred: string; detail: string }>();
+    expect(row?.cred).toBe("pat");
+    expect(JSON.parse(row?.detail ?? "{}")).toMatchObject({
+      by: "holder",
+      identityId: expect.any(String),
+    });
 
     // The old session closes; Leo answers its ask in the web app.
     s.d.send({ v: 1, id: "down", type: "agent_down", agent_ref: old!.ref });
