@@ -81,7 +81,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `hello {machine_label, client_version, caps?}`; `caps` (see Renames)
 - `agent_up {agent_ref, kind, proposed_name, namespace, global, name_kind?}`
 - `agent_down {agent_ref}`
-- `sessions {open[], closed[]}`
+- `sessions {open[], closed[], gone?[]}`: `gone` (`BUS_CAPS.sessionsGone`, #3208) is a distinct subset of `closed` naming sessions that will never reopen.
 - `send {from_ref, to_name, to_namespace?, to_id?, body}`: `to_id` (a reply, the answered mail's `from_id`) makes the hub deliver only to that agent; if `to_name` resolves to another agent or none, the send is refused `agent_gone`.
 - `ack {msg_id}`
 - `refuse {msg_id, reason: "closed", detail}`

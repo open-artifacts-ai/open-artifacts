@@ -18,7 +18,7 @@ export type HubOptions = {
   label: string;
   version: string;
   /** Read on every open; sent as `sessions` right after `hello`. */
-  sessions: () => { open: string[]; closed: string[] };
+  sessions: () => { open: string[]; closed: string[]; gone?: string[] };
   onFrame: (frame: ServerFrame) => void;
   /** A frame the decoder rejected but whose id it recovered: it answers that request. */
   onBadFrame?: (id: string, error: "bad_frame" | "too_large") => void;
@@ -60,6 +60,8 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.mailExpiry,
+  BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
 ] as const;
 

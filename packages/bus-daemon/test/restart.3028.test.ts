@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readAnnounced } from "../src/announced.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(async () => {
@@ -108,10 +109,29 @@ describe("a session that ended while the daemon was down leaves (#3028)", () => 
     const h = await daemonHarness({ announcedFile, claude: claude(sessions) });
     await h.next("agent_up");
     await vi.waitFor(async () => {
-      const { readAnnounced } = await import("../src/announced.ts");
       expect(readAnnounced(announcedFile).map((e) => e.ref)).toContain(
         "this-run",
       );
     });
+  });
+
+  it("loads an older announced.json whose entries omit gone (#3208)", () => {
+    const state = mkdtempSync(join(tmpdir(), "ob-3028-old-"));
+    const announcedFile = join(state, "announced.json");
+    writeFileSync(
+      announcedFile,
+      JSON.stringify({
+        v: 1,
+        refs: [
+          { ref: "legacy-ref", kind: "antigravity" },
+          { ref: "legacy-inst", kind: "claude-code", instance: "work" },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    expect(readAnnounced(announcedFile)).toEqual([
+      { ref: "legacy-ref", kind: "antigravity" },
+      { ref: "legacy-inst", kind: "claude-code", instance: "work" },
+    ]);
   });
 });

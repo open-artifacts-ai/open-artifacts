@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import {
+  AGY_DEFAULT_NAME,
   claudeSessionsDir,
   readSessionFile,
 } from "@oa/bus-adapter-claude-code";
@@ -18,6 +19,8 @@ import {
 } from "@oa/bus-adapter-opencode/version";
 import {
   ADAPTER_CAPS,
+  AGY_NO_SESSION,
+  AGY_WATCHER_RUNNING,
   type ConfigFile,
   correctedDeliveredText,
   type DaemonFrame,
@@ -35,6 +38,7 @@ import {
   unconfirmedText,
 } from "@oa/bus-ipc";
 import {
+  AGY_STARTING_LABEL,
   AgentRefSchema,
   BRIEF_RULES,
   BUS_CMD,
@@ -58,6 +62,14 @@ import {
   LINK_HASHES_MAX,
   withLinkHash,
 } from "./agents.ts";
+import {
+  type AgyPluginRoute,
+  type AgyProc,
+  agyPids,
+  agyPluginHome,
+  agyStartingRef,
+  cwdOfPid,
+} from "./agy-procs.ts";
 import { readAnnounced, writeAnnounced } from "./announced.ts";
 import {
   type AntigravityAgent,
@@ -69,6 +81,7 @@ import {
   attest,
   claudeProcStartOf,
   commOf,
+  isAgyWatcher,
   procStartOf,
 } from "./attest.ts";
 import {
@@ -198,6 +211,10 @@ import {
 } from "./sent.ts";
 import type { LaneSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
+import {
+  AgyTransport,
+  type AgyTransport as AgyTransportT,
+} from "./transports/antigravity.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
   CODEX_WAKE_TEXT,
@@ -229,6 +246,7 @@ import { startSelfCheck } from "./update/selfcheck.ts";
 import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
+export { type AgyPluginRoute, parseAgyPluginHome } from "./agy-procs.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./codex-names.ts";
@@ -255,6 +273,7 @@ export * from "./routes.ts";
 export * from "./sent.ts";
 export * from "./skill-refresh.ts";
 export * from "./status.ts";
+export * from "./transports/antigravity.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
 export * from "./transports/opencode.ts";
@@ -477,12 +496,37 @@ export type DaemonDeps = {
   antigravity?: {
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
+    /** agy S3: how long a watcher has to answer a push; default AGY_ANSWER_TIMEOUT_MS (50 s). */
+    answerTimeoutMs?: number;
+    /** #3205: pauses before an unknown hand-off is pushed again; default 2, 5, 10, then 30 s. */
+    recheckMs?: readonly number[];
     /** How long a read start time is reused; default PROC_START_TTL_MS. */
     procStartTtlMs?: number;
     /** The binary a pid runs, checked again on restore; default commOf. */
     comm?: (pid: number) => string | null;
     /** Live conversations kept across a restart; default ~/.oa-bus/antigravity-agents.json. */
     agentsFile?: string;
+    /**
+     * agy S2b: list running agy processes with no conversation yet as
+     * "starting". Default: OA_BUS_EXPERIMENTAL_AGY=1, in any home; only the
+     * home the agy plugin routes to lists (pluginHome), so one daemon does.
+     */
+    discover?: boolean;
+    /** agy S2b: the running agy processes (pid and ppid), null when unknown; default one async `ps`. */
+    pids?: () => AgyProc[] | null | Promise<AgyProc[] | null>;
+    /**
+     * agy S2b: where the installed agy plugin's hook sends sessions, null
+     * when there is none (agyPluginHome). Only the daemon of that home lists
+     * agy at launch, whatever home it is: elsewhere the conversation would
+     * join another bus.
+     */
+    pluginHome?: () => AgyPluginRoute | null;
+    /** Tests only: this daemon's bus home, as discovery compares it; default home(). */
+    home?: string;
+    /** agy S2b: a pid's working directory, null when unreadable; default cwdOfPid. */
+    cwdOf?: (pid: number) => string | null;
+    /** agy S2b: the bus home a pid was started for (procBusHome). */
+    homeOf?: (pid: number) => string | null | undefined;
   };
   codex?: CodexAttestDeps & {
     /** Every this many syncs, each live thread's lock is proven again; default 15 (30 s). */
@@ -534,6 +578,10 @@ export type Daemon = {
   agents: AgentTable;
   /** Test seam (#1956): the ref bindings held, and one sweep run now. */
   bindings: { count: () => number; sweep: () => void };
+  /** Test seam (#3205): agy messages held for a watcher, and unknown hand-offs waiting to be pushed again. */
+  agy: { held: () => number; rechecking: () => number };
+  /** Test seam (agy S2b): one sync tick now, as the interval runs it. */
+  syncNow: () => void;
 };
 
 /** A refusal's key: the CODEX_REFUSALS name for its text, else "other". */
@@ -729,9 +777,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** The sessions registered on one link: an agent is on its folder's instance only. */
   const sessions = (lane: Lane) => {
     const mine = (r: string) => laneOfRef(r) === lane;
+    const closed = agents.closedRefs().filter(mine);
+    const gone = lane.sessionsGone
+      ? closed.filter((r) => agents.byRef(r)?.gone === true)
+      : [];
     return {
       open: agents.openRefs().filter((r) => mine(r) && !held(r)),
-      closed: agents.closedRefs().filter(mine),
+      closed,
+      ...(gone.length > 0 ? { gone } : {}),
     };
   };
   /** #3028: the refs announced to a hub, kept across a restart (0600). */
@@ -749,6 +802,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
         ? { instance: a.instance }
         : {}),
+      // #3208: a definitive exit (starting agy) is kept across a restart.
+      ...(!a.live && a.gone === true ? { gone: true as const } : {}),
+      // #3208: a live starting agy's process, checked again by a restart.
+      ...(a.live && a.starting && a.pid > 0 && a.procStart !== undefined
+        ? { agy: { pid: a.pid, procStart: a.procStart } }
+        : {}),
     }));
     const text = JSON.stringify(rows);
     if (text === announcedWritten) return;
@@ -761,6 +820,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     }
   };
+  /**
+   * #3208: a gone ref stays marked (and in announced.json) until its record
+   * leaves the table: a written frame may still sit in the pacer when the
+   * daemon dies, so each sessions_gone link gets it again after hello_ok.
+   * The hub's handling of a repeated gone ref is a no-op.
+   */
+  const sendSessions = (lane: Lane) =>
+    sendOn(lane, {
+      v: 1,
+      id: frameId(),
+      type: "sessions",
+      ...sessions(lane),
+    });
   const announceSessions = () => {
     // #3028: the file follows the table, so a restart knows every ref the hub
     // may still hold for this machine.
@@ -770,13 +842,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!agents.byRef(ref)?.live) clearLimited(ref);
     for (const m of [renameFrames, renameHeldUntil])
       for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
-    for (const lane of lanes.all())
-      sendOn(lane, {
-        v: 1,
-        id: frameId(),
-        type: "sessions",
-        ...sessions(lane),
-      });
+    for (const lane of lanes.all()) sendSessions(lane);
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
   const limited = new Map<
@@ -1103,6 +1169,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ag.procStartTtlMs === undefined ? {} : { ttlMs: ag.procStartTtlMs },
   );
   const agComm = ag.comm ?? commOf;
+  // agy S2b: behind the flag, in every home; agyRoutedHere picks the one
+  // home that lists (the plugin's), so two running daemons never both do.
+  const agDiscover = ag.discover ?? process.env.OA_BUS_EXPERIMENTAL_AGY === "1";
+  const agHome = ag.home ?? home();
+  const agPids = ag.pids ?? agyPids;
+  const agCwd = ag.cwdOf ?? cwdOfPid;
+  const agHomeOf = ag.homeOf ?? procBusHome;
+  const agPluginHome = ag.pluginHome ?? (() => agyPluginHome());
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -1200,6 +1274,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     log,
     event: ev,
   });
+  /** agy S3: each agy process's watcher, and the messages held for one. */
+  const agyT: AgyTransportT = new AgyTransport({
+    log,
+    ...(deps.antigravity?.answerTimeoutMs === undefined
+      ? {}
+      : { answerTimeoutMs: deps.antigravity.answerTimeoutMs }),
+    ...(deps.antigravity?.recheckMs === undefined
+      ? {}
+      : { recheckMs: deps.antigravity.recheckMs }),
+  });
+  /** agy S3: watcher connections, from admitted hello to close. */
+  const agyWatchers = new Map<
+    Hello,
+    { pid: number; procStart: string; w?: ReturnType<AgyTransportT["up"]> }
+  >();
   const pi = new PiTransport({
     push: (ref, frame) => {
       const push = [...(piLinks.get(ref)?.values() ?? [])].at(-1);
@@ -1501,7 +1590,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       a.live = false;
       a.closedBy = "liveness";
       closed = true;
-      ev("agent_leave", agentFields(a, "conversation_switched"));
+      agyT.closed(a.ref);
+      ev(
+        "agent_leave",
+        agentFields(a, a.starting ? "joined" : "conversation_switched"),
+      );
     }
     if (closed) announceSessions();
   };
@@ -2459,6 +2552,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hermes: (agent, mail) => pi.deliver(agent, mail),
       openclaw: (agent, mail) => pi.deliver(agent, mail),
       codex: (agent, mail) => codex.deliver(agent, mail),
+      // agy S2b: a starting session has no conversation to put mail in: held,
+      // the receipt pending. The hub hands its mail to the conversation that
+      // takes its address over (`replaces`) and pushes it again on that
+      // agent_up. agy S3: a joined conversation's goes through its watcher.
+      antigravity: (agent, mail) =>
+        agent.starting
+          ? Promise.resolve({ ok: false as const, reason: "queued" as const })
+          : agyT.deliver(agent, mail),
       ...deps.transports,
     },
     onClosed: (a, closedBy) => {
@@ -2549,6 +2650,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               agent.busName = frame.bus_name;
               // Answered: the hub knows the new ref, the handover is done.
               delete agent.replaces;
+              // agy S2b: every agent_up of a starting session (a reopen clears
+              // the status at the hub) is followed by its "starting" status.
+              if (agent.starting && agent.live)
+                sendOn(lane, {
+                  v: 1,
+                  id: frameId(),
+                  type: "status",
+                  from_ref: agent.ref,
+                  state: "idle",
+                  label: AGY_STARTING_LABEL,
+                });
               flushRename(agent);
               // The hub forgot the hash with the last link: say it again.
               sendLink(agent);
@@ -2738,6 +2850,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   laneOfRef(rec.ref) === lane
                 )
                   announceUp(rec);
+            // #3208: the open-time sessions frame went before hello_ok, so gone
+            // was omitted; send it now that the hub listed sessions_gone.
+            if (
+              lane.sessionsGone &&
+              agents
+                .all()
+                .some(
+                  (a) =>
+                    !a.live && a.gone === true && laneOfRef(a.ref) === lane,
+                )
+            )
+              sendSessions(lane);
             for (const rec of agents.all()) flushRename(rec);
             // Queued replies go now that the link says what it supports.
             outbox.flush();
@@ -3320,6 +3444,46 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       };
     },
     onHello: (hello, closed) => {
+      /**
+       * agy S3: one watcher per agy process, admitted only while a
+       * conversation of that process is on the bus; it gets that one's name.
+       */
+      const admitAgyWatcher = (
+        h: typeof hello,
+        agyPid: number | undefined,
+      ): HelloResult | { error: string } => {
+        const procStart = h.attest.proc_start;
+        if (agyPid === undefined || procStart === undefined)
+          return { error: "agy watcher hello has no agy process" };
+        const key = { pid: agyPid, procStart };
+        const taken = [...agyWatchers.values()].some(
+          (x) => x.pid === agyPid && x.procStart === procStart,
+        );
+        if (taken || agyT.watcherFor(key))
+          return { error: AGY_WATCHER_RUNNING };
+        const rec = agents
+          .all()
+          .filter(
+            (a) =>
+              a.kind === "antigravity" &&
+              a.live &&
+              // agy S2b: a starting record has no conversation to watch.
+              !a.starting &&
+              a.pid === agyPid &&
+              a.procStart === procStart,
+          )
+          .sort(
+            (a, b) => (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+          )[0];
+        if (!rec) return { error: AGY_NO_SESSION };
+        agyWatchers.set(h, key);
+        ev("agy_watch_up", { pid: agyPid, ref: rec.ref });
+        return {
+          bus_name: rec.busName,
+          namespace: rec.namespace,
+          global: rec.global,
+        };
+      };
       /** welcome.caps (#1635): only to an adapter that listed `rename`. */
       const capsFor = (h: typeof hello) => {
         const listed = [
@@ -3373,6 +3537,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           });
           return { error: check.reason };
         }
+        // agy S3: a watcher speaks for its agy process, never for a conversation.
+        if (isAgyWatcher(hello)) return admitAgyWatcher(hello, check.pid);
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
         if (check.linkOnly) linkOnly.add(hello);
@@ -3590,6 +3756,39 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onFrame: (frame, hello, reply) => {
       if (frame.type === "hello") return undefined;
+      // agy S3: a watcher answers pushes; it asks nothing.
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        if (
+          (frame.type === "ack" || frame.type === "agy_failed") &&
+          watcher.w
+        ) {
+          const said =
+            frame.type === "ack"
+              ? "ok"
+              : frame.outcome === "unknown"
+                ? "unknown"
+                : "failed";
+          if (said === "unknown")
+            ev("agy_unknown", { pid: watcher.pid, msg_id: frame.msg_id });
+          if (!agyT.answered(frame.msg_id, watcher.w, said) && said === "ok")
+            log(`agy watcher acked ${frame.msg_id}, which it was not handed`);
+          return undefined;
+        }
+        return {
+          type: "error",
+          id: frame.id,
+          code: "unauthorized",
+          message: "a watcher connection only answers deliveries",
+        };
+      }
+      if (frame.type === "agy_failed")
+        return {
+          type: "error",
+          id: frame.id,
+          code: "bad_frame",
+          message: "agy_failed is for a watcher connection",
+        };
       // #1856: a proxied Open Artifacts call proves the thread's link and nothing else.
       if (linkOnly.has(hello) && frame.type !== "link_proof")
         return {
@@ -3691,7 +3890,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               code: "hub_unavailable",
               message: STATUS_COPY.hub_unavailable,
             };
-          relays.get(lane)?.status(ref, f.state, f.label, reply);
+          // agy S2b: "starting" is the bus's word for a session not yet
+          // joined (busAgentStarting); the agent's own is kept, capitalized.
+          const label =
+            f.label === AGY_STARTING_LABEL &&
+            agents.byRef(ref)?.kind === "antigravity"
+              ? "Starting"
+              : f.label;
+          relays.get(lane)?.status(ref, f.state, label, reply);
           return undefined;
         },
         // A Pi delivery waits on this same confirmation, from its own session.
@@ -3710,6 +3916,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return undefined;
     },
     onOpen: (hello, push) => {
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        watcher.w = agyT.up(watcher, (f) => {
+          push(f);
+          return true;
+        });
+        return;
+      }
       if (!piLike(hello.kind)) return;
       const links = piLinks.get(hello.agent_ref) ?? new Map();
       links.set(hello, push);
@@ -3718,6 +3932,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onClose: (hello) => {
       if (!hello) return;
+      const watcher = agyWatchers.get(hello);
+      if (watcher) {
+        agyWatchers.delete(hello);
+        if (watcher.w) agyT.down(watcher.w);
+        ev("agy_watch_down", { pid: watcher.pid });
+        return;
+      }
       const links = piLinks.get(hello.agent_ref);
       links?.delete(hello);
       if (links?.size === 0) {
@@ -3775,6 +3996,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const a of agents.all()) {
       if (a.kind !== "antigravity" || !a.live || a.procStart === undefined)
         continue;
+      // A starting session is listed again by the next scan, under the same ref.
+      if (a.starting) continue;
       rows.push({
         ref: a.ref,
         pid: a.pid,
@@ -4338,6 +4561,178 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   /**
+   * agy S2b: agy processes this daemon passed over, by pid, with the start
+   * time seen (another bus home's, a folder with no namespace), or the ticks
+   * a cwd could not be read. A new start at the pid is looked at afresh.
+   */
+  const agySkipped = new Map<
+    number,
+    { procStart: string; tries: number; final: boolean }
+  >();
+  const AGY_CWD_TRIES = 5;
+  /**
+   * agy S2b: top-level agy processes seen in the previous scan, by pid and
+   * start time. A process is listed only once seen in two consecutive scans
+   * with the same start time, so a short-lived helper agy is never listed.
+   */
+  const agySeen = new Map<number, string>();
+  /**
+   * agy S2b: lists each running agy process that has no conversation yet as
+   * an antigravity agent in state "starting", homed by its cwd through the
+   * folder map (unmapped: on no hub). Its ref comes from the pid and start
+   * time (agyStartingRef); the conversation that joins at the first message
+   * takes its address over (agySwitchedFrom). The S2 liveness above closes it
+   * when the process ends or the pid is reused.
+   */
+  /** The ps scan in flight: a tick while one runs starts no second. */
+  let agyScan = false;
+  let agyStopped = false;
+  /**
+   * agy S2b: the agy plugin's route when it sends sessions to this home,
+   * else null: another home's install, or none, so a conversation never
+   * joins here. Then nothing is listed, and a session listed before (the
+   * plugin moved since) closes.
+   */
+  const agyRoutedHere = (): AgyPluginRoute | null => {
+    const route = agPluginHome();
+    if (route?.home === agHome) return route;
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live || !a.starting) continue;
+      if (takenOver.has(a.ref)) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "plugin_elsewhere"));
+    }
+    if (closed) announceSessions();
+    return null;
+  };
+  const discoverAgy = () => {
+    if (agyScan) return;
+    const route = agyRoutedHere();
+    if (!route) return;
+    const got = agPids();
+    if (!(got instanceof Promise)) return listAgy(got, route);
+    agyScan = true;
+    got
+      .then((pids) => {
+        if (agyStopped) return;
+        const now = agyRoutedHere();
+        if (!now) return;
+        listAgy(pids, now);
+        persistAgy();
+      })
+      .catch((e) =>
+        log(
+          `antigravity discovery failed: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      )
+      .finally(() => {
+        agyScan = false;
+      });
+  };
+  const listAgy = (procs: AgyProc[] | null, route: AgyPluginRoute) => {
+    // ps could not be read: unknown, nothing is listed or closed for it.
+    if (procs === null) return;
+    const running = new Set(procs.map((p) => p.pid));
+    for (const pid of [...agySkipped.keys()])
+      if (!running.has(pid)) agySkipped.delete(pid);
+    const top = procs.filter((p) => !running.has(p.ppid));
+    const prevSeen = new Map(agySeen);
+    agySeen.clear();
+    const restoring = new Set([...agyPending.values()].map((p) => p.row.pid));
+    const listed: AgentRecord[] = [];
+    for (const { pid } of top) {
+      if (restoring.has(pid)) continue;
+      const start = agStart(pid);
+      if (start === null) continue;
+      agySeen.set(pid, start);
+      if (prevSeen.get(pid) !== start) continue;
+      // Met already: a conversation of this process (live, or one it showed
+      // before), or this same starting session.
+      const known = agents
+        .all()
+        .some(
+          (a) =>
+            a.kind === "antigravity" &&
+            a.pid === pid &&
+            a.procStart === start &&
+            (a.live || !a.starting || takenOver.has(a.ref)),
+        );
+      if (known) continue;
+      const skip = agySkipped.get(pid);
+      if (skip?.procStart === start && skip.final) continue;
+      const pass = (final: boolean) => {
+        const tries = skip?.procStart === start ? skip.tries + 1 : 1;
+        agySkipped.set(pid, {
+          procStart: start,
+          tries,
+          final: final || tries >= AGY_CWD_TRIES,
+        });
+      };
+      // A pinned hook (every install since agy S2b) sends every agy here
+      // whatever its environment says. A legacy unpinned hook follows the agy
+      // process's own OA_BUS_HOME (#2806), so its join lands here only when
+      // that is known to be this home: none set (the default home, ours) or
+      // this one. Another home's agy is passed over; one whose environment
+      // can't be read (macOS) is not listed, so no starting address is
+      // advertised that its join could miss. It is looked at again each tick:
+      // the next install pins the hook.
+      if (!route.pinned) {
+        const h = agHomeOf(pid);
+        if (h === null) continue;
+        if (typeof h === "string" && h !== agHome) {
+          pass(true);
+          continue;
+        }
+      }
+      const cwd = agCwd(pid);
+      if (cwd === null || !isAbsolute(cwd)) {
+        pass(false);
+        continue;
+      }
+      const instance = homeInstance(cwd);
+      let ns: Namespace;
+      try {
+        ns = resolveNs(cwd, false, { instance });
+      } catch {
+        pass(true);
+        continue;
+      }
+      if (!WireNamespaceSchema.safeParse(ns.namespace).success) {
+        pass(true);
+        continue;
+      }
+      agySkipped.delete(pid);
+      noteFolder(cwd);
+      const ref = agyStartingRef(pid, start);
+      seenAt.set(ref, ++seenSeq);
+      const rec = agents.up({
+        ref,
+        kind: "antigravity",
+        proposedName: AGY_DEFAULT_NAME,
+        busName: agents.byRef(ref)?.busName ?? AGY_DEFAULT_NAME,
+        namespace: ns.namespace,
+        namespaceSource: ns.source,
+        global: ns.global,
+        ...(instance !== undefined ? { instance } : {}),
+        pid,
+        procStart: start,
+        cwd,
+        live: true,
+        starting: true,
+      });
+      ev("agent_join", { ...agentFields(rec), state: "starting" });
+      listed.push(rec);
+    }
+    for (const rec of listed) {
+      announceUp(rec);
+      tellOwed(rec.ref);
+    }
+  };
+
+  /**
    * agy S2: an Antigravity record closes when its agy process ends, or its
    * pid now runs something started at another time. A start time that cannot
    * be read right now (a loaded machine) is unknown, not gone.
@@ -4353,7 +4748,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!gone && !moved) continue;
       a.live = false;
       a.closedBy = "liveness";
+      if (a.starting) a.gone = true;
       closed = true;
+      agyT.closed(a.ref);
       ev("agent_leave", agentFields(a, "process_gone"));
     }
     if (closed) announceSessions();
@@ -4362,6 +4759,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         [...agyPending.values()].map((p) => p.row),
         true,
       );
+    if (agDiscover) discoverAgy();
     persistAgy();
   };
 
@@ -4411,6 +4809,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   // live is not closed and reopened on every restart, and its name is free
   // again for a later rename; before, a daemon restart after a session ended
   // left the row live for good.
+  const agyEnded = (p: { pid: number; procStart: string }): boolean => {
+    if (!agRunning(p.pid)) return true;
+    const now = agStart(p.pid);
+    return now !== null && now !== p.procStart;
+  };
   for (const e of savedAnnounced) {
     if (agents.byRef(e.ref) !== undefined) continue;
     agents.up({
@@ -4425,6 +4828,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       cwd: "",
       live: false,
       closedBy: "liveness",
+      // #3208: a definitive exit (starting agy) is kept across a restart, and
+      // so is one whose process ended (or whose pid now runs another
+      // process) while the daemon was down. A start time that can't be read
+      // is not conclusive: a plain close.
+      ...(e.gone || (e.agy !== undefined && agyEnded(e.agy))
+        ? { gone: true }
+        : {}),
     });
   }
   persistAnnounced();
@@ -4531,7 +4941,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     agents,
     updater,
     bindings: { count: () => bindings.size, sweep: sweepBindings },
+    agy: { held: () => agyT.held(), rechecking: () => agyT.rechecking() },
+    syncNow: () => sync(),
     stop: async () => {
+      agyStopped = true;
       ev("daemon_stop", { pid: process.pid });
       selfCheck?.stop();
       updater?.stop();
@@ -4540,6 +4953,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       clearInterval(watcher);
       clearInterval(retry);
       delivery.stop();
+      agyT.stop();
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);

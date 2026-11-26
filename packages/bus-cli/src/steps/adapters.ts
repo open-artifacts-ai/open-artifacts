@@ -50,9 +50,11 @@ import {
   installAgyEntries,
   restoreAgyEntries,
 } from "./agy-proof.ts";
+import { installAgyRule, uninstallAgyRule } from "./agy-rule.ts";
 import {
   agyPluginFiles,
   agyPluginState,
+  agyWatchCommand,
   installAgyPlugin,
   uninstallAgyPlugin,
 } from "./antigravity.ts";
@@ -267,6 +269,14 @@ const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
   const ob = resolve(deps.busHome);
   return ob === join(deps.home, ".oa-bus") ? undefined : ob;
 };
+
+/**
+ * agy S2b: the bus home the agy plugin's hook pins, always (default home
+ * too), so the agy process's own OA_BUS_HOME never moves its join off the
+ * home that lists it at launch.
+ */
+const agyHookHome = (deps: Pick<AdapterDeps, "home" | "busHome">) =>
+  movedHome(deps) ?? join(deps.home, ".oa-bus");
 
 /**
  * Pi, oh-my-pi and OpenCode's TUI plugin run inside the harness, whose config
@@ -1134,7 +1144,9 @@ const install: Record<Harness, Step> = {
     const p = paths(deps);
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
-    const home = movedHome(deps);
+    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+    // read the conversation file the hook wrote, whatever agy's own env says.
+    const home = agyHookHome(deps);
     const next = upsertAgyMcp(text, NAME, server, home);
     target(p.agyMcp);
     const record = readRecord(p.record);
@@ -1143,7 +1155,13 @@ const install: Record<Harness, Step> = {
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
     // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
+    // agy S3: the one always-allow rule, for exactly the watcher's line.
+    installAgyRule(
+      deps.home,
+      p.busDir,
+      agyWatchCommand(deps.busBin, agyHookHome(deps)),
+    );
     agyPagesStep(deps, notes);
     return "done";
   },
@@ -1303,7 +1321,14 @@ const uninstall: Record<Harness, Step> = {
   async antigravity(deps, notes) {
     const p = paths(deps);
     // Only our marked folder goes; a folder not ours stays as it is.
-    const plugin = uninstallAgyPlugin(deps.home);
+    const folder = uninstallAgyPlugin(deps.home);
+    // agy S3: our rule, and only ours, leaves agy's settings.
+    const rule = uninstallAgyRule(
+      deps.home,
+      p.busDir,
+      agyWatchCommand(deps.busBin, agyHookHome(deps)),
+    );
+    const plugin = folder || rule;
     if (!present(p.agyMcp)) return plugin ? "done" : "none";
     // agy S5: the user's pages entries go back first, byte for byte.
     let put = false;
@@ -1550,14 +1575,14 @@ export function checkAdapters(
         agyEntryIs(
           parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
           deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-          movedHome(deps),
+          agyHookHome(deps),
         ) &&
         // agy S2: and the plugin whose hook joins each conversation.
         agyPluginState(
           deps.home,
           deps.busBin === undefined
             ? undefined
-            : agyPluginFiles(deps.busBin, movedHome(deps)),
+            : agyPluginFiles(deps.busBin, agyHookHome(deps)),
         ) === "current",
     ),
   };

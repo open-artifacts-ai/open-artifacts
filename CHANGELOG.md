@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.254.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.1...v0.254.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an agy process is listed as starting at launch (agy S2b) ([#3190](https://github.com/open-artifacts-ai/open-artifacts/issues/3190)) ([0fa55c9](https://github.com/open-artifacts-ai/open-artifacts/commit/0fa55c9d7bd5335117d467bf73d90d6416be7caf))
+
+
+### Bug Fixes
+
+* **bus:** agy's default name is a fallback; a gone session's mail expires at once ([#3208](https://github.com/open-artifacts-ai/open-artifacts/issues/3208)) ([#3233](https://github.com/open-artifacts-ai/open-artifacts/issues/3233)) ([626cc36](https://github.com/open-artifacts-ai/open-artifacts/commit/626cc363571e6e4e67c3c3956d74ebc51a1a45d4))
+
+## [0.253.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.0...v0.253.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **release:** main's version files say 0.253.0, as tag v0.253.0 does ([#3246](https://github.com/open-artifacts-ai/open-artifacts/issues/3246)) ([d6846e0](https://github.com/open-artifacts-ai/open-artifacts/commit/d6846e0d8b9b98d3e1fd90732fc2c29887e1212f))
+
 ## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
 
 

@@ -170,7 +170,7 @@ describe("RECOVERY_CRON", () => {
     await c.drain();
     // The text and pdf-thumbnail windows (one indexed read each), the
     // drain's cursor read (#2719), the first-comment scan's marker read
-    // (#2953), the Later claim and the pending push lookup.
+    // (#2953), the due Later lookup and the pending push lookup.
     expect(n.q).toBe(6);
     expect(await ranDay()).toBeNull();
   });
@@ -185,7 +185,7 @@ describe("RECOVERY_CRON", () => {
       c.ctx,
     );
     await c.drain();
-    // Sweep, fan-out cursor, scan marker, Later claim and pending push lookup.
+    // Sweep, fan-out cursor, scan marker, due Later lookup and pending push lookup.
     expect(n.q).toBe(5);
   });
 
