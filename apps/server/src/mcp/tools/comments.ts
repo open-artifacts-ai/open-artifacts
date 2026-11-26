@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { McpServer } from "@modelcontextprotocol/server";
+import type { Comment as CommentView } from "@oa/shared";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
@@ -42,6 +43,31 @@ async function threadOf<T>(p: Promise<T>): Promise<T> {
 }
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+/**
+ * #3163: what a write returns by default: ids and status, not the comment.
+ * Kept: `notice` (a non-fatal note, such as a cross-page replace that did not
+ * finish), `askedBy`, and the mentioned agents a notice could not reach.
+ * `status` only when it is known: a plain reply never says the thread's.
+ */
+function compact(
+  threadId: string,
+  c: CommentView | undefined,
+  status?: string,
+): Record<string, unknown> {
+  const gone = (c?.mentions ?? [])
+    .filter((m) => m.delivery === "gone")
+    .map((m) => m.name);
+  return {
+    threadId,
+    ...(c ? { commentId: c.id } : {}),
+    ...(status ? { status } : {}),
+    ...(c?.ask ? { askId: c.id } : {}),
+    ...(c?.askedBy ? { askedBy: c.askedBy } : {}),
+    ...(c?.notice ? { notice: c.notice } : {}),
+    ...(gone.length ? { notReached: gone } : {}),
+  };
+}
 
 export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   const { env, caller } = t;
@@ -211,10 +237,21 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             opts,
           ),
         );
-        return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
-          threadId: i.threadId,
-          comment,
-        });
+        // #3163: ids and status by default; verbose: true keeps the full comment.
+        return ok(
+          `Replied in thread ${i.threadId} on ${i.id}.`,
+          i.verbose
+            ? { threadId: i.threadId, comment }
+            : compact(
+                i.threadId,
+                comment,
+                comment.ask
+                  ? comment.ask.closed
+                    ? "resolved"
+                    : "open"
+                  : undefined,
+              ),
+        );
       }
       const thread = await addThread(
         env,
@@ -228,7 +265,13 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         },
         opts,
       );
-      return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
+      // #3163: ids and status by default; verbose: true keeps the full thread.
+      return ok(
+        `Started thread ${thread.id} on ${i.id}.`,
+        i.verbose
+          ? { thread }
+          : compact(thread.id, thread.comments[0], thread.status),
+      );
     }),
   );
 
@@ -246,10 +289,17 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           i.replacedBy,
         ),
       );
-      return ok(`Withdrew the ask ${i.commentId} on ${i.id}.`, {
-        threadId: i.threadId,
-        comment,
-      });
+      // #3163: ids and status by default; verbose: true keeps the full comment.
+      return ok(
+        `Withdrew the ask ${i.commentId} on ${i.id}.`,
+        i.verbose
+          ? { threadId: i.threadId, comment }
+          : compact(
+              i.threadId,
+              comment,
+              comment.ask?.withdrawn ? "withdrawn" : "open",
+            ),
+      );
     }),
   );
 
@@ -289,9 +339,18 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           resolved ? "resolved" : "open",
         ),
       );
+      // #3163: ids and status by default; verbose: true keeps the full thread.
       return ok(
         `Thread ${i.threadId} on ${i.id} is ${resolved ? "resolved" : "open again"}.`,
-        { thread },
+        i.verbose
+          ? { thread }
+          : {
+              threadId: thread.id,
+              ...(thread.comments[0]
+                ? { commentId: thread.comments[0].id }
+                : {}),
+              status: thread.status,
+            },
       );
     }),
   );
