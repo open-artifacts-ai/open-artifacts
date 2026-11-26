@@ -234,7 +234,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: old.identity, originAt: t0 + 30_001 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(old.ref);
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
     expect(await s.hub.roleHolderFor(old.identity, t0 + 30_001)).toBeNull();
   });
 
