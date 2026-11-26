@@ -163,10 +163,10 @@ test("an invited member outside the domain signs in by code: a member session in
   await page.getByRole("button", { name: "Verify" }).click();
   const v = await verified;
   expect(v.status()).toBe(200);
-  expect(await v.json()).toMatchObject({
-    user: { id: r.id, role: "member" },
-    readOnly: false,
-  });
+  // Not v.json(): the app navigates on success, and Playwright drops a
+  // response body once its page navigates away (v0.247.0's gate failed on
+  // that, cloud run 45740398112). The /me check below proves the same
+  // things on the live session: this member, not read-only, no cap.
 
   // An invited row has no name yet: the first page asks for one.
   const ask = page.getByRole("dialog", {
