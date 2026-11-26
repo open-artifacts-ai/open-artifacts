@@ -2,7 +2,8 @@
 // before its events socket joined sends its `comments` frame to no one. Every
 // hello refetches the list, so that reply still shows without a reload.
 // #3095: a frame that lands while the list's first fetch is still in flight
-// must not join that fetch (its answer predates the reply): it refetches.
+// must not only join that fetch (its answer predates the reply): once it
+// lands, the list is fetched again.
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { refetchesComments, refetchNow } from "../src/viewer/useLiveVersions";
@@ -33,15 +34,46 @@ it("a frame during the first fetch refetches: the reply it announces shows (#309
   const { answers, off } = watched(qc);
   expect(answers).toHaveLength(1); // the first fetch, still in flight
   const done = refetchNow(qc, ["comments"]);
-  // A fetch that started after the frame, not the one before it.
+  answers[0]?.(["Watching"]); // the first fetch's answer, from before the reply
+  // A fetch that started after the frame, not only the one before it.
   await vi.waitFor(() => expect(answers).toHaveLength(2));
-  answers[0]?.(["Watching"]); // the first fetch's late answer, from before the reply
   answers[1]?.(["Watching", "Arrived while you were reading"]);
   await done;
+  expect(answers).toHaveLength(2); // exactly one more read for the overlap
   expect(qc.getQueryData(["comments", "a1"])).toEqual([
     "Watching",
     "Arrived while you were reading",
   ]);
+  off();
+});
+
+it("with no frame, the list is read once", async () => {
+  const qc = new QueryClient();
+  const { answers, off } = watched(qc);
+  answers[0]?.(["Watching"]);
+  await vi.waitFor(() =>
+    expect(qc.getQueryData(["comments", "a1"])).toEqual(["Watching"]),
+  );
+  expect(answers).toHaveLength(1);
+  off();
+});
+
+it("a frame during a first fetch that finds comments unavailable asks no more", async () => {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const fails: Array<(e: Error) => void> = [];
+  const gone = new Error("comments_off");
+  const obs = new QueryObserver<string[]>(qc, {
+    queryKey: ["comments", "a1"],
+    queryFn: () => new Promise<string[]>((_, no) => fails.push(no)),
+  });
+  const off = obs.subscribe(() => {});
+  const done = refetchNow(qc, ["comments"], (e) => e === gone);
+  fails[0]?.(gone);
+  await done;
+  expect(fails).toHaveLength(1);
+  expect(qc.getQueryState(["comments", "a1"])?.error).toBe(gone);
   off();
 });
 
@@ -59,6 +91,7 @@ it("a frame during a refetch, with a list shown, still refetches once more", asy
   answers[1]?.(["Watching"]);
   answers[2]?.(["Watching", "A reply"]);
   await done;
+  expect(answers).toHaveLength(3);
   expect(qc.getQueryData(["comments", "a1"])).toEqual(["Watching", "A reply"]);
   off();
 });

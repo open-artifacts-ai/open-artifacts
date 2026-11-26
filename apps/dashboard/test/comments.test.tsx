@@ -1810,8 +1810,9 @@ describe("comments: guests and Retry-After", () => {
     mount(viewerPath(PUBLIC));
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
-    // The read sent no token and minted none.
-    expect(seenTokens).toEqual([null]);
+    // The reads sent no token and minted none. (The socket's hello may land
+    // while the first read is in flight; it then reads once more, #3095.)
+    expect(new Set(seenTokens)).toEqual(new Set([null]));
     expect(localStorage.getItem("oa.anonId")).toBeNull();
     const box = within(c).getByRole("textbox", {
       name: "Comment on the whole page",
