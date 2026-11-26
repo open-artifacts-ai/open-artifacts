@@ -19,11 +19,12 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterAll, expect, vi } from "vitest";
-import { type BusHub, busHubName } from "../../src/bus/hub.js";
+import { BusHub, busHubName } from "../../src/bus/hub.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { login } from "../helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 export const e = env as unknown as Env;
 
@@ -107,6 +108,7 @@ export type Daemon = {
   ws: WebSocket;
   /** Every raw text message received, in order (frames and PONGs). */
   raw: string[];
+  /** Fails by name after FRAME_WAIT_MS with no frame (withDeadline). */
   next: () => Promise<ServerFrame>;
   send: (f: ClientFrame) => void;
   close: () => void;
@@ -183,24 +185,17 @@ afterAll(async () => {
     }
   }
   // A socket the hub already tore down reported its close earlier. A close
-  // that never arrives fails the file with a clear message, inside the hook's
-  // own timeout; giving up silently is what let the worker tear down with the
+  // that never arrives fails the file at the hook's own timeout: the hook ends
+  // only once every socket is closed, so the worker cannot tear down with the
   // hub's `gone` RPC still in flight.
-  let giveUp: ReturnType<typeof setTimeout> | undefined;
-  await Promise.race([
+  // A close that never arrives fails the file with a clear message, inside the
+  // hook's own timeout (giving up silently is what let the worker tear down
+  // with the hub's `gone` RPC still in flight).
+  await withDeadline(
     Promise.all(closes),
-    new Promise<never>((_, reject) => {
-      giveUp = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `bus sockets still open ${CLOSE_WAIT_MS} ms after the file's afterAll closed them`,
-            ),
-          ),
-        CLOSE_WAIT_MS,
-      );
-    }),
-  ]).finally(() => clearTimeout(giveUp));
+    CLOSE_WAIT_MS,
+    `bus sockets still open ${CLOSE_WAIT_MS} ms after the file's afterAll closed them`,
+  );
   opened.clear();
   rawSockets.clear();
   const ns = e.USER_PRESENCE;
@@ -287,6 +282,9 @@ export async function daemon(
     // Recorded, then failed loudly in the test that reads it.
     expect(r.ok, `not a server frame: ${text}`).toBe(true);
     if (!r.ok) return;
+    // A fence's own reply is for `fence` alone (it listens on the socket): it
+    // never reaches a test's queue, where a later wait could take it for its own.
+    if (isFenceReply(r.frame)) return;
     const w = waiting.shift();
     if (w) w(r.frame);
     else queue.push(r.frame);
@@ -299,16 +297,11 @@ export async function daemon(
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve, reject) => {
-      const t = setTimeout(
-        () => reject(new Error("timed out waiting for a frame")),
-        FRAME_WAIT_MS,
-      );
-      waiting.push((frame) => {
-        clearTimeout(t);
-        resolve(frame);
-      });
-    });
+    return withDeadline(
+      new Promise<ServerFrame>((resolve) => waiting.push(resolve)),
+      FRAME_WAIT_MS,
+      "a frame from the hub",
+    );
   };
   const d: Daemon = {
     ws,
@@ -332,6 +325,20 @@ export const eventually = <T>(
   fn: () => T | Promise<T>,
   o: { timeout?: number; interval?: number } = {},
 ) => vi.waitFor(fn, { timeout: 10_000, interval: 10, ...o });
+
+/** The frame of `type` answering request `id`: another frame of that type (an earlier reply) is not it. */
+export async function waitForId<T extends ServerFrame["type"]>(
+  conn: { next: () => Promise<ServerFrame> },
+  type: T,
+  id: string,
+): Promise<Extract<ServerFrame, { type: T }>> {
+  for (let i = 0; i < 5000; i++) {
+    const f = await conn.next();
+    if (f.type === type && (f as { id?: unknown }).id === id)
+      return f as Extract<ServerFrame, { type: T }>;
+  }
+  throw new Error(`no ${type} frame answering ${id}`);
+}
 
 export async function waitFor<T extends ServerFrame["type"]>(
   conn: { next: () => Promise<ServerFrame> },
@@ -357,6 +364,69 @@ export const framesSeen = (d: Daemon): ServerFrame[] =>
 let seq = 0;
 /** A namespace no other test uses, so names never collide across tests. */
 export const ns = (tag = "ns") => `test.local/${tag}-${++seq}-${Date.now()}`;
+
+/** Resolves once the hub's started close handlers, index calls and recorded writes have settled (no clock). */
+export const idleOf = (h: DurableObjectStub<BusHub>) =>
+  runInDurableObject(h, (i: BusHub) => BusHub.whenIdle(i));
+/** `idleOf` for a member's hub (the owner's by default). */
+export const hubIdle = async (userId?: string) => idleOf(await hubOf(userId));
+
+/**
+ * Runs `act` (a close the hub will handle once: a client close, a replacement,
+ * a closeAll) and resolves when the hub's close handler for it has finished:
+ * counted inside the hub, woken by the handler itself.
+ */
+export async function closing(
+  h: DurableObjectStub<BusHub>,
+  act: () => unknown,
+): Promise<void> {
+  const before = await runInDurableObject(h, (i: BusHub) =>
+    BusHub.closesDone(i),
+  );
+  await act();
+  await runInDurableObject(h, (i: BusHub) =>
+    BusHub.whenClosesDone(i, before + 1),
+  );
+}
+
+const FENCE_PREFIX = "fence-";
+export const isFenceReply = (f: ServerFrame) =>
+  (f as { id?: unknown }).id !== undefined &&
+  String((f as { id?: unknown }).id).startsWith(FENCE_PREFIX);
+
+let fenceSeq = 0;
+/**
+ * Fences the hub's reaction to everything these daemons sent before: the hub
+ * handles a socket's frames in order and its sync reactions (roster fan-out,
+ * writes) happen inside that handling, so once the hello_ok for this hello is
+ * back, every frame the hub emitted to the daemon for earlier work is in
+ * `raw`. Only for a reaction that is synchronous in the handler; a timer or an
+ * alarm is awaited on its own end event.
+ */
+export async function fence(
+  ...ds: Pick<Daemon, "ws" | "send">[]
+): Promise<void> {
+  await Promise.all(
+    ds.map((d) => {
+      const id = `${FENCE_PREFIX}${++fenceSeq}`;
+      const back = new Promise<void>((resolve) => {
+        const on = (ev: MessageEvent) => {
+          const text = String(ev.data);
+          if (
+            text.includes('"type":"hello_ok"') &&
+            text.includes(`"id":"${id}"`)
+          ) {
+            d.ws.removeEventListener("message", on);
+            resolve();
+          }
+        };
+        d.ws.addEventListener("message", on);
+      });
+      d.send(hello(id));
+      return back;
+    }),
+  );
+}
 
 export const hello = (id = "h1"): ClientFrame => ({
   v: 1,

@@ -18,10 +18,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { busCloseKind } from "../../src/services/bus.js";
 import {
+  closing,
   type Daemon,
   daemon,
   e,
   hello,
+  hubIdle,
   hubOf,
   machine,
   member,
@@ -226,11 +228,13 @@ describe("offline reap (open-bus #422)", () => {
     const m = await machine("Twice");
     const d1 = await connect(m.token);
     const name = await reg(d1, "t", uniq("Twice"), ns("twice"));
-    const d2 = await connect(m.token);
-    const c = await d1.closed;
-    expect(c.reason).toBe("replaced");
-    // sleep-ok: absence — a replaced machine must not be marked offline at all
-    await new Promise((r) => setTimeout(r, 20));
+    let d2!: Daemon;
+    // The new socket replaces d1; the hub's close handling of d1 is the end event.
+    await closing(await hubOf(), async () => {
+      d2 = await connect(m.token);
+      expect((await d1.closed).reason).toBe("replaced");
+      d1.close(); // the client's echo is what reaches the hub's close handler
+    });
     expect(await disconnectedAt(m.id)).toBeNull();
     await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS);
     expect(await liveOf(m.id)).toEqual([name]);
@@ -542,10 +546,11 @@ describe("closeAll and the offline clock (#1350)", () => {
 
   it('closeAll "access" leaves the clock unset; a reconnect reaps nothing', async () => {
     const { uid, t0, m, d, name, stub } = await setup("Access");
-    expect(await stub.closeAll("space role lowered", "access")).toBe(1);
-    expect((await d.closed).code).toBe(4403);
-    // sleep-ok: absence — an access close is not an offline machine
-    await new Promise((r) => setTimeout(r, 20));
+    await closing(stub, async () => {
+      expect(await stub.closeAll("space role lowered", "access")).toBe(1);
+      expect((await d.closed).code).toBe(4403);
+      d.close(); // the client's echo is what reaches the hub's close handler
+    });
     expect(await disconnectedAt(m.id, uid)).toBeNull();
     const d2 = await connect(m.token);
     await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS, uid);

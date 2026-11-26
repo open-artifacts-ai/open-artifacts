@@ -65,13 +65,21 @@ const ON = {
 };
 const tu = (local: string) => uniq(local, TD);
 /**
- * A start time past the current millisecond: an earlier test's last audit
- * row may share it. Waits on the clock moving (a D1 round trip advances
- * workerd's clock), not on a sleep.
+ * A start time past every earlier audit row, with every later `Date.now()`
+ * strictly later than the one before it, across the whole file: the clock is a
+ * counter that never goes back (an earlier test advanced it past real time, so
+ * a later one starts from where it left off), restored after each test. Audit
+ * rows never tie on `at`, no earlier row is at or after a later `since`, and
+ * nothing waits for the real clock to move.
  */
+let ticking = false;
+let fakeNow = 0;
 async function freshSince(): Promise<number> {
-  const t = Date.now();
-  while (Date.now() <= t) await env.DB.prepare("select 1").first();
+  if (!ticking) {
+    ticking = true;
+    fakeNow = Math.max(Date.now(), fakeNow);
+    vi.spyOn(Date, "now").mockImplementation(() => ++fakeNow);
+  }
   return Date.now();
 }
 
@@ -110,7 +118,10 @@ async function refused404(
     error: { ...error, details: { reason, ...extra } },
   });
 }
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  ticking = false;
+});
 
 async function call(
   e: Env,

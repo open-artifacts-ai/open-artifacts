@@ -25,9 +25,11 @@ import {
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
 import {
+  closing,
   e,
   hello,
   hubOf,
+  idleOf,
   machine,
   ns,
   ready,
@@ -35,6 +37,7 @@ import {
   up,
   upgrade,
 } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 // ------------------------------------------------------------------ helpers
 //
@@ -84,14 +87,13 @@ function wire<T>(ws: WebSocket, parse: (t: string) => T | null) {
   const next = () => {
     const f = queue.shift();
     if (f !== undefined) return Promise.resolve(f);
-    return new Promise<T>((resolve, reject) => {
-      // sleep-ok: a deadline for a frame that may never come, not a wait
-      const t = setTimeout(() => reject(new Error("timed out")), 15_000);
-      waiting.push((x) => {
-        clearTimeout(t);
-        resolve(x);
-      });
-    });
+    return withDeadline(
+      new Promise<T>((resolve) => {
+        waiting.push(resolve);
+      }),
+      15_000,
+      "a frame from the hub",
+    );
   };
   return { seen, next, closed };
 }
@@ -206,8 +208,6 @@ const list = (from_ref: string): ClientFrame => ({
   from_ref,
 });
 
-const tick = () => new Promise((r) => setTimeout(r, 30));
-
 const receiptRow = (h: BusHubStub, id: string) =>
   inHub(
     h,
@@ -301,15 +301,20 @@ describe("revoke drops the machine's agents", () => {
     const s = await agentOn(h, "Sender", "sender", n);
     s.d.seen.length = 0;
 
-    expect(await h.revokeMachine(v.m.id)).toBe(true);
+    let revoked = false;
+    // The victim's close lands in the hub's close handler: the end event.
+    await closing(h, async () => {
+      revoked = await h.revokeMachine(v.m.id);
+      await v.d.closed;
+      v.d.ws.close(1000, "bye"); // the client's echo reaches the hub's close handler
+    });
+    expect(revoked).toBe(true);
     const p = await h.snapshot();
     expect(p.agents.map((a) => a.name)).toEqual(["sender"]);
     expect(p.connected).not.toContain(v.m.id);
     expect((await revokedAts(h))[v.m.id]).toEqual(expect.any(Number));
 
-    // The close lands: no second roster_changed.
-    await v.d.closed;
-    await tick();
+    // The close has landed (above): no second roster_changed.
 
     s.d.send(list(s.ref));
     const r = await until(s.d, "roster");
@@ -464,8 +469,10 @@ describe("revoke and mail", () => {
     const s = await agentOn(h, "Sender", "sender", n);
     s.d.send(send(s.ref, "victim", "hello"));
     const r = await until(s.d, "receipt");
-    s.d.ws.close(1000, "bye");
-    await tick();
+    await closing(h, async () => {
+      s.d.ws.close(1000, "bye");
+      await s.d.closed;
+    }); // the hub has seen the sender go
     expect(await h.revokeMachine(v.m.id)).toBe(true);
     await v.d.closed;
 
@@ -497,8 +504,10 @@ describe("revoke and mail", () => {
     await until(s.d, "receipt_update");
     expect(await mailCount(h, [r.msg_id])).toBe(1);
     // Mail the victim sent the sender, still pending.
-    s.d.ws.close(1000, "bye");
-    await tick();
+    await closing(h, async () => {
+      s.d.ws.close(1000, "bye");
+      await s.d.closed;
+    }); // the hub has seen the sender go
     v.d.send(send(v.ref, "sender", "from victim"));
     const out = await until(v.d, "receipt");
 

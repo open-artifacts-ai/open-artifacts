@@ -3990,6 +3990,16 @@ export class BusHub extends DurableObject<Env> {
     // Every daemon socket gets "pong" for "ping" from the runtime, without
     // waking the hub.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
+    // An own property, not a prototype member, so Workers RPC does not expose it.
+    Object.defineProperty(this, "indexInFlight", {
+      enumerable: true,
+      get: () => this.#inFlight,
+      set: (v: number) => {
+        this.#inFlight = v;
+        if (v === 0 && this.#whenIdle.length > 0)
+          for (const w of this.#whenIdle.splice(0)) w();
+      },
+    });
     void ctx.blockConcurrencyWhile(async () => {
       ctx.storage.sql.exec(HUB_SCHEMA);
       migrateHub(ctx.storage.sql);
@@ -5474,7 +5484,39 @@ export class BusHub extends DurableObject<Env> {
    * expose it. Tests read it inside the DO (runInDurableObject); a file's
    * afterAll waits for 0 so the worker is not torn down with an RPC pending.
    */
-  indexInFlight = 0;
+  declare indexInFlight: number;
+  #inFlight = 0;
+  #whenIdle: (() => void)[] = [];
+
+  /**
+   * Tests only (static, not RPC): resolves once every index call, close/error
+   * handler and recorded write this instance started has settled (in flight
+   * 0), woken by the last one finishing, never by a clock.
+   */
+  #closesDone = 0;
+  #closeWaiters: { n: number; resolve: () => void }[] = [];
+  #closeDone(): void {
+    this.#closesDone++;
+    if (this.#closeWaiters.length === 0) return;
+    for (const w of [...this.#closeWaiters])
+      if (this.#closesDone >= w.n) {
+        this.#closeWaiters.splice(this.#closeWaiters.indexOf(w), 1);
+        w.resolve();
+      }
+  }
+  /** Tests only (static, not RPC): how many close/error handlers have finished. */
+  static closesDone(hub: BusHub): number {
+    return hub.#closesDone;
+  }
+  /** Tests only (static, not RPC): resolves once `n` close/error handlers have finished, woken by the n-th. */
+  static whenClosesDone(hub: BusHub, n: number): Promise<void> {
+    if (hub.#closesDone >= n) return Promise.resolve();
+    return new Promise((resolve) => hub.#closeWaiters.push({ n, resolve }));
+  }
+  static whenIdle(hub: BusHub): Promise<void> {
+    if (hub.#inFlight === 0) return Promise.resolve();
+    return new Promise((resolve) => hub.#whenIdle.push(resolve));
+  }
 
   #indexGoneTimeoutMs = INDEX_GONE_TIMEOUT_MS;
 
@@ -6499,16 +6541,20 @@ export class BusHub extends DurableObject<Env> {
       ? this.ctx.id.name.slice(4)
       : null;
     if (userId === null) return;
-    this.ctx.waitUntil(
-      (async () => {
-        if (await noteAgentNamed(this.env, userId)) {
-          this.#namedKnown = true;
-          // #2479: the first time only; best effort, never fails the frame.
-          await noteMemberFirst(this.env, userId, "agent_named", this.ctx);
-        } else if (await namedRecorded(this.env, userId))
-          this.#namedKnown = true;
-      })().catch(() => {}),
-    );
+    // Counted like the index calls, so a test can wait for the write's end.
+    this.indexInFlight++;
+    const work = (async () => {
+      if (await noteAgentNamed(this.env, userId)) {
+        this.#namedKnown = true;
+        // #2479: the first time only; best effort, never fails the frame.
+        await noteMemberFirst(this.env, userId, "agent_named", this.ctx);
+      } else if (await namedRecorded(this.env, userId)) this.#namedKnown = true;
+    })()
+      .catch(() => {})
+      .finally(() => {
+        this.indexInFlight--;
+      });
+    this.ctx.waitUntil(work);
   }
 
   #rekeyFollows(
@@ -6842,6 +6888,7 @@ export class BusHub extends DurableObject<Env> {
       await this.#goneFromIndex(ws);
     } finally {
       this.indexInFlight--;
+      this.#closeDone();
     }
   }
 
@@ -6860,6 +6907,7 @@ export class BusHub extends DurableObject<Env> {
       await this.#goneFromIndex(ws);
     } finally {
       this.indexInFlight--;
+      this.#closeDone();
     }
   }
 
