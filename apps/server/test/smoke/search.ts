@@ -3,8 +3,10 @@ import {
   PublishResultSchema,
   R,
   SearchHitSchema,
+  VersionInfoSchema,
 } from "@oa/shared";
 import { afterAll, describe, expect, it } from "vitest";
+import { z } from "zod";
 
 const base = process.env.STAGING_URL;
 const pat = process.env.STAGING_OWNER_PAT;
@@ -44,49 +46,45 @@ describe.skipIf(!base || !pat)("staging smoke: search", () => {
     expect(r.status).toBe(201);
     const { id } = PublishResultSchema.parse(await r.json());
     created.push(id);
-    // C3: the body is indexed asynchronously by the artifact DO's alarm.
-    let last = "";
-    // A transient non-200 or a timed-out poll is "not yet" until the
-    // deadline; a 401/403 (the PAT itself refused) fails at once.
-    let refused = 0;
-    await expect
-      .poll(
-        async () => {
-          let status = 0;
-          try {
-            const s = await fetch(`${base}${R.search}?q=${word}`, {
-              headers: { authorization: `Bearer ${pat}` },
-              signal: AbortSignal.timeout(10_000),
-            });
-            status = s.status;
-            last = `${s.status} ${await s.text()}`;
-          } catch (e) {
-            last = `error ${(e as Error).name}`;
-          }
-          if ([401, 403].includes(status)) {
-            refused = status;
-            return true;
-          }
-          if (status !== 200) return false;
-          const page = PageSchema(SearchHitSchema).parse(
-            JSON.parse(last.slice(4)),
-          );
-          return page.items.some((h) => h.id === id);
-        },
-        {
-          timeout: 60_000,
-          interval: 2_000,
-          message: "not found in 60 s",
-        },
-      )
-      .toBe(true)
-      .catch((e) => {
-        throw new Error(
-          `${(e as Error).message}; last search response: ${last}`,
-        );
+    // C3: the body is indexed asynchronously by the artifact DO's alarm. The
+    // versions read holds while that job is pending and answers when it
+    // settles (R.versions wait), so there is one held ask, then one search.
+    // Each ask has its own bound; a refused PAT (401/403) fails at once.
+    const HOLD_MS = 25_000;
+    const deadline = Date.now() + 90_000;
+    let quick = 0;
+    for (;;) {
+      const asked = Date.now();
+      const v = await fetch(`${base}${R.versions(id, undefined, HOLD_MS)}`, {
+        headers: { authorization: `Bearer ${pat}` },
+        signal: AbortSignal.timeout(HOLD_MS + 10_000),
       });
-    expect(refused, `the PAT was refused: ${last}`).toBe(0);
+      const text = await v.text();
+      expect(v.status, `versions: ${text}`).toBe(200);
+      const newest = z.array(VersionInfoSchema).parse(JSON.parse(text))[0];
+      if (newest?.textIndexed) break;
+      if (Date.now() >= deadline)
+        throw new Error(`not indexed in 90 s; last versions: ${text}`);
+      // An install that answers at once, again and again, does not hold the
+      // request (an older build): fail rather than ask in a tight loop.
+      quick = Date.now() - asked < HOLD_MS / 2 ? quick + 1 : 0;
+      if (quick > 5)
+        throw new Error(
+          "versions?wait answers without holding: an install without the wait param",
+        );
+    }
+    const s = await fetch(`${base}${R.search}?q=${word}`, {
+      headers: { authorization: `Bearer ${pat}` },
+      signal: AbortSignal.timeout(10_000),
+    });
+    const body = await s.text();
+    expect(s.status, `search: ${body}`).toBe(200);
+    const page = PageSchema(SearchHitSchema).parse(JSON.parse(body));
+    expect(
+      page.items.some((h) => h.id === id),
+      `search: ${body}`,
+    ).toBe(true);
     const anon = await fetch(`${base}${R.search}?q=${word}`);
     expect(anon.status).toBe(401);
-  }, 75_000);
+  }, 130_000);
 });
