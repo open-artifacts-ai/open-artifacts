@@ -278,13 +278,16 @@ const JS_RULES: ((code: string) => Found[])[] = [
     for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
     // Atomics.wait / waitAsync with a finite timeout is a sleep (a fresh buffer
-    // nothing notifies); one with no timeout or Infinity waits for a notify.
+    // nothing notifies); one with no timeout, Infinity, or an explicit undefined / void 0 (the same as
+    // omitted) waits for a notify.
     for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
       const args = topLevelArgs(c.body.slice(1));
       const timeout = args[3]?.trim();
       if (
         timeout &&
-        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY)$/.test(timeout)
+        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
+          timeout,
+        )
       )
         out.push({ index: c.index, why: "timers/promises" });
     }

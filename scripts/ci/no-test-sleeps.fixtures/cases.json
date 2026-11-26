@@ -772,5 +772,29 @@
     "file": "a.test.ts",
     "text": "await Atomics.waitAsync(ia, 0, 0).value;",
     "why": []
+  },
+  {
+    "name": "Atomics.wait with an explicit undefined timeout (no timeout)",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0, undefined);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait with an explicit void 0 timeout (no timeout)",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(ia, 0, 0, void 0);",
+    "why": []
+  },
+  {
+    "name": "Atomics.waitAsync with an explicit undefined timeout (no timeout)",
+    "file": "a.test.ts",
+    "text": "await Atomics.waitAsync(ia, 0, 0, undefined).value;",
+    "why": []
+  },
+  {
+    "name": "Atomics.waitAsync with an explicit void 0 timeout (no timeout)",
+    "file": "a.test.ts",
+    "text": "await Atomics.waitAsync(ia, 0, 0, void 0).value;",
+    "why": []
   }
 ]
