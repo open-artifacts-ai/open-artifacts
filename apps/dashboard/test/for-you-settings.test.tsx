@@ -34,10 +34,21 @@ installClock();
 const ME_ID = fixtures.me.user.id;
 
 /** A browser that can do web push, with our worker and its subscription faked. */
+// The mock API's push key as bytes: a subscription made with it counts as on (#3024).
+const MOCK_KEY = Uint8Array.from(
+  atob(
+    "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
+      .replace(/-/g, "+")
+      .replace(/_/g, "/") + "=",
+  ),
+  (c) => c.charCodeAt(0),
+).buffer;
+
 function fakePush(start: NotificationPermission, answer = start) {
   let sub: object | null = null;
   const subscription = {
     endpoint: "https://push.example.com/abc",
+    options: { applicationServerKey: MOCK_KEY },
     toJSON: () => ({
       endpoint: "https://push.example.com/abc",
       keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
@@ -47,6 +58,8 @@ function fakePush(start: NotificationPermission, answer = start) {
       return true;
     },
   };
+  // A browser that kept an id (subscribed()) has its subscription too.
+  if (localStorage.getItem("oa.push.subscription.v2")) sub = subscription;
   const pushManager = {
     getSubscription: async () => sub,
     subscribe: vi.fn(async () => {
@@ -343,6 +356,20 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(updates).toBeEnabled();
   });
 
+  it("removes the enrolled device from the cache after the server turns it off", async () => {
+    const sub = subscribed({ needsYou: true, updates: false });
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const device = await page();
+    await waitFor(() => expect(device).toHaveAttribute("aria-checked", "true"));
+    fireEvent.click(device);
+    await waitFor(() => expect(sub.patches).toEqual([{ needsYou: false }]));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("switch", { name: "Updates in this browser" }),
+      ).toBeDisabled(),
+    );
+  });
+
   it("a toggle PATCHes the switch at once and keeps it", async () => {
     const sub = subscribed();
     server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
@@ -363,6 +390,18 @@ describe("this browser's notifications (slice 3, S5)", () => {
     );
     // Off keeps the subscription (Updates is still on): no unsubscribe, no DELETE.
     expect(updates).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("while the browser's key check is unknown, the switch is never On (#3024)", async () => {
+    const sub = subscribed();
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const f = fakePush("default");
+    f.pushManager.getSubscription = () => new Promise(() => {});
+    mount("/settings/notifications");
+    const sw = await needs();
+    // Everything else has loaded (the list lists this browser); the check hasn't.
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(sw).toHaveAttribute("aria-checked", "false");
   });
 
   it("a failed PATCH puts the switch back and says so", async () => {

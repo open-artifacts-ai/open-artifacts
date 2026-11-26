@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -86,6 +87,36 @@ describe("folderHomeLookup (#2793 S2)", () => {
     expect(look(`${a}-sibling`)).toEqual({ unmapped: true });
   });
 
+  it("routes a registered worktree through its primary checkout unless mapped directly", () => {
+    const h = multi();
+    const primary = scratch();
+    const checkout = join(scratch(), "side checkout");
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", primary, ...args]);
+    git("init", "-q");
+    git(
+      "-c",
+      "user.name=Test",
+      "-c",
+      "user.email=test@example.org",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--allow-empty",
+      "-qm",
+      "initial",
+    );
+    git("worktree", "add", "-q", "--detach", checkout);
+    const nested = join(checkout, "nested");
+    mkdirSync(nested);
+    const map = { [primary]: "work" };
+    writeFolders({ map, no: {}, seen: {} }, h);
+    const look = folderHomeLookup(h);
+    expect(look(nested)).toEqual({ instance: "work" });
+    writeFolders({ map: { ...map, [checkout]: "main" }, no: {}, seen: {} }, h);
+    expect(look(nested)).toEqual({ instance: "main" });
+  });
+
   it("an entry naming an instance that is gone counts as unmapped", () => {
     const h = multi();
     const a = scratch();
@@ -115,7 +146,7 @@ describe("folderHomeLookup (#2793 S2)", () => {
     const b = scratch();
     writeFolders({ map: { [b]: "work" }, no: {}, seen: {} }, h);
     expect(unmappedFolderNote(a, h)).toBe(
-      "This folder isn't tied to an instance yet. Run npx @open-artifacts/bus use in this folder.",
+      "This folder is not connected to a bus instance. Run npx @open-artifacts/bus use in this folder.",
     );
     expect(unmappedFolderNote(a, h)).toBeUndefined();
     expect(unmappedFolderNote(b, h)).toBeUndefined();

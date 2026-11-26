@@ -58,6 +58,27 @@ describe("moving an address keeps the larger share", () => {
     expect(await stored(id, from)).toBeNull();
   });
 
+  it.each(["source", "destination"])(
+    "preserves a migrated member grant at the %s address",
+    async (side) => {
+      const id = await page();
+      const from = `legacy-${side}-${tag}@x.com`;
+      const to = `moved-${side}-${tag}@x.com`;
+      const user = await login(from, "member");
+      const legacy = side === "source" ? from : to;
+      await put(id, from, "viewer");
+      await put(id, to, "viewer");
+      await E.DB.prepare(
+        "INSERT INTO legacy_viewer_comments (artifact_id,email,can_comment) VALUES (?,?,1)",
+      )
+        .bind(id, legacy)
+        .run();
+      expect(await moveUserEmail(E, user.userId, from, to)).not.toBeNull();
+      expect(await stored(id, to)).toEqual({ role: "viewer", c: 1 });
+      expect(await stored(id, from)).toBeNull();
+    },
+  );
+
   it("an editor share still wins, and keeps the comment bit", async () => {
     const id = await page();
     const from = `em-from2-${tag}@x.com`;

@@ -28,6 +28,7 @@ export type Command = (
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | { cmd: "agy-hello" }
+  | { cmd: "agy-watch" }
   | {
       cmd: "mcp-proxy";
       hub: string;
@@ -35,7 +36,9 @@ export type Command = (
       /** The environment variable that holds the token (Codex passes it by name). */
       tokenEnv?: string;
       /** Which harness runs the proxy; OpenCode when absent. */
-      for?: "opencode" | "codex";
+      for?: "opencode" | "codex" | "antigravity";
+      /** agy S5: an added instance's local name (#2793 S4); absent is main. */
+      name?: string;
     }
   | { cmd: "status" }
   | { cmd: "logs" }
@@ -70,6 +73,7 @@ const COMMANDS = new Set([
   "mcp",
   "mcp-proof",
   "agy-hello",
+  "agy-watch",
   "mcp-proxy",
   "status",
   "logs",
@@ -114,7 +118,7 @@ const FLAGS: Record<string, string[]> = {
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
-  "mcp-proxy": ["instance", "token-file", "token-env", "for"],
+  "mcp-proxy": ["instance", "token-file", "token-env", "for", "name"],
   namespace: ["yes"],
   upgrade: ["allow-failed"],
 };
@@ -241,14 +245,25 @@ export function parse(argv: string[]): Command {
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
   if (cmd === "mcp-proxy" && !values.instance)
     throw new Error(
-      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex|antigravity] [--name <instance name>] [--token-file <path> | --token-env <name>]`,
     );
   if (cmd === "mcp-proxy") {
     const f = values.for;
-    if (f !== undefined && f !== "opencode" && f !== "codex")
-      throw new Error("--for takes opencode or codex");
-    if (values["token-env"] !== undefined && f !== "codex")
-      throw new Error("--token-env needs --for codex");
+    if (
+      f !== undefined &&
+      f !== "opencode" &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--for takes opencode, codex or antigravity");
+    if (
+      values["token-env"] !== undefined &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--token-env needs --for codex or --for antigravity");
+    if (values.name !== undefined && f !== "antigravity")
+      throw new Error("--name needs --for antigravity");
     if (values["token-env"] !== undefined && tokenFile)
       throw new Error("give --token-file or --token-env, not both");
   }
@@ -267,7 +282,10 @@ export function parse(argv: string[]): Command {
             hub: values.instance as string,
             ...(tokenFile ? { tokenFile } : {}),
             ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
-            ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
+            ...(values.for
+              ? { for: values.for as "opencode" | "codex" | "antigravity" }
+              : {}),
+            ...(values.name !== undefined ? { name: values.name } : {}),
           }
         : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
@@ -321,6 +339,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "daemon":
       return { cmd, hub: values.instance };
     case "agy-hello":
+    case "agy-watch":
       return { cmd };
     case "mcp": {
       const harness = positionals[0] ?? "";

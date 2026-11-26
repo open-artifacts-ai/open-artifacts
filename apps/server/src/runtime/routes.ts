@@ -253,7 +253,7 @@ async function gate(
   const ctx = {
     ...canCtx(who, a, plan),
     personal: r.personal,
-    commenterShare: r.commenter,
+    shareRole: r.shareRole,
   };
   const allowed = () => can(r.level, GATE_ACTION[kind], ctx);
   /**

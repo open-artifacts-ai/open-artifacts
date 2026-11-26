@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.259.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.0...v0.259.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* unify Viewer, Commenter and Editor across page shares ([#3272](https://github.com/open-artifacts-ai/open-artifacts/issues/3272)) ([5f3eb0c](https://github.com/open-artifacts-ai/open-artifacts/commit/5f3eb0c8a5e8aa11eaf740b9a0445b8a94dcc969))
+
+## [0.259.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.1...v0.259.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** Pi /name and a later Codex /rename count as a person's name ([#3143](https://github.com/open-artifacts-ai/open-artifacts/issues/3143) A3) ([#3267](https://github.com/open-artifacts-ai/open-artifacts/issues/3267)) ([e504ed5](https://github.com/open-artifacts-ai/open-artifacts/commit/e504ed528961893dd7b4bf71b8b96133e7ee9c68))
+
+## [0.258.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.0...v0.258.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** hide revoked machines from list after 24 hours ([#3123](https://github.com/open-artifacts-ai/open-artifacts/issues/3123)) ([#3281](https://github.com/open-artifacts-ai/open-artifacts/issues/3281)) ([50e587a](https://github.com/open-artifacts-ai/open-artifacts/commit/50e587aaed83ec7cb234a75cf8676d2baabdcb31))
+
+## [0.258.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.257.0...v0.258.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** agy gets the bus rules at session start, and the skill; no habits in its files (agy S4) ([#3131](https://github.com/open-artifacts-ai/open-artifacts/issues/3131)) ([9bd4863](https://github.com/open-artifacts-ai/open-artifacts/commit/9bd4863e374d6f638d8aebc47cddef8bd8252760))
+
+## [0.257.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.256.0...v0.257.0) (2026-11-26)
+
+
+### Features
+
+* **api:** GET versions ?wait holds until the latest version is indexed ([#3115](https://github.com/open-artifacts-ai/open-artifacts/issues/3115)) ([#3221](https://github.com/open-artifacts-ai/open-artifacts/issues/3221)) ([147eca3](https://github.com/open-artifacts-ai/open-artifacts/commit/147eca392b6ca1f1240b7faa0f3fb74bae74e165))
+* **bus:** an agy session's pages link to that session through a local proxy (agy S5) ([#3141](https://github.com/open-artifacts-ai/open-artifacts/issues/3141)) ([339ff25](https://github.com/open-artifacts-ai/open-artifacts/commit/339ff25d788b5cd3f86fbfd5024b5ac5e3c7db7a))
+* **bus:** the role's holder hands it over at once ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3230](https://github.com/open-artifacts-ai/open-artifacts/issues/3230)) ([4395247](https://github.com/open-artifacts-ai/open-artifacts/commit/4395247d1f81d06d77794f94998f78b417db244c))
+
+
+### Bug Fixes
+
+* **ci:** the release PR jumps the merge queue as soon as it is green ([#3236](https://github.com/open-artifacts-ai/open-artifacts/issues/3236)) ([57c9f53](https://github.com/open-artifacts-ai/open-artifacts/commit/57c9f5393e97b0510b5bc73f10b781b645c59cf4))
+
+## [0.256.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.255.0...v0.256.0) (2026-11-26)
+
+
+### Features
+
+* **mcp:** comment writes return ids and status, not the whole thread ([#3163](https://github.com/open-artifacts-ai/open-artifacts/issues/3163)) ([#3187](https://github.com/open-artifacts-ai/open-artifacts/issues/3187)) ([d9dd1f7](https://github.com/open-artifacts-ai/open-artifacts/commit/d9dd1f75f958a83f5f0eb414a20f95ee9f7e5ac3))
+* **notices:** a mention follows the thread, not the page; short notice tails ([#3164](https://github.com/open-artifacts-ai/open-artifacts/issues/3164)) ([#3188](https://github.com/open-artifacts-ai/open-artifacts/issues/3188)) ([9795b58](https://github.com/open-artifacts-ai/open-artifacts/commit/9795b588ba7fabc5b34c0b1013fb0dd485d598c3))
+
+## [0.255.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.254.0...v0.255.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session gets bus messages through its watcher (agy S3) ([#3171](https://github.com/open-artifacts-ai/open-artifacts/issues/3171)) ([120f3b8](https://github.com/open-artifacts-ai/open-artifacts/commit/120f3b89f67c94f0c41ca544ffecf5b34044cb2d))
+
+## [0.254.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.1...v0.254.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an agy process is listed as starting at launch (agy S2b) ([#3190](https://github.com/open-artifacts-ai/open-artifacts/issues/3190)) ([0fa55c9](https://github.com/open-artifacts-ai/open-artifacts/commit/0fa55c9d7bd5335117d467bf73d90d6416be7caf))
+
+
+### Bug Fixes
+
+* **bus:** agy's default name is a fallback; a gone session's mail expires at once ([#3208](https://github.com/open-artifacts-ai/open-artifacts/issues/3208)) ([#3233](https://github.com/open-artifacts-ai/open-artifacts/issues/3233)) ([626cc36](https://github.com/open-artifacts-ai/open-artifacts/commit/626cc363571e6e4e67c3c3956d74ebc51a1a45d4))
+
+## [0.253.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.0...v0.253.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **release:** main's version files say 0.253.0, as tag v0.253.0 does ([#3246](https://github.com/open-artifacts-ai/open-artifacts/issues/3246)) ([d6846e0](https://github.com/open-artifacts-ai/open-artifacts/commit/d6846e0d8b9b98d3e1fd90732fc2c29887e1212f))
+
+## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** a moved role takes the old session's notices and follows ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3228](https://github.com/open-artifacts-ai/open-artifacts/issues/3228)) ([0ef0989](https://github.com/open-artifacts-ai/open-artifacts/commit/0ef0989bcf4b849d14a5c0af1933977c4a1f60ab))
+
+
+### Bug Fixes
+
+* **bus:** a Codex entry signed in with codex mcp login links with no token ([#3108](https://github.com/open-artifacts-ai/open-artifacts/issues/3108)) ([#3125](https://github.com/open-artifacts-ai/open-artifacts/issues/3125)) ([3670730](https://github.com/open-artifacts-ai/open-artifacts/commit/3670730a5be9b2113016602e7a2d2368b99613da))
+
 ## [0.252.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.1...v0.252.0) (2026-11-26)
 
 

@@ -7,6 +7,7 @@ import {
   orderSignInMethods,
   type ShareRecipient,
   type ShareRole,
+  shareRoleLabel,
 } from "@oa/shared";
 import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
@@ -110,12 +111,6 @@ const FORMAT_LABEL: Record<Format, string> = {
   image: "Image",
   doc: "Doc",
 };
-const ROLE_LABEL: Record<ShareRole, string> = {
-  viewer: "Viewer",
-  commenter: "Commenter",
-  editor: "Editor",
-};
-
 const METHOD_PHRASE: Record<SignInProvider, (to: string) => string> = {
   google: () => "your Google account",
   access: () => "your organization's single sign-on",
@@ -255,7 +250,7 @@ export function shareEmail(
       artifactTitle: oneLine(p.title, TITLE_MAX),
       artifactUrl: linkOn(origin, p.path),
       artifactFormat: FORMAT_LABEL[p.format],
-      role: ROLE_LABEL[p.role],
+      role: shareRoleLabel(p.role),
       signInLine: signInSentence(p.signIn, values.recipientEmail, p),
     },
   );

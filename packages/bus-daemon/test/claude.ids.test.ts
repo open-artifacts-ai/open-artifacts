@@ -144,6 +144,9 @@ describe("reply ids in the daemon", () => {
       "notice_meta",
       "owner_away",
       "guest",
+      "mail_expiry",
+      "sessions_gone",
+      "codex_check",
     ]);
   });
 

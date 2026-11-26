@@ -25,7 +25,7 @@
   },
   {
     "name": "share_artifact",
-    "description": "Open Artifacts: Share an artifact with an email address as viewer or editor."
+    "description": "Open Artifacts: Share an artifact with an email address as Viewer, Commenter, or Editor (the default)."
   },
   {
     "name": "unshare_artifact",
