@@ -4,7 +4,13 @@
 // the first message takes over that address. Ticks are driven by syncNow on
 // a fake process table: no real agy, ps or lsof runs.
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -609,7 +615,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect("gone" in (closing as object)).toBe(false);
   });
 
-  it("a starting agy that exits while the hub link is down is sent as gone after reconnect hello_ok, and not again on a later reconnect (#3208)", async () => {
+  it("a starting agy that exits while the hub link is down is sent as gone after reconnect hello_ok, and again after each later hello_ok (#3208)", async () => {
     const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
     let onDisconnect: (() => void) | undefined;
     const { h } = await setup({
@@ -666,7 +672,8 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(h.of("agent_up")).toHaveLength(upsBefore);
     expect(h.of("sessions")).toHaveLength(sessionsBefore + 2);
 
-    // A later reconnect + hello_ok does not send gone for it again.
+    // A later reconnect + hello_ok sends it again: a written frame may never
+    // have left the pacer, and the hub's repeat is a no-op.
     h.hubSock()?.close();
     await h.next("hello", 3);
     const reopenSessions = await h.next("sessions", sessionsBefore + 3);
@@ -680,12 +687,13 @@ describe("an agy process is listed at launch (agy S2b)", () => {
       server_version: "1",
       caps,
     });
+    expect((await h.next("sessions", sessionsBefore + 4)).gone).toEqual([S0]);
     await settled(h);
-    expect(h.of("sessions")).toHaveLength(sessionsBefore + 3);
+    expect(h.of("sessions")).toHaveLength(sessionsBefore + 4);
     expect(h.of("agent_up")).toHaveLength(upsBefore);
   });
 
-  it("a starting agy that exits while the link is down stays gone across a daemon restart, and is cleared once taken (#3208)", async () => {
+  it("a starting agy that exits while the link is down stays gone across a daemon restart (#3208)", async () => {
     const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
     const dir = mkdtempSync(join(tmpdir(), "ob-agsg-"));
     const agentsFile = join(dir, "antigravity-agents.json");
@@ -738,10 +746,61 @@ describe("an agy process is listed at launch (agy S2b)", () => {
       ).toBe(true),
     );
     await settled(two.h);
-    // Once taken, announced.json no longer marks it gone.
-    const after = readAnnounced(announcedFile).find((e) => e.ref === S0);
-    expect(after).toBeDefined();
-    expect(after?.gone).toBeUndefined();
+    // Kept until the record leaves the table: sent after every hello_ok.
+    expect(readAnnounced(announcedFile).find((e) => e.ref === S0)?.gone).toBe(
+      true,
+    );
+  });
+
+  it("a gone frame still queued in the pacer when the daemon stops goes out after the next run's hello_ok (#3208)", async () => {
+    const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
+    const dir = mkdtempSync(join(tmpdir(), "ob-agsq-"));
+    const agentsFile = join(dir, "antigravity-agents.json");
+    const announcedFile = join(dir, "announced.json");
+    // No refill in the test's time: once the bucket is spent, frames queue.
+    const one = await setup({
+      caps,
+      agentsFile,
+      announcedFile,
+      hub: { pace: { burst: 3, rate: 1e-9 } },
+    });
+    one.h.daemon.syncNow();
+    await upFor(one.h, S0);
+    one.h.toDaemon({
+      id: "ok1",
+      type: "agent_ok",
+      agent_ref: S0,
+      bus_name: "agy",
+    });
+    await vi.waitFor(() =>
+      expect(one.h.daemon.agents.byRef(S0)?.busName).toBe("agy"),
+    );
+    const written = one.h.raw.length;
+    const room = one.h.daemon.hub.headroom;
+    os.alive.delete(AGY);
+    one.h.daemon.syncNow();
+    await one.h.barrier();
+    // The bucket is spent: the sessions frame carrying gone sits in the pacer.
+    expect(one.h.daemon.hub.headroom).toBe(room - 1);
+    // Queued, never written: the hub saw no gone.
+    expect(one.h.raw.length).toBe(written);
+    expect(one.h.of("sessions").some((f) => f.gone !== undefined)).toBe(false);
+    // A crash: the next run starts from announced.json as it is on disk now
+    // (a clean stop would also run the queued frame's onUnsent).
+    const crashed = join(dir, "announced-at-crash.json");
+    copyFileSync(announcedFile, crashed);
+    await one.h.daemon.stop();
+
+    const two = await setup(
+      { caps, agentsFile, announcedFile: crashed },
+      false,
+    );
+    const gone = await vi.waitFor(() => {
+      const f = two.h.of("sessions").find((x) => x.gone?.includes(S0));
+      expect(f).toBeDefined();
+      return f;
+    });
+    expect(gone?.closed).toContain(S0);
   });
 
   it("a reused pid is a new process: the old record closes, the new one is listed under a new ref", async () => {

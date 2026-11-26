@@ -785,7 +785,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
         ? { instance: a.instance }
         : {}),
-      // #3208: keep a definitive exit (starting agy) across a restart until the hub takes it.
+      // #3208: a definitive exit (starting agy) is kept across a restart.
       ...(!a.live && a.gone === true ? { gone: true as const } : {}),
     }));
     const text = JSON.stringify(rows);
@@ -799,39 +799,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     }
   };
-  const sendSessions = (lane: Lane) => {
-    const body = sessions(lane);
-    const gone = body.gone;
-    let unsent = false;
-    const ok = sendOn(
-      lane,
-      {
-        v: 1,
-        id: frameId(),
-        type: "sessions",
-        ...body,
-      },
-      gone
-        ? () => {
-            unsent = true;
-            // #3208: the frame never left the pacer (link dropped); keep gone for the next link.
-            for (const ref of gone) {
-              const rec = agents.byRef(ref);
-              if (rec && !rec.live) rec.gone = true;
-            }
-            persistAnnounced();
-          }
-        : undefined,
-    );
-    if (ok && !unsent && gone) {
-      // #3208: gone was taken by a sessions_gone link; clear it so later frames and restarts do not resend it.
-      for (const ref of gone) {
-        const rec = agents.byRef(ref);
-        if (rec) delete rec.gone;
-      }
-      persistAnnounced();
-    }
-  };
+  /**
+   * #3208: a gone ref stays marked (and in announced.json) until its record
+   * leaves the table: a written frame may still sit in the pacer when the
+   * daemon dies, so each sessions_gone link gets it again after hello_ok.
+   * The hub's handling of a repeated gone ref is a no-op.
+   */
+  const sendSessions = (lane: Lane) =>
+    sendOn(lane, {
+      v: 1,
+      id: frameId(),
+      type: "sessions",
+      ...sessions(lane),
+    });
   const announceSessions = () => {
     // #3028: the file follows the table, so a restart knows every ref the hub
     // may still hold for this machine.
@@ -4574,7 +4554,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       cwd: "",
       live: false,
       closedBy: "liveness",
-      // #3208: keep a definitive exit (starting agy) across a restart until the hub takes it.
+      // #3208: a definitive exit (starting agy) is kept across a restart.
       ...(e.gone ? { gone: true } : {}),
     });
   }
