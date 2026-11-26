@@ -25,6 +25,7 @@ import {
   type TokenCreated,
 } from "@oa/shared";
 import { test as base, expect, type Page } from "@playwright/test";
+import { withDeadline } from "../staging/with-deadline";
 
 export const PORT = Number(process.env.OA_E2E_PORT ?? 8787);
 // The app on plain `localhost` (an OAuth loopback host): the MCP resource can
@@ -217,31 +218,30 @@ export async function startServer(): Promise<() => Promise<void>> {
     // file change wakes the check; nothing polls on a timer), then /healthz
     // is asked once, bounded.
     const marker = `Ready on http://127.0.0.1:${PORT}`;
-    await new Promise<void>((resolve, reject) => {
-      const logged = () => readFileSync(logPath, "utf8");
-      const watcher = watch(logPath);
-      const done = (err?: Error) => {
-        clearTimeout(deadline);
-        watcher.close();
-        proc.off("exit", check);
-        if (err) reject(err);
-        else resolve();
-      };
-      const check = () => {
-        if (exited)
-          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`));
-        else if (logged().includes(marker)) done();
-      };
-      const deadline = setTimeout(
-        () =>
-          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`)),
+    const logged = () => readFileSync(logPath, "utf8");
+    const watcher = watch(logPath);
+    try {
+      await withDeadline(
+        new Promise<void>((resolve, reject) => {
+          const check = () => {
+            if (exited) reject(new Error("wrangler dev exited"));
+            else if (logged().includes(marker)) resolve();
+          };
+          watcher.on("change", check);
+          proc.once("exit", check);
+          // The line may already be there before the watch began.
+          check();
+        }),
         120_000,
+        "wrangler dev Ready line",
       );
-      watcher.on("change", check);
-      proc.once("exit", check);
-      // The line may already be there before the watch began.
-      check();
-    });
+    } catch (e) {
+      throw new Error(`fixtures: wrangler dev did not start\n${logged()}`, {
+        cause: e,
+      });
+    } finally {
+      watcher.close();
+    }
     const ask = await fetch(`${APP}/healthz`, {
       signal: AbortSignal.timeout(15_000),
     }).catch(() => undefined);
@@ -254,12 +254,11 @@ export async function startServer(): Promise<() => Promise<void>> {
         exited ? r(true) : proc.once("exit", () => r(true)),
       );
       kill();
-      const timeout = new Promise<boolean>((r) =>
-        setTimeout(() => r(false), 10_000).unref(),
+      // Still up 10 s after SIGTERM: kill the whole group (workerd too) while
+      // the group is certainly still ours.
+      await withDeadline(gone, 10_000, "wrangler dev exit").catch(() =>
+        kill("SIGKILL"),
       );
-      // Still up after SIGTERM: kill the whole group (workerd too) while the
-      // group is certainly still ours.
-      if (!(await Promise.race([gone, timeout]))) kill("SIGKILL");
       process.removeListener("exit", onExit);
       rmSync(dir, { recursive: true, force: true });
     };
