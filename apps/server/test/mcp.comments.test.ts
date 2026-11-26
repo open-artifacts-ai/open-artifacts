@@ -191,11 +191,88 @@ describe("comment tools over MCP", () => {
     ).thread;
     expect(again.status).toBe("open");
 
+    // #3139: one thread by id, and one comment with the one before it and the first.
+    const other = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "Another thread." }),
+    ).thread;
+    const one = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    );
+    expect(one.threads.map((x) => x.id)).toEqual([t.id]);
+    expect(one.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "Is this right?",
+      "Yes.",
+    ]);
+    for (const b of ["third", "fourth", "fifth"])
+      sc(
+        await tool(owner.client, "add_comment", {
+          id,
+          threadId: t.id,
+          body: b,
+        }),
+      );
+    const all = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    ).threads[0]?.comments as Comment[];
+    const fifth = all.at(-1) as Comment;
+    const trimmed = sc<CommentList>(
+      await tool(owner.client, "list_comments", {
+        id,
+        threadId: t.id,
+        commentId: fifth.id,
+      }),
+    );
+    expect(trimmed.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "Is this right?",
+      "fourth",
+      "fifth",
+    ]);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: "nope0000nope0000",
+        }),
+      ),
+    ).toMatch(/^not_found: No such thread/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: t.id,
+          commentId: "nope0000nope0000",
+        }),
+      ),
+    ).toMatch(/^not_found: No such comment in this thread/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", { id, commentId: fifth.id }),
+      ),
+    ).toMatch(/^bad_request: commentId needs threadId/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: t.id,
+          compact: true,
+        }),
+      ),
+    ).toMatch(/^bad_request: threadId reads one thread/);
+    // A stranger can't read a thread by id either.
+    expect(
+      textOf(
+        await tool(stranger.client, "list_comments", { id, threadId: t.id }),
+      ),
+    ).toMatch(/^not_found/);
+    expect(other.id).not.toBe(t.id);
+
     // The same threads over REST.
     const rest = (await (
       await api(app, comments(id), owner.cookie)
     ).json()) as CommentList;
-    expect(rest.threads.map((x) => x.id)).toEqual([t.id]);
+    expect(rest.threads.map((x) => x.id).sort()).toEqual(
+      [t.id, other.id].sort(),
+    );
   });
 
   it("a text anchor on html is verified like REST", async () => {

@@ -592,6 +592,10 @@ export const ListCommentsInputSchema = z.strictObject({
   mentionedSince: SinceIso.optional(),
   /** With answeredSince or mentionedSince: a small list instead of full threads. */
   compact: z.boolean().optional(),
+  /** #3139: only this thread (the id a comment notice names). */
+  threadId: z.string().min(1).max(128).optional(),
+  /** #3139: with threadId, only this comment, the comment before it and the thread's first comment. */
+  commentId: z.string().min(1).max(128).optional(),
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 

@@ -1361,6 +1361,43 @@ const mentionHit = (
   since: string,
 ): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
 
+/**
+ * #3139: one thread, the one a comment notice names, so an agent never reads
+ * every thread on a busy page to answer one comment. With `commentId`, only
+ * that comment, the comment just before it and the thread's first comment
+ * (which holds an ask, if any). Masked for the viewer exactly like the full
+ * read (threadViews). `not_found` for an unknown thread or comment.
+ */
+export async function listThread(
+  env: Env,
+  artifactId: string,
+  viewer: CommentViewer,
+  threadId: string,
+  commentId?: string,
+): Promise<CommentList> {
+  const r = await call(() => stub(env, artifactId).commentsList("all"));
+  const t = r.threads.find((x) => x.id === threadId);
+  if (!t)
+    throw new ApiError(
+      "not_found",
+      "No such thread on this artifact. Get threadId from list_comments.",
+    );
+  let kept = t;
+  if (commentId !== undefined) {
+    const at = t.comments.findIndex((c) => c.id === commentId);
+    if (at === -1)
+      throw new ApiError("not_found", "No such comment in this thread.");
+    const keep = new Set([0, Math.max(0, at - 1), at]);
+    kept = { ...t, comments: t.comments.filter((_, n) => keep.has(n)) };
+  }
+  const threads = await threadViews(env, artifactId, [kept], viewer);
+  return {
+    threads,
+    open: t.status === "open" ? 1 : 0,
+    truncated: false,
+  };
+}
+
 /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
 export async function listComments(
   env: Env,
@@ -2074,6 +2111,7 @@ async function deliver(
                 agent,
                 // Only a comment a person typed, to an agent of that same person.
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),
@@ -2583,6 +2621,7 @@ async function threadReply(
                 "thread_reply",
                 agent,
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),
