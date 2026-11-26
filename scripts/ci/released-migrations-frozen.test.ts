@@ -63,6 +63,39 @@ describe("released-migrations-frozen.sh", () => {
     expect(r.run().code).toBe(0);
     r.done();
   });
+  it("requires a marker and a verification plan for newly destructive SQL", () => {
+    const r = repo();
+    r.tag("v1.0.0");
+    const path = `${M}/0003_cleanup.sql`;
+    for (const sql of [
+      "-- 0053-shaped cleanup\nDeLeTe /* dead devices */ FROM a;",
+      "CREATE TRIGGER clean AFTER INSERT ON b BEGIN DELETE FROM a; END;",
+      "CREATE TABLE tmp(x); INSERT INTO tmp SELECT x FROM a; DROP TABLE a;",
+      "ALTER TABLE a DROP COLUMN x;",
+      "REPLACE INTO a VALUES (1);",
+    ]) {
+      r.write(path, sql);
+      r.commit("unmarked");
+      expect(r.run().err).toContain("requires -- oa:non-additive");
+    }
+    r.write(path, "-- oa:non-additive\nDELETE FROM a;");
+    r.commit("marker only");
+    expect(r.run().err).toContain("-- oa:verify");
+    r.write(
+      path,
+      "-- oa:non-additive\n-- oa:verify Compare survivor IDs before and after.\nDELETE FROM a;",
+    );
+    r.commit("documented");
+    expect(r.run().code).toBe(0);
+    r.write(
+      path,
+      "CREATE TABLE c(x TEXT DEFAULT 'DROP TABLE a;', y REFERENCES a ON DELETE CASCADE); -- DELETE FROM a",
+    );
+    r.commit("additive");
+    expect(r.run().code).toBe(0);
+    r.done();
+  });
+
   it("compares with the highest stable tag, ignoring prereleases", () => {
     const r = repo();
     r.tag("v1.9.0");

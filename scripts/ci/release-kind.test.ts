@@ -401,7 +401,7 @@ if [ -n "$q" ]; then jq -r "$q" < "$f"; else cat "$f"; fi
 
   it("prints is_release=true for the release commit and exits 0", () => {
     const r = cli(base(PENDING));
-    expect(r.stdout).toBe("is_release=true\n");
+    expect(r.stdout).toBe("is_release=true\nrelease_pr=1775\n");
     expect(r.code).toBe(0);
     expect(r.stderr).toContain("decision: release commit (#1775)");
   });

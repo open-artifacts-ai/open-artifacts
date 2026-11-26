@@ -73,9 +73,12 @@ jobs:
         run: node --experimental-strip-types --no-warnings scripts/ci/release-kind.ts --repo "$REPO" --sha "$SHA" >> "$GITHUB_OUTPUT"
       # Never tag an empty release commit (#2379): the merge queue once built
       # one for an already-landed release PR. Fails red before the tag exists.
-      - name: The release commit changes the version
+      - name: The release commit agrees with its tag and advances the version
         if: ${{ steps.kind.outputs.is_release == 'true' }}
-        run: node --experimental-strip-types --no-warnings scripts/ci/release-commit-changed.ts
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          RELEASE_PR: ${{ steps.kind.outputs.release_pr }}
+        run: node --experimental-strip-types --no-warnings scripts/ci/release-commit-changed.ts --before-tag
       - id: rp
         uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:

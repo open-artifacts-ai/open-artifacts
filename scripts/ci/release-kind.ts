@@ -43,7 +43,11 @@ import { pathToFileURL } from "node:url";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (cmd: string, args: string[]) => ExecResult;
-export type Decision = { isRelease: boolean; log: string[] };
+export type Decision = {
+  isRelease: boolean;
+  releasePr?: number;
+  log: string[];
+};
 export type Say = (line: string) => void;
 
 const SUBJECT = /^chore\(main\): release \S+ \(#(\d+)\)$/;
@@ -172,7 +176,7 @@ export function decide(
         `more than one merged release PR is pending (${[...new Set([own, ...others])].join(" ")}): remove "${LABEL}" from the stranded ones: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud`,
       );
     say(`decision: release commit (#${own}); this run creates the release`);
-    return { isRelease: true, log };
+    return { isRelease: true, releasePr: own, log };
   }
   if (pending.length === 0) {
     say("decision: not a release commit");
@@ -200,7 +204,7 @@ export function decide(
     say(
       `decision: #${n}'s merge commit is this commit; this run creates the release`,
     );
-    return { isRelease: true, log };
+    return { isRelease: true, releasePr: n, log };
   }
   const status = api(c, `repos/${repo}/compare/${sha}...${merge}`, ".status");
   if (status === "ahead") {
@@ -234,6 +238,7 @@ function main(argv: string[]): number {
   try {
     const d = decide(real, repo, sha, (l) => console.error(l));
     console.log(`is_release=${d.isRelease}`);
+    if (d.releasePr) console.log(`release_pr=${d.releasePr}`);
     return 0;
   } catch (e) {
     console.error(`::error::${(e as Error).message}`);
