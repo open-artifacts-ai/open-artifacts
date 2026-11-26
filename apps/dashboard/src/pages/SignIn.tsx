@@ -129,6 +129,9 @@ export const WRONG_ACCOUNT_NO_CODES =
 /** #3029: under the Google button on the plain sign-in page. */
 export const INVITED_HELP =
   "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
+/** #3179 (OA Product): the same hint when login codes are on too. */
+export const INVITED_HELP_CODES =
+  "Invited? Use the Google account or email address your invite went to. Can't get in? Ask whoever invited you.";
 
 /**
  * #2590 G2 (b) is for share recipients: the server can't tell them apart,
@@ -545,15 +548,19 @@ function HostedSignIn({
   // "Try another account" action the share-link page has (same Google start).
   const wrongGoogle = error === "no_access" && via === "google";
 
-  // Google only: one button; guests get their own row.
+  // Google, plus login codes when they're on (#3179): codes are a normal
+  // way in for members, never a guest-only path.
+  const googleAccount = domain
+    ? `your ${domain} Google account`
+    : "your Google account";
   return (
     <>
       <h1>Log in to {name}</h1>
       {banner}
       <p className="oa-split-sub">
-        {domain
-          ? `Use your ${domain} Google account.`
-          : "Use your Google account."}
+        {guests
+          ? `Use ${googleAccount} or a login code.`
+          : `Use ${googleAccount}.`}
       </p>
       <Button asChild className="oa-split-btn">
         <a href={googleHref}>
@@ -570,7 +577,7 @@ function HostedSignIn({
             color: "var(--oa-text-muted)",
           }}
         >
-          {INVITED_HELP}
+          {guests ? INVITED_HELP_CODES : INVITED_HELP}
         </p>
       )}
       {accessButton}
@@ -583,8 +590,7 @@ function HostedSignIn({
           }}
         >
           <p style={{ margin: "0 0 12px", fontSize: 13 }}>
-            <strong>Invited as a guest?</strong> If someone shared an artifact
-            with your email, use a code.
+            No Google account? We'll email you a login code.
           </p>
           <Button asChild variant="outline" className="oa-split-btn">
             <Link to={SIGN_IN_PAGE as string} search={{ method: "code", next }}>
