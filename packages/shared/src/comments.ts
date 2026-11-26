@@ -44,6 +44,11 @@ export const CommentAuthorSchema = z.object({
   role: z
     .object({ name: z.string(), holder: z.string().optional() })
     .optional(),
+  /**
+   * With `role` (#3132): `name` is the role, and this is the session's own
+   * bus name, for the small print.
+   */
+  session: z.string().optional(),
   /** @deprecated Old "via <label>"; the server no longer sets it (`kind: "agent"` carries the name). */
   agent: z.string().optional(),
   me: z.boolean(),

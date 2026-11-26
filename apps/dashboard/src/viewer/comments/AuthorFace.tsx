@@ -127,12 +127,24 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
     : "";
   const lead = isLinked ? app : "not linked";
   const rest = a.for ? `for ${a.for}` : "";
-  if (!lead && !rest) return null;
+  // #3132: shown as its role, the session (and who holds the role now) is small print.
+  const session = a.session
+    ? [a.session, a.role?.holder ? `now ${a.role.holder}` : ""]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
+  if (!lead && !rest && !session) return null;
   return (
     <span
       data-for=""
       className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
     >
+      {session && (
+        <span data-role-session="">
+          {session}
+          {lead || rest ? " · " : ""}
+        </span>
+      )}
       {isLinked && <span className="sr-only">linked, </span>}
       {app ? (
         <>

@@ -431,20 +431,22 @@ type Ctx = {
 };
 
 /**
- * #3132: an agent's role on a page, for a viewer who may see who the agent
- * is (never a guest other than its owner, never an outsider).
+ * #3132: an agent shown as its role on a page: `name` is the role, and
+ * `session` the session's own name for the small print. Only for a viewer
+ * who may see who the agent is (never a guest other than its owner, never
+ * an outsider); otherwise the author as it was.
  */
-const roleField = (
+const withRole = (
+  author: CommentAuthor,
   identityId: string | undefined,
   owner: string | undefined,
   viewer: CommentViewer,
   ctx: Ctx,
-): Pick<CommentAuthor, "role"> => {
+): CommentAuthor => {
   const r = identityId ? ctx.roles.get(identityId) : undefined;
-  if (!r || outsider(viewer) || viewer.userId === null) return {};
-  const v = faceViewer(viewer);
-  if (v.guest && viewer.userId !== owner) return {};
-  return { role: r };
+  if (!r || outsider(viewer) || viewer.userId === null) return author;
+  if (faceViewer(viewer).guest && viewer.userId !== owner) return author;
+  return { ...author, name: r.name, session: author.name, role: r };
 };
 
 /** A party's name today: its linked agent's current bus name, else the one stored with it. */
@@ -471,8 +473,8 @@ const authorView = (
   // before #1789) reads as the agent at read time; no row is migrated. A
   // linked one shows its current name (#1889), renamed before any masking.
   if (a.agent)
-    return {
-      ...agentFace(
+    return withRole(
+      agentFace(
         {
           ref: a.ref,
           agent: a.agent.identity
@@ -491,8 +493,11 @@ const authorView = (
         u,
         clash,
       ),
-      ...roleField(a.agent.identity?.identityId, a.ref, viewer, ctx),
-    };
+      a.agent.identity?.identityId,
+      a.ref,
+      viewer,
+      ctx,
+    );
   const me = viewer.userId !== null && viewer.userId === a.ref;
   return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
 };
@@ -964,22 +969,31 @@ const partyView = (
 ): CommentAuthor =>
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
-    : {
-        // A stored identity adds linked, product and animal (#1890); a party
-        // without one keeps this shape, with no `linked`.
-        ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
-        kind: "agent",
-        id: p.key,
-        name: agentName(
-          currentName(p, users),
-          users.users.get(p.owner),
-          viewer,
-          users.clash,
-        ),
-        for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
-        me: viewer.userId !== null && viewer.userId === p.owner,
-        ...roleField(p.identity?.identityId, p.owner, viewer, users),
-      };
+    : withRole(
+        {
+          // A stored identity adds linked, product and animal (#1890); a party
+          // without one keeps this shape, with no `linked`.
+          ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
+          kind: "agent",
+          id: p.key,
+          name: agentName(
+            currentName(p, users),
+            users.users.get(p.owner),
+            viewer,
+            users.clash,
+          ),
+          for: forLine(
+            users.users.get(p.owner),
+            faceViewer(viewer),
+            users.clash,
+          ),
+          me: viewer.userId !== null && viewer.userId === p.owner,
+        },
+        p.identity?.identityId,
+        p.owner,
+        viewer,
+        users,
+      );
 
 /** The identity fields of a named agent, from its stored identity; none without one. */
 const identityFace = (

@@ -97,7 +97,8 @@ describe("a role on a page (#3132)", () => {
     };
     expect(await author()).toMatchObject({
       kind: "agent",
-      name: names[0],
+      name: role,
+      session: names[0],
       role: { name: role },
     });
     expect((await author())?.role).not.toHaveProperty("holder");
@@ -106,7 +107,8 @@ describe("a role on a page (#3132)", () => {
       true,
     );
     expect(await author()).toMatchObject({
-      name: names[0],
+      name: role,
+      session: names[0],
       role: { name: role, holder: names[1] },
     });
   });
