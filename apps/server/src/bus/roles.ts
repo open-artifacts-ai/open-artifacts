@@ -302,6 +302,17 @@ export function putRole(
           newId,
         )
       : null;
+  // #3132: a take-over ask the move answers (the role now held by the one
+  // who asked) is settled, so no card is left for it.
+  if (moved !== null)
+    sql.exec(
+      `update role_proposals set status = 'applied', decided_at = ?
+         where org_id = ? and role_id = ? and agent_id = ? and status = 'pending'`,
+      now,
+      orgId,
+      id,
+      agentId,
+    );
   return { ok: true, role: roleDto(row), moved };
 }
 

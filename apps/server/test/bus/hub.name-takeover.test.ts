@@ -233,6 +233,8 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(await roleOf(s.n, s.name)).toEqual([{ ref }]);
     const row = (await hub.snapshot()).agents.find((a) => a.name === got);
     expect(row?.pendingRole).toBeUndefined();
+    // The ask the move answered is settled: no card is left for it.
+    expect(await asks(ref)).toEqual([]);
     s.d.close();
   });
 
