@@ -9,6 +9,8 @@
 export const LIVE_FETCH_TIMEOUT_MS = 10_000;
 /** Attempts for an idempotent request (1 + 2 retries). */
 export const LIVE_FETCH_TRIES = 3;
+/** Most health asks before one retry: a host refusing at once is not asked in a busy loop. */
+export const HEALTH_ASKS_MAX = 50;
 const RETRY_STATUS = new Set([502, 503, 504]);
 const IDEMPOTENT = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
 
@@ -45,14 +47,15 @@ export async function liveFetch(
   const healthy = o.healthy ?? ((origin) => hostHealthy(f, origin, ms));
   /**
    * Asks the host until it answers, for at most healthWaitMs (one attempt's
-   * bound by default) of Date time, then lets the caller resend. Each ask is a
+   * bound by default) of Date time or HEALTH_ASKS_MAX asks, then lets the caller resend. Each ask is a
    * real request with its own timeout, which paces the loop: nothing sleeps.
    */
   const untilHealthy = async () => {
     const end = Date.now() + (o.healthWaitMs ?? ms);
     const origin = new URL(req.url).origin;
-    // Still down at the deadline: the resend itself reports it.
-    while (Date.now() < end) if (await healthy(origin)) return;
+    // Still down at the deadline or the cap: the resend itself reports it.
+    for (let n = 0; n < HEALTH_ASKS_MAX && Date.now() < end; n++)
+      if (await healthy(origin)) return;
   };
   for (let i = 1; ; i++) {
     // Each attempt gets its own copy (a body is single-use) and bound.

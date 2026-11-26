@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { liveFetch } from "./live-fetch.js";
+import { HEALTH_ASKS_MAX, liveFetch } from "./live-fetch.js";
 
 const seq = (...steps: (number | Error)[]) => {
   const calls: Request[] = [];
@@ -120,6 +120,24 @@ describe("liveFetch (xt:live, flake server #2)", () => {
     expect(asks.map((a) => a.at)).toEqual([0, 100, 200, 300, 400]);
     for (const a of asks) expect(a.sentThen).toBe(1);
     expect(sent).toEqual([0, WAIT]);
+  });
+
+  it("asks a host that refuses at once at most HEALTH_ASKS_MAX times, then resends once", async () => {
+    // The clock never moves and the answer is instant: only the cap ends it.
+    vi.useFakeTimers({ now: 0, toFake: ["Date"] });
+    const { f, calls } = seq(503, 200);
+    let asks = 0;
+    const r = await liveFetch(new Request("https://x.test/"), {
+      fetch: f,
+      healthy: async () => {
+        asks++;
+        return false;
+      },
+      healthWaitMs: 10_000,
+    });
+    expect(r.status).toBe(200);
+    expect(asks).toBe(HEALTH_ASKS_MAX);
+    expect(calls).toHaveLength(2);
   });
 
   it("never retries a 4xx", async () => {
