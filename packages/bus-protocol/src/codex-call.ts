@@ -55,3 +55,14 @@ export async function canonicalArgsSha256(
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
+
+/**
+ * The Codex `thread_source` values that mark a thread Codex spawned itself,
+ * not the user's (codex-rs `ThreadSource`). Never linked: the daemon, the
+ * adapter and the server all refuse them.
+ */
+export const CODEX_SPAWNED_SOURCES: ReadonlySet<string> = new Set([
+  "subagent",
+  "guardian_review",
+  "memory_consolidation",
+]);

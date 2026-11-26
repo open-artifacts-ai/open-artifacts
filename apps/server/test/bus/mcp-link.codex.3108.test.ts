@@ -9,13 +9,8 @@ import {
   canonicalArgsSha256,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SPAWNED_SOURCES } from "../../../../packages/bus-ipc/src/frames.ts";
 import { BusHub } from "../../src/bus/hub.js";
-import {
-  CODEX_SPAWNED_SOURCES,
-  linkRequest,
-  PROOF_LOOKUP_MS,
-} from "../../src/services/bus.js";
+import { linkRequest, PROOF_LOOKUP_MS } from "../../src/services/bus.js";
 import { MCP_URL } from "../mcp-helpers.js";
 import {
   type Daemon,
@@ -360,21 +355,18 @@ describe("a Codex call with no proof (#3108)", () => {
 });
 
 describe("limits (#3108)", () => {
-  /** Answers every check on `d` with yes until `stop` is set. */
+  /** Answers every check on `d` with yes, as each frame arrives; returns the stop. */
   function autoYes(d: Daemon) {
-    let stop = false;
-    let seen = 0;
-    const loop = (async () => {
-      while (!stop) {
-        const cs = checksOf(d);
-        while (seen < cs.length) reply(d, (cs[seen++] as Check).id, true);
-        await new Promise((r) => setTimeout(r, 0));
+    const on = (ev: MessageEvent) => {
+      try {
+        const f = JSON.parse(String(ev.data)) as { type?: string; id?: string };
+        if (f.type === "codex_call_check" && f.id) reply(d, f.id, true);
+      } catch {
+        // Not a frame (a PONG).
       }
-    })();
-    return async () => {
-      stop = true;
-      await loop;
     };
+    d.ws.addEventListener("message", on);
+    return async () => d.ws.removeEventListener("message", on);
   }
 
   const setClock = async (userId: string, ms: number | null) =>
@@ -466,13 +458,5 @@ describe("logging (#3108)", () => {
       "s3cr3t-value",
     ])
       expect(logged).not.toContain(v);
-  });
-});
-
-describe("spawned sources (#3108)", () => {
-  it("the server's copy equals the adapter's SPAWNED_SOURCES (@oa/bus-ipc)", () => {
-    expect([...CODEX_SPAWNED_SOURCES].sort()).toEqual(
-      [...SPAWNED_SOURCES].sort(),
-    );
   });
 });

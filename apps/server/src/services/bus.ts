@@ -1,4 +1,5 @@
 import {
+  CODEX_SPAWNED_SOURCES,
   CodexDirectCallIdSchema,
   CodexExecCallIdSchema,
   CodexItemIdSchema,
@@ -812,13 +813,6 @@ function bodyHasToolsCall(text: string | undefined): boolean {
 
 /** Not JSON: the handler answers it with its usual parse error. */
 const UNPARSEABLE = "{";
-
-/** #3108: Codex `thread_source` values of threads Codex spawned itself (mirrors SPAWNED_SOURCES in @oa/bus-ipc); never linked. */
-export const CODEX_SPAWNED_SOURCES: ReadonlySet<string> = new Set([
-  "subagent",
-  "guardian_review",
-  "memory_consolidation",
-]);
 
 const asRecord = (v: unknown): Record<string, unknown> | null =>
   v !== null && typeof v === "object" && !Array.isArray(v)
