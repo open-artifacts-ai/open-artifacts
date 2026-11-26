@@ -89,17 +89,14 @@ const SLOT = /^s(\d+)\.g(\d+)$/;
 const announced = new Set<string>();
 
 /**
- * Parsed call times of write-once slot files (keyed by full path). Slot files
- * are linked in complete and never rewritten, so caching valid timestamps
- * avoids O(HOOK_LIMIT^2) file reads across a burst of claims in one process.
+ * Parsed call times of write-once slot files, scoped to a ledger directory's
+ * identity (dev + ino + birthtime). Slot files are linked in complete and never
+ * rewritten, so caching valid timestamps avoids O(HOOK_LIMIT^2) file reads
+ * across a burst of claims in one process; replacing the directory changes its
+ * identity and invalidates the cache.
  */
-const slotTimes = new Map<string, number>();
-const SLOT_CACHE_LIMIT = 4096;
-
-function cacheSlotTime(path: string, t: number): void {
-  if (slotTimes.size >= SLOT_CACHE_LIMIT) slotTimes.clear();
-  slotTimes.set(path, t);
-}
+const dirCaches = new Map<string, { id: string; times: Map<string, number> }>();
+const DIR_CACHE_LIMIT = 64;
 
 /** A temp file older than this was left by a crash (takeSlot holds one for microseconds). */
 export const STALE_TMP_MS = 3 * HOOK_WINDOW_MS;
@@ -110,7 +107,10 @@ export const STALE_TMP_MS = 3 * HOOK_WINDOW_MS;
  * directory, the same os.tmpdir(), or their budgets split), and temp files
  * a crash left behind are removed (litter only: a scan never reads them).
  */
-function ledgerDir(app: string, root: string): string {
+function ledgerDir(
+  app: string,
+  root: string,
+): { dir: string; times: Map<string, number> } {
   const dir = hookLedgerDir(app, root);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(dir);
@@ -120,12 +120,19 @@ function ledgerDir(app: string, root: string): string {
     (st.mode & 0o077) !== 0
   )
     throw new Error(`hook ledger ${dir}: not a private directory of ours`);
+  const id = `${st.dev}:${st.ino}:${st.birthtimeMs}`;
+  let cache = dirCaches.get(dir);
+  if (!cache || cache.id !== id) {
+    if (dirCaches.size >= DIR_CACHE_LIMIT) dirCaches.clear();
+    cache = { id, times: new Map() };
+    dirCaches.set(dir, cache);
+  }
   if (!announced.has(dir)) {
     announced.add(dir);
     process.stderr.write(`hook budget: ledger ${dir}\n`);
     sweepTemps(dir, Date.now());
   }
-  return dir;
+  return { dir, times: cache.times };
 }
 
 /** Removes temp files older than STALE_TMP_MS (by mtime). */
@@ -146,13 +153,19 @@ function sweepTemps(dir: string, now: number): void {
  * the file's mtime, so it still leaves the window a window after it was
  * made. Never later than `now`; `now` if even the stat fails.
  */
-function callTime(path: string, now: number): number {
-  const cached = slotTimes.get(path);
+function callTime(
+  dir: string,
+  name: string,
+  now: number,
+  times: Map<string, number>,
+): number {
+  const cached = times.get(name);
   if (cached !== undefined && cached <= now) return cached;
+  const path = join(dir, name);
   try {
     const v = Number(readFileSync(path, "utf8"));
     if (Number.isFinite(v) && v > 0 && v <= now) {
-      cacheSlotTime(path, v);
+      times.set(name, v);
       return v;
     }
   } catch {}
@@ -164,7 +177,11 @@ function callTime(path: string, now: number): number {
 }
 
 /** Each slot's newest generation and its call time. */
-function scan(dir: string, now: number): Map<number, Slot> {
+function scan(
+  dir: string,
+  now: number,
+  times: Map<string, number>,
+): Map<number, Slot> {
   const newest = new Map<number, { gen: number; name: string }>();
   for (const name of readdirSync(dir)) {
     const m = SLOT.exec(name);
@@ -177,7 +194,7 @@ function scan(dir: string, now: number): Map<number, Slot> {
   }
   const slots = new Map<number, Slot>();
   for (const [n, { gen, name }] of newest)
-    slots.set(n, { n, gen, at: callTime(join(dir, name), now) });
+    slots.set(n, { n, gen, at: callTime(dir, name, now, times) });
   return slots;
 }
 
@@ -199,13 +216,18 @@ function newestGen(dir: string, slot: number): number {
  * Links a complete temp file holding `t` to `name`: false if `name` exists
  * (another process took the slot). The temp file is always removed.
  */
-function takeSlot(dir: string, name: string, t: number): boolean {
+function takeSlot(
+  dir: string,
+  name: string,
+  t: number,
+  times: Map<string, number>,
+): boolean {
   const tmp = join(dir, `tmp.${process.pid}.${randomBytes(6).toString("hex")}`);
   const dest = join(dir, name);
   writeFileSync(tmp, String(t), { flag: "wx", mode: 0o600 });
   try {
     linkSync(tmp, dest);
-    if (Number.isFinite(t) && t > 0) cacheSlotTime(dest, t);
+    if (Number.isFinite(t) && t > 0) times.set(name, t);
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -223,9 +245,10 @@ export function hookWindowCount(
   o: Pick<PaceOpts, "root" | "now"> = {},
 ): number {
   const now = (o.now ?? Date.now)();
-  const dir = ledgerDir(app, o.root ?? tmpdir());
-  return [...scan(dir, now).values()].filter((s) => now - s.at < HOOK_WINDOW_MS)
-    .length;
+  const { dir, times } = ledgerDir(app, o.root ?? tmpdir());
+  return [...scan(dir, now, times).values()].filter(
+    (s) => now - s.at < HOOK_WINDOW_MS,
+  ).length;
 }
 
 /**
@@ -241,10 +264,11 @@ export async function claimHookSlot(
   const reserve = o.reserve ?? 0;
   const room = HOOK_LIMIT - reserve;
   if (room < 1) throw new Error("hook budget: reserve leaves no room");
-  const dir = ledgerDir(app, o.root ?? tmpdir());
+  const root = o.root ?? tmpdir();
   for (;;) {
+    const { dir, times } = ledgerDir(app, root);
     const t = now();
-    const slots = scan(dir, t);
+    const slots = scan(dir, t, times);
     const fresh = [...slots.values()]
       .filter((s) => t - s.at < HOOK_WINDOW_MS)
       .map((s) => s.at)
@@ -264,24 +288,23 @@ export async function claimHookSlot(
       if (s && t - s.at < HOOK_WINDOW_MS) continue;
       const gen = s ? s.gen + 1 : 0;
       const name = `s${n}.g${gen}`;
-      if (!takeSlot(dir, name, t)) break; // another process took it: scan again
+      if (!takeSlot(dir, name, t, times)) break; // another process took it: scan again
       // A claim that stalled for windows can take a generation older than
       // the newest (one already unlinked): never counted, so not a call.
       if (newestGen(dir, n) !== gen) {
-        const stale = join(dir, name);
-        slotTimes.delete(stale);
+        times.delete(name);
         try {
-          unlinkSync(stale);
+          unlinkSync(join(dir, name));
         } catch {}
         break;
       }
       // Older generations of slot n are never read again. The one before
       // stays, so a claim that scanned it long ago still collides.
       if (gen >= 2) {
-        const old = join(dir, `s${n}.g${gen - 2}`);
-        slotTimes.delete(old);
+        const old = `s${n}.g${gen - 2}`;
+        times.delete(old);
         try {
-          unlinkSync(old);
+          unlinkSync(join(dir, old));
         } catch {}
       }
       return fresh.length + 1;
