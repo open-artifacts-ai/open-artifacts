@@ -2,6 +2,7 @@
 // The mock frame has no runtime, so its messages are replayed with the nonce.
 // Shots only when SEL_SHOTS_DIR is set.
 import { mkdirSync } from "node:fs";
+import { PROTOCOL_VERSION } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const OUT = process.env.SEL_SHOTS_DIR;
@@ -59,10 +60,32 @@ for (const w of [1280]) {
         await expect
           .poll(() => page.frames().some((f) => f !== page.mainFrame()))
           .toBe(true);
-        await expect(async () => {
-          await select(page);
-          await expect(box(page)).toBeVisible({ timeout: 200 });
-        }).toPass();
+        // The frame says hello and the shell's welcome reaches it: the shell's
+        // bridge is live, so the replayed selection below is taken.
+        // The mock frame's host does not exist, so the iframe settles on
+        // Chromium's error page: only then is its document final, and a
+        // listener added to it is not lost to a navigation.
+        await expect
+          .poll(() =>
+            page
+              .frames()
+              .find((f) => f !== page.mainFrame())
+              ?.url(),
+          )
+          .toMatch(/^chrome-error:/);
+        const frame = page.frames().find((f) => f !== page.mainFrame());
+        await frame?.evaluate(() =>
+          addEventListener("message", (e) => {
+            if (e.data?.type === "welcome")
+              document.documentElement.dataset.oaReady = "1";
+          }),
+        );
+        await fromFrame(page, "hello", { protocol: PROTOCOL_VERSION, kind });
+        await expect(
+          page.frameLocator("iframe").first().locator("html"),
+        ).toHaveAttribute("data-oa-ready", "1");
+        await select(page);
+        await expect(box(page)).toBeVisible();
         await expect(card(page)).toBeVisible();
         await shot(page, `${kind}-${w}-1-selected`);
       });

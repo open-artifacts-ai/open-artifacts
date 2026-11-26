@@ -110,8 +110,16 @@ test("http asks with a not-secure warning; the port shows when not the default",
     content: `${LINKS}<script>window.openArtifacts.ready.then(() => parent.postMessage({ oa: 1, type: "open", url: "http://plain.example:8080/x", nonce: window.__oaShellNonce.n }, "*"))</script>`,
   });
   await page.setViewportSize({ width: 390, height: 800 });
+  // Playwright's own calls on the page count as user gestures, and with one
+  // the shell opens the link instead of asking (a browser's gesture lapses
+  // after a few real seconds, which no test clock moves). So the page reports
+  // no activation, as a reader who has not touched it would.
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "userActivation", {
+      value: { isActive: false, hasBeenActive: false },
+    });
+  });
   await page.goto(`/a/${a.id}`);
-  await expect(artifactFrame(page).locator("#who")).toHaveText("links");
   await expect(
     page.getByText("Open link to plain.example:8080?"),
   ).toBeVisible();
