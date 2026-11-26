@@ -472,6 +472,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  "POST /api/v1/bus/roles/proposals/:id": { org: "mcp.connect" },
   // #1567 project links; PUT and DELETE browser sessions only (handler).
   "GET /api/v1/bus/links": { org: "mcp.connect" },
   "PUT /api/v1/bus/links": { org: "mcp.connect" },

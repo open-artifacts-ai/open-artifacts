@@ -22,8 +22,10 @@ import {
   type BusReachProposed,
   type BusRole,
   type BusRoleProposal,
+  type BusRoleProposalDecided,
   type BusRoleProposeInput,
   parseFeatures,
+  type RoleCard,
 } from "@oa/shared";
 import type {
   LinkDecideResult,
@@ -41,6 +43,7 @@ import type {
 import type {
   DecideResult,
   ProposalAudit,
+  ProposalRefusalReason,
   ProposeInput,
   ProposeResult,
   ViewResult,
@@ -254,6 +257,11 @@ export type BusHubRpc = {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult>;
+  /** #3132: confirms or rejects role proposal `id` (the dashboard card), once. */
+  decideRoleProposalById(
+    id: string,
+    decision: "confirm" | "reject",
+  ): Promise<DecideResult>;
   /** #1403: the credentials and machines behind the pending proposals. */
   pendingProposalSources(): Promise<{
     credentials: string[];
@@ -267,6 +275,8 @@ export type BusHubRpc = {
   listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
     expired: ProposalAudit[];
+    /** #3132: the current holder of each pending proposal: live, or away since (ms). */
+    holders: Record<string, { live: boolean; since: number | null }>;
   }>;
 };
 
@@ -1817,6 +1827,114 @@ export async function decideBusRoleProposal(
       ),
     }).run();
   return r;
+}
+
+/**
+ * #3132: the answer on the handover card (POST R.busRoleProposal(id)): the
+ * member's browser session decides proposal `id` in their own hub, once. The
+ * route took only that session; audits as the link's decision does
+ * (bus.role.confirmed or bus.role.refused, plus bus.role.moved when a role
+ * moved). 404 for an unknown proposal; 409 conflict with details { reason }
+ * when it can't apply (used, expired, changed, a putRole refusal; the
+ * proposal is then refused). A reject answers with the refused proposal.
+ */
+export async function decideBusRoleProposalById(
+  env: Env,
+  userId: string,
+  id: string,
+  decision: "confirm" | "reject",
+): Promise<BusRoleProposalDecided> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId)))
+    throw new ApiError("not_found", "Not found");
+  const hub = busHub(env, userId);
+  if (!hub) throw new ApiError("not_found", "Not found");
+  await sweepRevokedProposers(env, userId, hub);
+  const r = await roleCall(hub.decideRoleProposalById(id, decision));
+  await auditExpired(env, userId, r.expired);
+  const actor = userActor(userId);
+  if (r.ok) {
+    await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
+      detail: detailOf(r.audit),
+    }).run();
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    return { proposal: r.proposal, role: r.role };
+  }
+  if (r.proposal === null) throw new ApiError("not_found", "Not found");
+  await audit(env, "bus.role.refused", auditTarget(userId), actor, {
+    detail: detailOf(
+      r.audit ?? {
+        proposalId: r.proposal.id,
+        action: r.proposal.action,
+        roleId: r.proposal.roleId,
+        agentId: r.proposal.agentId,
+        priorAgentId: r.proposal.priorAgentId,
+      },
+      r.reason,
+    ),
+  }).run();
+  if (r.reason === "rejected") return { proposal: r.proposal, role: null };
+  throw new ApiError("conflict", DECIDE_REFUSALS[r.reason], {
+    reason: r.reason,
+  });
+}
+
+const DECIDE_REFUSALS: Record<ProposalRefusalReason, string> = {
+  unknown: "Not found",
+  used: "This was already decided",
+  expired: "This ask has expired. Ask the agent to propose it again",
+  changed: "The role changed since this was asked, so nothing was moved",
+  invalid: "That role name isn't valid",
+  name_taken: ROLE_REFUSALS.name_taken,
+  agent_not_open: "That agent isn't open anymore, so nothing was moved",
+  role_limit: ROLE_REFUSALS.role_limit,
+};
+
+/**
+ * #3132: the member's pending role proposals as handover cards, for For you
+ * (services/inbox.ts): newest first. Reads their own hub once, within
+ * BUS_HUB_TIMEOUT_MS; [] when the bus is off, no machine ever connected, or
+ * the read fails or times out.
+ */
+export async function pendingRoleCards(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<{ card: RoleCard; createdAt: string }[]> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return [];
+  const hub = busHub(env, userId);
+  if (!hub) return [];
+  try {
+    const r = await within(hub.listRoleProposals(), BUS_HUB_TIMEOUT_MS);
+    if (r === null) return [];
+    await auditExpired(env, userId, r.expired);
+    return r.proposals
+      .filter((p) => p.status === "pending" && Date.parse(p.expiresAt) > now)
+      .map((p) => {
+        const h = p.priorAgentId ? r.holders[p.priorAgentId] : undefined;
+        return {
+          createdAt: p.createdAt,
+          card: {
+            proposalId: p.id,
+            action: p.action,
+            name: p.name,
+            namespace: p.namespace,
+            agentName: p.agentName,
+            priorHolderName: p.priorHolderName,
+            holder: h
+              ? {
+                  state: h.live ? ("live" as const) : ("away" as const),
+                  since:
+                    h.since === null ? null : new Date(h.since).toISOString(),
+                }
+              : null,
+            expiresAt: p.expiresAt,
+          },
+        };
+      });
+  } catch (e) {
+    logError("bus_role_cards_failed", e);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------- reach proposals

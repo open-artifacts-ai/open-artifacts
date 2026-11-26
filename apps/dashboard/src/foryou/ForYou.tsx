@@ -32,6 +32,7 @@ import {
 import { useHeld } from "../api/agentAsks";
 import { useThreads } from "../api/comments";
 import { useMe } from "../auth/useMe";
+import { RoleCard } from "../bus/RoleCard";
 import { toast } from "../layout/toast";
 import { AuthorFace } from "../viewer/comments/AuthorFace";
 import { AskBlock, asksForMe, showsAskBody } from "../viewer/comments/asks";
@@ -730,7 +731,9 @@ function Face({ x }: { x: InboxItem }) {
         {initials(a.name)}
       </span>
     );
-  return <Glyph>{x.kind === "away" ? "☾" : "•"}</Glyph>;
+  return (
+    <Glyph>{x.kind === "away" ? "☾" : x.kind === "role" ? "⇄" : "•"}</Glyph>
+  );
 }
 
 /** A waiting ask's calm mark: a clock and the server's duration. */
@@ -824,95 +827,107 @@ function Row({
       }
     >
       <Face x={x} />
-      <div className={`min-w-0 ${x.level === "update" ? "pr-7" : ""}`}>
-        <b className="block leading-[1.35] font-semibold">
-          {isAsk && !put ? (
-            <button
-              type="button"
-              data-row-target=""
-              className={stretch}
-              onClick={open}
-            >
-              {title}
-            </button>
-          ) : href && !away ? (
-            <a
-              href={href}
-              data-row-target=""
-              className={stretch}
-              onClick={follow}
-            >
-              {title}
-            </a>
-          ) : (
-            title
-          )}
-        </b>
-        <small className="mt-px block text-[12.5px] text-[var(--oa-text-muted)]">
-          {contextLine(x)}
-          {away && isUnread && (
-            <>
-              {" · "}
-              {/* The contract can't fold rows yet: "Show them" marks the summary read, and the updates are listed below. */}
+      {x.kind === "role" && x.role ? (
+        // #3132: the handover card answers on the row; one click moves the role.
+        <div className="min-w-0">
+          <div className="leading-[1.35] font-semibold">
+            <RoleCard card={x.role} />
+          </div>
+          <small className="mt-px block text-[12.5px] text-[var(--oa-text-muted)]">
+            {contextLine(x)}
+          </small>
+        </div>
+      ) : (
+        <div className={`min-w-0 ${x.level === "update" ? "pr-7" : ""}`}>
+          <b className="block leading-[1.35] font-semibold">
+            {isAsk && !put ? (
               <button
                 type="button"
-                className={`${LINK} relative z-[1] text-[12.5px]`}
-                onClick={() => markRead.mutate([x.id])}
+                data-row-target=""
+                className={stretch}
+                onClick={open}
               >
-                Show them
+                {title}
               </button>
-            </>
-          )}
-        </small>
-        {acts && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <Urgency x={x} />
-            {x.backFromLater && (
-              <span
-                className={`${CHIP} bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)]`}
-              >
-                Back from later
-              </span>
-            )}
-            {/* A mention's one action: open it where it was said. */}
-            {x.kind === "mention" && href && (
+            ) : href && !away ? (
               <a
                 href={href}
+                data-row-target=""
+                className={stretch}
                 onClick={follow}
-                className={`${BTN} border-[var(--oa-accent)] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] no-underline`}
               >
-                Open
+                {title}
               </a>
+            ) : (
+              title
             )}
-            {canLater(x) && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    type="button"
-                    className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
-                  >
-                    Later <span aria-hidden="true">▾</span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="min-w-[180px]">
-                  <DropdownMenuItem
-                    onSelect={() => later.mutate({ id: x.id, until: "hour" })}
-                  >
-                    In an hour
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() =>
-                      later.mutate({ id: x.id, until: "morning" })
-                    }
-                  >
-                    Tomorrow morning
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+          </b>
+          <small className="mt-px block text-[12.5px] text-[var(--oa-text-muted)]">
+            {contextLine(x)}
+            {away && isUnread && (
+              <>
+                {" · "}
+                {/* The contract can't fold rows yet: "Show them" marks the summary read, and the updates are listed below. */}
+                <button
+                  type="button"
+                  className={`${LINK} relative z-[1] text-[12.5px]`}
+                  onClick={() => markRead.mutate([x.id])}
+                >
+                  Show them
+                </button>
+              </>
             )}
-          </div>
-        )}
-      </div>
+          </small>
+          {acts && (
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <Urgency x={x} />
+              {x.backFromLater && (
+                <span
+                  className={`${CHIP} bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)]`}
+                >
+                  Back from later
+                </span>
+              )}
+              {/* A mention's one action: open it where it was said. */}
+              {x.kind === "mention" && href && (
+                <a
+                  href={href}
+                  onClick={follow}
+                  className={`${BTN} border-[var(--oa-accent)] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] no-underline`}
+                >
+                  Open
+                </a>
+              )}
+              {canLater(x) && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className={`${BTN} border-[var(--oa-border)] bg-[var(--oa-surface)] font-medium text-[var(--oa-text)]`}
+                    >
+                      Later <span aria-hidden="true">▾</span>
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="min-w-[180px]">
+                    <DropdownMenuItem
+                      onSelect={() => later.mutate({ id: x.id, until: "hour" })}
+                    >
+                      In an hour
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        later.mutate({ id: x.id, until: "morning" })
+                      }
+                    >
+                      Tomorrow morning
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {x.level === "update" && !away && (isUnread || page || agent) && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

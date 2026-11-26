@@ -246,6 +246,8 @@ export type BusLinkProposed = z.infer<typeof BusLinkProposedSchema>;
 
 /** How long a role proposal's confirm link works (#1372). */
 export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
+/** #3132: how long the proposal's card in the dashboard can still be answered (its expiresAt). */
+export const BUS_ROLE_PROPOSAL_CARD_TTL_MS = 24 * 3_600_000;
 /** Pending role proposals one member may have at once (#1372). */
 export const BUS_ROLE_PROPOSALS_PENDING_MAX = 20;
 /** The newest role proposals GET R.busRoles lists, pending or decided (#1372). */
@@ -319,6 +321,21 @@ export const BusRolePutSchema = z.strictObject({
   agentId: z.string().min(1).max(64).nullable(),
 });
 export type BusRolePut = z.infer<typeof BusRolePutSchema>;
+
+/** POST R.busRoleProposal(id) (#3132): the member's answer on the handover card. */
+export const BusRoleProposalDecideSchema = z.strictObject({
+  decision: z.enum(["confirm", "reject"]),
+});
+export type BusRoleProposalDecide = z.infer<typeof BusRoleProposalDecideSchema>;
+
+/** The decided proposal, and the role as set (null after a clear or a refusal). */
+export const BusRoleProposalDecidedSchema = z.strictObject({
+  proposal: BusRoleProposalSchema,
+  role: BusRoleSchema.nullable(),
+});
+export type BusRoleProposalDecided = z.infer<
+  typeof BusRoleProposalDecidedSchema
+>;
 
 /**
  * MCP bus_role_propose (#1372): propose pointing the role (namespace, name)

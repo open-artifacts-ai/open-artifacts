@@ -1,7 +1,13 @@
 // #1293: Agents › Roles and access (#1296 roles, #1372 proposals). The
-// Access card waits for grants (#1346); confirming a proposal here waits for
-// #1444, so a proposal points at the link the agent gave.
-import type { BusAgent, BusRole, BusRoleProposal } from "@oa/shared";
+// Access card waits for grants (#1346). #3132: a proposal shows as the
+// handover card, on its role's row (or under "Waiting for you" when the role
+// is new), and Yes or No answers it here.
+import type {
+  BusAgent,
+  BusRole,
+  BusRoleProposal,
+  RoleCard as RoleCardData,
+} from "@oa/shared";
 import {
   Button,
   Input,
@@ -14,7 +20,7 @@ import {
   TableRow,
   useIsMobile,
 } from "@oa/ui/shadcn";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { ApiClientError } from "../api/client";
 import {
   useBusAgents,
@@ -31,6 +37,7 @@ import { OptionSelect } from "../settings/OptionSelect";
 import { errorText, muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
 import { shortName } from "./namespaces";
+import { RoleCard } from "./RoleCard";
 import { LIVE_DOWN, StatusBadge } from "./ui";
 
 /** PUT R.busRoles refusals (409 details.reason) as plain lines. */
@@ -52,30 +59,30 @@ export function roleError(e: unknown): string {
   return "That didn't save. Try again.";
 }
 
-/** The pending proposals whose link still works. */
+/** The pending proposals that can still be answered (the card's window, a day). */
 export const pending = (ps: BusRoleProposal[], now = Date.now()) =>
   ps.filter((p) => p.status === "pending" && Date.parse(p.expiresAt) > now);
 
-function ProposalSentence({ p, all }: { p: BusRoleProposal; all: string[] }) {
-  const where = shortName(p.namespace, all);
-  if (p.action === "clear")
-    return (
-      <>
-        Remove <b>{p.name}</b> in {where}.
-      </>
-    );
-  return (
-    <>
-      Point <b>{p.name}</b> in {where} at <b>{p.agentName}</b>
-      {p.priorHolderName ? (
-        <>
-          {" "}
-          (now <b>{p.priorHolderName}</b>)
-        </>
-      ) : null}
-      .
-    </>
-  );
+/** A proposal as the handover card shows it; the holder's state is read from the open agents (away: since it closed). */
+export function cardOf(p: BusRoleProposal, agents: BusAgent[]): RoleCardData {
+  const prior = p.priorAgentId
+    ? agents.find((a) => a.id === p.priorAgentId)
+    : undefined;
+  return {
+    proposalId: p.id,
+    action: p.action,
+    name: p.name,
+    namespace: p.namespace,
+    agentName: p.agentName,
+    priorHolderName: p.priorHolderName,
+    holder: prior
+      ? {
+          state: prior.state === "live" ? "live" : "away",
+          since: prior.state === "live" ? null : prior.since,
+        }
+      : null,
+    expiresAt: p.expiresAt,
+  };
 }
 
 function RoleDialog({
@@ -223,8 +230,14 @@ export function RolesTab() {
       ...roles.data.roles.map((r) => r.namespace),
     ]),
   ];
-  const waiting = pending(roles.data.proposals);
   const list = roles.data.roles;
+  const waitingAll = pending(roles.data.proposals);
+  // A proposal for a role that exists shows on that role's row; a new role's waits above.
+  const onRow = (r: BusRole) =>
+    waitingAll.filter((p) => p.action !== "set" && p.roleId === r.id);
+  const waiting = waitingAll.filter(
+    (p) => p.action === "set" || !list.some((r) => r.id === p.roleId),
+  );
   const actions = (r: BusRole) => (
     <span className="flex justify-end gap-[var(--oa-space-1)]">
       <Button
@@ -252,22 +265,15 @@ export function RolesTab() {
         <SettingsCard
           id="oa-proposals-h"
           title="Waiting for you"
-          subtitle="An AI agent proposed a change. Nothing changes unless you confirm it."
+          subtitle="An AI agent asked for a change. Nothing changes unless you say yes."
         >
           <ul className="m-0 grid list-none gap-[var(--oa-space-2)] p-0">
             {waiting.map((p) => (
               <li
                 key={p.id}
-                className="grid gap-[2px] rounded-lg border bg-secondary/40 p-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
+                className="rounded-lg border bg-secondary/40 p-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]"
               >
-                <span>
-                  <ProposalSentence p={p} all={all} />
-                </span>
-                <span className={muted}>
-                  Proposed {relativeTime(p.createdAt)} · link expires{" "}
-                  {relativeTime(p.expiresAt)}. Open the link the agent gave you
-                  to confirm it.
-                </span>
+                <RoleCard card={cardOf(p, live)} />
               </li>
             ))}
           </ul>
@@ -300,6 +306,9 @@ export function RolesTab() {
                 </span>
                 <span className={muted}>Set {shortDate(r.setAt)}</span>
                 {actions(r)}
+                {onRow(r).map((p) => (
+                  <RoleCardBox key={p.id} p={p} agents={live} />
+                ))}
               </li>
             ))}
           </ul>
@@ -318,27 +327,36 @@ export function RolesTab() {
             </TableHeader>
             <TableBody>
               {list.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell className="font-mono text-[length:var(--oa-text-xs)] font-medium">
-                    {r.name}
-                  </TableCell>
-                  <TableCell>
-                    <HolderBadge
-                      r={r}
-                      live={r.agentId !== null && liveIds.has(r.agentId)}
-                    />
-                  </TableCell>
-                  <TableCell
-                    className="text-muted-foreground"
-                    title={r.namespace}
-                  >
-                    {shortName(r.namespace, all)}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {shortDate(r.setAt)}
-                  </TableCell>
-                  <TableCell>{actions(r)}</TableCell>
-                </TableRow>
+                <Fragment key={r.id}>
+                  <TableRow>
+                    <TableCell className="font-mono text-[length:var(--oa-text-xs)] font-medium">
+                      {r.name}
+                    </TableCell>
+                    <TableCell>
+                      <HolderBadge
+                        r={r}
+                        live={r.agentId !== null && liveIds.has(r.agentId)}
+                      />
+                    </TableCell>
+                    <TableCell
+                      className="text-muted-foreground"
+                      title={r.namespace}
+                    >
+                      {shortName(r.namespace, all)}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {shortDate(r.setAt)}
+                    </TableCell>
+                    <TableCell>{actions(r)}</TableCell>
+                  </TableRow>
+                  {onRow(r).map((p) => (
+                    <TableRow key={p.id} data-role-card-row={p.id}>
+                      <TableCell colSpan={5}>
+                        <RoleCardBox p={p} agents={live} />
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </Fragment>
               ))}
             </TableBody>
           </Table>
@@ -388,5 +406,20 @@ function RoleRowSentence({ r, all }: { r: BusRole; all: string[] }) {
       <b className="font-mono">{r.name}</b> in {shortName(r.namespace, all)}:{" "}
       {r.vacant || r.holderName === null ? "vacant" : <b>{r.holderName}</b>}
     </>
+  );
+}
+
+/** The handover card on a role's row (#3132). */
+function RoleCardBox({
+  p,
+  agents,
+}: {
+  p: BusRoleProposal;
+  agents: BusAgent[];
+}) {
+  return (
+    <div className="rounded-lg border bg-secondary/40 p-[var(--oa-space-3)] text-[length:var(--oa-text-sm)]">
+      <RoleCard card={cardOf(p, agents)} />
+    </div>
   );
 }

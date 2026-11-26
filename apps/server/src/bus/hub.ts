@@ -130,6 +130,7 @@ import {
 import {
   type DecideResult,
   decideProposal,
+  decideProposalById,
   expireByCredential,
   expireProposals,
   listProposals,
@@ -5413,6 +5414,33 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #3132: the dashboard card's answer: confirms or rejects role proposal
+   * `id`, once. Worker only, and only from POST R.busRoleProposal(id) (a
+   * member's browser session). Applies as decideRoleProposal does, and the
+   * hub checks again that the role is still as proposed.
+   */
+  async decideRoleProposalById(
+    id: string,
+    decision: "confirm" | "reject",
+  ): Promise<DecideResult> {
+    const r = this.#withReachNotice(() =>
+      decideProposalById(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        id,
+        decision,
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      ),
+    );
+    logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    return r;
+  }
+
+  /**
    * #3132: a role moved between sessions: the pages the old session began
    * to follow while it held the role move to the new holder (its other
    * follows stay its own); its later notices forward via roleForward.
@@ -5499,10 +5527,34 @@ export class BusHub extends DurableObject<Env> {
   async listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
     expired: ProposalAudit[];
+    /** #3132: where each pending proposal's current holder is: live now, or away since a time (ms). */
+    holders: Record<string, { live: boolean; since: number | null }>;
   }> {
     const sql = this.ctx.storage.sql;
     const expired = expireProposals(sql, OWNER_ORG_ID, this.#now());
-    return { proposals: listProposals(sql, OWNER_ORG_ID), expired };
+    const proposals = listProposals(sql, OWNER_ORG_ID);
+    const ids = [
+      ...new Set(
+        proposals.flatMap((p) =>
+          p.status === "pending" && p.priorAgentId ? [p.priorAgentId] : [],
+        ),
+      ),
+    ];
+    const holders: Record<string, { live: boolean; since: number | null }> = {};
+    for (const a of ids.length
+      ? sql
+          .exec<{ id: string; live: number; since: number | null }>(
+            "select id, live, coalesce(away_since, updated_at) as since from agents where org_id = ? and id in (select value from json_each(?))",
+            OWNER_ORG_ID,
+            JSON.stringify(ids),
+          )
+          .toArray()
+      : [])
+      holders[a.id] = {
+        live: a.live === 1,
+        since: a.live === 1 ? null : a.since,
+      };
+    return { proposals, expired, holders };
   }
 
   /** When the last closeAll started (ms), or null. */
