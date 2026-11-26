@@ -78,13 +78,7 @@ function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("timed out")), 15_000);
-      waiting.push((x) => {
-        clearTimeout(t);
-        resolve(x);
-      });
-    });
+    return new Promise<ServerFrame>((resolve) => waiting.push(resolve));
   };
   return { ws, seen, next, closed, isClosed: () => done };
 }
