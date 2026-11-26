@@ -1,8 +1,17 @@
 /// <reference types="node" />
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { R } from "@oa/shared";
 import type { Locator, Page } from "@playwright/test";
-import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
+import {
+  APP,
+  artifactFrame,
+  expect,
+  publishViaApi,
+  test,
+  uniq,
+} from "./fixtures";
 
 /**
  * A thumbnail can 404 while the server is still rendering the new version's
@@ -79,8 +88,11 @@ async function openLibrary(page: Page, path: string) {
 }
 
 /**
- * Holds the member's onboarding body until `release()`: `reached` resolves once
- * the request is in flight, so a test controls when the card arrives.
+ * Holds the member's onboarding BODY until `release()`, after the browser has
+ * seen the status and headers: the request goes to a tiny local server that
+ * asks the real one, writes status and headers at once (flushed), and ends the
+ * body only when the test lets it. `reached` resolves once the headers are out.
+ * (route.fulfill sends headers and body together, so it cannot do this.)
  */
 async function holdOnboarding(page: Page) {
   let release: () => void = () => {};
@@ -88,19 +100,48 @@ async function holdOnboarding(page: Page) {
     release = r;
   });
   let reached: () => void = () => {};
-  const seen = new Promise<void>((r) => {
+  const headersSent = new Promise<void>((r) => {
     reached = r;
   });
+  const server = createServer(async (req, res) => {
+    const forwarded: Record<string, string> = {};
+    for (const k of ["x-oa-request", "accept"])
+      if (typeof req.headers[k] === "string")
+        forwarded[k] = req.headers[k] as string;
+    // The browser sends no cookie to another host: the route carried it here.
+    const cookie = req.headers["x-forward-cookie"];
+    if (typeof cookie === "string") forwarded.cookie = cookie;
+    const up = await fetch(`${APP}${R.onboarding}`, { headers: forwarded });
+    const body = await up.text();
+    res.writeHead(up.status, {
+      "content-type": up.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
+      "access-control-allow-origin": APP,
+      "access-control-allow-credentials": "true",
+    });
+    res.flushHeaders();
+    reached();
+    await gate;
+    res.end(body);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
   await page.route(
     (u) => u.pathname === R.onboarding,
-    async (route) => {
-      const response = await route.fetch();
-      reached();
-      await gate;
-      await route.fulfill({ response });
-    },
+    async (route) =>
+      route.continue({
+        url: `http://127.0.0.1:${port}${R.onboarding}`,
+        headers: {
+          ...(await route.request().allHeaders()),
+          "x-forward-cookie": (await route.request().allHeaders()).cookie ?? "",
+        },
+      }),
   );
-  return { release, reached: seen };
+  return {
+    release,
+    reached: headersSent,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
 }
 
 /** A click aimed at the box's centre that waits for the navigation it causes. */
@@ -141,12 +182,23 @@ test("a thumbnail click after a late onboarding answer still opens the detail", 
     format: "html",
     content: `<!doctype html><h1>${a.heading}</h1>`,
   });
+  // The state that moves a settled-looking page: this browser remembers "no
+  // card" for the member (an earlier load saw it finished), so no placeholder
+  // holds the room while the answer is out; the answer then opens the card.
+  const me = (await (await page.request.get(`${APP}${R.me}`)).json()) as {
+    user: { id: string };
+  };
+  await page.addInitScript((id) => {
+    localStorage.setItem(`oa.onboarding.no-card.${id}`, "1");
+  }, me.user.id);
   const held = await holdOnboarding(page);
   const opened = openLibrary(page, "/");
-  // The page is up and asking; its card arrives only when the test lets it.
+  // The browser has the answer's status and headers; its body, and so the
+  // card, arrives only when the test lets it.
   await held.reached;
   held.release();
   await opened;
+  await held.close();
   const thumb = await inView(
     page
       .locator("article.lib-card")
