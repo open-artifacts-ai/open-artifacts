@@ -5,6 +5,7 @@ import {
   createEventLog,
   type Daemon,
   type DaemonDeps,
+  defaultSkillRefresher,
   runDaemon,
   START_ERROR_CODES,
 } from "@oa/bus-daemon";
@@ -90,6 +91,12 @@ export async function daemon(
       onSocketLost: () => end(1),
       // #2552: the updater ends the daemon non-zero to restart it from a new `bin`.
       update: { entryFile: fileURLToPath(import.meta.url), exit: end },
+      // #3203: a new instance release rewrites the installed skills.
+      skillRefresh: defaultSkillRefresher(
+        ctx.home,
+        (msg) => sayErr(ctx, msg),
+        fileURLToPath(import.meta.url),
+      ),
     }).then(
       (d) => {
         running = d;

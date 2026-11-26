@@ -101,12 +101,13 @@ export function createSkillRefresher(deps: SkillRefreshDeps): SkillRefresher {
 export function defaultSkillRefresher(
   busHomeDir: string,
   log: (msg: string) => void,
+  entry: string,
 ): SkillRefresher {
   const file = join(busHomeDir, "skill-version");
   return createSkillRefresher({
     readStored: () => readSkillVersion(file),
     writeStored: (v) => writeSkillVersion(file, v),
-    run: () => runSkillCommand(),
+    run: () => runSkillCommand(process.execPath, entry),
     log,
   });
 }

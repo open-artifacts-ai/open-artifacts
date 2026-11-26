@@ -183,7 +183,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
-import { defaultSkillRefresher } from "./skill-refresh.ts";
+import type { SkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -299,6 +299,8 @@ const piLike = (kind: string) =>
 export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
+  /** #3203: refreshes the installed skills when the main instance's version changes. */
+  skillRefresh?: SkillRefresher;
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
@@ -515,9 +517,7 @@ const agentFields = (a: AgentRecord, reason?: string): EventFields => ({
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
-  const skillRefresh = deps.config
-    ? undefined
-    : defaultSkillRefresher(home(), log);
+  const skillRefresh = deps.skillRefresh;
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
   // #2793: one link per instance, each built from its own credentials only.
   const lanes = new Lanes();
