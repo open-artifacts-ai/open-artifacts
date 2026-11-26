@@ -18,6 +18,7 @@ import {
   ROUTE_POLICY,
   TOOL_POLICY,
 } from "../src/auth/route-policy.js";
+import { featuresOf } from "../src/billing/features.js";
 import { contentApp } from "../src/content/app.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
@@ -528,6 +529,16 @@ describe("artifact surfaces, dataWriters editors (#681)", () => {
   });
 });
 
+/**
+ * A route its policy switches off under one of this world's FEATURES (the
+ * table's offWhen: GET /api/v1/usage under hosted's usage_off) answers 404
+ * to everyone (enforcePolicy, src/auth/route-policy.ts).
+ */
+const switchedOff = (route: string) => {
+  const p = ROUTE_POLICY[route];
+  return !!p && "org" in p && !!p.offWhen && featuresOf(E).includes(p.offWhen);
+};
+
 describe("instance routes", () => {
   describe.each(ORG_SURFACES.map((s) => ({ ...s })))("$route", (s) => {
     it.concurrent(
@@ -537,12 +548,14 @@ describe("instance routes", () => {
         const exp = {} as Record<CallerName, string>;
         await Promise.all(
           CALLERS.map(async (who) => {
-            // This world is self-hosted (fixture E): a hosted-only route
-            // refuses everyone.
-            exp[who] = orgExpected(who, s.rule, s.route, {
-              hosted: E.HOSTED === "1",
-              ...(s.hostedOnly ? { hostedOnly: true } : {}),
-            });
+            // On a self-hosted world (fixture E) a hosted-only route
+            // refuses everyone; on any world, so does a switched-off one.
+            exp[who] = switchedOff(s.route)
+              ? "deny"
+              : orgExpected(who, s.rule, s.route, {
+                  hosted: E.HOSTED === "1",
+                  ...(s.hostedOnly ? { hostedOnly: true } : {}),
+                });
             // Allowed, it changes the instance: "instance writes" runs it
             // last, on its own.
             if (s.instance && exp[who] === "allow") {
@@ -760,9 +773,10 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
     ...SURFACES.filter((s) => !s.mutates).map((s) => s.name),
     // realOnly: no refusal mode holds in this world (the instance routes
     // above run them for real).
-    ...ORG_SURFACES.filter((s) => !s.mutates && !s.realOnly).map(
-      (s) => s.route,
-    ),
+    // A switched-off route is the instance routes' deny for everyone.
+    ...ORG_SURFACES.filter(
+      (s) => !s.mutates && !s.realOnly && !switchedOff(s.route),
+    ).map((s) => s.route),
     ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
   ];
   it.concurrent.each(names.map((n) => [n]))(
