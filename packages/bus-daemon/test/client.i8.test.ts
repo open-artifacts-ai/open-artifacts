@@ -68,17 +68,33 @@ describe("I8: revoke recovery", () => {
     await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
     const port = (http.address() as { port: number }).port;
     const onRevoked = vi.fn();
+    // The hub asks for a backoff only when it will retry; a revoke never does.
+    // Fake time moves each backoff on at once.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let retries = 0;
+    let retried!: () => void;
+    const second = new Promise<void>((r) => {
+      retried = r;
+    });
     const hub = new HubConnection(
-      opts(`ws://127.0.0.1:${port}/hub`, { onRevoked, backoffMs: () => 20 }),
+      opts(`ws://127.0.0.1:${port}/hub`, {
+        onRevoked,
+        backoffMs: () => {
+          retries++;
+          if (retries === 2) retried();
+          else queueMicrotask(() => vi.advanceTimersByTime(20));
+          return 20;
+        },
+      }),
     );
     hub.start();
     try {
-      await vi.waitFor(() => expect(hits).toBeGreaterThanOrEqual(2), {
-        timeout: 1500,
-      });
+      await second;
+      expect(hits).toBeGreaterThanOrEqual(2);
       expect(onRevoked).not.toHaveBeenCalled();
     } finally {
       hub.stop();
+      vi.useRealTimers();
       http.close();
     }
   });

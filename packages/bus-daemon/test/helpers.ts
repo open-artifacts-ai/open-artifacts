@@ -202,11 +202,15 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       (f): f is Extract<DaemonToHub, { type: T }> => f.type === type,
     );
   const next = async <T extends DaemonToHub["type"]>(type: T, n = 1) => {
-    // A signal, so the timeout costs nothing when it passes; a fake codex is a node process, >1 s under a full-package run.
-    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n), {
-      timeout: 15_000,
-      interval: 10,
-    });
+    // Woken by the frame itself, never by a clock.
+    if (of(type).length < n)
+      await new Promise<void>((resolve) => {
+        const off = onFrame(() => {
+          if (of(type).length < n) return;
+          off();
+          resolve();
+        });
+      });
     return of(type)[n - 1] as Extract<DaemonToHub, { type: T }>;
   };
   const toDaemon = (f: object) =>

@@ -31,8 +31,11 @@ import { daemonHarness, eventCounter, hello, stopAll } from "./helpers.ts";
 afterEach(stopAll);
 /** Wake passes the daemon finished: the signal for "it looked again and did nothing". */
 let passes = eventCounter();
+/** Anything the test reads may have changed: a pass, a finished run, a log line, a frame. */
+let ticks = eventCounter();
 beforeEach(() => {
   passes = eventCounter();
+  ticks = eventCounter();
 });
 
 const THREAD = "01a18536-7f07-7680-b17c-199e3dadf886";
@@ -44,10 +47,21 @@ const P2 = 101;
 const A1 = 200;
 const A2 = 201;
 const A3 = 202;
-/** Positive waits under a loaded full-package run. */
-const LOADED = { timeout: 15_000, interval: 10 };
-/** vi.waitFor with a timeout that survives a full-package run (a fake codex is a node process: >1 s when loaded). */
-const waitFor: typeof vi.waitFor = (fn, o) => vi.waitFor(fn, o ?? LOADED);
+/**
+ * Waits until `fn` stops throwing, re-checking only when something the test
+ * can observe happened (`ticks`), never on a clock. A condition no event
+ * reaches fails by the test's own timeout.
+ */
+const waitFor = async (fn: () => unknown): Promise<void> => {
+  for (;;) {
+    try {
+      await fn();
+      return;
+    } catch {
+      await ticks.next();
+    }
+  }
+};
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 const line = (type: string, payload: object) =>
   `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`;
@@ -142,9 +156,15 @@ function world() {
     relockEvery: 1,
     wakeAskMs: 0,
     wakeCheckMs: 0,
-    onWakePass: () => passes.hook(),
+    onWakePass: () => {
+      passes.hook();
+      ticks.hook();
+    },
     resolveBin: () => ({ path: bin, from: "path" as const }),
-    run: execCodex(5_000),
+    run: ((...a) =>
+      execCodex(5_000)(...a).finally(() => ticks.hook())) as ReturnType<
+      typeof execCodex
+    >,
     wakes: async () => true,
   };
   return { home, state, files, codex, runs, exit };
@@ -182,6 +202,7 @@ function answerLists(
     caps: ["ids", "mailbox", "waiting"],
   });
   return h.onFrame((f) => {
+    ticks.hook();
     {
       if (f.type !== "list" || done.has(f.id)) return;
       done.add(f.id);
@@ -234,7 +255,10 @@ async function restarted(
     attest: undefined,
     codex: { ...w.codex, ...extra },
     claude: { syncMs: 20 },
-    log: (m: string) => logs.push(m),
+    log: (m: string) => {
+      logs.push(m);
+      ticks.hook();
+    },
     ...deps,
   });
   return { two, logs };
@@ -771,20 +795,18 @@ function answerQueries(
     server_version: "1",
     caps: ["ids", "mailbox", "waiting", "waiting_query"],
   });
-  const t = setInterval(() => {
-    for (const f of h.of("waiting_query")) {
-      if (done.has(f.id)) continue;
-      done.add(f.id);
-      const reply = counts(f.agent_refs);
-      if (!reply) continue;
-      h.toDaemon({
-        id: f.id,
-        type: "waiting_counts",
-        counts: reply,
-      });
-    }
-  }, 5);
-  return () => clearInterval(t);
+  return h.onFrame((f) => {
+    ticks.hook();
+    if (f.type !== "waiting_query" || done.has(f.id)) return;
+    done.add(f.id);
+    const reply = counts(f.agent_refs);
+    if (!reply) return;
+    h.toDaemon({
+      id: f.id,
+      type: "waiting_counts",
+      counts: reply,
+    });
+  });
 }
 
 describe("the wake needs no live asker and no lsof (#2079)", () => {
@@ -795,8 +817,10 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       w,
       { holdersOf: (fs: string[]) => new Map(fs.map((f) => [f, []])) },
       {
-        events: (e: string, f?: Record<string, unknown>) =>
-          evs.push(`${e} ${JSON.stringify(f)}`),
+        events: (e: string, f?: Record<string, unknown>) => {
+          evs.push(`${e} ${JSON.stringify(f)}`);
+          ticks.hook();
+        },
       },
     );
     const stop = answerQueries(two, (refs) =>
@@ -946,34 +970,33 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       server_version: "1",
       caps: ["ids", "mailbox", "waiting"],
     });
-    const t = setInterval(() => {
-      for (const f of two.of("list")) {
-        if (done.has(f.id)) continue;
-        done.add(f.id);
-        two.toDaemon({
-          id: f.id,
-          type: "roster",
-          agents:
-            f.from_ref === NEAR
-              ? [
-                  {
-                    bus_name: "my-codex",
-                    kind: "codex",
-                    namespace: "ns",
-                    global: false,
-                    state: "away",
-                    machine_label: "laptop",
-                    waiting: 2,
-                  },
-                ]
-              : [],
-        });
-      }
-    }, 5);
+    const stopAnswering = two.onFrame((f) => {
+      ticks.hook();
+      if (f.type !== "list" || done.has(f.id)) return;
+      done.add(f.id);
+      two.toDaemon({
+        id: f.id,
+        type: "roster",
+        agents:
+          f.from_ref === NEAR
+            ? [
+                {
+                  bus_name: "my-codex",
+                  kind: "codex",
+                  namespace: "ns",
+                  global: false,
+                  state: "away",
+                  machine_label: "laptop",
+                  waiting: 2,
+                },
+              ]
+            : [],
+      });
+    });
     await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(two.of("waiting_query")).toHaveLength(0);
     expect(two.of("list").every((f) => f.from_ref === NEAR)).toBe(true);
-    clearInterval(t);
+    stopAnswering();
   });
 
   it("Linux without lsof: a locked thread is found, an open but unlocked one is not", () => {

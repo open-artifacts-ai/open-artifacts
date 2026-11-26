@@ -336,17 +336,34 @@ describe("C5 hardening: injection failure classes", () => {
   it("a stalled write after connecting is a retryable timeout", async () => {
     const d = dir();
     const sock = join(d, "c.sock");
+    // The first bytes in prove the client connected and wrote; then it stalls.
+    let wrote!: () => void;
+    const started = new Promise<void>((r) => {
+      wrote = r;
+    });
     const server = createServer((s) => {
       s.on("error", () => {}); // peer resets are not the test
       paused.push(s);
-      s.pause();
+      s.once("data", () => {
+        s.pause();
+        wrote();
+      });
     });
     servers.push(server);
     await new Promise<void>((r) => server.listen(sock, () => r()));
     const t = transportFor({ d, sock }, { injectTimeoutMs: 100 });
-    expect(
-      await t.deliver(agent, { ...mail(), body: "x".repeat(8 * 1024 * 1024) }),
-    ).toEqual({ ok: false, reason: "timeout" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const out = t.deliver(agent, {
+        ...mail(),
+        body: "x".repeat(8 * 1024 * 1024),
+      });
+      await started;
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await out).toEqual({ ok: false, reason: "timeout" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a reset after connecting is a retryable timeout", async () => {
