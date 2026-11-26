@@ -229,23 +229,34 @@ describe("ci.yml", () => {
     const steps: any[] = job.steps;
     for (const s of steps) expect(s.if, "no step is gated").toBeUndefined();
     expect(steps.some((s) => s.id === "changed")).toBe(false);
-    // It also proves a contents-read job token can read main's rules, which
-    // release-cadence needs for the release head's required checks.
-    const rules = steps.find((s) =>
-      String(s.run).includes("rules/branches/main"),
-    );
-    expect(rules?.env?.GH_TOKEN).toBe(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      "${{ github.token }}",
-    );
-    expect(rules?.run).toContain('select(.type == "required_status_checks")');
-    expect(w.permissions).toEqual({ contents: "read" });
     // Nothing waits on it: a skipped job must not hold an aggregate.
     for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
       w.jobs,
     ))
       expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
         "public-only",
+      );
+  });
+  // release-cadence reads main's required checks with its job token: a
+  // contents-read job token proves on every run that it can.
+  it("cadence-rules-read reads main's rules with a contents-read job token, and nothing needs it", () => {
+    const job = w.jobs["cadence-rules-read"];
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job.if).toBeUndefined();
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const steps: any[] = job.steps;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].env.GH_TOKEN).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.token }}",
+    );
+    expect(steps[0].run).toContain("rules/branches/main");
+    expect(steps[0].run).toContain('select(.type == "required_status_checks")');
+    for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
+      w.jobs,
+    ))
+      expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
+        "cadence-rules-read",
       );
   });
   // #2568: the updater's tests on the lowest Node the bus allows. Informational:

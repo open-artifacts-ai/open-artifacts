@@ -227,8 +227,8 @@ export type Required = { name: string; app: number };
 /**
  * Every check main requires: the floor, plus whatever the rules that apply
  * to main (its rulesets) list right now. That endpoint is public for a public
- * repo (it answers without a token), and ci.yml's public-only job reads it
- * with a contents-read job token on every run. Classic branch protection is
+ * repo (it answers without a token), and ci.yml's cadence-rules-read job
+ * reads it with a contents-read job token on every run. Classic branch protection is
  * not read: it needs admin, and the floor already holds the two checks only
  * it lists. A failed read throws, so the plan fails closed.
  */
