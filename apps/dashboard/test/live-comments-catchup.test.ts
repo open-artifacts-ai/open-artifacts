@@ -77,6 +77,28 @@ it("a frame during a first fetch that finds comments unavailable asks no more", 
   off();
 });
 
+it("a change during a first fetch that found comments unavailable reads again", async () => {
+  const qc = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const calls: Array<{ ok: (v: string[]) => void; no: (e: Error) => void }> =
+    [];
+  const obs = new QueryObserver<string[]>(qc, {
+    queryKey: ["comments", "a1"],
+    queryFn: () => new Promise<string[]>((ok, no) => calls.push({ ok, no })),
+  });
+  const off = obs.subscribe(() => {});
+  // No skip: the frame says something changed (comments turned on).
+  const done = refetchNow(qc, ["comments"]);
+  calls[0]?.no(new Error("comments_off")); // the stale first answer
+  await vi.waitFor(() => expect(calls).toHaveLength(2));
+  calls[1]?.ok(["Watching"]);
+  await done;
+  expect(calls).toHaveLength(2);
+  expect(qc.getQueryData(["comments", "a1"])).toEqual(["Watching"]);
+  off();
+});
+
 it("a frame during a refetch, with a list shown, still refetches once more", async () => {
   const qc = new QueryClient();
   const { answers, off } = watched(qc);

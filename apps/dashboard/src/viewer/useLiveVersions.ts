@@ -131,8 +131,9 @@ export const refetchesComments = (e: { type: string }): boolean =>
  * data yet) joins that fetch, whose answer may predate the change: a reply
  * made while the comments list was still loading never showed (#3095). So
  * such a fetch is let land first, then the query is fetched again. One that
- * landed with an answer `skip` names (comments unavailable) is not asked
- * twice; a query that had already answered is refetched as before.
+ * landed with an answer `skip` names is not asked twice (a hello after a
+ * read that found comments unavailable); a query that had already answered
+ * is refetched as before.
  */
 export const refetchNow = async (
   qc: QueryClient,
@@ -355,7 +356,14 @@ export function useLiveVersions(o: {
         if (refetchesComments(e)) {
           // A comment changed, or the socket (re)connected and may have
           // missed some (cloud #291): refetch the list.
-          void refetchNow(qc, commentsKey(id), commentsUnavailable);
+          // A hello only re-checks: a first read that found comments
+          // unavailable is not asked again. A comments frame is a change
+          // (comments may have just been turned on), so it always reads.
+          void refetchNow(
+            qc,
+            commentsKey(id),
+            e.type === "hello" ? commentsUnavailable : undefined,
+          );
           // #2426 B: an ask shown in this page's slots may have been decided.
           void refetchNow(qc, ASK_SLOTS_KEY);
         }
