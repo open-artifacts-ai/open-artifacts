@@ -48,7 +48,14 @@ const setup = (
   return { fx, requestThumbnail, put, invalidate };
 };
 const blob = (size: number) => new Blob([new Uint8Array(size)]);
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe("thumbnails", () => {
   it("requests a thumbnail for a space manager", () => {
@@ -234,6 +241,7 @@ describe("bridge follow-ups", () => {
   const live: { dispose(): void }[] = [];
   let frame = new FakeFrame(contentWindow);
   beforeEach(() => {
+    vi.useFakeTimers();
     frame = new FakeFrame(contentWindow);
     FakeWS.all = [];
     post.mockReset();

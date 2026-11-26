@@ -10,7 +10,7 @@ import { connect } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import { connectDaemon } from "../src/client.ts";
 import { serveDaemon } from "../src/server.ts";
-import { hello, ok, tmpSock, within } from "./helpers.ts";
+import { hello, ok, tmpSock } from "./helpers.ts";
 
 describe("server hardening", () => {
   it("close() resolves while a client is still connected", async () => {
@@ -22,9 +22,9 @@ describe("server hardening", () => {
     });
     const raw = connect(path);
     await new Promise((r) => raw.once("connect", r));
-    const res = await within(s.close().then(() => "closed"));
+    // A close that hangs on the open socket fails at the test's own timeout.
+    await s.close();
     raw.destroy();
-    expect(res).toBe("closed");
   });
 
   it("a second serveDaemon on a live socket refuses instead of unlinking it", async () => {
@@ -95,8 +95,7 @@ describe("server frame errors", () => {
       code: "internal",
       id: "x",
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(c.state).toBe("closed");
+    await vi.waitFor(() => expect(c.state).toBe("closed"));
     const d = await connectDaemon({
       path,
       hello: hello("other"),
@@ -147,9 +146,8 @@ describe("server frame errors", () => {
       path,
       onHello: ok,
       onFrame: (f, _h, reply) => {
-        setTimeout(
-          () => reply({ v: 1, id: f.id, type: "roster", agents: [] }),
-          20,
+        setImmediate(() =>
+          reply({ v: 1, id: f.id, type: "roster", agents: [] }),
         );
         return undefined;
       },
@@ -257,7 +255,7 @@ describe("a one-request connection (C26c I1)", () => {
         .map((f) => `${JSON.stringify(f)}\n`)
         .join(""),
     );
-    expect(await within(closed)).not.toBe("timeout");
+    await closed;
     return got
       .trim()
       .split("\n")
@@ -312,9 +310,8 @@ describe("a one-request connection (C26c I1)", () => {
       onHello: ok,
       oneRequest: () => true,
       onFrame: (f, _h, reply) => {
-        setTimeout(
-          () => reply({ v: 1, id: f.id, type: "roster", agents: [] }),
-          20,
+        setImmediate(() =>
+          reply({ v: 1, id: f.id, type: "roster", agents: [] }),
         );
         return undefined;
       },
@@ -346,10 +343,15 @@ describe("an asynchronous hello (C26c N3)", () => {
   it("holds frames sent behind the hello until it is welcomed, in order", async () => {
     const path = tmpSock();
     const seen: string[] = [];
+    // The hello is welcomed only once the test has sent every frame behind it.
+    let welcome: () => void = () => {};
+    const sent = new Promise<void>((r) => {
+      welcome = r;
+    });
     await serveDaemon({
       path,
       onHello: async () => {
-        await new Promise((r) => setTimeout(r, 30));
+        await sent;
         seen.push("hello");
         return ok();
       },
@@ -369,7 +371,9 @@ describe("an asynchronous hello (C26c N3)", () => {
         .map((f) => `${JSON.stringify(f)}\n`)
         .join(""),
     );
-    raw.write(`${JSON.stringify({ v: 1, id: "b", type: "list" })}\n`);
+    raw.write(`${JSON.stringify({ v: 1, id: "b", type: "list" })}\n`, () =>
+      welcome(),
+    );
     await vi.waitFor(() => expect(got.trim().split("\n")).toHaveLength(3));
     raw.destroy();
     expect(seen).toEqual(["hello", "a", "b"]);

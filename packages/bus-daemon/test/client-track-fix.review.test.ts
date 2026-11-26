@@ -77,7 +77,6 @@ describe("review: a daemon that died before the injection landed", () => {
       body: "x".repeat(4 << 20),
     });
     await vi.waitFor(() => expect(stalled.accepted()).toBe(true));
-    await new Promise((r) => setTimeout(r, 50));
     // A daemon killed now (crash, OOM, SIGKILL, power) leaves only what is on
     // disk; the next daemon must inject, never ack.
     expect(existsSync(join(d, "claude-held.injected.json"))).toBe(false);

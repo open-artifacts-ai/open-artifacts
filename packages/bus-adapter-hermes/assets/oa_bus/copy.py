@@ -467,11 +467,21 @@ def away_time(iso):
     return d.strftime("%Y-%m-%d %H:%M") + " UTC"
 
 
-def roster_line(a, now_ms):
-    """One list_agents line. `a` carries name, kind, namespace, queued and optionally machine_label, away."""
+def roster_line(a, now_ms, home=None):
+    """One list_agents line. `a` carries name, kind, namespace, queued and optionally machine_label, away.
+
+    #3166: with `home`, the short row: no namespace when it is `home`, the host to its first label.
+    """
     says = status_says_text(a, now_ms)
     machine = a.get("machine_label")
-    where = f", {machine}" if isinstance(machine, str) and machine else ""
+    host = ""
+    if isinstance(machine, str) and machine:
+        host = (machine.split(".")[0] or machine) if home is not None else machine
+    parts = [display_kind(a["kind"])]
+    if home is None or a["namespace"] != home:
+        parts.append(a["namespace"])
+    if host:
+        parts.append(host)
     away = a.get("away")
     if away is not None:
         mark = f" (away since {away_time(away)})" if away else " (away)"
@@ -480,7 +490,7 @@ def roster_line(a, now_ms):
     else:
         mark = ""
     tail = f"  {says}" if says else ""
-    return f"- {a['name']} ({display_kind(a['kind'])}, {a['namespace']}{where}){mark}{tail}"
+    return f"- {a['name']} ({', '.join(parts)}){mark}{tail}"
 
 
 def is_fallback_name(name, kind):
@@ -489,22 +499,54 @@ def is_fallback_name(name, kind):
     return low == kind or low.startswith(f"{kind}-") or low == "agent" or re.fullmatch(r"claude-\d+", low) is not None
 
 
+AWAY_RECENT_MS = 60 * 60_000
+
+
+def _is_recent_away(since, now_ms):
+    t = parse_time_ms(since) if isinstance(since, str) else None
+    return t is not None and now_ms - t < AWAY_RECENT_MS
+
+
 def collapsed_away_line(n, listed):
     more = " more" if listed else ""
     return f"{n}{more} away {'session' if n == 1 else 'sessions'} with no chosen name (not listed, still reachable by name)"
 
 
-def roster_text(agents, now_ms):
+def hidden_away_line(n):
+    # #3166: the count line for away rows left out of list_agents by default.
+    return f"{n} away {'agent' if n == 1 else 'agents'} not listed (still reachable by name; all: true lists them)"
+
+
+def roster_text(agents, now_ms, show_all=False):
     """bus-ipc rosterText: the list_agents text from the hub's roster rows."""
     if not agents:
         return "No agents in your namespace and linked ones."
     lines = []
-    collapsed = 0
+    hidden = 0
+    shown = []
     for a in agents:
         away = a.get("state") == "away"
-        if away and is_fallback_name(a["name"], a["kind"]):
-            collapsed += 1
+        if away and (
+            is_fallback_name(a["name"], a["kind"])
+            or (not show_all and not _is_recent_away(a.get("since"), now_ms))
+        ):
+            hidden += 1
             continue
+        shown.append(a)
+    # #3166: by default the most common namespace is named once, on top, and
+    # left out of its rows. `show_all` keeps the long rows as before.
+    counts = {}
+    for a in shown:
+        counts[a["namespace"]] = counts.get(a["namespace"], 0) + 1
+    home = None
+    for ns, n in counts.items():
+        if home is None or n > counts[home]:
+            home = ns
+    short = home if not show_all else None
+    if short is not None:
+        lines.append(f"Namespace {short}:")
+    for a in shown:
+        away = a.get("state") == "away"
         lines.append(
             roster_line(
                 {
@@ -513,10 +555,13 @@ def roster_text(agents, now_ms):
                     "away": str(a.get("since", "")) if away else None,
                 },
                 now_ms,
+                short,
             )
         )
-    if collapsed:
-        lines.append(collapsed_away_line(collapsed, len(lines) > 0))
+    if hidden:
+        lines.append(
+            collapsed_away_line(hidden, len(lines) > 0) if show_all else hidden_away_line(hidden)
+        )
     return "\n".join(lines)
 
 

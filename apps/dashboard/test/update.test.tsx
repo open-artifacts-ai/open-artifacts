@@ -11,9 +11,11 @@ import {
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COPIED, upgradePrompt } from "../src/layout/update";
+import { installClock } from "./clock";
 import { installHarness, mount, mountHosted, server, wait } from "./harness";
 
 installHarness();
+installClock();
 
 const NEWER: InstanceUpdate = {
   latestVersion: "0.15.0",
@@ -92,7 +94,7 @@ describe("Settings → Instance Version card", () => {
     clipboard();
     mount("/settings/instance");
     const c = await card();
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(4100));

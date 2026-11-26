@@ -3,6 +3,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installClock } from "./clock";
 import { installHarness, mount, mountHosted, server, wait } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -15,6 +16,7 @@ vi.mock("../src/viewer/bridge", () => ({
 }));
 
 installHarness();
+installClock();
 
 const PUBLIC = (
   fixtures.artifacts.find((a) => a.title === "Q4 report") as { id: string }

@@ -1,7 +1,8 @@
 // T19's reads survive a dropped connection, in the pattern #1152 gave the
 // red-line suite (tests/redline/src/provisioning.ts, fetch-timeout.ts): an
 // allow-side GET that got no response at all is sent again, a bounded few
-// times with a short backoff, so a poll keeps polling. A write is never sent
+// times, once the host answers /healthz again (no timed backoff), so a poll
+// keeps polling. A write is never sent
 // twice, with one exception: a caller may opt a request into the same bounded
 // retry (`repeatable: true`), and only a route in REPEATABLE_WRITE_ROUTES is
 // honoured. That list holds the session test hook alone, which is safe to
@@ -24,8 +25,28 @@ import { isNetworkError, noResponseCode } from "./net-codes";
 
 export { isNetworkError, noResponseCode };
 
-/** The waits before the second and third tries, as in tests/redline/src/http.ts. */
-export const READ_BACKOFF_MS = [250, 1000] as const;
+/** Sends of a retryable request: the first and up to two more (as tests/redline/src/http.ts). */
+export const READ_TRIES = 3;
+/** Most health asks before one resend: a host refusing at once is not asked in a busy loop. */
+export const HEALTH_ASKS_MAX = 50;
+/** How long to wait for the host to answer again before resending anyway. */
+export const HEALTH_WAIT_MS = 10_000;
+
+/** True when the host at `origin` answers GET /healthz with a 200 within `ms`. */
+export async function hostHealthy(
+  origin: string,
+  ms: number,
+): Promise<boolean> {
+  try {
+    const r = await fetch(`${origin}/healthz`, {
+      signal: AbortSignal.timeout(ms),
+    });
+    await r.body?.cancel();
+    return r.status === 200;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A request that got no HTTP response for a socket reason (#1596). Names
@@ -47,19 +68,43 @@ export class InfraError extends Error {
  */
 export const REPEATABLE_WRITE_ROUTES: readonly string[] = ["/__test/session"];
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const classify = (
+  e: unknown,
+  m: string,
+  route: string | undefined,
+  i: number,
+) => {
+  // Out of tries, or a write: a socket failure is infra, named. An HTTP
+  // response never gets here; a timeout or abort keeps its own error.
+  const code = noResponseCode(e);
+  if (!code) return e;
+  const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
+  return new InfraError(
+    `no_response ${code} ${m} ${route ?? "?"} (${tries})`,
+    e,
+  );
+};
 
 /**
  * Sends a request through `send`, which builds a fresh one (and its timeout)
- * each call. A GET or HEAD (or an opted-in allow-listed route) that throws a network error is sent again after
- * each `backoff` wait; anything else, and any response, goes back at once.
+ * each call. A GET or HEAD (or an opted-in allow-listed route) that throws a
+ * network error is sent again, up to READ_TRIES sends, after the host at
+ * `origin` answers /healthz again (or HEALTH_WAIT_MS passes: each ask is a
+ * request bounded by what is left, so nothing sleeps). Anything else, and any
+ * response, goes back at once. Without an `origin` there is nothing to ask,
+ * so a failed request is not sent again.
  */
 export async function sendRead(
   method: string | undefined,
   send: () => Promise<Response>,
   o: {
-    backoff?: readonly number[];
-    wait?: (ms: number) => Promise<void>;
+    /** The host's origin: what to ask /healthz of before a resend. */
+    origin?: string;
+    tries?: number;
+    /** Whether the host answers within `ms` (default: GET /healthz is a 200). */
+    healthy?: (origin: string, ms: number) => Promise<boolean>;
+    /** How long to wait for it (default HEALTH_WAIT_MS). */
+    healthWaitMs?: number;
     /** The route, for the infra reason (never a query: it may hold a code). */
     route?: string;
     /** Opt in to the GET retry; ignored unless `route` is in REPEATABLE_WRITE_ROUTES. */
@@ -73,25 +118,20 @@ export async function sendRead(
     (o.repeatable === true &&
       o.route !== undefined &&
       REPEATABLE_WRITE_ROUTES.includes(o.route));
-  const backoff = retryable ? (o.backoff ?? READ_BACKOFF_MS) : [];
-  const wait = o.wait ?? sleep;
-  for (let i = 0; ; i++) {
+  const tries = retryable && o.origin ? (o.tries ?? READ_TRIES) : 1;
+  const healthy = o.healthy ?? hostHealthy;
+  const untilHealthy = async (origin: string) => {
+    const end = Date.now() + (o.healthWaitMs ?? HEALTH_WAIT_MS);
+    for (let n = 0; n < HEALTH_ASKS_MAX && Date.now() < end; n++)
+      if (await healthy(origin, end - Date.now())) return;
+  };
+  for (let i = 1; ; i++) {
     try {
       return await send();
     } catch (e) {
-      const ms = backoff[i];
-      if (ms === undefined || !isNetworkError(e)) {
-        // Out of tries, or a write: a socket failure is infra, named. An HTTP
-        // response never gets here; a timeout or abort keeps its own error.
-        const code = noResponseCode(e);
-        if (!code) throw e;
-        const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
-        throw new InfraError(
-          `no_response ${code} ${m} ${o.route ?? "?"} (${tries})`,
-          e,
-        );
-      }
-      await wait(ms);
+      if (i >= tries || !isNetworkError(e))
+        throw classify(e, m, o.route, i - 1);
+      await untilHealthy(o.origin as string);
     }
   }
 }
@@ -105,7 +145,7 @@ export function sendPacedHook(
   route: string,
   pace: () => Promise<unknown>,
   send: () => Promise<Response>,
-  o: { backoff?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
+  o: Parameters<typeof sendRead>[2] = {},
 ): Promise<Response> {
   return sendRead(
     "POST",

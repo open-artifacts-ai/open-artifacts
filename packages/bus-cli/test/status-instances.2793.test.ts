@@ -61,6 +61,7 @@ describe("status: instances (#2793 S6)", () => {
         "Machine  leo-macbook-pro",
         "!  Daemon running, but no service will restart it after a reboot.",
         "   Run npx @open-artifacts/bus install.",
+        "Habits: on, sent by the bus",
         "",
         "No agents in namespace github.com/open-artifacts-ai/oa-bus yet.",
         "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",

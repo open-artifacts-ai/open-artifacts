@@ -134,11 +134,13 @@ describe("skill.md drift", () => {
     );
   });
 
-  it("leaves the installer's habits question to the human", async () => {
-    const md = await skillPart("agents");
-    expect(md).toContain("QUESTION FOR YOUR USER");
-    expect(md).toContain("(`install --habits`) only on their yes");
-    expect(md).toContain("until they answer, run neither");
+  it("has no installer habits question", async () => {
+    const md = await skill();
+    expect(md).not.toContain(
+      "A question a tool asks for your human is theirs to answer.",
+    );
+    expect(md).not.toContain("QUESTION FOR YOUR USER");
+    expect(md).not.toContain("install --habits");
   });
 
   it("tells every page writer how links open", async () => {
@@ -599,7 +601,8 @@ describe("skill.md drift", () => {
         "If your harness has its own artifact or page tool, it publishes somewhere else",
         "A file already on disk",
         "publish it by upload, so its text never passes through you",
-        "Do not read it into your context or paste it as content",
+        "Do not read or print the file, and skip extra checks (ls, wc, get_artifact): run only the three steps below. Never paste it as content.",
+        "Run this command with these exact flags, each value as one single-quoted argument:",
         "curl -q -sS --fail --globoff -T '<file>' '<url>' -o /dev/null -w '%{http_code}\\n'",
         "Go on only on 204",
         "never credentials, keys or .env files",

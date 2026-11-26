@@ -64,8 +64,11 @@ const gap = (page: Page) =>
 const shot = async (page: Page, name: string) => {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: `${OUT}/${name}.png`,
+    animations: "disabled",
+  });
 };
 
 async function open(page: Page) {
@@ -79,14 +82,16 @@ const field = (page: Page) =>
 
 /** The sheet ends at the screen's bottom and its scroller at the sheet's. */
 async function expectFlush(page: Page, name: string) {
-  await page.waitForTimeout(150);
-  const g = await gap(page);
-  const inner = await page.evaluate(() => window.innerHeight);
-  // The sheet's border is 1px; the safe-area inset is inside the scroller.
-  expect(g.scrollerBottom, `${name} ${JSON.stringify(g)}`).toBeGreaterThan(
-    inner - 3,
-  );
-  expect(g.sheetBottom, name).toBeGreaterThan(inner - 1);
+  await expect(async () => {
+    const g = await gap(page);
+    const inner = await page.evaluate(() => window.innerHeight);
+    expect(g.kb, name).toBe("0px");
+    // The sheet's border is 1px; the safe-area inset is inside the scroller.
+    expect(g.scrollerBottom, `${name} ${JSON.stringify(g)}`).toBeGreaterThan(
+      inner - 3,
+    );
+    expect(g.sheetBottom, name).toBeGreaterThan(inner - 1);
+  }).toPass();
   // The sheet's own box never scrolls (it holds the header) and nothing in it
   // overflows it.
   const box = await page.locator("[data-sheet-height]").evaluate((el) => ({
@@ -110,9 +115,7 @@ test("390: after the keyboard opens and closes", async ({ page }) => {
   await open(page);
   await field(page).focus();
   await keyboard(page, 320);
-  await page.waitForTimeout(150);
-  const up = await gap(page);
-  expect(up.kb).toBe("320px");
+  await expect.poll(async () => (await gap(page)).kb).toBe("320px");
   await field(page).blur();
   await keyboard(page, 0);
   await expectFlush(page, "keyboard closed");

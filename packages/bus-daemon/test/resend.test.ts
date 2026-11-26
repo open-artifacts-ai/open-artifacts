@@ -28,7 +28,17 @@ function clock() {
   };
 }
 
-const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
+/** The harness of the running test (see `tick`). */
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+/**
+ * Fences the hub frames sent so far (`quiet`: the daemon's reaction to each,
+ * a synchronous one, has run and its frames to the hub have arrived). With
+ * the hub link down nothing can reach the hub, so there is nothing to fence.
+ * The window of each check is on the injected fake clock, not here.
+ */
+const tick = async (_ms?: number) => {
+  if (cur.hubSock()?.readyState === 1) await cur.quiet();
+};
 
 async function setup(
   over: Parameters<typeof daemonHarness>[0] = {},
@@ -48,6 +58,7 @@ async function setup(
     // No session files here: never let sync close the test's agents.
     claude: { syncMs: 3_600_000 },
   });
+  cur = h;
   /** The hub registers `ref`'s nth agent_up. */
   const ok = async (n: number, ref = "A") => {
     const up = (await h.next("agent_up", n)) as { id: string };
@@ -205,7 +216,12 @@ group("a send whose link drops before its receipt (C16)", () => {
     h.hubSock()?.terminate();
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(false));
     c.advance(59_000);
-    await tick();
+    let done = false;
+    void reply.then(() => (done = true));
+    // A reply to this adapter would already have been written ahead of the
+    // daemon's answer to this request, on the same socket.
+    await a.request({ type: "self" });
+    expect(done).toBe(false);
     c.advance(1000);
     // Shown as-is by the adapters (R3); `held`: its msg_id is no hub id (R4).
     await expect(reply).resolves.toMatchObject({
@@ -226,7 +242,9 @@ group("a send whose link drops before its receipt (C16)", () => {
     await tick();
     let done = false;
     void reply.then(() => (done = true));
-    await tick();
+    // A reply to this adapter would already have been written ahead of the
+    // daemon's answer to this request, on the same socket.
+    await a.request({ type: "self" });
     expect(done).toBe(false);
     await drop();
     await expect(reply).resolves.toMatchObject({
@@ -250,7 +268,9 @@ group("a send whose link drops before its receipt (C16)", () => {
     await tick();
     let done = false;
     void reply.then(() => (done = true));
-    await tick();
+    // A reply to this adapter would already have been written ahead of the
+    // daemon's answer to this request, on the same socket.
+    await a.request({ type: "self" });
     expect(done).toBe(false);
     c.advance(5000);
     await expect(reply).resolves.toMatchObject({

@@ -107,15 +107,24 @@ describe("upload hardening", () => {
       ac.signal,
     );
     await waitFor(() => expect(api.putRaw).toHaveBeenCalled());
-    ac.abort();
-    const r = await Promise.race([
-      p.then(
-        () => "resolved",
-        (e: Error) => e.name,
-      ),
-      new Promise((res) => setTimeout(() => res("hung"), 200)),
-    ]);
-    expect(r).toBe("AbortError");
+    // The abort must settle within 200 ms, measured on fake time (no wall wait).
+    let outcome: string | undefined;
+    void p.then(
+      () => {
+        outcome = "resolved";
+      },
+      (e: Error) => {
+        outcome = e.name;
+      },
+    );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      ac.abort();
+      await vi.advanceTimersByTimeAsync(199);
+      expect(outcome).toBe("AbortError");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a failed PUT names the file", async () => {

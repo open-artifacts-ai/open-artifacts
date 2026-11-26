@@ -147,9 +147,10 @@ const BTN_MARGIN = 4;
 const POINTER = 5;
 /** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
 const BAR_CLEAR = 48 + 12;
-const SELECTION_MS = 100;
+/** How long a selection must hold still before the shell hears of it. */
+export const SELECTION_MS = 100;
 /** How long a collapsed selection stays usable for the shell's command. */
-const KEPT_MS = 1500;
+export const KEPT_MS = 1500;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const ICON_TAGS = new Set([

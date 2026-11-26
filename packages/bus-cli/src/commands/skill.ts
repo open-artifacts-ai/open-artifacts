@@ -2,6 +2,7 @@
 // nothing else: no login, no daemon, no service, no harness wiring. It works
 // when the bus install was refused or failed, because it needs only the
 // instance's origin. `--check` reads and changes nothing.
+import { readFileSync } from "node:fs";
 import { codexBinFile } from "@oa/bus-daemon";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { originOf, readMachine } from "../machine.ts";
@@ -12,9 +13,11 @@ import {
   installSkill,
   savedSkill,
   skillFolder,
+  skillVersion,
 } from "../steps/skill.ts";
 
-type Opts = { hub?: string; check: boolean; json?: boolean };
+/** refresh (#3203, the daemon's run): rewrite only copies already saved for this instance. */
+type Opts = { hub?: string; check: boolean; json?: boolean; refresh?: boolean };
 
 /** Harnesses found on this machine, wired or not: the skill does not need the bus. */
 const detected = (ctx: Ctx): Harness[] =>
@@ -48,7 +51,32 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     ]);
     return 1;
   }
-  const harnesses = detected(ctx);
+  let harnesses = detected(ctx);
+  if (opts.refresh && harnesses.length > 0) {
+    // Never adds a skill where none was saved: only the instance's own folder, already there.
+    let liveFolder: string | undefined;
+    try {
+      liveFolder = skillFolder(
+        await fetchSkillText(ctx.fetch, `${origin}/skill.md`),
+      );
+    } catch {
+      liveFolder = undefined;
+    }
+    if (!liveFolder) {
+      sayErr(
+        ctx,
+        `Could not read this instance's skill from ${origin}/skill.md.`,
+      );
+      return 1;
+    }
+    const folder = liveFolder;
+    harnesses = harnesses.filter(
+      (h) =>
+        savedSkill({ home: ctx.userHome, env: ctx.env }, h, folder) !==
+        undefined,
+    );
+    if (harnesses.length === 0) return 0;
+  }
   if (harnesses.length === 0) {
     sayErr(ctx, [
       "No harness the bus knows was found here.",
@@ -77,9 +105,11 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     if (failedUrl) sayErr(ctx, `Could not fetch the skill from ${failedUrl}.`);
   }
   // Only this instance's own copy counts, so its folder name must be known.
+  let liveText: string;
   let folder: string | undefined;
   try {
-    folder = skillFolder(await deps.fetchSkill(`${origin}/skill.md`));
+    liveText = await deps.fetchSkill(`${origin}/skill.md`);
+    folder = skillFolder(liveText);
     if (!folder) throw new Error("no skill name in the file");
   } catch (e) {
     sayErr(
@@ -88,14 +118,32 @@ export async function skill(opts: Opts, ctx: Ctx): Promise<number> {
     );
     return 1;
   }
+  const liveVersion = skillVersion(liveText);
   const where = Object.fromEntries(
     harnesses.map((h) => [h, savedSkill(deps, h, folder)]),
   ) as Record<Harness, string | undefined>;
   let ok = !failedUrl;
   for (const h of harnesses) {
     const path = where[h];
-    if (path) log(ctx, `${h}: skill saved at ${tilde(ctx, path)}`);
-    else {
+    if (path) {
+      let savedVersion: string | undefined;
+      if (liveVersion) {
+        try {
+          savedVersion = skillVersion(readFileSync(path, "utf8"));
+        } catch {
+          // Unreadable file: say nothing extra.
+        }
+      }
+      if (liveVersion && savedVersion && savedVersion !== liveVersion) {
+        ok = false;
+        sayErr(
+          ctx,
+          `${h}: skill at ${tilde(ctx, path)} is ${savedVersion}, the instance has ${liveVersion}. Run ${ctx.busCmd} skill to update it.`,
+        );
+      } else {
+        log(ctx, `${h}: skill saved at ${tilde(ctx, path)}`);
+      }
+    } else {
       ok = false;
       sayErr(
         ctx,

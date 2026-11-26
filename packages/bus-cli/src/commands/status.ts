@@ -245,8 +245,7 @@ export async function status(ctx: Ctx): Promise<number> {
     async () => (await health).version,
   );
   if (update) say(ctx, c.updateAvailable(update, st.version, m.hub));
-  const habits = habitsLine(ctx);
-  if (habits) say(ctx, habits);
+  say(ctx, habitsLine(ctx));
   // From the install record only: status never starts Claude Code.
   if (readClaudePluginsRecord(ctx.home)?.plugins?.length)
     say(ctx, c.pluginsStatus());
