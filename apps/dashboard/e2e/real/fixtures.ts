@@ -120,14 +120,6 @@ export function devConfig(): Record<string, unknown> {
   return cfg;
 }
 
-async function healthy(): Promise<boolean> {
-  try {
-    return (await fetch(`${APP}/healthz`)).ok;
-  } catch {
-    return false;
-  }
-}
-
 /** Whether anything accepts connections on `port`, on 127.0.0.1 or ::1. */
 const busyOn = (host: string, port: number) =>
   new Promise<boolean>((resolve) => {
