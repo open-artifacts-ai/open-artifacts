@@ -46,6 +46,7 @@ const sub = () => `sub-${crypto.randomUUID()}`;
 /** A Gmail login: no hd, no tenant, bound to its address. */
 const gmail = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: sub(),
   email: uniq("inv", "gmail.com"),
   name: "Inv",
@@ -57,6 +58,7 @@ const gmail = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
 /** An in-domain login: hd a.com is the tenant. */
 const inDom = (o: Partial<VerifiedIdentity> = {}): VerifiedIdentity => ({
   provider: "google",
+  emailVerified: true,
   subject: sub(),
   email: uniq("m"),
   name: "M",
@@ -199,6 +201,7 @@ describe("M1: first link needs strong evidence", () => {
     expect(
       await admit(e, c, {
         provider: "google",
+        emailVerified: true,
         subject: sub(),
         email,
         name: null,

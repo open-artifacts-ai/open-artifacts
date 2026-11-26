@@ -98,6 +98,7 @@ describe("google provider (direct)", () => {
       provider: "google",
       subject: "google-sub-1",
       email: "bob@a.com",
+      emailVerified: true,
       name: "Bob",
       tenant: "a.com",
       hd: "a.com",

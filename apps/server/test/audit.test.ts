@@ -329,6 +329,7 @@ describe("login and identity", () => {
   it("login is audited as auth.signin", async () => {
     const r = await admit(env, authConfig(direct()), {
       provider: "google",
+      emailVerified: true,
       subject: `sub-${crypto.randomUUID()}`,
       email: uniq("signin"),
       name: "S",
@@ -393,6 +394,7 @@ describe("login and identity", () => {
     await expect(
       admit(env, authConfig(direct()), {
         provider: "google",
+        emailVerified: true,
         subject: `sub-${crypto.randomUUID()}`,
         email: uniq("signin"),
         name: "S",

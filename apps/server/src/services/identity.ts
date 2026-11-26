@@ -8,7 +8,7 @@ import {
   isAdminRow,
   managesAdmins,
 } from "../auth/authz.js";
-import type { AuthConfig } from "../auth/config.js";
+import type { AuthConfig, IdentityProvider } from "../auth/config.js";
 import { isGuestRole, isMemberRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
 import { stmt } from "../db/stmt.js";
@@ -19,7 +19,7 @@ import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
 import { outsiderLoginOff } from "./outside.js";
-import { googleLinkStmts, toMember } from "./users.js";
+import { identityLinkStmts, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
 // (provider, subject) is the only link; email links an existing ACTIVE row at
@@ -55,7 +55,9 @@ const USER_COLS =
 
 const BY_SUBJECT = `select ${USER_COLS} from identities i join users u on u.id = i.user_id
   where i.provider = ?1 and i.subject = ?2 limit 1`;
-const BY_EMAIL = `select ${USER_COLS}, u.invited_at as invitedAt, (select subject from identities i where i.user_id = u.id and i.provider = 'google') as subject
+// subject: the row's link for THIS provider (?2), so another provider's link
+// is never an identity_conflict.
+const BY_EMAIL = `select ${USER_COLS}, u.invited_at as invitedAt, (select subject from identities i where i.user_id = u.id and i.provider = ?2) as subject
   from users u where u.email = ?1 limit 1`;
 
 const AN_OWNER = "select 1 as x from users where role = 'owner' limit 1";
@@ -63,6 +65,15 @@ const AN_OWNER = "select 1 as x from users where role = 'owner' limit 1";
 const member = (r: UserRow) => toMember(r as Parameters<typeof toMember>[0]);
 
 const logDrift = () => logAuth({ evt: "email_drift", outcome: "kept" });
+
+/**
+ * Google and Access keep today's admission (#3087). Any other provider is
+ * link-only: it signs in by a linked subject, and otherwise only reaches an
+ * existing active row through the emailed code. It never creates a row,
+ * promotes a guest, becomes the owner, or follows email drift.
+ */
+const linkOnly = (p: IdentityProvider): boolean =>
+  p !== "google" && p !== "access";
 
 /** Name, last-seen and owner role on sign-in; never a guest's role (#2590). */
 async function touch(
@@ -72,7 +83,11 @@ async function touch(
   now: number,
 ): Promise<Member | null> {
   // An email-bound identity never becomes the owner (#2520).
-  const owner = id.bound ? "" : normalizeEmail(env.OWNER_EMAIL ?? "");
+  // Nor does a link-only provider's.
+  const owner =
+    id.bound || linkOnly(id.provider)
+      ? ""
+      : normalizeEmail(env.OWNER_EMAIL ?? "");
   // The role is kept from the row's CURRENT role, in SQL, never written back
   // from the read above: an admin demotion racing this sign-in sticks (P3 T6).
   // No login path changes a guest's role (#2590): only an admin's invite makes
@@ -141,7 +156,9 @@ async function followDrift(
  * 3. Unlinked: an existing row with the email must be active (else removed)
  *    and have no other Google link (else identity_conflict); a new row needs
  *    join = member or OWNER_EMAIL (else no_access). Created and linked in one
- *    race-safe batch (googleLinkStmts).
+ *    race-safe batch (identityLinkStmts).
+ * Any other provider (linkOnly) skips rules 1 and 3 and drift: see
+ * admitLinkOnly.
  * A guest promoted to member here is safe: hd proves domain membership. With
  * no domains (no tenant) a guest stays a guest: nothing proves membership.
  */
@@ -155,6 +172,7 @@ export async function admit(
   // An email-bound identity has no tenant, whatever else it carries.
   const id: VerifiedIdentity =
     cfg.domains.length === 0 || raw.bound ? { ...raw, tenant: null } : raw;
+  if (linkOnly(id.provider)) return admitLinkOnly(env, id, now);
   if (!id.bound && !googleTenantOk(cfg, id.tenant))
     return { ok: false, reason: "tenant" };
   const email = normalizeEmail(id.email);
@@ -177,7 +195,7 @@ export async function admit(
     );
   }
 
-  const existing = await stmt(env.DB, BY_EMAIL).bind(email).first<
+  const existing = await stmt(env.DB, BY_EMAIL).bind(email, id.provider).first<
     UserRow & {
       subject: string | null;
       invitedAt: number | null;
@@ -210,7 +228,10 @@ export async function admit(
     // member or admin, guest): only strong evidence links directly (#2520
     // M1). Weak evidence needs the emailed code, which slice 2 builds; until
     // then it is refused. The token's hd, never the address, decides.
-    if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
+    if (
+      !id.emailVerified ||
+      !googleEvidenceStrong(email, true, id.hd ?? id.tenant)
+    )
       return { ok: false, reason: "needs_code" };
   }
   // OWNER_EMAIL is special only while no owner exists; then normal join rules.
@@ -229,7 +250,10 @@ export async function admit(
     // The owner's switch (#2590): off ends share-made guests' logins.
     if (await outsiderLoginOff(env, null, email))
       return { ok: false, reason: "no_access" };
-    if (!googleEvidenceStrong(email, true, id.hd ?? id.tenant))
+    if (
+      !id.emailVerified ||
+      !googleEvidenceStrong(email, true, id.hd ?? id.tenant)
+    )
       return { ok: false, reason: "needs_code" };
     role = "guest";
   }
@@ -239,7 +263,8 @@ export async function admit(
   const lead = existing ? [inviteAcceptAudit(env, existing.id)] : [];
   const results = await env.DB.batch<UserRow & { subject: string | null }>([
     ...lead,
-    ...googleLinkStmts(env, {
+    ...identityLinkStmts(env, {
+      provider: id.provider,
       email,
       name: id.name,
       role,
@@ -254,6 +279,45 @@ export async function admit(
   if (row.subject !== id.subject)
     return { ok: false, reason: "identity_conflict" };
   return admitted(await touch(env, row, id, now));
+}
+
+/**
+ * admit() for a link-only provider (#3087): no tenant rule (the hd rule is
+ * Google's), no drift. Linked: that user, as admit does. Unlinked: an
+ * existing ACTIVE row is required (else no_access); a lapsed invite is
+ * invite_expired; otherwise needs_code, always, whatever the provider says
+ * about the address: the emailed code makes the first link (verifyLink).
+ */
+async function admitLinkOnly(
+  env: Env,
+  id: VerifiedIdentity,
+  now: number,
+): Promise<AdmitResult> {
+  const blocked = async (r: UserRow) =>
+    (await unsharedGuest(env, r)) ||
+    (isGuestRole(r.role as Role) &&
+      (await outsiderLoginOff(env, r.id, r.email)));
+  const linked = await stmt(env.DB, BY_SUBJECT)
+    .bind(id.provider, id.subject)
+    .first<UserRow>();
+  if (linked) {
+    if (linked.status !== "active") return { ok: false, reason: "removed" };
+    if (await blocked(linked)) return { ok: false, reason: "no_access" };
+    return admitted(await touch(env, linked, id, now));
+  }
+  // The address matters only for a first link: a linked subject signs in by
+  // its stable id alone, whatever email the provider sends this time.
+  const email = normalizeEmail(id.email);
+  if (!email) return { ok: false, reason: "no_access" };
+  const existing = await stmt(env.DB, BY_EMAIL)
+    .bind(email, id.provider)
+    .first<UserRow & { subject: string | null; invitedAt: number | null }>();
+  if (existing?.status !== "active") return { ok: false, reason: "no_access" };
+  if (existing.subject) return { ok: false, reason: "identity_conflict" };
+  if (await blocked(existing)) return { ok: false, reason: "no_access" };
+  if (inviteLapsed(existing, now))
+    return { ok: false, reason: "invite_expired" };
+  return { ok: false, reason: "needs_code" };
 }
 
 /**
@@ -299,7 +363,8 @@ const admitted = (user: Member | null): AdmitResult =>
 /**
  * Why a code isn't allowed, for the log only (#2656): a fixed word, never the
  * address. bad_address: not an address. row_inactive: the row is removed or
- * suspended. linked: the row has a Google link. invite_expired: a never-signed-in
+ * suspended. linked: the row has a linked identity (for a link code: one
+ * for that provider). invite_expired: a never-signed-in
  * invite past its window. domain_codes_off / domain_no_join: the address is in
  * the login domains, where codes are off or a new address can't join. not_guest:
  * an owner or admin row outside the domains, or a member row there on an
@@ -327,6 +392,15 @@ export type CodeEligibility =
 export const ELIGIBILITY = `select u.id, u.role, u.status,
     u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
     exists (select 1 from identities i where i.user_id = u.id) as linked
+  from users u where u.email = ?1 limit 1`;
+/**
+ * ELIGIBILITY for linking a `?2` identity (#3087): linked is a link for THAT
+ * provider only, so a Google-linked member can add GitHub. Plain code
+ * sign-in keeps ELIGIBILITY (any identity blocks it).
+ */
+const LINK_ELIGIBILITY = `select u.id, u.role, u.status,
+    u.invited_at as invitedAt, u.last_seen_at as lastSeenAt,
+    exists (select 1 from identities i where i.user_id = u.id and i.provider = ?2) as linked
   from users u where u.email = ?1 limit 1`;
 // A share on a deleted page admits nothing (#2598 N3).
 const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifact_id
@@ -369,23 +443,28 @@ export async function codeEligibility(
 }
 
 /**
- * Who may get a code to LINK a Google account that admit() refused with
- * needs_code (#2590 G2): the person proved the Google account, the code
- * proves the mailbox. An active, unlinked, unlapsed row (invited member or
- * admin, or a guest); or no row and a live share (a guest row is made at
- * verify). Never a removed or suspended row, a guest left with no share, or a
- * row that already has a Google link. No write; checked at request and verify.
+ * Who may get a code to LINK a `provider` account that admit() refused with
+ * needs_code (#2590 G2, #3087): the person proved the account, the code
+ * proves the mailbox. An active, unlapsed row with no link for this provider
+ * (another provider's link doesn't block it) (invited member or admin, or a
+ * guest); or, for Google only, no row and a live share (a guest row is made
+ * at verify). Never a removed or suspended row, a guest left with no share,
+ * or a row that already has a link for this provider. No write; checked at
+ * request and verify.
  */
 export async function linkEligibility(
   env: Env,
   rawEmail: string,
+  provider: IdentityProvider,
 ): Promise<CodeEligibility> {
   const email = normalizeEmail(rawEmail);
   if (!email) return { kind: "none", why: "bad_address" };
-  const row = await stmt(env.DB, ELIGIBILITY)
-    .bind(email)
+  const row = await stmt(env.DB, LINK_ELIGIBILITY)
+    .bind(email, provider)
     .first<CodeRow & { invitedAt: number | null; lastSeenAt: number | null }>();
   if (!row) {
+    // A link-only provider never creates a row, not even a share's guest.
+    if (linkOnly(provider)) return { kind: "none", why: "no_share" };
     if (!(await stmt(env.DB, SHARED).bind(email).first()))
       return { kind: "none", why: "no_share" };
     return (await outsiderLoginOff(env, null, email))
@@ -459,7 +538,7 @@ export async function codeRule(
  */
 const TARGET_OK = `u.role <> 'owner' and (u.role <> 'admin' or ?3 = 1)`;
 const RESETTABLE = `exists (select 1 from identities i join users u on u.id = i.user_id
-  where i.provider = 'google' and u.id = ?1 and ${TARGET_OK})`;
+  where i.provider = ?4 and u.id = ?1 and ${TARGET_OK})`;
 /**
  * An owner or admin: only the owner may act on one (#475). Checked by role,
  * never by link, so a refusal doesn't reveal whether they are linked.
@@ -470,7 +549,10 @@ const ADMIN_TARGET =
 /**
  * Admin action (owner or admin; 404 for anyone else): removes a member's
  * Google link so their next Google sign-in links afresh (clears an
- * identity_conflict). Never the owner's link; 404 when there is none. An
+ * identity_conflict). Provider-aware (#3087): it resets `provider`'s link
+ * only (Google by default, the members route's only caller today); another
+ * provider's link stays, and only a Google reset sets google_relink. Never
+ * the owner's link; 404 when there is none. An
  * admin's link only by the (uncapped) owner: an admin acting on an admin or
  * the owner gets 403 owner_only whether or not they are linked (it would
  * sign a peer admin out, #475), also when the target was promoted between
@@ -488,6 +570,8 @@ export async function resetIdentity(
   actor: Member,
   userId: string,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  /** The link to reset; Google by default (the members route's only caller). */
+  provider: IdentityProvider = "google",
 ): Promise<void> {
   if (!orgCan(actor, "members.manage", { cap: capOfCaller(callerOf(actor)) }))
     throw new ApiError("not_found", "Not found");
@@ -506,7 +590,7 @@ export async function resetIdentity(
     throw new ApiError("not_found", "Not found");
   };
   const row = await stmt(env.DB, `select ${RESETTABLE} as ok`)
-    .bind(userId, null, owner)
+    .bind(userId, null, owner, provider)
     .first<{ ok: number }>();
   if (!row?.ok) await refuse();
   // Grants (KV) BEFORE the batch, unlike removeMember and setUserStatus, and
@@ -522,17 +606,20 @@ export async function resetIdentity(
     stmt(
       env.DB,
       `update tokens set revoked_at = ?2 where user_id = ?1 and revoked_at is null and ${RESETTABLE}`,
-    ).bind(userId, Date.now(), owner),
+    ).bind(userId, Date.now(), owner, provider),
     stmt(
       env.DB,
       // google_relink: the next directory users page relinks this row by
       // email (applyUsers), never deleting it as a recycled address. Never
       // on an erased row (#1204): its address is gone, so the reset only
       // frees that Google account to come back as a new, empty person.
+      // google_relink is Google's (directory sync): another provider's reset
+      // leaves it as it is.
       `update users set session_epoch = session_epoch + 1,
-        google_relink = case when erased_at is null then 1 else 0 end
+        google_relink = case when ?4 <> 'google' then google_relink
+                             when erased_at is null then 1 else 0 end
         where id = ?1 and ${RESETTABLE}`,
-    ).bind(userId, null, owner),
+    ).bind(userId, null, owner, provider),
     // Directly after the session_epoch update (gated on RESETTABLE): audited
     // only when that update changed the row, i.e. the reset happens.
     audit(
@@ -541,22 +628,24 @@ export async function resetIdentity(
       { type: "user", id: userId },
       userActor(actor.id),
       {
-        detail: { provider: "google" },
+        detail: { provider },
         when: { sql: "changes() > 0", args: [] },
       },
     ),
-    stmt(
-      env.DB,
-      `delete from identities where provider = 'google'
-       and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
-    ).bind(userId, null, owner),
-    // #1291: bus machines go with the PATs (after results[3], read below).
+    // #1291: bus machines go with the PATs. Before the link delete below:
+    // RESETTABLE reads that link, so after it this would match nothing.
     stmt(
       env.DB,
       `update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null and ${RESETTABLE}`,
-    ).bind(userId, Date.now(), owner),
+    ).bind(userId, Date.now(), owner, provider),
+    stmt(
+      env.DB,
+      `delete from identities where provider = ?4
+       and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
+    ).bind(userId, null, owner, provider),
   ]);
-  if (!results[3]?.results.length) await refuse();
+  // results[4]: the link delete's returning row.
+  if (!results[4]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).
   await revokeUserLive(env, userId, "identity reset", ctx);
 }

@@ -4,9 +4,17 @@ import { env } from "cloudflare:workers";
 import { AUTH, R, SIGN_IN_PAGE } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
+import { codesKey, emailKey } from "../src/auth/codes.js";
+import { authConfig } from "../src/auth/config.js";
 import { readSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
+import {
+  admit,
+  codeEligibility,
+  linkEligibility,
+} from "../src/services/identity.js";
 import { shareReach } from "../src/services/reach.js";
+import { b64urlDecode, b64urlEncode, hmacSign } from "../src/util/crypto.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
 import { fakeGoogle } from "./fixtures/fake-google.js";
 import { errOf, fetchAndWait, login } from "./helpers.js";
@@ -21,7 +29,13 @@ const get = (e: Env, path: string, cookie?: string) =>
     e,
     ctx,
   );
-const post = async (e: Env, path: string, body: unknown, cookie?: string) => {
+const post = async (
+  e: Env,
+  path: string,
+  body: unknown,
+  cookie?: string,
+  ip = "198.51.100.88",
+) => {
   const waits: Promise<unknown>[] = [];
   const r = await app.fetch(
     new Request(`${APP}${path}`, {
@@ -30,7 +44,7 @@ const post = async (e: Env, path: string, body: unknown, cookie?: string) => {
         "content-type": "application/json",
         "x-oa-request": "1",
         "sec-fetch-site": "same-origin",
-        "cf-connecting-ip": "198.51.100.88",
+        "cf-connecting-ip": ip,
         ...(cookie ? { cookie } : {}),
       },
       body: JSON.stringify(body),
@@ -104,6 +118,43 @@ async function linkFlow(e: Env, m: ReturnType<typeof mailer>, email: string) {
   const pending = cookieOf(req, /oa_code=/);
   const code = m.codeFor(email);
   return { g, link, req, pending, code };
+}
+
+/**
+ * A link cookie sealed as routes/codes.ts seals one, with any body: the
+ * provider field (#3087) present, absent (a cookie from before it) or unknown.
+ */
+async function sealLink(e: Env, body: Record<string, unknown>) {
+  const email = body.e as string;
+  const ek = await emailKey(e, email);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    b64urlDecode(await codesKey(e, "oa:code-email")) ?? new Uint8Array(),
+    "AES-GCM",
+    false,
+    ["encrypt"],
+  );
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: new TextEncoder().encode(ek) },
+    key,
+    new TextEncoder().encode(JSON.stringify(body)),
+  );
+  const sealed = new Uint8Array(12 + ct.byteLength);
+  sealed.set(iv);
+  sealed.set(new Uint8Array(ct), 12);
+  const val = b64urlEncode(
+    new TextEncoder().encode(
+      JSON.stringify({
+        ek,
+        ee: b64urlEncode(sealed),
+        exp: Date.now() + 600_000,
+        k: "gl",
+      }),
+    ),
+  );
+  const sig = await hmacSign(await codesKey(e, "oa:glink-cookie"), val);
+  return `oa_glink=${val}.${sig}`;
 }
 
 describe("a weak first Google login links after a code (#2590 G2)", () => {
@@ -253,6 +304,248 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     }
     expect(() => m.codeFor(email)).toThrow();
     expect(await subjectOf(email)).toBeNull();
+  });
+
+  it("a link cookie from before the provider field links as Google (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("old", "custom.example");
+    const uid = await seedUser(email, "member");
+    await env.DB.prepare("update users set invited_at = ? where id = ?")
+      .bind(Date.now(), uid)
+      .run();
+    const link = await sealLink(e, {
+      s: `sub-${email}`,
+      e: email,
+      h: null,
+      n: null,
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    const pending = cookieOf(req, /oa_code=/);
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      `${link}; ${pending}`,
+    );
+    expect(ok.status).toBe(200);
+    const sess = await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ uid, p: "google" });
+    expect(
+      await env.DB.prepare(
+        "select provider p, subject s from identities where user_id = ?",
+      )
+        .bind(uid)
+        .first(),
+    ).toEqual({ p: "google", s: `sub-${email}` });
+  });
+
+  it("a link cookie naming an unknown provider is refused (#3087)", async () => {
+    const { e } = install();
+    const email = uniq("uk", "custom.example");
+    await seedUser(email, "member");
+    const body = { s: `sub-${email}`, e: email, h: null, n: null };
+    // The same body with p: "github" is read, so only the provider differs.
+    const good = await sealLink(e, { ...body, p: "github" });
+    expect((await get(e, AUTH.codeLink, good)).status).toBe(200);
+    for (const p of ["access", "gitlab"]) {
+      const bad = await sealLink(e, { ...body, p });
+      expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
+      expect(
+        (await post(e, AUTH.codeRequest, { link: true }, bad)).status,
+      ).toBe(400);
+    }
+  });
+
+  it("a Google-linked member adds GitHub by a code; Google stays linked (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("two", "custom.example");
+    const uid = await seedUser(email, "member", { googleSub: `g-${email}` });
+    const gh = {
+      provider: "github" as const,
+      emailVerified: true,
+      subject: `gh-${email}`,
+      email,
+      name: null,
+      tenant: null,
+    };
+    expect(await admit(e, authConfig(e), gh)).toEqual({
+      ok: false,
+      reason: "needs_code",
+    });
+    const link = await sealLink(e, {
+      s: gh.subject,
+      e: email,
+      h: null,
+      n: null,
+      p: "github",
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    const code = m.codeFor(email);
+    expect(code).toBeTruthy();
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code },
+      `${link}; ${cookieOf(req, /oa_code=/)}`,
+    );
+    expect(ok.status).toBe(200);
+    const sess = await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ uid, p: "github" });
+    const links = await env.DB.prepare(
+      "select provider p, subject s from identities where user_id = ? order by provider",
+    )
+      .bind(uid)
+      .all();
+    expect(links.results).toEqual([
+      { p: "github", s: gh.subject },
+      { p: "google", s: `g-${email}` },
+    ]);
+    // Now straight in by subject; a second GitHub account is a conflict.
+    expect(await admit(e, authConfig(e), gh)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    expect(
+      await admit(e, authConfig(e), { ...gh, subject: `gh2-${email}` }),
+    ).toEqual({ ok: false, reason: "identity_conflict" });
+    // A plain code sign-in for the linked member is still refused.
+    expect(await codeEligibility(e, authConfig(e), email)).toEqual({
+      kind: "none",
+      why: "linked",
+    });
+    expect(await linkEligibility(e, email, "github")).toEqual({
+      kind: "none",
+      why: "linked",
+    });
+  });
+
+  it("a link code verifies only the link it was requested for (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("swap", "custom.example");
+    const uid = await seedUser(email, "member", { googleSub: `g-${email}` });
+    const body = { e: email, h: null, n: null, p: "github" };
+    const linkA = await sealLink(e, { ...body, s: `ghA-${email}` });
+    const ip = "198.51.100.92";
+    const req = await post(e, AUTH.codeRequest, { link: true }, linkA, ip);
+    expect(req.status).toBe(202);
+    const pending = cookieOf(req, /oa_code=/);
+    const code = m.codeFor(email);
+    // Another subject, or another provider for the same subject, swapped in.
+    for (const swapped of [
+      await sealLink(e, { ...body, s: `ghB-${email}` }),
+      await sealLink(e, { ...body, s: `ghA-${email}`, p: "microsoft" }),
+    ]) {
+      const r = await post(
+        e,
+        AUTH.codeVerify,
+        { code },
+        `${swapped}; ${pending}`,
+        ip,
+      );
+      expect(r.status).toBe(401);
+      expect(cookieOf(r, SESSION)).toBeUndefined();
+    }
+    const links = await env.DB.prepare(
+      "select provider p from identities where user_id = ?",
+    )
+      .bind(uid)
+      .all();
+    expect(links.results).toEqual([{ p: "google" }]);
+  });
+
+  it("overlapping attempts: a plain code after a link request signs in; a link code after a plain request links (#3087)", async () => {
+    const { e, m } = install();
+    const ip = "198.51.100.91";
+    const pendingOf = (r: Response) => cookieOf(r, /oa_code=/) ?? "";
+    // Link first, then a plain request in the same browser: the plain code
+    // signs in by code, nothing links.
+    const email = uniq("ovl", "custom.example");
+    await seedShare(email);
+    const link = cookieOf(await google(e, weak(email)), /oa_glink=/);
+    const lr = await post(e, AUTH.codeRequest, { link: true }, link, ip);
+    expect(lr.status).toBe(202);
+    const plain = await post(
+      e,
+      AUTH.codeRequest,
+      { email },
+      `${link}; ${pendingOf(lr)}`,
+      ip,
+    );
+    expect(plain.status).toBe(202);
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      `${link}; ${pendingOf(plain)}`,
+      ip,
+    );
+    expect(ok.status).toBe(200);
+    expect(
+      await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]),
+    ).toMatchObject({ p: "code" });
+    expect(await subjectOf(email)).toBeNull();
+    // Plain first, then a link request: the link code links.
+    const email2 = uniq("ovl2", "custom.example");
+    await seedShare(email2);
+    const link2 = cookieOf(await google(e, weak(email2)), /oa_glink=/);
+    const pr = await post(e, AUTH.codeRequest, { email: email2 }, link2, ip);
+    expect(pr.status).toBe(202);
+    const lreq = await post(
+      e,
+      AUTH.codeRequest,
+      { link: true },
+      `${link2}; ${pendingOf(pr)}`,
+      ip,
+    );
+    expect(lreq.status).toBe(202);
+    const ok2 = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email2) },
+      `${link2}; ${pendingOf(lreq)}`,
+      ip,
+    );
+    expect(ok2.status).toBe(200);
+    expect(
+      await readSession(e, cookieOf(ok2, SESSION)?.split("=")[1]),
+    ).toMatchObject({ p: "google" });
+    expect(await subjectOf(email2)).toBe(`sub-${email2}`);
+  });
+
+  it("a GitHub link never creates a row, not even a share recipient's (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("ghshare", "custom.example");
+    await seedShare(email);
+    expect((await linkEligibility(e, email, "github")).kind).toBe("none");
+    expect((await linkEligibility(e, email, "google")).kind).toBe("guest");
+    const link = await sealLink(e, {
+      s: `gh-${email}`,
+      e: email,
+      h: null,
+      n: null,
+      p: "github",
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    expect(() => m.codeFor(email)).toThrow();
+    expect(await countRows(email)).toBe(0);
+  });
+
+  it("a link cookie's p: only a missing one reads as Google; null is refused (#3087)", async () => {
+    const { e } = install();
+    const email = uniq("gp", "custom.example");
+    await seedUser(email, "member");
+    const body = { s: `sub-${email}`, e: email, h: null, n: null };
+    // A legacy cookie (no p) still works.
+    expect((await get(e, AUTH.codeLink, await sealLink(e, body))).status).toBe(
+      200,
+    );
+    for (const p of [null, "", 1, "GOOGLE"]) {
+      const bad = await sealLink(e, { ...body, p });
+      expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
+    }
   });
 
   it("a forged link cookie is refused", async () => {

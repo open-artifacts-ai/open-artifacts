@@ -251,6 +251,7 @@ describe("SESSION_SECRET shorter than 32 characters", () => {
         authorizeUrl: (_e, a) => `https://idp.test/?state=${a.state}`,
         redeem: async () => ({
           provider: id,
+          emailVerified: true,
           subject: "s",
           email: "x@a.com",
           name: null,
@@ -271,6 +272,7 @@ describe("SESSION_SECRET shorter than 32 characters", () => {
           authorizeUrl: () => "",
           redeem: async () => ({
             provider: id,
+            emailVerified: true,
             subject: "s",
             email: "x@a.com",
             name: null,
@@ -300,6 +302,7 @@ describe("SESSION_SECRET shorter than 32 characters", () => {
 describe("provider interface and state", () => {
   const redeem = vi.fn(async () => ({
     provider: "access" as const,
+    emailVerified: true,
     subject: "sub",
     email: "x@a.com",
     name: null,

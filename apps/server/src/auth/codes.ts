@@ -20,7 +20,7 @@ import { getSettings } from "../services/members.js";
 import { noteTestOtp } from "../test-hooks/index.js";
 import { b64urlDecode, hmacSign } from "../util/crypto.js";
 import { logAuth } from "./audit.js";
-import type { AuthConfig } from "./config.js";
+import type { AuthConfig, IdentityProvider } from "./config.js";
 import { deriveKey, MIN_SECRET_LENGTH } from "./keys.js";
 
 // Emailed one-time sign-in codes (P2). One row per request, keyed by HMACs
@@ -392,8 +392,11 @@ export async function deliverCode(
   requestId: string,
   ip: string,
   now = Date.now(),
-  /** A code to link a Google account admit() refused with needs_code (#2590 G2). */
-  link = false,
+  /**
+   * A code to link this provider's account, which admit() refused with
+   * needs_code (#2590 G2, #3087). Absent: an ordinary sign-in code.
+   */
+  link?: IdentityProvider,
 ): Promise<{ requestId: string } | null> {
   /** Logs (and, in test builds, records) why nothing was sent. */
   const none = async (
@@ -408,7 +411,7 @@ export async function deliverCode(
   const to = normalizeEmail(email);
   if (!to) return none("ineligible", "bad_address");
   const elig = link
-    ? await linkEligibility(env, to)
+    ? await linkEligibility(env, to, link)
     : await codeEligibility(env, cfg, to);
   if (elig.kind === "none") return none("ineligible", elig.why);
   const day = counterBucket("day", now);

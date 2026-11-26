@@ -114,6 +114,7 @@ it("a Google login writes the user touch plus the auth.signin audit row", async 
   rows.n = 0;
   const r = await admit(counted, authConfig(direct()), {
     provider: "google",
+    emailVerified: true,
     subject: sub,
     email,
     name: "R",

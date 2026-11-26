@@ -1,12 +1,18 @@
 import type { Env } from "../../env.js";
-import type { ProviderId } from "../config.js";
+import type { IdentityProvider, ProviderId } from "../config.js";
 
 /** What a redirect provider vouches for, after every check passed. */
 export type VerifiedIdentity = {
-  provider: ProviderId;
+  provider: IdentityProvider;
   /** The provider's stable subject (Access `sub`, Google `sub`). */
   subject: string;
   email: string;
+  /**
+   * The provider vouches for this exact address (#3087): Google's
+   * email_verified (redeem requires it), Access always. Evidence of address
+   * ownership only, never of domain membership.
+   */
+  emailVerified: boolean;
   name: string | null;
   /** Verified tenant (Google `hd`), or null when the provider has none. */
   tenant: string | null;

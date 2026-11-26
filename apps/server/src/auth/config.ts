@@ -5,6 +5,12 @@ import { b64urlDecode } from "../util/crypto.js";
 
 /** Redirect (OIDC) sign-in providers. Codes ("email") aren't one. */
 export type ProviderId = "access" | "google";
+/**
+ * Every provider an identities row may name (#3087). Wider than ProviderId:
+ * microsoft, github and apple arrive in later slices, and AUTH_PROVIDERS
+ * (parseProviders) refuses them until then.
+ */
+export type IdentityProvider = ProviderId | "microsoft" | "github" | "apple";
 export type SignInProvider = ProviderId | "email";
 
 export type GoogleTransport =
