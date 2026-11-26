@@ -86,7 +86,6 @@
   "packages/bus-adapter-pi/test/asset.test.ts": 3,
   "packages/bus-cli/test/auto-update.2552.test.ts": 1,
   "packages/bus-cli/test/claude-proof.2688.test.ts": 1,
-  "packages/bus-daemon/test/claude.hardening.test.ts": 1,
   "packages/bus-daemon/test/daemon.dedupe.runDaemon.test.ts": 1,
   "packages/bus-daemon/test/deliver.test.ts": 1,
   "packages/bus-daemon/test/delivered.test.ts": 5,

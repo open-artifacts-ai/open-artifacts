@@ -366,34 +366,31 @@ describe("C5 hardening: injection failure classes", () => {
 
   it("keeps the session live when an injection times out", async () => {
     const d = dir();
-    const sock = join(d, "c.sock");
-    const server = createServer((s) => {
-      s.on("error", () => {}); // peer resets are not the test
-      paused.push(s);
-      s.pause();
+    writeSession(d, 4242);
+    // The transport's answer to an injection that connected and then timed
+    // out (a non-retryable timeout): the stub settles with exactly that.
+    let timedOut!: () => void;
+    const settled = new Promise<void>((r) => {
+      timedOut = r;
     });
-    servers.push(server);
-    await new Promise<void>((r) => server.listen(sock, () => r()));
-    writeSession(d, 4242, { messagingSocketPath: sock });
-    writeFileSync(
-      join(d, `4242.${sha(sock)}.key`),
-      JSON.stringify({ peerToken: "tok", procStart: "t0" }),
-    );
     const h = await daemonHarness({
       claude: {
         sessionsDir: d,
         socketsDir: join(d, "r"),
-        injectTimeoutMs: 100,
         procStart: () => "t0",
         isRunning: () => true,
       },
+      transports: {
+        "claude-code": async () => {
+          timedOut();
+          return { ok: false, reason: "timeout" };
+        },
+      },
     });
     await h.next("agent_up");
-    h.toDaemon({
-      ...deliverFrame("mmmmmmmmmmmmmmm1", "s4242"),
-      body: "x".repeat(200_000),
-    });
-    await new Promise((r) => setTimeout(r, 400));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await settled;
+    await h.barrier();
     expect(h.of("refuse")).toEqual([]);
     expect(h.of("ack")).toEqual([]);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
