@@ -67,6 +67,7 @@ import {
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { agentKey } from "../services/comment-agents.js";
 import {
+  artifactIdOf,
   follow,
   following,
   knownKey,
@@ -3992,6 +3993,14 @@ export class BusHub extends DurableObject<Env> {
     hub.#clock = ms;
   }
 
+  /** #3132: a gate an unfollow's D1 delete waits on; null in production. */
+  #unfollowGate: Promise<void> | null = null;
+
+  /** Tests only, like setTestClock: holds unfollows' D1 deletes until `gate` settles. */
+  static setTestUnfollowGate(hub: BusHub, gate: Promise<void> | null): void {
+    hub.#unfollowGate = gate;
+  }
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     // Every daemon socket gets "pong" for "ping" from the runtime, without
@@ -6752,6 +6761,44 @@ export class BusHub extends DurableObject<Env> {
     return p;
   }
 
+  /** #3132: the role part of page `ref` that `agent`'s roles carry ends now (synchronous). */
+  #endRolePart(agent: AgentRow, ref: string): void {
+    const id = artifactIdOf(this.env, ref);
+    if (id)
+      this.ctx.storage.sql.exec(
+        `delete from role_follows where artifact_id = ?
+           and role_id in (select id from roles where org_id = ? and agent_id = ?)`,
+        id,
+        OWNER_ORG_ID,
+        agent.id,
+      );
+  }
+
+  /**
+   * #3132: an unfollow by `agent`. The role's part of the page ends at once,
+   * before anything awaits (a role it holds now cannot move away first), and
+   * the D1 delete runs in the same queue as a role move's re-key, so a move
+   * that starts meanwhile never hands the page on.
+   */
+  #unfollowNow(
+    userId: string,
+    to: { namespace: string; name: string },
+    agent: AgentRow,
+    ref: string,
+  ): Promise<{ removed: boolean }> {
+    this.#endRolePart(agent, ref);
+    const gate = this.#unfollowGate;
+    const p = this.#rekeyed.then(async () => {
+      if (gate) await gate;
+      return unfollow(this.env, userId, to, ref);
+    });
+    this.#rekeyed = p.then(
+      () => undefined,
+      () => undefined,
+    );
+    return p;
+  }
+
   /**
    * #1766: every address this hub still holds for its member: a live agent, or
    * a name under an unexpired reservation (away, held, chosen), as knownKey.
@@ -6804,6 +6851,8 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     const to = { namespace: agent.namespace, name: agent.name };
+    // #3132: before anything awaits, so the role can't move away first.
+    if (f.type === "unfollow") this.#endRolePart(agent, f.artifact);
     const wire = (e: {
       artifactId: string;
       url: string;
@@ -6826,23 +6875,15 @@ export class BusHub extends DurableObject<Env> {
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
           : f.type === "unfollow"
-            ? unfollow(this.env, userId, to, f.artifact).then((r) => {
-                // #3132: the holder's unfollow ends the role's part too, so a
-                // later move gives the page to nobody.
-                this.ctx.storage.sql.exec(
-                  `delete from role_follows where artifact_id = ?
-                     and role_id in (select id from roles where org_id = ? and agent_id = ?)`,
-                  r.artifactId,
-                  OWNER_ORG_ID,
-                  agent.id,
-                );
-                return {
-                  v: 1,
-                  id: f.id,
-                  type: "unfollowed",
-                  removed: r.removed,
-                } as const;
-              })
+            ? this.#unfollowNow(userId, to, agent, f.artifact).then(
+                (r) =>
+                  ({
+                    v: 1,
+                    id: f.id,
+                    type: "unfollowed",
+                    removed: r.removed,
+                  }) as const,
+              )
             : following(this.env, userId, to).then(
                 (l) =>
                   ({
