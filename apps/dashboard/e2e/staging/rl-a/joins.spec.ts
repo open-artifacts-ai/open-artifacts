@@ -161,12 +161,10 @@ test("an invited member outside the domain signs in by code: a member session in
   );
   await page.getByRole("textbox", { name: "Code" }).fill(got.code);
   await page.getByRole("button", { name: "Verify" }).click();
-  const v = await verified;
-  expect(v.status()).toBe(200);
-  expect(await v.json()).toMatchObject({
-    user: { id: r.id, role: "member" },
-    readOnly: false,
-  });
+  // Only the status: the page does a full load to `next` at once, so the
+  // response body is gone by the time it could be read. /me below checks
+  // the identity and that the session is not capped.
+  expect((await verified).status()).toBe(200);
 
   // An invited row has no name yet: the first page asks for one.
   const ask = page.getByRole("dialog", {
