@@ -43,6 +43,9 @@ export async function until<T>(
   }
 }
 
+/** How long one call to the server may take. */
+export const FETCH_MS = 30_000;
+
 /** Fetch with one cookie jar: what a signed-in browser would send. */
 export class Session {
   #cookies = new Map<string, string>();
@@ -59,6 +62,8 @@ export class Session {
         [...this.#cookies].map(([k, v]) => `${k}=${v}`).join("; "),
       );
     const res = await fetch(new URL(path, this.origin), {
+      // A call that hangs fails, rather than holding the job to its timeout.
+      signal: AbortSignal.timeout(FETCH_MS),
       ...init,
       headers,
       redirect: "manual",

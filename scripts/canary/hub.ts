@@ -17,7 +17,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Session, until } from "./lib.ts";
+import { withoutModelKeys } from "./clients.ts";
+import { FETCH_MS, Session, until } from "./lib.ts";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SERVER = join(ROOT, "apps/server");
@@ -90,7 +91,8 @@ export async function startServer(
   const config = join(dir, "wrangler.json");
   const state = join(dir, "state");
   writeFileSync(config, JSON.stringify(devConfig(port), null, 2));
-  const env: NodeJS.ProcessEnv = { ...process.env, CI: "1" };
+  // The server never needs a model key.
+  const env: NodeJS.ProcessEnv = { ...withoutModelKeys(process.env), CI: "1" };
   delete env.VITE_MOCK;
   execFileSync(
     WRANGLER,
@@ -105,7 +107,7 @@ export async function startServer(
       "--persist-to",
       state,
     ],
-    { cwd: SERVER, stdio: "inherit", env },
+    { cwd: SERVER, stdio: "inherit", env, timeout: 180_000 },
   );
   const logPath = join(dir, "wrangler.log");
   const log = openSync(logPath, "a");
@@ -157,7 +159,13 @@ export async function startServer(
           )
         )
           return undefined;
-        return (await fetch(`${origin}/healthz`)).ok ? true : undefined;
+        return (
+          await fetch(`${origin}/healthz`, {
+            signal: AbortSignal.timeout(10_000),
+          })
+        ).ok
+          ? true
+          : undefined;
       },
       { ms: 180_000, everyMs: 500 },
     );
@@ -240,6 +248,7 @@ export async function approveProbeMachine(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ machine_label: label }),
+    signal: AbortSignal.timeout(FETCH_MS),
   });
   if (res.status !== 201) throw new Error(`bus/device: HTTP ${res.status}`);
   const dev = (await res.json()) as {
@@ -255,6 +264,7 @@ export async function approveProbeMachine(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ device_code: dev.device_code }),
+        signal: AbortSignal.timeout(FETCH_MS),
       });
       if (t.status === 429) return undefined;
       const j = (await t.json()) as { machine_token?: string };

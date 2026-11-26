@@ -28,8 +28,11 @@ starts it headless with a cheap model, and checks:
    (Codex and Pi; the others take it in their next turn, so it is skipped).
 
 The job summary has one table per client. When a client fails, the report job
-opens one issue for it, labelled `client-canary`, or comments on the open one.
-A green run closes it.
+opens one issue for it and its channel (pinned or latest), labelled
+`client-canary`, or comments on the open one. A green run on the same channel
+closes it, so a nightly pass never closes a weekly failure. A job that times
+out or is cancelled counts as failed. A failed job uploads its logs
+(`logs-<client>`) with model keys and tokens blanked.
 
 ## Secrets to add
 
@@ -40,7 +43,8 @@ Only model API keys. Add them under Settings, Secrets and variables, Actions:
 | `ANTHROPIC_API_KEY` | Claude Code, OpenCode, Pi |
 | `OPENAI_API_KEY` | Codex |
 
-A client whose key is missing is skipped with a line saying which secret to
+Each job gets only its own client's key. npm install and the local server get
+none. A client whose key is missing is skipped with a line saying which secret to
 add. Its job stays green.
 
 Each client uses its cheapest model. To change one, set the repo variable

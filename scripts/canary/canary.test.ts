@@ -18,11 +18,21 @@ import {
   CLIENT_IDS,
   CLIENTS,
   canaryPrompt,
+  MODEL_KEYS,
   missingSecrets,
+  withoutModelKeys,
 } from "./clients.ts";
 import { type ClientResult, overall, summaryMarkdown } from "./lib.ts";
-import { LABEL, readResults, report, titleFor } from "./report.ts";
-import { inPty, markFailed, runCanary } from "./run.ts";
+import type { Mail } from "./probe.ts";
+import { LABEL, readResults, report, titleFor, withMissing } from "./report.ts";
+import {
+  copyLogs,
+  inPty,
+  markFailed,
+  runCanary,
+  type SteerProbe,
+  steerCheck,
+} from "./run.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const RUN = join(root, "scripts/canary/run.ts");
@@ -46,7 +56,8 @@ describe("client-canary.yml", () => {
   });
 
   it("the weekly cron picks the latest releases; nightly and dispatch default to pinned", () => {
-    const channel = wf.jobs.canary.env.CHANNEL as string;
+    // Workflow-wide: the report job keys its issues on it too.
+    const channel = wf.env.CHANNEL as string;
     expect(channel).toContain(
       "github.event.schedule == '30 4 * * 1' && 'latest'",
     );
@@ -82,11 +93,11 @@ describe("client-canary.yml", () => {
     expect(JSON.stringify(wf.jobs.report)).not.toContain("secrets.");
   });
 
-  it("model keys reach only the key check and the canary step", () => {
+  it("model keys reach only the key check and the canary step, and only for their client", () => {
     const steps = wf.jobs.canary.steps as {
       id?: string;
       name?: string;
-      env?: object;
+      env?: Record<string, string>;
     }[];
     const withKeys = steps.filter((s) =>
       JSON.stringify(s.env ?? {}).includes("secrets."),
@@ -95,10 +106,35 @@ describe("client-canary.yml", () => {
       "need",
       "Run the canary",
     ]);
-    // Every secret a client needs is passed in.
-    for (const c of Object.values(CLIENTS))
-      for (const s of c.secrets)
-        expect(workflowText).toContain(`${s}: \${{ secrets.${s} }}`);
+    for (const step of withKeys)
+      for (const key of MODEL_KEYS) {
+        const expr = step.env?.[key] ?? "";
+        const takers = CLIENT_IDS.filter((id) =>
+          CLIENTS[id].secrets.includes(key),
+        );
+        expect(expr).toBe(
+          `\${{ contains(fromJSON('${JSON.stringify(takers)}'), matrix.client) && secrets.${key} || '' }}`,
+        );
+      }
+    expect(JSON.stringify(wf.env)).not.toContain("secrets.");
+    expect(JSON.stringify(wf.jobs.canary.env)).not.toContain("secrets.");
+  });
+
+  it("a job cut off by its timeout still records a failed result and keeps its logs", () => {
+    const steps = wf.jobs.canary.steps as {
+      name?: string;
+      if?: string;
+      run?: string;
+      with?: { name?: string };
+    }[];
+    const mark = steps.find((s) => s.run?.includes("--mark-failed"));
+    expect(mark?.if).toBe("failure() || cancelled()");
+    const logs = steps.find(
+      (s) => s.with?.name === "logs-${{ matrix.client }}",
+    );
+    expect(logs?.if).toBe("failure() || cancelled()");
+    // The report job downloads canary-*; the logs never match it.
+    expect(wf.jobs.report.steps.at(-2).with.pattern).toBe("canary-*");
   });
 
   it("every heavy step waits on the key check", () => {
@@ -108,7 +144,7 @@ describe("client-canary.yml", () => {
       run?: string;
     }[];
     const heavy = steps.filter((s) =>
-      /pnpm|run\.ts --client "\$CLIENT" --channel "\$CHANNEL" --out "\$RESULT"$/.test(
+      /pnpm|run\.ts --client "\$CLIENT" --channel "\$CHANNEL" --out "\$RESULT" --logs /.test(
         s.run ?? "",
       ),
     );
@@ -294,10 +330,11 @@ describe("one issue per client", () => {
   const res = (
     client: "claude" | "pi",
     status: ClientResult["status"],
+    channel = "pinned",
   ): ClientResult => ({
     client,
     label: CLIENTS[client].label,
-    channel: "pinned",
+    channel,
     version: "1.0.0",
     status,
     checks: [
@@ -340,18 +377,20 @@ describe("one issue per client", () => {
     expect(calls[1]?.slice(0, 3)).toEqual(["label", "create", LABEL]);
     const create = calls[2] ?? [];
     expect(create.slice(0, 2)).toEqual(["issue", "create"]);
-    expect(create).toContain(titleFor("Pi"));
+    expect(create).toContain(titleFor("Pi", "pinned"));
     expect(create[create.indexOf("--label") + 1]).toBe(LABEL);
     const body = create[create.indexOf("--body") + 1];
     expect(body).toContain("https://github.test/run/1");
     expect(body).toContain("- joins at start: not within 120 s");
-    expect(lines).toEqual([`pi: failed, opened "Client canary failing: Pi"`]);
+    expect(lines).toEqual([
+      `pi: failed, opened "Client canary failing: Pi (pinned)"`,
+    ]);
   });
 
   it("a failure with an open issue comments on it; a pass closes it; a skip changes nothing", () => {
     const { calls, gh } = fakeGh([
-      { number: 7, title: titleFor("Pi") },
-      { number: 8, title: titleFor("Claude Code") },
+      { number: 7, title: titleFor("Pi", "pinned") },
+      { number: 8, title: titleFor("Claude Code", "pinned") },
     ]);
     const lines = report([res("pi", "fail"), res("claude", "pass")], {
       ...opts,
@@ -367,11 +406,36 @@ describe("one issue per client", () => {
       "pi: failed again, commented on #7",
       "claude: green, closed #8",
     ]);
-    const skip = fakeGh([{ number: 7, title: titleFor("Pi") }]);
+    const skip = fakeGh([{ number: 7, title: titleFor("Pi", "pinned") }]);
     expect(report([res("pi", "skip")], { ...opts, gh: skip.gh })).toEqual([
       "pi: skip, nothing to change",
     ]);
     expect(skip.calls).toHaveLength(1);
+  });
+
+  it("a pinned pass never closes a latest failure", () => {
+    const { calls, gh } = fakeGh([
+      { number: 9, title: titleFor("Pi", "latest") },
+    ]);
+    expect(report([res("pi", "pass", "pinned")], { ...opts, gh })).toEqual([
+      "pi: pass, nothing to change",
+    ]);
+    expect(calls).toHaveLength(1);
+    const latest = fakeGh([{ number: 9, title: titleFor("Pi", "latest") }]);
+    expect(
+      report([res("pi", "pass", "latest")], { ...opts, gh: latest.gh }),
+    ).toEqual(["pi: green, closed #9"]);
+  });
+
+  it("a client with no result file counts as failed", () => {
+    const all = withMissing([res("pi", "pass")], "latest");
+    expect(all.map((r) => [r.client, r.status, r.channel])).toEqual([
+      ["claude", "fail", "latest"],
+      ["codex", "fail", "latest"],
+      ["opencode", "fail", "latest"],
+      ["pi", "pass", "pinned"],
+    ]);
+    expect(all[0]?.checks[0]?.detail).toContain("timed out or was cancelled");
   });
 });
 
@@ -386,5 +450,124 @@ describe("readResults", () => {
       );
     }
     expect(readResults(dir).map((r) => r.client)).toEqual(["claude", "pi"]);
+  });
+});
+
+describe("the mid-turn check decides on the order of replies", () => {
+  /**
+   * A stub probe for a client: it answers by the release files steerCheck
+   * writes, as a real client would. "steers" answers PING at the first tool
+   * boundary, before it has even started the second held command (the case a
+   * snapshot of the hold files got wrong). "next turn" answers PING only once
+   * the turn is over. "skips hold 2" sends DONE first and PONG after.
+   */
+  const stub = (
+    signals: string,
+    mode: "steers" | "next turn" | "skips hold 2",
+  ): SteerProbe => {
+    const mail: Mail[] = [];
+    const frames: SteerProbe["frames"] = [];
+    let word = "";
+    let ping = "";
+    let n = 0;
+    const released = (k: number) =>
+      existsSync(join(signals, `hold-${word}-${k}.release`));
+    const put = (body: string) => {
+      if (!mail.some((m) => m.body === body))
+        mail.push({ from: "client", body, at: n++ });
+    };
+    // What the client has said by now, given what has been released.
+    const tick = () => {
+      if (!released(1)) return;
+      if (mode === "steers") put(`PONG ${ping}`);
+      if (mode === "skips hold 2") put(`DONE ${word}`);
+      if (mode === "skips hold 2") put(`PONG ${ping}`);
+      if (released(2)) put(`DONE ${word}`);
+      if (released(2)) put(`PONG ${ping}`);
+    };
+    return {
+      mail,
+      frames,
+      async send(_to: string, body: string) {
+        const id = `m${n++}`;
+        const hold = /HOLD (\w+)/.exec(body);
+        if (hold) {
+          word = hold[1] as string;
+          writeFileSync(join(signals, `hold-${word}-1.started`), "");
+        }
+        const p = /PING (\w+)/.exec(body);
+        if (p) {
+          ping = p[1] as string;
+          frames.push({
+            type: "receipt_update",
+            msg_id: id,
+            state: "delivered",
+          });
+        }
+        return { type: "receipt", msg_id: id, state: "sent" };
+      },
+      async reply(text: string) {
+        tick();
+        const m = mail.find((x) => x.body.includes(text));
+        if (!m) throw new Error(`no reply containing "${text}"`);
+        return m;
+      },
+    } as SteerProbe;
+  };
+  const limits = { hold: 1000, reply: 0, late: 0 };
+  const run = async (mode: Parameters<typeof stub>[1]) => {
+    const signals = mkdtempSync(join(tmpdir(), "canary-steer-"));
+    const steps: [string, string, string][] = [];
+    await steerCheck(
+      stub(signals, mode),
+      "client",
+      signals,
+      (c, st, d) => steps.push([c, st, d]),
+      limits,
+    );
+    expect(steps).toHaveLength(1);
+    return steps[0] as [string, string, string];
+  };
+
+  it("passes a client that answers before it starts the second held command", async () => {
+    const [check, status, detail] = await run("steers");
+    expect([check, status]).toEqual(["mid-turn message", "pass"]);
+    expect(detail).toContain("answered inside that turn");
+  });
+
+  it("fails a client that answers only in its next turn", async () => {
+    const [, status, detail] = await run("next turn");
+    expect(status).toBe("fail");
+    expect(detail).toContain("answered only after that turn ended");
+  });
+
+  it("fails a client whose DONE came before the PONG", async () => {
+    const [, status, detail] = await run("skips hold 2");
+    expect(status).toBe("fail");
+    expect(detail).toContain("answered only after that turn ended");
+  });
+});
+
+describe("logs", () => {
+  it("a copied log has every model key and token blanked", () => {
+    const from = mkdtempSync(join(tmpdir(), "canary-logs-"));
+    const to = join(mkdtempSync(join(tmpdir(), "canary-logs-out-")), "logs");
+    writeFileSync(
+      join(from, "client.log"),
+      "key sk-test-0123456789 token oa_pat_abcdefgh ok\n",
+    );
+    copyLogs(from, to, ["sk-test-0123456789", "oa_pat_abcdefgh"]);
+    expect(readFileSync(join(to, "client.log"), "utf8")).toBe(
+      "key [hidden] token [hidden] ok\n",
+    );
+  });
+
+  it("npm and the server get no model key", () => {
+    const env = withoutModelKeys({
+      PATH: "/bin",
+      ANTHROPIC_API_KEY: "a",
+      OPENAI_API_KEY: "b",
+    });
+    expect(env).toEqual({ PATH: "/bin" });
   });
 });

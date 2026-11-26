@@ -246,6 +246,20 @@ export const CLIENTS: Record<ClientId, Client> = {
 
 export const CLIENT_IDS = Object.keys(CLIENTS) as ClientId[];
 
+/** Every model key any client takes. */
+export const MODEL_KEYS = [
+  ...new Set(Object.values(CLIENTS).flatMap((c) => c.secrets)),
+];
+
+/** `env` with no model key in it: for npm, wrangler and anything not the client. */
+export function withoutModelKeys(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const k of MODEL_KEYS) delete out[k];
+  return out;
+}
+
 /** The secrets `client` needs that `env` lacks. */
 export const missingSecrets = (
   client: Client,
@@ -260,7 +274,7 @@ export function canaryPrompt(title: string): string {
   return [
     "You are a test session for the Open Artifacts bus. Follow these rules exactly and do nothing else.",
     `1. Now: publish a page with the ${PAGES} publish_artifact tool, title "${title}", format "html", content "<p>canary</p>". Then end your turn.`,
-    '2. When a bus message says "PING <word>", send its sender exactly "PONG <word>" with the bus send message tool. Then end your turn.',
+    '2. When a bus message says "PING <word>", answer it at once, even in the middle of other work and before your next command: send its sender exactly "PONG <word>" with the bus send message tool. Then go on with what you were doing, or end your turn if there is nothing.',
     '3. When a bus message says "HOLD <word>", run the shell command `oa-canary-hold <word> 1`, then `oa-canary-hold <word> 2`. Each waits until it is released. Then send the sender exactly "DONE <word>" and end your turn.',
     "Never ask questions. Keep every message to one line.",
   ].join("\n");

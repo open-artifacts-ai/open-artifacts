@@ -1,23 +1,28 @@
-// After the canary jobs: one GitHub issue per client, labelled client-canary,
-// as release-alert.yml keeps its blocker issue. A failed client opens its
-// issue, or comments on the open one; a passing client closes it; a skipped
-// client changes nothing.
+// After the canary jobs: one GitHub issue per client and channel (pinned or
+// latest), labelled client-canary, as release-alert.yml keeps its blocker
+// issue. A failed client opens its issue, or comments on the open one; a pass
+// on the same channel closes it, so a pinned pass never closes a latest
+// failure; a skipped client changes nothing. A client with no result file
+// (its job timed out or was cancelled) counts as failed.
 //
 //   node --experimental-strip-types scripts/canary/report.ts <results dir>
 //
-// Needs GH_TOKEN (issues: write), REPO and RUN (the run's URL) in the env. It
+// Needs GH_TOKEN (issues: write), REPO, RUN (the run's URL) and CHANNEL in the env. It
 // reads only the canary's own result files; the text it writes holds the run
 // URL, the client, its version and the check lines, never a log excerpt.
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CLIENT_IDS, CLIENTS } from "./clients.ts";
 import type { ClientResult } from "./lib.ts";
 
 export const LABEL = "client-canary";
-export const titleFor = (label: string) => `Client canary failing: ${label}`;
+export const titleFor = (label: string, channel: string) =>
+  `Client canary failing: ${label} (${channel})`;
 
 type Gh = (args: string[]) => string;
-const realGh: Gh = (args) => execFileSync("gh", args, { encoding: "utf8" });
+const realGh: Gh = (args) =>
+  execFileSync("gh", args, { encoding: "utf8", timeout: 60_000 });
 
 const failed = (r: ClientResult) =>
   r.checks
@@ -62,7 +67,7 @@ export function report(
       "The scheduled client canary found a broken bus client",
     ]);
   for (const r of results) {
-    const title = titleFor(r.label);
+    const title = titleFor(r.label, r.channel);
     const n = find(title);
     const what = `${r.label} (${r.channel}${r.version ? `, ${r.version}` : ""})`;
     if (r.status === "fail") {
@@ -101,9 +106,41 @@ export function report(
   return out;
 }
 
+/**
+ * A failed result for each client in the matrix that wrote none: a job cut
+ * off by its timeout, or cancelled, uploads nothing.
+ */
+export function withMissing(
+  results: ClientResult[],
+  channel: string,
+): ClientResult[] {
+  const have = new Set(results.map((r) => r.client));
+  const missing = CLIENT_IDS.filter((id) => !have.has(id)).map(
+    (id): ClientResult => ({
+      client: id,
+      label: CLIENTS[id].label,
+      channel,
+      version: "",
+      status: "fail",
+      checks: [
+        {
+          check: "run",
+          status: "fail",
+          detail:
+            "the job wrote no result: it timed out or was cancelled. See the run",
+        },
+      ],
+    }),
+  );
+  return [...results, ...missing].sort((a, b) =>
+    a.client.localeCompare(b.client),
+  );
+}
+
 /** Every result file under `dir` (one folder per downloaded artifact). */
 export function readResults(dir: string): ClientResult[] {
   const out: ClientResult[] = [];
+  if (!existsSync(dir)) return out;
   for (const e of readdirSync(dir, { withFileTypes: true, recursive: true }))
     if (e.isFile() && e.name.endsWith(".json"))
       out.push(
@@ -116,17 +153,13 @@ export function readResults(dir: string): ClientResult[] {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dir = process.argv[2];
-  const { REPO, RUN } = process.env;
-  if (!dir || !REPO || !RUN) {
-    console.error("usage: REPO=owner/name RUN=<url> report.ts <results dir>");
+  const { REPO, RUN, CHANNEL } = process.env;
+  if (!dir || !REPO || !RUN || !CHANNEL) {
+    console.error(
+      "usage: REPO=owner/name RUN=<url> CHANNEL=pinned|latest report.ts <results dir>",
+    );
     process.exit(2);
   }
-  const results = readResults(dir);
-  if (results.length === 0) {
-    console.error(
-      "::error::no canary results to report: every canary job failed before it wrote one",
-    );
-    process.exit(1);
-  }
+  const results = withMissing(readResults(dir), CHANNEL);
   for (const l of report(results, { repo: REPO, run: RUN })) console.log(l);
 }

@@ -10,6 +10,7 @@
 //   --hub <origin>      a server that is already running (else one is started)
 //   --port <n>          the port for the server it starts (default 8790)
 //   --out <file>        write the result as JSON
+//   --logs <dir>        on a failure, copy the logs here with keys and tokens blanked
 //   --check             only decide: prints run=true or run=false (to
 //                       $GITHUB_OUTPUT too) and, when skipped, writes --out
 //   --mark-failed <why> write a failed result to --out unless one is there
@@ -35,6 +36,7 @@ import {
   mkdirSync,
   mkdtempSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -53,6 +55,7 @@ import {
   canaryPrompt,
   type Launch,
   missingSecrets,
+  withoutModelKeys,
 } from "./clients.ts";
 import {
   approveCode,
@@ -83,6 +86,8 @@ export const LIMITS = {
   page: 180_000,
   reply: 180_000,
   hold: 120_000,
+  /** One quick command (version, status, doctor, a first-run step). */
+  command: 60_000,
 };
 
 export type Options = {
@@ -92,6 +97,8 @@ export type Options = {
   hub?: string;
   port: number;
   out?: string;
+  /** On a failure, the run's logs are copied here, model keys and tokens blanked. */
+  logsOut?: string;
   env: Record<string, string | undefined>;
   log: (line: string) => void;
 };
@@ -237,10 +244,13 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     o.log(`${status.toUpperCase()} ${client.id} ${check}: ${detail}`);
   };
   let server: { origin: string; stop: () => Promise<void> } | undefined;
+  let install: Proc | undefined;
   let daemon: Proc | undefined;
   let session: Proc | undefined;
   let probe: Probe | undefined;
   let version = "";
+  /** Values a copied log must never hold. */
+  const secrets = client.secrets.flatMap((k) => o.env[k] ?? []);
   try {
     // 1. The client binary: installed from npm, or the one given.
     let clientBin = o.clientBin;
@@ -252,6 +262,9 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         ["install", "-g", "--prefix", prefix, "--no-fund", "--no-audit", spec],
         {
           stdio: ["ignore", "ignore", "inherit"],
+          // Install scripts never see a model key.
+          env: withoutModelKeys(o.env),
+          timeout: LIMITS.install,
         },
       );
       clientBin = join(prefix, "bin");
@@ -273,6 +286,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     const v = spawnSync(join(clientBin, client.bin), ["--version"], {
       env: childEnv(client, home, path, o.env),
       encoding: "utf8",
+      timeout: LIMITS.command,
     });
     version = (v.stdout || "").trim().split("\n")[0] ?? "";
 
@@ -289,6 +303,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     mkdirSync(join(home, ".open-artifacts"), { recursive: true, mode: 0o700 });
     const pat = await createToken(member, `canary ${client.id}`);
     writeFileSync(tokenFile, pat, { mode: 0o600 });
+    secrets.push(pat);
     const env = childEnv(client, home, path, o.env, {
       CANARY_SIGNALS: signals,
       // Codex's token form reads it by name (bearer_token_env_var).
@@ -302,13 +317,18 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       model: o.env[`CANARY_MODEL_${client.id.toUpperCase()}`] || client.model,
       env,
     };
-    execFileSync("git", ["init", "-q"], { cwd: work, env });
+    execFileSync("git", ["init", "-q"], {
+      cwd: work,
+      env,
+      timeout: LIMITS.command,
+    });
     for (const r of client.prepare(ctx).run ?? []) {
       const out = spawnSync(r.cmd, r.args, {
         cwd: work,
         env,
         input: r.stdin ?? "",
         encoding: "utf8",
+        timeout: LIMITS.command,
       });
       if (out.status !== 0)
         throw new Error(`${r.cmd} ${r.args[0]} failed (exit ${out.status})`);
@@ -316,7 +336,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
 
     // 3. oa-bus install, approved on the approval page by the member.
     const installLog = join(logs, "install.log");
-    const install = startProc(
+    install = startProc(
       "oa-bus",
       ["install", "--instance", origin, "--no-open", "--no-service"],
       {
@@ -333,7 +353,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     await approveCode(member, code);
     await until(
       "oa-bus install to finish",
-      () => (install.exited() ? true : undefined),
+      () => (install?.exited() ? true : undefined),
       {
         ms: LIMITS.install,
       },
@@ -357,7 +377,8 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     await until(
       "the daemon to answer",
       () =>
-        spawnSync("oa-bus", ["status"], { cwd: work, env }).status === 0
+        spawnSync("oa-bus", ["status"], { cwd: work, env, timeout: 10_000 })
+          .status === 0
           ? true
           : undefined,
       { ms: 30_000 },
@@ -366,11 +387,13 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       cwd: work,
       env,
       encoding: "utf8",
+      timeout: LIMITS.command,
     });
     const doctor = spawnSync("oa-bus", ["doctor"], {
       cwd: work,
       env,
       encoding: "utf8",
+      timeout: LIMITS.command,
     });
     const line = `${doctor.stdout}\n${doctor.stderr}`
       .split("\n")
@@ -385,6 +408,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
 
     // 5. The probe: a second machine on the same bus.
     const probeToken = await approveProbeMachine(member, "canary-probe");
+    secrets.push(probeToken);
     probe = await Probe.open(origin, probeToken, "canary-probe");
 
     // 6. The client, headless, with the canary's prompt.
@@ -470,6 +494,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     step("run", "fail", (e as Error).message);
   } finally {
     probe?.close();
+    await stopProc(install);
     await stopProc(session);
     await stopProc(daemon);
     await server?.stop().catch(() => {});
@@ -477,36 +502,50 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       try {
         rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
       } catch {}
-    } else o.log(`logs kept in ${logs}`);
+    } else {
+      o.log(`logs kept in ${logs}`);
+      if (o.logsOut) copyLogs(logs, o.logsOut, secrets);
+    }
   }
   return result(version);
 }
 
+/** What steerCheck needs from the probe (a stub stands in for it in the tests). */
+export type SteerProbe = Pick<Probe, "send" | "reply" | "frames" | "mail">;
+
 /**
  * HOLD <a> starts a turn that runs two held commands. While the first is held,
- * PING <b> is sent and delivered; then the first is released. A client that
- * steers sees PING <b> at that tool boundary and answers it while the second
- * command still holds the turn open. Only then is the second released.
+ * PING <b> is sent and delivered; then the first is released. The second is
+ * released only after PONG <b> arrives, or once the wait for it runs out. So
+ * the turn cannot end before that, and the order of replies decides: PONG <b>
+ * before the second release and before DONE <a> means the message reached
+ * that turn. It does not matter whether the client answered before or after
+ * it started the second command.
  */
-async function steerCheck(
-  probe: Probe,
+export async function steerCheck(
+  probe: SteerProbe,
   name: string,
   signals: string,
   step: (check: string, status: CheckResult["status"], detail: string) => void,
+  limits: { hold: number; reply: number; late: number } = {
+    hold: LIMITS.hold,
+    reply: LIMITS.reply,
+    late: 60_000,
+  },
 ) {
   const a = marker();
   const b = marker();
   const file = (n: number, what: string) =>
     join(signals, `hold-${a}-${n}.${what}`);
   const release = (n: number) => writeFileSync(file(n, "release"), "");
+  const at = (text: string) =>
+    probe.mail.findIndex((m) => m.body.includes(text));
   try {
     await probe.send(name, `HOLD ${a}`);
     await until(
       "the first held command",
       () => (existsSync(file(1, "started")) ? true : undefined),
-      {
-        ms: LIMITS.hold,
-      },
+      { ms: limits.hold },
     );
     const r = await probe.send(name, `PING ${b}`);
     await until(
@@ -522,13 +561,14 @@ async function steerCheck(
     );
     release(1);
     const pong = await probe
-      .reply(`PONG ${b}`, LIMITS.reply)
+      .reply(`PONG ${b}`, limits.reply)
       .catch(() => undefined);
-    const held =
-      existsSync(file(2, "started")) && !existsSync(file(2, "release"));
+    // Read before the release: whatever is in the mail now came inside the turn.
+    const done = at(`DONE ${a}`);
+    const inTurn = pong !== undefined && (done < 0 || at(`PONG ${b}`) < done);
     release(2);
-    await probe.reply(`DONE ${a}`, LIMITS.reply);
-    if (pong && held)
+    await probe.reply(`DONE ${a}`, limits.reply);
+    if (inTurn)
       step(
         "mid-turn message",
         "pass",
@@ -537,7 +577,8 @@ async function steerCheck(
     else {
       // Answered after the turn ended: delivered, but not steered into it.
       const late =
-        pong ?? (await probe.reply(`PONG ${b}`, 60_000).catch(() => undefined));
+        pong ??
+        (await probe.reply(`PONG ${b}`, limits.late).catch(() => undefined));
       step(
         "mid-turn message",
         "fail",
@@ -550,6 +591,17 @@ async function steerCheck(
     release(1);
     release(2);
     step("mid-turn message", "fail", (e as Error).message);
+  }
+}
+
+/** Copies each log to `to`, with every value in `secrets` blanked. */
+export function copyLogs(from: string, to: string, secrets: string[]) {
+  mkdirSync(to, { recursive: true });
+  const blank = secrets.filter((v) => v.length >= 8);
+  for (const f of readdirSync(from)) {
+    let text = readFileSync(join(from, f), "utf8");
+    for (const v of blank) text = text.replaceAll(v, "[hidden]");
+    writeFileSync(join(to, f), text);
   }
 }
 
@@ -591,6 +643,7 @@ async function main() {
       hub: { type: "string" },
       port: { type: "string", default: "8790" },
       out: { type: "string" },
+      logs: { type: "string" },
       fake: { type: "boolean", default: false },
       "fake-break": { type: "string" },
       check: { type: "boolean", default: false },
@@ -656,6 +709,7 @@ async function main() {
     ...(fakeDir ? { clientBin: fakeDir } : {}),
     ...(values["client-bin"] ? { clientBin: values["client-bin"] } : {}),
     ...(values.hub ? { hub: values.hub } : {}),
+    ...(values.logs ? { logsOut: values.logs } : {}),
   });
   const md = summaryMarkdown(r);
   console.log(md);

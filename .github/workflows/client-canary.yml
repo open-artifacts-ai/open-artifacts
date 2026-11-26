@@ -10,9 +10,10 @@
 # - Only model API keys are secrets. A client whose key is missing is skipped
 #   with a summary line saying which secret to add, and its job stays green.
 # - One job per client, plus one report job: five jobs, far under the 180 cap.
-# - The canary jobs get contents: read only. The report job has no checkout
-#   and no model key: it reads the result files and keeps one issue per
-#   client (label client-canary), as release-alert.yml keeps its blocker.
+# - Each job gets only its own client's model key; npm and the server get none.
+# - The canary jobs get contents: read only. The report job has no model key:
+#   it reads the result files and keeps one issue per client and channel
+#   (label client-canary), as release-alert.yml keeps its blocker.
 name: client-canary
 
 on:
@@ -35,6 +36,9 @@ concurrency:
   group: client-canary
   cancel-in-progress: false
 
+env:
+  CHANNEL: ${{ github.event.schedule == '30 4 * * 1' && 'latest' || inputs.channel || 'pinned' }}
+
 jobs:
   canary:
     runs-on: ubuntu-latest
@@ -47,7 +51,6 @@ jobs:
         client: [claude, codex, opencode, pi]
     env:
       CLIENT: ${{ matrix.client }}
-      CHANNEL: ${{ github.event.schedule == '30 4 * * 1' && 'latest' || inputs.channel || 'pinned' }}
       RESULT: canary-${{ matrix.client }}.json
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -59,8 +62,9 @@ jobs:
       - id: need
         name: Is this client's model key set?
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Only this leg's client gets its key (scripts/canary/clients.ts secrets).
+          ANTHROPIC_API_KEY: ${{ contains(fromJSON('["claude","opencode","pi"]'), matrix.client) && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ contains(fromJSON('["codex"]'), matrix.client) && secrets.OPENAI_API_KEY || '' }}
         run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --check --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT"
       - if: steps.need.outputs.run == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -79,22 +83,33 @@ jobs:
       - name: Run the canary
         if: steps.need.outputs.run == 'true'
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Only this leg's client gets its key (scripts/canary/clients.ts secrets).
+          ANTHROPIC_API_KEY: ${{ contains(fromJSON('["claude","opencode","pi"]'), matrix.client) && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ contains(fromJSON('["codex"]'), matrix.client) && secrets.OPENAI_API_KEY || '' }}
           # Optional repo variables; empty means the client's own cheap default.
           CANARY_MODEL_CLAUDE: ${{ vars.CANARY_MODEL_CLAUDE }}
           CANARY_MODEL_CODEX: ${{ vars.CANARY_MODEL_CODEX }}
           CANARY_MODEL_OPENCODE: ${{ vars.CANARY_MODEL_OPENCODE }}
           CANARY_MODEL_PI: ${{ vars.CANARY_MODEL_PI }}
-        run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT"
+        run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT" --logs "$RUNNER_TEMP/canary-logs"
       - name: Record a job that broke before the canary ran
-        if: failure()
-        run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT" --mark-failed "the job failed before the canary finished in setup or build. See the run"
+        # cancelled(): a job cut off by timeout-minutes ends cancelled, not failed.
+        if: failure() || cancelled()
+        run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT" --mark-failed "the job stopped before the canary finished (a setup or build step failed, or it timed out). See the run"
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: canary-${{ matrix.client }}
           path: ${{ env.RESULT }}
+          if-no-files-found: ignore
+          retention-days: 14
+      # The client, daemon and install logs of a failed run. Model keys and
+      # the local server's tokens are blanked; those tokens die with the job.
+      - if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: logs-${{ matrix.client }}
+          path: ${{ runner.temp }}/canary-logs
           if-no-files-found: ignore
           retention-days: 14
 
