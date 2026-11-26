@@ -130,8 +130,7 @@ test("asks: an agent's ask, a person's answer (not a yes)", async () => {
   }
 });
 
-// Skipped by Leo's call (2026-11-26): flaky on the staging gate (#3095); fix lands next release, then remove this skip.
-test.skip("live reply: an agent's reply shows with the page open, no reload", {
+test("live reply: an agent's reply shows with the page open, no reload", {
   tag: "@gate",
 }, async () => {
   await needs("live replies (#2179)", MIN);
