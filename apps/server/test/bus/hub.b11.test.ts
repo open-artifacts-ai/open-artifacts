@@ -997,6 +997,94 @@ describe("gone-session drain (#3208)", () => {
     expect(s.d.seen.filter((f) => f.type === "roster_changed")).toEqual([]);
     expect(await snapshot()).toEqual(before);
   });
+
+  it("queued gone receipts expire only as recipient_closed even past TTL and ignore late acks", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone-ttl");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const total = 120;
+    const msgIds = await seedReceipts(h, victim, total, {
+      state: "pending",
+      body: true,
+      now: t0,
+      from: s.id,
+    });
+
+    // Send gone just before TTL expires.
+    await clock(h, t0 + MAILBOX_RETAIN_MS - 10);
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    expect(await expiredClosed(h)).toBe(CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(total - CLOSE_INLINE_BATCH);
+
+    // An ack from the same machine for a still-queued msg_id must not settle it.
+    const queuedId = await inHub(
+      h,
+      (_, st) =>
+        st.storage.sql
+          .exec<{ id: string }>(
+            "select id from receipts where to_agent = ? and state = 'pending' order by rowid limit 1",
+            victim,
+          )
+          .one().id,
+    );
+    d.send({ v: 1, id: "late-ack", type: "ack", msg_id: queuedId });
+    await sync(d);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where id = ? and state = 'pending'",
+        queuedId,
+      ),
+    ).toBe(1);
+
+    // Advance past expires_at before the first alarm; drive alarms until done.
+    await clock(h, t0 + MAILBOX_RETAIN_MS + 1000);
+    await drain(
+      h,
+      async () =>
+        (await pendingCount(h)) === 0 &&
+        (await count(
+          h,
+          "select count(*) as n from meta where key like 'gone_drain:%'",
+        )) === 0,
+    );
+
+    expect(await pendingCount(h)).toBe(0);
+    expect(await expiredClosed(h)).toBe(total);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'delivered'",
+      ),
+    ).toBe(0);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+
+    await sync(s.d);
+    const told = new Map<string, number>();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
+      }
+    expect(told.size).toBe(total);
+    for (const id of msgIds) expect(told.get(id)).toBe(1);
+  });
 });
 
 // ------------------------------------------------------------------- logs
