@@ -87,6 +87,8 @@ const RPC_ALLOWLIST = [
   "deliverNotice",
   "expireLinkProposalsOf",
   "expireRoleProposalsOf",
+  // #3132: the holder hands its role on (only from MCP bus_role_propose by the linked holder).
+  "handOverRole",
   "identityOf",
   // #2552: a fieldless frame to one machine of the member; the named version changed.
   "installNow",

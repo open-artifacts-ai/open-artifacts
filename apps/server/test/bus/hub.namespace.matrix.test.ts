@@ -643,6 +643,7 @@ describe("RPC surface", () => {
       "deliverNotice",
       "expireLinkProposalsOf",
       "expireRoleProposalsOf",
+      "handOverRole",
       "identityOf",
       "installNow",
       "listLinks",
