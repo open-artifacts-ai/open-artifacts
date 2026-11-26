@@ -57,6 +57,8 @@ it("holds the process only while a request is pending", async () => {
     p.stdout.on("data", (d) => {
       o += d;
     });
+    // A safety net only: the assertion below is the child's own report that
+    // the socket let go of its loop (held:false), not how long it took.
     const kill = setTimeout(() => p.kill("SIGKILL"), 8000);
     p.on("close", (status) => {
       clearTimeout(kill);
@@ -64,6 +66,10 @@ it("holds the process only while a request is pending", async () => {
     });
   });
   // Held while the request was pending, answered, and gone once idle.
-  expect(out.out.trim().split("\n")).toEqual(["held:true", "reply:roster"]);
+  expect(out.out.trim().split("\n")).toEqual([
+    "held:true",
+    "reply:roster",
+    "held:false",
+  ]);
   expect(out.status).toBe(0);
 }, 15000);

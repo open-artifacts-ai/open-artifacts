@@ -1,5 +1,4 @@
 import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
 import { systemTool } from "@oa/bus-ipc";
 
 export type Deps = {
@@ -71,39 +70,54 @@ const SYSTEM_TOOLS = new Set(["launchctl", "systemctl"]);
 export const resolveCmd = (cmd: string): string =>
   SYSTEM_TOOLS.has(cmd) ? systemTool(cmd) : cmd;
 
-/** execFile with a kill at `timeoutMs`; a killed command fails like any other. */
+/**
+ * execFile with a kill at `timeoutMs`; a killed command fails like any other.
+ * The timeout is our own timer (not execFile's) so a test can drive it with
+ * fake timers, and it settles at once: a grandchild that inherited the pipes
+ * and outlives the kill cannot hold the result back.
+ */
 export const makeExec =
   (timeoutMs: number): Deps["exec"] =>
-  async (cmd, args, opts) => {
-    guardServiceManager(cmd, args);
-    try {
-      const run = promisify(execFile)(resolveCmd(cmd), args, {
-        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
-        maxBuffer: 8 * 1024 * 1024,
-        timeout: opts?.timeoutMs ?? timeoutMs,
-        killSignal: "SIGKILL",
-      });
+  (cmd, args, opts) =>
+    new Promise((resolve) => {
+      guardServiceManager(cmd, args);
+      const ms = opts?.timeoutMs ?? timeoutMs;
+      let done = false;
+      const settle = (r: { code: number; stdout: string; stderr: string }) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(r);
+      };
+      const child = execFile(
+        resolveCmd(cmd),
+        args,
+        {
+          ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
+          maxBuffer: 8 * 1024 * 1024,
+        },
+        (e, stdout, stderr) => {
+          if (!e) return settle({ code: 0, stdout, stderr });
+          const err = e as { code?: number | string };
+          settle({
+            code: typeof err.code === "number" ? err.code : 1,
+            stdout: stdout ?? "",
+            stderr: stderr || String(e),
+          });
+        },
+      );
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        settle({
+          code: 1,
+          stdout: "",
+          stderr: `timed out after ${ms} ms`,
+        });
+      }, ms);
       // Stdin is always closed (with `input`, or empty): a command that reads it never waits.
-      run.child.stdin?.on("error", () => {});
-      run.child.stdin?.end(opts?.input ?? "");
-      const r = await run;
-      return { code: 0, stdout: r.stdout, stderr: r.stderr };
-    } catch (e) {
-      const err = e as {
-        code?: number | string;
-        killed?: boolean;
-        stdout?: string;
-        stderr?: string;
-      };
-      return {
-        code: typeof err.code === "number" ? err.code : 1,
-        stdout: err.stdout ?? "",
-        stderr: err.killed
-          ? `timed out after ${opts?.timeoutMs ?? timeoutMs} ms`
-          : (err.stderr ?? String(e)),
-      };
-    }
-  };
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts?.input ?? "");
+    });
 
 export const realDeps: Deps = {
   fetch,
