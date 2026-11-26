@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.258.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.257.0...v0.258.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** agy gets the bus rules at session start, and the skill; no habits in its files (agy S4) ([#3131](https://github.com/open-artifacts-ai/open-artifacts/issues/3131)) ([9bd4863](https://github.com/open-artifacts-ai/open-artifacts/commit/9bd4863e374d6f638d8aebc47cddef8bd8252760))
+
 ## [0.257.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.256.0...v0.257.0) (2026-11-26)
 
 
