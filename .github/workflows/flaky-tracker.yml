@@ -1,14 +1,14 @@
 # The flaky tracker for public CI (cloud #447). Tracking only: it reruns
 # nothing and blocks nothing. When a CI run passes on attempt 2 or later,
-# every test that failed on an earlier attempt of that run (same commit)
-# failed and then passed with nothing changed. scripts/ci/flaky-tracker.ts
-# reads those attempts' failed job logs, records each sighting in the
-# `flaky-sightings` store issue, and opens or bumps one issue labelled `flaky`
-# per test once it was seen in two runs within 7 days. workflow_run can't see
-# another repo's runs, so the cloud repo runs its own tracker for its CI.
-# The default token only: no App, no secret, no Environment. The script comes
-# from the default branch, never from the run under test, and runs from forks
-# are skipped (their logs are anyone's text).
+# every test that failed (or timed out) on an earlier attempt of that run
+# (same commit) failed and then passed with nothing changed.
+# scripts/ci/flaky-tracker.ts reads those attempts' failed job logs, records
+# each sighting in the `flaky-sightings` store issue, and opens or bumps one
+# issue labelled `flaky` per test once it was seen in two runs within 7 days.
+# workflow_run can't see another repo's runs, so the cloud repo runs its own
+# tracker for its CI. The default token only: no App, no secret, no
+# Environment. The script comes from the default branch, never from the run
+# under test, and runs from forks are skipped (their logs are anyone's text).
 name: flaky-tracker
 on:
   workflow_run:
@@ -21,10 +21,12 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt > 1 &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    # Per event, so a newer run never cancels a pending one and loses its
-    # sightings. The script re-lists the open issues right before each write.
+    # One group for every tracker run in this repo, so two runs never read
+    # and write the store and the issues at once. It sits on the job, not the
+    # workflow: every CI completion starts this workflow, and a skipped one
+    # holding a workflow-level slot would cancel a pending real run.
     concurrency:
-      group: flaky-tracker-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+      group: flaky-tracker
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10

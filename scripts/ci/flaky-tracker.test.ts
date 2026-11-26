@@ -1,25 +1,37 @@
 // cloud #447: the public CI flaky tracker. The vitest fixture is an excerpt of
 // run 45651408126 attempt 1, job test-shard (server); the Playwright one
 // follows the list reporter's summary (lib/runner, generateSummaryMessage).
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import {
   BOT,
+  bumpedBody,
   codeSpan,
   decide,
   type Exec,
   type Failure,
+  inert,
+  issueTitle,
   keyOf,
-  MAX_TESTS_PER_RUN,
+  loadRun,
+  MAX_FILED_PER_RUN,
+  markerBlock,
+  newIssueBody,
+  parseMarks,
   parsePlaywright,
   parseStore,
   parseVitest,
+  type Recorded,
   type RunInfo,
   repoDir,
   type Sighting,
+  STORE_MAX_COMMENTS,
   sleeper,
-  storeComment,
-  summaryMarker,
-  TWICE_NOTE,
+  storeBody,
+  storeComments,
   track,
 } from "./flaky-tracker.ts";
 
@@ -115,6 +127,44 @@ const F: Failure = {
   file: "apps/server/test/a.test.ts",
 };
 const S: Sighting = { at: "2026-11-26T10:00:00Z", run: 900, attempt: 1 };
+const rec = (run: number, at: string, id = F.id): Recorded => ({
+  key: keyOf(id),
+  run,
+  attempt: 1,
+  at,
+});
+const issueBody = (seen: Sighting[], id = F.id) =>
+  `hi\n\n${markerBlock([`key ${keyOf(id)}`, ...seen.map((s) => `seen ${s.at} ${s.run}/${s.attempt}`)])}`;
+
+describe("the workflow", () => {
+  const wf = parse(
+    readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "../../.github/workflows/flaky-tracker.yml",
+      ),
+      "utf8",
+    ),
+  );
+
+  it("serializes every tracker run in one concurrency group with no per-run part", () => {
+    const jobs = Object.values(wf.jobs) as {
+      concurrency?: { group: string; "cancel-in-progress": boolean };
+    }[];
+    expect(jobs).toHaveLength(1);
+    expect(wf.concurrency).toBeUndefined();
+    const c = jobs[0]?.concurrency;
+    expect(c?.group).toBe("flaky-tracker");
+    expect(c?.group).not.toContain("${{");
+    expect(c?.["cancel-in-progress"]).toBe(false);
+  });
+
+  it("skips runs from another repository", () => {
+    expect(wf.jobs.track.if).toContain(
+      "github.event.workflow_run.head_repository.full_name == github.repository",
+    );
+  });
+});
 
 describe("decide", () => {
   it("records a first sighting and opens nothing", () => {
@@ -127,9 +177,7 @@ describe("decide", () => {
     const a = decide({
       f: F,
       sighting: S,
-      recorded: [
-        { key: keyOf(F.id), run: 800, attempt: 1, at: "2026-11-22T00:00:00Z" },
-      ],
+      recorded: [rec(800, "2026-11-22T00:00:00Z")],
       open: [],
       nowMs: NOW,
     });
@@ -139,32 +187,40 @@ describe("decide", () => {
 
   it("does not count a sighting older than 7 days, another test, or the same run twice", () => {
     for (const r of [
-      { key: keyOf(F.id), run: 700, attempt: 1, at: "2026-11-18T00:00:00Z" },
-      {
-        key: keyOf("vitest:other"),
-        run: 800,
-        attempt: 1,
-        at: "2026-11-25T00:00:00Z",
-      },
-      { key: keyOf(F.id), run: 900, attempt: 1, at: "2026-11-26T10:00:00Z" },
+      rec(700, "2026-11-18T00:00:00Z"),
+      rec(800, "2026-11-25T00:00:00Z", "vitest:other"),
+      rec(900, "2026-11-26T10:00:00Z"),
     ])
       expect(
         decide({ f: F, sighting: S, recorded: [r], open: [], nowMs: NOW }).kind,
       ).toBe("record");
   });
 
-  it("bumps the open issue, and skips a run it already notes", () => {
-    const body = `<!-- flaky-key: ${keyOf(F.id)} -->\n<!-- flaky-seen: 2026-11-20T00:00:00Z 600/1 -->`;
+  it("bumps the open issue only with 2 runs in 7 days, and skips a run it already notes", () => {
+    const body = issueBody([
+      { at: "2026-11-10T00:00:00Z", run: 600, attempt: 1 },
+    ]);
+    const open = [{ number: 5, body }];
+    // The issue is open, but the last sighting is 16 days old: record only.
     expect(
       decide({
         f: F,
         sighting: S,
-        recorded: [],
-        open: [{ number: 5, body }],
+        recorded: [rec(600, "2026-11-10T00:00:00Z")],
+        open,
         nowMs: NOW,
       }).kind,
-    ).toBe("bump");
-    const noted = `${body.split("\n")[0]}\n<!-- flaky-seen: 2026-11-26T10:00:00Z 900/1 -->`;
+    ).toBe("record");
+    const a = decide({
+      f: F,
+      sighting: S,
+      recorded: [rec(850, "2026-11-25T00:00:00Z")],
+      open,
+      nowMs: NOW,
+    });
+    expect(a.kind).toBe("bump");
+    expect(a.kind === "bump" && a.window.map((s) => s.run)).toEqual([850, 900]);
+    const noted = issueBody([S]);
     expect(
       decide({
         f: F,
@@ -177,31 +233,137 @@ describe("decide", () => {
   });
 });
 
-describe("the store", () => {
-  it("round-trips its lines and keeps titles inert", () => {
-    const c = storeComment(RUN, [
+const HOSTILE = [
+  `x --> @mallory <!-- flaky-tracker\nkey ${keyOf("vitest:victim")}\n-->`,
+  "y ---> @mallory #1 `z`",
+  "<!--- flaky-key: 0123456789abcdef --> flaky-seen: 2026-11-26T00:00:00Z 1/1",
+];
+
+describe("untrusted text", () => {
+  it("inert() leaves no comment delimiter or marker word", () => {
+    for (const t of [...HOSTILE, "<!-->", "<!---->", "-->-->", "a->b"]) {
+      const s = inert(t);
+      expect(s).not.toMatch(/<!--|-->|<!-|->/);
+      expect(s).not.toMatch(/flaky-(tracker|key|seen|summary|sightings|prev)/i);
+    }
+  });
+
+  it("a hostile title or file can't forge or end a marker block", () => {
+    for (const title of HOSTILE) {
+      const f: Failure = {
+        suite: "vitest",
+        title,
+        file: `test/${title}.test.ts`,
+        id: `vitest:test/${title}.test.ts:${title}`,
+      };
+      const [store] = storeComments(RUN, [{ f, sighting: S }]);
+      expect(parseStore(store ?? "")).toEqual([{ key: keyOf(f.id), ...S }]);
+      const body = newIssueBody({ f, run: RUN, seen: [S], owner: null });
+      expect(parseMarks(body)).toEqual({
+        key: keyOf(f.id),
+        seen: [S],
+        sightings: [],
+      });
+      for (const text of [store ?? "", body]) {
+        // The only `<!--` and `-->` are the bot's trailing block.
+        expect(text.match(/<!--/g)).toHaveLength(1);
+        expect(text.match(/-->/g)).toHaveLength(1);
+        // Every mention sits inside a code span.
+        expect(text.replace(/(`+)[\s\S]*?\1/g, "")).not.toContain("@");
+      }
+      // The victim's open issue is not matched by the hostile test.
+      expect(
+        decide({
+          f: { ...F, id: "vitest:victim" },
+          sighting: S,
+          recorded: [],
+          open: [{ number: 1, body }],
+          nowMs: NOW,
+        }).kind,
+      ).toBe("record");
+      const t = issueTitle(f);
+      expect(t).not.toMatch(/[`#@]/);
+      expect(t).not.toMatch(/<!-|->/);
+    }
+  });
+
+  it("ids reach markers only as a hex hash", () => {
+    const f: Failure = { ...F, id: "vitest:a-->b:--->c" };
+    const [store] = storeComments(RUN, [{ f, sighting: S }]);
+    const body = newIssueBody({ f, run: RUN, seen: [S], owner: null });
+    for (const text of [store ?? "", body]) {
+      const block = text.slice(text.lastIndexOf("<!-- flaky-tracker"));
+      expect(block).not.toContain("a--");
+      expect(block.slice(0, -3)).not.toContain(">");
+      expect(block).toContain(keyOf(f.id));
+    }
+    expect(keyOf(f.id)).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it("a marker block that is not trailing is ignored", () => {
+    const block = markerBlock([`key ${keyOf(F.id)}`]);
+    expect(parseMarks(`${block}\nmore text`).key).toBeUndefined();
+    expect(parseMarks(`text\n${block}\n`).key).toBe(keyOf(F.id));
+  });
+
+  it("keeps titles inert in the store's text", () => {
+    const [c] = storeComments(RUN, [
       { f: { ...F, title: "@someone #12 `x`" }, sighting: S },
     ]);
-    expect(parseStore(c)).toEqual([{ key: keyOf(F.id), ...S }]);
     expect(c).toContain(codeSpan("@someone #12 `x`"));
     expect(codeSpan("a `b`")).toBe("`` a `b` ``");
   });
+
+  it("splits a large run's store lines under the comment limit", () => {
+    const rows = Array.from({ length: 400 }, (_, i) => ({
+      f: { ...F, id: `${F.id}${i}`, title: "t".repeat(600) },
+      sighting: S,
+    }));
+    const cs = storeComments(RUN, rows);
+    expect(cs.length).toBeGreaterThan(1);
+    for (const c of cs) expect(c.length).toBeLessThan(65536);
+    expect(cs.flatMap(parseStore)).toHaveLength(400);
+  });
 });
+
+describe("bumpedBody", () => {
+  it("replaces only the trailing block", () => {
+    const b = bumpedBody(issueBody([S]), keyOf(F.id), [S, { ...S, run: 901 }]);
+    expect(b.startsWith("hi\n")).toBe(true);
+    expect(parseMarks(b).seen.map((s) => s.run)).toEqual([900, 901]);
+    expect(b.match(/<!--/g)).toHaveLength(1);
+  });
+});
+
+type FakeIssue = {
+  number: number;
+  body: string;
+  label: string;
+  login?: string;
+  comments?: number;
+  created_at?: string;
+  closed?: boolean;
+};
 
 /** A fake GitHub: one failed attempt with the given job log, then the issue API. */
 function fakeGh(o: {
   log: string;
-  storeComments?: { user: string; body: string }[];
-  open?: { number: number; body: string; login?: string }[];
+  jobConclusion?: string;
+  attemptConclusion?: string;
+  storeComments?: { user: string; body: string; issue?: number }[];
+  issues?: FakeIssue[];
 }) {
   const calls: string[][] = [];
   const created: { title: string; body: string; label: string }[] = [];
   const comments: { n: string; body: string }[] = [];
-  const store = [...(o.storeComments ?? [])];
-  const issues = (o.open ?? []).map((i) => ({
+  const store = (o.storeComments ?? []).map((c) => ({
+    issue: c.issue ?? 1,
+    ...c,
+  }));
+  const issues: FakeIssue[] = (o.issues ?? []).map((i) => ({
+    login: "app/github-actions",
+    created_at: "2026-11-01T00:00:00Z",
     ...i,
-    label: "flaky",
-    login: i.login ?? "app/github-actions",
   }));
   const val = (args: string[], k: string) => args[args.indexOf(k) + 1] ?? "";
   const exec: Exec = (_cmd, args) => {
@@ -210,7 +372,12 @@ function fakeGh(o: {
     const path = args.find((a) => a.startsWith("repos/")) ?? "";
     if (args[0] === "api") {
       if (/\/attempts\/1$/.test(path))
-        return ok(JSON.stringify({ conclusion: "failure", head_sha: SHA }));
+        return ok(
+          JSON.stringify({
+            conclusion: o.attemptConclusion ?? "failure",
+            head_sha: SHA,
+          }),
+        );
       if (/\/attempts\/1\/jobs/.test(path))
         return ok(
           JSON.stringify({
@@ -218,7 +385,7 @@ function fakeGh(o: {
               {
                 id: 1,
                 name: "test-shard (server)",
-                conclusion: "failure",
+                conclusion: o.jobConclusion ?? "failure",
                 completed_at: "2026-11-26T10:00:00.123Z",
               },
               {
@@ -227,19 +394,42 @@ function fakeGh(o: {
                 conclusion: "failure",
                 completed_at: null,
               },
+              {
+                id: 3,
+                name: "lint",
+                conclusion: "cancelled",
+                completed_at: null,
+              },
             ],
           }),
         );
       if (path.endsWith("/jobs/1/logs")) return ok(o.log);
       if (path.endsWith("/jobs/2/logs"))
         return ok("##[error]Process completed with exit code 1.");
-      if (/\/issues\/\d+\/comments/.test(path))
+      if (path.endsWith("/jobs/3/logs")) return ok(o.log);
+      const cm = /\/issues\/(\d+)\/comments/.exec(path);
+      if (cm)
         return ok(
           store
-            .filter((c) => c.user === BOT)
+            .filter((c) => c.user === BOT && c.issue === Number(cm[1]))
             .map((c) => JSON.stringify(c.body))
             .join("\n"),
         );
+      const im = /\/issues\/(\d+)$/.exec(path);
+      if (im) {
+        const i = issues.find((x) => x.number === Number(im[1]));
+        if (!i) return { code: 1, stdout: "", stderr: "HTTP 404" };
+        return ok(
+          JSON.stringify({
+            number: i.number,
+            body: i.body,
+            created_at: i.created_at,
+            comments:
+              i.comments ?? store.filter((c) => c.issue === i.number).length,
+            user: { login: i.login === "app/github-actions" ? BOT : i.login },
+          }),
+        );
+      }
       if (path.includes("/commits?"))
         return ok(JSON.stringify([{ author: { login: "dev1" } }]));
       if (path.includes("/assignees/")) return ok("");
@@ -253,7 +443,7 @@ function fakeGh(o: {
       return ok(
         JSON.stringify(
           issues
-            .filter((i) => i.label === label)
+            .filter((i) => i.label === label && !i.closed)
             .map((i) => ({
               number: i.number,
               body: i.body,
@@ -274,12 +464,17 @@ function fakeGh(o: {
         body: c.body,
         label: c.label,
         login: "app/github-actions",
+        created_at: "2026-11-26T11:00:00Z",
       });
       return ok("");
     }
     if (args[0] === "issue" && args[1] === "comment") {
       comments.push({ n: args[2] as string, body: val(args, "--body") });
-      store.push({ user: BOT, body: val(args, "--body") });
+      store.push({
+        issue: Number(args[2]),
+        user: BOT,
+        body: val(args, "--body"),
+      });
       return ok("");
     }
     if (args[0] === "issue" && args[1] === "edit") {
@@ -287,13 +482,63 @@ function fakeGh(o: {
       if (i) i.body = val(args, "--body");
       return ok("");
     }
+    if (args[0] === "issue" && args[1] === "close") {
+      const i = issues.find((x) => String(x.number) === args[2]);
+      if (i) i.closed = true;
+      comments.push({ n: args[2] as string, body: val(args, "--comment") });
+      return ok("");
+    }
     return { code: 1, stdout: "", stderr: `unexpected ${args.join(" ")}` };
   };
-  return { exec, calls, created, comments };
+  return { exec, calls, created, comments, issues };
 }
 
 const ONE_FAIL = VITEST_LOG.split("\n").slice(0, 7).join("\n");
-const ID = parseVitest(ONE_FAIL)[0]?.id as string;
+const ONE = parseVitest(ONE_FAIL)[0] as Failure;
+const ID = ONE.id;
+const STORE: FakeIssue = {
+  number: 1,
+  body: storeBody(),
+  label: "flaky-sightings",
+};
+const priorStore = (run: number, at: string, f = ONE) =>
+  storeComments({ ...RUN, runId: run }, [
+    { f, sighting: { at, run, attempt: 1 } },
+  ])[0] as string;
+
+describe("loadRun", () => {
+  const exec =
+    (o: object): Exec =>
+    () => ({ code: 0, stdout: JSON.stringify(o), stderr: "" });
+  it("reads the passing attempt", () => {
+    expect(
+      loadRun(
+        exec({
+          conclusion: "success",
+          head_sha: SHA,
+          head_repository: { full_name: REPO },
+        }),
+        REPO,
+        900,
+        2,
+      ),
+    ).toEqual(RUN);
+  });
+  it("skips a run whose head is in a fork", () => {
+    expect(
+      loadRun(
+        exec({
+          conclusion: "success",
+          head_sha: SHA,
+          head_repository: { full_name: "mallory/open-artifacts" },
+        }),
+        REPO,
+        900,
+        2,
+      ),
+    ).toBeNull();
+  });
+});
 
 describe("track", () => {
   sleeper.sleep = () => {};
@@ -310,39 +555,34 @@ describe("track", () => {
     expect(r.notes).toEqual(["attempt 1: job test failed outside the tests"]);
   });
 
-  it("second run in 7 days: opens one flaky issue with both run links, owner assigned", () => {
-    const prior = storeComment({ ...RUN, runId: 800 }, [
-      {
-        f: parseVitest(ONE_FAIL)[0] as Failure,
-        sighting: { at: "2026-11-24T09:00:00Z", run: 800, attempt: 1 },
-      },
-    ]);
+  it("a timed-out job counts like a failed one", () => {
     const g = fakeGh({
       log: ONE_FAIL,
-      open: [],
+      jobConclusion: "timed_out",
+      attemptConclusion: "timed_out",
+    });
+    const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(r.done).toEqual([{ action: "record", id: ID }]);
+    // The cancelled job (same log) is not read.
+    expect(g.calls.some((c) => c.at(-1)?.endsWith("/jobs/3/logs"))).toBe(false);
+  });
+
+  it("second run in 7 days: opens one flaky issue with both run links, owner assigned", () => {
+    const prior = priorStore(800, "2026-11-24T09:00:00Z");
+    const g = fakeGh({
+      log: ONE_FAIL,
+      issues: [STORE],
       storeComments: [
         { user: BOT, body: prior },
         // Anyone can comment on a public issue: never counted.
         { user: "mallory", body: prior.replace("800/1", "801/1") },
       ],
     });
-    // The store issue exists.
-    g.exec("gh", [
-      "issue",
-      "create",
-      "--title",
-      "store",
-      "--body",
-      "",
-      "--label",
-      "flaky-sightings",
-    ]);
-    g.created.length = 0;
     const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
     expect(r.done).toEqual([{ action: "create", id: ID }]);
     const issue = g.created[0];
     expect(issue?.label).toBe("flaky");
-    expect(issue?.body).toContain(`<!-- flaky-key: ${keyOf(ID)} -->`);
+    expect(parseMarks(issue?.body ?? "").key).toBe(keyOf(ID));
     expect(issue?.body).toContain(
       `https://github.com/${REPO}/actions/runs/800/attempts/1`,
     );
@@ -373,27 +613,149 @@ describe("track", () => {
     ).toBe(before);
   });
 
-  it("bumps the open issue with the run link", () => {
-    const body = `<!-- flaky-key: ${keyOf(ID)} -->\nhi\n<!-- flaky-seen: 2026-11-24T09:00:00Z 800/1; 2026-11-25T09:00:00Z 850/1 -->`;
-    const g = fakeGh({ log: ONE_FAIL, open: [{ number: 7, body }] });
+  it("bumps the open issue with the run links when seen twice in 7 days", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      issues: [
+        STORE,
+        {
+          number: 7,
+          label: "flaky",
+          body: issueBody(
+            [{ at: "2026-11-24T09:00:00Z", run: 800, attempt: 1 }],
+            ID,
+          ),
+        },
+      ],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
+      ],
+    });
     const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
     expect(r.done).toContainEqual({ action: "bump", id: ID, issue: 7 });
     const bump = g.comments.find((c) => c.n === "7");
-    expect(bump?.body).toContain(`/actions/runs/900/attempts/1`);
-    expect(bump?.body).toContain(TWICE_NOTE);
+    expect(bump?.body).toContain("/actions/runs/900/attempts/1");
+    expect(bump?.body).toContain("/actions/runs/800/attempts/1");
+    expect(bump?.body).toContain("failed in 2 runs within 7 days");
+    const seen = parseMarks(g.issues.find((i) => i.number === 7)?.body ?? "");
+    expect(seen.seen.map((s) => s.run)).toEqual([800, 900]);
   });
 
-  it(`more than ${MAX_TESTS_PER_RUN} failed tests: one summary issue, nothing recorded`, () => {
-    const log = Array.from(
-      { length: MAX_TESTS_PER_RUN + 1 },
-      (_, i) => ` FAIL  test/t${i}.test.ts > case ${i}`,
-    ).join("\n");
-    const g = fakeGh({ log });
+  it("an open issue whose last sighting is past the window is not bumped", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      issues: [
+        STORE,
+        {
+          number: 7,
+          label: "flaky",
+          body: issueBody(
+            [{ at: "2026-11-10T09:00:00Z", run: 600, attempt: 1 }],
+            ID,
+          ),
+        },
+      ],
+    });
     const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
-    expect(r.done).toEqual([{ action: "summary", id: "summary:900" }]);
+    expect(r.done).toEqual([{ action: "record", id: ID }]);
+    expect(g.comments.map((c) => c.n)).toEqual(["1"]);
+  });
+
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      ...ONE,
+      title: `case ${i}`,
+      file: `test/t${i}.test.ts`,
+      id: `vitest:test/t${i}.test.ts:case ${i}`,
+    }));
+  const log = (fs: Failure[]) =>
+    fs.map((f) => ` FAIL  ${f.file} > ${f.title}`).join("\n");
+
+  it(`more than ${MAX_FILED_PER_RUN} first sightings: all recorded, nothing filed`, () => {
+    const g = fakeGh({
+      log: log(many(MAX_FILED_PER_RUN + 3)),
+      issues: [STORE],
+    });
+    const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(r.done.every((d) => d.action === "record")).toBe(true);
+    expect(g.created).toEqual([]);
+    expect(g.comments.flatMap((c) => parseStore(c.body))).toHaveLength(
+      MAX_FILED_PER_RUN + 3,
+    );
+  });
+
+  it(`more than ${MAX_FILED_PER_RUN} tests to file: all recorded, one summary instead`, () => {
+    const fs = many(MAX_FILED_PER_RUN + 3);
+    // Six were seen before; two are first sightings.
+    const seenBefore = fs.slice(0, MAX_FILED_PER_RUN + 1);
+    const g = fakeGh({
+      log: log(fs),
+      issues: [STORE],
+      storeComments: seenBefore.map((f) => ({
+        user: BOT,
+        body: priorStore(800, "2026-11-24T09:00:00Z", f),
+      })),
+    });
+    const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(g.comments.flatMap((c) => parseStore(c.body))).toHaveLength(
+      fs.length,
+    );
+    expect(r.done.filter((d) => d.action === "record")).toHaveLength(2);
+    expect(r.done).toContainEqual({ action: "summary", id: "summary:900" });
     expect(g.created).toHaveLength(1);
-    expect(g.created[0]?.body).toContain(summaryMarker(900));
-    expect(g.comments).toEqual([]);
+    const body = g.created[0]?.body ?? "";
+    expect(parseMarks(body).summary).toBe(900);
+    expect(body).toContain("/actions/runs/800/attempts/1");
+    expect(body).not.toContain("case 7");
+    // A rerun skips the summary it filed.
+    const again = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(again.done).toContainEqual({
+      action: "skip",
+      id: "summary:900",
+      issue: expect.any(Number),
+    });
+    expect(g.created).toHaveLength(1);
+  });
+
+  it(`${MAX_FILED_PER_RUN} tests to file: each filed on its own`, () => {
+    const fs = many(MAX_FILED_PER_RUN + 3);
+    const g = fakeGh({
+      log: log(fs),
+      issues: [STORE],
+      storeComments: fs.slice(0, MAX_FILED_PER_RUN).map((f) => ({
+        user: BOT,
+        body: priorStore(800, "2026-11-24T09:00:00Z", f),
+      })),
+    });
+    const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(r.done.filter((d) => d.action === "create")).toHaveLength(
+      MAX_FILED_PER_RUN,
+    );
+    expect(g.created).toHaveLength(MAX_FILED_PER_RUN);
+  });
+
+  it(`a store past ${STORE_MAX_COMMENTS} comments is closed and continued, and both are read`, () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      issues: [{ ...STORE, comments: STORE_MAX_COMMENTS + 1 }],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
+      ],
+    });
+    const r = track({ exec: g.exec, run: RUN, nowMs: NOW });
+    const next = g.issues.find(
+      (i) => i.label === "flaky-sightings" && i.number !== 1,
+    );
+    expect(parseMarks(next?.body ?? "").prev).toBe(1);
+    expect(g.issues.find((i) => i.number === 1)?.closed).toBe(true);
+    expect(g.comments.find((c) => c.n === "1")?.body).toContain(
+      `#${next?.number}`,
+    );
+    // This run's line went to the new store; the old one's sighting counted.
+    expect(g.comments.filter((c) => c.n === String(next?.number))).toHaveLength(
+      1,
+    );
+    expect(r.done).toEqual([{ action: "create", id: ID }]);
   });
 
   it("a failure outside the tests files nothing", () => {
