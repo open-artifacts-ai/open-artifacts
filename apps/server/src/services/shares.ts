@@ -22,6 +22,7 @@ import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import {
+  LEGACY_COMMENT,
   SHARE_ROLE_CASE,
   shareRoleSql,
   storedShare,
@@ -70,7 +71,7 @@ export const MAX_SHARES = 200;
 const GUEST_LINE: Record<ShareRole, string> = {
   viewer: "They're a guest, so they can only view.",
   commenter: "They're a guest, so they can view and comment.",
-  editor: "They're a guest, so they can only view for now.",
+  editor: "Editor once they join the team. Until then, they can only view.",
 };
 export const guestShareLine = (s: { role: ShareRole }): string =>
   GUEST_LINE[s.role];
@@ -101,7 +102,7 @@ export async function listShares(
   const rows = await getDb(env)
     .select({
       email: shares.email,
-      role: shareRoleSql(),
+      role: shareRoleSql<ShareRole>(),
       createdAt: shares.createdAt,
       orgRole: users.role,
       uid: users.id,
@@ -222,12 +223,9 @@ export async function putShare(
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))
     throw new ApiError("bad_request", "Cannot share with yourself");
-  // No role given: a guest comments, anyone else views.
   const reach = await shareReach(env, email);
   const guest = await guestRecipients(env)(email, reach.role);
-  // An outsider is never stored as editor: a guest comments at most.
-  const asked = s.role ?? (guest ? "commenter" : "viewer");
-  const role: ShareRole = guest && asked === "editor" ? "commenter" : asked;
+  const role = s.role ?? "editor";
   const stored = storedShare(role);
   // #2590: with the owner's switch off, no new share to an address outside
   // the instance (no user row here). A person already in stays shareable.
@@ -246,11 +244,18 @@ export async function putShare(
   // The audit row rides in the same batch, written only when the upsert
   // changed a row (a share refused at the cap, or a re-share at the same
   // role, writes none).
-  const [res] = await env.DB.batch<{
+  const [, res] = await env.DB.batch<{
     email: string;
     role: string;
     createdAt: number;
   }>([
+    // Materialize a preserved grant before the upsert compares roles so that
+    // a repeated Commenter grant stays a no-op and a Viewer downgrade is audited.
+    env.DB.prepare(`UPDATE shares SET can_comment = 1
+      WHERE artifact_id = ? AND email = ? AND role = 'viewer' AND can_comment = 0 AND ${LEGACY_COMMENT}`).bind(
+      id,
+      email,
+    ),
     env.DB.prepare(
       `INSERT INTO shares (artifact_id, email, role, can_comment, created_by, created_at)
        SELECT ?1, ?2, ?3, ?7, ?4, ?5
@@ -261,6 +266,9 @@ export async function putShare(
        RETURNING email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt`,
     ).bind(id, email, stored.role, user.id, now, MAX_SHARES, stored.canComment),
     shareAudit(env, "artifact.share", user, artifact, { role }),
+    env.DB.prepare(
+      "DELETE FROM legacy_viewer_comments WHERE artifact_id = ? AND email = ?",
+    ).bind(id, email),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
@@ -361,7 +369,12 @@ export const OUTSIDE_EMAILS_PER_INSTANCE_PER_DAY_TRIAL = 20;
 async function emailShare(
   env: Env,
   user: Member,
-  artifact: { id: string; title: string; format: string; doc: number },
+  artifact: {
+    id: string;
+    title: string;
+    format: string;
+    doc: number;
+  },
   email: string,
   role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */

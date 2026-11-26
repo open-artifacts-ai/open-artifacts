@@ -1064,7 +1064,7 @@ export const RULES: Record<string, Rule> = {
   },
 };
 
-/** Tables the seeder doesn't own: SQLite's, D1's and FTS shadow tables. */
+/** Tables with independent seed data. SQLite, D1 and triggers populate the rest. */
 export function seedableTables(db: DatabaseSync): string[] {
   const rows = db
     .prepare(
@@ -1081,6 +1081,7 @@ export function seedableTables(db: DatabaseSync): string[] {
         !n.startsWith("sqlite_") &&
         !n.startsWith("_cf_") &&
         n !== "d1_migrations" &&
+        n !== "legacy_viewer_comments" && // 0054 populates these when seeding shares.
         !virtual.some((v) => n.startsWith(`${v}_`)),
     );
 }

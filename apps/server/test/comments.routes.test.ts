@@ -450,10 +450,10 @@ describe("who can", () => {
     }
   });
 
-  it("a shared viewer reads and comments", async () => {
+  it("a shared viewer can read but cannot comment", async () => {
     const id = await pub();
     await share(id, viewer, "viewer");
-    expect((await post(id, viewer)).status).toBe(201);
+    expect((await post(id, viewer)).status).toBe(404);
     expect((await call(id, viewer, "")).status).toBe(200);
   });
 

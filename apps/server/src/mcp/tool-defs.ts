@@ -116,7 +116,7 @@ export const TOOL_DEFS = [
     inputSchema: ShareArtifactInputSchema,
     example: { id: ID, email: "sam@example.com", role: "viewer" },
     description:
-      "Open Artifacts: Share an artifact with an email address as viewer or editor. Owner or space manager only.",
+      "Open Artifacts: Share an artifact with an email address as Viewer (read), Commenter (read and comment), or Editor (also publish new versions, the default). Guest Editors can only view until they join the team. Owner or space manager only.",
   },
   {
     name: "unshare_artifact",
