@@ -632,6 +632,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     ["pi", "pi"],
     ["omp", "omp"],
     ["openclaw", "openclaw"],
+    ["antigravity", "antigravity"],
     ["hermes", "hermes"],
     ["hermes", "hermes-myproject"],
     ["claude-code", "agent"],

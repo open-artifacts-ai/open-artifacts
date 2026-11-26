@@ -38,6 +38,7 @@ export const KIND_LABEL: Record<AgentKind, string> = {
   hermes: "Hermes",
   openclaw: "OpenClaw",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 /** A known kind's label; any other kind shows as its own token (C26h). */
 export const kindLabel = (kind: string): string =>
