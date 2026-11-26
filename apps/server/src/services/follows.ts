@@ -230,7 +230,7 @@ export async function unfollow(
   userId: string,
   to: BusAddress,
   ref: string,
-): Promise<{ removed: boolean }> {
+): Promise<{ removed: boolean; artifactId: string }> {
   const a = address(to);
   const id = artifactIdOf(env, ref);
   if (!id) throw notFound();
@@ -241,7 +241,7 @@ export async function unfollow(
   )
     .bind(userId, id, a.namespace, a.name)
     .run();
-  return { removed: (r.meta.changes ?? 0) > 0 };
+  return { removed: (r.meta.changes ?? 0) > 0, artifactId: id };
 }
 
 /**
