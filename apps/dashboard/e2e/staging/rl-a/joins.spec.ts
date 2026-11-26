@@ -165,6 +165,12 @@ test("an invited member outside the domain signs in by code: a member session in
   // response body is gone by the time it could be read. /me below checks
   // the identity and that the session is not capped.
   expect((await verified).status()).toBe(200);
+  // Verify answers, then the page does a full load to `next`. Wait for that
+  // landing first: a name typed before the reload is lost with the old page,
+  // and the new page's Save stays disabled on an empty name.
+  await page.waitForURL((u) => !u.pathname.startsWith("/sign-in"), {
+    waitUntil: "load",
+  });
 
   // The API agrees on the code session: the invited row, a member, uncapped.
   const meRes = await page.request.get(`${A.app}${R.me}`, {
@@ -184,6 +190,9 @@ test("an invited member outside the domain signs in by code: a member session in
     await ask
       .getByRole("textbox", { name: "Your name" })
       .fill(`T19 ${RUN} invited`);
+    await expect(ask.getByRole("textbox", { name: "Your name" })).toHaveValue(
+      `T19 ${RUN} invited`,
+    );
     await ask.getByRole("button", { name: "Save" }).click();
     await expect(ask).toHaveCount(0);
   }
