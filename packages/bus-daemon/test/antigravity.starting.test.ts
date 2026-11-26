@@ -17,6 +17,7 @@ import { AGY_STARTING_LABEL, BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AgyPluginRoute,
+  type AgyProc,
   agyPluginHome,
   agyStartingRef,
   parseAgyPids,
@@ -40,6 +41,7 @@ const S0 = agyStartingRef(AGY, "t0");
 /** The OS as the daemon sees it: which pids run, what, since when, where. */
 const os = {
   alive: new Set<number>(),
+  ppid: new Map<number, number>(),
   comm: new Map<number, string>(),
   start: new Map<number, string>(),
   cwd: new Map<number, string>(),
@@ -53,8 +55,9 @@ const os = {
   /** A process's environment can't be read (macOS): procBusHome's null. */
   envUnreadable: false,
 };
-const agyRuns = (pid: number, start: string, cwd: string) => {
+const agyRuns = (pid: number, start: string, cwd: string, ppid = 1) => {
   os.alive.add(pid);
+  os.ppid.set(pid, ppid);
   os.comm.set(pid, "/Users/u/.local/bin/agy");
   os.start.set(pid, start);
   os.cwd.set(pid, cwd);
@@ -72,7 +75,7 @@ async function setup(
     /** "flag": the daemon's own default, from OA_BUS_EXPERIMENTAL_AGY. */
     discover?: boolean | "flag";
     agentsFile?: string;
-    pids?: () => Promise<number[] | null>;
+    pids?: () => Promise<AgyProc[] | null>;
     /** This daemon's bus home, and where it reads the plugin's route. */
     home?: string;
     pluginHome?: () => AgyPluginRoute | null;
@@ -81,6 +84,7 @@ async function setup(
 ) {
   if (fresh) {
     os.alive = new Set();
+    os.ppid = new Map();
     os.comm = new Map();
     os.start = new Map();
     os.cwd = new Map();
@@ -120,9 +124,9 @@ async function setup(
         (() =>
           os.psDown
             ? null
-            : [...os.alive].filter(
-                (p) => basename(os.comm.get(p) ?? "") === "agy",
-              )),
+            : [...os.alive]
+                .filter((p) => basename(os.comm.get(p) ?? "") === "agy")
+                .map((pid) => ({ pid, ppid: os.ppid.get(pid) ?? 1 }))),
       cwdOf: (pid) => os.cwd.get(pid) ?? null,
       homeOf: (pid) => (os.envUnreadable ? null : os.home.get(pid)),
       ...(agentsFile ? { agentsFile } : {}),
@@ -193,6 +197,7 @@ const settled = async (h: H) => {
 describe("an agy process is listed at launch (agy S2b)", () => {
   it("is listed as a starting antigravity agent before any message, with a starting status", async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     expect(await upFor(h, S0)).toMatchObject({
       kind: "antigravity",
       proposed_name: "agy",
@@ -221,12 +226,63 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(ups(h, S0)).toHaveLength(1);
   });
 
+  it("an agy whose parent is agy is never listed", async () => {
+    const { h } = await setup();
+    agyRuns(4243, "t-child", "/w/app", AGY);
+    h.daemon.syncNow();
+    h.daemon.syncNow();
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    await settled(h);
+    expect(h.of("agent_up").map((u) => u.agent_ref)).toEqual([S0]);
+    expect(
+      h.daemon.agents.byRef(agyStartingRef(4243, "t-child")),
+    ).toBeUndefined();
+  });
+
+  it("a process seen in only one scan is not listed; seen in two consecutive scans it is listed with the usual starting ref", async () => {
+    const { h } = await setup();
+    // Startup ran scan 1: AGY is remembered, not listed yet.
+    await settled(h);
+    expect(h.of("agent_up")).toEqual([]);
+    expect(h.daemon.agents.byRef(S0)).toBeUndefined();
+    // Scan 2 sees AGY again with the same start time: now listed.
+    h.daemon.syncNow();
+    expect(await upFor(h, S0)).toMatchObject({
+      agent_ref: S0,
+      kind: "antigravity",
+      proposed_name: "agy",
+    });
+  });
+
+  it("a process that disappears after one scan never appears and takes no name", async () => {
+    const { h } = await setup();
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    // Short-lived helper appears for one scan, then exits before the next.
+    agyRuns(4299, "t-short", "/w/app");
+    h.daemon.syncNow();
+    await settled(h);
+    expect(
+      h.daemon.agents.byRef(agyStartingRef(4299, "t-short")),
+    ).toBeUndefined();
+    os.alive.delete(4299);
+    h.daemon.syncNow();
+    h.daemon.syncNow();
+    await settled(h);
+    expect(h.of("agent_up").map((u) => u.agent_ref)).toEqual([S0]);
+    expect(
+      h.daemon.agents.byRef(agyStartingRef(4299, "t-short")),
+    ).toBeUndefined();
+  });
+
   it("lists only agy: another binary is not an agent", async () => {
     const { h } = await setup();
     os.alive.add(5000);
     os.comm.set(5000, "/bin/zsh");
     os.start.set(5000, "t5");
     os.cwd.set(5000, "/w/other");
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await upFor(h, S0);
     await settled(h);
@@ -261,6 +317,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     agyRuns(6000, "t6", "/b/proj");
     agyRuns(7000, "t7", "/u/elsewhere");
     h.daemon.syncNow();
+    h.daemon.syncNow();
     const onB = agyStartingRef(6000, "t6");
     const off = agyStartingRef(7000, "t7");
     await vi.waitFor(() =>
@@ -283,6 +340,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
   it("lists nothing with discovery off, and skips an agy started for another home when the hook follows its environment", async () => {
     const two = await setup({ discover: false });
     two.h.daemon.syncNow();
+    two.h.daemon.syncNow();
     await settled(two.h);
     expect(two.h.of("agent_up")).toEqual([]);
     expect(two.h.daemon.agents.all()).toEqual([]);
@@ -290,10 +348,12 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
     const { h } = await setup();
     os.unpinned = true;
+    h.daemon.syncNow();
     await upFor(h, S0);
     agyRuns(6000, "t6", "/w/two");
     os.home.set(6000, "/somewhere/else/.oa-bus");
     agyRuns(6001, "t61", "/w/three");
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await upFor(h, agyStartingRef(6001, "t61"));
     expect(h.daemon.agents.byRef(agyStartingRef(6000, "t6"))).toBeUndefined();
@@ -301,6 +361,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it("lists nothing when the agy plugin sends sessions to another home, or there is none; a session listed before closes", async () => {
     const elsewhere = await setup();
+    elsewhere.h.daemon.syncNow();
     await upFor(elsewhere.h, S0);
     // The plugin is rewritten for another home (an --alongside install).
     os.plugin = { home: "/somewhere/else/.oa-bus", pinned: true };
@@ -310,6 +371,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(elsewhere.h.daemon.agents.byRef(S0)?.live).toBe(false);
     agyRuns(6100, "t61", "/w/later");
     elsewhere.h.daemon.syncNow();
+    elsewhere.h.daemon.syncNow();
     await settled(elsewhere.h);
     expect(
       elsewhere.h.daemon.agents.byRef(agyStartingRef(6100, "t61")),
@@ -318,19 +380,21 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     os.plugin = null;
     agyRuns(6200, "t62", "/w/none");
     elsewhere.h.daemon.syncNow();
+    elsewhere.h.daemon.syncNow();
     await settled(elsewhere.h);
     expect(
       elsewhere.h.daemon.agents.byRef(agyStartingRef(6200, "t62")),
     ).toBeUndefined();
-    // The plugin routes here again: listed.
+    // The plugin routes here again: listed after two consecutive scans.
     os.plugin = undefined;
+    elsewhere.h.daemon.syncNow();
     elsewhere.h.daemon.syncNow();
     await upFor(elsewhere.h, agyStartingRef(6200, "t62"));
   });
 
   it("runs one process scan at a time: a tick while ps runs starts none", async () => {
     let calls = 0;
-    let finish: (p: number[] | null) => void = () => {};
+    let finish: (p: AgyProc[] | null) => void = () => {};
     const { h } = await setup({
       pids: () => {
         calls++;
@@ -345,14 +409,18 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     await settled(h);
     expect(calls).toBe(1);
     expect(h.daemon.agents.byRef(S0)).toBeUndefined();
-    finish([AGY]);
-    await upFor(h, S0);
+    finish([{ pid: AGY, ppid: 1 }]);
+    await settled(h);
+    expect(h.daemon.agents.byRef(S0)).toBeUndefined();
     h.daemon.syncNow();
     expect(calls).toBe(2);
+    finish([{ pid: AGY, ppid: 1 }]);
+    await upFor(h, S0);
   });
 
   it("the conversation that joins at the first message takes over the address: one session, not two", async () => {
     const { h, hook } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     h.toDaemon({
       id: "ok1",
@@ -395,6 +463,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it('a joined agy that says "starting" itself is not shown as the bus\'s starting', async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     const hello = agyHello({
       pid: AGY,
@@ -431,6 +500,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it("holds a message to a starting session (receipt pending), and holds it again for the joined conversation until S3 delivers", async () => {
     const { h, hook } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     h.toDaemon(deliver(S0, "mmmmmmmmmmmmmmm1"));
     await settled(h);
@@ -448,6 +518,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it("closes when the agy process ends, joined or not", async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     os.alive.delete(AGY);
     h.daemon.syncNow();
@@ -457,6 +528,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it("a reused pid is a new process: the old record closes, the new one is listed under a new ref", async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     os.start.set(AGY, "t1");
     h.daemon.syncNow();
@@ -473,6 +545,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
 
   it("a process table that cannot be read lists and closes nothing", async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     os.psDown = true;
     agyRuns(6000, "t6", "/w/two");
@@ -482,15 +555,18 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(h.daemon.agents.byRef(agyStartingRef(6000, "t6"))).toBeUndefined();
     os.psDown = false;
     h.daemon.syncNow();
+    h.daemon.syncNow();
     await upFor(h, agyStartingRef(6000, "t6"));
   });
 
   it("a cwd that cannot be read yet is tried again on a later tick", async () => {
     const { h } = await setup();
+    h.daemon.syncNow();
     await upFor(h, S0);
     os.alive.add(6000);
     os.comm.set(6000, "agy");
     os.start.set(6000, "t6");
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await settled(h);
     expect(h.daemon.agents.byRef(agyStartingRef(6000, "t6"))).toBeUndefined();
@@ -507,6 +583,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
       "antigravity-agents.json",
     );
     const one = await setup({ agentsFile });
+    one.h.daemon.syncNow();
     await upFor(one.h, S0);
     one.h.daemon.syncNow();
     let saved: unknown[] = [];
@@ -518,6 +595,7 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(saved).toEqual([]);
     await stopAll();
     const two = await setup({ agentsFile }, false);
+    two.h.daemon.syncNow();
     expect(await upFor(two.h, S0)).toMatchObject({ kind: "antigravity" });
   });
 });
@@ -580,6 +658,7 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     p.write(DEFAULT);
     const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    h.daemon.syncNow();
     await upFor(h, S0);
   });
 
@@ -593,11 +672,13 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
       pluginHome: p.route,
       discover: "flag",
     });
+    h.daemon.syncNow();
     await upFor(h, S0);
     // The pinned hook sends this agy here though its OA_BUS_HOME is unset
     // or names another home: it is still this home's.
     agyRuns(7000, "t7", "/w/env");
     os.home.set(7000, DEFAULT);
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await upFor(h, agyStartingRef(7000, "t7"));
   });
@@ -605,6 +686,7 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
   it("no plugin installed: no home lists", async () => {
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await settled(h);
     expect(h.of("agent_up")).toEqual([]);
@@ -615,6 +697,7 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     p.write(MOVED);
     const { h } = await setup({ home: DEFAULT, pluginHome: p.route });
+    h.daemon.syncNow();
     h.daemon.syncNow();
     await settled(h);
     expect(h.of("agent_up")).toEqual([]);
@@ -645,6 +728,7 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
     p.write(DEFAULT);
     moved.h.daemon.syncNow();
     await closedRef(moved.h, S0);
+    def.h.daemon.syncNow();
     def.h.daemon.syncNow();
     await upFor(def.h, S0);
     moved.h.daemon.syncNow();
@@ -686,6 +770,8 @@ describe("launch and join always target the same home (agy S2b)", () => {
     os.home.set(AGY, ALT);
     os.envUnreadable = mac;
     ready = true;
+    def.h.daemon.syncNow();
+    alt.h.daemon.syncNow();
     def.h.daemon.syncNow();
     alt.h.daemon.syncNow();
     await settled(def.h);
@@ -741,6 +827,7 @@ describe("launch and join always target the same home (agy S2b)", () => {
     os.envUnreadable = true;
     ready = true;
     h.daemon.syncNow();
+    h.daemon.syncNow();
     await settled(h);
     expect(h.daemon.agents.byRef(S0)).toBeUndefined();
     // The next install pins the hook: the same process is listed.
@@ -756,15 +843,19 @@ describe("the process reads (agy S2b)", () => {
     expect(
       parseAgyPids(
         [
-          "  1 /sbin/launchd",
-          " 459 /Users/u/.local/bin/agy",
-          " 460 agy",
-          " 461 /usr/bin/agy-helper",
-          " 462 /bin/zsh",
+          "  1   0 /sbin/launchd",
+          " 459   1 /Users/u/.local/bin/agy",
+          " 460 459 agy",
+          " 461   1 /usr/bin/agy-helper",
+          " 462   1 /bin/zsh",
+          " 463 /Users/u/.local/bin/agy",
           "bad line",
         ].join("\n"),
       ),
-    ).toEqual([459, 460]);
+    ).toEqual([
+      { pid: 459, ppid: 1 },
+      { pid: 460, ppid: 459 },
+    ]);
   });
 
   it("reads the bus home from the agy plugin's hook, as install writes it", () => {

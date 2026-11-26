@@ -62,6 +62,7 @@ import {
 } from "./agents.ts";
 import {
   type AgyPluginRoute,
+  type AgyProc,
   agyPids,
   agyPluginHome,
   agyStartingRef,
@@ -479,8 +480,8 @@ export type DaemonDeps = {
      * home the agy plugin routes to lists (pluginHome), so one daemon does.
      */
     discover?: boolean;
-    /** agy S2b: the pids running agy, null when unknown; default one async `ps`. */
-    pids?: () => number[] | null | Promise<number[] | null>;
+    /** agy S2b: the running agy processes (pid and ppid), null when unknown; default one async `ps`. */
+    pids?: () => AgyProc[] | null | Promise<AgyProc[] | null>;
     /**
      * agy S2b: where the installed agy plugin's hook sends sessions, null
      * when there is none (agyPluginHome). Only the daemon of that home lists
@@ -4237,6 +4238,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   >();
   const AGY_CWD_TRIES = 5;
   /**
+   * agy S2b: top-level agy processes seen in the previous scan, by pid and
+   * start time. A process is listed only once seen in two consecutive scans
+   * with the same start time, so a short-lived helper agy is never listed.
+   */
+  const agySeen = new Map<number, string>();
+  /**
    * agy S2b: lists each running agy process that has no conversation yet as
    * an antigravity agent in state "starting", homed by its cwd through the
    * folder map (unmapped: on no hub). Its ref comes from the pid and start
@@ -4292,18 +4299,23 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agyScan = false;
       });
   };
-  const listAgy = (pids: number[] | null, route: AgyPluginRoute) => {
+  const listAgy = (procs: AgyProc[] | null, route: AgyPluginRoute) => {
     // ps could not be read: unknown, nothing is listed or closed for it.
-    if (pids === null) return;
-    const running = new Set(pids);
+    if (procs === null) return;
+    const running = new Set(procs.map((p) => p.pid));
     for (const pid of [...agySkipped.keys()])
       if (!running.has(pid)) agySkipped.delete(pid);
+    const top = procs.filter((p) => !running.has(p.ppid));
+    const prevSeen = new Map(agySeen);
+    agySeen.clear();
     const restoring = new Set([...agyPending.values()].map((p) => p.row.pid));
     const listed: AgentRecord[] = [];
-    for (const pid of pids) {
+    for (const { pid } of top) {
       if (restoring.has(pid)) continue;
       const start = agStart(pid);
       if (start === null) continue;
+      agySeen.set(pid, start);
+      if (prevSeen.get(pid) !== start) continue;
       // Met already: a conversation of this process (live, or one it showed
       // before), or this same starting session.
       const known = agents

@@ -12,34 +12,44 @@ import { systemTool } from "@oa/bus-ipc";
  * then, so the process table is the only sign it is there.
  */
 
+/** One running agy process from `ps`: its pid and parent pid. */
+export type AgyProc = { pid: number; ppid: number };
+
 /**
- * The pids running the agy binary, from one `ps` over every process; null
- * when ps cannot be read (unknown, never "none run"). The binary is matched
- * by name, as S1a's attest does (`commOf`). Asynchronous, so a slow ps never
- * holds up hub frames or socket hellos.
+ * The running agy processes (pid and ppid), from one `ps` over every
+ * process; null when ps cannot be read (unknown, never "none run"). The
+ * binary is matched by name, as S1a's attest does (`commOf`). Asynchronous,
+ * so a slow ps never holds up hub frames or socket hellos.
  */
-export function agyPids(): Promise<number[] | null> {
+export function agyPids(): Promise<AgyProc[] | null> {
   return new Promise((resolve) => {
     execFile(
       systemTool("ps"),
-      ["-axo", "pid=,comm="],
+      ["-axo", "pid=,ppid=,comm="],
       { encoding: "utf8", timeout: 1500, maxBuffer: 8 * 1024 * 1024 },
       (err, out) => resolve(err ? null : parseAgyPids(out)),
     );
   });
 }
 
-/** `ps -o pid=,comm=` lines to the pids whose binary is `agy`. */
-export function parseAgyPids(out: string): number[] {
-  const pids: number[] = [];
+/** `ps -axo pid=,ppid=,comm=` lines to the processes whose binary is `agy`. */
+export function parseAgyPids(out: string): AgyProc[] {
+  const procs: AgyProc[] = [];
   for (const line of out.split("\n")) {
-    const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
+    const m = /^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/.exec(line);
     if (!m) continue;
-    if (basename(m[2] as string) !== "agy") continue;
+    if (basename(m[3] as string) !== "agy") continue;
     const pid = Number(m[1]);
-    if (Number.isSafeInteger(pid) && pid > 0) pids.push(pid);
+    const ppid = Number(m[2]);
+    if (
+      Number.isSafeInteger(pid) &&
+      pid > 0 &&
+      Number.isSafeInteger(ppid) &&
+      ppid >= 0
+    )
+      procs.push({ pid, ppid });
   }
-  return pids;
+  return procs;
 }
 
 /**
