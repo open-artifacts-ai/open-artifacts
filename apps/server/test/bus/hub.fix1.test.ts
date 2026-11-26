@@ -21,6 +21,7 @@ import {
   ready,
   up,
   waitFor,
+  waitForId,
 } from "./helpers.js";
 
 const list = (id: string, from_ref: string): ClientFrame => ({
@@ -223,7 +224,7 @@ describe("F3: targeted roster_changed fan-out", () => {
       ),
     });
     d.send(hello("after"));
-    await waitFor(d, "hello_ok");
+    await waitForId(d, "hello_ok", "after");
     const wall = Date.now() - t0;
     await until(() => watchers.every((w, i) => changed(w).length > before[i]));
     await fence(...watchers);

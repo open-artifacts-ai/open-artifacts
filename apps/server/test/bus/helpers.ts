@@ -282,6 +282,9 @@ export async function daemon(
     // Recorded, then failed loudly in the test that reads it.
     expect(r.ok, `not a server frame: ${text}`).toBe(true);
     if (!r.ok) return;
+    // A fence's own reply is for `fence` alone (it listens on the socket): it
+    // never reaches a test's queue, where a later wait could take it for its own.
+    if (isFenceReply(r.frame)) return;
     const w = waiting.shift();
     if (w) w(r.frame);
     else queue.push(r.frame);
@@ -322,6 +325,20 @@ export const eventually = <T>(
   fn: () => T | Promise<T>,
   o: { timeout?: number; interval?: number } = {},
 ) => vi.waitFor(fn, { timeout: 10_000, interval: 10, ...o });
+
+/** The frame of `type` answering request `id`: another frame of that type (an earlier reply) is not it. */
+export async function waitForId<T extends ServerFrame["type"]>(
+  conn: { next: () => Promise<ServerFrame> },
+  type: T,
+  id: string,
+): Promise<Extract<ServerFrame, { type: T }>> {
+  for (let i = 0; i < 5000; i++) {
+    const f = await conn.next();
+    if (f.type === type && (f as { id?: unknown }).id === id)
+      return f as Extract<ServerFrame, { type: T }>;
+  }
+  throw new Error(`no ${type} frame answering ${id}`);
+}
 
 export async function waitFor<T extends ServerFrame["type"]>(
   conn: { next: () => Promise<ServerFrame> },
@@ -372,6 +389,11 @@ export async function closing(
   );
 }
 
+const FENCE_PREFIX = "fence-";
+export const isFenceReply = (f: ServerFrame) =>
+  (f as { id?: unknown }).id !== undefined &&
+  String((f as { id?: unknown }).id).startsWith(FENCE_PREFIX);
+
 let fenceSeq = 0;
 /**
  * Fences the hub's reaction to everything these daemons sent before: the hub
@@ -386,7 +408,7 @@ export async function fence(
 ): Promise<void> {
   await Promise.all(
     ds.map((d) => {
-      const id = `fence-${++fenceSeq}`;
+      const id = `${FENCE_PREFIX}${++fenceSeq}`;
       const back = new Promise<void>((resolve) => {
         const on = (ev: MessageEvent) => {
           const text = String(ev.data);

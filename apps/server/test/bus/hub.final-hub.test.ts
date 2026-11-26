@@ -28,7 +28,15 @@ import {
   SEND_KEY_RETAIN_MS,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, fence, idleOf, ns, trackSocket, up } from "./helpers.js";
+import {
+  e,
+  fence,
+  idleOf,
+  isFenceReply,
+  ns,
+  trackSocket,
+  up,
+} from "./helpers.js";
 
 type BusHubStub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -114,6 +122,7 @@ async function daemonOn(h: BusHubStub, machineId: string): Promise<D> {
     if (t === PONG) return;
     const r = decodeServerFrame(t);
     if (!r.ok) return;
+    if (isFenceReply(r.frame)) return; // a fence's own reply is not a test's
     const k = w.shift();
     if (k) k(r.frame);
     else q.push(r.frame);
