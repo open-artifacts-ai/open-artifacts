@@ -616,7 +616,10 @@ export function mountCodes(app: AppType): void {
     }
 
     const row = elig.userId ? await getUserWithEpoch(c.env, elig.userId) : null;
-    if (!row) return unauthorized({ reason: "expired" }, [clearPending(c)]);
+    // #3184 exact address: the row the session is signed for must still be
+    // at the mailbox just verified (its address may change between reads).
+    if (!row || row.user.email.toLowerCase() !== email)
+      return unauthorized({ reason: "expired" }, [clearPending(c)]);
     const user: Member = row.user;
     const guest = elig.kind === "guest";
     const domain = email.slice(email.lastIndexOf("@") + 1);

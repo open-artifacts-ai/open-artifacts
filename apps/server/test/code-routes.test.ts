@@ -442,6 +442,57 @@ describe("POST AUTH.codeVerify", () => {
       expect(body.auth.cap ?? null).toBeNull();
     });
 
+  // #3184 exact address: the row's address changes after the eligibility
+  // read and before the session's row read; no session is signed.
+  for (const role of ["owner", "admin", "member"] as const)
+    it(`${role === "member" ? "a" : "an"} ${role} row whose address changes during verify gets no session`, async () => {
+      const addr = uniq(`move-${role}`, "x.com");
+      const moved = uniq(`moved-${role}`, "x.com");
+      await seedUser(addr, role);
+      const s = await start(direct(), addr);
+      const real = s.e.DB;
+      let armed = true;
+      const DB = new Proxy(real, {
+        get(t, k) {
+          if (k !== "prepare") return Reflect.get(t, k, t);
+          return (sql: string) => {
+            const st = t.prepare(sql);
+            if (!sql.includes("where id = ?1 and status = 'active' and not"))
+              return st;
+            return new Proxy(st, {
+              get(st0, k0) {
+                if (k0 !== "bind") return Reflect.get(st0, k0, st0);
+                return (...args: unknown[]) => {
+                  const b = st0.bind(...args);
+                  return new Proxy(b, {
+                    get(b0, k1) {
+                      if (k1 !== "first") return Reflect.get(b0, k1, b0);
+                      return async (...a: unknown[]) => {
+                        if (armed) {
+                          armed = false;
+                          await t
+                            .prepare(
+                              "update users set email = ?1 where email = ?2",
+                            )
+                            .bind(moved, addr)
+                            .run();
+                        }
+                        return (b0.first as (...x: unknown[]) => unknown)(...a);
+                      };
+                    },
+                  });
+                };
+              },
+            });
+          };
+        },
+      });
+      const r = await verify({ ...s.e, DB } as Env, s.code(), s.cookie);
+      expect(armed).toBe(false);
+      expect(r.status).toBe(401);
+      expect(cookieOf(r, SESSION)).toBeUndefined();
+    });
+
   // The m session holds only while codeRule would still admit the row.
   it("a row's code session ends when the row is made a guest", async () => {
     const member = uniq("mx", "x.com");
