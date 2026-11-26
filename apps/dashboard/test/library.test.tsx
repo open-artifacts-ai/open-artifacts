@@ -27,6 +27,66 @@ describe("Library", () => {
     expect(screen.getAllByRole("article")).toHaveLength(arts.length);
   });
 
+  it.each(["list", "grid"])(
+    "selects manageable %s items without opening them",
+    async (view) => {
+      const router = mount(`/?view=${view}`);
+      const select = await screen.findByRole("button", { name: "Select" });
+      fireEvent.click(select);
+      const checkboxes = (await screen.findAllByRole(
+        "checkbox",
+      )) as HTMLInputElement[];
+      const allowed = checkboxes.filter((box) => !box.disabled);
+      const first = allowed[0];
+      if (!first) throw new Error("Expected an owned artifact");
+      fireEvent.click(first);
+      expect(screen.getByText("1 selected")).toBeVisible();
+      expect(router.state.location.pathname).toBe("/");
+      const last = allowed.at(-1);
+      if (last && last !== first) {
+        fireEvent.click(last, { shiftKey: true });
+        expect(screen.getByText(`${allowed.length} selected`)).toBeVisible();
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      expect(screen.queryByText("Move to folder…")).toBeNull();
+    },
+  );
+
+  it("opens the sharing panel from an owned row menu", async () => {
+    const router = mount("/?view=list");
+    const menu = await screen.findByRole("button", {
+      name: "Actions for Landing page",
+    });
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    expect(
+      await screen.findByRole("menuitem", { name: "Archive" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("menuitem", { name: "Move to folder…" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share…" }));
+    await screen.findByRole("combobox", { name: "Invite role" });
+    expect(router.state.location.search).toMatchObject({
+      panel: "open",
+      tab: "share",
+    });
+  });
+
+  it("opens a confirmation before deleting from the menu", async () => {
+    mount("/");
+    const menu = await screen.findByRole("button", {
+      name: "Actions for Landing page",
+    });
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "Landing page",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await link("Landing page")).toBeVisible();
+  });
+
   it("format filter updates the URL and the request", async () => {
     const router = mount("/");
     await link("Landing page");
