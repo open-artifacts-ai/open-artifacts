@@ -5,6 +5,7 @@ import {
   R,
   TEST_AUDIT_LIMIT,
   TEST_HOOKS,
+  TEST_RUN_HEADER,
   TestAuditResultSchema,
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -33,7 +34,7 @@ async function call(
   e: Env,
   path: string,
   body: unknown,
-  o: { key?: string; host?: string } = {},
+  o: { key?: string; host?: string; run?: string } = {},
 ) {
   return worker.fetch(
     new Request(`http://${o.host ?? "app.localhost"}${path}`, {
@@ -42,6 +43,7 @@ async function call(
         "content-type": "application/json",
         "cf-connecting-ip": "198.51.100.201",
         ...(o.key ? { authorization: `Bearer ${o.key}` } : {}),
+        ...(o.run ? { [TEST_RUN_HEADER]: o.run } : {}),
       },
       body: JSON.stringify(body),
     }) as never,
@@ -49,8 +51,8 @@ async function call(
     { waitUntil() {}, passThroughOnException() {} } as never,
   );
 }
-const read = (since: number, e = on(), key = KEY) =>
-  call(e, TEST_HOOKS.audit, { since }, { key });
+const read = (since: number, e = on(), key = KEY, run?: string) =>
+  call(e, TEST_HOOKS.audit, { since, ...(run ? { run } : {}) }, { key });
 
 /** The standard 404, byte for byte (hooks off). */
 async function same404(r: Response) {
@@ -68,6 +70,96 @@ const insert = (
   env.DB.prepare(
     "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id, detail) values (?, ?, ?, null, ?, ?, ?, ?)",
   ).bind(newId(), at, kind, action, targetType, `t-${at}`, '{"k":"v"}');
+
+describe("run tags keep one suite's rows out of another's read", () => {
+  const rows = async (since: number, run?: string) =>
+    TestAuditResultSchema.parse(
+      await (await read(since, on(), KEY, run)).json(),
+    ).events;
+
+  it("a tagged call's row is hidden from the unfiltered read and found by its tag", async () => {
+    const since = Date.now();
+    await call(
+      on(),
+      TEST_HOOKS.session,
+      { email: uniq("tag", TD), role: "member" },
+      { key: KEY, run: "t19-abc123" },
+    );
+    await call(
+      on(),
+      TEST_HOOKS.session,
+      { email: uniq("plain", TD), role: "member" },
+      { key: KEY },
+    );
+    const plain = await rows(since);
+    expect(plain.map((e) => e.detail.run)).not.toContain("t19-abc123");
+    expect(plain.filter((e) => e.action === "test_hook.session")).toHaveLength(
+      1,
+    );
+    const mine = await rows(since, "t19-abc123");
+    expect(mine).toHaveLength(1);
+    expect(mine[0]?.detail).toMatchObject({
+      hook: "session",
+      outcome: "ok",
+      run: "t19-abc123",
+    });
+  });
+
+  it("many tagged rows never push an untagged row out of the newest 200", async () => {
+    const at = Date.now() + 40_000_000_000;
+    const tagged = Array.from({ length: TEST_AUDIT_LIMIT + 50 }, (_, i) =>
+      env.DB.prepare(
+        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id, detail) values (?, ?, 'test_hook', null, 'test_hook.session', 'test_hook', 'session', ?)",
+      ).bind(
+        newId(),
+        at + 10 + i,
+        JSON.stringify({ hook: "session", run: "t19-flood" }),
+      ),
+    );
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id, detail) values (?, ?, 'test_hook', null, 'test_hook.session', 'test_hook', 'session', ?)",
+      ).bind(newId(), at, JSON.stringify({ hook: "session", who: "suite" })),
+      ...tagged,
+    ]);
+    const plain = await rows(at);
+    expect(plain.map((e) => e.detail.who)).toContain("suite");
+    expect((await rows(at, "t19-flood")).length).toBe(TEST_AUDIT_LIMIT);
+  });
+
+  it("a wrong key cannot tag its rows: its denied row stays in the unfiltered read", async () => {
+    const since = Date.now();
+    await call(
+      on(),
+      TEST_HOOKS.session,
+      {},
+      { key: "x".repeat(48), run: "t19-hide" },
+    );
+    const plain = await rows(since);
+    expect(plain.some((e) => e.detail.outcome === "denied")).toBe(true);
+    expect(await rows(since, "t19-hide")).toEqual([]);
+  });
+
+  it("a malformed tag is ignored (the row is untagged) and a malformed filter is bad input", async () => {
+    const since = Date.now();
+    await call(
+      on(),
+      TEST_HOOKS.session,
+      { email: uniq("bad", TD), role: "member" },
+      { key: KEY, run: "has space" },
+    );
+    expect((await rows(since)).some((e) => e.detail.hook === "session")).toBe(
+      true,
+    );
+    const r = await call(
+      on(),
+      TEST_HOOKS.audit,
+      { since, run: "has space" },
+      { key: KEY },
+    );
+    expect(r.status).toBe(404);
+  });
+});
 
 describe("POST /__test/audit", () => {
   // Far future, so rows other tests write never fall in range.

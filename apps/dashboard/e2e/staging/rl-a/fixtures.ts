@@ -8,6 +8,7 @@ import {
   type Role,
   type Space,
   TEST_HOOKS,
+  TEST_RUN_HEADER,
   type TestSessionInput,
 } from "@oa/shared";
 import {
@@ -48,7 +49,13 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
       fetch(`${A.app}${path}`, {
         method: "POST",
         redirect: "manual",
-        headers: { "content-type": "application/json", ...headers },
+        headers: {
+          "content-type": "application/json",
+          // T19's rows in the install's audit log carry this tag, so they never
+          // crowd the red-line suite's rows out of its newest-200 read.
+          [TEST_RUN_HEADER]: `t19-${RUN}`,
+          ...headers,
+        },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(FETCH_MS),
       }),
