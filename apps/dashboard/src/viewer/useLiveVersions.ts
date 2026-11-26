@@ -1,5 +1,9 @@
 import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ASK_SLOTS_KEY } from "../api/askSlots";
 import { ApiClientError, api } from "../api/client";
@@ -120,6 +124,22 @@ function useAnnouncer() {
  */
 export const refetchesComments = (e: { type: string }): boolean =>
   e.type === "comments" || e.type === "hello";
+
+/**
+ * Refetch every query under `queryKey` so it shows the server as of now. A
+ * plain invalidate that lands while a query's first fetch is in flight (no
+ * data yet) joins that fetch, whose answer may predate the change: a reply
+ * made while the comments list was still loading never showed (#3095). So
+ * such a fetch is cancelled first, and the refetch starts after the change.
+ */
+export const refetchNow = async (qc: QueryClient, queryKey: QueryKey) => {
+  await qc.cancelQueries({
+    queryKey,
+    predicate: (q) =>
+      q.state.fetchStatus === "fetching" && q.state.data === undefined,
+  });
+  await qc.invalidateQueries({ queryKey });
+};
 
 /**
  * Live version updates for one viewer: one R.events socket, coalesced into
@@ -326,9 +346,9 @@ export function useLiveVersions(o: {
         if (refetchesComments(e)) {
           // A comment changed, or the socket (re)connected and may have
           // missed some (cloud #291): refetch the list.
-          void qc.invalidateQueries({ queryKey: commentsKey(id) });
+          void refetchNow(qc, commentsKey(id));
           // #2426 B: an ask shown in this page's slots may have been decided.
-          void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
+          void refetchNow(qc, ASK_SLOTS_KEY);
         }
         if (e.type === "hello") {
           down.current = false;
