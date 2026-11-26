@@ -34,3 +34,28 @@ it("no next shows no line", async () => {
   await google();
   expect(screen.queryByText(DEAD_LINK)).toBeNull();
 });
+
+it("dead=1 beside a next is ignored: no line, next kept", async () => {
+  mountHosted("/sign-in?dead=1&next=%2Fa%2Fabc");
+  expect(await google()).toHaveAttribute(
+    "href",
+    "/auth/login/google?next=%2Fa%2Fabc",
+  );
+  expect(screen.queryByText(DEAD_LINK)).not.toBeInTheDocument();
+});
+
+it("Access mode: ?dead=1 shows the line above Continue with Cloudflare Access", async () => {
+  mountHosted("/sign-in?dead=1", { mode: "access" });
+  expect(
+    await screen.findByRole("link", {
+      name: "Continue with Cloudflare Access",
+    }),
+  ).toHaveAttribute("href", "/auth/login");
+  expect(screen.getByText(DEAD_LINK)).toBeVisible();
+});
+
+it("Access mode: no dead flag, no line", async () => {
+  mountHosted("/sign-in", { mode: "access" });
+  await screen.findByRole("link", { name: "Continue with Cloudflare Access" });
+  expect(screen.queryByText(DEAD_LINK)).not.toBeInTheDocument();
+});
