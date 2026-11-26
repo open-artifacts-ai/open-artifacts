@@ -48,7 +48,7 @@ import {
 
 // The first release with #3026, account push (#3024); a run on an older rl-a skips
 // (a failure on the gate run). T19_PUSH_MIN lets a local pair name its own.
-const MIN = process.env.T19_PUSH_MIN ?? "0.254.0";
+const MIN = process.env.T19_PUSH_MIN ?? "0.253.1";
 const TICK_WAIT_MS = 4 * 60_000;
 const { eng } = SPACES;
 const DEFAULT_BODY = "An agent is waiting for your answer";
