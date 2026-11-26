@@ -1,0 +1,8 @@
+{
+  "name": "oa-bus",
+  "version": "1.0.0",
+  "displayName": "Open Artifacts bus",
+  "description": "Puts this Antigravity session on the Open Artifacts bus, so your other AI agents can reach it.",
+  "homepage": "https://open-artifacts.com",
+  "logo": "logo.svg"
+}

@@ -5825,22 +5825,30 @@ export class BusHub extends DurableObject<Env> {
         }
       }
       case "sessions": {
-        // Open sessions come back with their own agent_up; closed ones end.
+        // Open sessions come back with their own agent_up; closed ones and any
+        // live row the daemon no longer lists end (#3192). `open` is the
+        // complete live set for this link (the daemon builds it from its whole
+        // table per lane, packages/bus-daemon/src/index.ts `sessions(lane)`),
+        // so a row in neither list is one the daemon forgot.
         const change: RosterChange = { namespaces: [], global: false };
-        // One statement closes every listed live agent (refs passed as one
-        // JSON parameter, json_each; no per-ref query), then one bounded
-        // inline batch and one queue row (B11).
+        // One statement closes every closed or unlisted live agent (refs
+        // passed as JSON parameters via json_each; no per-ref query), then one
+        // bounded inline batch and one queue row (B11). The schema forbids
+        // overlap between `open` and `closed`, so the `closed` branch is
+        // redundant with `not in open` and kept for clarity.
         const downed = all<{ id: string; namespace: string; global: number }>(
           sql,
           `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
             where machine_id = ? and live = 1 and org_id = ?
-              and native_ref in (select value from json_each(?))
+              and (native_ref in (select value from json_each(?))
+                   or native_ref not in (select value from json_each(?)))
            returning id, namespace, global`,
           this.#now(),
           this.#now(),
           machineId,
           OWNER_ORG_ID,
           JSON.stringify(f.closed),
+          JSON.stringify(f.open),
         );
         for (const a of downed) {
           change.namespaces.push(a.namespace);

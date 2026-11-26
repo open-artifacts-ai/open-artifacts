@@ -76,8 +76,8 @@ async function send(d: Daemon, from: string, to: string): Promise<Receipt> {
   }
 }
 
-const close = async (d: Daemon, ref: string) => {
-  d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
+const close = async (d: Daemon, ref: string, open: string[] = []) => {
+  d.send({ v: 1, id: id("c"), type: "sessions", open, closed: [ref] });
   await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
@@ -289,7 +289,7 @@ describe("a reclaimed name keeps its roles (#1816)", () => {
     await reg(s.d, other, otherName, s.n);
     const role = uniq("role");
     await holds(s.n, role, other);
-    await close(s.d, other);
+    await close(s.d, other, [s.oldRef]);
     await close(s.d, s.oldRef);
     await reg(s.d, uniq("new"), s.name, s.n);
     expect(await holderRef(role)).toBe(other);
@@ -310,10 +310,10 @@ describe("a vacant role and an away agent in two linked namespaces (#1816)", () 
     // B: a role named `name` whose holder is closed (vacant).
     await reg(d, "hb", uniq("Holder"), b);
     await holds(b, name, "hb");
-    await close(d, "hb");
+    await close(d, "hb", ["me"]);
     // C: an agent named `name`, closed (away).
     await reg(d, "ac", name, c);
-    await close(d, "ac");
+    await close(d, "ac", ["me"]);
     const r = await send(d, "me", name);
     expect(r).toMatchObject({ state: "refused", reason: "ambiguous" });
     d.close();
@@ -327,7 +327,7 @@ describe("a vacant role and an away agent in two linked namespaces (#1816)", () 
     const name = uniq("Solo");
     await reg(d, "me", uniq("Me"), a);
     await reg(d, "ac", name, c);
-    await close(d, "ac");
+    await close(d, "ac", ["me"]);
     const r = await send(d, "me", name);
     expect(r).toMatchObject({ state: "pending", queued: "away" });
     d.close();

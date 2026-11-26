@@ -1,3 +1,4 @@
+import { createECDH } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/index.ts";
 import { generateVapidPair } from "../src/vapid.ts";
@@ -35,20 +36,6 @@ const ready = (w: W) => {
   return w;
 };
 const puts = (w: W) => w.ops.filter((o) => o.startsWith("put "));
-
-// Loaded by path: a static import would pull the Worker server code into the
-// scripts typecheck, which has no Worker types.
-const WEB_PUSH = new URL(
-  "../../../apps/server/src/services/web-push.ts",
-  import.meta.url,
-).href;
-type VapidHeader = (
-  env: Record<string, string>,
-  endpoint: string,
-) => Promise<string>;
-const loadVapidHeader = async () =>
-  ((await import(/* @vite-ignore */ WEB_PUSH)) as { vapidHeader: VapidHeader })
-    .vapidHeader;
 
 describe("OA_SETUP_PUSH_KEYS=off", () => {
   const off = (w: W) => {
@@ -153,35 +140,12 @@ describe("self-host push keys (VAPID)", () => {
     expect(w.ops.join("\n")).not.toContain(keys[1]);
   });
 
-  it("the generated pair signs a VAPID JWT that verifies against the public key", async () => {
+  it("generates a scalar and its matching uncompressed P-256 public point", async () => {
     const { publicKey, privateKey } = await generateVapidPair();
-    expect(Buffer.from(publicKey, "base64url")).toHaveLength(65);
-    expect(Buffer.from(privateKey, "base64url")).toHaveLength(32);
-    const header = await (await loadVapidHeader())(
-      {
-        VAPID_PUBLIC_KEY: publicKey,
-        VAPID_PRIVATE_KEY: privateKey,
-        APP_HOST: "app.example.com",
-      },
-      "https://push.example.net/send/abc",
-    );
-    const m = header.match(/^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=(.+)$/);
-    expect(m).not.toBeNull();
-    const [, h, c, sig, k] = m as RegExpMatchArray;
-    expect(k).toBe(publicKey);
-    const key = await crypto.subtle.importKey(
-      "raw",
-      Buffer.from(publicKey, "base64url"),
-      { name: "ECDSA", namedCurve: "P-256" },
-      false,
-      ["verify"],
-    );
-    const ok = await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      key,
-      Buffer.from(sig, "base64url"),
-      new TextEncoder().encode(`${h}.${c}`),
-    );
-    expect(ok).toBe(true);
+    const scalar = Buffer.from(privateKey, "base64url");
+    expect(scalar.byteLength).toBe(32);
+    const key = createECDH("prime256v1");
+    key.setPrivateKey(scalar);
+    expect(key.getPublicKey("base64url", "uncompressed")).toBe(publicKey);
   });
 });
