@@ -26,6 +26,8 @@ const FORBIDDEN = [
   "QUESTION FOR YOUR USER",
   "withHabits(",
   "habitsAfterInstall",
+  "setPluginHabits",
+  "HABITS_MARKER_TEXT",
 ];
 
 describe("no habit file writes or prompts in bus-cli/src (#3043)", () => {

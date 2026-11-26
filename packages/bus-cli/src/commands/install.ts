@@ -30,7 +30,7 @@ import {
 } from "../steps/adapters.ts";
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
-import { habitsOptedOut } from "../steps/habits.ts";
+import { habitsOptedOut, removeHabitsBlocks } from "../steps/habits.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { noteMade, pruneMade } from "../steps/leftovers.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
@@ -615,6 +615,16 @@ async function installRun(
     }
     return results.every((r) => r.state === "done") ? 0 : 1;
   }
+  // #3043: habits now come with the bus; remove any old managed blocks left by
+  // earlier installs before runSteps restarts the daemon (which also removes
+  // them on startup for the auto-update path), so install sees the true count.
+  const preRemoved = !second
+    ? removeHabitsBlocks({
+        home: ctx.userHome,
+        env: ctx.env,
+        busHome: ctx.home,
+      })
+    : undefined;
   const ok = await runSteps(steps, ctx, {
     path: join(ctx.home, "install.json"),
     now: ctx.now,
@@ -626,9 +636,8 @@ async function installRun(
     useBusCmd(ctx);
   }
   const skillFailed = reportSkillFailure(ctx);
-  // #3043: habits now come with the bus; remove any old managed blocks left by
-  // earlier installs, without asking anything.
-  const removed = ok && !second ? removeOldHabits(ctx) : 0;
+  // Print the moved line even if runSteps failed: the files were already changed.
+  const removed = preRemoved ? removeOldHabits(ctx, preRemoved) : 0;
   const code = ok && !skillFailed ? 0 : 1;
   if (json)
     realCtx.stdout.write(

@@ -3,7 +3,7 @@ import unittest
 
 import support
 from oa_bus import register
-from oa_bus.bus import HABITS, Bus
+from oa_bus.bus import Bus
 from oa_bus.roots import NO_SESSION, SUBAGENT, UNRESOLVED, Roots
 
 NAMES = [
@@ -23,8 +23,7 @@ def plugin(replies=None, known=None):
     known = known or {"root-1": "root-1", "rot": "root-1"}
     ctx = support.FakeCtx()
     roots = Roots(known.get)
-    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t",
-               habits_marker=support.habits_marker())
+    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t")
     link = support.FakeLink(ref="root-1", replies=replies or {})
     bus.ensure = lambda ref: link
     register(ctx, roots=roots, bus=bus)
@@ -124,7 +123,7 @@ class Registration(unittest.TestCase):
         ctx.hooks["subagent_start"][0](parent_session_id="root-1", child_session_id="kid", child_role="x")
 
     def test_pre_llm_call_passes_user_message_through(self):
-        ctx, _, bus, link = plugin()
+        ctx, _, bus, link = plugin({"habits": {"type": "habits", "rules": "bus rules"}})
         bus.state("root-1").queue.append(("queued text", "mmmmmmmmmmmmmmm1"))
         bus.state("root-1").link = link
         hook = ctx.hooks["pre_llm_call"][0]
@@ -136,7 +135,7 @@ class Registration(unittest.TestCase):
         hist = [{"role": "user", "content": "hi"}]
         self.assertEqual(
             hook(session_id="root-1", platform="telegram", user_message="hi", conversation_history=hist),
-            {"context": f"queued text\n\n{HABITS}"},
+            {"context": "queued text\n\nbus rules"},
         )
         self.assertEqual(link.acks, ["mmmmmmmmmmmmmmm1"])
 

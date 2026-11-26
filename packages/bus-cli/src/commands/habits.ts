@@ -4,21 +4,17 @@
 
 import { BRIEF_RULES } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
-import { checkAdapters } from "../steps/adapters.ts";
 import {
   habitsOptedOut,
-  PLUGIN_HARNESSES,
   type PluginHarness,
   removeHabits,
   removeHabitsBlocks,
+  removePluginHabits,
   removeProjectHabits,
   setHabitsOptOut,
-  setPluginHabits,
 } from "../steps/habits.ts";
 
-/** What a person reads once a plugin's habits are on or off. */
-export const pluginOn = (p: PluginHarness) =>
-  `Habits on in the ${p.label} plugin.`;
+/** What a person reads once a legacy plugin marker is removed on --no-habits. */
 export const pluginOff = (p: PluginHarness) =>
   `Habits off in the ${p.label} plugin.`;
 
@@ -33,19 +29,6 @@ const deps = (ctx: Ctx) => ({
   busHome: ctx.home,
 });
 
-/** The plugin harnesses wired now (Hermes, OpenClaw). */
-function wiredPlugins(ctx: Ctx): PluginHarness[] {
-  const w = checkAdapters({
-    home: ctx.userHome,
-    busHome: ctx.home,
-    env: ctx.env,
-    which: ctx.which,
-    codexApp: ctx.codexApp,
-    busBin: ctx.service.argv?.(),
-  });
-  return PLUGIN_HARNESSES.filter((p) => w[p.name] === "configured");
-}
-
 const stamp = (ctx: Ctx) => new Date(ctx.now()).toISOString();
 
 /**
@@ -53,8 +36,11 @@ const stamp = (ctx: Ctx) => new Date(ctx.now()).toISOString();
  * instruction files. Prints one line when at least one file was cleaned, plus
  * any notes for blocks that could not be removed. Never asks anything.
  */
-export function removeOldHabits(ctx: Ctx): number {
-  const r = removeHabitsBlocks(deps(ctx));
+export function removeOldHabits(
+  ctx: Ctx,
+  pre?: { files: string[]; notes: string[] },
+): number {
+  const r = pre ?? removeHabitsBlocks(deps(ctx));
   const n = r.files.length;
   if (n > 0) say(ctx, HABITS_MOVED_LINE(n));
   for (const note of r.notes) say(ctx, note);
@@ -67,12 +53,11 @@ const show = (ctx: Ctx): number => {
   return 0;
 };
 
-/** `--habits`: clear the opt-out, turn wired plugin markers back on, remove old file blocks. */
+/** `--habits`: clear the opt-out, remove old file blocks and any leftover plugin markers. */
 function turnOn(ctx: Ctx): number {
-  const plugins = wiredPlugins(ctx);
   setHabitsOptOut(ctx.home, false, stamp(ctx));
-  const pl = setPluginHabits(deps(ctx), plugins, true);
   const removed = removeHabitsBlocks(deps(ctx));
+  removePluginHabits(deps(ctx));
   say(
     ctx,
     "Habits: on, sent by the bus. Nothing is written to your instruction files.",
@@ -80,12 +65,11 @@ function turnOn(ctx: Ctx): number {
       ? [HABITS_MOVED_LINE(removed.files.length)]
       : []),
   );
-  for (const p of pl.changed) say(ctx, pluginOn(p));
-  for (const n of [...removed.notes, ...pl.notes]) say(ctx, n);
+  for (const n of removed.notes) say(ctx, n);
   return 0;
 }
 
-/** `--no-habits`: opt out of bus-sent rules, remove old file blocks and plugin markers. */
+/** `--no-habits`: opt out of bus-sent rules, remove old file blocks and leftover plugin markers. */
 function turnOff(ctx: Ctx): number {
   const r = removeHabits(deps(ctx));
   const proj = removeProjectHabits(deps(ctx));
@@ -100,7 +84,7 @@ function turnOff(ctx: Ctx): number {
   const offIn = r.plugins ?? [];
   const notes = [...r.notes, ...proj.notes];
   if (r.incomplete) {
-    // Never "Habits off" while a plugin marker may still be on.
+    // Never "Habits off" while a legacy plugin marker may still be on.
     say(
       ctx,
       ...(blocks.length > 0 ? [HABITS_MOVED_LINE(blocks.length)] : []),
@@ -125,8 +109,8 @@ export async function habitsCommand(
   mode: HabitsMode,
   ctx: Ctx,
 ): Promise<number> {
-  say(ctx, ctx.copy.header(ctx.version), "");
   if (mode === "show") return show(ctx);
+  say(ctx, ctx.copy.header(ctx.version), "");
   return mode === "yes" ? turnOn(ctx) : turnOff(ctx);
 }
 

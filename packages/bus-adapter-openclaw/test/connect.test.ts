@@ -97,7 +97,10 @@ it("does not keep its host process alive once the turn is over", async () => {
   const server = await serveDaemon({
     path: daemonSocketPath(home),
     onHello: () => ({ bus_name: "openclaw-1", namespace: "ns", global: false }),
-    onFrame: () => undefined,
+    onFrame: (f) =>
+      f.type === "habits"
+        ? { type: "habits", rules: "test bus rules" }
+        : undefined,
   });
   cleanup.push(() => server.close());
   // The sources use TypeScript that strip-only mode cannot run: bundle the child.

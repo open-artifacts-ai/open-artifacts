@@ -14,7 +14,6 @@ import { uninstall } from "../src/commands/uninstall.ts";
 import {
   HABITS_BEGIN,
   HABITS_END,
-  HABITS_LINES,
   type HabitsHarness,
   habitsFiles,
   removeHabits,
@@ -33,22 +32,6 @@ const OLD_BLOCK = [
   HABITS_END,
 ];
 const OLD_TEXT = OLD_BLOCK.join("\n");
-
-describe("the legacy Hermes copy", () => {
-  it("matches HABITS_LINES", () => {
-    const py = readFileSync(
-      new URL("../../bus-adapter-hermes/assets/oa_bus/bus.py", import.meta.url),
-      "utf8",
-    );
-    const m = /^HABITS = \(\n([\s\S]*?)\n\)$/m.exec(py);
-    expect(m).not.toBeNull();
-    // Python's adjacent string literals, joined: the same text, no quotes.
-    const text = [...(m?.[1] ?? "").matchAll(/"((?:[^"\\]|\\.)*)"/g)]
-      .map((x) => (x[1] as string).replace(/\\n/g, "\n").replace(/\\"/g, '"'))
-      .join("");
-    expect(text).toBe(HABITS_LINES.join("\n"));
-  });
-});
 
 describe("withoutHabits: removing old blocks keeps every other byte", () => {
   it("removes a block and its separating blank line, nothing else", () => {

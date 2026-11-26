@@ -18,7 +18,11 @@ import { HABITS_MOVED_LINE } from "../src/commands/habits.ts";
 import { install } from "../src/commands/install.ts";
 import { status as statusCmd } from "../src/commands/status.ts";
 import { parse } from "../src/index.ts";
-import { HABITS_BEGIN, HABITS_END } from "../src/steps/habits.ts";
+import {
+  HABITS_BEGIN,
+  HABITS_END,
+  removeHabitsBlocks,
+} from "../src/steps/habits.ts";
 import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
 
 const OLD_BLOCK = [
@@ -213,6 +217,69 @@ describe("install removes old habit blocks and never asks (#3043)", () => {
     });
     expect(ctx.err().join("\n")).toContain(HABITS_MOVED_LINE(5));
   });
+
+  it("removes blocks before the restarted daemon's startup hook so the moved line and --json count are not lost", async () => {
+    let daemonRemoved = -1;
+    const make = () => {
+      const ctx = fakeCtx(
+        claudeHarness({
+          service: {
+            kind: "launchd" as const,
+            ensure: vi.fn(async () => {
+              // Simulates daemon.ts startup removal running during service ensure().
+              daemonRemoved = removeHabitsBlocks({
+                home: ctx.userHome,
+                env: ctx.env,
+                busHome: ctx.home,
+              }).files.length;
+              return {};
+            }),
+            remove: vi.fn(async () => ({ unit: "launchd" as const })),
+            cli: () => ["oa-bus"],
+            argv: () => ["oa-bus"],
+          },
+        }),
+      );
+      approve(ctx);
+      seedAllFive(ctx);
+      return ctx;
+    };
+
+    const human = make();
+    expect(await install({ hub: HUB }, human)).toBe(0);
+    expect(daemonRemoved).toBe(0);
+    const moved = HABITS_MOVED_LINE(5);
+    expect(human.out().filter((l) => l === moved)).toHaveLength(1);
+
+    const asJson = make();
+    expect(await install({ hub: HUB, json: true }, asJson)).toBe(0);
+    expect(daemonRemoved).toBe(0);
+    expect(JSON.parse(asJson.out().join("\n"))).toEqual({
+      ok: true,
+      habits: { state: "on", removed: 5 },
+      question: null,
+    });
+    expect(asJson.err().filter((l) => l === moved)).toHaveLength(1);
+  });
+
+  it("still prints the moved line if a later install step fails", async () => {
+    const ctx = fakeCtx(
+      claudeHarness({
+        service: {
+          kind: "launchd" as const,
+          ensure: vi.fn(async () => ({ running: 999 })),
+          remove: vi.fn(async () => ({ unit: "launchd" as const })),
+          cli: () => ["oa-bus"],
+          argv: () => ["oa-bus"],
+        },
+      }),
+    );
+    approve(ctx);
+    seedAllFive(ctx);
+
+    expect(await install({ hub: HUB }, ctx)).toBe(1);
+    expect(ctx.out().filter((l) => l === HABITS_MOVED_LINE(5))).toHaveLength(1);
+  });
 });
 
 describe("daemon start removes old habit blocks (#3043)", () => {
@@ -276,7 +343,7 @@ describe("flags: --show-habits, --no-habits, --habits, removed project flags (#3
   it("--show-habits prints BRIEF_RULES verbatim and writes no file", async () => {
     const ctx = fakeCtx(claudeHarness());
     expect(await install({ habits: "show" }, ctx)).toBe(0);
-    expect(ctx.out().join("\n")).toContain(BRIEF_RULES.trimEnd());
+    expect(ctx.raw()).toBe(BRIEF_RULES);
     expect(existsSync(join(ctx.userHome, ".claude", "CLAUDE.md"))).toBe(false);
     expect(existsSync(join(ctx.home, "install.json"))).toBe(false);
   });

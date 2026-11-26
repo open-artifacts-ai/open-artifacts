@@ -1,5 +1,6 @@
-// The Hermes plugin's habits (#1602): the plugin adds the lines only while
-// <plugin dir>/habits.on exists, and the installer writes it only on a yes.
+// #3043: habits come from the bus over IPC, never from a habits.on marker file.
+// Install, --habits, --no-habits and uninstall never write habits.on, and remove
+// any legacy habits.on left behind by earlier versions.
 import {
   chmodSync,
   existsSync,
@@ -14,15 +15,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BRIEF_RULES } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { habitsLine } from "../src/commands/habits.ts";
 import { install } from "../src/commands/install.ts";
 import { uninstall } from "../src/commands/uninstall.ts";
 import {
   PLUGIN_HARNESSES,
-  pluginHabitsState,
   removeHabits,
-  setPluginHabits,
+  removePluginHabits,
 } from "../src/steps/habits.ts";
 import {
   HERMES_HABITS_MARKER,
@@ -48,62 +49,57 @@ const ours = (home: string, env: Record<string, string> = {}) => {
   return dir;
 };
 
-describe("setPluginHabits: a folder under an env that is gone (#1743)", () => {
-  it("off still reaches a Hermes marker written under another HERMES_HOME", () => {
+describe("removePluginHabits: a folder under an env that is gone (#1743)", () => {
+  it("reaches a legacy Hermes marker recorded under another HERMES_HOME", () => {
     const home = tmp();
     const busHome = join(home, ".oa-bus");
     const env = { HERMES_HOME: join(tmp(), "srv-hermes") };
     const dir = ours(home, env);
-    setPluginHabits({ home, env, busHome }, [hermes], true);
-    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
+    mkdirSync(busHome, { recursive: true });
+    writeFileSync(
+      join(busHome, "install.json"),
+      JSON.stringify({ habits: { pluginDirs: { hermes: [dir] } } }),
+    );
     const r = removeHabits({ home, busHome });
     expect(r.files).toContain(join(dir, HERMES_HABITS_MARKER));
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
   });
 });
 
-describe("setPluginHabits", () => {
-  it("yes writes the marker, no removes it", () => {
+describe("removePluginHabits", () => {
+  it("removes a legacy marker", () => {
     const home = tmp();
     const dir = ours(home);
-    expect(pluginHabitsState({ home }, hermes)).toBe("off");
-    expect(setPluginHabits({ home }, [hermes], true).changed).toEqual([hermes]);
-    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
-    expect(pluginHabitsState({ home }, hermes)).toBe("on");
-    expect(setPluginHabits({ home }, [hermes], false).changed).toEqual([
-      hermes,
-    ]);
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
+    expect(removePluginHabits({ home }, [hermes]).changed).toEqual([hermes]);
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
   });
   it.each([
     ["plain", false],
     ["symlinked", true],
-  ])("no reaches a HERMES_HOME under a %s ~/.hermes", (_name, linked) => {
+  ])("reaches a HERMES_HOME under a %s ~/.hermes", (_name, linked) => {
     const home = tmp();
     const root = linked ? join(tmp(), "hermes") : join(home, ".hermes");
     mkdirSync(root, { recursive: true });
     if (linked) symlinkSync(root, join(home, ".hermes"));
     const env = { HERMES_HOME: join(root, "custom") };
     const dir = ours(home, env);
-    expect(setPluginHabits({ home, env }, [hermes], true).changed).toEqual([
-      hermes,
-    ]);
-    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
-    expect(setPluginHabits({ home, env }, [hermes], false).changed).toEqual([
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
+    expect(removePluginHabits({ home, env }, [hermes]).changed).toEqual([
       hermes,
     ]);
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
-    expect(pluginHabitsState({ home, env }, hermes)).toBe("off");
   });
-  it("removeHabits (--no-habits, uninstall) takes the marker too", () => {
+  it("removeHabits (--no-habits, uninstall) takes a legacy marker too", () => {
     const home = tmp();
     const dir = ours(home);
-    setPluginHabits({ home }, [hermes], true);
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
     const r = removeHabits({ home });
     expect(r.files).toEqual([join(dir, HERMES_HABITS_MARKER)]);
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
   });
-  it("off sweeps the root and every profile, and notes a symlinked one", () => {
+  it("sweeps the root and every profile, and notes a symlinked one", () => {
     const home = tmp();
     const root = join(home, ".hermes");
     const mk = (base: string) => {
@@ -144,53 +140,17 @@ describe("setPluginHabits", () => {
       `Left the Hermes plugin alone: ${linked} is a symlink, so its habits may still be on. To turn them off, delete ${linked}/habits.on.`,
     );
   });
-  it("refuses a folder that is not ours", () => {
-    const home = tmp();
-    const dir = hermesPluginDir(home, {});
-    mkdirSync(dir, { recursive: true });
-    const r = setPluginHabits({ home }, [hermes], true);
-    expect(r.changed).toEqual([]);
-    expect(r.notes[0]).toContain("wasn't installed by npx @open-artifacts/bus");
-    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
-    expect(pluginHabitsState({ home }, hermes)).toBe("not installed");
-  });
-  it("says so when nothing is installed", () => {
-    const home = tmp();
-    const r = setPluginHabits({ home }, [hermes], true);
-    expect(r.notes[0]).toBe(
-      `Left the Hermes plugin alone: nothing installed at ${hermesPluginDir(home, {})}.`,
-    );
-  });
-  it("refuses a symlinked plugin folder and writes nothing through it", () => {
-    const home = tmp();
-    const real = join(home, "elsewhere");
-    mkdirSync(real);
-    writeFileSync(
-      join(real, HERMES_MARKER),
-      "managed by the Open Artifacts bus installer: x\n",
-    );
-    const dir = hermesPluginDir(home, {});
-    mkdirSync(join(dir, ".."), { recursive: true });
-    symlinkSync(real, dir);
-    const r = setPluginHabits({ home }, [hermes], true);
-    expect(r.notes[0]).toContain("symlink");
-    expect(existsSync(join(real, HERMES_HABITS_MARKER))).toBe(false);
-  });
-  it("refuses a symlinked marker, and off unlinks it without following", () => {
+  it("unlinks a symlinked marker without following it", () => {
     const home = tmp();
     const dir = ours(home);
     const target = join(home, "target");
     writeFileSync(target, "keep");
     symlinkSync(target, join(dir, HERMES_HABITS_MARKER));
-    const r = setPluginHabits({ home }, [hermes], true);
-    expect(r.changed).toEqual([]);
-    expect(r.notes[0]).toContain("symlink");
-    expect(readFileSync(target, "utf8")).toBe("keep");
-    setPluginHabits({ home }, [hermes], false);
+    removePluginHabits({ home }, [hermes]);
     expect(readFileSync(target, "utf8")).toBe("keep");
     expect(() => lstatSync(join(dir, HERMES_HABITS_MARKER))).toThrow();
   });
-  it("the marker does not make the plugin stale or foreign", () => {
+  it("a legacy marker does not make the plugin stale or foreign", () => {
     const home = tmp();
     const dir = ours(home);
     const shipped = tmp();
@@ -200,7 +160,7 @@ describe("setPluginHabits", () => {
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
     expect(pluginState(dir, shipped)).toBe("current");
-    setPluginHabits({ home }, [hermes], true);
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
     expect(pluginHash(dir)).toBe(pluginHash(shipped));
     expect(pluginState(dir, shipped)).toBe("current");
   });
@@ -286,40 +246,53 @@ describe("install and uninstall with Hermes", () => {
     expect(ctx.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
     expect(habitsLine(ctx)).toBe("Habits: on, sent by the bus");
   });
-  it("--habits writes it, a reinstall keeps it, --no-habits and uninstall remove it", async () => {
+  it("--habits and install never create habits.on, and remove an existing one", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
+    expect(existsSync(marker(ctx))).toBe(false);
+    // --habits never creates habits.on and removes any leftover one quietly.
+    writeFileSync(marker(ctx), "on\n");
+    const beforeOn = ctx.out().length;
     await install({ habits: "yes" }, ctx);
-    expect(existsSync(marker(ctx))).toBe(true);
-    expect(ctx.out().join("\n")).toContain("Habits on in the Hermes plugin.");
+    expect(existsSync(marker(ctx))).toBe(false);
+    const onOut = ctx.out().slice(beforeOn).join("\n");
+    expect(onOut).toContain(
+      "Habits: on, sent by the bus. Nothing is written to your instruction files.",
+    );
+    expect(onOut).not.toContain("Habits on in the Hermes plugin.");
+    expect(onOut).not.toContain("Bus habits now come with the bus");
     expect(habitsLine(ctx)).toBe("Habits: on, sent by the bus");
-    // Make the plugin stale so the reinstall recopies it.
+    // Reinstall on a current plugin removes any leftover habits.on.
+    writeFileSync(marker(ctx), "on\n");
+    await install({ hub: HUB }, ctx);
+    expect(existsSync(marker(ctx))).toBe(false);
+    // Reinstall on a stale plugin does not carry habits.on over.
+    writeFileSync(marker(ctx), "on\n");
     writeFileSync(
       join(hermesPluginDir(ctx.userHome, ctx.env), "bus.py"),
       "# edited\n",
     );
     await install({ hub: HUB }, ctx);
-    expect(existsSync(marker(ctx))).toBe(true);
+    expect(existsSync(marker(ctx))).toBe(false);
     expect(
       readFileSync(
         join(hermesPluginDir(ctx.userHome, ctx.env), "bus.py"),
         "utf8",
       ),
     ).not.toBe("# edited\n");
+    // --no-habits removes any leftover marker too.
+    writeFileSync(marker(ctx), "on\n");
     await install({ habits: "no" }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
-    expect(ctx.out().join("\n")).toContain("Habits off in the Hermes plugin.");
-    await install({ habits: "yes" }, ctx);
-    expect(existsSync(marker(ctx))).toBe(true);
     await uninstall({ purge: false }, ctx);
     expect(existsSync(hermesPluginDir(ctx.userHome, ctx.env))).toBe(false);
   });
   (process.getuid?.() === 0 ? it.skip : it)(
-    "--no-habits that cannot remove the marker says so, exits 1 and never prints Habits off",
+    "--no-habits that cannot remove a legacy marker says so, exits 1 and never prints Habits off",
     async () => {
       const ctx = setup();
       await install({ hub: HUB }, ctx);
-      await install({ habits: "yes" }, ctx);
+      writeFileSync(marker(ctx), "on\n");
       const dir = hermesPluginDir(ctx.userHome, ctx.env);
       chmodSync(dir, 0o500);
       try {
@@ -361,7 +334,7 @@ describe("install and uninstall with Hermes", () => {
     expect(existsSync(marker(no))).toBe(false);
     expect(habitsLine(no)).toBe("Habits: off (you opted out)");
   });
-  it("a symlinked marker is refused by --habits without following it", async () => {
+  it("--habits unlinks a symlinked leftover marker without following it", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     const target = join(ctx.userHome, "t");
@@ -370,15 +343,12 @@ describe("install and uninstall with Hermes", () => {
     const code = await install({ habits: "yes" }, ctx);
     expect(code).toBe(0);
     expect(readFileSync(target, "utf8")).toBe("keep");
-    expect(ctx.out().join("\n")).toContain("symlink");
-    rmSync(marker(ctx));
+    expect(() => lstatSync(marker(ctx))).toThrow();
   });
-  it("--show-habits prints BRIEF_RULES and exits 0", async () => {
+  it("--show-habits prints BRIEF_RULES verbatim and exits 0", async () => {
     const ctx = setup();
     expect(await install({ habits: "show" }, ctx)).toBe(0);
-    expect(ctx.out().join("\n")).toContain(
-      "When you're connected to the Open Artifacts bus",
-    );
+    expect(ctx.raw()).toBe(BRIEF_RULES);
   });
 });
 
@@ -400,7 +370,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
     withMarker(behind);
     mkdirSync(join(home, ".hermes"), { recursive: true });
     symlinkSync(elsewhere, join(home, ".hermes", "profiles"));
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(existsSync(join(behind, HERMES_HABITS_MARKER))).toBe(false);
     expect(r.notes).toContain(
       `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${realpathSync(elsewhere)}. Its profiles were checked too.`,
@@ -410,7 +380,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
   it("says nothing about a plain profiles folder", () => {
     const home = tmp();
     withMarker(profileDir(join(home, ".hermes"), "work"));
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([]);
     expect(r.incomplete).toBe(false);
   });
@@ -419,7 +389,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
     mkdirSync(join(home, ".hermes"), { recursive: true });
     const gone = join(tmp(), "gone");
     symlinkSync(gone, join(home, ".hermes", "profiles"));
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([
       `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${gone}, which doesn't exist, so there were no profiles to check.`,
     ]);
@@ -428,7 +398,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
   it("says nothing when a plain profiles folder is missing", () => {
     const home = tmp();
     mkdirSync(join(home, ".hermes"), { recursive: true });
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([]);
     expect(r.incomplete).toBe(false);
   });
@@ -436,7 +406,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
     const home = tmp();
     mkdirSync(join(home, ".hermes"), { recursive: true });
     writeFileSync(join(home, ".hermes", "profiles"), "x");
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([
       `The Hermes profiles folder ${join(home, ".hermes", "profiles")} isn't a folder, so there were no profiles to check.`,
     ]);
@@ -447,7 +417,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
     mkdirSync(join(home, ".hermes"), { recursive: true });
     const p = join(home, ".hermes", "profiles");
     symlinkSync(p, p);
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([
       `Couldn't read the Hermes profiles folder ${p} (ELOOP), so habits may still be on in a profile there.`,
     ]);
@@ -461,7 +431,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
       mkdirSync(join(p, "work"), { recursive: true });
       chmodSync(p, 0o000);
       try {
-        const r = setPluginHabits({ home }, [hermes], false);
+        const r = removePluginHabits({ home }, [hermes]);
         expect(r.notes).toEqual([
           `Couldn't read the Hermes profiles folder ${p} (EACCES), so habits may still be on in a profile there.`,
         ]);
@@ -474,7 +444,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
   it("does not throw when the Hermes root is a file", () => {
     const home = tmp();
     writeFileSync(join(home, ".hermes"), "x");
-    const r = setPluginHabits({ home }, [hermes], false);
+    const r = removePluginHabits({ home }, [hermes]);
     expect(r.notes).toEqual([
       `The Hermes profiles folder ${join(home, ".hermes", "profiles")} isn't a folder, so there were no profiles to check.`,
     ]);
@@ -488,7 +458,7 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
       mkdirSync(join(root, "profiles"), { recursive: true });
       chmodSync(root, 0o000);
       try {
-        const r = setPluginHabits({ home }, [hermes], false);
+        const r = removePluginHabits({ home }, [hermes]);
         expect(r.notes).toContain(
           `Couldn't read the Hermes profiles folder ${join(root, "profiles")} (EACCES), so habits may still be on in a profile there.`,
         );

@@ -114,9 +114,9 @@ describe("skill.md drift", () => {
     );
   });
 
-  it("leaves a tool's question for the human, with no installer habits question", async () => {
+  it("has no installer habits question", async () => {
     const md = await skill();
-    expect(md).toContain(
+    expect(md).not.toContain(
       "A question a tool asks for your human is theirs to answer.",
     );
     expect(md).not.toContain("QUESTION FOR YOUR USER");
