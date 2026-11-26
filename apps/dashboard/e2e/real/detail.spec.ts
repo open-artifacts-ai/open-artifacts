@@ -1,7 +1,7 @@
 /// <reference types="node" />
 import { join } from "node:path";
-import type { Locator, Page } from "@playwright/test";
 import { R } from "@oa/shared";
+import type { Locator, Page } from "@playwright/test";
 import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
 
 /**
