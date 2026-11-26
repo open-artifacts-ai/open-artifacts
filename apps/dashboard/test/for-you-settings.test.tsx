@@ -34,10 +34,21 @@ installClock();
 const ME_ID = fixtures.me.user.id;
 
 /** A browser that can do web push, with our worker and its subscription faked. */
+// The mock API's push key as bytes: a subscription made with it counts as on (#3024).
+const MOCK_KEY = Uint8Array.from(
+  atob(
+    "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
+      .replace(/-/g, "+")
+      .replace(/_/g, "/") + "=",
+  ),
+  (c) => c.charCodeAt(0),
+).buffer;
+
 function fakePush(start: NotificationPermission, answer = start) {
   let sub: object | null = null;
   const subscription = {
     endpoint: "https://push.example.com/abc",
+    options: { applicationServerKey: MOCK_KEY },
     toJSON: () => ({
       endpoint: "https://push.example.com/abc",
       keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
@@ -47,6 +58,8 @@ function fakePush(start: NotificationPermission, answer = start) {
       return true;
     },
   };
+  // A browser that kept an id (subscribed()) has its subscription too.
+  if (localStorage.getItem("oa.push.subscription.v2")) sub = subscription;
   const pushManager = {
     getSubscription: async () => sub,
     subscribe: vi.fn(async () => {

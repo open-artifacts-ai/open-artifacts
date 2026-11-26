@@ -452,20 +452,49 @@ export const usePatchSubscription = () => {
   });
 };
 
-/** Whether this browser has notifications on (its own subscription), read once. */
-export function useThisBrowserOn() {
+/**
+ * #3024: this browser counts as on only when something can reach it: it has a
+ * subscription, made with the server's current key (no key: off), and the
+ * server lists this browser's device (by the id it kept for this member).
+ * Never re-subscribes: that waits for a click.
+ */
+export async function thisBrowserOn(
+  publicKey: string | null | undefined,
+  list: { id: string }[],
+  userId: string,
+): Promise<boolean> {
+  if (!publicKey) return false;
+  const sub = await currentSubscription();
+  if (!sub || !sameKey(sub.options?.applicationServerKey, b64url(publicKey)))
+    return false;
+  const id = thisSubscriptionId(userId);
+  return !!id && list.some((x) => x.id === id);
+}
+
+/**
+ * `pushKey`: the server's key, null when it has none or couldn't be read,
+ * undefined while unknown. `list`: this member's devices, undefined while
+ * unknown. The answer is undefined until both are known and the browser is read.
+ */
+export function useThisBrowserOn(
+  pushKey: string | null | undefined,
+  list: { id: string }[] | undefined,
+  userId: string,
+) {
   const [on, setOn] = useState<boolean | undefined>(undefined);
+  const known = pushKey !== undefined && (pushKey === null || !!list);
   useEffect(() => {
+    if (!known) return;
     let live = true;
-    void currentSubscription().then(
-      (s) => live && setOn(!!s),
+    void thisBrowserOn(pushKey, list ?? [], userId).then(
+      (v) => live && setOn(v),
       () => live && setOn(false),
     );
     return () => {
       live = false;
     };
-  }, []);
-  return [on, setOn] as const;
+  }, [known, pushKey, list, userId]);
+  return [known ? on : undefined, setOn] as const;
 }
 
 /** "Not now" keeps the nudge away on this browser for this long, at least (Design). */

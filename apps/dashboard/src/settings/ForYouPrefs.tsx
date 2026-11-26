@@ -40,6 +40,7 @@ import {
   usePatchSubscription,
   usePushKey,
   usePushSubscriptions,
+  useThisBrowserOn,
 } from "../foryou/push";
 import { toast } from "../layout/toast";
 import { useInstanceName } from "../layout/useDocumentTitle";
@@ -140,7 +141,14 @@ function Levels({
   // This browser's own row, from the list (S5, #2774).
   const subs = usePushSubscriptions(pushKey !== null && supported);
   const userId = useMeId();
-  const mine = thisSubscription(subs.data, userId);
+  // #3024: a device listed but made with another key can't be reached: off.
+  const [on] = useThisBrowserOn(
+    pushKey,
+    subs.isError ? [] : subs.data?.items,
+    userId,
+  );
+  const listed = thisSubscription(subs.data, userId);
+  const mine = on === false ? undefined : listed;
   const note =
     pushKey === null
       ? noKeyLine
