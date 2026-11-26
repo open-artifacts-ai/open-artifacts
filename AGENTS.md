@@ -44,9 +44,16 @@ advice for contributors.
   live, and merges once CI is green on that exact SHA
   (`gh pr merge <n> --match-head-commit <sha>`). Merging needs no human pick;
   tests and CI stop a bad merge. Never push to a queued PR.
-- **Keep bus messages to 140 characters.** Send a link and the one thing that
-  changed or the one ask; details go on a page or issue. Long messages fill
-  every receiver's context.
+- **Minimum tokens.** When the user has not asked you something directly,
+  write at most 140 characters in your own chat, or nothing. Messages between
+  agents may be longer but as terse as possible. Use ASD-STE100 (Simplified
+  Technical English) for the user and for internal pages; with other agents,
+  terser is fine if both sides understand. No acknowledgements ("thanks",
+  "got it"): reply only on a change or a need. Link, don't paste: no diffs,
+  logs or page text, only the one line that matters. Don't restate a message
+  or recap a page before its link. Status goes in `set_status` and your page,
+  not in messages. One message per real event. Read one thread or one
+  section, not the whole page.
 - **Quote the decision.** Before building or calling work done, read the
   user's decisions on the plan page (answered asks, typed comments) and quote
   the one the work meets.
