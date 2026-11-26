@@ -229,6 +229,17 @@ describe("ci.yml", () => {
     const steps: any[] = job.steps;
     for (const s of steps) expect(s.if, "no step is gated").toBeUndefined();
     expect(steps.some((s) => s.id === "changed")).toBe(false);
+    // It also proves a contents-read job token can read main's rules, which
+    // release-cadence needs for the release head's required checks.
+    const rules = steps.find((s) =>
+      String(s.run).includes("rules/branches/main"),
+    );
+    expect(rules?.env?.GH_TOKEN).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      "${{ github.token }}",
+    );
+    expect(rules?.run).toContain('select(.type == "required_status_checks")');
+    expect(w.permissions).toEqual({ contents: "read" });
     // Nothing waits on it: a skipped job must not hold an aggregate.
     for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
       w.jobs,

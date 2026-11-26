@@ -63,8 +63,6 @@ type Fixture = {
   checks?: Partial<CheckRow>[];
   /** main's applied rules (default: the ruleset's five); null: unreadable. */
   rules?: unknown[] | null;
-  /** main's branch-protection checks (default: all seven); null: unreadable. */
-  protection?: { context: string; app_id: number }[] | null;
   release?: { tag_name: string; published_at: string } | null;
   /** What enqueuePullRequest answers (default: the front, jumped). */
   enqueue?: { position: number; jump: boolean } | null;
@@ -188,24 +186,6 @@ function fake(f: Fixture) {
                 { type: "merge_queue", parameters: {} },
               ],
             ),
-          );
-    if (args[0] === "api" && path.endsWith("/branches/main"))
-      return f.protection === null
-        ? unreadable
-        : ok(
-            JSON.stringify({
-              protection: {
-                enabled: true,
-                required_status_checks: {
-                  checks:
-                    f.protection ??
-                    REQUIRED_CHECKS.map((context) => ({
-                      context,
-                      app_id: 15368,
-                    })),
-                },
-              },
-            }),
           );
     const checks = /\/commits\/([0-9a-f]+)\/check-runs\?/.exec(path);
     if (args[0] === "api" && checks)
@@ -416,14 +396,11 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
   });
 
   it("the floor holds when main's live rules list fewer checks", async () => {
-    // Rules and protection list only the ruleset's five: authz-matrix and
-    // no-test-hooks are still required.
+    // The rules list only the ruleset's five (as main's do): authz-matrix
+    // and no-test-hooks, which only classic branch protection lists, are
+    // still required.
     const five = ["lint", "typecheck", "test", "build", "e2e"];
-    const g = fake({
-      ...f3249,
-      protection: five.map((context) => ({ context, app_id: 15368 })),
-      checks: five.map((n) => check(n)),
-    });
+    const g = fake({ ...f3249, checks: five.map((n) => check(n)) });
     const l = logs();
     expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
     expect(l.out.join("\n")).toContain("no-test-hooks has not reported");
@@ -431,24 +408,29 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
     const none = fake({
       ...f3249,
       rules: [],
-      protection: [],
       checks: five.map((n) => check(n)),
     });
     expect((await go(none)).action).toBe("untested");
   });
 
-  it("a check main's rules or protection add later is required too, from its own app", async () => {
+  it("a check main's rules add later is required too, from its own app", async () => {
     const extra = [
-      ...REQUIRED_CHECKS.map((context) => ({ context, app_id: 15368 })),
-      { context: "public-only", app_id: 15368 },
+      {
+        type: "required_status_checks",
+        parameters: {
+          required_status_checks: [...REQUIRED_CHECKS, "public-only"].map(
+            (context) => ({ context, integration_id: 15368 }),
+          ),
+        },
+      },
     ];
-    const g = fake({ ...f3249, protection: extra });
+    const g = fake({ ...f3249, rules: extra });
     const l = logs();
     expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
     expect(l.out.join("\n")).toContain("public-only has not reported");
     const ok = fake({
       ...f3249,
-      protection: extra,
+      rules: extra,
       checks: [...allGreen(), check("public-only")],
     });
     expect((await go(ok)).action).toBe("enqueued");
@@ -483,15 +465,25 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
     expect((await go(otherOk)).action).toBe("enqueued");
   });
 
-  it("fails closed when main's rules or protection can't be read", async () => {
-    for (const f of [{ rules: null }, { protection: null }] as Fixture[]) {
-      const g = fake({ ...f3249, ...f });
-      await expect(go(g), JSON.stringify(f)).rejects.toThrow(/HTTP 403/);
-      expect(enqueues(g)).toEqual([]);
-      await expect(
-        planStep({ exec: fake({ ...f3249, ...f }).exec, repo: REPO }),
-      ).rejects.toThrow(/HTTP 403/);
-    }
+  it("fails closed when main's rules can't be read, and reads no classic protection", async () => {
+    const g = fake({ ...f3249, rules: null });
+    await expect(go(g)).rejects.toThrow(/HTTP 403/);
+    expect(enqueues(g)).toEqual([]);
+    await expect(
+      planStep({ exec: fake({ ...f3249, rules: null }).exec, repo: REPO }),
+    ).rejects.toThrow(/HTTP 403/);
+    // Classic branch protection needs admin: never read.
+    const ok = fake(f3249);
+    await go(ok);
+    expect(
+      ok.calls.some((c) =>
+        c.some(
+          (a) =>
+            /\/branches\/main(\/protection)?$/.test(a) &&
+            !a.includes("/rules/"),
+        ),
+      ),
+    ).toBe(false);
   });
 
   it("the newest run of each check decides: a newer red rerun blocks an older green one", async () => {

@@ -802,3 +802,12 @@ jobs:
           # or container checkout never fails "dubious ownership".
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           bash scripts/ci/public-only-guard.sh
+      # release-cadence reads main's required checks from this endpoint with
+      # its job token and fails closed when it can't: prove a read-only job
+      # token (contents: read, as here) can read it.
+      - name: release-cadence can read main's rules with a read-only token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" --jq '[.[] | select(.type == "required_status_checks")] | length')
+          [ "$n" -ge 1 ] || { echo "no required_status_checks rule readable on main" >&2; exit 1; }

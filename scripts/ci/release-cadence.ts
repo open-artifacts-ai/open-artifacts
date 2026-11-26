@@ -226,9 +226,11 @@ export type Required = { name: string; app: number };
 
 /**
  * Every check main requires: the floor, plus whatever the rules that apply
- * to main (rulesets) and main's branch protection list right now. Both are
- * read with the job token (metadata and contents read); a failed read throws,
- * so the plan fails closed.
+ * to main (its rulesets) list right now. That endpoint is public for a public
+ * repo (it answers without a token), and ci.yml's public-only job reads it
+ * with a contents-read job token on every run. Classic branch protection is
+ * not read: it needs admin, and the floor already holds the two checks only
+ * it lists. A failed read throws, so the plan fails closed.
  */
 export async function requiredChecks(
   exec: Exec,
@@ -242,15 +244,6 @@ export async function requiredChecks(
       required_status_checks?: { context?: string; integration_id?: number }[];
     };
   }[];
-  const branch = JSON.parse(
-    await gh(exec, ["api", `repos/${repo}/branches/main`]),
-  ) as {
-    protection?: {
-      required_status_checks?: {
-        checks?: { context?: string; app_id?: number | null }[];
-      };
-    };
-  };
   const out = new Map<string, Required>();
   const add = (name: string | undefined, app: number | null | undefined) => {
     if (!name) return;
@@ -262,8 +255,6 @@ export async function requiredChecks(
     if (r.type === "required_status_checks")
       for (const c of r.parameters?.required_status_checks ?? [])
         add(c.context, c.integration_id);
-  for (const c of branch.protection?.required_status_checks?.checks ?? [])
-    add(c.context, c.app_id);
   return [...out.values()];
 }
 
