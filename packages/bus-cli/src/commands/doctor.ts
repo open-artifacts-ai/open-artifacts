@@ -219,7 +219,7 @@ function codexChecks(
   const skill = codexSkillState({ home: ctx.userHome, env: ctx.env });
   if (skill.file && skill.block && skill.shared)
     out.warn(c.codexSkillSharedTwice());
-  else if (skill.file && skill.block)
+  else if (skill.file && skill.block && !skill.separate)
     out.warn(
       c.codexSkillTwice(tilde(ctx, skill.file), tilde(ctx, skill.block)),
     );
