@@ -128,11 +128,17 @@ type OwnAgents = {
 };
 
 /**
- * #2311: an offline agent still on a harness default name is no mention
- * target. #3132: nor is a session that handed its role on: the @ list offers
- * the role, held by another session now.
+ * Whether the @ list leaves a session out. #3143 (Leo 2026-11-24: "away
+ * agents leave at once"): a session that is not live (closed, or open on a
+ * machine that is not connected) is gone from the list the moment it stops
+ * being live, unless it holds a role: the role is the address, and mail to it
+ * waits for the next holder (#3132). #2311: an offline agent still on a
+ * harness default name is no mention target. #3132: nor is a session that
+ * handed its role on, or one waiting to take a role over: the @ list offers
+ * the role, held by another session.
  */
 const hiddenUnnamed = (a: BusAgent): boolean =>
+  (a.state !== "live" && !a.role) ||
   (!a.running && a.unnamed === true) ||
   a.handedOver === true ||
   a.pendingRole !== undefined;

@@ -13,6 +13,7 @@ import { E } from "../mcp-helpers.js";
 import {
   daemon,
   e,
+  fence,
   hello,
   hubOf,
   machine,
@@ -96,5 +97,69 @@ describe("an @-mention of a role (#3132)", () => {
       expect(f.to_ref).toBe("ref1");
       break;
     }
+  });
+
+  it("a closed session leaves the @ list at once; a closed role holder stays as its role, away (#3143)", async () => {
+    const m = await member();
+    const user = (await getUser(e, m.userId)) as Member;
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({ ...hello("h1"), caps: [BUS_CAPS.follow] } as never);
+    await waitFor(d, "hello_ok");
+    const space = ns("away");
+    const names: string[] = [];
+    for (const [i, n] of [uniq("Plain"), uniq("Holder")].entries()) {
+      d.send(up(`u${i}`, `ref${i}`, n, space));
+      names.push((await waitFor(d, "agent_ok")).bus_name);
+    }
+    const hub = await hubOf(m.userId);
+    const holderId =
+      (await hub.snapshot()).agents.find((a) => a.name === names[1])?.id ?? "";
+    const role = uniq("Search");
+    expect(
+      (
+        await api(app, R.busRoles, m.cookie, {
+          method: "PUT",
+          body: { namespace: space, name: role, agentId: holderId },
+        })
+      ).status,
+    ).toBe(200);
+    const id = (
+      await publish(
+        E(),
+        user,
+        {
+          title: "doc",
+          format: "html",
+          content: "<p>Notes</p>",
+          comments: "everyone",
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    const listed = async () => {
+      const r = await api(app, R.artifactAgents(id), m.cookie);
+      expect(r.status).toBe(200);
+      const j = (await r.json()) as
+        | ArtifactAgent[]
+        | { agents: ArtifactAgent[] };
+      return Array.isArray(j) ? j : j.agents;
+    };
+    const before = await listed();
+    expect(before.some((a) => a.name === names[0])).toBe(true);
+    expect(before.some((a) => a.name === role)).toBe(true);
+
+    d.send({ v: 1, id: "d0", type: "agent_down", agent_ref: "ref0" });
+    d.send({ v: 1, id: "d1", type: "agent_down", agent_ref: "ref1" });
+    // A frame after the downs: the hub has handled both once it answers.
+    await fence(d);
+    const after = await listed();
+    expect(after.some((a) => a.name === names[0])).toBe(false);
+    expect(after.find((a) => a.name === role)).toMatchObject({
+      name: role,
+      online: false,
+    });
   });
 });
