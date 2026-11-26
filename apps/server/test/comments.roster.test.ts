@@ -212,6 +212,39 @@ describe("roster: the viewer's own running agents", () => {
     expect(again.find((x) => x.name === "Runner")?.key).toBe(runner?.key);
   });
 
+  it("#3132: an agent holding a role is offered by the role, with its session as small print", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Codex W" },
+      s.id,
+    );
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "OA Platform W"), role: "OA Platform" },
+        agentRow("ns-o", "Plain"),
+      ],
+      [s.editor.userId]: [{ ...agentRow("ns-e", "Codex W"), role: "Codex" }],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const own = r.find((x) => x.address.name === "OA Platform W");
+    expect(own).toMatchObject({
+      name: "OA Platform",
+      session: "OA Platform W",
+    });
+    // Mail still goes to the session's address, which the role follows.
+    expect(own?.address).toEqual({ namespace: "ns-o", name: "OA Platform W" });
+    expect(r.find((x) => x.address.name === "Plain")).not.toHaveProperty(
+      "session",
+    );
+    expect(r.find((x) => x.address.name === "Codex W")?.name).toMatch(
+      /^Codex \(/,
+    );
+  });
+
   it("online is a connected daemon: a running agent whose machine is away is listed, offline", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);

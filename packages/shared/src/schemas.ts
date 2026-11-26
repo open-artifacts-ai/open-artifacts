@@ -1146,6 +1146,8 @@ export const BusAgentSchema = z.strictObject({
   statusAt: z.string().optional(),
   /** #2311: still on a harness default name (never renamed); present only when true. */
   unnamed: z.boolean().optional(),
+  /** #3132: the role it holds in its own namespace: the address to @-mention it by. */
+  role: z.string().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 

@@ -278,9 +278,13 @@ export async function agentRoster(
     for (const address of addresses) {
       const a = sessions?.get(addrKey(address));
       if (sessions && (!a || hiddenUnnamed(a))) continue;
+      // #3132: an agent holding a role is offered by the role, the address
+      // the role's mail follows; its session is small print.
+      const session = a?.name ?? address.name;
       out.push({
         key: await agentKey(artifactId, userId, address),
-        name: `${a?.name ?? address.name}${owner}`,
+        name: `${a?.role ?? session}${owner}`,
+        ...(a?.role ? { session } : {}),
         ...sessionFor(a, mine),
         owner: mine ? null : shownName(user),
         userId,

@@ -29,6 +29,8 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   minted?: number;
   /** #2311: a role names this agent. */
   roleHolder?: number;
+  /** #3132: the role it holds in its own namespace, by name. */
+  roleName?: string | null;
 };
 
 /**
@@ -63,6 +65,7 @@ export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => {
       ? { unnamed: true }
       : {}),
     ...statusFields(a),
+    ...(a.roleName ? { role: a.roleName } : {}),
   };
 };
 

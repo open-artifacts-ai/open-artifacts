@@ -3253,6 +3253,7 @@ export async function artifactAgents(
     out.push({
       key: a.key,
       name: a.name,
+      ...(a.session && !masked ? { session: a.session } : {}),
       online: a.online,
       state: a.state,
       lastActiveAt: masked ? null : a.lastActiveAt,

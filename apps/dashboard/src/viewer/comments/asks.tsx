@@ -1609,7 +1609,10 @@ function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
   const stem = stemOf(a.name);
   const repeats =
     all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
-  return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
+  // #3132: offered by its role, the session holding it is small print.
+  return [head, a.session, repeats ? a.machine : null]
+    .filter(Boolean)
+    .join(" \u00b7 ");
 }
 
 /** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
