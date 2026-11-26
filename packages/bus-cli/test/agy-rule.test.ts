@@ -5,7 +5,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +24,8 @@ import {
   agyRuleState,
   agySettingsFile,
   agyWatchRule,
+  installAgyRule,
+  uninstallAgyRule,
 } from "../src/steps/agy-rule.ts";
 import {
   AGY_WATCH_FILE,
@@ -142,6 +147,32 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
     await uninstallAdapters(deps);
     expect(allowOf(file)).toEqual(["command(git)"]);
   });
+
+  it.each([true, false])(
+    "cleans up a failed watcher move with retry=%s",
+    (retry) => {
+      const { h, file } = setup();
+      const busDir = join(h, ".oa-bus");
+      const before = '{"permissions":{"allow":["mcp(oa_bus/self)"]}}\n';
+      put(file, before);
+      const oldLine = agyWatchCommand(["/old/oa-bus"], busDir);
+      installAgyRule(h, busDir, oldLine);
+      const original = file + ".original";
+      renameSync(file, original);
+      symlinkSync(original, file);
+      expect(() => installAgyRule(h, busDir, pinnedLine(h))).toThrow(/symlink/);
+      expect(allowOf(file)).toContain(agyWatchRule(oldLine));
+      unlinkSync(file);
+      renameSync(original, file);
+      if (retry) {
+        installAgyRule(h, busDir, pinnedLine(h));
+        expect(allowOf(file)).not.toContain(agyWatchRule(oldLine));
+        expect(allowOf(file)).toContain(pinnedRule(h));
+      }
+      uninstallAgyRule(h, busDir);
+      expect(read(file)).toBe(before);
+    },
+  );
 
   it("preserves user-owned grants across reinstalls and names missing or restricted tools", async () => {
     const { h, deps, file } = setup();

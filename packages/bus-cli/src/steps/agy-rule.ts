@@ -99,6 +99,7 @@ function lists(text: string, file: string): Lists {
 type Recorded = {
   file: string;
   rule: string;
+  previousRules?: string[];
   toolRules: string[];
   made: string[][];
 };
@@ -112,6 +113,7 @@ function readRecorded(busDir: string): Recorded | undefined {
       return {
         file: v.file,
         rule: v.rule,
+        previousRules: v.previousRules && strings(v.previousRules),
         toolRules: strings(v.toolRules).filter((r) => toolRules.includes(r)),
         made: Array.isArray(v.made) ? v.made : [],
       };
@@ -167,8 +169,16 @@ export function installAgyRule(
   const text = readText(file) ?? "";
   const old = readRecorded(busDir);
   let out = text;
-  if (old && old.file === file && old.rule !== rule)
-    out = without(out, old.rule, file);
+  const previousRules = new Set<string>();
+  if (old?.file === file) {
+    const allowed = lists(text, file).allow;
+    for (const previous of [old.rule, ...(old.previousRules ?? [])]) {
+      if (previous !== rule && allowed.includes(previous)) {
+        previousRules.add(previous);
+        out = without(out, previous, file);
+      }
+    }
+  }
   const made =
     old?.file === file
       ? old.made
@@ -190,9 +200,16 @@ export function installAgyRule(
   }
   mkdirSync(busDir, { recursive: true });
   const rec: Recorded = { file, rule, toolRules: [...owned], made };
-  if (JSON.stringify(old) !== JSON.stringify(rec))
-    writeAtomic(agyRuleRecord(busDir), `${JSON.stringify(rec)}\n`, 0o600);
+  // Until settings are atomically replaced, either watcher's rule may be on disk.
+  const pending = previousRules.size
+    ? { ...rec, previousRules: [...previousRules] }
+    : rec;
+  const recordFile = agyRuleRecord(busDir);
+  if (JSON.stringify(old) !== JSON.stringify(pending))
+    writeAtomic(recordFile, `${JSON.stringify(pending)}\n`, 0o600);
   if (out !== text) writeAtomic(file, out, 0o600);
+  if (previousRules.size)
+    writeAtomic(recordFile, `${JSON.stringify(rec)}\n`, 0o600);
   return out !== text;
 }
 
@@ -209,7 +226,10 @@ export function uninstallAgyRule(
   const file = agySettingsFile(home);
   const rec = readRecorded(busDir);
   const rules = new Set<string>();
-  if (rec?.file === file) rules.add(rec.rule);
+  if (rec?.file === file) {
+    rules.add(rec.rule);
+    for (const previous of rec.previousRules ?? []) rules.add(previous);
+  }
   if (line !== undefined) rules.add(agyWatchRule(line));
   const text = readText(file);
   let out = text;
