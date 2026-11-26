@@ -63,12 +63,20 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
   const bob = await ctx.newPage();
   await bob.clock.install();
   await loginAs(bob, bobEmail, "guest");
+  // Every socket this page opens for the artifact: the revoke must end them,
+  // and a reconnect (one opened after the banner, even at once) is one more.
+  const sockets: string[] = [];
+  bob.on("websocket", (w) => {
+    if (w.url().includes(`/artifacts/${id}`)) sockets.push(w.url());
+  });
   await bob.goto(`/a/${id}?panel=open&tab=versions`);
   await expect(artifactFrame(bob).locator("#out")).toHaveText("subscribed");
   await expect(
     bob.getByRole("complementary").or(bob.getByRole("tabpanel")).first(),
   ).toBeVisible();
 
+  // What the page had open before the revoke.
+  const opened = sockets.length;
   await apiOk(member.pat, "DELETE", R.share(id, bobEmail));
   // Design's gone state (live versions): the frame stays, with a banner.
   await expect(
@@ -88,6 +96,7 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
   // Advance past the events reconnect backoff (1 s base) to prove nothing retries.
   await bob.clock.runFor(2_000);
   expect(after).toEqual([]);
+  expect(sockets).toHaveLength(opened);
   await expect(
     bob.getByRole("heading", { name: "Page not found" }),
   ).toHaveCount(0);
