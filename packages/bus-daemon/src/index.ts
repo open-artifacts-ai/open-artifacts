@@ -666,6 +666,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
+  /**
+   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
+   * Bounded; a repo moved under a live daemon is picked up at its next start.
+   */
+  const keyCache = new BoundedMap<string, string>(1000);
+  const keyOf = (cwd: string): string => {
+    let k = keyCache.get(cwd);
+    if (k === undefined) {
+      k = folderKey(cwd);
+      keyCache.set(cwd, k);
+    }
+    return k;
+  };
   // Without a bus home (tests that bring a config) main serves every folder.
   // Otherwise the folder map decides, read fresh at each session start: an
   // `oa-bus add` while sessions are live moves none of them (live records keep
@@ -674,7 +687,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.homeLookup ??
     (instHome === undefined
       ? () => ({ instance: MAIN_INSTANCE })
-      : folderHomeLookup(instHome));
+      : folderHomeLookup(instHome, keyOf));
   /** The connected instance a folder maps to, or undefined. Quiet: no note. */
   const connectedHome = (cwd: string): string | undefined => {
     const r = lookup(cwd);
@@ -936,25 +949,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configIssues = new ConfigIssues();
   /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
   const folderNotes = new Map<string, ConfigFile>();
-  /**
-   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
-   * Bounded; a repo moved under a live daemon is picked up at its next start.
-   */
-  const keyCache = new BoundedMap<string, string>(1000);
-  const keyOf = (cwd: string): string => {
-    let k = keyCache.get(cwd);
-    if (k === undefined) {
-      k = folderKey(cwd);
-      keyCache.set(cwd, k);
-    }
-    return k;
-  };
   const noteFolder = (cwd: string) => {
     if (instHome === undefined || deps.homeLookup) return;
     // One instance: no folder note, so no git call per request.
     if (listInstances(instHome).length < 2) return;
     const key = keyOf(cwd);
-    const unmapped = unmappedFolderNote(cwd, instHome, key);
+    const unmapped = unmappedFolderNote(cwd, instHome, key, lookup);
     const changed = unmapped
       ? undefined
       : changedSuggestionNote(cwd, instHome, key);
@@ -3821,6 +3821,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        unmapped: (cwd) => "unmapped" in lookup(cwd),
         proposeReach: (ref, namespaces) => {
           // The agent's own instance: a key goes only to its own address.
           const lane = laneOfRef(ref);
