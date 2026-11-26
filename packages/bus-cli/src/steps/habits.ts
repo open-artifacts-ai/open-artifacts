@@ -8,6 +8,11 @@
 //   pi        <agent dir>/AGENTS.override.md if it exists, else AGENTS.md
 //   opencode  $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else
 //             ~/.config/opencode, then AGENTS.md
+//   antigravity  ~/.gemini/config/AGENTS.md (agy S4; only written while agy is
+//             wired, which needs OA_BUS_EXPERIMENTAL_AGY=1). agy's bundled
+//             agy-customizations guide names ~/.gemini/config/ its global root,
+//             and its changelog lists AGENTS.md and GEMINI.md there as global
+//             rules. Never ~/.gemini/GEMINI.md: Gemini CLI reads that one too.
 //   omp       none: its always-on file is unverified, so nothing is written
 //   hermes    none: the plugin adds the lines itself, only while a habits.on
 //             marker sits in its folder (PLUGIN_HARNESSES below)
@@ -46,12 +51,18 @@ import { readInstallFile, updateInstallFile } from "./step.ts";
 type Env = Record<string, string | undefined>;
 
 /** The harnesses whose always-on file we know and write. */
-export type HabitsHarness = "claude" | "codex" | "pi" | "opencode";
+export type HabitsHarness =
+  | "claude"
+  | "codex"
+  | "pi"
+  | "opencode"
+  | "antigravity";
 export const HABITS_HARNESSES: HabitsHarness[] = [
   "claude",
   "codex",
   "pi",
   "opencode",
+  "antigravity",
 ];
 
 export const HABITS_LEAD = "When you're connected to the Open Artifacts bus:";
@@ -117,6 +128,8 @@ export function habitsFiles(
           "AGENTS.md",
         ),
       ];
+    case "antigravity":
+      return [join(deps.home, ".gemini", "config", "AGENTS.md")];
   }
 }
 
@@ -312,12 +325,15 @@ const saveRecord = (
  *   project's own AGENTS.md instead of adding to it, so we never write it.
  * - pi: AGENTS.md (context files from the working directory).
  * - opencode: AGENTS.md, with CLAUDE.md only as a fallback.
+ * - antigravity: AGENTS.md (agy walks from the cwd up to the repository root
+ *   reading GEMINI.md and AGENTS.md: its bundled rules guide).
  */
 export const PROJECT_HABITS_FILE: Record<HabitsHarness, string> = {
   claude: "CLAUDE.local.md",
   codex: "AGENTS.md",
   pi: "AGENTS.md",
   opencode: "AGENTS.md",
+  antigravity: "AGENTS.md",
 };
 
 /** The project's own file for `h`, under `cwd`. */

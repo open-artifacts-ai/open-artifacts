@@ -429,6 +429,11 @@ describe("skill.md drift", () => {
       ["codex", "mcp__oa_bus__send_message"],
       ["opencode", "oa_bus_send_message"],
       ["hermes", "oabus_send_message"],
+      // agy S4: agy calls MCP tools through its own call_mcp_tool.
+      [
+        "antigravity",
+        'call_mcp_tool(ServerName="oa_bus", ToolName="send_message")',
+      ],
     ] as const) {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(`\`${tool}\` is send_message`);
