@@ -146,7 +146,7 @@ export function requireUser(c: Context<AppEnv>): Member {
  * Interactive cookie sessions: a Cloudflare Access sign-in (self-host),
  * Google or an email code. Never "pat" (or any bearer token).
  */
-const INTERACTIVE: ReadonlySet<string> = new Set([
+export const INTERACTIVE: ReadonlySet<string> = new Set([
   "access",
   "google",
   "apple",
