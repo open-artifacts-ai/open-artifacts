@@ -118,7 +118,11 @@ import {
   picturesOf,
   releasePictures,
 } from "./comment-pictures.js";
-import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import {
+  COMMENTS_MAX_REPLIES,
+  type CommentStatus,
+  cleanGuestName,
+} from "./comment-rules.js";
 import {
   addressKey,
   follow,
@@ -1375,13 +1379,24 @@ export async function listThread(
   threadId: string,
   commentId?: string,
 ): Promise<CommentList> {
-  const r = await call(() => stub(env, artifactId).commentsList("all"));
-  const t = r.threads.find((x) => x.id === threadId);
-  if (!t)
-    throw new ApiError(
-      "not_found",
-      "No such thread on this artifact. Get threadId from list_comments.",
-    );
+  // The one thread straight from the store, not the page's capped list, so a
+  // thread past the list's 500-thread or size budget is still found. It keeps
+  // the store's reply cap: one row past COMMENTS_MAX_REPLIES means truncated.
+  let full: StoredThread;
+  try {
+    full = await call(() => stub(env, artifactId).commentsGet(threadId));
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "not_found")
+      throw new ApiError(
+        "not_found",
+        "No such thread on this artifact. Get threadId from list_comments.",
+      );
+    throw e;
+  }
+  const truncated = full.comments.length > COMMENTS_MAX_REPLIES;
+  const t = truncated
+    ? { ...full, comments: full.comments.slice(0, COMMENTS_MAX_REPLIES) }
+    : full;
   let kept = t;
   if (commentId !== undefined) {
     const at = t.comments.findIndex((c) => c.id === commentId);
@@ -1394,7 +1409,7 @@ export async function listThread(
   return {
     threads,
     open: t.status === "open" ? 1 : 0,
-    truncated: false,
+    truncated,
   };
 }
 

@@ -12,11 +12,11 @@ describe("the brief rules (#3043)", () => {
   const lines = BRIEF_RULES.trimEnd().split("\n");
   const rules = lines.slice(1);
 
-  it("is a lead line and seven rules, one line each", () => {
+  it("is a lead line and eight rules, one line each", () => {
     expect(lines[0]).toBe(
       "When you're connected to the Open Artifacts bus (details: the bus skill):",
     );
-    expect(rules).toHaveLength(7);
+    expect(rules).toHaveLength(8);
     for (const r of rules) expect(r.startsWith("- ")).toBe(true);
   });
 
