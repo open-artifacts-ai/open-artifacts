@@ -170,6 +170,8 @@ export type BusDeps = {
   random?: () => Buffer;
   /** Test seam: PROOF_MS. */
   proofMs?: number;
+  /** Test seam: called once a pushed message is queued for the next prompt. */
+  onQueued?: (msgId: string) => void;
 };
 
 export type PromptResult = {
@@ -534,6 +536,7 @@ export class Bus {
           });
       b.pending.set(msgId, { msgId, key: msgId, text: wrap(sender, text) });
       b.shown.set(msgId, "queued");
+      this.deps.onQueued?.(msgId);
     } catch (e) {
       b.shown.delete(msgId);
       throw e;

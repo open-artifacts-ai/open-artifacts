@@ -57,9 +57,14 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     },
   });
   cleanup.push(() => server.close());
+  let queuedMsg: (id: string) => void = () => {};
+  const queued = new Promise<string>((r) => {
+    queuedMsg = r;
+  });
   const bus = new Bus({
     connect: realConnect({ OA_BUS_HOME: home }),
     stateDir: () => "/state/.openclaw",
+    onQueued: (id) => queuedMsg(id),
   });
   bus.buildPrompt(caller({ runId: "w", workspaceDir: "/work/space" }));
   await vi.waitFor(() => expect(push).toBeDefined());
@@ -78,13 +83,10 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     { runId: "w" },
   );
   // The deliver is queued only after the client's `self` round trip over the
-  // socket completes, so wait for the mail to land in the next prompt. A run
-  // with nothing pending stores nothing, so asking again with r1 is safe.
-  await vi.waitFor(() =>
-    expect(bus.buildPrompt(caller({ runId: "r1" }))?.prependContext).toContain(
-      "over the socket",
-    ),
-  );
+  // socket completes: wait for the client's own signal that it queued it.
+  await queued;
+  const r = bus.buildPrompt(caller({ runId: "r1" }));
+  expect(r?.prependContext).toContain("over the socket");
   bus.modelCallEnded(
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "r1", outcome: "completed" },
