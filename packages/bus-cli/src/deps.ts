@@ -106,7 +106,7 @@ export const makeExec =
           {
             ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
             maxBuffer: 8 * 1024 * 1024,
-          killSignal: "SIGKILL",
+            killSignal: "SIGKILL",
           },
           (e, stdout, stderr) => {
             clearTimeout(timer);
