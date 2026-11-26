@@ -26,7 +26,6 @@ packages/bundle/test/imports.test.ts @oa/provisioning-contract  # forbidden-path
 packages/bundle/test/imports.test.ts @oa/redline  # forbidden-path list it must not import from, not a read (#1056)
 packages/bundle/test/imports.test.ts @oa/scheduler  # forbidden-path list it must not import from, not a read (#1056)
 packages/bundle/test/imports.test.ts @oa/shared  # forbidden-path list it must not import from, not a read (#1056)
-packages/bus-adapter-openclaw/test/bus.test.ts @open-artifacts/bus  # cycle: @open-artifacts/bus declares @oa/bus-adapter-openclaw
 packages/bus-cli/src/steps/claude-plugins.ts @oa/claude-code-shortcuts  # a sparse-checkout path in the GitHub repo it clones, not a local read
 packages/bus-ipc/test/copy.test.ts @open-artifacts/bus
 packages/ui/test/brand.test.ts @oa/landing

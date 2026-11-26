@@ -310,4 +310,48 @@ describe("pi extension bus rules (#3043)", () => {
     expect(await turn).toBeUndefined();
     expect(turnDone).toBe(true);
   });
+
+  it("drops rules while disconnected and fetches them again after reconnect", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let currentRules = "RULES v1";
+    let habitsCount = 0;
+    let resolveSecondHabits!: () => void;
+    const secondHabits = new Promise<void>((r) => {
+      resolveSecondHabits = r;
+    });
+    const daemon = await fakeDaemon(home, (f) => {
+      if (f.type !== "habits") return undefined;
+      habitsCount++;
+      if (habitsCount === 2) resolveSecondHabits();
+      return { type: "habits", rules: currentRules };
+    });
+
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    const c = rootCtx();
+    await p.emit("session_start", c, { reason: "startup" });
+    expect(
+      await p.emit("before_agent_start", c, { systemPrompt: "BASE" }),
+    ).toEqual({ systemPrompt: "BASE\n\nRULES v1" });
+
+    // Drop the daemon link; wait until lost() has cleared rules and armed the reconnect timer.
+    currentRules = "RULES v2";
+    daemon.conns[0]?.sock.destroy();
+    for (let i = 0; i < 100 && vi.getTimerCount() === 0; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    // While disconnected, before_agent_start adds no rules.
+    expect(
+      await p.emit("before_agent_start", c, { systemPrompt: "BASE" }),
+    ).toBeUndefined();
+
+    // After the reconnect timer fires and the new link fetches rules, rules come back.
+    await vi.advanceTimersByTimeAsync(3_000);
+    await secondHabits;
+    expect(
+      await p.emit("before_agent_start", c, { systemPrompt: "BASE" }),
+    ).toEqual({ systemPrompt: "BASE\n\nRULES v2" });
+  });
 });

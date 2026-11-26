@@ -1,4 +1,5 @@
 import {
+  existsSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -160,11 +161,115 @@ describe("Codex hooks.json management (#3043)", () => {
     });
     expect(uninstallCodexHook(file)).toEqual({ removed: false });
 
-    // When ours is the only hook, SessionStart and hooks are removed cleanly.
+    // When ours is the only hook, the now-empty file is deleted instead of writing {}.
     const solo = join(dir, "solo.json");
     installCodexHook(solo, cmd1);
     expect(uninstallCodexHook(solo)).toEqual({ removed: true });
-    expect(JSON.parse(readFileSync(solo, "utf8"))).toEqual({});
+    expect(existsSync(solo)).toBe(false);
+  });
+
+  it("keeps existing user group at index 0 and appends ours at index 1", () => {
+    const dir = makeDir();
+    const file = join(dir, "hooks.json");
+    const userGroup = {
+      matcher: "startup",
+      hooks: [{ type: "command", command: "/bin/user-first", timeout: 5 }],
+    };
+    writeFileSync(
+      file,
+      `${JSON.stringify({ hooks: { SessionStart: [userGroup] } }, null, 2)}\n`,
+    );
+
+    expect(installCodexHook(file, cmd1)).toEqual({ status: "added" });
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    expect(after.hooks.SessionStart[0]).toEqual(userGroup);
+    expect(after.hooks.SessionStart[1]).toEqual({
+      matcher: "startup|resume",
+      hooks: [{ type: "command", command: cmd1, timeout: 10 }],
+    });
+  });
+
+  it("returns a re-trust note on uninstall when our group is not the last SessionStart group", () => {
+    const dir = makeDir();
+    const file = join(dir, "hooks.json");
+    const afterGroup = {
+      matcher: "startup",
+      hooks: [{ type: "command", command: "/bin/user-after", timeout: 5 }],
+    };
+    writeFileSync(
+      file,
+      `${JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "startup|resume",
+                hooks: [{ type: "command", command: cmd1, timeout: 10 }],
+              },
+              afterGroup,
+            ],
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    expect(uninstallCodexHook(file)).toEqual({
+      removed: true,
+      note: "Codex may ask you to trust the hooks listed after the Open Artifacts bus hook again.",
+    });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      hooks: { SessionStart: [afterGroup] },
+    });
+  });
+
+  it("preserves existing indentation and trailing newline on install and uninstall", () => {
+    const dir = makeDir();
+    const userGroup = {
+      matcher: "startup",
+      hooks: [{ type: "command", command: "/bin/user-hook", timeout: 5 }],
+    };
+
+    // 4-space indentation, no trailing newline
+    const fourSpace = join(dir, "four.json");
+    const fourBefore = JSON.stringify(
+      { hooks: { SessionStart: [userGroup] } },
+      null,
+      4,
+    );
+    writeFileSync(fourSpace, fourBefore);
+    expect(installCodexHook(fourSpace, cmd1)).toEqual({ status: "added" });
+    const fourInstalled = readFileSync(fourSpace, "utf8");
+    expect(fourInstalled.endsWith("\n")).toBe(false);
+    expect(fourInstalled).toContain('\n    "hooks": {');
+    expect(uninstallCodexHook(fourSpace)).toEqual({ removed: true });
+    expect(readFileSync(fourSpace, "utf8")).toBe(fourBefore);
+
+    // Tab indentation, with trailing newline
+    const tabFile = join(dir, "tab.json");
+    const tabBefore = `${JSON.stringify(
+      { hooks: { SessionStart: [userGroup] } },
+      null,
+      "\t",
+    )}\n`;
+    writeFileSync(tabFile, tabBefore);
+    expect(installCodexHook(tabFile, cmd1)).toEqual({ status: "added" });
+    const tabInstalled = readFileSync(tabFile, "utf8");
+    expect(tabInstalled.endsWith("\n")).toBe(true);
+    expect(tabInstalled).toContain('\n\t"hooks": {');
+    expect(uninstallCodexHook(tabFile)).toEqual({ removed: true });
+    expect(readFileSync(tabFile, "utf8")).toBe(tabBefore);
+  });
+
+  it("keeps hooks.json on uninstall when other top-level keys remain", () => {
+    const dir = makeDir();
+    const file = join(dir, "extra.json");
+    writeFileSync(file, `${JSON.stringify({ extra: true }, null, 2)}\n`);
+    expect(installCodexHook(file, cmd1)).toEqual({ status: "added" });
+    expect(uninstallCodexHook(file)).toEqual({ removed: true });
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ extra: true });
   });
 
   it("leaves invalid JSON untouched and reports a warning", () => {

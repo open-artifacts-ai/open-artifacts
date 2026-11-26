@@ -42,6 +42,7 @@ import {
   codexBinPin,
   listInstances,
 } from "@oa/bus-daemon";
+import { habitsOff } from "@oa/bus-ipc";
 import { hostSlug } from "@oa/shared/secrets";
 import {
   busStopped,
@@ -1030,13 +1031,19 @@ const install: Record<Harness, Step> = {
       notes.push(CODEX_NO_BIN);
     }
     await codexEntryStep(deps, notes);
-    const hook = installCodexHook(
-      codexHooks(deps.home, deps.env ?? {}),
-      codexHookCommand(deps.busBin, deps.home, p.busDir),
-    );
-    if (hook.note) notes.push(hook.note);
-    if (hook.status === "added" || hook.status === "updated")
-      notes.push(CODEX_HOOK_TRUST_LINE);
+    const hooksPath = codexHooks(deps.home, deps.env ?? {});
+    if (habitsOff(p.busDir)) {
+      const hook = uninstallCodexHook(hooksPath);
+      if (hook.note) notes.push(hook.note);
+    } else {
+      const hook = installCodexHook(
+        hooksPath,
+        codexHookCommand(deps.busBin, deps.home, p.busDir),
+      );
+      if (hook.note) notes.push(hook.note);
+      if (hook.status === "added" || hook.status === "updated")
+        notes.push(CODEX_HOOK_TRUST_LINE);
+    }
     return "done";
   },
 

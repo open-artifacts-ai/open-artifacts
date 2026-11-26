@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { codexAppBin, resolveCodexBin } from "@oa/bus-daemon";
 import { parse } from "smol-toml";
@@ -519,6 +519,30 @@ const HOOK_TIMEOUT = 10;
 export const CODEX_HOOK_TRUST_LINE =
   "Codex: open /hooks once and trust the Open Artifacts bus hook, so each session gets the bus rules.";
 
+export const CODEX_HOOK_SHIFT_NOTE =
+  "Codex may ask you to trust the hooks listed after the Open Artifacts bus hook again.";
+
+type JsonFormat = {
+  indent: string | number;
+  trailingNewline: boolean;
+};
+
+const DEFAULT_JSON_FORMAT: JsonFormat = { indent: 2, trailingNewline: true };
+
+/** Detects indentation (tab or N spaces, default 2) and trailing newline from existing JSON text. */
+function detectJsonFormat(text: string): JsonFormat {
+  const m = /\r?\n([ \t]+)\S/.exec(text);
+  let indent: string | number = 2;
+  if (m?.[1]) {
+    const ws = m[1];
+    indent = ws.startsWith("\t") ? "\t" : ws.length;
+  }
+  return { indent, trailingNewline: text.endsWith("\n") };
+}
+
+const formatJson = (doc: unknown, fmt: JsonFormat): string =>
+  `${JSON.stringify(doc, null, fmt.indent)}${fmt.trailingNewline ? "\n" : ""}`;
+
 const shellQuote = (arg: string): string =>
   /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)
     ? arg
@@ -558,7 +582,7 @@ type HooksDoc = Record<string, unknown> & {
 
 type ParsedHooks =
   | { kind: "missing" }
-  | { kind: "ok"; doc: HooksDoc }
+  | { kind: "ok"; doc: HooksDoc; format: JsonFormat }
   | { kind: "skip"; note: string };
 
 function readHooksFile(path: string): ParsedHooks {
@@ -580,9 +604,11 @@ function readHooksFile(path: string): ParsedHooks {
       kind: "skip",
       note: `Left ${path} alone: it is not a regular file.`,
     };
+  let text: string;
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    text = readFileSync(path, "utf8");
+    raw = JSON.parse(text);
   } catch {
     return {
       kind: "skip",
@@ -614,7 +640,7 @@ function readHooksFile(path: string): ParsedHooks {
         };
     }
   }
-  return { kind: "ok", doc: raw as HooksDoc };
+  return { kind: "ok", doc: raw as HooksDoc, format: detectJsonFormat(text) };
 }
 
 export type CodexHookResult = {
@@ -636,12 +662,16 @@ export function installCodexHook(
   const ourGroup = { matcher: HOOK_MATCHER, hooks: [ourHook] };
   if (read.kind === "missing") {
     const doc = { hooks: { SessionStart: [ourGroup] } };
-    writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+    writeAtomic(path, formatJson(doc, DEFAULT_JSON_FORMAT));
     return { status: "added" };
   }
   const doc = read.doc;
   const hooks = isRecord(doc.hooks) ? doc.hooks : {};
   const list = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
+  // Codex keys hook trust by position (<path>:session_start:<group>:<hook>).
+  // Update our hook in place when present, and always append a new group at
+  // the end (never prepend or reorder), so user groups before ours keep their
+  // trust keys.
   for (const group of list) {
     if (!Array.isArray(group.hooks)) continue;
     const idx = group.hooks.findIndex(isOurHook);
@@ -654,18 +684,19 @@ export function installCodexHook(
       )
         return { status: "unchanged" };
       group.hooks[idx] = { ...existing, ...ourHook };
-      writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+      writeAtomic(path, formatJson(doc, read.format));
       return { status: "updated" };
     }
   }
   doc.hooks = { ...hooks, SessionStart: [...list, ourGroup] };
-  writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+  writeAtomic(path, formatJson(doc, read.format));
   return { status: "added" };
 }
 
 /**
  * Removes only our SessionStart hook from `$CODEX_HOME/hooks.json` (#3043),
- * plus any group/SessionStart/hooks container we emptied.
+ * plus any group/SessionStart/hooks container we emptied. Deletes the file
+ * when nothing else remains.
  */
 export function uninstallCodexHook(path: string): {
   removed: boolean;
@@ -679,16 +710,22 @@ export function uninstallCodexHook(path: string): {
   const list = hooks?.SessionStart;
   if (!hooks || !Array.isArray(list)) return { removed: false };
   let removed = false;
+  let shifted = false;
   const nextList: typeof list = [];
-  for (const group of list) {
-    if (!Array.isArray(group.hooks)) {
-      nextList.push(group);
+  for (let i = 0; i < list.length; i++) {
+    const group = list[i];
+    if (!group || !Array.isArray(group.hooks)) {
+      if (group) nextList.push(group);
       continue;
     }
     const kept = group.hooks.filter((h) => !isOurHook(h));
     if (kept.length !== group.hooks.length) {
       removed = true;
-      if (kept.length > 0) nextList.push({ ...group, hooks: kept });
+      if (kept.length > 0) {
+        nextList.push({ ...group, hooks: kept });
+      } else if (i < list.length - 1) {
+        shifted = true;
+      }
     } else {
       nextList.push(group);
     }
@@ -700,6 +737,12 @@ export function uninstallCodexHook(path: string): {
     delete hooks.SessionStart;
     if (Object.keys(hooks).length === 0) delete doc.hooks;
   }
-  writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
-  return { removed: true };
+  if (Object.keys(doc).length === 0) {
+    rmSync(path, { force: true });
+  } else {
+    writeAtomic(path, formatJson(doc, read.format));
+  }
+  return shifted
+    ? { removed: true, note: CODEX_HOOK_SHIFT_NOTE }
+    : { removed: true };
 }

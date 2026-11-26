@@ -1530,7 +1530,11 @@ export default function oaBus(pi: Pi): void {
           );
         } catch {}
       },
-      lost: () => reconnect(),
+      lost: () => {
+        rules = undefined;
+        rulesFetch = undefined;
+        reconnect();
+      },
     }).then(
       (l) => {
         if (connecting?.link === link) connecting = undefined;
