@@ -55,7 +55,7 @@ describe("receipt_update notices", () => {
     expect(notify.mock.calls[0][2]).toBe(ID);
     // Told once: a repeated update is an unknown msg_id.
     h.toDaemon({ id: "u2", type: "receipt_update", msg_id: ID, ...update });
-    await new Promise((r) => setTimeout(r, 50));
+    await h.quiet();
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
@@ -111,7 +111,7 @@ describe("receipt_update notices", () => {
       msg_id: ID,
       state: "expired",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -165,7 +165,7 @@ describe("receipt_update notices", () => {
       msg_id: ID,
       state: "expired",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -186,7 +186,7 @@ describe("receipt_update notices", () => {
       state: "expired",
       reason: "recipient_closed",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await h2.quiet();
     expect(notify).not.toHaveBeenCalled();
     await h2.adapter("A");
     await vi.waitFor(() =>
@@ -198,7 +198,7 @@ describe("receipt_update notices", () => {
     );
     // Told: a later reconnect does not repeat it.
     await h2.adapter("A");
-    await new Promise((r) => setTimeout(r, 50));
+    await h2.quiet();
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
@@ -223,7 +223,7 @@ describe("receipt_update notices", () => {
       msg_id: ID,
       state: "expired",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).not.toHaveBeenCalled();
   });
 

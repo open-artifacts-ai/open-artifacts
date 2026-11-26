@@ -26,7 +26,7 @@ describe("the daemon event log (#2029)", () => {
       ...deliverFrame("mmmmmmmmmmmmmmm1"),
       body: "CANARY-BODY-TEXT",
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     await events.flush();
     const text = readFileSync(file, "utf8");
     expect(text).toMatch(

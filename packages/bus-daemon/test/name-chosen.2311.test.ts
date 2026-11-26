@@ -5,10 +5,16 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+});
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 const write = (d: string, over: object = {}) =>
   writeFileSync(
@@ -27,6 +33,7 @@ const write = (d: string, over: object = {}) =>
   );
 
 async function start(over: object = {}) {
+  syncs = eventCounter();
   const d = mkdtempSync(join(tmpdir(), "ob-chosen-"));
   write(d, over);
   const h = await daemonHarness({
@@ -34,10 +41,12 @@ async function start(over: object = {}) {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: () => true,
     },
   });
+  cur = h;
   return { h, d };
 }
 const helloOk = (caps: string[]) => ({
@@ -48,7 +57,19 @@ const helloOk = (caps: string[]) => ({
   server_version: "1",
   caps,
 });
-const settle = () => new Promise((r) => setTimeout(r, 150));
+/** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
+let syncs = eventCounter();
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+/**
+ * Moves the fake sync interval over the window the test covers and checks the
+ * syncs really ran, then fences what they sent: "it looked again and did nothing".
+ */
+const settle = async (ms: number = 150) => {
+  const before = syncs.count;
+  await vi.advanceTimersByTimeAsync(ms);
+  expect(syncs.count - before).toBeGreaterThanOrEqual(Math.floor(ms / 20));
+  await cur.quiet();
+};
 
 describe("name_chosen (#2311)", () => {
   it("is sent after hello_ok for a session already live at connect", async () => {
