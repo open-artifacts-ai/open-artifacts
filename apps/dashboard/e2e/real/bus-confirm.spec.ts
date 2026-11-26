@@ -60,10 +60,13 @@ async function holdApproveBody(page: Page) {
         "access-control-allow-origin": APP,
         "access-control-allow-credentials": "true",
       });
-      res.flushHeaders();
+      // Headers and the first bytes go out (a navigation commits on its first
+      // bytes); the rest of the body waits for the test.
+      const cut = Math.max(1, Math.floor(body.length / 2));
+      res.write(body.slice(0, cut));
       reached();
       await gate;
-      res.end(body);
+      res.end(body.slice(cut));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
