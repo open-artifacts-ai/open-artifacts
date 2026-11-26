@@ -2855,9 +2855,26 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * agy process it attested) with that pid, conversation and process start.
    * No record yet binds nothing: the proxy asks again on its next call, so
    * nothing is held. A proof for another instance than the session's home
-   * is dropped, as for Claude.
+   * is dropped, as for Claude. Any process of this OS user can claim an agy
+   * pid (a shell command agy runs too): that residual is accepted, as for
+   * #1822. The proxy asks on every tools/call, so each miss is noted and
+   * logged once per conversation, hash and cause; proofIssues stays keyed by
+   * the agy pid, which all of its conversations share.
    */
   const ag = deps.antigravity ?? {};
+  const agyMissed = new Set<string>();
+  /** True the first time this conversation's hash misses for this cause. */
+  const agyFirstMiss = (conversation: string, hash: string, cause: string) => {
+    const key = `${conversation}\0${hash}\0${cause}`;
+    if (agyMissed.has(key)) return false;
+    agyMissed.add(key);
+    while (agyMissed.size > PENDING_PROOF_MAX) {
+      const oldest = agyMissed.values().next().value;
+      if (oldest === undefined) break;
+      agyMissed.delete(oldest);
+    }
+    return true;
+  };
   const agyLinkProof = (
     pid: number,
     conversation: string,
@@ -2867,29 +2884,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const want = instance ?? MAIN_INSTANCE;
     const start = (ag.procStart ?? procStartOf)(pid);
     if (!start) {
-      noteUnbound("no_process_start");
+      if (agyFirstMiss(conversation, hash, "no_process_start"))
+        noteUnbound("no_process_start");
       return { bound: false };
     }
     if (basename((ag.comm ?? commOf)(pid) ?? "") !== "agy") {
-      noteUnbound("process_mismatch", pid);
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
       return { bound: false };
     }
     const rec = agents.byRef(conversation);
     if (!rec || rec.kind !== "antigravity" || !rec.live) {
-      noteUnbound("no_live_record", pid);
+      if (agyFirstMiss(conversation, hash, "no_live_record"))
+        noteUnbound("no_live_record", pid);
       return { bound: false };
     }
     if (rec.pid !== pid || (rec.procStart ?? start) !== start) {
-      noteUnbound("process_mismatch", pid);
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
       return { bound: false };
     }
     const home = homedOf(rec);
     if (home === undefined) {
-      noteUnbound("unmapped_folder", pid);
+      if (agyFirstMiss(conversation, hash, "unmapped_folder"))
+        noteUnbound("unmapped_folder", pid);
       return { bound: false };
     }
     if (want !== home) {
-      dropProof(want, rec, hash);
+      if (agyFirstMiss(conversation, hash, `wrong_instance:${want}`))
+        dropProof(want, rec, hash);
       return { bound: false };
     }
     // A hub that takes no proofs: the proxy sends none.

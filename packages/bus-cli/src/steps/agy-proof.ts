@@ -48,8 +48,14 @@ export type AgyEntryIo = {
   busHome?: string;
   /** #2954: the PAT file for an origin, when the entry has no header. */
   patFile?: (origin: string) => string;
-  /** #3075: another bus's proxy entry is taken over when this says that bus has stopped. */
+  /**
+   * #3075: another bus's proxy entry for an added instance is taken over when
+   * this says that bus has stopped. Main's entries never are: two buses may
+   * share one hub.
+   */
   stopped?: (owner: string | undefined) => boolean;
+  /** The kept-entries file of the bus at `owner`, so a takeover carries the user's original. */
+  keptOf?: (owner: string | undefined) => string;
 };
 
 type Moved = {
@@ -257,7 +263,9 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
     const ours = ourAgyEntry(e, t.origin);
     if (ours) {
       if (ours.owner !== io.busHome) {
-        if (io.stopped?.(ours.owner))
+        // #3075: only an added instance's entry is taken over; main's stays
+        // with its bus, which keeps the user's original for its uninstall.
+        if (t.name !== undefined && io.stopped?.(ours.owner))
           out.push({
             kind: "adopt",
             name,
@@ -408,7 +416,15 @@ export function installAgyEntries(
           original = cur.replace(p.token, TOKEN_MARK);
         } else original = cur;
       } else if (p.kind === "adopt") {
-        original = adoptedOriginal(t.origin, p.cred);
+        // The stopped bus kept the user's own entry: carry it, else rebuild
+        // the http entry `agy mcp add` writes.
+        const theirs =
+          io.keptOf === undefined
+            ? undefined
+            : readMoved(io.keptOf(p.owner)).find(
+                (m) => m.name === p.name && m.origin === t.origin,
+              );
+        original = theirs?.original ?? adoptedOriginal(t.origin, p.cred);
         out.notes.push(
           `took over the ${p.name} entry in ${io.file}: the bus at ${p.owner ?? "the default home"} no longer runs`,
         );
@@ -463,7 +479,13 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     const doc = text.trim() === "" ? {} : parseAgyMcp(text, io.file);
     const cur = servers(doc)[m.name];
     const ours = isRecord(cur) ? ourAgyEntry(cur, m.origin) : undefined;
-    if (!ours || ours.owner !== io.busHome) continue;
+    if (!ours) continue;
+    if (ours.owner !== io.busHome) {
+      // Another bus took the entry over (#3075): keep the original, so it is
+      // not lost while that bus holds the entry.
+      stay.push(m);
+      continue;
+    }
     let raw = m.original;
     if (raw.includes(TOKEN_MARK)) {
       if (!ours.token || !PLAIN_TOKEN.test(ours.token)) {

@@ -815,7 +815,7 @@ export function copy(
     // agy S5, doctor: an Open Artifacts entry in agy's config goes through the proxy.
     agyPagesLinked: (name: string, host: string, instance?: string) =>
       done(
-        `Antigravity's ${clip(name, 32)} entry shows pages as the session (${clip(host, 40)}${instance ? `, instance ${instance}` : ""})`,
+        `Antigravity's ${clip(name, 32)} entry goes through oa-bus (${clip(host, 40)}${instance ? `, instance ${instance}` : ""})`,
       ),
     // agy S5, doctor: install would put that entry through the proxy.
     agyPagesPending: (name: string) => [

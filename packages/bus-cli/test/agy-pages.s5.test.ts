@@ -24,7 +24,11 @@ import {
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
-import { AGY_TOKEN_ENV, agyPagesState } from "../src/steps/agy-proof.ts";
+import {
+  AGY_TOKEN_ENV,
+  agyPagesState,
+  restoreAgyEntries,
+} from "../src/steps/agy-proof.ts";
 import { TOKEN } from "./fake.ts";
 
 const HUB = "https://artifacts.example.com";
@@ -208,7 +212,7 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(e.env).toEqual({ [AGY_TOKEN_ENV]: PAT, OA_BUS_HOME: bus });
   });
 
-  it("leaves another running bus's proxy entry, and takes one whose bus has stopped (#3075)", async () => {
+  it("leaves another running bus's proxy entry, and main's even when its bus has stopped (#3075)", async () => {
     const other = mkdtempSync(join(tmpdir(), "ob-agy5-other-"));
     const theirs = (home: string) =>
       `{\n  "mcpServers": {\n    "open-artifacts": ${JSON.stringify({
@@ -223,22 +227,73 @@ describe("Antigravity pages entry (agy S5)", () => {
     const r = await installAdapters(a.deps);
     expect(entry(read(a.file)).env).toMatchObject({ OA_BUS_HOME: other });
     expect(r.notes.join("\n")).toContain(`belongs to the bus at ${other}`);
+    // Main's entry stays with its bus even with no socket: that bus keeps
+    // the user's original for its own uninstall.
     const gone = join(other, "gone");
     const b = setup();
     put(b.file, theirs(gone));
-    await installAdapters(b.deps);
-    expect(entry(read(b.file))).toEqual({
-      command: BIN[0],
-      args: PROXY_ARGS,
-      env: { [AGY_TOKEN_ENV]: PAT },
+    const rb = await installAdapters(b.deps);
+    expect(entry(read(b.file))).toEqual(entry(theirs(gone)));
+    expect(rb.notes.join("\n")).toContain(`belongs to the bus at ${gone}`);
+  });
+
+  it("takes an added instance's entry whose bus has stopped, carrying the user's original, and the old bus's uninstall keeps it (#3075)", async () => {
+    const bus = mkdtempSync(join(tmpdir(), "ob-agy5-bus-"));
+    saveInstance(
+      {
+        name: "mit-ai",
+        hub: MIT,
+        machine_id: "",
+        label: "m",
+        machine_token: TOKEN,
+      },
+      bus,
+    );
+    // The stopped bus has no socket, but kept the user's own entry text.
+    const old = mkdtempSync(join(tmpdir(), "ob-agy5-old-"));
+    const mine = `{ "serverUrl": "${MIT}/mcp", "headers": { "Authorization": "Bearer {{oa-bus:pages-token}}" } }`;
+    const keptOld = `${JSON.stringify({ entries: [{ name: "oa-mit", origin: MIT, instance: "mit-ai", original: mine }] }, null, 2)}\n`;
+    put(join(old, "agy-pages-entries.json"), keptOld);
+    const args = [
+      BIN[1],
+      "mcp-proxy",
+      "--instance",
+      MIT,
+      "--for",
+      "antigravity",
+      "--name",
+      "mit-ai",
+      "--token-env",
+      AGY_TOKEN_ENV,
+    ];
+    const { deps, file } = setup({ busHome: bus });
+    put(
+      file,
+      `{\n  "mcpServers": {\n    "oa-mit": ${JSON.stringify({
+        command: BIN[0],
+        args,
+        env: { [AGY_TOKEN_ENV]: PAT, OA_BUS_HOME: old },
+      })}\n  }\n}\n`,
+    );
+    const r = await installAdapters(deps);
+    expect(entry(read(file), "oa-mit").env).toEqual({
+      [AGY_TOKEN_ENV]: PAT,
+      OA_BUS_HOME: bus,
     });
-    // Uninstall gives the user an http entry with their token.
-    await uninstallAdapters(b.deps);
-    expect(entry(read(b.file))).toEqual({
-      disabled: false,
+    expect(r.notes.join("\n")).toContain("took over the oa-mit entry");
+    // The old bus's uninstall leaves the entry and keeps its kept file.
+    const o = setup({ busHome: old });
+    expect(restoreAgyEntries({ ...agyEntryIo(o.deps), file }).restored).toEqual(
+      [],
+    );
+    expect(read(join(old, "agy-pages-entries.json"))).toBe(keptOld);
+    // This bus's uninstall puts the user's own text back, token in place.
+    await uninstallAdapters(deps);
+    expect(entry(read(file), "oa-mit")).toEqual({
+      serverUrl: `${MIT}/mcp`,
       headers: { Authorization: `Bearer ${PAT}` },
-      serverUrl: `${HUB}/mcp`,
     });
+    expect(read(file)).toContain(mine.replace("{{oa-bus:pages-token}}", PAT));
   });
 
   it("doctor's state: pending, linked, then missing program", async () => {

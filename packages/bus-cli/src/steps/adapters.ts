@@ -587,6 +587,8 @@ export const agyEntryIo = (
         `${hostSlug(new URL(origin).host)}-pat-token`,
       ),
     stopped: stoppedBus(deps, false),
+    keptOf: (owner) =>
+      join(owner ?? join(deps.home, ".oa-bus"), "agy-pages-entries.json"),
   };
 };
 

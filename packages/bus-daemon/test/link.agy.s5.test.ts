@@ -21,9 +21,11 @@ async function start(
     caps?: string[];
     comm?: string | null;
     procStart?: string | null;
+    logs?: string[];
   } = {},
 ) {
   const h = await daemonHarness({
+    ...(opts.logs ? { log: (m: string) => opts.logs?.push(m) } : {}),
     antigravity: {
       comm: () =>
         opts.comm === undefined ? "/Users/x/.local/bin/agy" : opts.comm,
@@ -128,12 +130,17 @@ describe("antigravity link_proof (agy S5)", () => {
     expect(h.of("link_bind")).toHaveLength(0);
   });
 
-  it("drops a proof for another instance than the session's home", async () => {
-    const h = await start();
+  it("drops a proof for another instance than the session's home, logged once per hash", async () => {
+    const logs: string[] = [];
+    const h = await start({ logs });
     await session(h);
     await h.next("agent_up");
-    expect(await proof(h, { instance: "mit-ai" })).toBe(false);
+    // The proxy asks on every tools/call: the drop is logged once.
+    for (let i = 0; i < 3; i++)
+      expect(await proof(h, { instance: "mit-ai" })).toBe(false);
+    expect(await proof(h, { instance: "mit-ai", hash: HASH2 })).toBe(false);
     expect(h.of("link_bind")).toHaveLength(0);
+    expect(logs.filter((l) => l.includes("dropped a proof"))).toHaveLength(2);
   });
 
   it("says not bound to a hub that takes no proofs", async () => {
