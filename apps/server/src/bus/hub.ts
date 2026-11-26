@@ -2709,6 +2709,18 @@ function agentList(
 export const HELD_BYTES_CAP = 8 * 1024 * 1024;
 const HELD_ENTRY_BYTES = 256;
 
+/**
+ * #3205: kinds whose daemon keeps a pushed message, unacked, for as long as
+ * its harness takes to say it has it, often past LIMITS.ackTimeoutMs: an agy
+ * session's message waits for its watcher (agy S3). Their bodies are stored
+ * in `mail` when pushed, never held in memory only, so an eviction while the
+ * daemon still has the message cannot lose the hub's copy and expire the
+ * receipt (`lost_body`) under it. Every other kind is held as before.
+ */
+export const STORED_ON_PUSH_KINDS: ReadonlySet<string> = new Set([
+  "antigravity",
+]);
+
 /** A held body: `at` is when it was pushed (its ack deadline is at + ackTimeoutMs). */
 type Held = {
   toAgent: string;
@@ -7070,8 +7082,13 @@ export class BusHub extends DurableObject<Env> {
     const socket =
       target.live === 1 ? liveSocket(this.ctx, target.machineId) : null;
     const inline = size <= LIMITS.inlineBodyBytes;
-    // Held in memory only for an inline push to a live socket under the cap.
-    const held = socket !== null && inline && this.#fits(size);
+    // Held in memory only for an inline push to a live socket under the cap,
+    // and never for a kind whose daemon may keep it past the ack timeout.
+    const held =
+      socket !== null &&
+      inline &&
+      !STORED_ON_PUSH_KINDS.has(target.kind) &&
+      this.#fits(size);
     sql.exec(
       `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, reason, size, created_at, expires_at, acked_at, held_at)
        values (?, ?, ?, ?, ?, ?, ?, 'pending', null, ?, ?, ?, null, ?)`,
@@ -7091,8 +7108,9 @@ export class BusHub extends DurableObject<Env> {
     insertSendKey(sql, sender.id, f.id, key.hash, msgId, now, viaRole);
     if (this.#sendKeys !== null) this.#sendKeys++;
     this.#arm(now + SEND_KEY_RETAIN_MS + 1);
-    // Write-on-miss: an offline machine (agent queued), an oversized body or
-    // a full held cap is stored; only an inline push to a live socket is held.
+    // Write-on-miss: an offline machine (agent queued), an oversized body, a
+    // full held cap or a STORED_ON_PUSH_KINDS recipient is stored; only an
+    // inline push to a live socket is held.
     if (held) this.#hold(msgId, target.id, f.body, size, now, expiresAt, now);
     else storeBody(sql, msgId, target.id, f.body, now, expiresAt);
     this.#arm(expiresAt);
@@ -7984,8 +8002,13 @@ export class BusHub extends DurableObject<Env> {
       }
       // A body already on disk stays there until ack or expiry (never moved
       // into memory, so an eviction cannot lose it). A held body, never
-      // persisted, is re-held with a fresh ack deadline.
-      if (h) {
+      // persisted, is re-held with a fresh ack deadline; for a
+      // STORED_ON_PUSH_KINDS agent (#3205) it is stored instead.
+      if (h && STORED_ON_PUSH_KINDS.has(agent.kind)) {
+        storeBody(sql, r.id, agent.id, body, r.createdAt, r.expiresAt);
+        sql.exec("update receipts set held_at = null where id = ?", r.id);
+        this.#release(r.id);
+      } else if (h) {
         this.#hold(r.id, agent.id, body, r.size, r.createdAt, r.expiresAt, now);
         sql.exec("update receipts set held_at = ? where id = ?", now, r.id);
         this.#arm(now + LIMITS.ackTimeoutMs);

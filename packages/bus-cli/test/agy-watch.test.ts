@@ -5,6 +5,7 @@
 // process table is a map. No sleeps: every wait is a signal with a deadline.
 import { randomUUID } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -32,8 +33,10 @@ import { agyHello, agyWatchStep } from "../src/commands/agy-hello.ts";
 import {
   AGY_MESSAGE_TITLE,
   type AgyWatchDeps,
+  agyChildState,
   agyErrorLine,
   agyWatch,
+  execSend,
   type SendResult,
 } from "../src/commands/agy-watch.ts";
 import { fakeCtx } from "./fake.ts";
@@ -87,6 +90,8 @@ async function setup() {
     antigravity: {
       isRunning: (pid) => starts.has(pid),
       procStart: (pid) => starts.get(pid) ?? null,
+      // #3205: an unknown hand-off is pushed again after a short pause.
+      recheckMs: [5],
     },
   });
   h.toDaemon({
@@ -114,6 +119,8 @@ async function setup() {
     recursive: true,
   });
   const box = { readable: true };
+  /** Whether an earlier call's process can be read (gap B: it may not be). */
+  const procs = { readable: true };
   const took = () =>
     existsSync(mailDir)
       ? readdirSync(mailDir).map(
@@ -153,6 +160,16 @@ async function setup() {
     const run = agyWatch(ctx, {
       proc: (p) => table[p] ?? null,
       procStart: (p) => starts.get(p) ?? null,
+      childState: (p, start) =>
+        !procs.readable
+          ? "unknown"
+          : !starts.has(p)
+            ? "gone"
+            : start === "" || starts.get(p) === start
+              ? start === ""
+                ? "unknown"
+                : "running"
+              : "gone",
       ppid: SHELL,
       pid,
       env: ENV,
@@ -279,6 +296,7 @@ async function setup() {
     acked,
     calls,
     box,
+    procs,
     inBox,
     agyTakes,
     up,
@@ -432,9 +450,8 @@ describe("oa-bus agy-watch (agy S3)", () => {
     await until(() => expect(w2.unknown).toContain(id));
     expect(acked(id)).toBe(0);
     expect(calls).toHaveLength(1);
-    // The mailbox reads again and the hub delivers again: now it is acked.
+    // The mailbox reads again; the daemon pushes it again: now it is acked.
     box.readable = true;
-    again(id);
     await until(() => expect(acked(id)).toBe(1));
     expect(calls).toHaveLength(1);
     expect(inBox(id)).toBe(1);
@@ -477,8 +494,13 @@ describe("oa-bus agy-watch (agy S3)", () => {
     await until(() => expect(w2.unknown).toContain(id));
     // agy titled the conversation; the hub renamed the session.
     rename("release-prep");
+    // Readable once the rename landed: the next recheck push says the new name.
+    await until(() =>
+      expect(w2.pushes.some((t) => t.includes("to you (release-prep)"))).toBe(
+        true,
+      ),
+    );
     box.readable = true;
-    again(id);
     await until(() => expect(acked(id)).toBe(1));
     // The push carried the new name, agy's copy the old: still the same message.
     expect(w2.pushes.at(-1)).toContain("to you (release-prep)");
@@ -494,7 +516,7 @@ describe("oa-bus agy-watch (agy S3)", () => {
   });
 
   it("a watcher killed outright leaves its agentapi call running: the next one waits for that call to end, then sends only if agy lacks it", async () => {
-    const { start, send, again, kill, acked, calls, inBox, up } = await setup();
+    const { start, send, kill, acked, calls, inBox, up } = await setup();
     let reached!: () => void;
     const inCall = new Promise<void>((r) => {
       reached = r;
@@ -517,9 +539,113 @@ describe("oa-bus agy-watch (agy S3)", () => {
     await until(() => expect(w2.unknown).toContain(id));
     expect(acked(id)).toBe(0);
     expect(calls).toHaveLength(0);
-    // It ends without reaching agy; the hub delivers again: sent once.
+    // It ends without reaching agy; the daemon pushes it again: sent once.
     starts.delete(CALL);
-    again(id);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("#3205: the orphaned call reaches agy after the next watcher answered unknown: acked then, without the hub, and never sent again", async () => {
+    const { start, send, kill, acked, calls, inBox, agyTakes, up } =
+      await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    let resume!: () => void;
+    const w1 = start(W1, async (bin, conversation, text, started) => {
+      starts.set(CALL, "c1");
+      started?.(CALL);
+      reached();
+      // Frozen at birth; it reaches agy only when resumed.
+      await new Promise<void>((r) => {
+        resume = r;
+      });
+      agyTakes(bin, conversation, text);
+      starts.delete(CALL);
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    const w2 = start(W2);
+    await until(() => expect(w2.unknown).toContain(id));
+    expect(acked(id)).toBe(0);
+    // The orphan resumes and agy takes the message from it.
+    resume();
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    expect(w2.logs.join("\n")).toContain(
+      `delivered ${id} (agy already had it)`,
+    );
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("gap A: a watcher that dies between starting its agy call and writing the call down never let it reach agy: the next watcher sends once", async () => {
+    const { start, send, kill, acked, calls, inBox, up } = await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    // The call process exists, but the watcher dies before `started` wrote
+    // it down: its gate never opens (execSend), so it never runs agy.
+    const w1 = start(W1, async () => {
+      starts.set(CALL, "c1");
+      reached();
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    const w2 = start(W2);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("gap B: an earlier call whose process can't be read is unclear: unknown, never sent again, until it is provably gone", async () => {
+    const { start, send, kill, acked, calls, inBox, procs, up } = await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    const w1 = start(W1, async (_bin, _conversation, _text, started) => {
+      starts.set(CALL, "c1");
+      started?.(CALL);
+      reached();
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    procs.readable = false;
+    const w2 = start(W2);
+    // Pushed again and again (rechecks), unknown each time, never sent.
+    await until(() =>
+      expect(w2.unknown.filter((x) => x === id).length).toBeGreaterThan(2),
+    );
+    expect(calls).toHaveLength(0);
+    expect(acked(id)).toBe(0);
+    expect(w2.logs.join("\n")).toContain("an earlier agy call may still run");
+    // Readable again, and the call is gone without reaching agy: sent once.
+    starts.delete(CALL);
+    procs.readable = true;
     await until(() => expect(acked(id)).toBe(1));
     expect(calls).toHaveLength(1);
     expect(inBox(id)).toBe(1);
@@ -550,11 +676,16 @@ describe("oa-bus agy-watch (agy S3)", () => {
   it("a hand-off that timed out is delivered only if agy's mailbox has it, else unknown", async () => {
     const { start, send, acked, calls, inBox, agyTakes, up } = await setup();
     let n = 0;
-    const w = start(W1, async (bin, conversation, text) => {
+    const w = start(W1, async (bin, conversation, text, started) => {
       n += 1;
       // The first call times out after agy took it; the second before.
       if (n === 1) agyTakes(bin, conversation, text);
-      else calls.push({ bin, conversation, text });
+      else {
+        calls.push({ bin, conversation, text });
+        // Its call still runs (SIGTERM ignored): a recheck can't send again.
+        starts.set(CALL, "c1");
+        started?.(CALL);
+      }
       return { ok: false, unknown: true, detail: "timed out" };
     });
     await up();
@@ -566,6 +697,9 @@ describe("oa-bus agy-watch (agy S3)", () => {
     await until(() => expect(w.unknown).toContain(lost));
     expect(acked(lost)).toBe(0);
     expect(inBox(lost)).toBe(0);
+    await until(() =>
+      expect(w.unknown.filter((x) => x === lost).length).toBeGreaterThan(1),
+    );
     expect(calls).toHaveLength(2);
     starts.delete(AGY);
     w.tick();
@@ -726,5 +860,98 @@ describe("oa-bus agy-watch (agy S3)", () => {
     const line = "/h/.oa-bus/bin/oa-bus agy-watch";
     expect(agyWatchStep(line)).toContain("BypassSandbox: true");
     expect(agyWatchStep(line).endsWith(line)).toBe(true);
+  });
+});
+
+describe("the agy call's gate (#3205 review, gap A)", () => {
+  /** A fake agy that writes its arguments to $MARK. */
+  const fakeAgy = () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-agy-gate-"));
+    const bin = join(dir, "agy");
+    writeFileSync(bin, '#!/bin/sh\nprintf "%s\\n" "$@" > "$MARK"\n');
+    chmodSync(bin, 0o755);
+    return { bin, mark: join(dir, "ran") };
+  };
+
+  it("runs agy only after the call was written down, with the arguments as given", async () => {
+    const { bin, mark } = fakeAgy();
+    const seen: number[] = [];
+    const r = await execSend({ PATH: process.env.PATH, MARK: mark })(
+      bin,
+      A,
+      "line one\n(msg_id x) $HOME `id`",
+      (pid) => {
+        // Not yet run: it waits for this to return.
+        expect(existsSync(mark)).toBe(false);
+        seen.push(pid);
+        return true;
+      },
+    );
+    expect(r).toEqual({ ok: true });
+    expect(seen).toHaveLength(1);
+    expect(readFileSync(mark, "utf8")).toBe(
+      `agentapi\nsend-message\n--title=${AGY_MESSAGE_TITLE}\n${A}\nline one\n(msg_id x) $HOME \`id\`\n`,
+    );
+  });
+
+  for (const [what, started] of [
+    ["could not be written down", () => false],
+    [
+      "threw while being written down",
+      (): boolean => {
+        throw new Error("disk full");
+      },
+    ],
+  ] as const)
+    it(`never runs agy when the call ${what}: a plain refusal, not unknown`, async () => {
+      const { bin, mark } = fakeAgy();
+      const r = await execSend({ PATH: process.env.PATH, MARK: mark })(
+        bin,
+        A,
+        "hello",
+        started,
+      );
+      expect(r).toEqual({ ok: false, detail: "stopped before agy was called" });
+      expect(existsSync(mark)).toBe(false);
+    });
+});
+
+describe("agyChildState (#3205 review, gap B)", () => {
+  const yes = () => true;
+  it("is gone only when provably so", () => {
+    expect(
+      agyChildState(
+        1,
+        "s",
+        () => "s",
+        () => false,
+      ),
+    ).toBe("gone");
+    expect(agyChildState(1, "s", () => "other", yes)).toBe("gone");
+    expect(agyChildState(1, "s", () => "s", yes)).toBe("running");
+  });
+  it("is unknown when the start time can't be read, or never was", () => {
+    expect(
+      agyChildState(
+        1,
+        "s",
+        () => {
+          throw new Error("ps timed out");
+        },
+        yes,
+      ),
+    ).toBe("unknown");
+    expect(agyChildState(1, "s", () => null, yes)).toBe("unknown");
+    expect(agyChildState(1, "", () => "s", yes)).toBe("unknown");
+    // ps found nothing because it had just ended: gone.
+    let n = 0;
+    expect(
+      agyChildState(
+        1,
+        "s",
+        () => null,
+        () => n++ === 0,
+      ),
+    ).toBe("gone");
   });
 });

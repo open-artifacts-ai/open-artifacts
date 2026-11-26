@@ -526,6 +526,111 @@ describe("reconnect flush", () => {
   });
 });
 
+describe("#3205: an agy recipient's body is stored when pushed", () => {
+  /** A receiver of `kind` on its own machine, and a sender. */
+  async function setupKind(kind: "antigravity" | "opencode") {
+    const sm = await machine("Sender");
+    const tm = await machine("Target");
+    const s = await ready(sm.token);
+    const t = await ready(tm.token);
+    const n = ns();
+    const receiver = uniq("Receiver");
+    await agent(s, "sref", uniq("Sender"), n);
+    t.send({ ...up(`u-k-${++seq}`, "rref", receiver, n), kind } as ClientFrame);
+    expect((await waitFor(t, "agent_ok")).bus_name).toBe(receiver);
+    return {
+      s,
+      t,
+      n,
+      receiver,
+      close: () => {
+        s.close();
+        t.close();
+      },
+    };
+  }
+
+  it("an eviction while agy's daemon still holds the message expires nothing; its late ack settles it delivered, once", async () => {
+    const { s, t, n, receiver, close } = await setupKind("antigravity");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    expect(await waitFor(t, "deliver")).toMatchObject({
+      msg_id: r.msg_id,
+      body: "held",
+    });
+    // Stored at once, never only in memory.
+    expect((await heldStats()).ids).not.toContain(r.msg_id);
+    expect((await mailRow(r.msg_id))?.body).toBe("held");
+    // The hub is evicted while the watcher restarts, and the ack timeout passes.
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    // The hook's hello on the same socket: the daemon announces the session again.
+    t.send({
+      ...up(`u-k-${++seq}`, "rref", receiver, n),
+      kind: "antigravity",
+    } as ClientFrame);
+    await waitFor(t, "agent_ok");
+    await barrier(s);
+    expect(updates(s, r.msg_id)).toHaveLength(0);
+    expect(await receiptRow(r.msg_id)).toMatchObject({
+      state: "pending",
+      reason: null,
+    });
+    // The flush pushed it again from the stored copy.
+    const again = framesSeen(t).filter(
+      (f) => f.type === "deliver" && f.msg_id === r.msg_id,
+    );
+    expect(again).toHaveLength(2);
+    // The next watcher finds it in agy's mailbox and acks: delivered, told once.
+    t.send(ack("a1", r.msg_id));
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "delivered",
+    });
+    t.send(ack("a2", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(updates(s, r.msg_id).map((u) => u.state)).toEqual(["delivered"]);
+    expect(await mailRow(r.msg_id)).toBeNull();
+    close();
+  });
+
+  it("other kinds are held in memory as before: an eviction still expires the receipt (lost_body)", async () => {
+    const { s, t, receiver, close } = await setupKind("opencode");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    await waitFor(t, "deliver");
+    expect((await heldStats()).ids).toContain(r.msg_id);
+    expect(await mailRow(r.msg_id)).toBeNull();
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await receiptRow(r.msg_id)).toMatchObject({ reason: "lost_body" });
+    close();
+  });
+
+  it("an agy message still expires at its TTL, and a later ack does not flip it", async () => {
+    const { s, t, receiver, close } = await setupKind("antigravity");
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "old"));
+    await waitFor(t, "deliver");
+    await setClock(Date.now() + TTL + 5000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await mailRow(r.msg_id)).toBeNull();
+    t.send(ack("a1", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(updates(s, r.msg_id)).toHaveLength(1);
+    close();
+  });
+});
+
 describe("alarm", () => {
   it("ack timeout persists the held body; the receipt stays pending; reconnect delivers it", async () => {
     const { s, t, tm, n, receiver, close } = await setup();

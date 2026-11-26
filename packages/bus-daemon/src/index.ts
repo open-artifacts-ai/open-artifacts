@@ -480,6 +480,8 @@ export type DaemonDeps = {
     isRunning?: (pid: number) => boolean;
     /** agy S3: how long a watcher has to answer a push; default 30 s. */
     answerTimeoutMs?: number;
+    /** #3205: pauses before an unknown hand-off is pushed again; default 2, 5, 10, then 30 s. */
+    recheckMs?: readonly number[];
     /** How long a read start time is reused; default PROC_START_TTL_MS. */
     procStartTtlMs?: number;
     /** The binary a pid runs, checked again on restore; default commOf. */
@@ -537,6 +539,8 @@ export type Daemon = {
   agents: AgentTable;
   /** Test seam (#1956): the ref bindings held, and one sweep run now. */
   bindings: { count: () => number; sweep: () => void };
+  /** Test seam (#3205): agy messages held for a watcher, and unknown hand-offs waiting to be pushed again. */
+  agy: { held: () => number; rechecking: () => number };
 };
 
 /** A refusal's key: the CODEX_REFUSALS name for its text, else "other". */
@@ -1197,6 +1201,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ...(deps.antigravity?.answerTimeoutMs === undefined
       ? {}
       : { answerTimeoutMs: deps.antigravity.answerTimeoutMs }),
+    ...(deps.antigravity?.recheckMs === undefined
+      ? {}
+      : { recheckMs: deps.antigravity.recheckMs }),
   });
   /** agy S3: watcher connections, from admitted hello to close. */
   const agyWatchers = new Map<
@@ -4482,6 +4489,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     agents,
     updater,
     bindings: { count: () => bindings.size, sweep: sweepBindings },
+    agy: { held: () => agyT.held(), rechecking: () => agyT.rechecking() },
     stop: async () => {
       ev("daemon_stop", { pid: process.pid });
       selfCheck?.stop();

@@ -62,7 +62,7 @@ const watcherHello = (pid = WATCHER, start = "t0"): Hello => ({
   attest: { proc_start: start },
 });
 
-async function setup(answerTimeoutMs?: number) {
+async function setup(answerTimeoutMs?: number, recheckMs?: number[]) {
   os.comm = new Map([
     [AGY, "/Users/u/.local/bin/agy"],
     [SHELL, "/bin/zsh"],
@@ -88,6 +88,8 @@ async function setup(answerTimeoutMs?: number) {
       isRunning: (pid) => os.start.has(pid),
       procStart: (pid) => os.start.get(pid) ?? null,
       ...(answerTimeoutMs === undefined ? {} : { answerTimeoutMs }),
+      // #3205: an unknown hand-off is pushed again after this pause.
+      recheckMs: recheckMs ?? [60_000],
     },
     claude: { syncMs: 20, retryDelaysMs: [5, 5, 5] },
   });
@@ -229,13 +231,14 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
     await vi.waitFor(() => expect(acked(id)).toBe(1));
   });
 
-  it("an unknown answer (agy may have it, its mailbox cannot say) is never delivered or refused: the receipt stays pending until the hub delivers again", async () => {
+  it("#3205: an unknown answer (agy may have it, its mailbox cannot say) is never delivered or refused, holds nothing else up, and stays held here", async () => {
     const { h, join, watcher, send, acked } = await setup();
     await join();
     const { c, got } = await watcher();
     const id = send();
     await wait(c, got, 1);
     c.agyUnknown(id);
+    await vi.waitFor(() => expect(h.daemon.agy.rechecking()).toBe(1));
     // A later message goes through at once: the unknown one held nothing up.
     const next = send();
     await wait(c, got, 2);
@@ -245,7 +248,7 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
     expect(acked(id)).toBe(0);
     expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
     expect(h.daemon.agents.byRef(A)?.live).toBe(true);
-    // The hub delivers it again: pushed again, and acked once agy says so.
+    // The hub delivers it again: it joins the held one, nothing is pushed twice.
     h.toDaemon({
       id: "again",
       type: "deliver",
@@ -255,10 +258,59 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
       namespace: "ns",
       body: "hello there",
     });
+    await vi.waitFor(() => expect(h.daemon.agy.rechecking()).toBe(1));
+    expect(got).toHaveLength(2);
+    expect(acked(id)).toBe(0);
+  });
+
+  it("#3205: an unknown hand-off is pushed again after a pause, with no help from the hub, and acked once the watcher finds it in agy's mailbox", async () => {
+    const { h, join, watcher, send, acked } = await setup(undefined, [5]);
+    await join();
+    const { c, got } = await watcher();
+    const id = send();
+    await wait(c, got, 1);
+    // Still unclear twice (the earlier agy call still runs), then agy has it.
+    c.agyUnknown(id);
+    await wait(c, got, 2);
+    c.agyUnknown(id);
     await wait(c, got, 3);
-    expect(got[2]?.msg_id).toBe(id);
+    expect(got.map((f) => f.msg_id)).toEqual([id, id, id]);
+    expect(acked(id)).toBe(0);
     c.ack(id);
     await vi.waitFor(() => expect(acked(id)).toBe(1));
+    expect(h.daemon.agy.rechecking()).toBe(0);
+    expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
+  });
+
+  it("#3205: an unknown hand-off goes to a new watcher at once, without waiting out the pause", async () => {
+    const { h, join, watcher, send, acked } = await setup();
+    await join();
+    const first = await watcher();
+    const id = send();
+    await wait(first.c, first.got, 1);
+    first.c.agyUnknown(id);
+    await vi.waitFor(() => expect(h.daemon.agy.rechecking()).toBe(1));
+    first.c.close();
+    await new Promise<void>((r) => first.c.onClose(r));
+    const second = await watcher();
+    await wait(second.c, second.got, 1);
+    expect(second.got[0]?.msg_id).toBe(id);
+    second.c.ack(id);
+    await vi.waitFor(() => expect(acked(id)).toBe(1));
+  });
+
+  it("#3205: an unknown hand-off held for a session that closes is let go, never refused", async () => {
+    const { h, join, watcher, send, acked } = await setup();
+    await join();
+    const { c, got } = await watcher();
+    const id = send();
+    await wait(c, got, 1);
+    c.agyUnknown(id);
+    await vi.waitFor(() => expect(h.daemon.agy.rechecking()).toBe(1));
+    os.start.delete(AGY);
+    await vi.waitFor(() => expect(h.daemon.agy.rechecking()).toBe(0));
+    expect(acked(id)).toBe(0);
+    expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
   });
 
   it("pushes again to a watcher that went quiet (it never hands an id over twice)", async () => {

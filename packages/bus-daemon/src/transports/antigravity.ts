@@ -18,6 +18,13 @@ import type { DeliverOutcome, Mail } from "../deliver.ts";
  * With no watcher up for the session's agy process the message is held here,
  * its receipt pending, and goes the moment one comes up. Nothing is queued
  * while one is up: agy places the message itself.
+ *
+ * #3205: a message whose hand-off is unknown (an earlier agy call may have
+ * reached agy, and agy's mailbox cannot say yet) stays held here too. It is
+ * pushed again after a pause, or as soon as a new watcher comes up, and that
+ * watcher asks agy's mailbox again: present acks it (Delivered), absent once
+ * the earlier call is surely gone sends it once, still unclear answers
+ * unknown again. It is never acked on a guess and never sent twice.
  */
 
 export type AgyWatcherKey = { pid: number; procStart: string };
@@ -30,6 +37,8 @@ type Watcher = AgyWatcherKey & {
 type Waiting = {
   ref: string;
   key: AgyWatcherKey;
+  /** A message whose hand-off is unknown, pausing before it is pushed again. */
+  recheck?: true;
   wake: (why: "up" | "closed") => void;
 };
 
@@ -44,8 +53,15 @@ type InFlight = {
 export type AgyTransportOptions = {
   /** How long a watcher has to answer a push before it is pushed again. Default 30 s. */
   answerTimeoutMs?: number;
+  /**
+   * #3205: the pauses before an unknown hand-off is pushed again, the last
+   * repeated. Default 2 s, 5 s, 10 s, then every 30 s.
+   */
+  recheckMs?: readonly number[];
   log?: (msg: string) => void;
 };
+
+const RECHECK_MS = [2000, 5000, 10_000, 30_000] as const;
 
 const same = (a: AgyWatcherKey, b: AgyWatcherKey) =>
   a.pid === b.pid && a.procStart === b.procStart;
@@ -128,7 +144,15 @@ export class AgyTransport {
   /** How many messages wait for a watcher, for this agy process or all. */
   held(key?: AgyWatcherKey): number {
     let n = 0;
-    for (const w of this.#waiting) if (!key || same(w.key, key)) n += 1;
+    for (const w of this.#waiting)
+      if (!w.recheck && (!key || same(w.key, key))) n += 1;
+    return n;
+  }
+
+  /** #3205: how many unknown hand-offs wait to be pushed again. */
+  rechecking(): number {
+    let n = 0;
+    for (const w of this.#waiting) if (w.recheck) n += 1;
     return n;
   }
 
@@ -137,7 +161,7 @@ export class AgyTransport {
     // S2 records always carry it; without it no watcher can be matched.
     if (procStart === undefined) return { ok: false, reason: "queued" };
     const key = { pid: agent.pid, procStart };
-    const text = agyMessageText(agent, mail);
+    let unknowns = 0;
     for (;;) {
       if (this.#stopped || !agent.live)
         return { ok: false, reason: "closed", closedBy: "liveness" };
@@ -148,6 +172,8 @@ export class AgyTransport {
           return { ok: false, reason: "closed", closedBy: "liveness" };
         continue;
       }
+      // Framed at each push: a rename meanwhile shows the session's new name.
+      const text = agyMessageText(agent, mail);
       const got = await this.#push(w, agent.ref, mail.msg_id, text);
       // The watcher acks only what agy's agentapi or agy's own mailbox says
       // agy took.
@@ -155,10 +181,19 @@ export class AgyTransport {
       // agy said no (it may be starting up): the deliver chain retries.
       if (got === "failed")
         return { ok: false, reason: "timeout", retryable: true };
-      // An earlier hand-off may have reached agy and its mailbox cannot say:
-      // a timeout that may have delivered (#2110). Never acked, never pushed
-      // again here: the receipt stays pending until the hub delivers again.
-      if (got === "unknown") return { ok: false, reason: "timeout" };
+      // #3205: an earlier hand-off may have reached agy and its mailbox
+      // cannot say yet. Never acked on a guess: held here, the receipt
+      // pending, and pushed again after a pause (or to a new watcher at
+      // once), whose mailbox check decides then. The watcher never sends an
+      // id twice while that is unclear.
+      if (got === "unknown") {
+        const pauses = this.opts.recheckMs ?? RECHECK_MS;
+        const ms = pauses[Math.min(unknowns, pauses.length - 1)] ?? 30_000;
+        unknowns += 1;
+        if ((await this.#wait(agent.ref, key, ms)) === "closed")
+          return { ok: false, reason: "closed", closedBy: "liveness" };
+        continue;
+      }
       // "lost": the watcher went away or went quiet before it answered. The
       // next push carries the same msg_id; a watcher checks agy's mailbox
       // before it hands over an id an earlier one may have, so this never
@@ -166,17 +201,33 @@ export class AgyTransport {
     }
   }
 
-  #wait(ref: string, key: AgyWatcherKey): Promise<"up" | "closed"> {
+  /**
+   * Until a watcher for `key` comes up or the session closes; with `ms`
+   * (#3205, a recheck), also until that pause ends.
+   */
+  #wait(
+    ref: string,
+    key: AgyWatcherKey,
+    ms?: number,
+  ): Promise<"up" | "closed"> {
+    if (this.#stopped) return Promise.resolve("closed");
     return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const wait: Waiting = {
         ref,
         key,
+        ...(ms === undefined ? {} : { recheck: true as const }),
         wake: (why) => {
+          if (timer) clearTimeout(timer);
           this.#waiting.delete(wait);
           resolve(why);
         },
       };
       this.#waiting.add(wait);
+      if (ms !== undefined) {
+        timer = setTimeout(() => wait.wake("up"), ms);
+        timer.unref();
+      }
     });
   }
 
