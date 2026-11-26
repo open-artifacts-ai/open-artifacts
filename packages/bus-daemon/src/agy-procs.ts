@@ -1,7 +1,9 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readlinkSync } from "node:fs";
-import { basename, isAbsolute } from "node:path";
+import { readFileSync, readlinkSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, isAbsolute, join } from "node:path";
+import { busHome } from "@oa/bus-adapter-claude-code";
 import { systemTool } from "@oa/bus-ipc";
 
 /**
@@ -13,21 +15,18 @@ import { systemTool } from "@oa/bus-ipc";
 /**
  * The pids running the agy binary, from one `ps` over every process; null
  * when ps cannot be read (unknown, never "none run"). The binary is matched
- * by name, as S1a's attest does (`commOf`).
+ * by name, as S1a's attest does (`commOf`). Asynchronous, so a slow ps never
+ * holds up hub frames or socket hellos.
  */
-export function agyPids(): number[] | null {
-  let out: string;
-  try {
-    out = execFileSync(systemTool("ps"), ["-axo", "pid=,comm="], {
-      encoding: "utf8",
-      timeout: 1500,
-      maxBuffer: 8 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-  } catch {
-    return null;
-  }
-  return parseAgyPids(out);
+export function agyPids(): Promise<number[] | null> {
+  return new Promise((resolve) => {
+    execFile(
+      systemTool("ps"),
+      ["-axo", "pid=,comm="],
+      { encoding: "utf8", timeout: 1500, maxBuffer: 8 * 1024 * 1024 },
+      (err, out) => resolve(err ? null : parseAgyPids(out)),
+    );
+  });
 }
 
 /** `ps -o pid=,comm=` lines to the pids whose binary is `agy`. */
@@ -90,3 +89,46 @@ export function parseLsofCwd(out: string): string | null {
  */
 export const agyStartingRef = (pid: number, procStart: string): string =>
   `agy-starting-${pid}-${createHash("sha256").update(procStart).digest("hex").slice(0, 12)}`;
+
+/** The global agy plugin's hooks file that `oa-bus install` writes. */
+export const agyHooksFile = (userHome: string = homedir()): string =>
+  join(userHome, ".gemini", "config", "plugins", "oa-bus", "hooks.json");
+
+/**
+ * The bus home the agy plugin's hook sends a session to, from its hooks.json
+ * (as `agyHookCommand` writes it): the moved home its command exports, else
+ * the default home. null when there is no oa-bus hook there: no conversation
+ * would ever join, so nothing is listed. A hook that names no home follows
+ * the agy process's own OA_BUS_HOME, which procBusHome checks per process.
+ */
+export function agyPluginHome(file: string = agyHooksFile()): string | null {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+  return parseAgyPluginHome(text);
+}
+
+/** hooks.json text to the bus home its oa-bus hook names (agyPluginHome). */
+export function parseAgyPluginHome(text: string): string | null {
+  let hooks: unknown;
+  try {
+    hooks = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const ours = (hooks as Record<string, unknown> | null)?.["oa-bus"] as
+    | Record<string, unknown>
+    | undefined;
+  const handlers = ours?.SessionStart;
+  if (!Array.isArray(handlers)) return null;
+  const command = handlers
+    .map((h) => (h as { command?: unknown } | null)?.command)
+    .find((c): c is string => typeof c === "string" && c.includes("agy-hello"));
+  if (command === undefined) return null;
+  const m = /^export OA_BUS_HOME='((?:[^']|'\\'')*)'; /.exec(command);
+  if (!m) return busHome({});
+  return busHome({ OA_BUS_HOME: (m[1] as string).replaceAll("'\\''", "'") });
+}

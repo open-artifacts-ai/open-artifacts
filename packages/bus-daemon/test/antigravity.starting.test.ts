@@ -6,16 +6,23 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { type AgyConversation, agyHello } from "@oa/bus-adapter-claude-code";
+import {
+  type AgyConversation,
+  agyHello,
+  busHome,
+} from "@oa/bus-adapter-claude-code";
 import { connectDaemon } from "@oa/bus-ipc";
 import { AGY_STARTING_LABEL, BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  agyPluginHome,
   agyStartingRef,
   parseAgyPids,
+  parseAgyPluginHome,
   parseLsofCwd,
 } from "../src/agy-procs.ts";
 import { attest } from "../src/attest.ts";
+import { home as busHomeNow } from "../src/config.ts";
 import type { DaemonDeps } from "../src/index.ts";
 import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
 
@@ -34,6 +41,8 @@ const os = {
   home: new Map<number, string>(),
   /** ps cannot be read right now. */
   psDown: false,
+  /** Where the agy plugin's hook sends sessions; undefined: this daemon's home. */
+  plugin: undefined as string | null | undefined,
 };
 const agyRuns = (pid: number, start: string, cwd: string) => {
   os.alive.add(pid);
@@ -53,6 +62,7 @@ async function setup(
   over: Partial<DaemonDeps> & {
     discover?: boolean;
     agentsFile?: string;
+    pids?: () => Promise<number[] | null>;
   } = {},
   fresh = true,
 ) {
@@ -63,9 +73,10 @@ async function setup(
     os.cwd = new Map();
     os.home = new Map();
     os.psDown = false;
+    os.plugin = undefined;
     agyRuns(AGY, "t0", "/w/app");
   }
-  const { discover = true, agentsFile, ...rest } = over;
+  const { discover = true, agentsFile, pids, ...rest } = over;
   const h = await daemonHarness({
     ...rest,
     homeLookup: byFolder,
@@ -81,12 +92,15 @@ async function setup(
       comm: (pid) => os.comm.get(pid) ?? null,
       procStartTtlMs: 0,
       discover,
-      pids: () =>
-        os.psDown
-          ? null
-          : [...os.alive].filter(
-              (p) => basename(os.comm.get(p) ?? "") === "agy",
-            ),
+      pluginHome: () => (os.plugin === undefined ? busHomeNow() : os.plugin),
+      pids:
+        pids ??
+        (() =>
+          os.psDown
+            ? null
+            : [...os.alive].filter(
+                (p) => basename(os.comm.get(p) ?? "") === "agy",
+              )),
       cwdOf: (pid) => os.cwd.get(pid) ?? null,
       homeOf: (pid) => os.home.get(pid),
       ...(agentsFile ? { agentsFile } : {}),
@@ -262,6 +276,58 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(h.daemon.agents.byRef(agyStartingRef(6000, "t6"))).toBeUndefined();
   });
 
+  it("lists nothing when the agy plugin sends sessions to another home, or there is none; a session listed before closes", async () => {
+    const elsewhere = await setup();
+    await upFor(elsewhere.h, S0);
+    // The plugin is rewritten for another home (an --alongside install).
+    os.plugin = "/somewhere/else/.oa-bus";
+    elsewhere.h.daemon.syncNow();
+    await settled(elsewhere.h);
+    await closedRef(elsewhere.h, S0);
+    expect(elsewhere.h.daemon.agents.byRef(S0)?.live).toBe(false);
+    agyRuns(6100, "t61", "/w/later");
+    elsewhere.h.daemon.syncNow();
+    await settled(elsewhere.h);
+    expect(
+      elsewhere.h.daemon.agents.byRef(agyStartingRef(6100, "t61")),
+    ).toBeUndefined();
+    // No plugin at all: likewise nothing.
+    os.plugin = null;
+    agyRuns(6200, "t62", "/w/none");
+    elsewhere.h.daemon.syncNow();
+    await settled(elsewhere.h);
+    expect(
+      elsewhere.h.daemon.agents.byRef(agyStartingRef(6200, "t62")),
+    ).toBeUndefined();
+    // The plugin routes here again: listed.
+    os.plugin = undefined;
+    elsewhere.h.daemon.syncNow();
+    await upFor(elsewhere.h, agyStartingRef(6200, "t62"));
+  });
+
+  it("runs one process scan at a time: a tick while ps runs starts none", async () => {
+    let calls = 0;
+    let finish: (p: number[] | null) => void = () => {};
+    const { h } = await setup({
+      pids: () => {
+        calls++;
+        return new Promise((r) => {
+          finish = r;
+        });
+      },
+    });
+    await vi.waitFor(() => expect(calls).toBe(1));
+    h.daemon.syncNow();
+    h.daemon.syncNow();
+    await settled(h);
+    expect(calls).toBe(1);
+    expect(h.daemon.agents.byRef(S0)).toBeUndefined();
+    finish([AGY]);
+    await upFor(h, S0);
+    h.daemon.syncNow();
+    expect(calls).toBe(2);
+  });
+
   it("the conversation that joins at the first message takes over the address: one session, not two", async () => {
     const { h, hook } = await setup();
     await upFor(h, S0);
@@ -302,6 +368,42 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     });
     await settled(h);
     expect(h.of("status").filter((s) => s.from_ref === A)).toEqual([]);
+  });
+
+  it('a joined agy that says "starting" itself is not shown as the bus\'s starting', async () => {
+    const { h } = await setup();
+    await upFor(h, S0);
+    const hello = agyHello({
+      pid: AGY,
+      procStart: "t0",
+      conversationId: A,
+      cwd: "/w/app",
+    });
+    if (!hello) throw new Error("no hello");
+    const client = await connectDaemon({ path: h.socketPath, hello });
+    try {
+      await upFor(h, A);
+      h.toDaemon({
+        id: "ok3",
+        type: "agent_ok",
+        agent_ref: A,
+        bus_name: "agy",
+      });
+      await settled(h);
+      await client.request({
+        type: "set_status",
+        state: "idle",
+        label: AGY_STARTING_LABEL,
+      });
+      await vi.waitFor(() =>
+        expect(h.of("status").find((s) => s.from_ref === A)).toMatchObject({
+          state: "idle",
+          label: "Starting",
+        }),
+      );
+    } finally {
+      client.close();
+    }
   });
 
   it("holds a message to a starting session (receipt pending), and holds it again for the joined conversation until S3 delivers", async () => {
@@ -411,6 +513,29 @@ describe("the process reads (agy S2b)", () => {
         ].join("\n"),
       ),
     ).toEqual([459, 460]);
+  });
+
+  it("reads the bus home from the agy plugin's hook, as install writes it", () => {
+    const hooks = (cmd: string) =>
+      JSON.stringify({
+        "oa-bus": {
+          SessionStart: [{ type: "command", command: cmd }],
+          PreInvocation: [{ type: "command", command: cmd }],
+        },
+      });
+    // The shape agyHookCommand writes (bus-cli's antigravity-plugin test
+    // checks the real one): no moved home is the default one.
+    const tail = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`;
+    expect(parseAgyPluginHome(hooks(tail))).toBe(busHome({}));
+    expect(
+      parseAgyPluginHome(
+        hooks(`export OA_BUS_HOME='/tmp/it'\\''s/.oa-bus-2'; ${tail}`),
+      ),
+    ).toBe("/tmp/it's/.oa-bus-2");
+    expect(parseAgyPluginHome("{}")).toBeNull();
+    expect(parseAgyPluginHome("not json")).toBeNull();
+    expect(parseAgyPluginHome(hooks("echo something-else"))).toBeNull();
+    expect(agyPluginHome("/nonexistent/hooks.json")).toBeNull();
   });
 
   it("reads the cwd from lsof -Fn", () => {

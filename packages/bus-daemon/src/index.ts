@@ -60,7 +60,12 @@ import {
   LINK_HASHES_MAX,
   withLinkHash,
 } from "./agents.ts";
-import { agyPids, agyStartingRef, cwdOfPid } from "./agy-procs.ts";
+import {
+  agyPids,
+  agyPluginHome,
+  agyStartingRef,
+  cwdOfPid,
+} from "./agy-procs.ts";
 import { readAnnounced, writeAnnounced } from "./announced.ts";
 import {
   type AntigravityAgent,
@@ -223,6 +228,7 @@ import { startSelfCheck } from "./update/selfcheck.ts";
 import { Updater, type UpdaterDeps } from "./update/updater.ts";
 
 export * from "./agents.ts";
+export { parseAgyPluginHome } from "./agy-procs.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./codex-names.ts";
@@ -472,8 +478,14 @@ export type DaemonDeps = {
      * home (#2806: a second home never lists another bus's processes).
      */
     discover?: boolean;
-    /** agy S2b: the pids running agy, null when unknown; default one `ps`. */
-    pids?: () => number[] | null;
+    /** agy S2b: the pids running agy, null when unknown; default one async `ps`. */
+    pids?: () => number[] | null | Promise<number[] | null>;
+    /**
+     * agy S2b: the bus home the installed agy plugin's hook sends sessions
+     * to, null when there is none (agyPluginHome). Only a daemon of that home
+     * lists agy at launch: elsewhere the conversation would join another bus.
+     */
+    pluginHome?: () => string | null;
     /** agy S2b: a pid's working directory, null when unreadable; default cwdOfPid. */
     cwdOf?: (pid: number) => string | null;
     /** agy S2b: the bus home a pid was started for (procBusHome). */
@@ -1093,6 +1105,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const agPids = ag.pids ?? agyPids;
   const agCwd = ag.cwdOf ?? cwdOfPid;
   const agHomeOf = ag.homeOf ?? procBusHome;
+  const agPluginHome = ag.pluginHome ?? (() => agyPluginHome());
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -3555,7 +3568,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               code: "hub_unavailable",
               message: STATUS_COPY.hub_unavailable,
             };
-          relays.get(lane)?.status(ref, f.state, f.label, reply);
+          // agy S2b: "starting" is the bus's word for a session not yet
+          // joined (busAgentStarting); the agent's own is kept, capitalized.
+          const label =
+            f.label === AGY_STARTING_LABEL &&
+            agents.byRef(ref)?.kind === "antigravity"
+              ? "Starting"
+              : f.label;
+          relays.get(lane)?.status(ref, f.state, label, reply);
           return undefined;
         },
         // A Pi delivery waits on this same confirmation, from its own session.
@@ -4220,8 +4240,49 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * takes its address over (agySwitchedFrom). The S2 liveness above closes it
    * when the process ends or the pid is reused.
    */
+  /** The ps scan in flight: a tick while one runs starts no second. */
+  let agyScan = false;
+  let agyStopped = false;
+  /**
+   * agy S2b: the agy plugin does not send sessions to this home (another
+   * home's install, or none), so a conversation never joins here: nothing is
+   * listed, and a session listed before (the plugin moved since) closes.
+   */
+  const agyRoutedHere = (): boolean => {
+    if (agPluginHome() === home()) return true;
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live || !a.starting) continue;
+      if (takenOver.has(a.ref)) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "plugin_elsewhere"));
+    }
+    if (closed) announceSessions();
+    return false;
+  };
   const discoverAgy = () => {
-    const pids = agPids();
+    if (agyScan || !agyRoutedHere()) return;
+    const got = agPids();
+    if (!(got instanceof Promise)) return listAgy(got);
+    agyScan = true;
+    got
+      .then((pids) => {
+        if (agyStopped || !agyRoutedHere()) return;
+        listAgy(pids);
+        persistAgy();
+      })
+      .catch((e) =>
+        log(
+          `antigravity discovery failed: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+      )
+      .finally(() => {
+        agyScan = false;
+      });
+  };
+  const listAgy = (pids: number[] | null) => {
     // ps could not be read: unknown, nothing is listed or closed for it.
     if (pids === null) return;
     const running = new Set(pids);
@@ -4503,6 +4564,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     bindings: { count: () => bindings.size, sweep: sweepBindings },
     syncNow: () => sync(),
     stop: async () => {
+      agyStopped = true;
       ev("daemon_stop", { pid: process.pid });
       selfCheck?.stop();
       updater?.stop();

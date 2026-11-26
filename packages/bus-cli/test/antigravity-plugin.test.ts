@@ -11,7 +11,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readAgyConversation } from "@oa/bus-adapter-claude-code";
+import { busHome, readAgyConversation } from "@oa/bus-adapter-claude-code";
+import { parseAgyPluginHome } from "@oa/bus-daemon";
 import { HelloRefused } from "@oa/bus-ipc";
 import { describe, expect, it, vi } from "vitest";
 import { AGY_HELLO_EVENT, agyHello } from "../src/commands/agy-hello.ts";
@@ -141,6 +142,15 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(run(REF)).toBe("{}");
     expect(run("5d1c9e2a-3b4f-4a6d-8e7f-0a1b2c3d4e5f")).toBe("ran agy-hello");
     expect(run(undefined)).toBe("ran agy-hello");
+  });
+
+  it("the daemon reads the home the hook sends sessions to: default, or the moved one (agy S2b)", () => {
+    const hooks = (moved?: string) =>
+      agyPluginFiles(BIN, moved)["hooks.json"] as string;
+    expect(parseAgyPluginHome(hooks())).toBe(busHome({}));
+    expect(parseAgyPluginHome(hooks("/tmp/it's here/.oa-bus-2"))).toBe(
+      "/tmp/it's here/.oa-bus-2",
+    );
   });
 
   it("an older plugin of ours is rewritten; doctor sees it as not wired until then", async () => {

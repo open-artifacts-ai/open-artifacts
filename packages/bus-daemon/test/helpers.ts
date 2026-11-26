@@ -176,6 +176,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       // agy S2b: never the machine's real process table.
       discover: false,
       pids: () => [],
+      pluginHome: () => null,
       ...over.antigravity,
     },
   });
