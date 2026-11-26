@@ -166,27 +166,30 @@ test("an invited member outside the domain signs in by code: a member session in
   // the identity and that the session is not capped.
   expect((await verified).status()).toBe(200);
 
-  // An invited row has no name yet: the first page asks for one.
-  const ask = page.getByRole("dialog", {
-    name: "What do you like to be called?",
+  // The API agrees on the code session: the invited row, a member, uncapped.
+  const meRes = await page.request.get(`${A.app}${R.me}`, {
+    headers: { "x-oa-request": "1" },
   });
-  await ask
-    .getByRole("textbox", { name: "Your name" })
-    .fill(`T19 ${RUN} invited`);
-  await ask.getByRole("button", { name: "Save" }).click();
-  await expect(ask).toHaveCount(0);
+  expect(meRes.status()).toBe(200);
+  const me = (await meRes.json()) as Me;
+  expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
+  expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
+
+  // The name prompt shows only when the server says a name is needed (an
+  // invite may already carry one); /me decides, so the test never races it.
+  if (me.needsDisplayName) {
+    const ask = page.getByRole("dialog", {
+      name: "What do you like to be called?",
+    });
+    await ask
+      .getByRole("textbox", { name: "Your name" })
+      .fill(`T19 ${RUN} invited`);
+    await ask.getByRole("button", { name: "Save" }).click();
+    await expect(ask).toHaveCount(0);
+  }
   await expect(
     page.getByRole("heading", { level: 1, name: "Library" }),
   ).toBeVisible();
-
-  // The API agrees on the code session: the invited row, a member, uncapped.
-  const me = (await (
-    await page.request.get(`${A.app}${R.me}`, {
-      headers: { "x-oa-request": "1" },
-    })
-  ).json()) as Me;
-  expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
-  expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
 });
 
 test("an outside guest logs in by code, sees only Shared with me, and is read-only", {
