@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { TEST_PURGE_PREFIX } from "../../packages/shared/src/hosted/test-hooks.ts";
 import {
   CLIENT_IDS,
   CLIENTS,
@@ -67,6 +68,7 @@ import {
   runCanary,
   runNames,
   SCRATCH_DIR,
+  STAGING_PURGE_PREFIX,
   type SteerProbe,
   steerCheck,
   targetOf,
@@ -717,10 +719,10 @@ describe("readResults", () => {
 describe("sanitizing", () => {
   it("inert text has no HTML, markdown, mention, reference or URL left", () => {
     const t = inert(
-      "<b>x</b> @a #12 a/b#3 [l](u) `c` *e* _u_ | p https://x.example www.x.example $m$ ~s~",
+      "<b>x</b> @a #12 a/b#3 GH-4 gh-5 [l](u) `c` *e* _u_ | p https://x.example www.x.example $m$ ~s~",
     );
     expect(t).not.toMatch(
-      /<b>|@a|(?<!&)#12|b#3|\[l\]\(|`c`|\*e\*|_u_|\||https:\/\/|www\.x|\$m\$|~s~/,
+      /<b>|@a|(?<!&)#12|b#3|gh-\d|\[l\]\(|`c`|\*e\*|_u_|\||https:\/\/|www\.x|\$m\$|~s~/i,
     );
     expect(t).toContain("&lt;b&gt;");
   });
@@ -804,6 +806,15 @@ describe("bound to this run's session", () => {
       "canary-r2-pi@canary.test",
     );
     expect(() => runIdOf("Bad Id!")).toThrow("CANARY_RUN_ID");
+    // Every run id it takes fits the purge hook's prefix, for every client.
+    const longest = "a".repeat(20);
+    expect(runIdOf(longest)).toBe(longest);
+    expect(() => runIdOf(`${longest}b`)).toThrow("at most 20");
+    for (const c of ["claude", "codex", "opencode", "pi"] as const)
+      expect(
+        TEST_PURGE_PREFIX.test(runNames(longest, c, "staging").prefix),
+      ).toBe(true);
+    expect(STAGING_PURGE_PREFIX.source).toBe(TEST_PURGE_PREFIX.source);
     expect(runIdOf("gh-12-3")).toBe("gh-12-3");
     expect(runIdOf(undefined)).toMatch(/^[a-f0-9]{10}$/);
   });
@@ -1211,6 +1222,19 @@ describe("logs", () => {
     expect(readFileSync(join(to, "client.log"), "utf8")).toBe(
       "key [hidden] token [hidden] ok\n",
     );
+  });
+
+  it("a model key split by terminal codes or a line wrap is still blanked", () => {
+    const from = mkdtempSync(join(tmpdir(), "canary-logs-"));
+    const to = join(mkdtempSync(join(tmpdir(), "canary-logs-out-")), "logs");
+    const key = "sk-test-0123456789abcdef";
+    writeFileSync(
+      join(from, "client.log"),
+      `a sk-test-01\u001b[0m\u001b[2;5H2345\r\n6789abcdef b \u001b]0;t\u0007${key.slice(0, 9)}\n${key.slice(9)} c\n`,
+    );
+    copyLogs(from, to, [key]);
+    const out = readFileSync(join(to, "client.log"), "utf8");
+    expect(out).toBe("a [hidden] b [hidden] c\n");
   });
 
   it("a token shape is blanked even when its value was not known", () => {

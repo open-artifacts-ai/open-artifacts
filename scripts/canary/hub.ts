@@ -284,7 +284,9 @@ export async function purgeMembers(
 ): Promise<number> {
   const res = await hookPost(origin, key, PATHS.hookPurge, {
     prefix,
-    before: Date.now(),
+    // Five minutes ahead: a runner clock behind the server's must not spare
+    // this run's member. The prefix alone picks it.
+    before: Date.now() + 5 * 60_000,
     limit: 5,
   });
   if (!res.ok) throw new Error(`people purge hook: HTTP ${res.status}`);

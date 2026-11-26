@@ -150,6 +150,36 @@ export function redact(text: string, secrets: readonly string[] = []): string {
   return out;
 }
 
+/** Terminal codes: CSI, OSC (to BEL or ST) and other two-byte escapes. */
+const TERMINAL_CODES = new RegExp(
+  "\\x1b\\[[0-9;?]*[ -/]*[@-~]|\\x1b\\][^\\x07\\x1b]*(?:\\x07|\\x1b\\\\)|\\x1b[@-Z\\\\-_]",
+  "g",
+);
+
+/**
+ * A raw terminal log (a client's PTY output) as plain text, redacted: terminal
+ * codes out, carriage returns made newlines, then each value in `secrets`
+ * blanked even when a redraw or a line wrap split it with whitespace, and
+ * every token shape blanked.
+ */
+export function redactLog(
+  text: string,
+  secrets: readonly string[] = [],
+): string {
+  let out = text.replace(TERMINAL_CODES, "").replace(/\r\n?/g, "\n");
+  for (const v of secrets) {
+    if (!v || v.length < 8) continue;
+    const split = new RegExp(
+      [...v]
+        .map((c) => c.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&"))
+        .join("\\s*"),
+      "g",
+    );
+    out = out.replace(split, "[hidden]");
+  }
+  return redact(out, secrets);
+}
+
 /** Control, bidi and zero-width characters: never kept in a detail. */
 const CONTROLS = new RegExp(
   "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]+",
@@ -180,7 +210,7 @@ const ZWSP = "\u200b";
 
 /**
  * `text` (cleaned first) as inert GitHub markdown: no HTML, no markdown, no
- * table break, no @-mention, no #-link or cross-repo reference, no autolinked
+ * table break, no @-mention, no #-link, GH- link or cross-repo reference, no autolinked
  * URL. Every text from a client, a log or the hub that reaches a summary, an
  * issue or a comment goes through this.
  */
@@ -193,6 +223,8 @@ export function inert(
     clean(text, secrets, max)
       // @name, #123, owner/repo#123: a zero-width space after the sign.
       .replace(/([@#])/g, `$1${ZWSP}`)
+      // GH-123, any case: a zero-width space before the hyphen.
+      .replace(/(gh)-(?=\d)/gi, `$1${ZWSP}-`)
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
@@ -318,15 +350,19 @@ export function summaryMarkdown(
 /** Words for a short random marker the canary asks clients to echo back. */
 export const marker = (): string => randomBytes(5).toString("hex");
 
-/** A run id: lowercase letters, digits and hyphens, so it fits an address and a name. */
-export const RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+/**
+ * A run id: lowercase letters, digits and hyphens, at most 20, so it fits an
+ * address, a name and the staging purge prefix (`t19-canary-<id>-<client>`,
+ * which the hook caps at 44).
+ */
+export const RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
 /** CANARY_RUN_ID (the workflow sets it from the run), else a new one. */
 export function runIdOf(v: string | undefined): string {
   if (!v) return marker();
   if (!RUN_ID_RE.test(v))
     throw new Error(
-      "CANARY_RUN_ID must be lowercase letters, digits and hyphens, at most 40",
+      "CANARY_RUN_ID must be lowercase letters, digits and hyphens, at most 20",
     );
   return v;
 }

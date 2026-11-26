@@ -111,6 +111,7 @@ import {
   onFiles,
   overall,
   redact,
+  redactLog,
   runIdOf,
   type Session,
   summaryMarkdown,
@@ -274,6 +275,9 @@ export const missingDetail = (
 ): string =>
   `MISSING SECRET: add the repo secret ${missing.join(" and ")} to run ${label} on ${target}. Without it the canary is red, never skipped.`;
 
+/** The purge hook's prefix rule (packages/shared TEST_PURGE_PREFIX). */
+export const STAGING_PURGE_PREFIX = /^t19-[a-z0-9-]{0,40}$/;
+
 /** This run's names: its member's address, its token's label, its staging purge prefix. */
 export function runNames(
   runId: string,
@@ -287,6 +291,10 @@ export function runNames(
     target === "staging"
       ? `t19-canary-${runId}-${client}`
       : `canary-${runId}-${client}`;
+  if (target === "staging" && !STAGING_PURGE_PREFIX.test(prefix))
+    throw new Error(
+      `the staging purge prefix ${prefix} is too long for the purge hook`,
+    );
   return {
     prefix,
     email: `${prefix}@${target === "staging" ? domain : "canary.test"}`,
@@ -1042,13 +1050,16 @@ export async function nextTurnCheck(
   }
 }
 
-/** Copies each log to `to`, with every value in `secrets` and every token shape blanked. */
+/**
+ * Copies each log to `to` as plain text, with every value in `secrets` (even
+ * one a redraw or a wrap split) and every token shape blanked.
+ */
 export function copyLogs(from: string, to: string, secrets: string[]) {
   mkdirSync(to, { recursive: true, mode: 0o700 });
   for (const f of readdirSync(from))
     writeFileSync(
       join(to, f),
-      redact(readFileSync(join(from, f), "utf8"), secrets),
+      redactLog(readFileSync(join(from, f), "utf8"), secrets),
     );
 }
 

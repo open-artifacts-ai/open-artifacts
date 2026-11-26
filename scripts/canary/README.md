@@ -54,6 +54,9 @@ and checks:
 4. **page shows as the session**: the session publishes a page and says
    `PUBLISHED <title>` on the bus. The page must be linked, show the client's
    product and this run's token, with no other session on the member's bus.
+   The page is tied to the session by that token and by being the only live
+   session on a new member, not by comparing agent ids: a page's versions do
+   not show the publisher's hub agent id yet.
 5. **receives and replies**: a message to it gets an answer.
 6. **mid-turn message**: a message sent while a turn is running.
    - Codex and Pi steer: it must land in that same turn.
