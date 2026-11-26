@@ -40,7 +40,7 @@ Internal process for the people and agents who maintain this repository, not
 advice for contributors.
 
 - **Leads work in pairs.** One builds; the partner, on a different model
-  provider, reviews the PR against the issue's acceptance lines, proves it
+  provider where possible, reviews the PR against the issue's acceptance lines, proves it
   live, and merges once CI is green on that exact SHA
   (`gh pr merge <n> --match-head-commit <sha>`). Merging needs no human pick;
   tests and CI stop a bad merge. Never push to a queued PR.
