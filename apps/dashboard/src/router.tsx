@@ -101,15 +101,19 @@ function FullRoute() {
 
 /** `/sign-in`: the SPA owns the chooser and the code forms. */
 function SignInRoute() {
-  const { error, next, method, via, link } = useSearch({ strict: false }) as {
+  const { error, next, method, via, link, dead } = useSearch({
+    strict: false,
+  }) as {
     error?: string;
     next?: string;
     method?: string;
     via?: "access" | "google";
     link?: string;
+    dead?: string;
   };
   return (
     <SignIn
+      dead={dead === "1"}
       error={error}
       next={next}
       method={method}
@@ -356,7 +360,10 @@ const routeTree = root.addChildren([
       // #2590 G2: link=1 (the server holds a refused guest's address);
       // anything else is dropped. Never an address in the URL.
       const link = s.link === "1" || s.link === 1 ? "1" : undefined;
+      // #3029: the dashboard's own redirect from a path it has no route for.
+      const dead = s.dead === "1" || s.dead === 1 ? "1" : undefined;
       return {
+        ...(dead && { dead }),
         ...(error !== undefined && { error }),
         ...(next && { next }),
         ...(method && { method }),
