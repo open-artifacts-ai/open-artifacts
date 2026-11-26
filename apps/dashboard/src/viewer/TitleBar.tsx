@@ -388,6 +388,8 @@ export function TitleBar({
         ? versionDate(info.createdAt)
         : "";
   const label = `v${version}${suffix ? ` · ${suffix}` : ""}`;
+  /** #2622: a phone showing an older version: the pill turns amber, and its name is the approved line. */
+  const older = phone && version !== artifact.currentVersion;
   // #2860: mute where the noise is. A signed-in person's page menu, on a server with For you.
   const pageMute = useMuteToggle(
     authed && !outsider ? { kind: "page", id: artifact.id } : null,
@@ -598,14 +600,17 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={`${BARP} ${phone && version !== artifact.currentVersion ? OLD : ""}`}
+            className={`${BARP} ${older ? OLD : ""}`}
+            // #2622: on an older version a phone's name is the approved
+            // "Version 15, not the latest" exactly, so it cannot also start
+            // with the visible "v15"; the visible text leaves the name and a
+            // clipped copy carries it, which keeps label-in-name true.
             aria-label={
-              phone
-                ? // The name starts with the visible "v15" (axe label-in-name).
-                  version === artifact.currentVersion
+              older
+                ? undefined
+                : phone
                   ? `v${version}, the latest version`
-                  : `v${version}, not the latest version`
-                : `Version: ${label}`
+                  : `Version: ${label}`
             }
             aria-expanded={versionsOpen}
             aria-controls={versionsOpen ? VERSIONS_PANEL_ID : undefined}
@@ -613,10 +618,19 @@ export function TitleBar({
             disabled={gone}
             onClick={onVersions}
           >
-            v{version}
-            {/* Phones show the number alone. */}
-            {suffix && (
-              <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
+            {older ? (
+              <>
+                <span aria-hidden="true">v{version}</span>
+                <span className="sr-only">{`Version ${version}, not the latest`}</span>
+              </>
+            ) : (
+              <>
+                v{version}
+                {/* Phones show the number alone. */}
+                {suffix && (
+                  <span className="-ml-1 whitespace-pre max-[960px]:hidden">{` · ${suffix}`}</span>
+                )}
+              </>
             )}
             {newer && !gone && <VersionsDot />}
           </ShButton>
