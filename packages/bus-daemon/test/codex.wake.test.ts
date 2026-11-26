@@ -365,6 +365,37 @@ describe("codex queue transport (C26d)", () => {
     }
   });
 
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])(
+    "execCodex(%s) rejects like execFile (ERR_OUT_OF_RANGE) and spawns nothing",
+    async (ms) => {
+      const f = fakeCodex();
+      await expect(execCodex(ms)(f.bin, [], process.env)).rejects.toMatchObject(
+        { code: "ERR_OUT_OF_RANGE" },
+      );
+      expect(f.runs()).toHaveLength(0);
+    },
+  );
+
+  it("execCodex(MAX_SAFE_INTEGER) is accepted: the child runs and exits normally", async () => {
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path, code: 0 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(Number.MAX_SAFE_INTEGER)(f.bin, [], process.env);
+      await g.connected();
+      g.go();
+      await expect(run).resolves.toEqual({ code: 0, stderr: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a timed-out child whose grandchild holds its pipes open still resolves, as null", async () => {
     const g = await gate();
     const dir = tmp("ob-fcx-gc-");

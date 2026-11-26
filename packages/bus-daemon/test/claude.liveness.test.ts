@@ -28,8 +28,8 @@ beforeEach(() => {
   settles = eventCounter();
 });
 afterEach(async () => {
+  await stopAll(); // clears the daemon's interval while it is still the fake one
   vi.useRealTimers();
-  await stopAll();
   await Promise.all(
     servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
   );
@@ -262,6 +262,8 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242);
     const running = new Set([4242]);
+    // The sync interval is fake: each absence window is crossed by moving the clock.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({ claude: syncDeps(d, running) });
     expect(await h.next("agent_up")).toMatchObject({
       agent_ref: "s4242",
@@ -273,16 +275,26 @@ describe("runDaemon claude session sync", () => {
       pid: 4242,
       live: true,
     });
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window: 5 ticks
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
+    await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
 
     running.delete(4242);
+    await vi.advanceTimersByTimeAsync(20); // the next tick sees it gone
     await vi.waitFor(() =>
       expect(h.of("sessions").at(-1)).toMatchObject({ closed: ["s4242"] }),
     );
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
     const downs = h.of("sessions").length;
-    await syncs.next(3);
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
     await h.barrier();
     expect(h.of("sessions")).toHaveLength(downs); // reported once
   });
@@ -347,13 +359,18 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242);
     const running = new Set([4242]);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({ claude: syncDeps(d, running) });
     await h.next("agent_up");
     const rec = h.daemon.agents.byRef("s4242");
     if (!rec) throw new Error("no record");
     rec.live = false;
     rec.closedBy = "delivery";
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(200); // the original 200 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(10); // the window really ran
+    }
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(rec.live).toBe(false);
@@ -371,6 +388,9 @@ describe("runDaemon claude session sync", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     writeFileSync(join(d, "4242.json"), '{"pid":4242,');
     await syncs.next(2); // the unreadable file was seen: the grace began
+    // The original test saw it still live 60 ms in: move the clock that far, tick, then look.
+    vi.setSystemTime(Date.now() + 60);
+    await syncs.next(2);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     vi.setSystemTime(Date.now() + 200);
     await syncs.next(2);
@@ -391,6 +411,9 @@ describe("runDaemon claude session sync", () => {
     await h.next("agent_up");
     vi.useFakeTimers({ toFake: ["Date"] });
     await syncs.next(2); // the unreadable start time was seen: the grace began
+    // The original test saw it still live 60 ms in: move the clock that far, tick, then look.
+    vi.setSystemTime(Date.now() + 60);
+    await syncs.next(2);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     vi.setSystemTime(Date.now() + 200);
     await syncs.next(2);
@@ -512,6 +535,7 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242, { messagingSocketPath: undefined });
     const running = new Set([4242]);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: { ...syncDeps(d, running), syncMs: 100 },
     });
@@ -519,7 +543,11 @@ describe("runDaemon claude session sync", () => {
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
     expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
     expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("delivery");
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(400); // the original 400 ms window: 4 ticks
+      expect(syncs.count - before).toBeGreaterThanOrEqual(4); // the window really ran
+    }
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
@@ -540,19 +568,25 @@ describe("runDaemon claude session sync", () => {
     const d = dir();
     writeSession(d, 4242);
     const running = new Set([4242]);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({ claude: syncDeps(d, running) });
     await h.next("agent_up");
     const rec = h.daemon.agents.byRef("s4242");
     if (!rec) throw new Error("no record");
     rec.live = false;
     rec.closedBy = "liveness";
+    await vi.advanceTimersByTimeAsync(20); // the next tick reopens it
     await h.next("agent_up", 2);
     // The reopen made a new record: close that one again at once.
     const again = h.daemon.agents.byRef("s4242");
     if (!again) throw new Error("no record");
     again.live = false;
     again.closedBy = "liveness";
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(200); // the original 200 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(10); // the window really ran
+    }
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(2);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
@@ -563,6 +597,7 @@ describe("runDaemon claude session sync", () => {
     writeSession(d, 4242);
     const running = new Set([4242]);
     let start: string | null = "t0";
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: {
         ...syncDeps(d, running),
@@ -571,11 +606,19 @@ describe("runDaemon claude session sync", () => {
     });
     await h.next("agent_up");
     start = null; // ps failed: unknown
-    await syncs.next(3); // several whole sync ticks
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(150); // the original 150 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(7); // the window really ran
+    }
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     start = "t0";
     writeFileSync(join(d, "4242.json"), '{"pid":4242,'); // a rewrite in flight
-    await syncs.next(3);
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(150); // the original 150 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(7); // the window really ran
+    }
     await h.barrier();
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
     expect(h.of("sessions").flatMap((x) => x.closed)).toEqual([]);
@@ -584,6 +627,7 @@ describe("runDaemon claude session sync", () => {
   it("accepts the session's MCP hello after the daemon announced it", async () => {
     const d = dir();
     writeSession(d, 4242);
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const h = await daemonHarness({
       claude: syncDeps(d, new Set([4242])),
       attest: () => ({ ok: true, cwd: "/repo", pid: 4242 }),
@@ -592,7 +636,11 @@ describe("runDaemon claude session sync", () => {
     const a = await h.adapter("s4242", { pid: 9999 }); // the MCP server's own pid
     expect(a.welcome).toMatchObject({ agent_ref: "s4242", namespace: "ns" });
     a.close();
-    await syncs.next(3);
+    {
+      const before = syncs.count;
+      await vi.advanceTimersByTimeAsync(100); // the original 100 ms window
+      expect(syncs.count - before).toBeGreaterThanOrEqual(5); // the window really ran
+    }
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(1);
     expect(h.daemon.agents.byRef("s4242")).toMatchObject({
