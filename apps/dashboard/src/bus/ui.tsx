@@ -10,6 +10,8 @@ export const APPROVE_PATH = "/bus/approve";
 
 const TONE = {
   Live: "bg-[var(--oa-success-soft)] text-[var(--oa-success-fg)]",
+  // agy S2b: running, not yet in a conversation.
+  Starting: "bg-secondary text-foreground",
   Queued: "bg-[var(--oa-warning-soft)] text-[var(--oa-warning)]",
   Offline: "bg-secondary text-muted-foreground",
   Unknown: "bg-secondary text-muted-foreground",

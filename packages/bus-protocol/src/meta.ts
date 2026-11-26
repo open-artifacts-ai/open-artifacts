@@ -1,17 +1,26 @@
 /** The bus name every agent falls back to when its proposal is unusable. */
 export const FALLBACK_BUS_NAME = "agent";
 
+const KIND_DEFAULT_NAMES: Readonly<Record<string, string>> = {
+  antigravity: "agy",
+};
+
 /**
- * A name only the harness gave the session (#1742, #1860): the kind itself
- * (codex, opencode, pi, omp, hermes...), `<kind>-...`, the hub's `agent`, or
+ * A name only the harness gave the session (#1742, #1860, #3208): the kind
+ * itself (codex, opencode, pi, omp, hermes...), `<kind>-...`, a kind's own
+ * default name such as agy's `agy` / `agy-...`, the hub's `agent`, or
  * Claude's `claude-<digits>`. The one definition: the hub never reclaims such
  * a name, and `list_agents` folds away rows that carry one into a count.
  */
 export function isFallbackName(name: string, kind: string): boolean {
   const lname = name.toLowerCase();
+  const d = Object.hasOwn(KIND_DEFAULT_NAMES, kind)
+    ? KIND_DEFAULT_NAMES[kind]
+    : undefined;
   return (
     lname === kind ||
     lname.startsWith(`${kind}-`) ||
+    (d !== undefined && (lname === d || lname.startsWith(`${d}-`))) ||
     lname === FALLBACK_BUS_NAME ||
     /^claude-\d+$/.test(lname)
   );

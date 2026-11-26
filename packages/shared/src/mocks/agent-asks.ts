@@ -44,7 +44,7 @@ export function createAgentAsksMock(d: Deps): {
   const now = d.now ?? Date.now;
   const person = (id: string, name: string) => ({ id, name });
   let on = true;
-  let phonePush = false;
+  const phonePush = false;
   let nextId = 1;
   const item = (
     i: number,
@@ -217,8 +217,7 @@ export function createAgentAsksMock(d: Deps): {
       http.put(`*${R.agentRequests}`, async ({ request }) => {
         const p = AgentRequestsSwitchBodySchema.safeParse(await request.json());
         if (!p.success) return d.err("bad_request", "Invalid body");
-        on = p.data.on ?? on;
-        phonePush = p.data.phonePush ?? phonePush;
+        on = p.data.on;
         return HttpResponse.json({
           on,
           phonePush,

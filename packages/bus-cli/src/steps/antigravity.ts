@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseAgyPluginHome } from "@oa/bus-daemon";
 
 /** The plugin's folder name, which agy also keys its on/off switch by. */
 export const AGY_PLUGIN_NAME = "oa-bus";
@@ -38,19 +39,22 @@ export const agyPluginDir = (home: string) =>
 const sh = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 
 /**
- * The hook command: this bus's argv plus `agy-hello`, and a moved home. agy
- * runs it with `sh -c`, so `$PPID` is the agy process. SessionStart fires for
- * a new conversation only; PreInvocation (before each model call) also covers
- * a resumed one (`agy --conversation`, `-c`). So that a call costs no Node
- * start, the shell says `{}` itself when the conversation agy names in the
- * hook's env is already the one recorded for this agy process.
+ * The hook command: this bus's argv plus `agy-hello`, pinned to the bus home
+ * it was installed for (`busHome`, absolute), default or moved. The pin is
+ * always written: an agy process started with some other OA_BUS_HOME would
+ * otherwise send its join there, while the home that lists agy at launch is
+ * the one this file names (agy S2b). agy runs it with `sh -c`, so `$PPID` is
+ * the agy process. SessionStart fires for a new conversation only;
+ * PreInvocation (before each model call) also covers a resumed one
+ * (`agy --conversation`, `-c`). So that a call costs no Node start, the shell
+ * says `{}` itself when the conversation agy names in the hook's env is
+ * already the one recorded for this agy process.
  */
-export function agyHookCommand(busBin: string[], movedHome?: string): string {
+export function agyHookCommand(busBin: string[], busHome: string): string {
   const argv = [...busBin, "agy-hello"].map(sh).join(" ");
-  const home =
-    movedHome === undefined ? "" : `export OA_BUS_HOME=${sh(movedHome)}; `;
   return (
-    `${home}f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; ` +
+    `export OA_BUS_HOME=${sh(busHome)}; ` +
+    `f="$OA_BUS_HOME/antigravity/$PPID.json"; ` +
     `if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && ` +
     `grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; ` +
     `then echo '{}'; else exec ${argv}; fi`
@@ -74,12 +78,12 @@ const SHIPPED = ["plugin.json", "logo.svg"];
 /** The plugin's files, as install writes them: the shipped ones and hooks.json. */
 export function agyPluginFiles(
   busBin: string[],
-  movedHome?: string,
+  busHome: string,
   assets: string = AGY_PLUGIN_ASSETS,
 ): Record<string, string> {
   const handler = {
     type: "command",
-    command: agyHookCommand(busBin, movedHome),
+    command: agyHookCommand(busBin, busHome),
     timeout: AGY_HOOK_TIMEOUT_S,
   };
   const hooks = {
@@ -150,8 +154,9 @@ export function agyPluginState(
   if (!present(dir)) return "absent";
   if (!isDir(dir) || !present(join(dir, AGY_PLUGIN_MARKER))) return "foreign";
   if (files === undefined)
-    // The bus's argv unknown: only that the hook runs `agy-hello`.
-    return /agy-hello/.test(readOr(join(dir, "hooks.json")) ?? "")
+    // The bus's argv unknown: only that the hook runs `agy-hello`, pinned to
+    // a home (an earlier build's unpinned hook is stale, agy S2b).
+    return parseAgyPluginHome(readOr(join(dir, "hooks.json")) ?? "")?.pinned
       ? "current"
       : "stale";
   return Object.entries(files).every(

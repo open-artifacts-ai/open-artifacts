@@ -12,6 +12,15 @@ export const STATUS_STATES = [
   "waiting_on_owner",
 ] as const;
 export const StatusStateSchema = z.enum(STATUS_STATES);
+
+/**
+ * agy S2b: the status label the daemon sets (with state `idle`) on an agy
+ * session it listed from the process table before its first message. The
+ * roster has no "starting" state, so this rides on the status every reader
+ * already shows; the dashboard shows it as "Starting". The joined
+ * conversation takes the address over and starts with no status.
+ */
+export const AGY_STARTING_LABEL = "starting";
 export type StatusState = z.infer<typeof StatusStateSchema>;
 
 /** `MachineLabelSchema` rules, at most `LIMITS.maxLabelChars` (64) code points. */

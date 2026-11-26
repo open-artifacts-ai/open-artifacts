@@ -1,4 +1,11 @@
 import {
+  CODEX_SPAWNED_SOURCES,
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
+  canonicalArgsSha256,
   LINK_PROOF_ARG,
   LINK_PROOF_HEADER,
   LinkProofSchema,
@@ -38,6 +45,7 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import type { PutRoleResult, RoleMove } from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -114,6 +122,8 @@ export type BusHubRpc = {
   runVersionChanged(): Promise<void>;
   /** #2759: the member saved their prefs; tell their cap'd sockets when quiet hours end. */
   ownerAwayChanged(): Promise<void>;
+  /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
+  codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -146,6 +156,11 @@ export type BusHubRpc = {
   namesOf(
     identityIds: string[],
   ): Promise<{ identityId: string; name: string }[]>;
+  /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
+  roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null>;
   /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
   waitingOf(
     identityIds: string[],
@@ -171,11 +186,7 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
     agentId: string | null,
-  ): Promise<
-    | { ok: true; role: BusRole }
-    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
-    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
-  >;
+  ): Promise<PutRoleResult>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -588,6 +599,35 @@ export async function agentNamesOf(
 }
 
 /**
+ * #3132: the live holder of the role the session `identityId` handed on, for
+ * something it began at `originAt` while it held it (bus/roles.ts
+ * roleForward), as an asker address, or null: no such move, no live holder,
+ * or the hub didn't answer (fail closed, #2224). Never throws.
+ */
+export async function roleHolderFor(
+  env: Env,
+  userId: string,
+  identityId: string,
+  originAt: number,
+): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+  try {
+    if (!busOn(env)) return null;
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        return hub.roleHolderFor(identityId, originAt);
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_role_holder_lookup_failed", e);
+    return null;
+  }
+}
+
+/**
  * #2512: which of `userId`'s own agents (identity ids) wait on their owner now,
  * with the time (ms) they started, from that member's hub only. A miss, a slow
  * or failing hub give an empty map; never throws.
@@ -805,6 +845,92 @@ function bodyHasToolsCall(text: string | undefined): boolean {
 /** Not JSON: the handler answers it with its usual parse error. */
 const UNPARSEABLE = "{";
 
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+
+/**
+ * #3108: the check a proof-less /mcp body asks of the member's daemons, or
+ * null. Exactly one tools/call (never a batch) whose `_meta` carries Codex's
+ * thread, call and (code mode) item ids. Every field is validated with the
+ * protocol's schemas; nothing from `_meta` is ever logged.
+ */
+async function codexCheckOf(
+  bodyText: string | undefined,
+): Promise<Record<string, unknown> | null> {
+  if (bodyText === undefined) return null;
+  let msg: unknown;
+  try {
+    msg = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  const m = asRecord(msg);
+  if (!m || m.method !== "tools/call") return null;
+  const params = asRecord(m.params);
+  const meta = asRecord(params?._meta);
+  if (!params || !meta) return null;
+  const thread = CodexThreadIdSchema.safeParse(meta.threadId);
+  const tool = CodexToolNameSchema.safeParse(params.name);
+  if (!thread.success || !tool.success) return null;
+  let turn: unknown = meta["x-codex-turn-metadata"];
+  if (typeof turn === "string")
+    try {
+      turn = JSON.parse(turn);
+    } catch {
+      return null;
+    }
+  const t = asRecord(turn);
+  if (!t || t.thread_id !== thread.data) return null;
+  if (
+    typeof t.thread_source === "string" &&
+    CODEX_SPAWNED_SOURCES.has(t.thread_source)
+  )
+    return null;
+  const exec = CodexExecCallIdSchema.safeParse(meta.callId);
+  const item = CodexItemIdSchema.safeParse(meta.itemId);
+  if (exec.success && item.success)
+    return {
+      thread_id: thread.data,
+      tool: tool.data,
+      mode: { kind: "code", call_id: exec.data, item_id: item.data },
+    };
+  const direct = CodexDirectCallIdSchema.safeParse(meta.callId);
+  if (!direct.success) return null;
+  const args_sha256 = await canonicalArgsSha256(params.arguments ?? {});
+  if (!args_sha256) return null;
+  return {
+    thread_id: thread.data,
+    tool: tool.data,
+    mode: { kind: "direct", call_id: direct.data, args_sha256 },
+  };
+}
+
+/** #3108: the identity of the Codex session behind a proof-less tools/call, or undefined (unlinked, the call still works). Never throws, never logs a value. */
+async function codexLink(
+  env: Env,
+  userId: string,
+  bodyText: string | undefined,
+): Promise<AgentIdentity | undefined> {
+  try {
+    const check = await codexCheckOf(bodyText);
+    if (!check) return undefined;
+    const id = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub ? await hub.codexCallCheck(check) : null;
+      })(),
+      PROOF_LOOKUP_MS,
+    );
+    return id ?? undefined;
+  } catch (e) {
+    logError("bus_codex_link_failed", e);
+    return undefined;
+  }
+}
+
 /**
  * #1822: the /mcp auth step's one link function. Takes the proof header off
  * the request (always, so no tool or handler ever sees it); #1856: also takes
@@ -861,8 +987,14 @@ export async function linkRequest(
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
   // No proof at all: nothing was looked up, so nothing is logged; the note says so.
-  if (proof === undefined)
+  if (proof === undefined) {
+    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
+    const identity = busOn(env)
+      ? await codexLink(env, userId, bodyText)
+      : undefined;
+    if (identity) return { req: out, identity };
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+  }
   const r = await lookupProof(
     env,
     userId,
@@ -1014,7 +1146,10 @@ export async function putBusRole(
   const hub = busHub(env, userId);
   if (!hub) throw refuse("no_bus");
   const r = await roleCall(hub.putRole(namespace, name, agentId));
-  if (r.ok) return r.role;
+  if (r.ok) {
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+    return r.role;
+  }
   if (r.reason === "invalid")
     throw new ApiError("bad_request", `Invalid ${r.field}`, {
       field: r.field,
@@ -1312,6 +1447,16 @@ const PROPOSAL_REFUSALS: Record<
 
 const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
 
+/** #3132: a role moved between sessions, by the member. Ids only. */
+const auditMove = (env: Env, userId: string, m: RoleMove) =>
+  audit(env, "bus.role.moved", auditTarget(userId), userActor(userId), {
+    detail: {
+      roleId: m.roleId,
+      fromAgentId: m.fromAgentId,
+      toAgentId: m.toAgentId,
+    },
+  }).run();
+
 /** An audit row's detail: ids and enums, the absent ones left out. */
 const detailOf = (a: ProposalAudit, why?: string) => ({
   proposalId: a.proposalId,
@@ -1598,11 +1743,12 @@ export async function decideBusRoleProposal(
   );
   await auditExpired(env, userId, r.expired);
   const actor = userActor(userId);
-  if (r.ok)
+  if (r.ok) {
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-  else if (r.proposal !== null)
+    if (r.moved !== null) await auditMove(env, userId, r.moved);
+  } else if (r.proposal !== null)
     // A link already used or expired is a refusal too; an unknown one has
     // nothing to name (the page answers the same).
     await audit(env, "bus.role.refused", auditTarget(userId), actor, {

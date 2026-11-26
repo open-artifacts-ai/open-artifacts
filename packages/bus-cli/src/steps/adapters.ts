@@ -37,6 +37,7 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
 import {
+  CODEX_OA_ENTRIES_FILE,
   CODEX_PROXY_ENTRY_FILE,
   codexBinFile,
   codexBinPin,
@@ -75,6 +76,7 @@ import {
   proxyProgramMissing as cxProxyProgramMissing,
   installEntry as installCxEntry,
   pendingEntry as pendingCxEntry,
+  recordEntries as recordCxEntries,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
 import {
@@ -261,6 +263,14 @@ const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
 };
 
 /**
+ * agy S2b: the bus home the agy plugin's hook pins, always (default home
+ * too), so the agy process's own OA_BUS_HOME never moves its join off the
+ * home that lists it at launch.
+ */
+const agyHookHome = (deps: Pick<AdapterDeps, "home" | "busHome">) =>
+  movedHome(deps) ?? join(deps.home, ".oa-bus");
+
+/**
  * Pi, oh-my-pi and OpenCode's TUI plugin run inside the harness, whose config
  * has no env to set: a moved home is set in the file's own first line, never
  * over an OA_BUS_HOME the user exported (#1443).
@@ -307,6 +317,8 @@ export const paths = (deps: AdapterDeps) => {
     codexBin: codexBinFile(busDir),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
+    // #3108: the Codex entries oa-bus leaves as they are, linked by the daemon's server check.
+    codexOaEntries: join(busDir, CODEX_OA_ENTRIES_FILE),
     // agy 1.5's user-level MCP config (`agy mcp add` writes it; the older
     // ~/.gemini/antigravity/mcp_config.json is the legacy path it migrated from).
     agyMcp: join(deps.home, ".gemini", "config", "mcp_config.json"),
@@ -664,6 +676,8 @@ const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
   moved: paths(deps).codexEntry,
   write: (text) => writeAtomic(paths(deps).codex, text),
   writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
+  entries: paths(deps).codexOaEntries,
+  writeEntries: (data) => writeAtomic(paths(deps).codexOaEntries, data, 0o600),
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
   // #2954: the PAT the connect guide tells people to save, so an entry that
@@ -1052,7 +1066,9 @@ const install: Record<Harness, Step> = {
     const p = paths(deps);
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
-    const home = movedHome(deps);
+    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+    // read the conversation file the hook wrote, whatever agy's own env says.
+    const home = agyHookHome(deps);
     const next = upsertAgyMcp(text, NAME, server, home);
     target(p.agyMcp);
     const record = readRecord(p.record);
@@ -1061,7 +1077,7 @@ const install: Record<Harness, Step> = {
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
     // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
     return "done";
   },
 };
@@ -1456,14 +1472,14 @@ export function checkAdapters(
         agyEntryIs(
           parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
           deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-          movedHome(deps),
+          agyHookHome(deps),
         ) &&
         // agy S2: and the plugin whose hook joins each conversation.
         agyPluginState(
           deps.home,
           deps.busBin === undefined
             ? undefined
-            : agyPluginFiles(deps.busBin, movedHome(deps)),
+            : agyPluginFiles(deps.busBin, agyHookHome(deps)),
         ) === "current",
     ),
   };
@@ -1538,6 +1554,22 @@ export function skippedProxyEntries(
       out.push({ harness: "OpenCode", note });
   } catch {}
   return out;
+}
+
+/**
+ * #3108: on daemon start, records the Codex entries that reach the instance
+ * (names and origin only), so an install from before this existed, brought
+ * forward by an update, links with no step from the user. Writes only the
+ * bus home's own file, never Codex's config. Never throws.
+ */
+export function reapplyCodexEntries(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env"> & { hub: string },
+): void {
+  try {
+    const d = { ...deps, busBin: [] as string[] } as AdapterDeps;
+    if (!present(paths(d).codex)) return;
+    recordCxEntries(cxEntryIo(d), deps.hub);
+  } catch {}
 }
 
 /**
