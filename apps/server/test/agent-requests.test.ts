@@ -264,7 +264,7 @@ describe("allow", () => {
     // Delivered as someone else's words, never as the receiver's own (the "your user" tier).
     expect(toOwnerAgent(s.id)[0]?.notice.text).not.toContain("Your user typed");
     expect(toOwnerAgent(s.id)[0]?.notice.text).toContain(
-      "Someone else wrote this comment",
+      "Someone else wrote this.",
     );
     expect((await listAs(s.id, asAgent(owner)))[0]?.comments[0]?.body).toBe(
       "one",

@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.256.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.255.0...v0.256.0) (2026-11-26)
+
+
+### Features
+
+* **mcp:** comment writes return ids and status, not the whole thread ([#3163](https://github.com/open-artifacts-ai/open-artifacts/issues/3163)) ([#3187](https://github.com/open-artifacts-ai/open-artifacts/issues/3187)) ([d9dd1f7](https://github.com/open-artifacts-ai/open-artifacts/commit/d9dd1f75f958a83f5f0eb414a20f95ee9f7e5ac3))
+* **notices:** a mention follows the thread, not the page; short notice tails ([#3164](https://github.com/open-artifacts-ai/open-artifacts/issues/3164)) ([#3188](https://github.com/open-artifacts-ai/open-artifacts/issues/3188)) ([9795b58](https://github.com/open-artifacts-ai/open-artifacts/commit/9795b588ba7fabc5b34c0b1013fb0dd485d598c3))
+
+## [0.255.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.254.0...v0.255.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session gets bus messages through its watcher (agy S3) ([#3171](https://github.com/open-artifacts-ai/open-artifacts/issues/3171)) ([120f3b8](https://github.com/open-artifacts-ai/open-artifacts/commit/120f3b89f67c94f0c41ca544ffecf5b34044cb2d))
+
+## [0.254.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.1...v0.254.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an agy process is listed as starting at launch (agy S2b) ([#3190](https://github.com/open-artifacts-ai/open-artifacts/issues/3190)) ([0fa55c9](https://github.com/open-artifacts-ai/open-artifacts/commit/0fa55c9d7bd5335117d467bf73d90d6416be7caf))
+
+
+### Bug Fixes
+
+* **bus:** agy's default name is a fallback; a gone session's mail expires at once ([#3208](https://github.com/open-artifacts-ai/open-artifacts/issues/3208)) ([#3233](https://github.com/open-artifacts-ai/open-artifacts/issues/3233)) ([626cc36](https://github.com/open-artifacts-ai/open-artifacts/commit/626cc363571e6e4e67c3c3956d74ebc51a1a45d4))
+
 ## [0.253.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.0...v0.253.1) (2026-11-26)
 
 
