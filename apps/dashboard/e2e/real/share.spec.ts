@@ -1,4 +1,5 @@
 import { AUTH, R } from "@oa/shared";
+import type { Page } from "@playwright/test";
 import {
   ACCESS_TEAM_DOMAIN,
   APP,
@@ -23,6 +24,19 @@ async function shareViaApi(pat: string, id: string, email: string) {
     body: JSON.stringify({ email, role: "viewer" }),
   });
   expect(res.ok, await res.text()).toBe(true);
+}
+
+async function revokeViaMenu(page: Page, id: string, email: string) {
+  const picker = page.getByRole("combobox", { name: `Role for ${email}` });
+  await picker.click();
+  const deleted = page.waitForResponse(
+    (r) =>
+      r.request().method() === "DELETE" &&
+      r.url() === `${APP}${R.share(id, email)}`,
+  );
+  await page.getByRole("option", { name: "Remove access" }).click();
+  expect((await deleted).ok()).toBe(true);
+  await expect(picker).toHaveCount(0);
 }
 
 test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets a 404", {
@@ -72,9 +86,7 @@ test("owner shares with Bob as viewer; Bob sees it in Shared; revoked, Bob gets 
   });
   await shareViaApi(member.pat, other.id, BOB);
 
-  await remove.click();
-  await page.getByRole("option", { name: "Remove access" }).click();
-  await expect(remove).toHaveCount(0);
+  await revokeViaMenu(page, id, BOB);
 
   // Bob is shared across projects, so the list may hold others' artifacts:
   // wait for it to load, then check this one is gone.
@@ -122,10 +134,7 @@ test("revoking a guest's last share signs them out", async ({
 
   await page.goto(`/a/${id}`);
   await page.getByRole("button", { name: "Share", exact: true }).click();
-  const remove = page.getByRole("combobox", { name: `Role for ${guest}` });
-  await remove.click();
-  await page.getByRole("option", { name: "Remove access" }).click();
-  await expect(remove).toHaveCount(0);
+  await revokeViaMenu(page, id, guest);
 
   // The guest is deactivated with their last share: the session is gone.
   const shared = await g.request.get(`${APP}${R.artifacts}?scope=shared`, {
