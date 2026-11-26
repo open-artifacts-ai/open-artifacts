@@ -73,8 +73,10 @@ export const resolveCmd = (cmd: string): string =>
 /**
  * execFile with a kill at `timeoutMs`; a killed command fails like any other.
  * The timeout is our own timer (not execFile's) so a test can drive it with
- * fake timers, and it settles at once: a grandchild that inherited the pipes
- * and outlives the kill cannot hold the result back.
+ * fake timers, but it behaves like execFile's: a timeout of 0 means none, an
+ * invalid one fails before spawning, and on expiry the stdio pipes are
+ * destroyed before the kill so a grandchild holding them open cannot keep the
+ * result back. The output collected so far is returned.
  */
 export const makeExec =
   (timeoutMs: number): Deps["exec"] =>
@@ -82,13 +84,18 @@ export const makeExec =
     new Promise((resolve) => {
       guardServiceManager(cmd, args);
       const ms = opts?.timeoutMs ?? timeoutMs;
-      let done = false;
-      const settle = (r: { code: number; stdout: string; stderr: string }) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve(r);
-      };
+      let timedOut = false;
+      // execFile's own check (an integer in 0..MAX_SAFE_INTEGER, else
+      // ERR_OUT_OF_RANGE, before spawning); the failure keeps its old shape.
+      if (!Number.isInteger(ms) || ms < 0 || ms > Number.MAX_SAFE_INTEGER) {
+        const e = Object.assign(
+          new RangeError(
+            `The value of "timeout" is out of range. It must be ${Number.isInteger(ms) ? ">= 0 && <= 9007199254740991" : "an integer"}. Received ${ms}`,
+          ),
+          { code: "ERR_OUT_OF_RANGE" },
+        );
+        return resolve({ code: 1, stdout: "", stderr: String(e) });
+      }
       const child = execFile(
         resolveCmd(cmd),
         args,
@@ -97,23 +104,27 @@ export const makeExec =
           maxBuffer: 8 * 1024 * 1024,
         },
         (e, stdout, stderr) => {
-          if (!e) return settle({ code: 0, stdout, stderr });
+          clearTimeout(timer);
+          if (!e) return resolve({ code: 0, stdout, stderr });
           const err = e as { code?: number | string };
-          settle({
+          resolve({
             code: typeof err.code === "number" ? err.code : 1,
             stdout: stdout ?? "",
-            stderr: stderr || String(e),
+            stderr: timedOut
+              ? `timed out after ${ms} ms`
+              : (stderr ?? String(e)),
           });
         },
       );
-      const timer = setTimeout(() => {
-        child.kill("SIGKILL");
-        settle({
-          code: 1,
-          stdout: "",
-          stderr: `timed out after ${ms} ms`,
-        });
-      }, ms);
+      const timer =
+        ms > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              child.kill("SIGKILL");
+            }, ms)
+          : undefined;
       // Stdin is always closed (with `input`, or empty): a command that reads it never waits.
       child.stdin?.on("error", () => {});
       child.stdin?.end(opts?.input ?? "");

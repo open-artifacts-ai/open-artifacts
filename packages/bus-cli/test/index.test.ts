@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { opencodeVersion } from "@oa/bus-adapter-opencode";
@@ -214,15 +214,19 @@ describe("exec", () => {
     writeFileSync(
       blocker,
       `import { connect } from "node:net";
+console.log("ready");
 const s = connect(${JSON.stringify(sock)});
 s.on("error", () => process.exit(0));
-s.on("close", () => process.exit(0));
+s.on("close", () => { console.log("bye"); process.exit(0); });
 s.on("data", () => {});
 `,
     );
     return {
       dir,
       blocker,
+      release: () => {
+        for (const s of held.splice(0)) s.destroy();
+      },
       /** Resolves once one more child has connected to the gate. */
       connected: () => new Promise<void>((r) => waiting.push(r)),
     };
@@ -235,6 +239,89 @@ s.on("data", () => {});
     });
     return state;
   };
+
+  /** Resolves once this process has read a chunk of a pipe or socket containing `text`. */
+  function readSeen(text: string): Promise<void> {
+    const emit = Socket.prototype.emit;
+    return new Promise((resolve) => {
+      const spy = vi
+        .spyOn(Socket.prototype, "emit")
+        .mockImplementation(function (
+          this: Socket,
+          ev: string,
+          ...a: unknown[]
+        ) {
+          const ret = Reflect.apply(emit, this, [ev, ...a]) as boolean;
+          if (ev === "data" && String(a[0]).includes(text)) {
+            spy.mockRestore();
+            resolve();
+          }
+          return ret;
+        } as never);
+      cleanup.push(() => spy.mockRestore());
+    });
+  }
+
+  const script = (g: { dir: string; blocker: string }) => {
+    const oc = join(g.dir, "opencode");
+    writeFileSync(
+      oc,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(g.blocker)}\n`,
+    );
+    chmodSync(oc, 0o755);
+    return oc;
+  };
+
+  it("a timeout of 0 means no timeout, like execFile", async () => {
+    const g = await gate();
+    const oc = script(g);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const connected = g.connected();
+    const run = makeExec(0)(oc, []);
+    const state = settled(run);
+    await connected;
+    await vi.advanceTimersByTimeAsync(2 ** 31);
+    expect(state.done).toBe(false);
+    g.release();
+    expect(await run).toMatchObject({ code: 0, stdout: "ready\nbye\n" });
+  });
+
+  it("an invalid timeout fails before spawning, like execFile", async () => {
+    const g = await gate();
+    const oc = script(g);
+    for (const bad of [
+      -1,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+    ]) {
+      const r = await makeExec(bad)(oc, []);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toMatch(/"timeout" is out of range/);
+    }
+    expect((await makeExec(300)(oc, [], { timeoutMs: -1 })).stderr).toMatch(
+      /out of range/,
+    );
+  });
+
+  it("returns the output collected before the timeout", async () => {
+    const g = await gate();
+    const oc = script(g);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const connected = g.connected();
+    const read = readSeen("ready");
+    const run = makeExec(300)(oc, []);
+    await connected;
+    await read;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await run).toMatchObject({
+      code: 1,
+      stdout: "ready\n",
+      stderr: "timed out after 300 ms",
+    });
+  });
 
   it("kills a hung command at its timeout, so a hung opencode reads as version unknown", async () => {
     const g = await gate();
