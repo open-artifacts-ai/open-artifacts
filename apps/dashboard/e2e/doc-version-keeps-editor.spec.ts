@@ -3,6 +3,7 @@
 // room (room full, view only) still sees the new text, with no chip.
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
+import { DEBOUNCE_MS } from "../src/viewer/useLiveVersions";
 import { roomPort, startRoom, stopRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
@@ -37,7 +38,21 @@ const chip = (page: Page) =>
 test("in the room: a newer version keeps the editor node and the caret", async ({
   page,
 }, info) => {
+  await page.clock.install();
   await open(page, info, ["--hello", "edit"]);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          (
+            window as unknown as {
+              __oaEvents: { connections(id: string): number };
+            }
+          ).__oaEvents.connections(id),
+        LANDING,
+      ),
+    )
+    .toBe(1);
   const prose = page.locator(".ProseMirror");
   await page.getByText("We ship the new landing page").click();
   await page.keyboard.press("Home");
@@ -50,7 +65,7 @@ test("in the room: a newer version keeps the editor node and the caret", async (
   const before = await caret();
   await prose.evaluate((n) => n.setAttribute("data-mark", "mine"));
   await newVersion(page);
-  await page.waitForTimeout(2_000);
+  await page.clock.runFor(DEBOUNCE_MS + 500);
   await expect(chip(page)).toHaveCount(0);
   await expect(page.locator(".ProseMirror")).toHaveAttribute(
     "data-mark",

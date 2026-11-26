@@ -61,18 +61,26 @@ async function agentSocket(token: string, namespace: string) {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("socket error")));
   });
-  const next = async (type: string): Promise<Frame> => {
-    const end = Date.now() + 15_000;
-    for (;;) {
-      const f = frames.find((x) => x.type === type);
-      if (f) return f;
-      if (Date.now() > end) throw new Error(`no ${type} frame`);
-      await new Promise<void>((r) => {
-        waiters.push(r);
-        setTimeout(r, 500);
-      });
-    }
-  };
+  const next = (pred: (f: Frame) => boolean, label: string): Promise<Frame> =>
+    new Promise<Frame>((resolve, reject) => {
+      const check = () => {
+        const f = frames.find(pred);
+        if (!f) return false;
+        clearTimeout(timer);
+        resolve(f);
+        return true;
+      };
+      const onMsg = () => {
+        if (!check()) waiters.push(onMsg);
+      };
+      const timer = setTimeout(() => {
+        const idx = waiters.indexOf(onMsg);
+        if (idx >= 0) waiters.splice(idx, 1);
+        reject(new Error(`no ${label} frame`));
+      }, 15_000);
+      if (!check()) waiters.push(onMsg);
+    });
+  let seq = 0;
   ws.send(
     JSON.stringify({
       v: 1,
@@ -83,7 +91,7 @@ async function agentSocket(token: string, namespace: string) {
       caps: ["roles", "rename", "follow", "notice_ack", "notice_meta"],
     }),
   );
-  await next("hello_ok");
+  await next((f) => f.type === "hello_ok", "hello_ok");
   ws.send(
     JSON.stringify({
       v: 1,
@@ -96,12 +104,18 @@ async function agentSocket(token: string, namespace: string) {
       global: false,
     }),
   );
-  const ok = await next("agent_ok");
+  const ok = await next((f) => f.type === "agent_ok", "agent_ok");
   return {
     name: String(ok.bus_name),
     /** Count server deliveries to this agent for this page. */
     seen: (pageId: string) =>
       arrivals.filter((n) => n.artifact_id === pageId).length,
+    /** Round-trip through the hub so any earlier delivery on this socket has arrived. */
+    flush: async () => {
+      const id = `fence-${++seq}`;
+      ws.send(JSON.stringify({ v: 1, id, type: "list", agent_ref: "r1" }));
+      await next((f) => f.type === "roster" && f.id === id, `roster(${id})`);
+    },
     close: () => ws.close(),
   };
 }
@@ -218,7 +232,7 @@ const woken = async (id: string, before: number) =>
     .poll(() => agentA.seen(id), { timeout: 15_000 })
     .toBeGreaterThan(before);
 const quiet = async (id: string, before: number) => {
-  await new Promise((r) => setTimeout(r, 3_000));
+  await agentA.flush();
   expect(agentA.seen(id)).toBe(before);
 };
 

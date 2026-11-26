@@ -81,11 +81,23 @@ for (const [w, h] of [[390, 844]] as const)
             "position:absolute;left:0;top:100%;height:300px;width:10px";
           document.querySelector(".oa-vbody")?.append(d);
         });
-      await page
-        .getByRole("button", { name: /Show \d+ earlier repl/ })
-        .first()
-        .click();
-      await page.waitForTimeout(700);
+      const thread = page
+        .locator("[data-thread]")
+        .filter({
+          has: page.getByRole("button", { name: /Show \d+ earlier repl/ }),
+        })
+        .first();
+      const expand = thread.getByRole("button", {
+        name: /Show \d+ earlier repl/,
+      });
+      await expand.click();
+      await expect(expand).toHaveCount(0);
+      await page.evaluate(
+        () =>
+          new Promise<void>((r) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => r())),
+          ),
+      );
       const m = await doc(page);
       expect(m.scrollHeight).toBe(m.innerHeight);
       expect(m.scrollY).toBe(0);
@@ -101,11 +113,23 @@ for (const [w, h] of [[390, 844]] as const)
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`/a/${ID}?mock=agents`);
     await page.getByRole("button", { name: /^Comments/ }).click();
-    await page
-      .getByRole("button", { name: /^Show 1\d earlier replies$/ })
-      .first()
-      .click();
-    await page.waitForTimeout(500);
+    const thread = page
+      .locator("[data-thread]")
+      .filter({
+        has: page.getByRole("button", { name: /^Show 1\d earlier replies$/ }),
+      })
+      .first();
+    const expand = thread.getByRole("button", {
+      name: /^Show 1\d earlier replies$/,
+    });
+    await expand.click();
+    await expect(expand).toHaveCount(0);
+    await page.evaluate(
+      () =>
+        new Promise<void>((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => r())),
+        ),
+    );
     const m = await doc(page);
     expect(m.scrollHeight).toBe(m.innerHeight);
     await page.evaluate(() => window.scrollBy(0, 500));

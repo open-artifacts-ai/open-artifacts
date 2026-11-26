@@ -14,8 +14,11 @@ const QUOTE = "a quote the reader selected";
 async function shot(page: Page, name: string) {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: `${OUT}/${name}.png`,
+    animations: "disabled",
+  });
 }
 
 /** What the frame's runtime sends. */
@@ -50,10 +53,16 @@ for (const w of [1280]) {
       test.beforeEach(async ({ page }) => {
         await page.setViewportSize({ width: w, height: w < 600 ? 844 : 800 });
         await page.goto(`/a/${id}?mock=agents`);
-        await expect(page.locator("iframe").first()).toBeVisible();
-        await page.waitForTimeout(500);
-        await select(page);
-        await expect(box(page)).toBeVisible();
+        const iframe = page.locator("iframe").first();
+        await expect(iframe).toBeVisible();
+        await expect(iframe).toHaveAttribute("src", /#oa=/);
+        await expect
+          .poll(() => page.frames().some((f) => f !== page.mainFrame()))
+          .toBe(true);
+        await expect(async () => {
+          await select(page);
+          await expect(box(page)).toBeVisible({ timeout: 200 });
+        }).toPass();
         await expect(card(page)).toBeVisible();
         await shot(page, `${kind}-${w}-1-selected`);
       });

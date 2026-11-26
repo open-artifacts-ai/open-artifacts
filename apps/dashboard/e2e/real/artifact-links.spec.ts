@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from "@playwright/test";
+import { NAV_INTERVAL_MS } from "../../src/viewer/navigate";
 import {
   APP,
   artifactFrame,
@@ -65,6 +66,7 @@ test("javascript:, data:, app pages and the content host are refused on a real c
   page.on("dialog", (d) => {
     throw new Error(`unexpected dialog: ${d.message()}`);
   });
+  await page.clock.install();
   await page.goto(`/a/${a.id}`);
   await ready(page);
   const nonce = await nonceOf(page);
@@ -92,7 +94,8 @@ test("javascript:, data:, app pages and the content host are refused on a real c
       );
     // A real click: the shell has user activation, and still refuses.
     await artifactFrame(page).locator("#post").click();
-    await page.waitForTimeout(1_100); // past the 1/s limit
+    // Advance past the 1/s rate limit and the 5 s refused-link toast lock.
+    await page.clock.runFor(Math.max(NAV_INTERVAL_MS, 5_000) + 100);
   }
   expect(page.url()).toBe(`${APP}/a/${a.id}`);
   await expect(page.getByText(/^Open link to/)).toHaveCount(0);
@@ -104,12 +107,11 @@ test("http asks with a not-secure warning; the port shows when not the default",
 }, info) => {
   test.slow();
   const a = await publishLinks(member.pat, {
-    content: `${LINKS}<script>setTimeout(() => parent.postMessage({ oa: 1, type: "open", url: "http://plain.example:8080/x", nonce: window.__oaShellNonce.n }, "*"), 12000)</script>`,
+    content: `${LINKS}<script>window.openArtifacts.ready.then(() => parent.postMessage({ oa: 1, type: "open", url: "http://plain.example:8080/x", nonce: window.__oaShellNonce.n }, "*"))</script>`,
   });
   await page.setViewportSize({ width: 390, height: 800 });
   await page.goto(`/a/${a.id}`);
   await expect(artifactFrame(page).locator("#who")).toHaveText("links");
-  await page.waitForTimeout(13_000);
   await expect(
     page.getByText("Open link to plain.example:8080?"),
   ).toBeVisible();
@@ -119,10 +121,9 @@ test("http asks with a not-secure warning; the port shows when not the default",
   if (info.project.name === "chromium")
     for (const scheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme: scheme });
-      // Let the theme's colour transitions finish.
-      await page.waitForTimeout(400);
       await page.screenshot({
         path: info.outputPath(`open-link-http-390-${scheme}.png`),
+        animations: "disabled",
       });
     }
 });

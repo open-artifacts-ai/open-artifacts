@@ -61,6 +61,7 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
   });
   const ctx = await browser.newContext({ baseURL: APP });
   const bob = await ctx.newPage();
+  await bob.clock.install();
   await loginAs(bob, bobEmail, "guest");
   await bob.goto(`/a/${id}?panel=open&tab=versions`);
   await expect(artifactFrame(bob).locator("#out")).toHaveText("subscribed");
@@ -84,7 +85,8 @@ test("a revoked share keeps the open copy, says so, and stops live data", async 
   bob.on("websocket", (w) => {
     if (w.url().includes(`/artifacts/${id}`)) after.push(w.url());
   });
-  await bob.waitForTimeout(2_000);
+  // Advance past the events reconnect backoff (1 s base) to prove nothing retries.
+  await bob.clock.runFor(2_000);
   expect(after).toEqual([]);
   await expect(
     bob.getByRole("heading", { name: "Page not found" }),

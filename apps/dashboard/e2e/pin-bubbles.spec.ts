@@ -78,9 +78,12 @@ async function open(
 async function shot(page: Page, name: string) {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
-  await page.waitForTimeout(300);
+  await page.evaluate(() => document.fonts.ready);
   const sfx = process.env.PINS_THEME === "dark" ? "-dark" : "";
-  await page.screenshot({ path: `${OUT}/${name}${sfx}.png` });
+  await page.screenshot({
+    path: `${OUT}/${name}${sfx}.png`,
+    animations: "disabled",
+  });
 }
 
 test.beforeAll(() => {

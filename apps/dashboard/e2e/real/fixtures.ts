@@ -4,8 +4,8 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
+  createWriteStream,
   mkdtempSync,
-  openSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -186,7 +186,7 @@ export async function startServer(): Promise<() => Promise<void>> {
     // worktree's server may have taken the port meanwhile.
     if (await portBusy(PORT)) throw inUse(PORT);
     const logPath = join(dir, "wrangler.log");
-    const log = openSync(logPath, "a");
+    const logStream = createWriteStream(logPath, { flags: "a" });
     child = spawn(
       WRANGLER,
       [
@@ -203,7 +203,7 @@ export async function startServer(): Promise<() => Promise<void>> {
       ],
       {
         cwd: SERVER,
-        stdio: ["ignore", log, log],
+        stdio: ["ignore", "pipe", "pipe"],
         detached: true,
         env: devEnv(),
       },
@@ -211,22 +211,46 @@ export async function startServer(): Promise<() => Promise<void>> {
     const proc = child;
     proc.on("exit", () => {
       exited = true;
+      logStream.end();
     });
-    // Ours, not whatever else answers on PORT: our wrangler is alive and has
-    // logged that it bound the port, and only then does /healthz count.
-    const ready = () =>
-      readFileSync(logPath, "utf8").includes(
-        `Ready on http://127.0.0.1:${PORT}`,
-      );
-    const deadline = Date.now() + 120_000;
-    for (;;) {
-      if (exited || Date.now() > deadline) {
-        const out = readFileSync(logPath, "utf8");
-        throw new Error(`fixtures: wrangler dev did not start\n${out}`);
-      }
-      if (ready() && (await healthy()) && !exited) break;
-      await new Promise((r) => setTimeout(r, 250));
-    }
+    // Ours, not whatever else answers on PORT: wait for our wrangler's own
+    // "Ready on ..." log line, then confirm /healthz answers.
+    const marker = `Ready on http://127.0.0.1:${PORT}`;
+    let output = "";
+    await new Promise<void>((resolve, reject) => {
+      const deadline = setTimeout(() => {
+        cleanup();
+        reject(new Error(`fixtures: wrangler dev did not start\n${output}`));
+      }, 120_000);
+      const onExit = () => {
+        cleanup();
+        reject(new Error(`fixtures: wrangler dev did not start\n${output}`));
+      };
+      const onChunk = (chunk: Buffer) => {
+        const text = chunk.toString("utf8");
+        logStream.write(chunk);
+        output += text;
+        if (output.includes(marker)) {
+          cleanup();
+          resolve();
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(deadline);
+        proc.off("exit", onExit);
+        proc.stdout?.off("data", onChunk);
+        proc.stderr?.off("data", onChunk);
+        // Keep draining to the log file after startup.
+        proc.stdout?.pipe(logStream, { end: false });
+        proc.stderr?.pipe(logStream, { end: false });
+      };
+      proc.once("exit", onExit);
+      proc.stdout?.on("data", onChunk);
+      proc.stderr?.on("data", onChunk);
+    });
+    await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
+    if (exited)
+      throw new Error(`fixtures: wrangler dev exited after ready\n${output}`);
     return async () => {
       const gone = new Promise<boolean>((r) =>
         exited ? r(true) : proc.once("exit", () => r(true)),

@@ -20,6 +20,7 @@
 // allow-listed route above).
 
 // One list of socket codes, shared with the red-line suite (net-codes.ts).
+import { expect } from "@playwright/test";
 import { isNetworkError, noResponseCode } from "./net-codes";
 
 export { isNetworkError, noResponseCode };
@@ -47,7 +48,22 @@ export class InfraError extends Error {
  */
 export const REPEATABLE_WRITE_ROUTES: readonly string[] = ["/__test/session"];
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const classify = (
+  e: unknown,
+  m: string,
+  route: string | undefined,
+  i: number,
+) => {
+  // Out of tries, or a write: a socket failure is infra, named. An HTTP
+  // response never gets here; a timeout or abort keeps its own error.
+  const code = noResponseCode(e);
+  if (!code) return e;
+  const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
+  return new InfraError(
+    `no_response ${code} ${m} ${route ?? "?"} (${tries})`,
+    e,
+  );
+};
 
 /**
  * Sends a request through `send`, which builds a fresh one (and its timeout)
@@ -74,26 +90,36 @@ export async function sendRead(
       o.route !== undefined &&
       REPEATABLE_WRITE_ROUTES.includes(o.route));
   const backoff = retryable ? (o.backoff ?? READ_BACKOFF_MS) : [];
-  const wait = o.wait ?? sleep;
-  for (let i = 0; ; i++) {
-    try {
-      return await send();
-    } catch (e) {
-      const ms = backoff[i];
-      if (ms === undefined || !isNetworkError(e)) {
-        // Out of tries, or a write: a socket failure is infra, named. An HTTP
-        // response never gets here; a timeout or abort keeps its own error.
-        const code = noResponseCode(e);
-        if (!code) throw e;
-        const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
-        throw new InfraError(
-          `no_response ${code} ${m} ${o.route ?? "?"} (${tries})`,
-          e,
-        );
+  if (o.wait || backoff.length === 0) {
+    for (let i = 0; ; i++) {
+      try {
+        return await send();
+      } catch (e) {
+        const ms = backoff[i];
+        if (ms === undefined || !isNetworkError(e))
+          throw classify(e, m, o.route, i);
+        await o.wait?.(ms);
       }
-      await wait(ms);
     }
   }
+  let attempt = 0;
+  let outcome:
+    | { ok: true; res: Response }
+    | { ok: false; err: unknown }
+    | undefined;
+  await expect(async () => {
+    try {
+      outcome = { ok: true, res: await send() };
+    } catch (e) {
+      if (attempt < backoff.length && isNetworkError(e)) {
+        attempt++;
+        throw e;
+      }
+      outcome = { ok: false, err: classify(e, m, o.route, attempt) };
+    }
+  }).toPass({ intervals: [...backoff], timeout: 0 });
+  if (!outcome?.ok) throw outcome?.err;
+  return outcome.res;
 }
 
 /**
