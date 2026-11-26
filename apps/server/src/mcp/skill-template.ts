@@ -228,6 +228,7 @@ ${renderSections(plan, (t) => `## ${t}\n`)}
 
 - ${LINK_RULE}
 - Let html pages use the full width on large screens (no narrow fixed max-width for tables and dashboards), and keep them readable on a phone.
+- Read pages with \`get_artifact\` using \`view: "text"\`, \`find\` or \`sinceVersion\` unless you are editing the HTML.
 
 ## Public interactive artifacts
 
