@@ -3997,12 +3997,12 @@ export class BusHub extends DurableObject<Env> {
     hub.#clock = ms;
   }
 
-  /** #3132: a gate an unfollow's D1 delete waits on; null in production. */
-  #unfollowGate: Promise<void> | null = null;
+  /** #3132: a gate the queued follow work (re-keys, unfollows) waits on; null in production. */
+  #followGate: Promise<void> | null = null;
 
-  /** Tests only, like setTestClock: holds unfollows' D1 deletes until `gate` settles. */
-  static setTestUnfollowGate(hub: BusHub, gate: Promise<void> | null): void {
-    hub.#unfollowGate = gate;
+  /** Tests only, like setTestClock: holds queued follow work until `gate` settles. */
+  static setTestFollowGate(hub: BusHub, gate: Promise<void> | null): void {
+    hub.#followGate = gate;
   }
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -6719,11 +6719,13 @@ export class BusHub extends DurableObject<Env> {
     if (userId === null) return undefined;
     const from = { namespace: before.namespace, name: before.name };
     const to = { namespace: after.namespace, name: after.name };
+    const gate = this.#followGate;
     const run = async (): Promise<void> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       // Counted like the index calls, so a test's afterAll waits for the D1 work.
       this.indexInFlight++;
       try {
+        if (gate) await gate;
         const timeout = new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("follow re-key timed out")),
@@ -6789,17 +6791,20 @@ export class BusHub extends DurableObject<Env> {
     to: { namespace: string; name: string },
     agent: AgentRow,
     ref: string,
-  ): Promise<{ removed: boolean }> {
+  ): Promise<{ removed: boolean } | { error: unknown }> {
     this.#endRolePart(agent, ref);
-    const gate = this.#unfollowGate;
+    const gate = this.#followGate;
+    // Never rejects: a refusal (not_found) comes back as `error`, so a queue
+    // link waiting for its answer leaves nothing unhandled.
     const p = this.#rekeyed.then(async () => {
-      if (gate) await gate;
-      return unfollow(this.env, userId, to, ref);
+      try {
+        if (gate) await gate;
+        return await unfollow(this.env, userId, to, ref);
+      } catch (error) {
+        return { error };
+      }
     });
-    this.#rekeyed = p.then(
-      () => undefined,
-      () => undefined,
-    );
+    this.#rekeyed = p.then(() => undefined);
     return p;
   }
 
@@ -6855,8 +6860,13 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     const to = { namespace: agent.namespace, name: agent.name };
-    // #3132: before anything awaits, so the role can't move away first.
-    if (f.type === "unfollow") this.#endRolePart(agent, f.artifact);
+    // #3132: on receipt, before anything awaits: the role's part ends while
+    // the role is still where the agent held it, and the D1 delete takes its
+    // place in the follow queue ahead of any later move.
+    const unfollowed =
+      f.type === "unfollow"
+        ? this.#unfollowNow(userId, to, agent, f.artifact)
+        : null;
     const wire = (e: {
       artifactId: string;
       url: string;
@@ -6879,15 +6889,17 @@ export class BusHub extends DurableObject<Env> {
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
           : f.type === "unfollow"
-            ? this.#unfollowNow(userId, to, agent, f.artifact).then(
-                (r) =>
-                  ({
-                    v: 1,
-                    id: f.id,
-                    type: "unfollowed",
-                    removed: r.removed,
-                  }) as const,
-              )
+            ? (
+                unfollowed as Promise<{ removed: boolean } | { error: unknown }>
+              ).then((r) => {
+                if ("error" in r) throw r.error;
+                return {
+                  v: 1,
+                  id: f.id,
+                  type: "unfollowed",
+                  removed: r.removed,
+                } as const;
+              })
             : following(this.env, userId, to).then(
                 (l) =>
                   ({
