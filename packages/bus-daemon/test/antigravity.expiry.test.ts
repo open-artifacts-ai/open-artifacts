@@ -10,6 +10,7 @@ import { createDeliver, type Mail } from "../src/deliver.ts";
 import {
   AGY_EXPIRY_MARGIN_MS,
   AgyTransport,
+  NOTICE_FALLBACK_MS,
 } from "../src/transports/antigravity.ts";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -279,5 +280,77 @@ describe("AgyTransport expiry", () => {
     expect(second).toEqual({ ok: false, reason: "expired" });
     expect(pushes).toHaveLength(0);
     expect(transport.held(KEY)).toBe(0);
+  });
+
+  it("a notice held with expires_at = now + 6 h, watcher up after 6 h + 1 ms: nothing pushed, resolves expired", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+
+    const transport = new AgyTransport();
+    const id = "n".repeat(15) + "1";
+    const notice: Mail = {
+      ...makeMail(id, BASE_TIME + NOTICE_FALLBACK_MS),
+      from_name: "open-artifacts",
+    };
+    const done = transport.deliver(makeAgent(), notice);
+    expect(transport.held(KEY)).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(NOTICE_FALLBACK_MS + 1);
+    const pushes: DaemonFrame[] = [];
+    transport.up(KEY, (f) => {
+      pushes.push(f);
+      return true;
+    });
+
+    expect(await done).toEqual({ ok: false, reason: "expired" });
+    expect(pushes).toHaveLength(0);
+    expect(transport.held()).toBe(0);
+  });
+
+  it("a notice with no expires_at (older hub), watcher up after 6 h + 1 ms: nothing pushed", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+
+    const transport = new AgyTransport();
+    const id = "n".repeat(15) + "2";
+    const notice: Mail = {
+      ...makeMail(id),
+      from_name: "open-artifacts",
+    };
+    const done = transport.deliver(makeAgent(), notice);
+    expect(transport.held(KEY)).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(NOTICE_FALLBACK_MS + 1);
+    const pushes: DaemonFrame[] = [];
+    transport.up(KEY, (f) => {
+      pushes.push(f);
+      return true;
+    });
+
+    expect(await done).toEqual({ ok: false, reason: "expired" });
+    expect(pushes).toHaveLength(0);
+    expect(transport.held()).toBe(0);
+  });
+
+  it("a notice with expires_at 6 h ahead and a watcher up at once: delivered", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE_TIME);
+
+    const transport = new AgyTransport();
+    const pushes: DaemonFrame[] = [];
+    const w = transport.up(KEY, (f) => {
+      pushes.push(f);
+      return true;
+    });
+
+    const id = "n".repeat(15) + "3";
+    const notice: Mail = {
+      ...makeMail(id, BASE_TIME + NOTICE_FALLBACK_MS),
+      from_name: "open-artifacts",
+    };
+    const done = transport.deliver(makeAgent(), notice);
+    expect(pushes).toHaveLength(1);
+    expect(transport.answered(id, w, "ok")).toBe(true);
+    expect(await done).toEqual({ ok: true });
   });
 });

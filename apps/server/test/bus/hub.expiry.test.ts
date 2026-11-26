@@ -14,8 +14,14 @@ import {
   MAILBOX_RETAIN_MS,
   type ServerFrame,
 } from "@oa/bus-protocol";
+import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { BusHub, HELD_BYTES_CAP, SWEEP_BATCH } from "../../src/bus/hub.js";
+import {
+  BusHub,
+  HELD_BYTES_CAP,
+  NOTICE_ACK_TTL_MS,
+  SWEEP_BATCH,
+} from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
   type Daemon,
@@ -1273,5 +1279,55 @@ describe("deliver.expires_at (BUS_CAPS.mailExpiry)", () => {
     withoutCap.d.close();
     tWith2.d.close();
     tWithout2.d.close();
+  });
+
+  it("sets expires_at on notice deliver frames to clock + NOTICE_ACK_TTL_MS only when mail_expiry is negotiated", async () => {
+    const sendTime = Date.now() + 60_000;
+    await setClock(sendTime);
+    const expectedIso = new Date(sendTime + NOTICE_ACK_TTL_MS).toISOString();
+
+    const tmWith = await machine("NoticeWithCap");
+    const tmWithout = await machine("NoticeWithoutCap");
+    const withCap = await readyWithCaps(tmWith.token, [
+      BUS_CAPS.follow,
+      BUS_CAPS.mailExpiry,
+    ]);
+    const withoutCap = await readyWithCaps(tmWithout.token, [BUS_CAPS.follow]);
+
+    const n = ns("notice-expiry");
+    const recvWith = uniq("NoticeWith");
+    const recvWithout = uniq("NoticeWithout");
+    await agent(withCap.d, "nw", recvWith, n);
+    await agent(withoutCap.d, "nwo", recvWithout, n);
+
+    const makeNotice = (name: string): BusNotice => {
+      const artifactId = uniq("art");
+      return {
+        id: newId(),
+        kind: "shared",
+        from: NOTICE_SENDER,
+        artifactId,
+        version: 1,
+        url: `https://app.test/a/${artifactId}`,
+        to: { namespace: n, name },
+        text: `Shared artifact ${artifactId}`,
+        coalesceKey: artifactId,
+      };
+    };
+
+    const hub = await stub();
+    expect(await hub.deliverNotice(makeNotice(recvWith))).toBe("delivered");
+    const d1 = await waitFor(withCap.d, "deliver");
+    expect(d1.from_name).toBe(NOTICE_SENDER);
+    expect(d1.expires_at).toBe(expectedIso);
+
+    expect(await hub.deliverNotice(makeNotice(recvWithout))).toBe("delivered");
+    const d2 = await waitFor(withoutCap.d, "deliver");
+    expect(d2.from_name).toBe(NOTICE_SENDER);
+    expect(d2.expires_at).toBeUndefined();
+
+    allParse(withCap.d, withoutCap.d);
+    withCap.d.close();
+    withoutCap.d.close();
   });
 });

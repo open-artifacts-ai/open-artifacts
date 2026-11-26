@@ -80,6 +80,11 @@ export const AGY_ANSWER_TIMEOUT_MS = 2 * AGY_SEND_TIMEOUT_MS + 10_000;
  * minute of clock skew lands before the hub expires the receipt.
  */
 export const AGY_EXPIRY_MARGIN_MS = AGY_ANSWER_TIMEOUT_MS + 60_000;
+/** A notice from an older hub with no expires_at is held at most this long from first seen: the hub's notice ack lives 6 h. */
+export const NOTICE_FALLBACK_MS = 6 * 60 * 60 * 1000;
+
+// Matches NOTICE_SENDER in @oa/shared (not a bus-daemon dependency).
+const NOTICE_SENDER = "open-artifacts";
 
 const MAX_TIMEOUT_MS = 0x7fffffff;
 
@@ -204,7 +209,11 @@ export class AgyTransport {
         }
         this.#firstSeen.set(mail.msg_id, first);
       }
-      deadline = first + MAILBOX_RETAIN_MS;
+      deadline =
+        first +
+        (mail.from_name === NOTICE_SENDER
+          ? NOTICE_FALLBACK_MS
+          : MAILBOX_RETAIN_MS);
     }
     const cutoff = deadline - AGY_EXPIRY_MARGIN_MS;
     const key = { pid: agent.pid, procStart };

@@ -3967,6 +3967,7 @@ function noticeFrame(
   agent: AgentRow,
   text: string,
   meta?: NoticeMeta,
+  expiresAt?: number,
 ): ServerFrame {
   return {
     v: 1,
@@ -3978,6 +3979,9 @@ function noticeFrame(
     namespace: agent.namespace,
     body: text,
     ...(meta ? { meta } : {}),
+    ...(expiresAt !== undefined
+      ? { expires_at: new Date(expiresAt).toISOString() }
+      : {}),
   };
 }
 
@@ -8129,10 +8133,12 @@ export class BusHub extends DurableObject<Env> {
     ack: string | null,
     metaJson: string | null,
   ): boolean {
+    const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
     const frame = noticeFrame(
       agent,
       text,
       noticeMetaGated(ws) ? parseNoticeMeta(metaJson) : undefined,
+      mailExpiryGated(ws) ? expiresAt : undefined,
     );
     if (!trySendFrame(ws, frame)) return false;
     if (ack !== null && !noticeAckGated(ws)) {
@@ -8152,7 +8158,6 @@ export class BusHub extends DurableObject<Env> {
     }
     if (ack !== null && noticeAckGated(ws) && frame.type === "deliver") {
       const sql = this.ctx.storage.sql;
-      const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
       sql.exec(
         "insert or replace into notice_acks (msg_id, machine_id, ack, expires_at) values (?, ?, ?, ?)",
         frame.msg_id,
