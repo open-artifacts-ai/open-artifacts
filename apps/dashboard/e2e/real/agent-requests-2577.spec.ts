@@ -19,7 +19,11 @@ import {
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
 import { checkMemberComments } from "../staging/happy-path/member-comments";
-import { approveMachine, freshSignInUrl } from "./bus-confirm";
+import {
+  approveMachine,
+  freshSignInUrl,
+  spendDeviceCodes,
+} from "./bus-confirm";
 import {
   APP,
   createToken,
@@ -29,6 +33,7 @@ import {
   test,
   uniq,
 } from "./fixtures";
+import { findFrame } from "./frame-wait";
 import { mcpWithToken } from "./mcp-client";
 
 type Frame = Record<string, unknown>;
@@ -62,24 +67,7 @@ async function agentSocket(token: string, namespace: string) {
     ws.addEventListener("error", () => reject(new Error("socket error")));
   });
   const next = (pred: (f: Frame) => boolean, label: string): Promise<Frame> =>
-    new Promise<Frame>((resolve, reject) => {
-      const check = () => {
-        const f = frames.find(pred);
-        if (!f) return false;
-        clearTimeout(timer);
-        resolve(f);
-        return true;
-      };
-      const onMsg = () => {
-        if (!check()) waiters.push(onMsg);
-      };
-      const timer = setTimeout(() => {
-        const idx = waiters.indexOf(onMsg);
-        if (idx >= 0) waiters.splice(idx, 1);
-        reject(new Error(`no ${label} frame`));
-      }, 15_000);
-      if (!check()) waiters.push(onMsg);
-    });
+    findFrame(frames, waiters, pred, `a ${label} frame`);
   let seq = 0;
   ws.send(
     JSON.stringify({
@@ -281,6 +269,7 @@ test.beforeEach(async ({ browser }) => {
 });
 
 test.afterEach(async () => {
+  await spendDeviceCodes();
   agentA?.close();
   agentB?.close();
   await Promise.all([pa, pb, pg].map((p) => p?.context().close()));

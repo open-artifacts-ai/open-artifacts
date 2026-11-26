@@ -7,6 +7,7 @@
 // is BusHub.setTestClock, ahead of real time, reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
+  BUS_CAPS,
   type ClientFrame,
   MAILBOX_PENDING_CAP,
   type ServerFrame,
@@ -54,9 +55,12 @@ const base = () => Date.now() + 3_600_000 + ++seq * 1000;
 
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 
-async function connect(token: string): Promise<Daemon> {
+async function connect(token: string, caps?: string[]): Promise<Daemon> {
   const d = await daemon(token);
-  d.send(hello(id("h")));
+  d.send({
+    ...hello(id("h")),
+    ...(caps === undefined ? {} : { caps }),
+  } as ClientFrame);
   await waitFor(d, "hello_ok");
   return d;
 }
@@ -150,6 +154,30 @@ const pendingOf = (ref: string) =>
     "select r.id as id from receipts r join agents a on a.id = r.to_agent where a.native_ref = ? and r.state = 'pending' order by r.rowid",
     ref,
   ).then((r) => r.map((x) => x.id));
+
+const receiptOf = (msgId: string) =>
+  sqlOf<{ state: string; reason: string | null }>(
+    "select state, reason from receipts where id = ?",
+    msgId,
+  ).then((r) => r[0]);
+
+const waitExpired = async (d: Daemon, msgIds: string[]) => {
+  await eventually(() => {
+    const updates = framesSeen(d).flatMap((f) =>
+      f.type === "receipt_update" ? [f] : [],
+    );
+    for (const mid of msgIds) {
+      expect(
+        updates.find(
+          (u) =>
+            u.msg_id === mid &&
+            u.state === "expired" &&
+            u.reason === "recipient_closed",
+        ),
+      ).toBeDefined();
+    }
+  });
+};
 
 /** One machine `d` (the restarting harness) with a closed agent `old` away under `name`, and a sender on another machine. */
 async function scene(opts: { kind?: string; global?: boolean } = {}) {
@@ -729,5 +757,215 @@ describe("a restarted session takes back its own name (#1742)", () => {
       await sqlOf("select 1 from agents where lower(name) = 'tidy 3-2'"),
     ).toEqual([]);
     shut(s);
+  });
+});
+
+describe("held mail stays with its session (#3208)", () => {
+  it("an agy row that closes without a handover keeps its mail: a new agy session gets agy-2 and none of it, and the row's own reopen receives it", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [BUS_CAPS.mailbox]);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
+    const oldRef = uniq("agy-starting-1");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m1 = await send(snd, "snd", "agy", "first");
+    const m2 = await send(snd, "snd", "agy", "second");
+    await close(d, oldRef);
+    const newRef = uniq("agy-starting-2");
+    const got = await reg(d, newRef, "agy", n, { kind: "antigravity" });
+    expect(got).toBe("agy-2");
+    expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
+    expect(await pendingOf(newRef)).toEqual([]);
+    expect(await pendingOf(oldRef)).toEqual([m1.msg_id, m2.msg_id]);
+    expect((await receiptOf(m1.msg_id))?.state).toBe("pending");
+    await reg(d, oldRef, "agy", n, { kind: "antigravity" });
+    await eventually(() => {
+      const ids = delivers(d)
+        .filter((x) => x.to_ref === oldRef)
+        .map((x) => x.msg_id);
+      expect(ids).toContain(m1.msg_id);
+      expect(ids).toContain(m2.msg_id);
+    });
+    d.close();
+    snd.close();
+  });
+
+  it("a chosen-name restart with no handover: the namesake takes the name and its held mail (#1742 unchanged)", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [BUS_CAPS.mailbox]);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
+    const name = uniq("Lead");
+    const oldRef = uniq("codex-1");
+    expect(await reg(d, oldRef, name, n, { kind: "codex" })).toBe(name);
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", name, "for the old lead");
+    await close(d, oldRef);
+    const newRef = uniq("codex-2");
+    expect(await reg(d, newRef, name, n, { kind: "codex" })).toBe(name);
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === newRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    expect(await pendingOf(oldRef)).toEqual([]);
+    expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
+    d.close();
+    snd.close();
+  });
+
+  it("an explicit handover (replaces) keeps the mail and the successor receives it", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [BUS_CAPS.mailbox]);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
+    const oldRef = uniq("agy-starting-3");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", "agy", "during startup");
+    const newRef = uniq("conv-uuid-3");
+    d.send({
+      ...up(id("u"), newRef, "agy", n),
+      kind: "antigravity",
+      replaces: oldRef,
+    } as ClientFrame);
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe("agy");
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === newRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
+    d.close();
+    snd.close();
+  });
+
+  it("Claude /clear still carries mail", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [BUS_CAPS.mailbox]);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
+    const name = uniq("Lead");
+    const oldRef = uniq("claude-1");
+    expect(await reg(d, oldRef, name, n, { kind: "claude-code" })).toBe(name);
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", name, "before clear");
+    const newRef = uniq("claude-2");
+    d.send({
+      ...up(id("u"), newRef, name, n),
+      kind: "claude-code",
+      replaces: oldRef,
+    } as ClientFrame);
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === newRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
+    d.close();
+    snd.close();
+  });
+
+  it("a starting agy row whose process ended (gone): its mail expires at once as recipient_closed, the sender is told, and a new agy session gets none", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const snd = await connect(sm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const oldRef = uniq("agy-starting-9");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", "agy", "during startup");
+    d.send({
+      v: 1,
+      id: id("c"),
+      type: "sessions",
+      open: [],
+      closed: [oldRef],
+      gone: [oldRef],
+    });
+    await waitExpired(snd, [m.msg_id]);
+    expect(await receiptOf(m.msg_id)).toEqual({
+      state: "expired",
+      reason: "recipient_closed",
+    });
+    expect(await awayRows("agy")).not.toContain(oldRef);
+    const newRef = uniq("agy-starting-10");
+    expect(await reg(d, newRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
+    expect(await pendingOf(newRef)).toEqual([]);
+    d.close();
+    snd.close();
+  });
+
+  it("a plain close (no gone) keeps the mail for the reopen", async () => {
+    await setClock(base());
+    const n = ns("rc");
+    const dm = await machine("Work");
+    const sm = await machine("Snd");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const snd = await connect(sm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const oldRef = uniq("agy-starting-11");
+    expect(await reg(d, oldRef, "agy", n, { kind: "antigravity" })).toBe("agy");
+    await reg(snd, "snd", uniq("Snd"), n);
+    const m = await send(snd, "snd", "agy", "keep for reopen");
+    await close(d, oldRef);
+    expect((await receiptOf(m.msg_id))?.state).toBe("pending");
+    await reg(d, oldRef, "agy", n, { kind: "antigravity" });
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === oldRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    d.close();
+    snd.close();
+  });
+
+  it("gone that is not in closed is refused", async () => {
+    await setClock(base());
+    const dm = await machine("Work");
+    const d = await connect(dm.token, [
+      BUS_CAPS.mailbox,
+      BUS_CAPS.sessionsGone,
+    ]);
+    const fid = id("c");
+    d.send({
+      v: 1,
+      id: fid,
+      type: "sessions",
+      open: [],
+      closed: [],
+      gone: [uniq("agy-starting-12")],
+    } as ClientFrame);
+    const err = await waitFor(d, "error");
+    expect(err).toMatchObject({ id: fid, code: "bad_frame" });
+    d.close();
   });
 });
