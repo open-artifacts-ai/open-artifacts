@@ -54,7 +54,8 @@ describe("createDeliver", () => {
       finish();
       await expect(first).resolves.toBeUndefined();
       await expect(joined).resolves.toBeUndefined();
-      await new Promise((r) => setTimeout(r, 20));
+      // An unhandled rejection surfaces within a turn of the event loop.
+      await new Promise((r) => setImmediate(r));
       expect(leaked).not.toHaveBeenCalled();
       expect(log).toHaveBeenCalledWith(expect.stringMatching(/socket gone/));
     } finally {

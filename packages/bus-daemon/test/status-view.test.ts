@@ -82,7 +82,7 @@ describe("self with row", () => {
     const before = h.of("list").length;
     const r = await a.request({ type: "self" });
     expect(r.type === "agent" && r.agent).not.toHaveProperty("status");
-    await new Promise((res) => setTimeout(res, 50));
+    await h.quiet();
     expect(h.of("list").length).toBe(before);
   });
 
