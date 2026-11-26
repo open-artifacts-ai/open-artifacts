@@ -113,7 +113,7 @@ async function agentSocket(token: string, namespace: string) {
     /** Round-trip through the hub so any earlier delivery on this socket has arrived. */
     flush: async () => {
       const id = `fence-${++seq}`;
-      ws.send(JSON.stringify({ v: 1, id, type: "list", agent_ref: "r1" }));
+      ws.send(JSON.stringify({ v: 1, id, type: "list", from_ref: "r1" }));
       await next((f) => f.type === "roster" && f.id === id, `roster(${id})`);
     },
     close: () => ws.close(),
@@ -226,11 +226,20 @@ const setSwitch = async (on: boolean) => {
   });
   expect(r.ok(), await r.text()).toBe(true);
 };
-/** Waits for A's agent to be sent something about the page; or, with `none`, that nothing comes. */
+/** Waits for A's agent to be sent something about the page. */
 const woken = async (id: string, before: number) =>
   expect
     .poll(() => agentA.seen(id), { timeout: 15_000 })
     .toBeGreaterThan(before);
+/**
+ * Nothing about the page reached A's agent. The server's window for this is
+ * not a time: a mention that A's agent is not to hear is dropped from the
+ * delivery list (held, services/comments.ts) or refused (403 for a guest or a
+ * switched-off person) before the POST answers, so no send is ever started.
+ * The caller has already seen that outcome on the response or the held list
+ * (the end event); this then fences the socket, so anything sent earlier has
+ * arrived, and checks the count.
+ */
 const quiet = async (id: string, before: number) => {
   await agentA.flush();
   expect(agentA.seen(id)).toBe(before);
@@ -300,9 +309,12 @@ test("2. an unlisted B's mention is held, nothing wakes A's agent, and A is told
   expect(await askStateOf(pb, id, aKey)).toBe("held");
   await mention(pb, id, aKey, "first question");
   await mention(pb, id, aKey, "second question");
-  await quiet(id, before);
+  // The hold is the server's own record of the decision, made before the POST
+  // answered: both mentions are on A's held list.
   const [r, ...rest] = await held(id);
   expect(rest).toHaveLength(0);
+  expect(r?.items).toHaveLength(2);
+  await quiet(id, before);
   expect(r?.sender.name).toBe(`E2E ${bEmail.split("@")[0]}`);
   expect(r?.items.map((i) => i.body)).toEqual([
     "first question",
@@ -435,8 +447,8 @@ test("3c. Not now keeps the request held and quiets the sender: nothing wakes, n
   // Quiet means off Needs you for the day (inbox.ts heldRequestRows).
   expect((await requestItems(id)).length).toBe(0);
   await mention(pb, id, aKey, "pls again");
-  await quiet(id, before);
   expect((await held(id))[0]?.items).toHaveLength(2);
+  await quiet(id, before);
   expect((await requestItems(id)).length).toBe(0);
   // B reads the same as before: still queued behind the hold.
   expect(await askStateOf(pb, id, aKey)).toBe("held");

@@ -4,10 +4,11 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  createWriteStream,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -186,7 +187,7 @@ export async function startServer(): Promise<() => Promise<void>> {
     // worktree's server may have taken the port meanwhile.
     if (await portBusy(PORT)) throw inUse(PORT);
     const logPath = join(dir, "wrangler.log");
-    const logStream = createWriteStream(logPath, { flags: "a" });
+    const log = openSync(logPath, "a");
     child = spawn(
       WRANGLER,
       [
@@ -203,7 +204,7 @@ export async function startServer(): Promise<() => Promise<void>> {
       ],
       {
         cwd: SERVER,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", log, log],
         detached: true,
         env: devEnv(),
       },
@@ -211,46 +212,44 @@ export async function startServer(): Promise<() => Promise<void>> {
     const proc = child;
     proc.on("exit", () => {
       exited = true;
-      logStream.end();
     });
-    // Ours, not whatever else answers on PORT: wait for our wrangler's own
-    // "Ready on ..." log line, then confirm /healthz answers.
+    // Ours, not whatever else answers on PORT: our wrangler is alive and has
+    // logged that it bound the port. The log file is watched for that line (a
+    // file change wakes the check; nothing polls on a timer), then /healthz
+    // is asked once, bounded.
     const marker = `Ready on http://127.0.0.1:${PORT}`;
-    let output = "";
     await new Promise<void>((resolve, reject) => {
-      const deadline = setTimeout(() => {
-        cleanup();
-        reject(new Error(`fixtures: wrangler dev did not start\n${output}`));
-      }, 120_000);
-      const onExit = () => {
-        cleanup();
-        reject(new Error(`fixtures: wrangler dev did not start\n${output}`));
-      };
-      const onChunk = (chunk: Buffer) => {
-        const text = chunk.toString("utf8");
-        logStream.write(chunk);
-        output += text;
-        if (output.includes(marker)) {
-          cleanup();
-          resolve();
-        }
-      };
-      const cleanup = () => {
+      const logged = () => readFileSync(logPath, "utf8");
+      const watcher = watch(logPath);
+      const done = (err?: Error) => {
         clearTimeout(deadline);
-        proc.off("exit", onExit);
-        proc.stdout?.off("data", onChunk);
-        proc.stderr?.off("data", onChunk);
-        // Keep draining to the log file after startup.
-        proc.stdout?.pipe(logStream, { end: false });
-        proc.stderr?.pipe(logStream, { end: false });
+        watcher.close();
+        proc.off("exit", check);
+        if (err) reject(err);
+        else resolve();
       };
-      proc.once("exit", onExit);
-      proc.stdout?.on("data", onChunk);
-      proc.stderr?.on("data", onChunk);
+      const check = () => {
+        if (exited)
+          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`));
+        else if (logged().includes(marker)) done();
+      };
+      const deadline = setTimeout(
+        () =>
+          done(new Error(`fixtures: wrangler dev did not start\n${logged()}`)),
+        120_000,
+      );
+      watcher.on("change", check);
+      proc.once("exit", check);
+      // The line may already be there before the watch began.
+      check();
     });
-    await expect.poll(healthy, { timeout: 15_000 }).toBe(true);
-    if (exited)
-      throw new Error(`fixtures: wrangler dev exited after ready\n${output}`);
+    const ask = await fetch(`${APP}/healthz`, {
+      signal: AbortSignal.timeout(15_000),
+    }).catch(() => undefined);
+    if (!ask?.ok || exited)
+      throw new Error(
+        `fixtures: wrangler dev is not healthy after Ready\n${readFileSync(logPath, "utf8")}`,
+      );
     return async () => {
       const gone = new Promise<boolean>((r) =>
         exited ? r(true) : proc.once("exit", () => r(true)),

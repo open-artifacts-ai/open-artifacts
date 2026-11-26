@@ -25,39 +25,25 @@ export async function approveMachine(page: Page): Promise<string> {
   await page.goto(`${APP}/bus/approve`);
   await page.locator("#code").fill(dev.user_code);
   await page.getByRole("button", { name: /continue|next|check/i }).click();
-  await Promise.all([
+  const [approved] = await Promise.all([
     page.waitForResponse(
       (r) =>
         r.url().endsWith("/bus/approve") && r.request().method() === "POST",
     ),
     page.getByRole("button", { name: "Approve", exact: true }).click(),
   ]);
-  // Approval is committed once POST /bus/approve answers; poll at the device
-  // interval only as a fallback if the server hasn't caught up yet.
-  let token = "";
-  await expect
-    .poll(
-      async () => {
-        const t = await fetch(`${APP}/bus/device/token`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ device_code: dev.device_code }),
-        });
-        const j = (await t.json()) as {
-          status?: string;
-          machine_token?: string;
-        };
-        token = j.machine_token ?? "";
-        return token;
-      },
-      {
-        message: "the machine token never arrived",
-        intervals: [5_500],
-        timeout: 66_000,
-      },
-    )
-    .toBeTruthy();
-  return token;
+  expect(approved.status(), await approved.text()).toBeLessThan(300);
+  // Approval is committed once POST /bus/approve answers, and this is the
+  // first token request for the code (so inside its rate limit): it returns
+  // the token. No polling.
+  const t = await fetch(`${APP}/bus/device/token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: dev.device_code }),
+  });
+  const j = (await t.json()) as { status?: string; machine_token?: string };
+  expect(j.machine_token, JSON.stringify(j)).toBeTruthy();
+  return String(j.machine_token);
 }
 
 type Frame = Record<string, unknown>;

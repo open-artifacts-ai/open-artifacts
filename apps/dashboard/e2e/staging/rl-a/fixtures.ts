@@ -57,6 +57,7 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(FETCH_MS),
       }),
+    { origin: A.app },
   );
 
 /**
@@ -171,7 +172,7 @@ export const api = (
         },
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, origin: A.app },
   );
 
 /** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
@@ -184,7 +185,7 @@ export const anon = (path: string, init: RequestInit = {}) =>
         redirect: "manual",
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, origin: A.app },
   );
 
 /** The body of a 2xx response; anything else throws with its status. */

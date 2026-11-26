@@ -11,8 +11,10 @@ test("rl-a reports testHooks and its own installId", {
   tag: "@gate",
 }, async () => {
   const a = rlA();
-  const res = await sendRead("GET", () =>
-    fetch(`${a.app}/healthz`, { signal: AbortSignal.timeout(FETCH_MS) }),
+  const res = await sendRead(
+    "GET",
+    () => fetch(`${a.app}/healthz`, { signal: AbortSignal.timeout(FETCH_MS) }),
+    { origin: a.app },
   );
   expect(res.status).toBe(200);
   const h = (await res.json()) as { testHooks?: boolean; installId?: string };
