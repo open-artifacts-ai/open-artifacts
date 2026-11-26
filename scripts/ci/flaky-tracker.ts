@@ -293,6 +293,10 @@ export type Marks = {
   /** A pending list's time (the reconcile that wrote it), and its runs. */
   pendingAt?: string;
   pending: Passed[];
+  /** How many reconciles could not read each pending run (none: 0). */
+  tries: Record<Passed, number>;
+  /** Runs dropped because they could not be read on UNREADABLE_TRIES reconciles. */
+  unreadable: Passed[];
 };
 
 const AT = String.raw`\d{4}-\d\d-\d\dT[\d:]+Z`;
@@ -301,7 +305,8 @@ const SUMMARY_RE = /^summary (\d+)$/;
 const PREV_RE = /^prev (\d+)$/;
 const PASSED_RE = /^passed (\d+\/\d+)$/;
 const PENDING_AT_RE = new RegExp(`^pending-at (${AT})$`);
-const PENDING_RE = /^pending (\d+\/\d+)$/;
+const PENDING_RE = /^pending (\d+\/\d+)(?: (\d{1,3}))?$/;
+const UNREADABLE_RE = /^unreadable (\d+\/\d+)$/;
 const SEEN_RE = new RegExp(`^seen (${AT}) (\\d+)/(\\d+)$`);
 const SIGHTING_RE = new RegExp(
   `^sighting ([0-9a-f]{16}) (\\d+)/(\\d+) (${AT})$`,
@@ -309,7 +314,14 @@ const SIGHTING_RE = new RegExp(
 
 /** The marks of a bot comment or body's trailing block (empty if none). */
 export function parseMarks(text: string): Marks {
-  const out: Marks = { seen: [], sightings: [], passed: [], pending: [] };
+  const out: Marks = {
+    seen: [],
+    sightings: [],
+    passed: [],
+    pending: [],
+    tries: {},
+    unreadable: [],
+  };
   const t = text.replace(/\r/g, "");
   const i = blockAt(t);
   if (i < 0) return out;
@@ -330,7 +342,12 @@ export function parseMarks(text: string): Marks {
     m = PENDING_AT_RE.exec(l);
     if (m) out.pendingAt = m[1];
     m = PENDING_RE.exec(l);
-    if (m) out.pending.push(m[1] as string);
+    if (m) {
+      out.pending.push(m[1] as string);
+      if (m[2]) out.tries[m[1] as string] = Number(m[2]);
+    }
+    m = UNREADABLE_RE.exec(l);
+    if (m) out.unreadable.push(m[1] as string);
     m = SEEN_RE.exec(l);
     if (m)
       out.seen.push({
@@ -385,7 +402,11 @@ export const noTestComment = (run: RunInfo) =>
  * leaves the range while it waits is still tracked. A run leaves the list
  * only once the store marks it.
  */
-export const pendingComment = (runs: Passed[], nowMs: number) =>
+export const pendingComment = (
+  runs: Passed[],
+  nowMs: number,
+  tries: Record<Passed, number> = {},
+) =>
   [
     runs.length
       ? `The flaky tracker's reconcile has ${runs.length} runs left to track; the next one carries on.`
@@ -393,8 +414,24 @@ export const pendingComment = (runs: Passed[], nowMs: number) =>
     "",
     markerBlock([
       `pending-at ${new Date(nowMs).toISOString().replace(/\.\d+Z$/, "Z")}`,
-      ...runs.map((r) => `pending ${r}`),
+      ...runs.map((r) => `pending ${r}${tries[r] ? ` ${tries[r]}` : ""}`),
     ]),
+  ].join("\n");
+
+/** A pending run is dropped once this many reconciles could not read it. */
+export const UNREADABLE_TRIES = 3;
+
+/**
+ * The store comment that drops a run no reconcile could read (its attempts,
+ * jobs or logs) on UNREADABLE_TRIES reconciles: `unreadable run/attempt`,
+ * which every reconcile then skips like a marked run, so it leaves the
+ * pending list visibly.
+ */
+export const unreadableComment = (repo: string, key: Passed, why: string) =>
+  [
+    `Run https://github.com/${repo}/actions/runs/${key.split("/")[0]} (passed on attempt ${key.split("/")[1]}) could not be read on ${UNREADABLE_TRIES} reconciles, so the flaky tracker drops it. Last error: ${codeSpan(inert(why))}`,
+    "",
+    markerBlock([`unreadable ${key}`]),
   ].join("\n");
 
 /**
@@ -806,11 +843,19 @@ function readStore(
   stores: number[],
   nowMs: number,
   fromMs = nowMs - WINDOW_DAYS * DAY_MS,
-): { sightings: Recorded[]; passed: Set<Passed>; pending: Passed[] } {
+): {
+  sightings: Recorded[];
+  passed: Set<Passed>;
+  pending: Passed[];
+  tries: Record<Passed, number>;
+  unreadable: Set<Passed>;
+} {
   const since = new Date(fromMs).toISOString();
   const sightings: Recorded[] = [];
   const passed = new Set<Passed>();
+  const unreadable = new Set<Passed>();
   let pending: Passed[] = [];
+  let tries: Record<Passed, number> = {};
   let pendingAt = "";
   for (const n of stores) {
     const lines = gh(exec, [
@@ -825,13 +870,15 @@ function readStore(
       const m = parseMarks(JSON.parse(l) as string);
       sightings.push(...m.sightings);
       for (const p of m.passed) passed.add(p);
+      for (const u of m.unreadable) unreadable.add(u);
       if (m.pendingAt && m.pendingAt >= pendingAt) {
         pendingAt = m.pendingAt;
         pending = m.pending;
+        tries = m.tries;
       }
     }
   }
-  return { sightings, passed, pending };
+  return { sightings, passed, pending, tries, unreadable };
 }
 
 const STORE_TITLE = "Flaky test sightings (the flaky tracker's store)";
@@ -1208,25 +1255,31 @@ function passedRuns(
   exec: Exec,
   repo: string,
   nowMs: number,
-): { passed: Set<Passed>; pending: Passed[] } {
+): {
+  passed: Set<Passed>;
+  pending: Passed[];
+  tries: Record<Passed, number>;
+  unreadable: Set<Passed>;
+} {
   const open = listOpen(exec, repo, STORE_LABEL);
-  if (!open.length) return { passed: new Set(), pending: [] };
+  if (!open.length)
+    return { passed: new Set(), pending: [], tries: {}, unreadable: new Set() };
   const from = reconcileFrom(nowMs);
-  const { passed, pending } = readStore(
+  const { passed, pending, tries, unreadable } = readStore(
     exec,
     repo,
     storeChain(exec, repo, open, nowMs, from),
     nowMs,
     from,
   );
-  return { passed, pending };
+  return { passed, pending, tries, unreadable };
 }
 
 export type Reconciled = {
   runId: number;
   attempt: number;
   /** "left": not started this time (the budget ran out); the next reconcile takes it. */
-  result: "recorded already" | "tracked" | "error" | "left";
+  result: "recorded already" | "tracked" | "error" | "left" | "unreadable";
   done: Done[];
   notes: string[];
 };
@@ -1261,14 +1314,27 @@ export function reconcile(o: {
   const { repo, nowMs } = o;
   const clock = o.clock ?? Date.now;
   const start = clock();
-  const spent = { calls: 0, logs: 0 };
+  let spent = { calls: 0, logs: 0 };
+  // The last failed gh call, while no later one has worked: a run whose
+  // failure is reading its own attempts, jobs or logs counts toward
+  // UNREADABLE_TRIES.
+  let lastFail: string[] | null = null;
   const exec: Exec = (cmd, args) => {
     spent.calls++;
     if (args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a))) spent.logs++;
-    return o.exec(cmd, args);
+    const r = o.exec(cmd, args);
+    lastFail = r.code === 0 ? null : args;
+    return r;
   };
+  const RUN_READ = /^repos\/[^/]+\/[^/]+\/actions\/(runs\/\d+|jobs\/\d+\/logs)/;
   const listed = recentRuns(exec, repo, nowMs);
-  const { passed, pending } = passedRuns(exec, repo, nowMs);
+  const {
+    passed,
+    pending,
+    tries: triedBefore,
+    unreadable,
+  } = passedRuns(exec, repo, nowMs);
+  const tries: Record<Passed, number> = { ...triedBefore };
   // The pending list too, whatever the listing's range: a run found by an
   // earlier reconcile and not finished stays a candidate until it is marked.
   const byRun = new Map<number, number>();
@@ -1277,9 +1343,17 @@ export function reconcile(o: {
     byRun.set(id as number, at as number);
   }
   for (const r of listed) byRun.set(r.runId, r.attempt);
+  const key = (r: { runId: number; attempt: number }) =>
+    `${r.runId}/${r.attempt}`;
+  // Runs never tried first, oldest first, then the retries, oldest first: a
+  // run that keeps failing never takes the turn of one not yet tried.
   const runs = [...byRun]
     .map(([runId, attempt]) => ({ runId, attempt }))
-    .sort((a, b) => a.runId - b.runId);
+    .sort(
+      (a, b) =>
+        Number((tries[key(a)] ?? 0) > 0) - Number((tries[key(b)] ?? 0) > 0) ||
+        a.runId - b.runId,
+    );
   if (!runs.length) return [];
   // The pending list is saved first, when it changed: the whole list of runs
   // not yet marked, before any run starts, so a job killed at any point after
@@ -1287,9 +1361,14 @@ export function reconcile(o: {
   // again, as a fresh comment, whenever any is left, even unchanged: the
   // store is read only over the reconcile's range, so a list never rewritten
   // would age out of it while its runs still wait.
-  let saved = pending.join(" ");
+  const listText = (list: Passed[]) =>
+    [...list]
+      .sort()
+      .map((k) => `${k} ${tries[k] ?? 0}`)
+      .join(" ");
+  let saved = listText(pending);
   const savePending = (list: Passed[], fresh = false) => {
-    if (list.join(" ") === saved && !(fresh && list.length)) return;
+    if (listText(list) === saved && !(fresh && list.length)) return;
     const { store } = openStore(
       exec,
       repo,
@@ -1297,12 +1376,11 @@ export function reconcile(o: {
       nowMs - WINDOW_DAYS * DAY_MS,
       [],
     );
-    comment(exec, repo, store, pendingComment(list, nowMs));
-    saved = list.join(" ");
+    comment(exec, repo, store, pendingComment(list, nowMs, tries));
+    saved = listText(list);
   };
-  const key = (r: { runId: number; attempt: number }) =>
-    `${r.runId}/${r.attempt}`;
-  savePending(runs.filter((r) => !passed.has(key(r))).map(key));
+  const done = (k: Passed) => passed.has(k) || unreadable.has(k);
+  savePending(runs.filter((r) => !done(key(r))).map(key));
   const out: Reconciled[] = [];
   let started = 0;
   const push = (r: Reconciled) => {
@@ -1311,7 +1389,8 @@ export function reconcile(o: {
   };
   for (const { runId, attempt } of runs) {
     const base = { runId, attempt, done: [], notes: [] };
-    if (passed.has(`${runId}/${attempt}`)) {
+    const k = key(base);
+    if (done(k)) {
       out.push({ ...base, result: "recorded already" });
       continue;
     }
@@ -1327,11 +1406,52 @@ export function reconcile(o: {
       continue;
     }
     started++;
+    const before = { ...spent };
+    lastFail = null;
     try {
       const run = loadRun(exec, repo, runId, attempt);
       push({ ...base, result: "tracked", ...track({ exec, run, nowMs }) });
+      delete tries[k];
     } catch (e) {
-      push({ ...base, result: "error", notes: [(e as Error).message] });
+      const why = (e as Error).message;
+      // A failed run costs the budget nothing but its time: the calls and
+      // logs it spent are given back, so runs that keep failing can't use
+      // up a reconcile and starve the others.
+      spent = before;
+      const failed = lastFail as string[] | null;
+      const unread = !!failed?.some((a) => RUN_READ.test(a));
+      if (!unread) {
+        push({ ...base, result: "error", notes: [why] });
+        continue;
+      }
+      const n = (tries[k] ?? 0) + 1;
+      if (n < UNREADABLE_TRIES) {
+        tries[k] = n;
+        push({
+          ...base,
+          result: "error",
+          notes: [
+            `${why} (could not read it, try ${n} of ${UNREADABLE_TRIES})`,
+          ],
+        });
+        continue;
+      }
+      const { store } = openStore(
+        exec,
+        repo,
+        nowMs,
+        nowMs - WINDOW_DAYS * DAY_MS,
+        [],
+      );
+      comment(exec, repo, store, unreadableComment(repo, k, why));
+      delete tries[k];
+      push({
+        ...base,
+        result: "unreadable",
+        notes: [
+          `could not be read on ${UNREADABLE_TRIES} reconciles: dropped, and marked unreadable in the store (${why})`,
+        ],
+      });
     }
   }
   // What is still not marked (left, or failed) is the new pending list. A
@@ -1346,7 +1466,10 @@ export function reconcile(o: {
 /** The step summary's lines for a reconcile: each run it worked on, then the backlog. */
 export function reconcileLines(all: Reconciled[]): string[] {
   const worked = all.filter(
-    (r) => r.result === "tracked" || r.result === "error",
+    (r) =>
+      r.result === "tracked" ||
+      r.result === "error" ||
+      r.result === "unreadable",
   );
   const left = all.filter((r) => r.result === "left").length;
   const retry = all.filter((r) => r.result === "error").length;

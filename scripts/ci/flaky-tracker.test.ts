@@ -43,6 +43,7 @@ import {
   storeComments,
   summaryText,
   track,
+  UNREADABLE_TRIES,
 } from "./flaky-tracker.ts";
 
 const E = "\u001b";
@@ -337,6 +338,8 @@ describe("untrusted text", () => {
         sightings: [],
         passed: [],
         pending: [],
+        tries: {},
+        unreadable: [],
       });
       for (const text of [store ?? "", body]) {
         // The only `<!--` and `-->` are the bot's trailing block.
@@ -1823,10 +1826,12 @@ describe("a pending list while daily events go on", () => {
 
   it("is still worked on day 63 after every run failed daily since day 0 and left the listing", () => {
     const g = make();
+    // Each run fails daily, but not as unreadable (the read works and its
+    // answer is garbage), so none is dropped.
     let broken = true;
     const exec: Exec = (cmd, args) =>
       broken && args.some((a) => /\/runs\/\d+\/attempts\/2$/.test(a))
-        ? { code: 1, stdout: "", stderr: "HTTP 404: Not Found" }
+        ? { code: 0, stdout: "<html>", stderr: "" }
         : g.exec(cmd, args);
     let last: ReturnType<typeof reconcile> = [];
     for (let d = 0; d < 63; d++)
@@ -1848,5 +1853,125 @@ describe("a pending list while daily events go on", () => {
     });
     expect(r.filter((x) => x.result === "tracked")).toHaveLength(32);
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+  });
+});
+
+describe("runs whose logs can't be read", () => {
+  // The Prover's case: 32 runs, the oldest 25 with a job log that answers
+  // 404, the newest 7 readable. Default budgets.
+  const ids = Array.from({ length: 32 }, (_, i) => 4000 + i);
+  const bad = new Set(ids.slice(0, 25));
+  const setup = () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id, i) => rerun(id, { created: (40 - i) * HOUR })),
+    });
+    // Which run's jobs were listed last: its job log is read next.
+    let current = 0;
+    const exec: Exec = (cmd, args) => {
+      const m = args
+        .map((a) => /\/runs\/(\d+)\/attempts\/1\/jobs/.exec(a))
+        .find(Boolean);
+      if (m) current = Number(m[1]);
+      if (
+        bad.has(current) &&
+        args.some((a) => /\/actions\/jobs\/1\/logs$/.test(a))
+      )
+        return { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
+      return g.exec(cmd, args);
+    };
+    return { g, exec };
+  };
+  const marks = (g: ReturnType<typeof fakeGh>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+  const dropped = (g: ReturnType<typeof fakeGh>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).unreadable);
+
+  it("never starve the readable ones: all 7 are tracked on the first completion", () => {
+    const { g, exec } = setup();
+    const r = reconcile({ exec, repo: REPO, nowMs: NOW });
+    expect(r.filter((x) => x.result === "tracked").map((x) => x.runId)).toEqual(
+      ids.slice(25),
+    );
+    expect(r.filter((x) => x.result === "error")).toHaveLength(25);
+    expect(reconcileLines(r).at(-1)).toBe(
+      "backlog: 0 new, 25 to retry (the next CI completion's reconcile carries on)",
+    );
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
+    // Each is on the pending list with its first failed try.
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").tries).toEqual(
+      Object.fromEntries(ids.slice(0, 25).map((id) => [`${id}/2`, 1])),
+    );
+  });
+
+  it("are tried after the runs not yet tried", () => {
+    const { g, exec } = setup();
+    // First completion: only the 25 unreadable ones exist yet.
+    const first = reconcile({ exec, repo: REPO, nowMs: NOW - 16 * HOUR });
+    expect(first.every((x) => x.result === "error")).toBe(true);
+    // Next: the 7 readable ones are new, so they go first.
+    g.clock.now = NOW;
+    const order: number[] = [];
+    reconcile({
+      exec,
+      repo: REPO,
+      nowMs: NOW,
+      onRun: (x) => order.push(x.runId),
+    });
+    expect(order.slice(0, 7)).toEqual(ids.slice(25));
+  });
+
+  it(`are dropped visibly after ${UNREADABLE_TRIES} reconciles could not read them, and then skipped`, () => {
+    const { g, exec } = setup();
+    const results: string[][] = [];
+    let last: ReturnType<typeof reconcile> = [];
+    for (let e = 0; e < UNREADABLE_TRIES; e++) {
+      g.clock.now = NOW + e * HOUR;
+      last = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      results.push([
+        ...new Set(last.filter((x) => bad.has(x.runId)).map((x) => x.result)),
+      ]);
+    }
+    expect(results).toEqual([["error"], ["error"], ["unreadable"]]);
+    expect(dropped(g).sort()).toEqual([...bad].map((id) => `${id}/2`));
+    // The summary names each one it drops.
+    const lines = reconcileLines(last);
+    expect(lines).toContain("- CI run 4000 attempt 2: unreadable");
+    expect(lines.join("\n")).toContain(
+      `could not be read on ${UNREADABLE_TRIES} reconciles: dropped, and marked unreadable in the store`,
+    );
+    expect(lines.at(-1)).toBe("backlog: 0 new, 0 to retry");
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+    // Later, they are skipped like marked runs: no read of them at all.
+    const reads = g.calls.length;
+    g.clock.now = NOW + 10 * HOUR;
+    const later = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+    expect(later.every((x) => x.result === "recorded already")).toBe(true);
+    expect(
+      g.calls.slice(reads).some((c) => c.some((a) => a.includes("/attempts/"))),
+    ).toBe(false);
+  });
+
+  it("a failure that is not a read of the run never drops it", () => {
+    // Run 900 files (the store holds run 800), and every issue create fails.
+    const prior = { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") };
+    const h = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(900)],
+      failCreates: 99,
+      issues: [STORE],
+      storeComments: [prior],
+    });
+    for (let e = 0; e < UNREADABLE_TRIES + 1; e++) {
+      h.clock.now = NOW + e * HOUR;
+      const [r] = reconcile({ exec: h.exec, repo: REPO, nowMs: h.clock.now });
+      expect(r?.result).toBe("error");
+    }
+    expect(h.comments.flatMap((c) => parseMarks(c.body).unreadable)).toEqual(
+      [],
+    );
+    expect(parseMarks(h.pendings.at(-1)?.body ?? "").pending).toEqual([
+      "900/2",
+    ]);
   });
 });
