@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { BusNameSchema } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeTransport, NOTICE_FROM } from "../src/transports/claude.ts";
+import { eventCounter } from "./helpers.ts";
 
 type Status =
   | "held"
@@ -37,7 +38,13 @@ const mail = (msg_id = "m1") => ({
 
 const servers: Server[] = [];
 const transports: ClaudeTransport[] = [];
+/** Counts the lines the transport's return sockets handled (statuses and replies): the signal that one arrived. */
+let lines = eventCounter();
+beforeEach(() => {
+  lines = eventCounter();
+});
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(transports.splice(0).map((t) => t.close()));
   await Promise.all(
     servers.splice(0).map((s) => new Promise<void>((r) => s.close(() => r()))),
@@ -104,6 +111,7 @@ function transportFor(
   const t = new ClaudeTransport({
     socketsDir: join(f.d, "sinks"),
     statusWindowMs: 40,
+    onLineHandled: lines.hook,
     target: () => ({ socketPath: f.sock, peerToken: "tok" }),
     ...over,
   });
@@ -137,13 +145,15 @@ describe("claude delivery acknowledgement", () => {
       void send(addr, id, "held");
     });
     send = status(f.sock);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const t = transportFor(f, { statusWindowMs: 200 });
     const p = t.deliver(agent, mail());
     let settled = false;
     void p.then(() => {
       settled = true;
     });
-    await new Promise((r) => setTimeout(r, 300)); // past the window: held keeps it open
+    await lines.reach(1); // the held status arrived
+    await vi.advanceTimersByTimeAsync(300); // past the window: held keeps it open
     expect(settled).toBe(false);
     await send(from, "m1", "delivered");
     expect(await p).toEqual({ ok: true });
@@ -161,8 +171,7 @@ describe("claude delivery acknowledgement", () => {
       send = status(f.sock);
       const t = transportFor(f, { statusWindowMs: 200 });
       const p = t.deliver(agent, mail());
-      await vi.waitFor(() => expect(from).not.toBe(""));
-      await new Promise((r) => setTimeout(r, 50));
+      await lines.reach(1); // the held status arrived
       await send(from, "m1", final);
       expect(await p).toEqual({ ok: false, reason: "closed", cause: final });
     },
@@ -240,8 +249,7 @@ describe("claude delivery acknowledgement", () => {
     const t = transportFor(f, { statusWindowMs: 200 });
     const first = t.deliver(agent, mail());
     const second = t.deliver(agent, mail()); // hub redelivery while held
-    await vi.waitFor(() => expect(f.seen).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 50));
+    await lines.reach(1); // the held status arrived
     await send(from, "m1", "delivered");
     expect(await first).toEqual({ ok: true });
     expect(await second).toEqual({ ok: true });
@@ -256,8 +264,7 @@ describe("claude delivery acknowledgement", () => {
     send = status(f.sock);
     const t = transportFor(f, { statusWindowMs: 200 });
     const p = t.deliver(agent, mail());
-    await vi.waitFor(() => expect(f.seen).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 50));
+    await lines.reach(1); // the held status arrived
     await t.close();
     expect(await p).toEqual({ ok: false, reason: "timeout" });
   });
@@ -270,8 +277,7 @@ describe("claude delivery acknowledgement", () => {
     send = status(f.sock);
     const t = transportFor(f, { statusWindowMs: 200 });
     const p = t.deliver(agent, mail());
-    await vi.waitFor(() => expect(f.seen).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 50));
+    await lines.reach(1); // the held status arrived
     await t.drop("s1");
     expect(await p).toEqual({ ok: false, reason: "timeout" });
   });
@@ -344,8 +350,9 @@ describe("claude notices", () => {
     const notices = f.seen.filter((s) => !byPeer.includes(s));
     expect(notices.map((s) => s.from)).toEqual([from, from]);
     expect(byPeer[0].from).not.toBe(from);
+    const handled = lines.next();
     await dial(from, reply(f.sock, "thanks"));
-    await new Promise((r) => setTimeout(r, 50));
+    await handled;
     expect(onReply).not.toHaveBeenCalled();
   });
 

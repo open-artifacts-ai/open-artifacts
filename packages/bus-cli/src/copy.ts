@@ -596,7 +596,7 @@ export function copy(
       "  install      --instance <url>   the instance to connect to",
       "               --check            only report what is set up; change nothing",
       "               --habits | --no-habits | --show-habits",
-      "                                  add, decline or show the always-on habit lines",
+      "                                  turn the rules the bus sends to sessions on or off, or show them",
       "               --no-service       skip the launchd or systemd step",
       "               --alongside        with --home <dir>: set up a separate bus next to your main one,",
       "                                  and leave every harness setting alone. To use a second",

@@ -30,6 +30,7 @@ import {
   waitFor,
   workerFetch,
 } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 type ErrorBody = { error: { code: string } };
 
@@ -395,15 +396,15 @@ describe("hub socket: lifecycle", () => {
     const m = await machine();
     const d = await daemon(m.token);
     d.ws.send(PING);
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("no pong")), 2000);
-      d.ws.addEventListener("message", (ev) => {
-        if (ev.data === PONG) {
-          clearTimeout(t);
-          resolve();
-        }
-      });
-    });
+    await withDeadline(
+      new Promise<void>((resolve) => {
+        d.ws.addEventListener("message", (ev) => {
+          if (ev.data === PONG) resolve();
+        });
+      }),
+      2000,
+      "PONG to a bare PING",
+    );
     d.close();
   });
 

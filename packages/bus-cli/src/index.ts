@@ -11,7 +11,7 @@ export type Command = (
       noOpen: boolean;
       noService: boolean;
       alongside: boolean;
-      habits?: "yes" | "project" | "project-off" | "no" | "show";
+      habits?: "yes" | "no" | "show";
       json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
@@ -97,8 +97,6 @@ const FLAGS: Record<string, string[]> = {
     "no-service",
     "alongside",
     "habits",
-    "habits-project",
-    "no-habits-project",
     "no-habits",
     "show-habits",
     "json",
@@ -142,8 +140,6 @@ export function parse(argv: string[]): Command {
       "no-service": { type: "boolean", default: false },
       alongside: { type: "boolean", default: false },
       habits: { type: "boolean", default: false },
-      "habits-project": { type: "boolean", default: false },
-      "no-habits-project": { type: "boolean", default: false },
       "no-habits": { type: "boolean", default: false },
       "show-habits": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -282,8 +278,6 @@ type Values = {
   "no-service": boolean;
   alongside: boolean;
   habits: boolean;
-  "habits-project": boolean;
-  "no-habits-project": boolean;
   "no-habits": boolean;
   "show-habits": boolean;
   json: boolean;
@@ -390,20 +384,16 @@ function route(cmd: string, values: Values, positionals: string[]) {
   }
 }
 
-/** At most one of --habits, --habits-project, --no-habits, --show-habits. */
+/** At most one of --habits, --no-habits, --show-habits. */
 function habitsMode(v: Values): {
-  habits?: "yes" | "project" | "project-off" | "no" | "show";
+  habits?: "yes" | "no" | "show";
 } {
   const asked = [
     v.habits && "yes",
-    v["habits-project"] && "project",
-    v["no-habits-project"] && "project-off",
     v["no-habits"] && "no",
     v["show-habits"] && "show",
-  ].filter(Boolean) as ("yes" | "project" | "project-off" | "no" | "show")[];
+  ].filter(Boolean) as ("yes" | "no" | "show")[];
   if (asked.length > 1)
-    throw new Error(
-      "use only one of --habits, --habits-project, --no-habits-project, --no-habits, --show-habits",
-    );
+    throw new Error("use only one of --habits, --no-habits, --show-habits");
   return asked[0] ? { habits: asked[0] } : {};
 }

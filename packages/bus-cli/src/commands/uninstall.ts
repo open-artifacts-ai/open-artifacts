@@ -85,7 +85,7 @@ async function unwire(ctx: Ctx): Promise<void> {
       `Could not remove the output style: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
-  // The always-on habits block goes too: only our marked block, nothing else.
+  // Remove any old habits block left by earlier versions: only our marked block, nothing else.
   try {
     const habits = removeHabits({
       home: ctx.userHome,
