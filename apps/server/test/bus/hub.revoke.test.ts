@@ -86,13 +86,9 @@ function wire<T>(ws: WebSocket, parse: (t: string) => T | null) {
   const next = () => {
     const f = queue.shift();
     if (f !== undefined) return Promise.resolve(f);
-    return new Promise<T>((resolve, reject) => {
-      // sleep-ok: a deadline for a frame that may never come, not a wait
-      const t = setTimeout(() => reject(new Error("timed out")), 15_000);
-      waiting.push((x) => {
-        clearTimeout(t);
-        resolve(x);
-      });
+    // A frame that never comes fails by the test's own timeout.
+    return new Promise<T>((resolve) => {
+      waiting.push(resolve);
     });
   };
   return { seen, next, closed };

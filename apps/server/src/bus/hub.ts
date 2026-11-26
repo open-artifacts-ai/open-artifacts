@@ -3996,7 +3996,8 @@ export class BusHub extends DurableObject<Env> {
       get: () => this.#inFlight,
       set: (v: number) => {
         this.#inFlight = v;
-        if (v === 0) for (const w of this.#whenIdle.splice(0)) w();
+        if (v === 0 && this.#whenIdle.length > 0)
+          for (const w of this.#whenIdle.splice(0)) w();
       },
     });
     void ctx.blockConcurrencyWhile(async () => {
@@ -5496,6 +5497,7 @@ export class BusHub extends DurableObject<Env> {
   #closeWaiters: { n: number; resolve: () => void }[] = [];
   #closeDone(): void {
     this.#closesDone++;
+    if (this.#closeWaiters.length === 0) return;
     for (const w of [...this.#closeWaiters])
       if (this.#closesDone >= w.n) {
         this.#closeWaiters.splice(this.#closeWaiters.indexOf(w), 1);

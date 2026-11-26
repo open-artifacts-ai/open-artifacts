@@ -54,13 +54,9 @@ describe("suspend's close-sockets job closes a live daemon socket (#202)", () =>
         props: {},
       } as unknown as ExecutionContext,
     );
-    const c = await Promise.race([
-      d.closed,
-      // sleep-ok: a race deadline, so a missing close fails instead of hanging
-      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
-    ]);
-    expect(c, "socket still open 10 s after the job").not.toBeNull();
-    expect(c?.code).toBe(4403);
+    // A missing close fails by the test's own timeout, not a timer of ours.
+    const c = await d.closed;
+    expect(c.code).toBe(4403);
     expect(Date.now() - t0).toBeLessThan(10_000);
   });
 });
@@ -204,12 +200,8 @@ describe("a suspended install refuses bus connects at once (cloud #228)", () => 
       }),
     };
     await expect(job(CLOSE_SOCKETS_CRON, failing)).rejects.toThrow("d1 down");
-    const c = await Promise.race([
-      d.closed,
-      // sleep-ok: a race deadline, so a missing close fails instead of hanging
-      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
-    ]);
-    expect(c?.code).toBe(4403);
+    const c = await d.closed;
+    expect(c.code).toBe(4403);
   });
 
   it("an unknown oa: job is still refused", async () => {
