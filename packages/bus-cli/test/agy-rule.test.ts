@@ -165,7 +165,7 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
               : null,
         procStart: () => "t0",
         title: async () => undefined,
-        hello: async () => "agy",
+        hello: async () => ({ name: "agy" }),
         ppid: 300,
         watcherLive: () => live,
         watchLine: () => LINE,

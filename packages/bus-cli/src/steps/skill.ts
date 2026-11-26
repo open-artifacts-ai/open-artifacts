@@ -26,10 +26,6 @@ import { dirname, join, resolve } from "node:path";
 import { compareVersions } from "@oa/bus-adapter-opencode";
 import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
-
-/** Antigravity gets its skill in a later slice (agy S4): no folder here yet. */
-type SkillHarness = Exclude<Harness, "antigravity">;
-
 import { codexHome } from "./codex.ts";
 import { hermesHome } from "./hermes.ts";
 import { openclawStateDir } from "./openclaw.ts";
@@ -131,7 +127,7 @@ const env = (deps: Pick<SkillDeps, "env">) => deps.env ?? {};
 /** The folder a harness reads skills from, honoring the same env overrides the adapters do. */
 export const skillDir = (
   deps: Pick<SkillDeps, "home" | "env">,
-  h: SkillHarness,
+  h: Harness,
 ): string => {
   const e = env(deps);
   const opencode =
@@ -149,6 +145,9 @@ export const skillDir = (
     hermes: join(hermesHome(deps.home, e), "skills"),
     // OpenClaw's managed skills folder, in its state dir.
     openclaw: join(openclawStateDir(deps.home, e), "skills"),
+    // agy S4: agy's global customization root is ~/.gemini/config (its bundled
+    // agy-customizations guide), and skills sit in skills/<name>/SKILL.md there.
+    antigravity: join(deps.home, ".gemini", "config", "skills"),
   }[h];
 };
 
@@ -504,17 +503,14 @@ export async function installSkill(
 ): Promise<SkillResult> {
   const written: string[] = [];
   const notes: string[] = [];
-  const skilled = harnesses.filter(
-    (h): h is SkillHarness => h !== "antigravity",
-  );
-  if (skilled.length === 0) return { written, notes };
+  if (harnesses.length === 0) return { written, notes };
   if (!origin) {
     notes.push(
       "Skipped the skill file: this machine isn't approved on an instance yet. Rerun the install once it is.",
     );
     return { written, notes };
   }
-  for (const h of skilled) {
+  for (const h of harnesses) {
     const url = `${origin}/skill.md?harness=${h}`;
     let text: string;
     try {
@@ -561,7 +557,7 @@ export async function installSkill(
 /** Removes our marked files in every harness, and our Codex block, and nothing else. */
 export const uninstallSkill = (
   deps: Pick<SkillDeps, "home" | "env">,
-  harnesses: SkillHarness[] = [
+  harnesses: Harness[] = [
     "claude",
     "opencode",
     "pi",
@@ -569,6 +565,7 @@ export const uninstallSkill = (
     "codex",
     "hermes",
     "openclaw",
+    "antigravity",
   ],
 ): SkillResult => {
   const written: string[] = [];
@@ -632,7 +629,14 @@ export const uninstallSkill = (
       scan(join(dirname(base), "skills"));
       continue;
     }
+    const before = written.length;
     scan(base);
+    // agy S4: ~/.gemini/config/skills holds only skills, so a folder we just
+    // emptied goes too (rmdir: never one with anything left in it).
+    if (h === "antigravity" && written.length > before)
+      try {
+        rmdirSync(base);
+      } catch {}
   }
   return { written, notes };
 };
@@ -675,7 +679,6 @@ export const savedSkill = (
   h: Harness,
   folder?: string,
 ): string | undefined => {
-  if (h === "antigravity") return undefined;
   if (h === "codex") {
     const st = codexSkillState(deps);
     return st.file ?? st.block;

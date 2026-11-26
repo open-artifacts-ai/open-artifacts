@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.258.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.257.0...v0.258.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** agy gets the bus rules at session start, and the skill; no habits in its files (agy S4) ([#3131](https://github.com/open-artifacts-ai/open-artifacts/issues/3131)) ([9bd4863](https://github.com/open-artifacts-ai/open-artifacts/commit/9bd4863e374d6f638d8aebc47cddef8bd8252760))
+
+## [0.257.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.256.0...v0.257.0) (2026-11-26)
+
+
+### Features
+
+* **api:** GET versions ?wait holds until the latest version is indexed ([#3115](https://github.com/open-artifacts-ai/open-artifacts/issues/3115)) ([#3221](https://github.com/open-artifacts-ai/open-artifacts/issues/3221)) ([147eca3](https://github.com/open-artifacts-ai/open-artifacts/commit/147eca392b6ca1f1240b7faa0f3fb74bae74e165))
+* **bus:** an agy session's pages link to that session through a local proxy (agy S5) ([#3141](https://github.com/open-artifacts-ai/open-artifacts/issues/3141)) ([339ff25](https://github.com/open-artifacts-ai/open-artifacts/commit/339ff25d788b5cd3f86fbfd5024b5ac5e3c7db7a))
+* **bus:** the role's holder hands it over at once ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3230](https://github.com/open-artifacts-ai/open-artifacts/issues/3230)) ([4395247](https://github.com/open-artifacts-ai/open-artifacts/commit/4395247d1f81d06d77794f94998f78b417db244c))
+
+
+### Bug Fixes
+
+* **ci:** the release PR jumps the merge queue as soon as it is green ([#3236](https://github.com/open-artifacts-ai/open-artifacts/issues/3236)) ([57c9f53](https://github.com/open-artifacts-ai/open-artifacts/commit/57c9f5393e97b0510b5bc73f10b781b645c59cf4))
+
+## [0.256.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.255.0...v0.256.0) (2026-11-26)
+
+
+### Features
+
+* **mcp:** comment writes return ids and status, not the whole thread ([#3163](https://github.com/open-artifacts-ai/open-artifacts/issues/3163)) ([#3187](https://github.com/open-artifacts-ai/open-artifacts/issues/3187)) ([d9dd1f7](https://github.com/open-artifacts-ai/open-artifacts/commit/d9dd1f75f958a83f5f0eb414a20f95ee9f7e5ac3))
+* **notices:** a mention follows the thread, not the page; short notice tails ([#3164](https://github.com/open-artifacts-ai/open-artifacts/issues/3164)) ([#3188](https://github.com/open-artifacts-ai/open-artifacts/issues/3188)) ([9795b58](https://github.com/open-artifacts-ai/open-artifacts/commit/9795b588ba7fabc5b34c0b1013fb0dd485d598c3))
+
 ## [0.255.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.254.0...v0.255.0) (2026-11-26)
 
 

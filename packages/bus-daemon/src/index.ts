@@ -666,6 +666,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
+  /**
+   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
+   * Bounded; a repo moved under a live daemon is picked up at its next start.
+   */
+  const keyCache = new BoundedMap<string, string>(1000);
+  const keyOf = (cwd: string): string => {
+    let k = keyCache.get(cwd);
+    if (k === undefined) {
+      k = folderKey(cwd);
+      keyCache.set(cwd, k);
+    }
+    return k;
+  };
   // Without a bus home (tests that bring a config) main serves every folder.
   // Otherwise the folder map decides, read fresh at each session start: an
   // `oa-bus add` while sessions are live moves none of them (live records keep
@@ -674,7 +687,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.homeLookup ??
     (instHome === undefined
       ? () => ({ instance: MAIN_INSTANCE })
-      : folderHomeLookup(instHome));
+      : folderHomeLookup(instHome, keyOf));
   /** The connected instance a folder maps to, or undefined. Quiet: no note. */
   const connectedHome = (cwd: string): string | undefined => {
     const r = lookup(cwd);
@@ -936,25 +949,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configIssues = new ConfigIssues();
   /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
   const folderNotes = new Map<string, ConfigFile>();
-  /**
-   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
-   * Bounded; a repo moved under a live daemon is picked up at its next start.
-   */
-  const keyCache = new BoundedMap<string, string>(1000);
-  const keyOf = (cwd: string): string => {
-    let k = keyCache.get(cwd);
-    if (k === undefined) {
-      k = folderKey(cwd);
-      keyCache.set(cwd, k);
-    }
-    return k;
-  };
   const noteFolder = (cwd: string) => {
     if (instHome === undefined || deps.homeLookup) return;
     // One instance: no folder note, so no git call per request.
     if (listInstances(instHome).length < 2) return;
     const key = keyOf(cwd);
-    const unmapped = unmappedFolderNote(cwd, instHome, key);
+    const unmapped = unmappedFolderNote(cwd, instHome, key, lookup);
     const changed = unmapped
       ? undefined
       : changedSuggestionNote(cwd, instHome, key);
@@ -3156,6 +3156,83 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     throw e;
   };
+  /**
+   * agy S5: `oa-bus mcp-proxy --for antigravity` names the agy process it
+   * runs under and the conversation agy put in the call's `_meta`. As for
+   * Claude, the pid is the caller's claim: what binds is a live antigravity
+   * record (the session S2 registers: agent_ref = conversation id, pid = the
+   * agy process it attested) with that pid, conversation and process start.
+   * No record yet binds nothing: the proxy asks again on its next call, so
+   * nothing is held. A proof for another instance than the session's home
+   * is dropped, as for Claude. Any process of this OS user can claim an agy
+   * pid (a shell command agy runs too): that residual is accepted, as for
+   * #1822. The proxy asks on every tools/call, so each miss is noted and
+   * logged once per conversation, hash and cause; proofIssues stays keyed by
+   * the agy pid, which all of its conversations share.
+   */
+  const agyMissed = new Set<string>();
+  /** True the first time this conversation's hash misses for this cause. */
+  const agyFirstMiss = (conversation: string, hash: string, cause: string) => {
+    const key = `${conversation}\0${hash}\0${cause}`;
+    if (agyMissed.has(key)) return false;
+    agyMissed.add(key);
+    while (agyMissed.size > PENDING_PROOF_MAX) {
+      const oldest = agyMissed.values().next().value;
+      if (oldest === undefined) break;
+      agyMissed.delete(oldest);
+    }
+    return true;
+  };
+  const agyLinkProof = (
+    pid: number,
+    conversation: string,
+    hash: string,
+    instance: string | undefined,
+  ): { bound: boolean } => {
+    const want = instance ?? MAIN_INSTANCE;
+    const start = (ag.procStart ?? procStartOf)(pid);
+    if (!start) {
+      if (agyFirstMiss(conversation, hash, "no_process_start"))
+        noteUnbound("no_process_start");
+      return { bound: false };
+    }
+    if (basename((ag.comm ?? commOf)(pid) ?? "") !== "agy") {
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const rec = agents.byRef(conversation);
+    if (!rec || rec.kind !== "antigravity" || !rec.live) {
+      if (agyFirstMiss(conversation, hash, "no_live_record"))
+        noteUnbound("no_live_record", pid);
+      return { bound: false };
+    }
+    if (rec.pid !== pid || (rec.procStart ?? start) !== start) {
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const home = homedOf(rec);
+    if (home === undefined) {
+      if (agyFirstMiss(conversation, hash, "unmapped_folder"))
+        noteUnbound("unmapped_folder", pid);
+      return { bound: false };
+    }
+    if (want !== home) {
+      if (agyFirstMiss(conversation, hash, `wrong_instance:${want}`))
+        dropProof(want, rec, hash);
+      return { bound: false };
+    }
+    // A hub that takes no proofs: the proxy sends none.
+    if (!laneOfRef(rec.ref)?.link) return { bound: false };
+    proofIssues.delete(pid);
+    // Asked on every call: the hub is told only once per hash.
+    if (!rec.linkHashes?.includes(hash)) {
+      rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+      sendLink(rec, hash);
+    }
+    return { bound: true };
+  };
   const server = await serveDaemon({
     path: listenPath,
     // A codex hello proves one call id, so it buys one request: `hello.pid`
@@ -3167,6 +3244,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      if (req.conversation !== undefined)
+        return agyLinkProof(req.pid, req.conversation, req.hash, req.instance);
       const want = req.instance ?? MAIN_INSTANCE;
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
       if (start === null || start === undefined) {
@@ -3780,6 +3859,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        unmapped: (cwd) => "unmapped" in lookup(cwd),
         proposeReach: (ref, namespaces) => {
           // The agent's own instance: a key goes only to its own address.
           const lane = laneOfRef(ref);

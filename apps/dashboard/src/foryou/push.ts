@@ -202,6 +202,12 @@ const b64url = (s: string) => {
   return Uint8Array.from(b, (c) => c.charCodeAt(0));
 };
 
+/** The browser's subscription key (null when it has none) is these bytes. */
+const sameKey = (have: ArrayBuffer | null | undefined, want: Uint8Array) =>
+  !!have &&
+  have.byteLength === want.length &&
+  new Uint8Array(have).every((v, i) => v === want[i]);
+
 /** Our registration, ready to subscribe (the worker active). */
 async function registration(): Promise<ServiceWorkerRegistration> {
   const reg = await navigator.serviceWorker.register(SW_URL, {
@@ -256,12 +262,19 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
   const p = await Notification.requestPermission();
   if (p !== "granted") throw new PermissionRefused(p);
   const reg = await registration();
-  const sub =
-    (await reg.pushManager.getSubscription()) ??
-    (await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: b64url(publicKey),
-    }));
+  const key = b64url(publicKey);
+  let sub = await reg.pushManager.getSubscription();
+  // #3024: a subscription made with another key (the server's key changed)
+  // never gets a push. Replace it; its old server row is removed below.
+  const rekeyed = !!sub && !sameKey(sub.options?.applicationServerKey, key);
+  if (sub && rekeyed) {
+    await sub.unsubscribe().catch(() => false);
+    sub = null;
+  }
+  sub ??= await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: key,
+  });
   const j = sub.toJSON() as {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
@@ -276,6 +289,13 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
     },
     z.object({ id: z.string() }),
   );
+  // A new endpoint got a new row; the earlier row (an old key's, even after a
+  // failed POST and a retry) would stay as a dead one.
+  const old = storedSub();
+  if (old && old.userId === userId && old.id !== id)
+    await api
+      .send("DELETE", R.mePushSubscription(old.id), undefined)
+      .catch(() => undefined);
   try {
     localStorage.setItem(SUB_KEY, JSON.stringify({ userId, id }));
   } catch {
@@ -433,20 +453,49 @@ export const usePatchSubscription = () => {
   });
 };
 
-/** Whether this browser has notifications on (its own subscription), read once. */
-export function useThisBrowserOn() {
+/**
+ * #3024: this browser counts as on only when something can reach it: it has a
+ * subscription, made with the server's current key (no key: off), and the
+ * server lists this browser's device (by the id it kept for this member).
+ * Never re-subscribes: that waits for a click.
+ */
+export async function thisBrowserOn(
+  publicKey: string | null | undefined,
+  list: { id: string }[],
+  userId: string,
+): Promise<boolean> {
+  if (!publicKey) return false;
+  const sub = await currentSubscription();
+  if (!sub || !sameKey(sub.options?.applicationServerKey, b64url(publicKey)))
+    return false;
+  const id = thisSubscriptionId(userId);
+  return !!id && list.some((x) => x.id === id);
+}
+
+/**
+ * `pushKey`: the server's key, null when it has none or couldn't be read,
+ * undefined while unknown. `list`: this member's devices, undefined while
+ * unknown. The answer is undefined until both are known and the browser is read.
+ */
+export function useThisBrowserOn(
+  pushKey: string | null | undefined,
+  list: { id: string }[] | undefined,
+  userId: string,
+) {
   const [on, setOn] = useState<boolean | undefined>(undefined);
+  const known = pushKey !== undefined && (pushKey === null || !!list);
   useEffect(() => {
+    if (!known) return;
     let live = true;
-    void currentSubscription().then(
-      (s) => live && setOn(!!s),
+    void thisBrowserOn(pushKey, list ?? [], userId).then(
+      (v) => live && setOn(v),
       () => live && setOn(false),
     );
     return () => {
       live = false;
     };
-  }, []);
-  return [on, setOn] as const;
+  }, [known, pushKey, list, userId]);
+  return [known ? on : undefined, setOn] as const;
 }
 
 /** "Not now" keeps the nudge away on this browser for this long, at least (Design). */

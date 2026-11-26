@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { BUS_CMD, BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
 import { home } from "./config.ts";
 import {
@@ -131,13 +139,42 @@ export function coveringEntry(
   return best;
 }
 
+/** Check the backlink in Git's worktree registry before inheriting a mapping. */
+function worktreeEntry(folders: Folders, checkout: string) {
+  const pointer = join(checkout, ".git");
+  const file = readOwnFile(pointer, undefined, { maxBytes: 8192 });
+  if (file.state !== "ok" || !file.text.startsWith("gitdir: "))
+    return undefined;
+  try {
+    const admin = realpathSync(resolve(checkout, file.text.slice(8).trimEnd()));
+    const registry = dirname(admin);
+    const common = dirname(registry);
+    if (basename(registry) !== "worktrees") return undefined;
+    const primary = basename(common) === ".git" ? dirname(common) : common;
+    const mapped = coveringEntry(folders, primary);
+    if (!mapped) return undefined;
+    const backlink = readOwnFile(join(admin, "gitdir"), undefined, {
+      maxBytes: 8192,
+    });
+    if (
+      backlink.state === "ok" &&
+      realpathSync(resolve(admin, backlink.text.trimEnd())) === pointer
+    )
+      return mapped;
+  } catch {}
+  return undefined;
+}
+
 /**
  * Where a folder's agents connect. With only main set up every folder is
  * main, and nothing is read or written. With several instances a mapped
  * folder covers everything below it (longest prefix wins); an unmapped one,
  * or one naming an instance that is gone, is unmapped: no guess.
  */
-export function folderHomeLookup(h: string = home()): HomeLookup {
+export function folderHomeLookup(
+  h: string = home(),
+  keyOf = folderKey,
+): HomeLookup {
   return (cwd) => {
     const list = listInstances(h);
     if (list.length === 1 && list[0]?.main) return { instance: MAIN_INSTANCE };
@@ -147,7 +184,9 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
     } catch {
       real = resolve(cwd);
     }
-    const hit = coveringEntry(readFolders(h), real);
+    const folders = readFolders(h);
+    const hit =
+      coveringEntry(folders, real) ?? worktreeEntry(folders, keyOf(cwd));
     if (hit && list.some((i) => i.name === hit.name))
       return { instance: hit.name };
     return { unmapped: true };
@@ -157,6 +196,7 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
 /** Bound on the once-only sets, so a long-lived daemon does not grow them without end. */
 const SEEN_MAX = 1000;
 const noted = new Set<string>();
+export const UNMAPPED_FOLDER_MESSAGE = `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`;
 
 /**
  * The line the daemon says once per folder for a session that has no
@@ -169,13 +209,14 @@ export function unmappedFolderNote(
   h: string = home(),
   /** The folder's key, when the caller already has it (it runs git). */
   known?: string,
+  lookup = folderHomeLookup(h),
 ): string | undefined {
-  if (!("unmapped" in folderHomeLookup(h)(cwd))) return undefined;
+  if (!("unmapped" in lookup(cwd))) return undefined;
   const key = `${h}\0${known ?? folderKey(cwd)}`;
   if (noted.has(key)) return undefined;
   if (noted.size >= SEEN_MAX) noted.clear();
   noted.add(key);
-  return `This folder isn't tied to an instance yet. Run ${BUS_CMD} use in this folder.`;
+  return UNMAPPED_FOLDER_MESSAGE;
 }
 
 /**

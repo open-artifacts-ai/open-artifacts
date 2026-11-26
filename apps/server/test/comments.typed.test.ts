@@ -159,11 +159,18 @@ const list = async (id: string, auth: string) =>
 const url = (id: string) => `http://app.localhost/a/${id}`;
 const ids = (t: Thread) =>
   `Thread ${t.id}, comment ${(t.comments[0] as Comment).id}.`;
-/** #3139: the ids line, your user's typed words (when sent) and the one-thread read. */
+/** #3139, #3225: the ids line, your user's typed words + reply call (when sent), else the one-thread read. */
 const idLines = (t: Thread, id: string, words?: string) => [
   ids(t),
-  ...(words !== undefined ? [`Their words: ${JSON.stringify(words)}`] : []),
-  `Read just this thread: list_comments ${JSON.stringify({ id, threadId: t.id, commentId: (t.comments[0] as Comment).id })}.`,
+  ...(words !== undefined
+    ? [
+        `Their words: ${JSON.stringify(words)}`,
+        `Reply: add_comment ${JSON.stringify({ id, threadId: t.id, body: "..." })}`,
+        `Answer from this notice. Only if their words refer to earlier comments: list_comments ${JSON.stringify({ id, threadId: t.id, commentId: (t.comments[0] as Comment).id })}.`,
+      ]
+    : [
+        `Read just this thread: list_comments ${JSON.stringify({ id, threadId: t.id, commentId: (t.comments[0] as Comment).id })}.`,
+      ]),
 ];
 
 const YOURS =
