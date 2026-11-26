@@ -24,6 +24,7 @@ import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { queueMentionPush, queueUpdatePush } from "./push.js";
 import { getUsers } from "./users.js";
+import { pushOn } from "./web-push.js";
 
 /** Person-mention Needs-you items one sender may cause per day (#2770). */
 export const PERSON_MENTIONS_PER_DAY = 200;
@@ -127,10 +128,18 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // #2512 S5: browser push for each Update, for those who turned it on. A
-    // Needs-you item (a person @mentioned, #2770) is queued as Needs-you
-    // (#2781), never as an Update.
+    if (!pushOn(env) || rows.length === 0) return;
+    // A thread can have many recipients and few enrolled browsers. Resolve
+    // those recipients together before scheduling their individual items.
+    const enrolled = await stmt(
+      env.DB,
+      "select distinct user_id from push_subscriptions where user_id in (select value from json_each(?1))",
+    )
+      .bind(JSON.stringify([...new Set(rows.map((r) => r.userId))]))
+      .all<{ user_id: string }>();
+    const hasDevice = new Set(enrolled.results.map((r) => r.user_id));
     for (const r of rows) {
+      if (!hasDevice.has(r.userId)) continue;
       const base = {
         key: r.key,
         artifactId: r.artifactId,

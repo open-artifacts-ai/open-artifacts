@@ -336,6 +336,62 @@ const ProofSeen = z.strictObject({
   hash: LinkProofHashSchema,
 });
 
+/**
+ * #3108: a Codex thread id (a UUID, as Codex mints it). Hostile input: the
+ * daemon builds no path and does no lookup before this matches.
+ */
+export const CodexThreadIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+/** A code-mode call id: `exec-<uuid>`, one per call an exec makes. */
+export const CodexExecCallIdSchema = z
+  .string()
+  .regex(/^exec-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+/** A direct function call's id, as the Responses API mints it. */
+export const CodexDirectCallIdSchema = z
+  .string()
+  .regex(/^call_[A-Za-z0-9]{8,64}$/);
+/** A code-mode exec's item id (`ctc_<hex>`). */
+export const CodexItemIdSchema = z.string().regex(/^ctc_[0-9a-f]{16,96}$/);
+/** An MCP tool name as Open Artifacts names its tools. */
+export const CodexToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+
+/**
+ * #3108 (`BUS_CAPS.codexCheck`): a /mcp tools/call signed in as this member
+ * carried no proof but named a Codex thread and call. The daemon says whether
+ * that exact call is open in a live Codex thread it holds. `direct`: a plain
+ * function_call, bound by tool name and the sha256 of its canonical
+ * arguments. `code`: a call inside a code-mode exec, bound by the open exec's
+ * item id and the literal tool name in its script. Never logged by the hub.
+ * Answered by `codex_call_checked` with `re` set to this frame's id.
+ */
+const CodexCallCheck = z.strictObject({
+  ...base,
+  type: z.literal("codex_call_check"),
+  thread_id: CodexThreadIdSchema,
+  tool: CodexToolNameSchema,
+  mode: z.discriminatedUnion("kind", [
+    z.strictObject({
+      kind: z.literal("direct"),
+      call_id: CodexDirectCallIdSchema,
+      args_sha256: LinkProofHashSchema,
+    }),
+    z.strictObject({
+      kind: z.literal("code"),
+      call_id: CodexExecCallIdSchema,
+      item_id: CodexItemIdSchema,
+    }),
+  ]),
+});
+
+/** The daemon's answer: `ok` only when the call is attested. */
+const CodexCallChecked = z.strictObject({
+  ...base,
+  type: z.literal("codex_call_checked"),
+  re: FrameIdSchema,
+  ok: z.boolean(),
+});
+
 /** #2079: most refs one `waiting_query` names. */
 export const MAX_WAITING_QUERY = 64;
 
@@ -736,6 +792,7 @@ export const CLIENT_FRAMES = [
   "update_report",
   "guest_up",
   "guest_down",
+  "codex_call_checked",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -759,6 +816,7 @@ export const SERVER_FRAMES = [
   "update_ack",
   "owner_away",
   "proof_seen",
+  "codex_call_check",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -781,6 +839,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   UpdateReport,
   GuestUp,
   GuestDown,
+  CodexCallChecked,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -804,6 +863,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   UpdateAck,
   OwnerAwayPush,
   ProofSeen,
+  CodexCallCheck,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -825,6 +885,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   UpdateReport,
   GuestUp,
   GuestDown,
+  CodexCallChecked,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -846,6 +907,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   UpdateAck,
   OwnerAwayPush,
   ProofSeen,
+  CodexCallCheck,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -859,6 +921,8 @@ export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
 export type ProofSeenFrame = z.infer<typeof ProofSeen>;
+export type CodexCallCheckFrame = z.infer<typeof CodexCallCheck>;
+export type CodexCallCheckedFrame = z.infer<typeof CodexCallChecked>;
 export type GuestUpFrame = z.infer<typeof GuestUp>;
 export type UpdateReportFrame = z.infer<typeof UpdateReport>;
 export type FollowEntryWire = z.infer<typeof FollowEntry>;

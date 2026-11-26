@@ -7,6 +7,8 @@ import {
 } from "@oa/bus-adapter-opencode";
 import {
   codexBinFile,
+  codexOaEntries,
+  formatEvent,
   globalFile,
   isGlobalDir,
   nearestConfig,
@@ -35,6 +37,7 @@ import {
   opencodeProxyProblem,
   skippedProxyEntries,
 } from "../steps/adapters.ts";
+import { agyPluginProblem } from "../steps/antigravity.ts";
 import {
   claudePluginsState,
   claudeVersion,
@@ -139,6 +142,61 @@ function asksForGlobal(ctx: Ctx, dirs: string[]): boolean {
  * Codex's own folder, which the attestation assumes only Codex writes
  * (docs/probes/codex.md §2).
  */
+/** Only this much of the end of events.log is read. */
+const EVENTS_TAIL = 512 * 1024;
+/** A link older than this reads as not seen: the entry links on its next call. */
+const LINK_RECENT_MS = 7 * 24 * 3600_000;
+
+/** `5 minutes ago`, `3 hours ago`, `2 days ago`. */
+function ago(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} minute${m === 1 ? "" : "s"} ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h} hour${h === 1 ? "" : "s"} ago`;
+  return `${Math.floor(h / 24)} days ago`;
+}
+
+/**
+ * #3108: each Codex entry that signs in by itself is linked through the
+ * server's call check. Reported only from what the daemon logged: a recent
+ * `codex_call_linked` for the entry, else that it links on its first call.
+ */
+function codexLinkLines(ctx: Ctx, hub: string): void {
+  let origin: string;
+  try {
+    origin = new URL(hub).origin;
+  } catch {
+    return;
+  }
+  const names = codexOaEntries(ctx.home, origin);
+  if (names.length === 0) return;
+  let tail = "";
+  try {
+    const file = join(ctx.home, "logs", "events.log");
+    const text = readFileSync(file, "utf8");
+    tail = text.length > EVENTS_TAIL ? text.slice(-EVENTS_TAIL) : text;
+  } catch {}
+  const lines = tail.split("\n");
+  for (const name of names) {
+    // The log's own writer makes the token, so quoting matches.
+    const token = formatEvent(new Date(0), "codex_call_linked", { name })
+      .split(" ")
+      .slice(1)
+      .join(" ");
+    let last: number | undefined;
+    for (const l of lines) {
+      if (!l.endsWith(` ${token}`)) continue;
+      const at = Date.parse(l.slice(0, l.indexOf(" ")));
+      if (Number.isFinite(at) && (last === undefined || at > last)) last = at;
+    }
+    const age = last === undefined ? undefined : ctx.now() - last;
+    if (age !== undefined && age <= LINK_RECENT_MS)
+      say(ctx, ctx.copy.codexLinked(safeText(name, 80), ago(age)));
+    else say(ctx, ctx.copy.codexLinksOnFirstCall(safeText(name, 80)));
+  }
+}
+
 function codexChecks(
   ctx: Ctx,
   out: { pass: (line: string) => void; warn: (lines: string[]) => void },
@@ -291,12 +349,17 @@ export async function doctor(ctx: Ctx): Promise<number> {
         busHome: ctx.home,
         env: ctx.env,
       });
+      const plugin = agyPluginProblem(ctx.userHome);
       if (bad?.problem === "malformed")
         fail(c.agyMalformed(tilde(ctx, bad.file)));
+      else if (plugin?.problem === "foreign")
+        fail(c.agyPluginForeign(tilde(ctx, plugin.dir)));
       else if (wiring[h] === "configured") pass(c.wired(h));
       else fail(c.notWired(h));
       if (bad?.problem === "disabled" && wiring[h] === "configured")
         warn(c.agyDisabled());
+      if (plugin?.problem === "off" && wiring[h] === "configured")
+        warn(c.agyPluginOff());
       continue;
     }
     let version: string | undefined;
@@ -409,9 +472,11 @@ export async function doctor(ctx: Ctx): Promise<number> {
         which: ctx.which,
       });
       if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
-      if (hub !== undefined)
+      if (hub !== undefined) {
         for (const k of skippedProxyEntries({ ...skipDeps(ctx), hub }))
           if (k.harness === "Codex") warn([`Codex: ${safeText(k.note, 400)}`]);
+        codexLinkLines(ctx, hub);
+      }
     }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }

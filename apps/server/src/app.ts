@@ -284,6 +284,18 @@ export function createApp(
       await res.body?.cancel();
       return textNotFound();
     }
+    // The web app manifest (iOS Home Screen push): a real file, served with
+    // its own type whatever ASSETS' extension table says. Never relabels
+    // ASSETS' SPA fallback (text/html) as a manifest.
+    if (
+      path === "/manifest.webmanifest" &&
+      res.ok &&
+      !/^text\/html/i.test(res.headers.get("content-type") ?? "")
+    ) {
+      const headers = new Headers(res.headers);
+      headers.set("Content-Type", "application/manifest+json");
+      return new Response(res.body, { status: res.status, headers });
+    }
     return bundle ? res : withInstanceMeta(c.env, res);
   });
   return app;
