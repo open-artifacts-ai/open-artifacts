@@ -112,6 +112,29 @@ describe("a commenter share", () => {
     expect(put.status).toBeGreaterThanOrEqual(400);
   });
 
+  it("reads a legacy Viewer as Commenter until the owner explicitly narrows or revokes it", async () => {
+    const id = await page();
+    await E.DB.prepare(
+      "INSERT INTO shares (artifact_id,email,role,created_by,created_at) VALUES (?,?,'viewer',?,1)",
+    )
+      .bind(id, member.email, owner.userId)
+      .run();
+    const role = async () =>
+      (
+        (await (await api(app, R.shares(id), owner.cookie)).json()) as Share[]
+      ).find((row) => row.email === member.email)?.role;
+    expect(await role()).toBe("commenter");
+    expect((await comment(id, member)).status).toBe(201);
+    expect((await share(id, member.email, "viewer")).status).toBe(200);
+    expect(await role()).toBe("viewer");
+    expect((await comment(id, member)).status).toBe(404);
+    await api(app, R.share(id, member.email), owner.cookie, {
+      method: "DELETE",
+    });
+    expect((await share(id, member.email, "viewer")).status).toBe(200);
+    expect(await role()).toBe("viewer");
+  });
+
   it("refuses comments and replies after a member is set to Viewer", async () => {
     const id = await page();
     await share(id, member.email, "commenter");

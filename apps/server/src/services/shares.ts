@@ -22,6 +22,7 @@ import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import {
+  LEGACY_COMMENT,
   SHARE_ROLE_CASE,
   shareRoleSql,
   storedShare,
@@ -243,11 +244,18 @@ export async function putShare(
   // The audit row rides in the same batch, written only when the upsert
   // changed a row (a share refused at the cap, or a re-share at the same
   // role, writes none).
-  const [res] = await env.DB.batch<{
+  const [, res] = await env.DB.batch<{
     email: string;
     role: string;
     createdAt: number;
   }>([
+    // Materialize a preserved grant before the upsert compares roles so that
+    // a repeated Commenter grant stays a no-op and a Viewer downgrade is audited.
+    env.DB.prepare(`UPDATE shares SET can_comment = 1
+      WHERE artifact_id = ? AND email = ? AND role = 'viewer' AND can_comment = 0 AND ${LEGACY_COMMENT}`).bind(
+      id,
+      email,
+    ),
     env.DB.prepare(
       `INSERT INTO shares (artifact_id, email, role, can_comment, created_by, created_at)
        SELECT ?1, ?2, ?3, ?7, ?4, ?5
@@ -258,6 +266,9 @@ export async function putShare(
        RETURNING email, ${SHARE_ROLE_CASE} AS role, created_at AS createdAt`,
     ).bind(id, email, stored.role, user.id, now, MAX_SHARES, stored.canComment),
     shareAudit(env, "artifact.share", user, artifact, { role }),
+    env.DB.prepare(
+      "DELETE FROM legacy_viewer_comments WHERE artifact_id = ? AND email = ?",
+    ).bind(id, email),
   ]);
   // No row back: unchanged (already at this role) or refused at the cap.
   const row =
