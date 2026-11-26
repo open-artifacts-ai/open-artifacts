@@ -5,7 +5,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
-import { listVersionsWaiting, publish } from "../src/services/artifacts.js";
+import {
+  listVersionsWaiting,
+  patch,
+  publish,
+} from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { api, login, runIndex } from "./helpers.js";
 
@@ -79,6 +83,23 @@ describe("GET versions wait", () => {
     expect(await newest(r)).toMatchObject({ version: 1, textIndexed: true });
     expect(Date.now() - t0).toBeLessThan(LIMITS.indexWaitMaxMs / 2);
     expect(await waiters(a.id)).toBe(0);
+  });
+
+  it("a very large wait is clamped to the cap, never refused", async () => {
+    const a = await pub({
+      title: `l ${tag}`,
+      format: "html",
+      content: "<p>big</p>",
+    });
+    const held = get(a.id, owner.cookie, undefined, 1_000_000_000);
+    await vi.waitFor(async () => expect(await waiters(a.id)).toBe(1));
+    expect(await runIndex(a.id)).toBe(true);
+    const r = await held;
+    expect(r.status).toBe(200);
+    expect(await newest(r)).toMatchObject({ version: 1, textIndexed: true });
+    expect(R.versions(a.id, undefined, 1_000_000_000)).toContain(
+      "wait=1000000000",
+    );
   });
 
   it("an already indexed version, and a page with `before`, are never held", async () => {
@@ -180,13 +201,73 @@ describe("GET versions wait", () => {
     expect(await waiters(a.id)).toBe(0);
   });
 
+  it("a hold that fails still answers from a fresh read", async () => {
+    const a = await pub({
+      title: `f ${tag}`,
+      format: "html",
+      content: "<p>rpc</p>",
+    });
+    // The runtime's hold dies after the index ran: the answer is the current list.
+    const failing = {
+      ...(env as Env),
+      ARTIFACT_RUNTIME: {
+        idFromName: (n: string) => env.ARTIFACT_RUNTIME.idFromName(n),
+        get: (id: DurableObjectId) => ({
+          whenIndexed: async () => {
+            await runIndex(a.id);
+            throw new Error("rpc died");
+          },
+        }),
+      },
+    } as unknown as Env;
+    const list = await listVersionsWaiting(
+      failing,
+      { kind: "user", user: owner.member },
+      a.id,
+      undefined,
+      5_000,
+    );
+    expect(list[0]).toMatchObject({ version: 1, textIndexed: true });
+  });
+
+  it("access revoked during a hold is refused when it ends", async () => {
+    const a = await pub({
+      title: `x ${tag}`,
+      visibility: "team",
+      format: "html",
+      content: "<p>acc</p>",
+    });
+    const reader = { kind: "user", user: other.member } as const;
+    // Readable before the hold.
+    expect(
+      (await listVersionsWaiting(env as Env, reader, a.id, undefined, 0))[0],
+    ).toMatchObject({ version: 1 });
+    const revoking = {
+      ...(env as Env),
+      ARTIFACT_RUNTIME: {
+        idFromName: (n: string) => env.ARTIFACT_RUNTIME.idFromName(n),
+        get: () => ({
+          whenIndexed: async () => {
+            await patch(env as Env, owner.member, a.id, {
+              visibility: "private",
+            } as never);
+            return true;
+          },
+        }),
+      },
+    } as unknown as Env;
+    await expect(
+      listVersionsWaiting(revoking, reader, a.id, undefined, 5_000),
+    ).rejects.toThrow();
+  });
+
   it("wait must be a non-negative integer", async () => {
     const a = await pub({
       title: `w ${tag}`,
       format: "html",
       content: "<p>u</p>",
     });
-    for (const bad of ["-1", "1.5", "abc", "", "9999999999"]) {
+    for (const bad of ["-1", "1.5", "abc", "", "99999999999999999"]) {
       const r = await api(app, `${R.versions(a.id)}?wait=${bad}`, owner.cookie);
       expect(r.status, bad).toBe(400);
     }

@@ -61,7 +61,7 @@ export const R = {
    * A page holds at most VERSIONS_PAGE_SIZE (20) and stops early once its manifests pass
    * ~1 MiB (always at least one), so pages may be shorter than 20: page on with
    * `before` = the last version; only an empty array means the end.
-   * `wait` (ms, an integer >= 0; the server caps it at LIMITS.indexWaitMaxMs):
+   * `wait` (ms, a safe integer >= 0, at most 16 digits; the server clamps it to LIMITS.indexWaitMaxMs):
    * on the first page (no `before`), while the newest version's search index
    * is still pending (`textIndexed` false), the request is held and answers the
    * moment that index job settles, or at the cap with the then-current list; it
@@ -72,7 +72,7 @@ export const R = {
   versions: (id: string, before?: number, wait?: number) => {
     if (before !== undefined && !(Number.isInteger(before) && before >= 1))
       throw new RangeError(`before must be an integer >= 1: ${before}`);
-    if (wait !== undefined && !(Number.isInteger(wait) && wait >= 0))
+    if (wait !== undefined && !(Number.isSafeInteger(wait) && wait >= 0))
       throw new RangeError(`wait must be an integer >= 0: ${wait}`);
     const q = [
       before === undefined ? "" : `before=${before}`,

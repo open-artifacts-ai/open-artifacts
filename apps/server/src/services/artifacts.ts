@@ -1549,8 +1549,8 @@ function docSaveField(
  * the plain read's, refused before any hold), then, on the first page while
  * the newest version is not text-indexed, a hold on that version's index job
  * in the artifact's DO (answers when it settles, or at `waitMs`, capped), and
- * the list read again. Nothing is written; a runtime failure answers the
- * plain list.
+ * the list read again, access included, whether the hold ended or failed.
+ * Nothing is written.
  */
 export async function listVersionsWaiting(
   env: Env,
@@ -1569,8 +1569,10 @@ export async function listVersionsWaiting(
       .get(ns.idFromName(id))
       .whenIndexed(newest.version, Math.min(waitMs, LIMITS.indexWaitMaxMs));
   } catch {
-    return first;
+    // The hold failed, not the read: whatever it did, answer from a fresh read.
   }
+  // Released, timed out or failed: the answer is current and the access
+  // check is run again (it may have changed while the request waited).
   return listVersions(env, caller, id, before);
 }
 
