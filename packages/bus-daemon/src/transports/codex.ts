@@ -259,10 +259,18 @@ export const execCodex =
           });
         },
       );
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-      }, timeoutMs);
+      // Like execFile's own timeout: armed only for a positive value (0 is
+      // "no timeout"), and the stdio pipes are destroyed before the kill, so
+      // a grandchild holding them open cannot keep the callback from firing.
+      const timer =
+        timeoutMs > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+              child.kill("SIGTERM");
+            }, timeoutMs)
+          : undefined;
     });
 
 /**
