@@ -532,7 +532,7 @@ export async function codeRule(
  */
 const TARGET_OK = `u.role <> 'owner' and (u.role <> 'admin' or ?3 = 1)`;
 const RESETTABLE = `exists (select 1 from identities i join users u on u.id = i.user_id
-  where i.provider = 'google' and u.id = ?1 and ${TARGET_OK})`;
+  where i.provider = ?4 and u.id = ?1 and ${TARGET_OK})`;
 /**
  * An owner or admin: only the owner may act on one (#475). Checked by role,
  * never by link, so a refusal doesn't reveal whether they are linked.
@@ -543,8 +543,10 @@ const ADMIN_TARGET =
 /**
  * Admin action (owner or admin; 404 for anyone else): removes a member's
  * Google link so their next Google sign-in links afresh (clears an
- * identity_conflict). Google only (#3087): every statement here, and the
- * google_relink mark, name provider 'google'; another provider's link stays. Never the owner's link; 404 when there is none. An
+ * identity_conflict). Provider-aware (#3087): it resets `provider`'s link
+ * only (Google by default, the members route's only caller today); another
+ * provider's link stays, and only a Google reset sets google_relink. Never
+ * the owner's link; 404 when there is none. An
  * admin's link only by the (uncapped) owner: an admin acting on an admin or
  * the owner gets 403 owner_only whether or not they are linked (it would
  * sign a peer admin out, #475), also when the target was promoted between
@@ -562,6 +564,8 @@ export async function resetIdentity(
   actor: Member,
   userId: string,
   ctx?: Pick<ExecutionContext, "waitUntil">,
+  /** The link to reset; Google by default (the members route's only caller). */
+  provider: IdentityProvider = "google",
 ): Promise<void> {
   if (!orgCan(actor, "members.manage", { cap: capOfCaller(callerOf(actor)) }))
     throw new ApiError("not_found", "Not found");
@@ -580,7 +584,7 @@ export async function resetIdentity(
     throw new ApiError("not_found", "Not found");
   };
   const row = await stmt(env.DB, `select ${RESETTABLE} as ok`)
-    .bind(userId, null, owner)
+    .bind(userId, null, owner, provider)
     .first<{ ok: number }>();
   if (!row?.ok) await refuse();
   // Grants (KV) BEFORE the batch, unlike removeMember and setUserStatus, and
@@ -596,17 +600,20 @@ export async function resetIdentity(
     stmt(
       env.DB,
       `update tokens set revoked_at = ?2 where user_id = ?1 and revoked_at is null and ${RESETTABLE}`,
-    ).bind(userId, Date.now(), owner),
+    ).bind(userId, Date.now(), owner, provider),
     stmt(
       env.DB,
       // google_relink: the next directory users page relinks this row by
       // email (applyUsers), never deleting it as a recycled address. Never
       // on an erased row (#1204): its address is gone, so the reset only
       // frees that Google account to come back as a new, empty person.
+      // google_relink is Google's (directory sync): another provider's reset
+      // leaves it as it is.
       `update users set session_epoch = session_epoch + 1,
-        google_relink = case when erased_at is null then 1 else 0 end
+        google_relink = case when ?4 <> 'google' then google_relink
+                             when erased_at is null then 1 else 0 end
         where id = ?1 and ${RESETTABLE}`,
-    ).bind(userId, null, owner),
+    ).bind(userId, null, owner, provider),
     // Directly after the session_epoch update (gated on RESETTABLE): audited
     // only when that update changed the row, i.e. the reset happens.
     audit(
@@ -615,22 +622,24 @@ export async function resetIdentity(
       { type: "user", id: userId },
       userActor(actor.id),
       {
-        detail: { provider: "google" },
+        detail: { provider },
         when: { sql: "changes() > 0", args: [] },
       },
     ),
-    stmt(
-      env.DB,
-      `delete from identities where provider = 'google'
-       and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
-    ).bind(userId, null, owner),
-    // #1291: bus machines go with the PATs (after results[3], read below).
+    // #1291: bus machines go with the PATs. Before the link delete below:
+    // RESETTABLE reads that link, so after it this would match nothing.
     stmt(
       env.DB,
       `update bus_machines set revoked_at = ?2 where user_id = ?1 and revoked_at is null and ${RESETTABLE}`,
-    ).bind(userId, Date.now(), owner),
+    ).bind(userId, Date.now(), owner, provider),
+    stmt(
+      env.DB,
+      `delete from identities where provider = ?4
+       and user_id = (select u.id from users u where u.id = ?1 and ${TARGET_OK}) returning 1`,
+    ).bind(userId, null, owner, provider),
   ]);
-  if (!results[3]?.results.length) await refuse();
+  // results[4]: the link delete's returning row.
+  if (!results[4]?.results.length) await refuse();
   // Sessions and tokens are gone: their live sockets close now (P3 T7).
   await revokeUserLive(env, userId, "identity reset", ctx);
 }

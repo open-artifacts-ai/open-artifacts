@@ -343,6 +343,21 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     );
   });
 
+  it("a link cookie's p: only a missing one reads as Google; null is refused (#3087)", async () => {
+    const { e } = install();
+    const email = uniq("gp", "custom.example");
+    await seedUser(email, "member");
+    const body = { s: `sub-${email}`, e: email, h: null, n: null };
+    // A legacy cookie (no p) still works.
+    expect((await get(e, AUTH.codeLink, await sealLink(e, body))).status).toBe(
+      200,
+    );
+    for (const p of [null, "", 1, "GOOGLE"]) {
+      const bad = await sealLink(e, { ...body, p });
+      expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
+    }
+  });
+
   it("a forged link cookie is refused", async () => {
     const { e } = install();
     const bogus = "oa_glink=" + "x".repeat(20) + "." + "y".repeat(20);
