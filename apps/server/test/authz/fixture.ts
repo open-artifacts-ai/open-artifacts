@@ -1,5 +1,13 @@
 // P3 T16: builds the matrix world described in expect.ts (workerd only).
+import {
+  createExecutionContext,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import {
+  OPTOUT_CHECK_PATH,
+  OPTOUT_MINT_PATH,
+} from "@oa/provisioning-contract/optouts";
 import { newId } from "@oa/shared";
 import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
@@ -13,7 +21,8 @@ import { runtimeStub } from "../../src/runtime/do.js";
 import { publish } from "../../src/services/artifacts.js";
 import { getUser } from "../../src/services/users.js";
 import { mailer, seedUser, uniq } from "../auth-helpers.js";
-import { directEnv } from "../directory-helpers.js";
+import { cachePlan, fakeBilling } from "../billing-helpers.js";
+import { directEnv, hostedEnv, hostedProps } from "../directory-helpers.js";
 import { fetchAndWait } from "../helpers.js";
 import { oauthToken } from "../mcp-helpers.js";
 import {
@@ -49,10 +58,52 @@ export const mail = mailer();
  */
 const ADMIT = { limit: async () => ({ success: true }) };
 
-/** FinQore's flags, on the Paid plan (no fan-out caps in the way). */
-export const E: Env = directEnv({
+/**
+ * Red-line port: vitest.authz-hosted.config.ts binds AUTHZ_HOSTED, and the
+ * same matrix runs with the settings staging gives red-line's install B
+ * (rl-b, Business: cloud tests/redline/src/targets.ts), the install whose
+ * own credentials the live per-route file (cloud
+ * tests/redline/live/surfaces.test.ts) ran. All from the cloud repo's
+ * committed staging config, no secret values:
+ * - vars: packages/provision/src/metadata.ts userWorkerMetadata gives PLAN
+ *   paid, ENVIRONMENT production, HOSTED 1, AUTH_DOMAIN_JOIN invite and the
+ *   tier's FEATURES (Business: this world's own) plus spaces and usage_off.
+ *   No bus: STAGING_BUS_ALL skips rl- slugs, and STAGING_BUS_SLUGS
+ *   (apps/provisioner/wrangler.jsonc, env.staging) does not list rl-b.
+ *   Staging's provisioner has OPTOUT_LIST "1", so packages/provision/src/
+ *   wfp.ts adds OPTOUT_PLATFORM on, OPTOUT_UNSUBSCRIBE_URL and the
+ *   OPTOUT_HASH_KEY secret (a test value here).
+ * - props: apps/dispatch/wrangler.jsonc env.staging binds AUTH_BROKER,
+ *   DIRECTORY_BROKER, BILLING and LOGIN with LOGIN_CHANGE "1", so
+ *   apps/dispatch/src/login-gate.ts loginProps gives every install LOGIN and
+ *   LOGIN_EDITABLE true (PROPS below).
+ * A prod Business install differs: bus on (provisioner PROD_BUS_ALL "1",
+ * slug not rl-), no LOGIN binding in prod's dispatch (so no LOGIN and no
+ * LOGIN_EDITABLE), and OPTOUT_LIST "0" (no OPTOUT_PLATFORM). This run is
+ * staging's, the setup the live file proved.
+ */
+export const HOSTED_RUN =
+  (env as unknown as { AUTHZ_HOSTED?: string }).AUTHZ_HOSTED === "1";
+const STAGING_SETTINGS: Partial<Env> = {
+  ENVIRONMENT: "production",
+  HOSTED: "1",
+  AUTH_DOMAIN_JOIN: "invite",
+  FEATURES: "spaces,sync_google,content_revocation,usage_off",
+  AUTH_BROKER_URL: "https://auth.h.test",
+  OPTOUT_PLATFORM: "on",
+  OPTOUT_HASH_KEY: "authz-hosted-test-key",
+  OPTOUT_UNSUBSCRIBE_URL: "https://signup.h.test/unsubscribe",
+};
+
+/**
+ * FinQore's flags, on the Paid plan (no fan-out caps in the way). A hosted
+ * run is a hosted install's env (hostedEnv: the directory broker, no Google
+ * client secret) with the login broker.
+ */
+export const E: Env = (HOSTED_RUN ? hostedEnv : directEnv)({
   PLAN: "paid",
   FEATURES: "spaces,sync_google,content_revocation",
+  ...(HOSTED_RUN ? STAGING_SETTINGS : {}),
   ...mail.env,
   RL_ANON: ADMIT as never,
 });
@@ -67,15 +118,62 @@ const nextIp = () => {
   return `2001:db8:${ipSeq.toString(16)}::1`;
 };
 
+/**
+ * Staging's LoginGate, faked: the opt-out list answers "not opted out" and
+ * mints a token (the shape of @oa/provisioning-contract's schemas), and any
+ * other route, a login-domain change included, is the gate's 404. The matrix
+ * never reaches a change (PUT stops at reauth_required).
+ */
+const fakeLoginGate = {
+  fetch: async (req: Request) => {
+    const path = new URL(req.url).pathname;
+    if (path === OPTOUT_CHECK_PATH) return Response.json({ optedOut: false });
+    if (path === OPTOUT_MINT_PATH)
+      return Response.json({ token: `${"T".repeat(31)}.${"m".repeat(43)}` });
+    return Response.json(
+      { error: "not_found" },
+      { status: 404, headers: { "x-oa-gate": "1" } },
+    );
+  },
+};
+
+/**
+ * A hosted run's ctx.props: what staging's dispatch gives every install (the
+ * login and directory brokers, billing, the login gate and LOGIN_EDITABLE),
+ * faked as the hosted tests fake them.
+ */
+const billing = HOSTED_RUN ? fakeBilling(E.INSTALL_ID) : null;
+const PROPS = billing
+  ? {
+      ...hostedProps(),
+      AUTH_BROKER: { fetch: async () => new Response(null, { status: 404 }) },
+      ...billing.props,
+      LOGIN: fakeLoginGate,
+      LOGIN_EDITABLE: true,
+    }
+  : undefined;
+
 /** The Worker as a remote target would be: both hosts, waitUntil awaited. */
 export const io: ProbeIO = {
   contentBase: CONTENT,
-  fetch: (req) => {
+  fetch: async (req) => {
     const h = new Headers(req.headers);
     // The edge sets it on every real request (anonymous socket and write
     // keys); one per request, so no limiter budget is shared across cells.
     if (!h.has("cf-connecting-ip")) h.set("cf-connecting-ip", nextIp());
-    return fetchAndWait(worker as never, new Request(req, { headers: h }), E);
+    if (!PROPS)
+      return fetchAndWait(worker as never, new Request(req, { headers: h }), E);
+    // Writable, as the platform's are: the MCP route sets ctx.props to the
+    // OAuth grant's.
+    const ctx = createExecutionContext();
+    Object.defineProperty(ctx, "props", { value: PROPS, writable: true });
+    const r = await worker.fetch(
+      new Request(req, { headers: h }) as never,
+      E as never,
+      ctx as never,
+    );
+    await waitOnExecutionContext(ctx);
+    return r;
   },
 };
 
@@ -182,6 +280,9 @@ const tag = newId().slice(0, 6).toLowerCase();
 export type CloneOpts = { noThumbnail?: boolean; editorsOnly?: boolean };
 
 export async function buildWorld(): Promise<World> {
+  // A hosted run: the install's tier is its billing row (business, active),
+  // cached as billing would answer it.
+  if (billing) await cachePlan(billing.s.row, Date.now(), E);
   const users: Partial<Record<CallerName, string>> = {};
   const emails: Partial<Record<CallerName, string>> = {};
   const subs = {
@@ -382,10 +483,15 @@ export async function buildWorld(): Promise<World> {
       email: emails[c],
     };
   }
-  const grant = await oauthToken(emails.staleSynced as string, "Matrix Agent", {
-    cookie: creds.staleSynced.cookie as string,
-    userId: u("staleSynced"),
-  });
+  const grant = await oauthToken(
+    emails.staleSynced as string,
+    "Matrix Agent",
+    {
+      cookie: creds.staleSynced.cookie as string,
+      userId: u("staleSynced"),
+    },
+    E,
+  );
   // The grant drives MCP; its PAT is checked on its own (matrix test).
   const staleSyncedPat = creds.staleSynced.token as string;
   creds.staleSynced = { ...creds.staleSynced, token: grant.accessToken };

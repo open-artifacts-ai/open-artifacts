@@ -8,6 +8,7 @@ export {
   HelloRefused,
 } from "./client.ts";
 export {
+  AWAY_RECENT_MS,
   cleanStatusLabel,
   collapsedAwayLine,
   correctedDeliveredText,
@@ -20,6 +21,7 @@ export {
   fitName,
   followingText,
   followText,
+  hiddenAwayLine,
   lateDeliveredText,
   linkedLiveNamespace,
   messageHeader,

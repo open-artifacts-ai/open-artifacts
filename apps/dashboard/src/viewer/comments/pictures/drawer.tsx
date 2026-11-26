@@ -1,7 +1,8 @@
 // #2508 slice A2: attaching pictures in the comment box (button, paste or
-// drop), up to 4, shrunk and stripped in the browser, with 56px thumbnails,
-// remove, progress and errors. Words are OA Product's and OA Design's
-// (screens v7, tab 1 and "Attaching"), word for word.
+// drop), up to 4, with 56px thumbnails, remove, progress and errors. Words are
+// OA Product's and OA Design's (screens v7, tab 1 and "Attaching"), word for
+// word. #3007: a picked picture is downscaled in the browser only when it is
+// past the limits (see shrink.ts); metadata is the server's job either way.
 import { TriangleAlert, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -157,7 +158,8 @@ export function usePictureDrawer(artifactId: string) {
         }
         room--;
         const key = `p${++seq}`;
-        // Shown at once from the file; replaced by the shrunk copy.
+        // Shown at once from the file; replaced by the downscaled copy when
+        // the picture is past the limits (#3007).
         const preview = URL.createObjectURL(f);
         count.current++;
         setItems((xs) => [

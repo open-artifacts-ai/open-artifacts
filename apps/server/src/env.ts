@@ -133,9 +133,10 @@ export interface Env {
   /** Browser Run, for server-side thumbnails (services/thumbs.ts); optional. */
   BROWSER?: Fetcher;
   /**
-   * Workers Images, to downscale a large comment picture for an agent
-   * (services/comment-pictures.ts). Without this binding the tool serves the
-   * original up to its byte limit.
+   * Workers Images: it downscales a comment picture over the store limits once,
+   * at upload (#3007), and a large one for an agent on the read path
+   * (services/comment-pictures.ts). Without this binding the upload is stored as
+   * it came and the tool serves the original up to its byte limit.
    */
   IMAGES?: ImagesBinding;
   /** Optional Email Service send binding; invite/share emails are off without it. */

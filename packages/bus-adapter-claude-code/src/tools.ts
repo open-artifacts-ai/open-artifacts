@@ -37,7 +37,16 @@ export const TOOLS = [
     name: "list_agents",
     description:
       "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
-    inputSchema: none,
+    inputSchema: {
+      type: "object",
+      properties: {
+        all: {
+          type: "boolean",
+          description: "true lists away agents too",
+        },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "send_message",
@@ -204,7 +213,7 @@ async function run(
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
       const now = Date.now();
-      return text(rosterText(r.agents, now));
+      return text(rosterText(r.agents, now, args.all === true));
     }
     if (name === "send_message") {
       const to = String(args.to ?? "");

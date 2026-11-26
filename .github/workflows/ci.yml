@@ -49,7 +49,11 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
-          "$RUNNER_TEMP/actionlint/actionlint" -color .github/workflows/*.yml
+          # actionlint has no release that knows concurrency `queue` yet
+          # (rhysd/actionlint#654); flaky-tracker.yml uses `queue: max`.
+          "$RUNNER_TEMP/actionlint/actionlint" -color \
+            -ignore 'unexpected key "queue" for "concurrency" section' \
+            .github/workflows/*.yml
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-reads.ts check
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-imports.ts cycles
   typecheck:
@@ -368,6 +372,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm --filter @oa/server test:authz
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
+      # Red-line split: the same matrix with hosted settings (ENVIRONMENT
+      # production, HOSTED 1, the business tier's FEATURES plus usage_off and
+      # bus), so the live per-route red-line file's hosted proof runs here.
+      - run: pnpm --filter @oa/server test:authz:hosted
         if: ${{ steps.ro.outputs.release_only != 'true' }}
   build:
     runs-on: ubuntu-latest
