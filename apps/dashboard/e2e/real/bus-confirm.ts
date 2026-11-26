@@ -81,20 +81,16 @@ export async function openAgent(
     if (w) w(f);
     else frames.push(f);
   });
+  // A frame that never comes fails at the test's own timeout.
   const next = (type: string) =>
-    new Promise<Frame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error(`no ${type} frame`)), 15_000);
+    new Promise<Frame>((resolve) => {
       const take = (f: Frame) => {
-        if (f.type === type) {
-          clearTimeout(t);
-          resolve(f);
-        } else waiters.push(take);
+        if (f.type === type) resolve(f);
+        else waiters.push(take);
       };
       const q = frames.findIndex((f) => f.type === type);
-      if (q >= 0) {
-        clearTimeout(t);
-        resolve(frames.splice(q, 1)[0] as Frame);
-      } else waiters.push(take);
+      if (q >= 0) resolve(frames.splice(q, 1)[0] as Frame);
+      else waiters.push(take);
     });
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
