@@ -3742,6 +3742,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        unmapped: (cwd) => "unmapped" in lookup(cwd),
         proposeReach: (ref, namespaces) => {
           // The agent's own instance: a key goes only to its own address.
           const lane = laneOfRef(ref);

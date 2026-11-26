@@ -10,6 +10,7 @@ import {
   listInstances,
   MAIN_INSTANCE,
 } from "./instances.ts";
+import { gitRecordRoot } from "./namespace.ts";
 import { writePrivate } from "./namespaces.ts";
 import { readOwnFile } from "./own-file.ts";
 
@@ -131,6 +132,26 @@ export function coveringEntry(
   return best;
 }
 
+/** Only inherit if the mapped repository itself lists this checkout. */
+function worktreeEntry(folders: Folders, cwd: string) {
+  const primary = gitRecordRoot(cwd);
+  if (!primary || inside(primary, cwd)) return undefined;
+  const mapped = coveringEntry(folders, primary);
+  if (!mapped) return undefined;
+  const checkout = git(cwd);
+  if (!checkout || !inside(checkout, cwd)) return undefined;
+  try {
+    const records = execFileSync(
+      "git",
+      ["-C", primary, "worktree", "list", "--porcelain", "-z"],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).split("\0\0");
+    if (records.some((r) => r.split("\0", 1)[0] === `worktree ${checkout}`))
+      return mapped;
+  } catch {}
+  return undefined;
+}
+
 /**
  * Where a folder's agents connect. With only main set up every folder is
  * main, and nothing is read or written. With several instances a mapped
@@ -147,7 +168,8 @@ export function folderHomeLookup(h: string = home()): HomeLookup {
     } catch {
       real = resolve(cwd);
     }
-    const hit = coveringEntry(readFolders(h), real);
+    const folders = readFolders(h);
+    const hit = coveringEntry(folders, real) ?? worktreeEntry(folders, real);
     if (hit && list.some((i) => i.name === hit.name))
       return { instance: hit.name };
     return { unmapped: true };

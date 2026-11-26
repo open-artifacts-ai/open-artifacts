@@ -11,6 +11,7 @@ import {
 import {
   AGENT_CAP_MESSAGES,
   BRIEF_RULES,
+  BUS_CMD,
   type ClientFrame,
   ClientFrameSchema,
   frameId,
@@ -233,6 +234,7 @@ export type RouteCtx = {
   habits?: () => string | null;
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
   renamed?: (ref: string, name: string) => void;
+  unmapped?: (cwd: string) => boolean;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
   configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /**
@@ -316,6 +318,16 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
+      if (
+        frame.row &&
+        agent.instance === undefined &&
+        ctx.unmapped?.(agent.cwd)
+      )
+        return {
+          type: "error",
+          code: "hub_unavailable",
+          message: `This folder is not connected to a bus instance. Run ${BUS_CMD} use in this folder.`,
+        };
       const files = frame.row
         ? (ctx.configFiles?.(
             agent.cwd,
