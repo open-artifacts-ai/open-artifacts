@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.248.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.1...v0.248.2) (2026-11-26)
+
+
+### Bug Fixes
+
+* **comments:** an ask pin keeps its face, ringed amber, and says Ask ([#3128](https://github.com/open-artifacts-ai/open-artifacts/issues/3128)) ([#3126](https://github.com/open-artifacts-ai/open-artifacts/issues/3126)) ([8d35d5c](https://github.com/open-artifacts-ai/open-artifacts/commit/8d35d5c96af3abec3ad4c2fcb540d4f1509c2cd5))
+* **t19:** the invited member's verify checks only its status; /me checks the session ([#3096](https://github.com/open-artifacts-ai/open-artifacts/issues/3096)) ([#3122](https://github.com/open-artifacts-ai/open-artifacts/issues/3122)) ([97ff642](https://github.com/open-artifacts-ai/open-artifacts/commit/97ff64221844dd60073850a1752a81e9670b0e7f))
+
 ## [0.248.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.0...v0.248.1) (2026-11-26)
 
 
