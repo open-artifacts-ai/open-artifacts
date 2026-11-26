@@ -277,19 +277,49 @@ const JS_RULES: ((code: string) => Found[])[] = [
     }
     for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
-    // Atomics.wait / waitAsync with a finite timeout is a sleep (a fresh buffer
-    // nothing notifies); one with no timeout, Infinity, or an explicit undefined / void 0 (the same as
-    // omitted) waits for a notify.
+    // Atomics.wait / waitAsync with a finite timeout is a sleep only when
+    // nothing can notify it: the array is made inline in the call, or it is an
+    // identifier that no `Atomics.notify(<it>` in the file names and that is
+    // never handed (it, or the buffer it views) to a Worker / postMessage /
+    // workerData. No timeout, Infinity, or an explicit undefined / void 0 (the
+    // same as omitted) waits for a notify; a notifiable one with a finite
+    // timeout is a bounded signal wait, a deadline on a real signal.
+    const ident = /^[A-Za-z_$][\w$]*$/;
     for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
       const args = topLevelArgs(c.body.slice(1));
       const timeout = args[3]?.trim();
       if (
-        timeout &&
-        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
+        !timeout ||
+        /^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
           timeout,
         )
       )
-        out.push({ index: c.index, why: "timers/promises" });
+        continue;
+      const arr = (args[0] ?? "").trim();
+      if (ident.test(arr)) {
+        const names = new Set([arr]);
+        // the buffer the array views: `arr = new Int32Array(buf)` / `buf.buffer`
+        const view = code.match(
+          new RegExp(
+            `\\b${arr.replace(/\$/g, "\\$")}\\s*=\\s*new\\s+\\w+Array\\s*\\(\\s*([A-Za-z_$][\\w$]*)`,
+          ),
+        );
+        if (view) names.add(view[1] as string);
+        const mentions = (text: string) =>
+          [...names].some((n) =>
+            new RegExp(`(?<![\\w$.])${n.replace(/\$/g, "\\$")}(?![\\w$])`).test(
+              text,
+            ),
+          );
+        const notified = [...calls(code, /\bAtomics\s*\.\s*notify\s*\(/g)].some(
+          (n) => mentions(topLevelArgs(n.body.slice(1))[0] ?? ""),
+        );
+        const shared = [
+          ...calls(code, /\b(?:new\s+Worker|postMessage|workerData)\s*\(/g),
+        ].some((w) => mentions(w.body));
+        if (notified || shared) continue;
+      }
+      out.push({ index: c.index, why: "timers/promises" });
     }
     return out;
   },

@@ -796,5 +796,41 @@
     "file": "a.test.ts",
     "text": "await Atomics.waitAsync(ia, 0, 0, void 0).value;",
     "why": []
+  },
+  {
+    "name": "Atomics.waitAsync bounded, resolved by a notify in the file (pass)",
+    "file": "a.test.ts",
+    "text": "const r = Atomics.waitAsync(ia, 0, 0, 5000);\nAtomics.notify(ia, 0);\nexpect(await r.value).toBe(\"ok\");",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded, buffer shared with a Worker (pass)",
+    "file": "a.test.ts",
+    "text": "const sab = new SharedArrayBuffer(4);\nconst ia = new Int32Array(sab);\nnew Worker(f, { workerData: { sab } });\nAtomics.wait(ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded, array posted to a worker (pass)",
+    "file": "a.test.ts",
+    "text": "w.postMessage({ ia });\nAtomics.wait(ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait timeout-only on a local nothing notifies (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.waitAsync timeout-only on a fresh inline buffer (flag)",
+    "file": "a.test.ts",
+    "text": "await Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50).value;",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.notify of a different array does not count (flag)",
+    "file": "a.test.ts",
+    "text": "Atomics.notify(other, 0);\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
   }
 ]
