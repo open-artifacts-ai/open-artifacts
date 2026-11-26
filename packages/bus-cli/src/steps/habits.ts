@@ -339,31 +339,39 @@ export function removeHabits(
   const notes: string[] = [];
   const seen = new Set<string>();
   const kept = { ...record(deps.busHome).files };
-  for (const h of harnesses) {
-    for (const path of habitsFiles(deps, h)) {
-      if (seen.has(path)) continue;
-      seen.add(path);
-      try {
-        if (brokenLink(path) || !existsSync(path)) continue;
-        const real = targetOf(path);
-        const before = readFileSync(real, "utf8");
-        if (spanOf(before.split("\n")) === undefined) continue;
-        const rec = kept[path];
-        const after = withoutHabits(before, rec?.added);
-        if (rec?.created && !isLink(path) && after.trim() === "")
-          rmSync(real, { force: true });
-        else writeAtomic(real, after);
+  const visit = (path: string) => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    try {
+      if (brokenLink(path) || !existsSync(path)) {
         delete kept[path];
-        files.push(path);
-      } catch (e) {
-        notes.push(
-          e instanceof Error && e.message === "unterminated"
-            ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
-            : `Could not update ${path}: ${reason(e)}`,
-        );
+        return;
       }
+      const real = targetOf(path);
+      const before = readFileSync(real, "utf8");
+      if (spanOf(before.split("\n")) === undefined) {
+        delete kept[path];
+        return;
+      }
+      const rec = kept[path];
+      const after = withoutHabits(before, rec?.added);
+      if (rec?.created && !isLink(path) && after.trim() === "")
+        rmSync(real, { force: true });
+      else writeAtomic(real, after);
+      delete kept[path];
+      files.push(path);
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
+          : `Could not update ${path}: ${reason(e)}`,
+      );
     }
+  };
+  for (const h of harnesses) {
+    for (const path of habitsFiles(deps, h)) visit(path);
   }
+  for (const path of Object.keys(kept)) visit(path);
   let p:
     | {
         changed: PluginHarness[];

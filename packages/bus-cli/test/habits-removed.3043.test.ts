@@ -21,6 +21,7 @@ import { parse } from "../src/index.ts";
 import {
   HABITS_BEGIN,
   HABITS_END,
+  removeHabits,
   removeHabitsBlocks,
 } from "../src/steps/habits.ts";
 import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
@@ -279,6 +280,51 @@ describe("install removes old habit blocks and never asks (#3043)", () => {
 
     expect(await install({ hub: HUB }, ctx)).toBe(1);
     expect(ctx.out().filter((l) => l === HABITS_MOVED_LINE(5))).toHaveLength(1);
+  });
+
+  it("removes blocks from recorded paths even when the env var that chose them is no longer set", () => {
+    const ctx = fakeCtx();
+    const claude = join(ctx.userHome, ".claude", "CLAUDE.md");
+    const customCodex = join(ctx.userHome, "codex-custom", "AGENTS.md");
+
+    putFile(claude, `claude user text\n\n${OLD_LF}\n`);
+    putFile(customCodex, `codex custom without newline\n\n${OLD_LF}\n`);
+
+    mkdirSync(ctx.home, { recursive: true });
+    const installJson = join(ctx.home, "install.json");
+    writeFileSync(
+      installJson,
+      JSON.stringify({
+        habits: {
+          files: {
+            [claude]: { added: "\n", created: false },
+            [customCodex]: { added: "\n\n", created: false },
+          },
+        },
+      }),
+    );
+
+    // CODEX_HOME is unset in env.
+    const deps = { home: ctx.userHome, env: {}, busHome: ctx.home };
+    const first = removeHabits(deps);
+    expect(first.files).toEqual([claude, customCodex]);
+    expect(first.files).toHaveLength(2);
+    expect(first.notes).toEqual([]);
+    expect(readFileSync(claude, "utf8")).toBe("claude user text\n");
+    expect(readFileSync(customCodex, "utf8")).toBe(
+      "codex custom without newline",
+    );
+    expect(JSON.parse(readFileSync(installJson, "utf8")).habits.files).toEqual(
+      {},
+    );
+
+    const second = removeHabits(deps);
+    expect(second.files).toEqual([]);
+    expect(second.notes).toEqual([]);
+    expect(readFileSync(claude, "utf8")).toBe("claude user text\n");
+    expect(readFileSync(customCodex, "utf8")).toBe(
+      "codex custom without newline",
+    );
   });
 });
 
