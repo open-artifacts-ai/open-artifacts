@@ -299,6 +299,46 @@ export function putRole(
 }
 
 /**
+ * #3132, Leo's pick 2026-11-26 ("The name is the role, automatically"): a
+ * session in a namespace (not global) under the name it asked for, a chosen
+ * one (not a harness default), holds the role of that name from its first
+ * message, when no role there has it yet and the cap has room. True when
+ * the role was created. The role then follows a rename of the session.
+ */
+export function claimNameRole(
+  sql: SqlStorage,
+  orgId: string,
+  agent: { id: string; namespace: string; name: string; global: number },
+  now: number,
+  newId: () => string,
+  max: number = BUS_ROLE_MAX,
+): boolean {
+  if (agent.global === 1) return false;
+  const lname = agent.name.toLowerCase();
+  if (roleRow(sql, orgId, agent.namespace, lname) !== null) return false;
+  const n =
+    one<{ n: number }>(
+      sql,
+      "select count(*) as n from roles where org_id = ?",
+      orgId,
+    )?.n ?? 0;
+  if (n >= max) return false;
+  sql.exec(
+    `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at, held_since)
+     values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    newId(),
+    orgId,
+    agent.namespace,
+    agent.name,
+    lname,
+    agent.id,
+    now,
+    now,
+  );
+  return true;
+}
+
+/**
  * #3132: the role's live holder hands it to its open agent `agentName`, at
  * once (Leo's pick, 2026-11-26: "The holder hands it over, or you
  * approve"). not_holder when the session with `identityId` is not the

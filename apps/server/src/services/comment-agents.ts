@@ -133,7 +133,9 @@ type OwnAgents = {
  * the role, held by another session now.
  */
 const hiddenUnnamed = (a: BusAgent): boolean =>
-  (!a.running && a.unnamed === true) || a.handedOver === true;
+  (!a.running && a.unnamed === true) ||
+  a.handedOver === true ||
+  a.pendingRole !== undefined;
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
