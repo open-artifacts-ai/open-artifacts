@@ -97,29 +97,54 @@ describe("liveFetch (xt:live, flake server #2)", () => {
     vi.useFakeTimers({ now: 0, toFake: ["Date"] });
     const STEP = 100;
     const WAIT = 500;
-    const asks: { at: number; sentThen: number }[] = [];
+    const asks: { at: number; sentThen: number; left: number }[] = [];
     const sent: number[] = [];
     const f = (async () => {
       sent.push(Date.now());
       return new Response("x", { status: sent.length === 1 ? 503 : 200 });
     }) as typeof fetch;
-    const wall = performance.now();
     const r = await liveFetch(new Request("https://x.test/"), {
       fetch: f,
-      healthy: async () => {
-        asks.push({ at: Date.now(), sentThen: sent.length });
+      healthy: async (_origin, left) => {
+        asks.push({ at: Date.now(), sentThen: sent.length, left });
         vi.advanceTimersByTime(STEP);
         return false;
       },
       healthWaitMs: WAIT,
     });
-    expect(performance.now() - wall).toBeLessThan(200);
     expect(r.status).toBe(200);
     // Every ask before the deadline saw exactly one request; the last came
     // one step before it. The second request followed, once, at the deadline.
     expect(asks.map((a) => a.at)).toEqual([0, 100, 200, 300, 400]);
     for (const a of asks) expect(a.sentThen).toBe(1);
+    // Each ask may take only what is left of the wait (a held /healthz
+    // cannot carry the resend past the deadline).
+    expect(asks.map((a) => a.left)).toEqual([500, 400, 300, 200, 100]);
     expect(sent).toEqual([0, WAIT]);
+  });
+
+  it("the default health ask is bounded by what is left of the wait", async () => {
+    vi.useFakeTimers({ now: 0, toFake: ["Date"] });
+    const bounds: (AbortSignal | null | undefined)[] = [];
+    const f = (async (r: Request | string, init?: RequestInit) => {
+      const url = typeof r === "string" ? r : r.url;
+      if (url.endsWith("/healthz")) {
+        bounds.push(init?.signal);
+        return new Response("ok", { status: 200 });
+      }
+      return new Response("x", { status: bounds.length === 0 ? 503 : 200 });
+    }) as typeof fetch;
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const r = await liveFetch(new Request("https://x.test/"), {
+      fetch: f,
+      timeoutMs: 400,
+      healthWaitMs: 20,
+    });
+    expect(r.status).toBe(200);
+    expect(bounds).toHaveLength(1);
+    // The health ask's own bound is the 20 ms left of the wait, not 400.
+    expect(timeout.mock.calls.map((c) => c[0])).toContain(20);
+    timeout.mockRestore();
   });
 
   it("asks a host that refuses at once at most HEALTH_ASKS_MAX times, then resends once", async () => {

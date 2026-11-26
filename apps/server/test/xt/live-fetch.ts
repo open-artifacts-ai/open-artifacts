@@ -35,8 +35,11 @@ export async function liveFetch(
     fetch?: typeof fetch;
     timeoutMs?: number;
     tries?: number;
-    /** Whether the host answers again (default: GET /healthz is a 200). */
-    healthy?: (origin: string) => Promise<boolean>;
+    /**
+     * Whether the host answers again within `ms` (default: GET /healthz is a
+     * 200, bounded by `ms`).
+     */
+    healthy?: (origin: string, ms: number) => Promise<boolean>;
     /** How long to wait for it before resending anyway (default: one attempt's bound). */
     healthWaitMs?: number;
   } = {},
@@ -44,7 +47,8 @@ export async function liveFetch(
   const f = o.fetch ?? fetch;
   const tries = IDEMPOTENT.has(req.method) ? (o.tries ?? LIVE_FETCH_TRIES) : 1;
   const ms = o.timeoutMs ?? LIVE_FETCH_TIMEOUT_MS;
-  const healthy = o.healthy ?? ((origin) => hostHealthy(f, origin, ms));
+  const healthy =
+    o.healthy ?? ((origin, left) => hostHealthy(f, origin, Math.min(ms, left)));
   /**
    * Asks the host until it answers, for at most healthWaitMs (one attempt's
    * bound by default) of Date time or HEALTH_ASKS_MAX asks, then lets the caller resend. Each ask is a
@@ -54,8 +58,10 @@ export async function liveFetch(
     const end = Date.now() + (o.healthWaitMs ?? ms);
     const origin = new URL(req.url).origin;
     // Still down at the deadline or the cap: the resend itself reports it.
+    // Each ask is bounded by what is left of the wait, so a held /healthz
+    // cannot carry the resend past the deadline.
     for (let n = 0; n < HEALTH_ASKS_MAX && Date.now() < end; n++)
-      if (await healthy(origin)) return;
+      if (await healthy(origin, end - Date.now())) return;
   };
   for (let i = 1; ; i++) {
     // Each attempt gets its own copy (a body is single-use) and bound.
