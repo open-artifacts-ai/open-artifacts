@@ -32,8 +32,11 @@
 // first, in one open store issue labelled `flaky-sightings`, as comments by
 // github-actions[bot] holding machine-readable lines. A test is filed (its
 // `flaky` issue opened, or the open one bumped, with the run links) only when
-// it was seen in 2 or more different runs within the last 7 days, counting
-// this one; a first sighting never files anything. When more than
+// it was seen in 2 or more different runs within 7 days of this failure,
+// counting this one; a first sighting never files anything. The 7 days are
+// measured between the failures' own times (each failed job's completion),
+// never from when the tracker runs, so a run the reconcile tracks days late
+// files exactly what its event would have. When more than
 // MAX_FILED_PER_RUN tests would be filed from one run, one summary issue is
 // filed instead of those. A store with more than STORE_MAX_COMMENTS comments
 // is closed and continued in a new one that names it, and the read follows
@@ -391,12 +394,16 @@ export function storeComments(
   return out;
 }
 
-/** The sightings within the window ending now, one per run (the earliest). */
-export function inWindow(s: Sighting[], nowMs: number): Sighting[] {
-  const from = nowMs - WINDOW_DAYS * DAY_MS;
+/**
+ * The sightings within WINDOW_DAYS of `atMs` (a failure's own time), before
+ * or after it, one per run (the earliest). Never the tracker's clock: a run
+ * tracked late, or out of order, is judged as it would have been on time.
+ */
+export function inWindow(s: Sighting[], atMs: number): Sighting[] {
+  const span = WINDOW_DAYS * DAY_MS;
   const byRun = new Map<number, Sighting>();
   for (const x of s) {
-    if (Date.parse(x.at) < from) continue;
+    if (Math.abs(Date.parse(x.at) - atMs) > span) continue;
     const had = byRun.get(x.run);
     if (!had || x.attempt < had.attempt) byRun.set(x.run, x);
   }
@@ -506,15 +513,15 @@ export type Action =
  * What one test's sighting does, given the store's sightings of it (any run)
  * and the open `flaky` issues. Skip when its open issue notes this run
  * already (a tracker rerun). Otherwise file it only when it was seen in 2 or
- * more different runs within the window, counting this one: bump its open
- * issue, or open one. Else only record it.
+ * more different runs within WINDOW_DAYS of this sighting's own time,
+ * counting this one: bump its open issue, or open one. Else only record it.
+ * When the tracker runs never decides it, so a late replay files the same.
  */
 export function decide(o: {
   f: Failure;
   sighting: Sighting;
   recorded: Recorded[];
   open: Issue[];
-  nowMs: number;
 }): Action {
   const { f, sighting } = o;
   const key = keyOf(f.id);
@@ -524,7 +531,7 @@ export function decide(o: {
     return { kind: "skip", f, sighting, issue: issue.number };
   const window = inWindow(
     [...o.recorded.filter((r) => r.key === key), sighting],
-    o.nowMs,
+    Date.parse(sighting.at),
   );
   if (window.length < 2) return { kind: "record", f, sighting };
   if (issue)
@@ -826,6 +833,7 @@ function openStore(
   exec: Exec,
   repo: string,
   nowMs: number,
+  fromMs: number,
   notes: string[],
 ): { store: number; read: number[] } {
   ensureLabel(
@@ -874,7 +882,7 @@ function openStore(
   }
   return {
     store: newest.number,
-    read: storeChain(exec, repo, open, nowMs),
+    read: storeChain(exec, repo, open, nowMs, fromMs),
   };
 }
 
@@ -920,8 +928,14 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   const { exec, run, nowMs } = o;
   const { found, notes } = collect(exec, run);
 
-  const { store, read } = openStore(exec, run.repo, nowMs, notes);
-  const kept = readStore(exec, run.repo, read, nowMs);
+  // The store is read from WINDOW_DAYS before this run's earliest failure,
+  // not before now: a run tracked days late still sees the sightings it
+  // pairs with (decide() judges by the failures' own times).
+  const fromMs =
+    Math.min(nowMs, ...found.map(({ sighting }) => Date.parse(sighting.at))) -
+    WINDOW_DAYS * DAY_MS;
+  const { store, read } = openStore(exec, run.repo, nowMs, fromMs, notes);
+  const kept = readStore(exec, run.repo, read, nowMs, fromMs);
   const stored = kept.sightings;
   const marked = kept.passed.has(`${run.runId}/${run.attempt}`);
   // No failed test, only failures outside the tests: nothing to record, but
@@ -948,7 +962,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   // Tracker runs are serialized (flaky-tracker.yml), so one list is current.
   const open = listOpen(exec, run.repo, LABEL);
   const actions = found.map(({ f, sighting }) =>
-    decide({ f, sighting, recorded, open, nowMs }),
+    decide({ f, sighting, recorded, open }),
   );
   const done: Done[] = [];
   const filed: (Action & { kind: "create" | "bump" })[] = [];
