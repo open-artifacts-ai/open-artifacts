@@ -60,6 +60,7 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.mailExpiry,
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
 ] as const;
