@@ -1,5 +1,6 @@
 import { type CommentList, R } from "@oa/shared";
 import type { Agent } from "../../real/mcp-client";
+import { withDeadline } from "../with-deadline";
 import {
   api,
   cleanup,
@@ -24,29 +25,28 @@ import {
 
 const MIN = "0.162.0";
 
-/**
- * Names the step that failed or hung: a hang ends by the test's own timeout,
- * and the step's name is in the failure of any step that throws.
- */
-async function step<T>(name: string, fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    throw new Error(`${name}: ${(e as Error).message}`, { cause: e });
-  }
-}
+const STEP_MS = 15_000;
+// Setup calls pace themselves against the hook window (hook-pace.ts), bounded
+// by the hook's own timeout less a margin; this only names a hang just under it.
+const SETUP_MS = 55_000;
+
+/** Fails fast and by name: a hung network step says which one hung. */
+const step = <T>(
+  name: string,
+  fn: () => Promise<T>,
+  ms = STEP_MS,
+): Promise<T> => withDeadline(fn(), ms, name);
 
 // Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
 let owner: Person;
 let agent: Agent;
 test.beforeAll(async ({ browser }) => {
-  // Setup paces itself against the hook window (hook-pace.ts); the hook's own
-  // timeout is just over this, and a hang ends here, not on a timer of ours.
-  test.setTimeout(60_000);
-  owner = await step("setup personAt", () =>
-    personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
+  owner = await step(
+    "setup personAt",
+    () => personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
+    SETUP_MS,
   );
-  agent = await step("setup oauthAgent", () => oauthAgent());
+  agent = await step("setup oauthAgent", () => oauthAgent(), SETUP_MS);
 });
 test.afterAll(async () => {
   await agent?.close();
