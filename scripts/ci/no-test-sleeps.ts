@@ -31,8 +31,23 @@
 // checker (one file, no libs): the wait passes only when an `Atomics.notify`
 // argument, or something handed to a Worker / `postMessage` / `workerData`,
 // names the same binding (the array, its `.buffer`, or the buffer it was built
-// over). An array that cannot be resolved is flagged, and so is a notify under
-// another name for the same memory.
+// over), at the same index (the same literal, or the same binding; a computed
+// index on either side is unknown and flagged), with a count that is not a
+// literal 0, in code that can run (not under a literal-false branch, after a
+// return/throw, or behind a literal `false &&`). An array that cannot be
+// resolved is flagged. Known limits, each decided on purpose:
+//   - the notify must be in the same file: a notify in another file is not
+//     seen, so that wait is flagged;
+//   - an alias is a different binding: a notify under another name for the
+//     same memory, or an index alias (`const j = i`), is flagged;
+//   - a notify in a function nothing calls, or behind a non-literal condition,
+//     counts: reachability is only checked for literal conditions and for
+//     statements after a return/throw/break/continue;
+//   - a share (Worker, `postMessage`, `workerData`) exempts at any index,
+//     since the other agent's notify is out of sight;
+//   - a notify later in the same function as a synchronous `Atomics.wait`
+//     counts, though that thread is blocked until it returns;
+//   - an array reassigned between the wait and the notify is one binding.
 //
 // Deliberately not covered (a static scan cannot tell them from real use):
 //   - a bare `setTimeout(fn, ms)` outside a Promise executor: it is how
@@ -316,7 +331,88 @@ function atomicsFinite(code: string, file: string): Found[] {
         if (k && holders.has(k)) over.set(sy, new Set([k]));
       }
     };
+    // What a literal condition decides: true, false, or unknown.
+    const truth = (e: N): boolean | undefined => {
+      const x = unwrap(e);
+      if (x.kind === ts.SyntaxKind.TrueKeyword) return true;
+      if (
+        x.kind === ts.SyntaxKind.FalseKeyword ||
+        x.kind === ts.SyntaxKind.NullKeyword
+      )
+        return false;
+      if (ts.isIdentifier(x) && x.text === "undefined") return false;
+      if (ts.isNumericLiteral(x)) return Number(x.text) !== 0;
+      if (ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x))
+        return x.text !== "";
+      return undefined;
+    };
+    /** Code that can never run: a literal-false branch, or after a return/throw. */
+    const dead = (n: N): boolean => {
+      for (let c: N = n; c.parent; c = c.parent) {
+        const p = c.parent;
+        if (ts.isIfStatement(p) || ts.isConditionalExpression(p)) {
+          const cond = ts.isIfStatement(p) ? p.expression : p.condition;
+          const thenN = ts.isIfStatement(p) ? p.thenStatement : p.whenTrue;
+          const elseN = ts.isIfStatement(p) ? p.elseStatement : p.whenFalse;
+          const t = truth(cond);
+          if (c === thenN && t === false) return true;
+          if (c === elseN && t === true) return true;
+        }
+        if (
+          ts.isWhileStatement(p) &&
+          c === p.statement &&
+          truth(p.expression) === false
+        )
+          return true;
+        if (ts.isBinaryExpression(p) && c === p.right) {
+          const k = p.operatorToken.kind;
+          if (
+            k === ts.SyntaxKind.AmpersandAmpersandToken &&
+            truth(p.left) === false
+          )
+            return true;
+          if (k === ts.SyntaxKind.BarBarToken && truth(p.left) === true)
+            return true;
+        }
+        if (
+          ts.isBlock(p) ||
+          ts.isSourceFile(p) ||
+          ts.isCaseClause(p) ||
+          ts.isDefaultClause(p)
+        ) {
+          for (const st of p.statements) {
+            if (st === c) break;
+            if (
+              ts.isReturnStatement(st) ||
+              ts.isThrowStatement(st) ||
+              ts.isBreakStatement(st) ||
+              ts.isContinueStatement(st)
+            )
+              return true;
+          }
+        }
+      }
+      return false;
+    };
+    // An index, as something two uses can be compared by: a numeric literal's
+    // value, or the binding it names; anything else (computed) is unknown.
+    type Idx = { lit: number } | { sym: Sym } | undefined;
+    const idxOf = (e: N | undefined): Idx => {
+      if (!e) return undefined;
+      const x = unwrap(e);
+      if (ts.isNumericLiteral(x)) return { lit: Number(x.text) };
+      const sy = symbolOf(x);
+      return sy ? { sym: sy } : undefined;
+    };
+    const sameIdx = (a: Idx, b: Idx) =>
+      a !== undefined &&
+      b !== undefined &&
+      (("lit" in a && "lit" in b && a.lit === b.lit) ||
+        ("sym" in a && "sym" in b && a.sym === b.sym));
+    // Worker / postMessage / workerData: handed to another agent, which may
+    // notify at any index. Notifies: the binding they wake and at which index.
     const notified = new Set<Sym>();
+    const notifies: { syms: Set<Sym>; idx: Idx }[] = [];
     const waits = new Map<number, N>();
     const walk = (n: N) => {
       if (ts.isVariableDeclaration(n) && n.initializer)
@@ -333,12 +429,19 @@ function atomicsFinite(code: string, file: string): Found[] {
         ts.isShorthandPropertyAssignment(n)
       ) {
         if (n.name.getText(sf) === "workerData")
-          for (const y of named(n)) notified.add(y);
+          if (!dead(n)) for (const y of named(n)) notified.add(y);
       } else if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
         const callee = n.expression.getText(sf).replace(/\s+/g, "");
         if (/^Atomics\.notify$/.test(callee)) {
-          const first = n.arguments?.[0];
-          if (first) for (const y of named(first)) notified.add(y);
+          const [first, index, count] = n.arguments ?? [];
+          // a count of literal 0 wakes nobody
+          const wakes = !(
+            count &&
+            truth(count) === false &&
+            ts.isNumericLiteral(unwrap(count))
+          );
+          if (first && wakes && !dead(n))
+            notifies.push({ syms: named(first), idx: idxOf(index) });
         } else if (/^Atomics\.(?:wait|waitAsync)$/.test(callee))
           waits.set(n.getStart(sf), n);
         else if (
@@ -346,7 +449,7 @@ function atomicsFinite(code: string, file: string): Found[] {
           (ts.isNewExpression(n) && /(?:^|\.)Worker$/.test(callee))
         )
           for (const a of n.arguments ?? [])
-            for (const y of named(a)) notified.add(y);
+            if (!dead(n)) for (const y of named(a)) notified.add(y);
       }
       ts.forEachChild(n, walk);
     };
@@ -355,6 +458,9 @@ function atomicsFinite(code: string, file: string): Found[] {
     // a notified view reaches the buffer it was built over
     for (const y of [...notified])
       for (const b of over.get(y) ?? []) notified.add(b);
+    for (const nt of notifies)
+      for (const y of [...nt.syms])
+        for (const b of over.get(y) ?? []) nt.syms.add(b);
     const out: Found[] = [];
     for (const f of finite) {
       const call = waits.get(f.index) as
@@ -367,8 +473,13 @@ function atomicsFinite(code: string, file: string): Found[] {
         keys.add(key);
         for (const b of over.get(key) ?? []) keys.add(b);
       }
-      if (![...keys].some((k) => notified.has(k)))
-        out.push({ index: f.index, why: "timers/promises" });
+      const at = idxOf(call?.arguments[1]);
+      const ok =
+        [...keys].some((k) => notified.has(k)) ||
+        notifies.some(
+          (nt) => sameIdx(nt.idx, at) && [...keys].some((k) => nt.syms.has(k)),
+        );
+      if (!ok) out.push({ index: f.index, why: "timers/promises" });
     }
     return out;
   } catch {

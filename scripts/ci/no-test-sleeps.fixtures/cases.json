@@ -916,5 +916,101 @@
     "file": "a.test.ts",
     "text": "const a = new Int32Array(new SharedArrayBuffer(4));\nconst b = new Int32Array(a.buffer);\nAtomics.notify(a, 0);\nAtomics.wait(b, 0, 0, 5000);",
     "why": []
+  },
+  {
+    "name": "a notify at index 0 does not mask a timeout-only wait at index 1 (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 0);\nAtomics.wait(ia, 1, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a wait and a notify at the same literal index (pass)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 1);\nAtomics.wait(ia, 1, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a wait and a notify at the same index binding (pass)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nconst i = 2;\nAtomics.notify(ia, i);\nAtomics.wait(ia, i, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a notify at index binding i does not cover literal 0 (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, i);\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a computed index on the notify is unknown (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, i + 1);\nAtomics.wait(ia, 1, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a computed index on the wait is unknown (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 0);\nAtomics.wait(ia, i + 1, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify with count 0 wakes nobody (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 0, 0);\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify with a count of 1 counts (pass)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 0, 1);\nAtomics.wait(ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a notify with the count left off wakes all (pass)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.notify(ia, 0);\nAtomics.wait(ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a notify under if (false) never runs (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nif (false) {\n  Atomics.notify(ia, 0);\n}\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify in the else of if (true) never runs (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nif (true) {\n} else {\n  Atomics.notify(ia, 0);\n}\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify after a return in the same block never runs (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nfunction g() {\n  return;\n  Atomics.notify(ia, 0);\n}\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify behind false && never runs (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nfalse && Atomics.notify(ia, 0);\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify in a ternary's dead arm never runs (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\n0 ? Atomics.notify(ia, 0) : 0;\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "a notify in a live branch counts (pass)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nif (ready) {\n  Atomics.notify(ia, 0);\n}\nAtomics.wait(ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a notify only in another file is not seen (flag)",
+    "file": "a.test.ts",
+    "text": "const ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.wait(ia, 0, 0, 50);",
+    "why": ["timers/promises"]
   }
 ]
