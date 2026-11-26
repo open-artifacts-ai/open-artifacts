@@ -3921,6 +3921,7 @@ function wellFormedNotice(n: BusNotice): boolean {
     typeof n.to.name === "string" &&
     n.to.name.length > 0 &&
     (n.notBefore === undefined || Number.isFinite(n.notBefore)) &&
+    (n.originAt === undefined || Number.isFinite(n.originAt)) &&
     (n.toIdentity === undefined ||
       (typeof n.toIdentity === "string" &&
         n.toIdentity.length > 0 &&
@@ -4861,6 +4862,29 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #3132: the live holder of the role the session linked as `identityId`
+   * handed on, for something it began at `originAt` while it held it
+   * (roles.ts roleForward); null otherwise. Worker only (an ask's answer for
+   * a session that is gone).
+   */
+  async roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+    if (typeof identityId !== "string" || identityId === "") return null;
+    if (!Number.isFinite(originAt)) return null;
+    const sql = this.ctx.storage.sql;
+    const h = roleForward(sql, OWNER_ORG_ID, "", "", identityId, originAt);
+    if (h === null) return null;
+    const identity = identityOfAgent(sql, h.id);
+    return {
+      namespace: h.namespace,
+      name: h.name,
+      ...(identity ? { identityId: identity } : {}),
+    };
+  }
+
+  /**
    * #2512: the agents of `identityIds` in this member's own hub that say they
    * wait on their owner right now (a live row with status waiting_on_owner),
    * and since when (ms). Returns ONLY `{identityId, since}`. At most
@@ -5127,12 +5151,13 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
-   * #3132: a role moved between sessions: the old session's followed pages
-   * move to the new holder (its later notices forward via roleForward).
+   * #3132: a role moved between sessions: the pages the old session began
+   * to follow while it held the role move to the new holder (its other
+   * follows stay its own); its later notices forward via roleForward.
    */
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
-    void this.#moveFollowRows(m.from, m.to);
+    void this.#moveFollowRows(m.from, m.to, m.heldFrom);
   }
 
   /**
@@ -6620,12 +6645,15 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
-   * The member's follow rows at address `before` move to `after` (D1, in the
-   * background, one at a time). A rename's re-key, and #3132 a role move's.
+   * The member's follow rows at address `before` (`since`: created then or
+   * later) move to `after` (D1, in the background, one at a time). A
+   * rename's re-key, and #3132 a role move's.
    */
   #moveFollowRows(
     before: { namespace: string; name: string },
     after: { namespace: string; name: string },
+    /** Only rows created since then (ms); absent: all of them. */
+    since?: number,
   ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
@@ -6644,7 +6672,10 @@ export class BusHub extends DurableObject<Env> {
             FOLLOW_TIMEOUT_MS,
           );
         });
-        await Promise.race([moveFollows(this.env, userId, from, to), timeout]);
+        await Promise.race([
+          moveFollows(this.env, userId, from, to, since),
+          timeout,
+        ]);
       } catch (e) {
         logError("bus_follow_rekey_failed", e);
       } finally {
@@ -8414,6 +8445,7 @@ export class BusHub extends DurableObject<Env> {
         n.to.namespace,
         n.to.name.toLowerCase(),
         n.toIdentity ?? null,
+        n.originAt ?? now,
       );
       if (holder !== null) {
         const identity = identityOfAgent(sql, holder.id);
