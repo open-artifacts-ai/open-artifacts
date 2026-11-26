@@ -2,6 +2,7 @@
 // role (the address to @-mention); after the role moves, the old comment
 // keeps its author and says who holds the role now. Real /mcp with link
 // proofs, a real hub; the per-isolate names cache is reset between reads.
+import { runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import { type CommentList, type Member, R } from "@oa/shared";
 import { afterAll, describe, expect, it } from "vitest";
@@ -66,10 +67,6 @@ describe("a role on a page (#3132)", () => {
     const idOf = async (name: string) =>
       (await hub.snapshot()).agents.find((a) => a.name === name)?.id ?? "";
     const role = uniq("Platform");
-    expect((await hub.putRole(space, role, await idOf(names[0]!))).ok).toBe(
-      true,
-    );
-
     const id = (
       await publish(
         E(),
@@ -85,16 +82,25 @@ describe("a role on a page (#3132)", () => {
         "create",
       )
     ).id;
+    const personal = await tool(c, "add_comment", { id, body: "Personal." });
+    expect(personal.isError).toBeFalsy();
+    expect((await hub.putRole(space, role, await idOf(names[0]!))).ok).toBe(
+      true,
+    );
+
     const made = await tool(c, "add_comment", { id, body: "Shipped." });
     expect(made.isError, JSON.stringify(made.content)).toBeFalsy();
 
-    const author = async () => {
+    const author = async (body = "Shipped.") => {
       resetNameClashCache();
       const r = await api(app, R.comments(id), m.cookie);
       expect(r.status).toBe(200);
       const list = (await r.json()) as CommentList;
-      return list.threads[0]?.comments[0]?.author;
+      return list.threads
+        .flatMap((t) => t.comments)
+        .find((c) => c.body === body)?.author;
     };
+    expect((await author("Personal."))?.role).toBeUndefined();
     expect(await author()).toMatchObject({
       kind: "agent",
       name: role,
@@ -106,6 +112,12 @@ describe("a role on a page (#3132)", () => {
     expect((await hub.putRole(space, role, await idOf(names[1]!))).ok).toBe(
       true,
     );
+    // Purge the old session row, as retention does after it goes away.
+    const oldId = await idOf(names[0]!);
+    await runInDurableObject(hub, (_instance, state) => {
+      state.storage.sql.exec("delete from agents where id = ?", oldId);
+    });
+    expect((await author("Personal."))?.role).toBeUndefined();
     expect(await author()).toMatchObject({
       name: role,
       session: names[0],

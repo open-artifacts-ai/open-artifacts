@@ -602,7 +602,7 @@ export async function agentNamesOf(
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   for (const [id, f] of await agentFacesOf(env, userId, identityIds))
-    out.set(id, f.name);
+    if (f.name) out.set(id, f.name);
   return out;
 }
 

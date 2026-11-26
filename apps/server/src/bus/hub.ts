@@ -155,7 +155,7 @@ import {
   resolveRoleAnywhere,
   resolveRoleIn,
   roleForward,
-  roleOfIdentity,
+  roleIntervals,
   roleTakenSql,
   settleMoveAudits,
 } from "./roles.js";
@@ -5168,8 +5168,8 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #1889: the current bus name of each agent identity in `identityIds`, from
    * this member's own hub only (an id of another member's agent is not here,
-   * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
-   * kind, machine or state (one row per identity). At most
+   * so it returns nothing). Includes holding intervals for dated authorship.
+   * A purged session can have intervals without a current name. At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
   async namesOf(identityIds: string[]): Promise<AgentNameRow[]> {
@@ -5187,17 +5187,23 @@ export class BusHub extends DurableObject<Env> {
         ...ids,
       )
       .toArray();
-    const seen = new Set<string>();
+    const names = new Map<string, string>();
+    for (const row of rows)
+      if (!names.has(row.identityId)) names.set(row.identityId, row.name);
     const out: AgentNameRow[] = [];
-    for (const r of rows) {
-      if (seen.has(r.identityId)) continue;
-      seen.add(r.identityId);
-      const role = roleOfIdentity(
+    for (const identityId of ids) {
+      const name = names.get(identityId);
+      const intervals = roleIntervals(
         this.ctx.storage.sql,
         OWNER_ORG_ID,
-        r.identityId,
+        identityId,
       );
-      out.push({ identityId: r.identityId, name: r.name, ...role });
+      if (name || intervals.length)
+        out.push({
+          identityId,
+          ...(name && { name }),
+          ...(intervals.length && { intervals }),
+        });
     }
     return out;
   }
