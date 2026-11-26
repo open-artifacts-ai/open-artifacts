@@ -92,6 +92,13 @@ export function devConfig(): Record<string, unknown> {
   cfg.assets.directory = join(SERVER, cfg.assets.directory);
   for (const db of cfg.d1_databases)
     db.migrations_dir = join(SERVER, db.migrations_dir);
+  // The suite runs far faster than a person: past a real install's per-IP
+  // limits (device codes, token polls, sign-ins), which only slow a local run.
+  // The limits themselves are the server tests' to prove, not this suite's.
+  for (const rl of (cfg.ratelimits ?? []) as {
+    simple?: { limit: number };
+  }[])
+    if (rl.simple) rl.simple.limit *= 100;
   const secret = () => randomBytes(32).toString("hex");
   cfg.vars = {
     ...cfg.vars,
