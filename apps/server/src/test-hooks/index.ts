@@ -10,6 +10,8 @@ import {
   TEST_HOOKS,
   TEST_HOOKS_ALLOWED,
   TEST_OTP_OUTCOMES,
+  TEST_RUN_HEADER,
+  TEST_RUN_TAG,
   TestAuditInputSchema,
   type TestAuditResult,
   TestCodeCapsResetInputSchema,
@@ -54,8 +56,9 @@ import { OTP_WAIT_CAP_MS } from "./otp-wait.js";
 // false). At runtime it is on only when the build allows it
 // (TEST_HOOKS_ALLOWED) AND TEST_HOOKS=1 AND a 32+ char TEST_HOOK_KEY AND a
 // TEST_DOMAIN. POST /__test/audit reads back test_hook.* audit rows only
-// (never any other event). Order per request: rate limit (RL_ANON; unbound is a refusal),
-// then the key, then the input. Every refusal is the standard 404, and every
+// (never any other event). Order per request: the key compared, then the rate
+// limit (a wrong key: RL_ANON; a right one: RL_HOOKS, else RL_ANON; RL_ANON
+// unbound is a refusal), then the input. Every refusal is the standard 404, and every
 // call past the rate limit writes one audit_events row. Before the key
 // verifies the 404 is uniform (no reason); after it, the 404 body's
 // error.details.reason says why (TEST_HOOK_REFUSALS, a fixed enum).
@@ -317,10 +320,12 @@ const AUDIT_INSERT =
 
 // The audit hook's read: test_hook rows only, enforced here in SQL (both the
 // actor kind and the action prefix, no LIKE wildcards), so no other audit
-// event can ever leave through it. ?1 since (ms), ?2 the cap.
+// event can ever leave through it. ?1 since (ms), ?2 the cap, ?3 the run tag
+// (null: the rows no suite tagged; a tag: that suite's own rows).
 const TEST_AUDIT_READ = `select action, at, actor_id as actorId, target_id as targetId, detail
   from audit_events
   where actor_kind = 'test_hook' and substr(action, 1, 10) = 'test_hook.' and at >= ?1
+    and json_extract(detail, '$.run') is ?3
   order by at desc, id desc limit ?2`;
 
 const parseDetail = (s: string): Record<string, unknown> => {
@@ -334,14 +339,15 @@ const parseDetail = (s: string): Record<string, unknown> => {
   }
 };
 
-/** test_hook.* rows at or after `since`, newest first, at most TEST_AUDIT_LIMIT. */
+/** test_hook.* rows at or after `since` (of `run`'s suite, or of none), newest first, at most TEST_AUDIT_LIMIT. */
 async function readTestAudit(
   env: Env,
   since: number,
+  run: string | null,
 ): Promise<TestAuditResult> {
   const res = await env.DB.batch([
     ...AUDIT_DDL.map((s) => env.DB.prepare(s)),
-    env.DB.prepare(TEST_AUDIT_READ).bind(since, TEST_AUDIT_LIMIT),
+    env.DB.prepare(TEST_AUDIT_READ).bind(since, TEST_AUDIT_LIMIT, run),
   ]);
   const rows = (res.at(-1)?.results ?? []) as {
     action: string;
@@ -354,15 +360,16 @@ async function readTestAudit(
 }
 
 /** One audit row per hook call: hook, IP, outcome, and the email's domain (never the address). */
-async function audit(
+async function auditRow(
   env: Env,
   hook: HookName,
   ip: string,
   outcome: Outcome,
-  o: { email?: string; userId?: string } = {},
+  o: { email?: string; userId?: string; run?: string } = {},
 ): Promise<void> {
   const detail: Record<string, string> = { hook, ip, outcome };
   if (o.email !== undefined) detail.domain = domainOf(o.email) ?? "";
+  if (o.run !== undefined) detail.run = o.run;
   await env.DB.batch([
     ...AUDIT_DDL.map((s) => env.DB.prepare(s)),
     env.DB.prepare(AUDIT_INSERT).bind(
@@ -651,20 +658,35 @@ export function mountTestHooks(app: AppType): void {
   app.all("/__test/*", async (c) => {
     const env = c.env;
     if (!testHooksOn(env)) return notFound();
-    // Rate limit first, before any key work; no limiter bound means refuse.
-    const rl = env.RL_ANON;
-    if (!rl) return notFound();
+    // No limiter bound means refuse: a wrong or absent key is charged to
+    // RL_ANON below, so without it nothing is safe to compare.
+    const anon = env.RL_ANON;
+    if (!anon) return notFound();
     const ip = c.req.header("cf-connecting-ip") ?? "";
-    const limited = !(
-      await rl.limit({ key: `test:${authConfig(env).installKey}:${ip}` })
-    ).success;
-    if (limited) {
+    const hook = hookName(c.req.path);
+    const given = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    const keyed = await sameKey(given, env.TEST_HOOK_KEY as string);
+    // A suite's own tag, taken only from a call whose key verified (a wrong key
+    // cannot hide its rows from the unfiltered read).
+    const tag = c.req.header(TEST_RUN_HEADER) ?? "";
+    const run = keyed && TEST_RUN_TAG.test(tag) ? tag : undefined;
+    const audit = (
+      e: Env,
+      h: HookName,
+      from: string,
+      outcome: Outcome,
+      o: { email?: string; userId?: string } = {},
+    ) => auditRow(e, h, from, outcome, run ? { ...o, run } : o);
+    // A wrong or absent key spends RL_ANON (30 a minute) as it always did, so
+    // guessing stays capped. A right key spends RL_HOOKS (the suites' own,
+    // much larger budget); without that binding it spends RL_ANON as before.
+    const key = `test:${authConfig(env).installKey}:${ip}`;
+    const limiter = keyed ? (env.RL_HOOKS ?? anon) : anon;
+    if (!(await limiter.limit({ key })).success) {
       log("limited");
       return notFound();
     }
-    const hook = hookName(c.req.path);
-    const given = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
-    if (!(await sameKey(given, env.TEST_HOOK_KEY as string))) {
+    if (!keyed) {
       await audit(env, hook, ip, "denied");
       return notFound();
     }
@@ -835,7 +857,11 @@ export function mountTestHooks(app: AppType): void {
       }
       // Read first, then audit this call like any other hook: the response
       // is the log as it stood, and this call's own row shows up next time.
-      const out = await readTestAudit(env, input.data.since);
+      const out = await readTestAudit(
+        env,
+        input.data.since,
+        input.data.run ?? null,
+      );
       await audit(env, hook, ip, "ok");
       return c.json(out);
     }

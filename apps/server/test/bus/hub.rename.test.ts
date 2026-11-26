@@ -595,7 +595,13 @@ describe("rename (R393b)", () => {
     await reg(d, "b", b, n);
     const b2 = uniq("Sess2");
     await renamed(d, "b", b2);
-    d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: ["b"] });
+    d.send({
+      v: 1,
+      id: id("c"),
+      type: "sessions",
+      open: ["s", "x", "x2"],
+      closed: ["b"],
+    });
     expect(await reg(d, "y", b, n)).toBe(`${b}-2`);
     expect(await reg(d, "y2", b2, n)).toBe(b2);
     expect(await formerRows(b2)).toEqual([b]);
@@ -1944,7 +1950,7 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
           v: 1,
           id: id("c"),
           type: "sessions",
-          open: [],
+          open: ["s"],
           closed: ["a"],
         });
       // A plain close (#1295) reserves the name as `away` and queues the

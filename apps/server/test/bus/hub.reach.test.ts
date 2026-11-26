@@ -12,6 +12,7 @@ import { addReach, reachNamespaces } from "../../src/bus/reach.js";
 import {
   type Daemon,
   daemon,
+  fence,
   hubOf,
   inOwnerHub,
   machine,
@@ -472,32 +473,20 @@ async function expectBlocked(w: World, how: "up" | "rename") {
   const t = await takeName(w, how);
   expect(t.got).not.toBe(w.hn);
   expect(t.got.startsWith(w.hn)).toBe(true);
-  // sleep-ok: absence — a blocked name must never receive a delivery
-  await new Promise((res) => setTimeout(res, 200));
+  await fence(t.d);
   expect(delivers(t.d)).toEqual([]);
   t.extra?.close();
 }
 
-async function expectReclaimed(
-  w: World,
-  how: "up" | "rename",
-  sender: Daemon,
-  msgId: string,
-) {
+async function expectReclaimed(w: World, how: "up" | "rename") {
   const t = await takeName(w, how);
   expect(t.got).toBe(w.hn);
-  const u = await waitFor(sender, "receipt_update");
-  expect(u).toMatchObject({
-    msg_id: msgId,
-    state: "expired",
-    reason: "recipient_closed",
-  });
-  expect(delivers(t.d)).toEqual([]);
+  await waitFor(t.d, "deliver");
   t.extra?.close();
   return t;
 }
 
-describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1346, #3208)", () => {
+describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1346)", () => {
   for (const how of ["up", "rename"] as const) {
     it(`${how}: pending mail from another namespace blocks the takeover`, async () => {
       const w = await world();
@@ -570,9 +559,8 @@ describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1
       const dq = await connect(REACH);
       await agent(dq, "q", uniq("mate"), w.x);
       await holderAway(w);
-      const r = await send(dq, "q", w.hn);
-      expect(r.state).toBe("pending");
-      await expectReclaimed(w, how, dq, r.msg_id);
+      expect((await send(dq, "q", w.hn)).state).toBe("pending");
+      await expectReclaimed(w, how);
       dq.close();
       w.close();
     }
@@ -587,9 +575,8 @@ describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1
       const dl = await connect([...REACH, BUS_CAPS.links]);
       await agent(dl, "l", uniq("linked"), w.y);
       await holderAway(w);
-      const r = await send(dl, "l", w.hn, w.x);
-      expect(r.state).toBe("pending");
-      await expectReclaimed(w, how, dl, r.msg_id);
+      expect((await send(dl, "l", w.hn, w.x)).state).toBe("pending");
+      await expectReclaimed(w, how);
       dl.close();
       w.close();
     });
@@ -604,7 +591,7 @@ describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1
       await holderAway(w);
       const r = await send(dg, "g", w.hn, w.x);
       expect(r.state).toBe("pending");
-      await expectReclaimed(w, how, dg, r.msg_id);
+      await expectReclaimed(w, how);
       dg.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "g" });
       await eventually(
         async () =>

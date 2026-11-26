@@ -1,18 +1,23 @@
-// #1742, #3208: a restarted session (a new agent_ref) takes back its old name
-// when only one `away` reservation of a closed agent of the same kind and
-// scope, on any non-revoked machine, holds it: on agent_up and on rename. The
-// old reservation is released and acked bodies are deleted, but mail never
-// follows a name: pending mail of the old row expires as recipient_closed
-// (senders told). Held mail moves only with an explicit `replaces` handover.
-// Every other holder still means a suffix. Time is BusHub.setTestClock, ahead
-// of real time, reset after each test.
+// #1742: a restarted session (a new agent_ref) takes back its old name when
+// only one `away` reservation of a closed agent of the same kind and scope,
+// on any non-revoked machine, holds it: on agent_up and on rename. The old
+// reservation is released and mail still queued for it (never acked) moves to
+// the newcomer; acked bodies never move. Every other holder still means a
+// suffix. Time is BusHub.setTestClock, ahead of real time, reset after each
+// test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  MAILBOX_PENDING_CAP,
+  type ServerFrame,
+} from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
+  fence,
   framesSeen,
   hello,
   hubOf,
@@ -221,7 +226,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("agent_up: mail queued for the old row expires as recipient_closed and never moves to the newcomer", async () => {
+  it("agent_up: mail queued for the old row arrives at the newcomer, in order", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const a = await send(s.snd, "snd", s.name, "first");
@@ -229,40 +234,29 @@ describe("a restarted session takes back its own name (#1742)", () => {
     expect([a.state, b.state]).toEqual(["pending", "pending"]);
     const ref = uniq("new");
     expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
-    await waitExpired(s.snd, [a.msg_id, b.msg_id]);
-    expect(delivers(s.d)).toEqual([]);
+    const d1 = await waitFor(s.d, "deliver");
+    const d2 = await waitFor(s.d, "deliver");
+    expect([d1.msg_id, d2.msg_id]).toEqual([a.msg_id, b.msg_id]);
+    expect(d1.to_ref).toBe(ref);
+    expect("body" in d1 && d1.body).toBe("first");
     expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(a.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
-    expect(await receiptOf(b.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
     shut(s);
   });
 
-  it("rename: mail queued for the old row expires as recipient_closed and never moves to the live newcomer", async () => {
+  it("rename: mail queued for the old row arrives at the live newcomer", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const a = await send(s.snd, "snd", s.name, "queued");
     const ref = uniq("new");
     await reg(s.d, ref, uniq("Other"), s.n);
-    expect((await rename(s.d, ref, s.name)).bus_name).toBe(s.name);
-    await waitExpired(s.snd, [a.msg_id]);
-    expect(delivers(s.d)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(a.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    await rename(s.d, ref, s.name);
+    const dl = await waitFor(s.d, "deliver");
+    expect(dl.msg_id).toBe(a.msg_id);
+    expect(dl.to_ref).toBe(ref);
     shut(s);
   });
 
-  it("acked bodies are deleted and queued mail expires: the newcomer gets neither", async () => {
+  it("acked bodies never move: the newcomer cannot fetch an old acked notice, and gets only the unacked mail", async () => {
     const s = await scene();
     const big = "z".repeat(40_000);
     const acked = await send(s.snd, "snd", s.name, big);
@@ -280,14 +274,8 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const queued = await send(s.snd, "snd", s.name, "unacked");
     const ref = uniq("new");
     expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
-    await waitExpired(s.snd, [queued.msg_id]);
-    expect(delivers(s.d).filter((x) => x.to_ref === ref)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(queued.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    const d2 = await waitFor(s.d, "deliver");
+    expect(d2.msg_id).toBe(queued.msg_id);
     s.d.send({
       v: 1,
       id: "fz",
@@ -314,7 +302,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("all old pending mail expires on reclaim, none moves", async () => {
+  it("moved mail honours the newcomer's mailbox cap: the oldest fit, the rest stays with the old row", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const sent: string[] = [];
@@ -322,32 +310,38 @@ describe("a restarted session takes back its own name (#1742)", () => {
       sent.push((await send(s.snd, "snd", s.name, t)).msg_id);
     const ref = uniq("new");
     await reg(s.d, ref, uniq("Other"), s.n);
-    expect((await rename(s.d, ref, s.name)).bus_name).toBe(s.name);
-    await waitExpired(s.snd, sent);
-    expect(delivers(s.d)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    for (const mid of sent)
-      expect(await receiptOf(mid)).toEqual({
-        state: "expired",
-        reason: "recipient_closed",
-      });
+    // The newcomer already holds all but two of its pending slots, below its
+    // session boundary (negative rowids never collide).
+    const have = MAILBOX_PENDING_CAP - 2;
+    for (let k = 1; k <= have; k++)
+      await sqlRun(
+        `insert into receipts (rowid, id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, size, created_at, expires_at)
+         select ?, ?, org_id, namespace, id, name, id, name, 'pending', 1, 0, 9e15 from agents where native_ref = ?`,
+        -k,
+        `filler${seq}-${k}`,
+        ref,
+      );
+    await rename(s.d, ref, s.name);
+    const dl1 = await waitFor(s.d, "deliver");
+    const dl2 = await waitFor(s.d, "deliver");
+    expect([dl1.msg_id, dl2.msg_id]).toEqual([sent[0], sent[1]]);
+    expect(await pendingOf(s.oldRef)).toEqual([sent[2]]);
+    await sqlRun("delete from receipts where id like ?", `filler${seq}-%`);
     shut(s);
   });
 
-  it("a rename loop gains nothing: away and back leaves expired mail gone", async () => {
+  it("a rename loop gains nothing: away and back never duplicates or re-takes mail", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const a = await send(s.snd, "snd", s.name, "once");
     const ref = uniq("new");
     await reg(s.d, ref, uniq("Other"), s.n);
     await rename(s.d, ref, s.name);
-    await waitExpired(s.snd, [a.msg_id]);
+    await waitFor(s.d, "deliver");
     const away = uniq("Away");
     await rename(s.d, ref, away);
     expect((await rename(s.d, ref, s.name)).bus_name).toBe(s.name);
-    expect(delivers(s.d)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
+    expect(await pendingOf(ref)).toEqual([a.msg_id]);
     expect(await pendingOf(s.oldRef)).toEqual([]);
     // Names the loop left are not away rows of anyone.
     expect(await awayRows(s.name)).toEqual([]);
@@ -357,12 +351,10 @@ describe("a restarted session takes back its own name (#1742)", () => {
   it("the old session coming back later gets a suffix and none of the mail", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
-    const m = await send(s.snd, "snd", s.name, "for the old one");
+    await send(s.snd, "snd", s.name, "for the new one");
     await reg(s.d, uniq("new"), s.name, s.n);
-    await waitExpired(s.snd, [m.msg_id]);
+    await waitFor(s.d, "deliver");
     expect(await reg(s.d, s.oldRef, s.name, s.n)).toBe(`${s.name}-2`);
-    expect(delivers(s.d)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
     shut(s);
   });
 
@@ -373,7 +365,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("an away holder on another machine is reclaimed too, and its queued mail expires", async () => {
+  it("an away holder on another machine is reclaimed too, with its queued mail", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const q = await send(s.snd, "snd", s.name, "for the restart");
@@ -381,14 +373,9 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const o = await connect(om.token);
     const ref = uniq("new");
     expect(await reg(o, ref, s.name, s.n)).toBe(s.name);
-    await waitExpired(s.snd, [q.msg_id]);
-    expect(delivers(o)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(q.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    const dl = await waitFor(o, "deliver");
+    expect(dl.msg_id).toBe(q.msg_id);
+    expect(dl.to_ref).toBe(ref);
     expect(await awayRows(s.name)).toEqual([]);
     o.close();
     shut(s);
@@ -527,7 +514,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("a full restart: every agent of a machine goes away with its socket, then the same chosen names come back bare, by agent_up and by rename, and old mail expires", async () => {
+  it("a full restart: every agent of a machine goes away with its socket, then the same chosen names come back bare, by agent_up and by rename, each with its own mail", async () => {
     const t0 = base();
     await setClock(t0);
     const n = ns("rc");
@@ -575,21 +562,17 @@ describe("a restarted session takes back its own name (#1742)", () => {
     expect(
       (await rename(d2, refs[1] as string, names[1] as string)).bus_name,
     ).toBe(names[1]);
-    await waitExpired(snd, [...mail.keys()]);
-    expect(delivers(d2)).toEqual([]);
-    for (const ref of [...oldRefs, ...refs])
-      expect(await pendingOf(ref)).toEqual([]);
-    for (const mid of mail.keys())
-      expect(await receiptOf(mid)).toEqual({
-        state: "expired",
-        reason: "recipient_closed",
-      });
+    // reg() skips frames it does not wait for: read every deliver received.
+    await eventually(() => expect(delivers(d2)).toHaveLength(3));
+    const got = new Map(delivers(d2).map((x) => [x.msg_id, x.to_ref]));
+    for (const [msgId, name] of mail)
+      expect(got.get(msgId)).toBe(refs[names.indexOf(name)]);
     for (const name of names) expect(await awayRows(name)).toEqual([]);
     d2.close();
     snd.close();
   });
 
-  it("a machine move: the name goes to the new machine and queued mail expires; the old session returning gets a suffix and no mail", async () => {
+  it("a machine move: the name and the queued mail go to the new machine; the old session returning gets a suffix and no mail", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const q = await send(s.snd, "snd", s.name, "queued on A");
@@ -597,19 +580,11 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const b = await connect(bm.token);
     const ref = uniq("onB");
     expect(await reg(b, ref, s.name, s.n)).toBe(s.name);
-    await waitExpired(s.snd, [q.msg_id]);
-    expect(delivers(b)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(q.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    const dl = await waitFor(b, "deliver");
+    expect(dl).toMatchObject({ msg_id: q.msg_id, to_ref: ref });
     // A's old session comes back.
     expect(await reg(s.d, s.oldRef, s.name, s.n)).toBe(`${s.name}-2`);
-    // sleep-ok: absence — nothing signals that a delivery does not come, and a
-    // frame already on the wire would show up here
-    await new Promise((res) => setTimeout(res, 50));
+    await fence(s.d);
     expect(s.d.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     b.close();
     shut(s);
@@ -702,8 +677,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       const ref2 = uniq("new2");
       await reg(s.d, ref2, uniq("Other"), s.n, { kind });
       expect((await rename(s.d, ref2, fallback)).bus_name).not.toBe(fallback);
-      // sleep-ok: absence — the check is that no delivery is pushed at all
-      await new Promise((res) => setTimeout(res, 50));
+      await fence(s.d);
       expect(delivers(s.d)).toEqual([]);
       expect(await awayRows(fallback)).toContain(oldRef);
       expect(await pendingOf(oldRef)).toEqual([q.msg_id]);
@@ -722,21 +696,31 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("a pushed, unacked body expires as recipient_closed on reclaim and never goes to the newcomer", async () => {
+  it("a pushed, unacked body follows the name: the newcomer gets it under the same msg_id and its ack settles", async () => {
     const s = await scene();
     const r = await send(s.snd, "snd", s.name, "pushed, never acked");
     await waitFor(s.d, "deliver");
     await close(s.d, s.oldRef);
     const ref = uniq("new");
     expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
-    await waitExpired(s.snd, [r.msg_id]);
-    expect(delivers(s.d).filter((x) => x.to_ref === ref)).toEqual([]);
-    expect(await pendingOf(s.oldRef)).toEqual([]);
-    expect(await pendingOf(ref)).toEqual([]);
-    expect(await receiptOf(r.msg_id)).toEqual({
-      state: "expired",
-      reason: "recipient_closed",
+    await eventually(() =>
+      expect(delivers(s.d).some((x) => x.to_ref === ref)).toBe(true),
+    );
+    const dl = delivers(s.d).find((x) => x.to_ref === ref);
+    expect(dl).toMatchObject({ msg_id: r.msg_id });
+    expect(dl && "body" in dl && dl.body).toBe("pushed, never acked");
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: r.msg_id });
+    const st = await eventually(async () => {
+      const rows = await sqlOf<{ state: string; ref: string }>(
+        "select r.state as state, a.native_ref as ref from receipts r join agents a on a.id = r.to_agent where r.id = ?",
+        r.msg_id,
+      );
+      // The assertion is what retries: returning the row alone would let the
+      // first read (still pending) through.
+      expect(rows[0]).toMatchObject({ state: "delivered", ref });
+      return rows[0];
     });
+    expect(st).toMatchObject({ state: "delivered", ref });
     shut(s);
   });
 
@@ -832,8 +816,7 @@ describe("held mail stays with its session (#3208)", () => {
     await close(d, oldRef);
     const newRef = uniq("agy-starting-2");
     const got = await reg(d, newRef, "agy", n, { kind: "antigravity" });
-    expect(got).not.toBe("agy");
-    expect(got).toMatch(/^agy-/);
+    expect(got).toBe("agy-2");
     expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
     expect(await pendingOf(newRef)).toEqual([]);
     expect(await pendingOf(oldRef)).toEqual([m1.msg_id, m2.msg_id]);
@@ -850,7 +833,7 @@ describe("held mail stays with its session (#3208)", () => {
     snd.close();
   });
 
-  it("a chosen-name restart with no handover: the namesake takes the name but none of the mail; the sender is told", async () => {
+  it("a chosen-name restart with no handover: the namesake takes the name and its held mail (#1742 unchanged)", async () => {
     await setClock(base());
     const n = ns("rc");
     const dm = await machine("Work");
@@ -865,9 +848,14 @@ describe("held mail stays with its session (#3208)", () => {
     await close(d, oldRef);
     const newRef = uniq("codex-2");
     expect(await reg(d, newRef, name, n, { kind: "codex" })).toBe(name);
-    await waitExpired(snd, [m.msg_id]);
-    expect(await pendingOf(newRef)).toEqual([]);
-    expect(delivers(d).filter((x) => x.to_ref === newRef)).toEqual([]);
+    await eventually(() => {
+      const dl = delivers(d).find(
+        (x) => x.to_ref === newRef && x.msg_id === m.msg_id,
+      );
+      expect(dl).toBeDefined();
+    });
+    expect(await pendingOf(oldRef)).toEqual([]);
+    expect((await receiptOf(m.msg_id))?.state).not.toBe("expired");
     d.close();
     snd.close();
   });

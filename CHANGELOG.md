@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.251.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.0...v0.251.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **sign-in:** with login codes on, the page treats codes as a normal way in, no guest copy ([#3179](https://github.com/open-artifacts-ai/open-artifacts/issues/3179)) ([#3196](https://github.com/open-artifacts-ai/open-artifacts/issues/3196)) ([442f1f5](https://github.com/open-artifacts-ai/open-artifacts/commit/442f1f5c55360d69ede80d9a950b5230b7eb2236))
+
+## [0.251.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.250.0...v0.251.0) (2026-11-26)
+
+
+### Features
+
+* **skill:** a short core skill plus parts read on demand ([#3169](https://github.com/open-artifacts-ai/open-artifacts/issues/3169)) ([#3199](https://github.com/open-artifacts-ai/open-artifacts/issues/3199)) ([d35e238](https://github.com/open-artifacts-ai/open-artifacts/commit/d35e238a7be51658725dd9eb50307227dfbbc6c9))
+
 ## [0.250.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.249.1...v0.250.0) (2026-11-26)
 
 

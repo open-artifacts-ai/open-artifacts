@@ -86,8 +86,13 @@ async function scene(caps: string[] | null = [BUS_CAPS.link]) {
   return { m, mach, d, ns: ns("link") };
 }
 
-const close = async (d: Daemon, userId: string, ref: string) => {
-  d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
+const close = async (
+  d: Daemon,
+  userId: string,
+  ref: string,
+  open: string[] = [],
+) => {
+  d.send({ v: 1, id: id("c"), type: "sessions", open, closed: [ref] });
   await eventually(async () => {
     const r = await rows(
       userId,
@@ -455,7 +460,7 @@ describe("the proof ends with the session (#1822)", () => {
     const s = await scene();
     await reg(s.d, "live1", "Lead", s.ns);
     await reg(s.d, "gone1", "Other", s.ns);
-    await close(s.d, s.m.userId, "gone1");
+    await close(s.d, s.m.userId, "gone1", ["live1"]);
     const hubStub = await hubOf(s.m.userId);
     // Rows as they were before agent_proofs: a proof_hash and no table row.
     const seed = (hashLive: string, hashGone: string) =>
@@ -815,7 +820,7 @@ describe("the away grace (#2110)", () => {
       }
     };
     await check();
-    await close(s.d, s.m.userId, "r1");
+    await close(s.d, s.m.userId, "r1", ["r2"]);
     await check();
     const a = await lookup(s.m.userId, hashOf("1"));
     const b = await lookup(s.m.userId, hashOf("2"));

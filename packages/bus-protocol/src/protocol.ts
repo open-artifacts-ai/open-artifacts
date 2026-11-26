@@ -109,6 +109,10 @@ const AgentDown = z.strictObject({
   agent_ref: AgentRefSchema,
 });
 
+/**
+ * `open` is every session the client holds live on this link; the hub ends any
+ * live row of the machine not in `open`.
+ */
 const Sessions = z
   .strictObject({
     ...base,

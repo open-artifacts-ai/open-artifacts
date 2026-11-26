@@ -18,7 +18,7 @@ import {
   MACHINE_LABEL_HEADER,
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
-import { e, trackSocket } from "./helpers.js";
+import { e, idleOf, trackSocket } from "./helpers.js";
 import { eventually } from "./helpers.ts";
 
 type Stub = DurableObjectStub<BusHub>;
@@ -85,9 +85,9 @@ const alarms = async (h: Stub, n: number) => {
   await inHub(h, (_, s) => s.storage.setAlarm(Date.now() + 1));
   for (let k = 0; k < n; k++) {
     await runDurableObjectAlarm(h);
-    // sleep-ok: absence — the alarm's own writes land before it resolves; this
-    // only lets the hub finish its post-alarm bookkeeping, which emits nothing
-    await new Promise((r) => setTimeout(r, 2));
+    // The alarm's own writes land before it resolves; what it started (index
+    // calls, recorded writes) is done when the hub is idle.
+    await idleOf(h);
   }
 };
 

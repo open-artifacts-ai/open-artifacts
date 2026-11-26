@@ -2,6 +2,7 @@
 // The mock frame has no runtime, so its messages are replayed with the nonce.
 // Shots only when SEL_SHOTS_DIR is set.
 import { mkdirSync } from "node:fs";
+import { PROTOCOL_VERSION } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const OUT = process.env.SEL_SHOTS_DIR;
@@ -14,8 +15,11 @@ const QUOTE = "a quote the reader selected";
 async function shot(page: Page, name: string) {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
-  await page.waitForTimeout(250);
-  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: `${OUT}/${name}.png`,
+    animations: "disabled",
+  });
 }
 
 /** What the frame's runtime sends. */
@@ -50,8 +54,36 @@ for (const w of [1280]) {
       test.beforeEach(async ({ page }) => {
         await page.setViewportSize({ width: w, height: w < 600 ? 844 : 800 });
         await page.goto(`/a/${id}?mock=agents`);
-        await expect(page.locator("iframe").first()).toBeVisible();
-        await page.waitForTimeout(500);
+        const iframe = page.locator("iframe").first();
+        await expect(iframe).toBeVisible();
+        await expect(iframe).toHaveAttribute("src", /#oa=/);
+        await expect
+          .poll(() => page.frames().some((f) => f !== page.mainFrame()))
+          .toBe(true);
+        // The frame says hello and the shell's welcome reaches it: the shell's
+        // bridge is live, so the replayed selection below is taken.
+        // The mock frame's host does not exist, so the iframe settles on
+        // Chromium's error page: only then is its document final, and a
+        // listener added to it is not lost to a navigation.
+        await expect
+          .poll(() =>
+            page
+              .frames()
+              .find((f) => f !== page.mainFrame())
+              ?.url(),
+          )
+          .toMatch(/^chrome-error:/);
+        const frame = page.frames().find((f) => f !== page.mainFrame());
+        await frame?.evaluate(() =>
+          addEventListener("message", (e) => {
+            if (e.data?.type === "welcome")
+              document.documentElement.dataset.oaReady = "1";
+          }),
+        );
+        await fromFrame(page, "hello", { protocol: PROTOCOL_VERSION, kind });
+        await expect(
+          page.frameLocator("iframe").first().locator("html"),
+        ).toHaveAttribute("data-oa-ready", "1");
         await select(page);
         await expect(box(page)).toBeVisible();
         await expect(card(page)).toBeVisible();

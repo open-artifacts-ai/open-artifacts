@@ -13,10 +13,11 @@
 // Wire spec frames (artifact UkN5r8hpoXu9DYxG): --hello role[:reason[:bytes]]
 // sends the hello frame first (read:room_full, read:access:1950000, edit);
 // --close <code> closes every connection with that code, --close-first <code>
-// only the first that settles (--revoke: 4403, then refuse every upgrade), i.e. is still open and the newest 600 ms after it connected (4401 4403 4404 1007 1013). It logs "conn n" for
+// only the first live one (--revoke: 4403, then refuse every upgrade), i.e. one that has sent a frame and is still open and the newest (4401 4403 4404 1007 1013). It logs "conn n" for
 // each connection and "closing <code>" for each close it makes, each with a
 // millisecond timestamp. --saved n[:name[:auto]] and
-// --restored from:version send the version broadcasts. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// --restored from:version send the version broadcasts when the room reads
+// "saved" / "restored" on stdin. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 
 import { createServer } from "node:http";
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
@@ -129,6 +130,28 @@ export function startDocRoom({
         ws.close(4401, "auth_expired");
       }
     }
+    // stdin "saved" / "restored": the version broadcasts of --saved and
+    // --restored, sent to every open socket when the test says so (the page has
+    // loaded by then), not on a timer.
+    if (saved && String(d).split("\n").includes("saved")) {
+      const [n, name, auto] = saved.split(":");
+      const frame = JSON.stringify({
+        type: "saved",
+        version: Number(n),
+        ...(name ? { name } : {}),
+        auto: auto === "auto",
+      });
+      for (const ws of wss.clients) if (ws.readyState === 1) ws.send(frame);
+    }
+    if (restored && String(d).split("\n").includes("restored")) {
+      const [from, version] = restored.split(":");
+      const frame = JSON.stringify({
+        type: "restored",
+        from: Number(from),
+        version: Number(version),
+      });
+      for (const ws of wss.clients) if (ws.readyState === 1) ws.send(frame);
+    }
     if (String(d).split("\n").includes("login")) {
       expired = false;
       readOnly = false;
@@ -199,44 +222,15 @@ export function startDocRoom({
         }),
       );
     }
-    // --saved n[:name[:auto]] and --restored from:version: the room's version
-    // broadcasts, 1.2 s after a client connects (the page has loaded by then).
-    if (saved) {
-      const [n, name, auto] = saved.split(":");
-      setTimeout(
-        () =>
-          ws.send(
-            JSON.stringify({
-              type: "saved",
-              version: Number(n),
-              ...(name ? { name } : {}),
-              auto: auto === "auto",
-            }),
-          ),
-        1200,
-      );
-    }
-    if (restored) {
-      const [from, version] = restored.split(":");
-      setTimeout(
-        () =>
-          ws.send(
-            JSON.stringify({
-              type: "restored",
-              from: Number(from),
-              version: Number(version),
-            }),
-          ),
-        1200,
-      );
-    }
     // --close <code>: every connection is closed with that code (4403, 4404,
     // 1007, 1013 ...); --close-first <code>: only the first one is.
-    // --close-first closes the first connection that SETTLES (still open
-    // after 200 ms), so a React StrictMode socket that is torn down at once
-    // never counts, and the test sees whether the client reconnects.
+    // They close a connection when its first frame arrives (below): the
+    // client speaks once its provider is live, so a React StrictMode socket
+    // that is torn down at once never counts, and the test sees whether the
+    // client reconnects.
     const mine = connections;
-    setTimeout(() => {
+    let spoke = false;
+    const closeIfLive = () => {
       // Still open, and still the newest: a StrictMode socket the page has
       // torn down (or is tearing down) is neither.
       if (ws.readyState !== 1 || mine !== connections) return;
@@ -255,10 +249,14 @@ export function startDocRoom({
       if (expireAuth) expired = true;
       console.log(`closing ${code} ${Date.now()}`);
       ws.close(Number(code), "wire spec");
-    }, 600);
+    };
     conns.set(ws, new Set());
     ws.binaryType = "arraybuffer";
     ws.on("message", (data) => {
+      if (!spoke) {
+        spoke = true;
+        closeIfLive();
+      }
       const decoder = decoding.createDecoder(new Uint8Array(data));
       switch (decoding.readVarUint(decoder)) {
         case SYNC: {
@@ -294,11 +292,7 @@ export function startDocRoom({
         awarenessProtocol.removeAwarenessStates(awareness, [...owned], null);
     });
     // --full: this doc is at its limit; say so as soon as a client is here.
-    if (full)
-      setTimeout(
-        () => ws.send(JSON.stringify({ type: "error", code: "doc_too_large" })),
-        150,
-      );
+    if (full) ws.send(JSON.stringify({ type: "error", code: "doc_too_large" }));
     // Hello: our sync step 1 (so the client sends what we lack), then the
     // current awareness states.
     const enc = encoding.createEncoder();

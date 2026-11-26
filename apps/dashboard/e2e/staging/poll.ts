@@ -1,18 +1,18 @@
 // T19 polls on a product signal, never on a fixed budget (#1251): read until
 // the answer stops being pending, bounded only by the test's own timeout. A
 // read that throws (a hook refusal, a bad status) fails at once.
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+//
+// There is no interval and no sleep: a read that is still pending is held by
+// the host (the otp/latest hook's `wait` holds the call until the send's
+// own write signals it, up to a bound), so a loop turn is one request, not a spin. A caller
+// whose read returns at once while pending must not use this.
 
 export async function untilSettled<T>(
   read: () => Promise<T>,
   pending: (value: T) => boolean,
-  o: { intervalMs?: number; wait?: (ms: number) => Promise<void> } = {},
 ): Promise<T> {
-  const wait = o.wait ?? sleep;
   for (;;) {
     const v = await read();
     if (!pending(v)) return v;
-    await wait(o.intervalMs ?? 1000);
   }
 }

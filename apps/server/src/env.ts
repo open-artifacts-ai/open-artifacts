@@ -108,6 +108,13 @@ export interface Env {
    * `ratelimits`; ANON_WRITES_PER_MIN does not change it.
    */
   RL_ANON_WRITES?: RateLimit;
+  /**
+   * The test hooks' own limiter (apps/server/src/test-hooks), keyed like
+   * RL_ANON, 600 a minute. Charged only for a call whose hook key verified; a
+   * wrong or absent key still spends RL_ANON. Unbound (a build or config from
+   * before it): a right key spends RL_ANON too, as it did.
+   */
+  RL_HOOKS?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
   /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
