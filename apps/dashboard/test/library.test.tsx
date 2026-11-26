@@ -42,6 +42,7 @@ describe("Library", () => {
       if (!first) throw new Error("Expected an owned artifact");
       fireEvent.click(first);
       expect(screen.getByText("1 selected")).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
       expect(router.state.location.pathname).toBe("/");
       const last = allowed.at(-1);
       if (last && last !== first) {
