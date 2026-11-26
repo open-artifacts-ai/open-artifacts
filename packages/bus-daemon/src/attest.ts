@@ -8,7 +8,7 @@ import {
   procStartOf,
   readSessionFile,
 } from "@oa/bus-adapter-claude-code";
-import { type Hello, systemTool } from "@oa/bus-ipc";
+import { ADAPTER_CAPS, type Hello, systemTool } from "@oa/bus-ipc";
 import { type CodexAttestor, codexAttestor } from "./codex-attest.ts";
 import { isRunning } from "./liveness/claude.ts";
 import {
@@ -77,7 +77,9 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       return { ok: true };
     }
     case "antigravity":
-      return attestAntigravity(hello, deps);
+      return isAgyWatcher(hello)
+        ? attestAgyWatcher(hello, deps)
+        : attestAntigravity(hello, deps);
     case "codex":
       // Without the daemon's one wait for a late call line: runDaemon awaits `attest` itself.
       if (deps.codex) return deps.codex.attestNow(hello);
@@ -134,6 +136,35 @@ function attestAntigravity(hello: Hello, deps: AttestDeps): Attest {
   if (hello.attest.proc_start !== start)
     return { ok: false, reason: "antigravity process start time moved" };
   return { ok: true };
+}
+
+/** agy S3: a hello from `oa-bus agy-watch`, not from a conversation. */
+export const isAgyWatcher = (hello: Hello): boolean =>
+  hello.kind === "antigravity" &&
+  (hello.caps?.includes(ADAPTER_CAPS.agyWatch) ?? false);
+
+/**
+ * agy S3: the watcher names its own pid and its agy process's start time. The
+ * agy process is the nearest agy binary among the watcher's parents (the
+ * shell agy ran it in, then agy), never a pid the hello names, and its start
+ * time must match. `pid` in the answer is that agy process.
+ */
+function attestAgyWatcher(hello: Hello, deps: AttestDeps): Attest {
+  if (!hello.attest.proc_start)
+    return { ok: false, reason: "agy watcher hello has no proc_start" };
+  const chain = (deps.ancestors ?? ancestorChain)(hello.pid);
+  // The chain starts at the watcher; agy is one of its parents.
+  const agy = chain
+    .slice(1, 13)
+    .find((pid) => basename((deps.comm ?? commOf)(pid) ?? "") === "agy");
+  if (agy === undefined)
+    return { ok: false, reason: "agy watcher does not run under agy" };
+  const start = (deps.procStart ?? procStartOf)(agy);
+  if (!start)
+    return { ok: false, reason: "antigravity process is not running" };
+  if (hello.attest.proc_start !== start)
+    return { ok: false, reason: "antigravity process start time moved" };
+  return { ok: true, pid: agy };
 }
 
 /**

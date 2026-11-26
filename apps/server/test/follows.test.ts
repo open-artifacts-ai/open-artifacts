@@ -213,7 +213,15 @@ describe("the notice template carries no authored text", () => {
         expect(n.from).toBe(NOTICE_SENDER);
         expect(n.url).toBe(url);
         expect(n.text).toBe(noticeText(n.kind, n.version, url));
-        expect(Object.keys(n).sort()).toEqual(
+        // #3132: a follow's notice says when the follow began, a number, never words.
+        expect(n.originAt === undefined || Number.isFinite(n.originAt)).toBe(
+          true,
+        );
+        expect(
+          Object.keys(n)
+            .filter((k) => k !== "originAt")
+            .sort(),
+        ).toEqual(
           [
             "artifactId",
             "coalesceKey",

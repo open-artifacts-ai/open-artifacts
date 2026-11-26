@@ -3,6 +3,7 @@ import {
   AgentKindSchema,
   AgentRefSchema,
   BusNameSchema,
+  CODEX_SPAWNED_SOURCES,
   IsoTimeSchema,
   KindTokenSchema,
   LinkProofHashSchema,
@@ -100,9 +101,24 @@ export const ADAPTER_CAPS = {
    * the frame only to a daemon whose welcome listed it.
    */
   link: "link",
+  /**
+   * `agy_watch` (agy S3): this antigravity connection is the watcher of one
+   * agy process, not a conversation. Its hello names the watcher's own pid
+   * and the agy process's start time; the daemon walks the watcher's parents
+   * to that agy process and pushes it `agy_deliver` frames, which it answers
+   * with `ack` or `agy_failed`. Any other request on it is refused.
+   */
+  agyWatch: "agy_watch",
 } as const;
 
 export { REACH_PROPOSAL_MAX };
+
+/** agy S3: the daemon's refusal of a second watcher for one agy process. */
+export const AGY_WATCHER_RUNNING =
+  "an oa-bus watcher already runs for this agy process";
+/** agy S3: the daemon's refusal of a watcher whose agy process has no conversation on the bus. */
+export const AGY_NO_SESSION =
+  "no conversation of this agy process is on the bus yet";
 
 export const Hello = z.object({
   ...base,
@@ -176,11 +192,7 @@ export type Hello = z.infer<typeof Hello>;
  * not the user's (codex-rs `ThreadSource`, all present in the 0.165 binary).
  * The adapter refuses them; the daemon decides from Codex's own state.
  */
-export const SPAWNED_SOURCES: ReadonlySet<string> = new Set([
-  "subagent",
-  "guardian_review",
-  "memory_consolidation",
-]);
+export const SPAWNED_SOURCES: ReadonlySet<string> = CODEX_SPAWNED_SOURCES;
 
 /** A tool call's request: its reply carries the agent's late-delivery notices. */
 const optIn = { late: z.literal(true).optional() };
@@ -336,6 +348,21 @@ export const AdapterLinkProof = z
   .strict();
 export type AdapterLinkProof = z.infer<typeof AdapterLinkProof>;
 
+/**
+ * agy S3: the watcher could not hand `msg_id` to agy (`agentapi
+ * send-message` failed). Nothing reached the session, so the daemon may try
+ * again; a watcher answers each push with this or with `ack` (an ack means
+ * agy said it took the message). `outcome: "unknown"`: an earlier hand-off
+ * may have reached agy and agy's mailbox cannot say, so the watcher neither
+ * sends it again nor calls it delivered; the receipt stays pending.
+ */
+export const AgyFailed = z.object({
+  ...base,
+  type: z.literal("agy_failed"),
+  msg_id: MsgIdSchema,
+  outcome: z.literal("unknown").optional(),
+});
+
 export const AdapterFrame = z.discriminatedUnion("type", [
   Hello,
   Send,
@@ -351,6 +378,7 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   ProposeReach,
   Habits,
   AdapterLinkProof,
+  AgyFailed,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -506,6 +534,19 @@ export const Deliver = z
   .refine((d) => (d.body === undefined) !== (d.notice === undefined), {
     message: "deliver needs exactly one of body or notice",
   });
+/**
+ * agy S3: one bus message for the watcher to hand to agy with `agentapi
+ * send-message <conversation_id> <text>`. `text` is the framed message, as
+ * every harness reads a peer's (header, then the body as data); the watcher
+ * passes it as one argument and never reads it.
+ */
+export const AgyDeliver = z.object({
+  ...base,
+  type: z.literal("agy_deliver"),
+  msg_id: MsgIdSchema,
+  conversation_id: AGENT_REF,
+  text: z.string().min(1),
+});
 /** A short local notice from Open Artifacts bus (the sender's mail expired or was refused); never a message. */
 export const Notice = z.object({
   ...base,
@@ -649,6 +690,7 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   Agent,
   Body,
   Deliver,
+  AgyDeliver,
   Notice,
   ErrorFrame,
   StatusReply,

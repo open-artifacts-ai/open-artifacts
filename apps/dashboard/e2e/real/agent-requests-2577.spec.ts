@@ -19,7 +19,11 @@ import {
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
 import { checkMemberComments } from "../staging/happy-path/member-comments";
-import { approveMachine, freshSignInUrl } from "./bus-confirm";
+import {
+  approveMachine,
+  freshSignInUrl,
+  spendDeviceCodes,
+} from "./bus-confirm";
 import {
   APP,
   createToken,
@@ -29,6 +33,7 @@ import {
   test,
   uniq,
 } from "./fixtures";
+import { findFrame } from "./frame-wait";
 import { mcpWithToken } from "./mcp-client";
 
 type Frame = Record<string, unknown>;
@@ -62,24 +67,7 @@ async function agentSocket(token: string, namespace: string) {
     ws.addEventListener("error", () => reject(new Error("socket error")));
   });
   const next = (pred: (f: Frame) => boolean, label: string): Promise<Frame> =>
-    new Promise<Frame>((resolve, reject) => {
-      const check = () => {
-        const f = frames.find(pred);
-        if (!f) return false;
-        clearTimeout(timer);
-        resolve(f);
-        return true;
-      };
-      const onMsg = () => {
-        if (!check()) waiters.push(onMsg);
-      };
-      const timer = setTimeout(() => {
-        const idx = waiters.indexOf(onMsg);
-        if (idx >= 0) waiters.splice(idx, 1);
-        reject(new Error(`no ${label} frame`));
-      }, 15_000);
-      if (!check()) waiters.push(onMsg);
-    });
+    findFrame(frames, waiters, pred, `a ${label} frame`);
   let seq = 0;
   ws.send(
     JSON.stringify({
@@ -115,6 +103,23 @@ async function agentSocket(token: string, namespace: string) {
       const id = `fence-${++seq}`;
       ws.send(JSON.stringify({ v: 1, id, type: "list", from_ref: "r1" }));
       await next((f) => f.type === "roster" && f.id === id, `roster(${id})`);
+    },
+    /** #3164: a mention no longer makes an agent follow the page; follow it over the bus. */
+    follow: async (pageId: string) => {
+      const id = `follow-${++seq}`;
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          id,
+          type: "follow",
+          from_ref: "r1",
+          artifact: pageId,
+        }),
+      );
+      await next(
+        (f) => f.type === "followed" && f.id === id,
+        `followed(${id})`,
+      );
     },
     close: () => ws.close(),
   };
@@ -155,7 +160,8 @@ async function newPage(label: string, withGuest = false) {
     });
     expect(r.ok(), await r.text()).toBe(true);
   }
-  // A mention makes an agent follow (#1535): each member mentions their own.
+  // Each member mentions their own agent, and each agent follows the page
+  // (#3164: a mention alone no longer follows it).
   const keyOf = async (p: Page, owner: "mine" | "theirs") =>
     (await agents(p, id)).find((a) =>
       owner === "mine" ? a.owner == null : a.owner != null,
@@ -166,6 +172,8 @@ async function newPage(label: string, withGuest = false) {
   expect(bKey, "B's agent is on B's list").toBeTruthy();
   await mention(pa, id, aKey, "A follows");
   await mention(pb, id, bKey, "B follows");
+  await agentA.follow(id);
+  await agentB.follow(id);
   // Both agents now show on both lists.
   await expect
     .poll(async () => (await agents(pb, id)).length, { timeout: 15_000 })
@@ -281,6 +289,7 @@ test.beforeEach(async ({ browser }) => {
 });
 
 test.afterEach(async () => {
+  await spendDeviceCodes();
   agentA?.close();
   agentB?.close();
   await Promise.all([pa, pb, pg].map((p) => p?.context().close()));

@@ -1,7 +1,17 @@
 /// <reference types="node" />
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
+import { R } from "@oa/shared";
 import type { Locator, Page } from "@playwright/test";
-import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
+import {
+  APP,
+  artifactFrame,
+  expect,
+  publishViaApi,
+  test,
+  uniq,
+} from "./fixtures";
 
 /**
  * A thumbnail can 404 while the server is still rendering the new version's
@@ -63,6 +73,89 @@ async function expectDetail(
   await expect(panel).toHaveCount(0);
 }
 
+/**
+ * Opens a library page and returns once it has stopped moving. This member has
+ * a card still open (an agent connected, steps left), so the settled page is
+ * the one where the card has rendered (`data-member`): its answer decides how
+ * much room it takes above the results, and a connected member's card is
+ * shorter than its placeholder, so the results move up when it commits. A box
+ * measured before that is in the wrong place for a click aimed by coordinates.
+ */
+async function openLibrary(page: Page, path: string) {
+  await page.goto(path);
+  await expect(page.locator("section[data-member]")).toBeVisible();
+  await expect(page.locator("[data-member-slot]")).toHaveCount(0);
+}
+
+/**
+ * Holds the member's onboarding BODY until `release()`, after the browser has
+ * seen the status and headers: the request goes to a tiny local server that
+ * asks the real one, writes status and headers at once (flushed), and ends the
+ * body only when the test lets it. `reached` resolves once the headers are out.
+ * (route.fulfill sends headers and body together, so it cannot do this.)
+ */
+async function holdOnboarding(page: Page) {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  let reached: () => void = () => {};
+  const headersSent = new Promise<void>((r) => {
+    reached = r;
+  });
+  const server = createServer(async (req, res) => {
+    const forwarded: Record<string, string> = {};
+    for (const k of ["x-oa-request", "accept"])
+      if (typeof req.headers[k] === "string")
+        forwarded[k] = req.headers[k] as string;
+    // The browser sends no cookie to another host: the route carried it here.
+    const cookie = req.headers["x-forward-cookie"];
+    if (typeof cookie === "string") forwarded.cookie = cookie;
+    const up = await fetch(`${APP}${R.onboarding}`, { headers: forwarded });
+    const body = await up.text();
+    res.writeHead(up.status, {
+      "content-type": up.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-store",
+      "access-control-allow-origin": APP,
+      "access-control-allow-credentials": "true",
+    });
+    res.flushHeaders();
+    reached();
+    await gate;
+    res.end(body);
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address() as AddressInfo;
+  await page.route(
+    (u) => u.pathname === R.onboarding,
+    async (route) => {
+      // The cookie jar, not the request's headers: WebKit's route omits it.
+      const cookie = (await page.context().cookies(APP))
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
+      await route.continue({
+        url: `http://127.0.0.1:${port}${R.onboarding}`,
+        headers: { ...route.request().headers(), "x-forward-cookie": cookie },
+      });
+    },
+  );
+  return {
+    release,
+    reached: headersSent,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+/** A click aimed at the box's centre that waits for the navigation it causes. */
+async function clickToDetail(page: Page, id: string, box: Box) {
+  await Promise.all([
+    page.waitForURL(new RegExp(`/a/${id}(/v/1)?(\\?|$)`)),
+    page.mouse.click(box.x + box.width / 2, box.y + box.height / 2),
+  ]);
+}
+
+type Box = { x: number; y: number; width: number; height: number };
+
 /** The element's box once it's on screen and scrolled into view (retried: the list may re-render as it settles). */
 async function inView(l: Locator) {
   // A member's Get started slot (#2632) settles first: the card that
@@ -78,6 +171,69 @@ async function inView(l: Locator) {
   if (!box) throw new Error("no box");
   return box as { x: number; y: number; width: number; height: number };
 }
+
+test("a thumbnail click after a late onboarding answer still opens the detail", {
+  tag: "@smoke",
+}, async ({ page, member }) => {
+  const a = {
+    title: `Late ${uniq()}`,
+    heading: "Hello late",
+  };
+  const made = await publishViaApi(member.pat, {
+    title: a.title,
+    format: "html",
+    content: `<!doctype html><h1>${a.heading}</h1>`,
+  });
+  // The state that moves a settled-looking page: this browser remembers "no
+  // card" for the member (an earlier load saw it finished), so no placeholder
+  // holds the room while the answer is out; the answer then opens the card.
+  const me = (await (await page.request.get(`${APP}${R.me}`)).json()) as {
+    user: { id: string };
+  };
+  await page.addInitScript((id) => {
+    localStorage.setItem(`oa.onboarding.no-card.${id}`, "1");
+  }, me.user.id);
+  const held = await holdOnboarding(page);
+  try {
+    const headersSeen = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === R.onboarding &&
+        r.request().method() === "GET",
+    );
+    let resolved = false;
+    const opened = openLibrary(page, "/").then(() => {
+      resolved = true;
+    });
+    // What an earlier readiness check settled on: the answer's headers seen,
+    // no placeholder, two frames. The test observes that state itself.
+    await headersSeen;
+    await expect(page.locator("[data-member-slot]")).toHaveCount(0);
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done())),
+        ),
+    );
+    // The body is still out, so the card has not rendered and openLibrary is
+    // still waiting: the page is not settled there.
+    await expect(page.locator("section[data-member]")).toHaveCount(0);
+    expect(resolved).toBe(false);
+    held.release();
+    await opened;
+  } finally {
+    // On a failure too: let the body go and close the proxy.
+    held.release();
+    await held.close();
+  }
+  const thumb = await inView(
+    page
+      .locator("article.lib-card")
+      .filter({ hasText: a.title })
+      .locator(".lib-thumb"),
+  );
+  await clickToDetail(page, made.id, thumb);
+  await expectDetail(page, made.id, a.title, a.heading);
+});
 
 test("library → detail: card, thumbnail and deep links", {
   tag: "@smoke",
@@ -108,7 +264,7 @@ test("library → detail: card, thumbnail and deep links", {
 
   for (const a of [html, md]) {
     // The title link.
-    await page.goto("/");
+    await openLibrary(page, "/");
     await card(a.title).getByRole("link", { name: a.title }).click();
     await expectDetail(page, a.id, a.title, a.heading);
     if (a === html)
@@ -117,15 +273,12 @@ test("library → detail: card, thumbnail and deep links", {
       );
 
     // The thumbnail, where a user naturally clicks.
-    await page.goto("/");
+    await openLibrary(page, "/");
     // A mouse click where the user aims, not a locator click: whatever covers the
     // thumbnail (the card's link) must take it. In view first: a member's Get
     // started card (#2632) can push it below the fold.
     const thumb = await inView(card(a.title).locator(".lib-thumb"));
-    await page.mouse.click(
-      thumb.x + thumb.width / 2,
-      thumb.y + thumb.height / 2,
-    );
+    await clickToDetail(page, a.id, thumb);
     await expectDetail(page, a.id, a.title, a.heading);
 
     // Deep links.
@@ -135,14 +288,14 @@ test("library → detail: card, thumbnail and deep links", {
     await expectDetail(page, a.id, a.title, a.heading);
 
     // List view: the row's timestamp, away from the title.
-    await page.goto("/?view=list");
+    await openLibrary(page, "/?view=list");
     const time = await inView(
       page
         .locator("article.lib-row")
         .filter({ hasText: a.title })
         .locator("time"),
     );
-    await page.mouse.click(time.x + time.width / 2, time.y + time.height / 2);
+    await clickToDetail(page, a.id, time);
     await expectDetail(page, a.id, a.title, a.heading);
   }
 

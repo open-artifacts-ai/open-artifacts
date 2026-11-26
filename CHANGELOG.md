@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.255.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.254.0...v0.255.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session gets bus messages through its watcher (agy S3) ([#3171](https://github.com/open-artifacts-ai/open-artifacts/issues/3171)) ([120f3b8](https://github.com/open-artifacts-ai/open-artifacts/commit/120f3b89f67c94f0c41ca544ffecf5b34044cb2d))
+
+## [0.254.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.1...v0.254.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an agy process is listed as starting at launch (agy S2b) ([#3190](https://github.com/open-artifacts-ai/open-artifacts/issues/3190)) ([0fa55c9](https://github.com/open-artifacts-ai/open-artifacts/commit/0fa55c9d7bd5335117d467bf73d90d6416be7caf))
+
+
+### Bug Fixes
+
+* **bus:** agy's default name is a fallback; a gone session's mail expires at once ([#3208](https://github.com/open-artifacts-ai/open-artifacts/issues/3208)) ([#3233](https://github.com/open-artifacts-ai/open-artifacts/issues/3233)) ([626cc36](https://github.com/open-artifacts-ai/open-artifacts/commit/626cc363571e6e4e67c3c3956d74ebc51a1a45d4))
+
+## [0.253.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.253.0...v0.253.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **release:** main's version files say 0.253.0, as tag v0.253.0 does ([#3246](https://github.com/open-artifacts-ai/open-artifacts/issues/3246)) ([d6846e0](https://github.com/open-artifacts-ai/open-artifacts/commit/d6846e0d8b9b98d3e1fd90732fc2c29887e1212f))
+
+## [0.253.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.253.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** a moved role takes the old session's notices and follows ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3228](https://github.com/open-artifacts-ai/open-artifacts/issues/3228)) ([0ef0989](https://github.com/open-artifacts-ai/open-artifacts/commit/0ef0989bcf4b849d14a5c0af1933977c4a1f60ab))
+
+
+### Bug Fixes
+
+* **bus:** a Codex entry signed in with codex mcp login links with no token ([#3108](https://github.com/open-artifacts-ai/open-artifacts/issues/3108)) ([#3125](https://github.com/open-artifacts-ai/open-artifacts/issues/3125)) ([3670730](https://github.com/open-artifacts-ai/open-artifacts/commit/3670730a5be9b2113016602e7a2d2368b99613da))
+
+## [0.252.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.1...v0.252.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session joins the bus at its first message (agy S2) ([#3135](https://github.com/open-artifacts-ai/open-artifacts/issues/3135)) ([dfa9126](https://github.com/open-artifacts-ai/open-artifacts/commit/dfa91264a74d1b15483fc6902fc09cde087b534e))
+
+
+### Bug Fixes
+
+* **bus:** an unsent agent_up no longer holds the update self-check ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3222](https://github.com/open-artifacts-ai/open-artifacts/issues/3222)) ([1eee203](https://github.com/open-artifacts-ai/open-artifacts/commit/1eee2034ed1cd82f5190203cd610911fb3aea090))
+* **bus:** sessions that exit read away within a minute ([#3192](https://github.com/open-artifacts-ai/open-artifacts/issues/3192)) ([#3198](https://github.com/open-artifacts-ai/open-artifacts/issues/3198)) ([b271979](https://github.com/open-artifacts-ai/open-artifacts/commit/b271979729e302ca1659835ed511557c3d88d28d))
+
+## [0.251.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.0...v0.251.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **sign-in:** with login codes on, the page treats codes as a normal way in, no guest copy ([#3179](https://github.com/open-artifacts-ai/open-artifacts/issues/3179)) ([#3196](https://github.com/open-artifacts-ai/open-artifacts/issues/3196)) ([442f1f5](https://github.com/open-artifacts-ai/open-artifacts/commit/442f1f5c55360d69ede80d9a950b5230b7eb2236))
+
 ## [0.251.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.250.0...v0.251.0) (2026-11-26)
 
 

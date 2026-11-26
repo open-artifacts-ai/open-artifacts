@@ -57,6 +57,7 @@ describe("contract is pinned", () => {
       "update_report",
       "guest_up",
       "guest_down",
+      "codex_call_checked",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -80,6 +81,7 @@ describe("contract is pinned", () => {
       "update_ack",
       "owner_away",
       "proof_seen",
+      "codex_call_check",
     ]);
   });
 
