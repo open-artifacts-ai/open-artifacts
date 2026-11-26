@@ -116,6 +116,23 @@ async function agentSocket(token: string, namespace: string) {
       ws.send(JSON.stringify({ v: 1, id, type: "list", from_ref: "r1" }));
       await next((f) => f.type === "roster" && f.id === id, `roster(${id})`);
     },
+    /** #3164: a mention no longer makes an agent follow the page; follow it over the bus. */
+    follow: async (pageId: string) => {
+      const id = `follow-${++seq}`;
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          id,
+          type: "follow",
+          from_ref: "r1",
+          artifact: pageId,
+        }),
+      );
+      await next(
+        (f) => f.type === "followed" && f.id === id,
+        `followed(${id})`,
+      );
+    },
     close: () => ws.close(),
   };
 }
@@ -155,7 +172,8 @@ async function newPage(label: string, withGuest = false) {
     });
     expect(r.ok(), await r.text()).toBe(true);
   }
-  // A mention makes an agent follow (#1535): each member mentions their own.
+  // Each member mentions their own agent, and each agent follows the page
+  // (#3164: a mention alone no longer follows it).
   const keyOf = async (p: Page, owner: "mine" | "theirs") =>
     (await agents(p, id)).find((a) =>
       owner === "mine" ? a.owner == null : a.owner != null,
@@ -166,6 +184,8 @@ async function newPage(label: string, withGuest = false) {
   expect(bKey, "B's agent is on B's list").toBeTruthy();
   await mention(pa, id, aKey, "A follows");
   await mention(pb, id, bKey, "B follows");
+  await agentA.follow(id);
+  await agentB.follow(id);
   // Both agents now show on both lists.
   await expect
     .poll(async () => (await agents(pb, id)).length, { timeout: 15_000 })
