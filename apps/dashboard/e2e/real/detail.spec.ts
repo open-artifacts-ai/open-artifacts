@@ -1,6 +1,7 @@
 /// <reference types="node" />
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
+import { R } from "@oa/shared";
 import { artifactFrame, expect, publishViaApi, test, uniq } from "./fixtures";
 
 /**
@@ -63,6 +64,41 @@ async function expectDetail(
   await expect(panel).toHaveCount(0);
 }
 
+/**
+ * Opens a library page and returns once it has stopped moving: the member's
+ * onboarding answer is in (it decides whether the Get started card takes room
+ * above the results, and a connected member's shorter card closes the gap) and
+ * the page has painted the result. A box measured earlier is a box in the wrong
+ * place for a click aimed by coordinates.
+ */
+async function openLibrary(page: Page, path: string) {
+  const answered = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === R.onboarding &&
+      r.request().method() === "GET",
+  );
+  await page.goto(path);
+  await answered;
+  await expect(page.locator("[data-member-slot]")).toHaveCount(0);
+  // The answer renders on the next frames.
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => done())),
+      ),
+  );
+}
+
+/** A click aimed at the box's centre that waits for the navigation it causes. */
+async function clickToDetail(page: Page, id: string, box: Box) {
+  await Promise.all([
+    page.waitForURL(new RegExp(`/a/${id}(/v/1)?(\\?|$)`)),
+    page.mouse.click(box.x + box.width / 2, box.y + box.height / 2),
+  ]);
+}
+
+type Box = { x: number; y: number; width: number; height: number };
+
 /** The element's box once it's on screen and scrolled into view (retried: the list may re-render as it settles). */
 async function inView(l: Locator) {
   // A member's Get started slot (#2632) settles first: the card that
@@ -108,7 +144,7 @@ test("library → detail: card, thumbnail and deep links", {
 
   for (const a of [html, md]) {
     // The title link.
-    await page.goto("/");
+    await openLibrary(page, "/");
     await card(a.title).getByRole("link", { name: a.title }).click();
     await expectDetail(page, a.id, a.title, a.heading);
     if (a === html)
@@ -117,15 +153,12 @@ test("library → detail: card, thumbnail and deep links", {
       );
 
     // The thumbnail, where a user naturally clicks.
-    await page.goto("/");
+    await openLibrary(page, "/");
     // A mouse click where the user aims, not a locator click: whatever covers the
     // thumbnail (the card's link) must take it. In view first: a member's Get
     // started card (#2632) can push it below the fold.
     const thumb = await inView(card(a.title).locator(".lib-thumb"));
-    await page.mouse.click(
-      thumb.x + thumb.width / 2,
-      thumb.y + thumb.height / 2,
-    );
+    await clickToDetail(page, a.id, thumb);
     await expectDetail(page, a.id, a.title, a.heading);
 
     // Deep links.
@@ -135,14 +168,14 @@ test("library → detail: card, thumbnail and deep links", {
     await expectDetail(page, a.id, a.title, a.heading);
 
     // List view: the row's timestamp, away from the title.
-    await page.goto("/?view=list");
+    await openLibrary(page, "/?view=list");
     const time = await inView(
       page
         .locator("article.lib-row")
         .filter({ hasText: a.title })
         .locator("time"),
     );
-    await page.mouse.click(time.x + time.width / 2, time.y + time.height / 2);
+    await clickToDetail(page, a.id, time);
     await expectDetail(page, a.id, a.title, a.heading);
   }
 
