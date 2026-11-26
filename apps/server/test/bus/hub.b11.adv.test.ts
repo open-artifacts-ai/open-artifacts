@@ -438,7 +438,7 @@ describe("H1 (P3): close cleanup cost does not grow with delivered history", () 
         v: 1,
         id: "w",
         type: "sessions",
-        open: [],
+        open: closed,
         closed: closed.map((r) => `w_${r}`),
       });
       await sync(d);
