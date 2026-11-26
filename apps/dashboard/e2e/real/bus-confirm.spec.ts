@@ -133,15 +133,16 @@ test("a refused approval fails at once with its status, while the body and the d
     await held.reached;
     // The 403's body is still out and the token call is held: the failure
     // comes from the headers alone, and the failure path made no token call.
-    expect(await withDeadline(refused, 30_000, "the refused approval")).toMatch(
+    expect(await withDeadline(refused, 15_000, "the refused approval")).toMatch(
       /POST \/bus\/approve: 403/,
     );
     expect(tokenCalls).toBe(0);
-    // The teardown's spend is bounded: it ends though the token call is held.
-    const t0 = Date.now();
+    // The teardown's spend is the one token call; with it let go, it ends.
+    // (That it ends at its bound when the call stays held is a unit test on a
+    // fake clock: test/spend-codes.test.ts.)
+    unhold();
     await spendDeviceCodes();
     expect(tokenCalls).toBe(1);
-    expect(Date.now() - t0).toBeLessThan(10_000);
   } finally {
     globalThis.fetch = realFetch;
     unhold();
