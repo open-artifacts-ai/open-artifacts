@@ -92,7 +92,7 @@ class Env:
         self.roots = Roots({"s1": "r1", "s2": "r2"}.get)
         self.exists = exists
         self.bus = Bus(self.roots, inject=self.ctx.inject_message, spawn=support.inline_spawn, start="t",
-                       codex_runtime=lambda: False, habits_marker=support.habits_marker(False),
+                       codex_runtime=lambda: False,
                        store=self.store, session_exists=lambda sid: self.exists)
         self.opened = []
         self.bus.touch = self.opened.append
