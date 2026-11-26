@@ -4,6 +4,7 @@ import {
   type ArtifactSummary,
   type ArtifactToShell,
   ASK_SLOTS_MAX,
+  type Capabilities,
   DataChangeSchema,
   DataDocSchema,
   type ErrorCode,
@@ -117,6 +118,12 @@ export interface BridgeOptions {
     ghost?: { x: number; y: number },
   ) => void;
   onCommentOpen?: (id: string) => void;
+  /**
+   * #3037: a capability the page's own code reached for (a runtime call), so
+   * the Share panel can say which live data boxes it uses. Counted even when
+   * the call is refused for that capability: that is the page failing.
+   */
+  onCapability?: (cap: keyof Capabilities) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
@@ -539,6 +546,11 @@ export function createBridge(opts: BridgeOptions) {
     const method = m.method;
     if (inFlight >= MAX_IN_FLIGHT)
       return fail(m.id, "rate_limited", "Too many concurrent calls");
+    // #3037: what the page asks for, taken before the capability gate below so
+    // a refused call still marks the box (the page is failing on it).
+    // onboarding.get isn't viewer identity: only the Welcome page may call it.
+    if (method !== "onboarding.get")
+      opts.onCapability?.(METHOD_CAPABILITY[method]);
     // onboarding.get has its own, stricter gate in run(): Welcome and its owner.
     if (
       method !== "onboarding.get" &&
