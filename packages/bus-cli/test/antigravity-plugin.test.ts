@@ -204,11 +204,11 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     // packages/bus-daemon/test/antigravity.starting.test.ts copies this shape
     // (pinnedHook); a change here must change it there.
     expect(agyHookCommand(["/bin/oa-bus"], "/tmp/it's here/.oa-bus")).toBe(
-      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; f="$OA_BUS_HOME/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
+      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; d="$OA_BUS_HOME/antigravity"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$d/$PPID.json" 2>/dev/null && p=$(sed -n 's/^{"pid":\\([0-9][0-9]*\\),.*/\\1/p' "$d/$PPID.watch.json" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
     );
   });
 
-  it("the hook's shell runs agy-hello only when the conversation is not the one recorded", () => {
+  it("the hook's shell runs agy-hello unless the conversation is the one recorded and its watcher runs", () => {
     const h = mkdtempSync(join(tmpdir(), "ob-agyf-"));
     // A stand-in argv: prints its words instead of starting the bus.
     const cmd = agyHookCommand(["/bin/echo", "ran"], h);
@@ -233,9 +233,24 @@ describe("the oa-bus agy plugin (agy S2)", () => {
         cwd: "/w",
       }),
     );
+    // agy S3: recorded, but no watcher yet: Node asks the session to start it.
+    expect(run(REF)).toBe("ran agy-hello");
+    const watch = (pid: number) =>
+      writeFileSync(
+        join(h, "antigravity", `${process.pid}.watch.json`),
+        `${JSON.stringify({ pid, procStart: "w0", agyStart: "t0" })}\n`,
+      );
+    // A running watcher (this test process stands in for it): the shell answers.
+    watch(process.pid);
     expect(run(REF)).toBe("{}");
     expect(run("5d1c9e2a-3b4f-4a6d-8e7f-0a1b2c3d4e5f")).toBe("ran agy-hello");
     expect(run(undefined)).toBe("ran agy-hello");
+    // The watcher died without clearing its file (SIGKILL): Node again.
+    const dead = Number(
+      execFileSync("/bin/sh", ["-c", "echo $$"], { encoding: "utf8" }),
+    );
+    watch(dead);
+    expect(run(REF)).toBe("ran agy-hello");
   });
 
   it("the daemon reads the home the hook sends sessions to: default, or the moved one (agy S2b)", () => {
@@ -337,6 +352,22 @@ describe("install, doctor and uninstall --purge with the plugin (agy S2)", () =>
     );
     await doctor(ctx);
     expect(ctx.all()).toContain("[[success]]✓[[/success]]  Antigravity wired");
+    // agy S3: and the one rule that lets the session start its watcher.
+    expect(ctx.all()).toContain(
+      "[[success]]✓[[/success]]  Antigravity may start the bus watcher without asking",
+    );
+    const none = make();
+    await install({ label: LABEL, hub: HUB }, none);
+    writeFileSync(
+      join(none.userHome, ".gemini/antigravity-cli/settings.json"),
+      "{}\n",
+    );
+    await doctor(none);
+    expect(none.all()).toEqual(
+      expect.arrayContaining([
+        "[[warning]]![[/warning]]  Antigravity will ask before it starts the bus watcher",
+      ]),
+    );
     const off = make();
     await install({ label: LABEL, hub: HUB }, off);
     writeFileSync(

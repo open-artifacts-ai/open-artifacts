@@ -48,15 +48,20 @@ const sh = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
  * PreInvocation (before each model call) also covers a resumed one
  * (`agy --conversation`, `-c`). So that a call costs no Node start, the shell
  * says `{}` itself when the conversation agy names in the hook's env is
- * already the one recorded for this agy process.
+ * already the one recorded for this agy process AND the watcher its watch
+ * file names still runs (agy S3). A watcher that died, even by SIGKILL, so
+ * sends the next call to Node, which asks the session to start it again;
+ * Node also checks the watcher's start time, which the shell can't.
  */
 export function agyHookCommand(busBin: string[], busHome: string): string {
   const argv = [...busBin, "agy-hello"].map(sh).join(" ");
   return (
     `export OA_BUS_HOME=${sh(busHome)}; ` +
-    `f="$OA_BUS_HOME/antigravity/$PPID.json"; ` +
+    `d="$OA_BUS_HOME/antigravity"; ` +
     `if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && ` +
-    `grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; ` +
+    `grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$d/$PPID.json" 2>/dev/null && ` +
+    `p=$(sed -n 's/^{"pid":\\([0-9][0-9]*\\),.*/\\1/p' "$d/$PPID.watch.json" 2>/dev/null) && ` +
+    `[ -n "$p" ] && kill -0 "$p" 2>/dev/null; ` +
     `then echo '{}'; else exec ${argv}; fi`
   );
 }
@@ -74,6 +79,22 @@ export const AGY_PLUGIN_ASSETS: string = (() => {
 })();
 /** The shipped files, by their path in the plugin folder. */
 const SHIPPED = ["plugin.json", "logo.svg"];
+/** agy S3: the watcher's command line, which the hook tells the session to run. */
+export const AGY_WATCH_FILE = "watch-command.txt";
+
+/** One shell word, quoted only when it has to be. */
+const word = (s: string) => (/^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : sh(s));
+
+/**
+ * agy S3: the one fixed command line that starts the watcher. The session
+ * runs it as a background command outside agy's sandbox; it has nothing in
+ * it from a message, a peer or the session.
+ */
+export function agyWatchCommand(busBin: string[], movedHome?: string): string {
+  const argv = [...busBin, "agy-watch"];
+  if (movedHome !== undefined) argv.push("--home", movedHome);
+  return argv.map(word).join(" ");
+}
 
 /** The plugin's files, as install writes them: the shipped ones and hooks.json. */
 export function agyPluginFiles(
@@ -94,6 +115,7 @@ export function agyPluginFiles(
       SHIPPED.map((f) => [f, readFileSync(join(assets, f), "utf8")]),
     ),
     "hooks.json": `${JSON.stringify(hooks, null, 2)}\n`,
+    [AGY_WATCH_FILE]: `${agyWatchCommand(busBin, busHome)}\n`,
   };
 }
 
@@ -193,7 +215,7 @@ export function uninstallAgyPlugin(home: string): boolean {
   const dir = agyPluginDir(home);
   if (agyPluginState(home, undefined) === "absent") return false;
   if (agyPluginState(home, undefined) === "foreign") return false;
-  for (const name of [...SHIPPED, "hooks.json"])
+  for (const name of [...SHIPPED, "hooks.json", AGY_WATCH_FILE])
     rmSync(join(dir, name), { force: true });
   rmSync(join(dir, AGY_PLUGIN_MARKER), { force: true });
   try {
