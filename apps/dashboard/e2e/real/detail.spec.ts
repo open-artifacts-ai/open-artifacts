@@ -194,13 +194,37 @@ test("a thumbnail click after a late onboarding answer still opens the detail", 
     localStorage.setItem(`oa.onboarding.no-card.${id}`, "1");
   }, me.user.id);
   const held = await holdOnboarding(page);
-  const opened = openLibrary(page, "/");
-  // The browser has the answer's status and headers; its body, and so the
-  // card, arrives only when the test lets it.
-  await held.reached;
-  held.release();
-  await opened;
-  await held.close();
+  try {
+    const headersSeen = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === R.onboarding &&
+        r.request().method() === "GET",
+    );
+    let resolved = false;
+    const opened = openLibrary(page, "/").then(() => {
+      resolved = true;
+    });
+    // What an earlier readiness check settled on: the answer's headers seen,
+    // no placeholder, two frames. The test observes that state itself.
+    await headersSeen;
+    await expect(page.locator("[data-member-slot]")).toHaveCount(0);
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done())),
+        ),
+    );
+    // The body is still out, so the card has not rendered and openLibrary is
+    // still waiting: the page is not settled there.
+    await expect(page.locator("section[data-member]")).toHaveCount(0);
+    expect(resolved).toBe(false);
+    held.release();
+    await opened;
+  } finally {
+    // On a failure too: let the body go and close the proxy.
+    held.release();
+    await held.close();
+  }
   const thumb = await inView(
     page
       .locator("article.lib-card")
