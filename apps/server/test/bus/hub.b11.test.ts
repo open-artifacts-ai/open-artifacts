@@ -1085,6 +1085,128 @@ describe("gone-session drain (#3208)", () => {
     expect(told.size).toBe(total);
     for (const id of msgIds) expect(told.get(id)).toBe(1);
   });
+
+  it("reopening a gone ref and revoking its machine drains pre-gone mail as recipient_closed and post-reopen mail as revoked", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone-revoke");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const oldTotal = 120;
+    const oldIds = await seedReceipts(h, victim, oldTotal, {
+      state: "pending",
+      body: true,
+      now: t0 - 10,
+      from: s.id,
+    });
+
+    // Session goes gone: only CLOSE_INLINE_BATCH expire inline; the rest are queued in gone_drain.
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    expect(await expiredClosed(h)).toBe(CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(oldTotal - CLOSE_INLINE_BATCH);
+
+    // Same ref reopens before the gone drain finishes.
+    await clock(h, t0 + 10);
+    d.send(up("u2", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    await sync(d);
+
+    // Sender sends new mail to the reopened session (stays unacked/pending).
+    const newIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      s.d.send({
+        v: 1,
+        id: `new-${i}`,
+        type: "send",
+        from_ref: "sender",
+        to_name: "Victim",
+        body: `after reopen ${i}`,
+      });
+      const r = await until(s.d, "receipt");
+      expect(r.state).toBe("pending");
+      newIds.push(r.msg_id);
+    }
+    await sync(d);
+
+    // Revoke the machine while the gone drain is still pending.
+    expect(await h.revokeMachine(m.id)).toBe(true);
+
+    // Drive alarms until every drain finishes.
+    await drain(
+      h,
+      async () =>
+        (await pendingCount(h)) === 0 &&
+        (await count(
+          h,
+          "select count(*) as n from meta where key like 'gone_drain:%' or key like 'revoke_drain:%'",
+        )) === 0,
+    );
+
+    expect(await pendingCount(h)).toBe(0);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from meta where key like 'gone_drain:%' or key like 'revoke_drain:%'",
+      ),
+    ).toBe(0);
+
+    // Every pre-gone message ended expired with reason recipient_closed;
+    // every post-reopen message ended expired with reason revoked.
+    const rows = await inHub(h, (_, st) =>
+      st.storage.sql
+        .exec<{ id: string; state: string; reason: string | null }>(
+          "select id, state, reason from receipts where to_agent = ?",
+          victim,
+        )
+        .toArray(),
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.size).toBe(oldIds.length + newIds.length);
+    for (const id of oldIds)
+      expect(byId.get(id)).toEqual({
+        id,
+        state: "expired",
+        reason: "recipient_closed",
+      });
+    for (const id of newIds)
+      expect(byId.get(id)).toEqual({
+        id,
+        state: "expired",
+        reason: "revoked",
+      });
+
+    // Sender gets exactly one receipt_update per msg_id (both recipient_closed
+    // and revoked map to wire reason recipient_closed).
+    await sync(s.d);
+    const told = new Map<
+      string,
+      { count: number; reason: string | undefined }
+    >();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        const prev = told.get(f.msg_id);
+        told.set(f.msg_id, { count: (prev?.count ?? 0) + 1, reason: f.reason });
+      }
+    expect(told.size).toBe(oldIds.length + newIds.length);
+    for (const id of [...oldIds, ...newIds])
+      expect(told.get(id)).toEqual({ count: 1, reason: "recipient_closed" });
+  });
 });
 
 // ------------------------------------------------------------------- logs
