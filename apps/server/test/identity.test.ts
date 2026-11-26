@@ -708,6 +708,43 @@ describe("resetIdentity", () => {
     expect(await flag()).toBe(0);
   });
 
+  it("resets only the named provider's link; Google's link and google_relink stay (#3087)", async () => {
+    const email = uniq("rgh");
+    const uid = await seedUser(email, "member", { googleSub: `RG-${email}` });
+    await env.DB.prepare(
+      "insert into identities (provider, subject, tenant, user_id, created_at) values ('github', ?, '', ?, ?)",
+    )
+      .bind(`gh-${email}`, uid, Date.now())
+      .run();
+    await createPat(env, uid, "t");
+    const links = async (provider: string) =>
+      count("identities where user_id = ? and provider = ?", uid, provider);
+    await resetIdentity(env, admin, uid, undefined, "github");
+    expect(await links("github")).toBe(0);
+    expect(await links("google")).toBe(1);
+    expect(await subjectOf(uid)).toBe(`RG-${email}`);
+    expect(
+      (
+        await one<{ f: number }>(
+          "select google_relink f from users where id = ?",
+          uid,
+        )
+      ).f,
+    ).toBe(0);
+    expect((await rowOf(uid)).e).toBe(1);
+    expect(await pats(uid)).toBe(0);
+  });
+
+  it("a provider with no link on the row: not found, nothing changes (#3087)", async () => {
+    const email = uniq("rnone");
+    const uid = await seedUser(email, "member", { googleSub: `RN-${email}` });
+    await expect(
+      resetIdentity(env, admin, uid, undefined, "microsoft"),
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(await subjectOf(uid)).toBe(`RN-${email}`);
+    expect((await rowOf(uid)).e).toBe(0);
+  });
+
   it("revokes the user's live sockets (UserPresence revokedAt set, P3 T7)", async () => {
     const email = uniq("live");
     const uid = await seedUser(email, "member", { googleSub: `L-${email}` });
