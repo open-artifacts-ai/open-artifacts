@@ -2150,7 +2150,10 @@ function agentUp(
         candidateName(f.proposed_name).toLowerCase() ===
           existing.name.toLowerCase()
       ),
-    true,
+    // #3132/#3143 (Leo 2026-11-26 18:57Z): only a name a person gave is a
+    // role, so only it asks the holder to move; a self-picked collision is a
+    // hidden session name, never a card.
+    f.name_chosen === true,
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };
@@ -7486,7 +7489,8 @@ export class BusHub extends DurableObject<Env> {
       f.name_kind,
       { kind: agent.kind },
       false,
-      true,
+      // #3143: only a person's rename asks to take a held name over.
+      f.name_chosen === true,
     );
     const name = assigned.name;
     const reply = {

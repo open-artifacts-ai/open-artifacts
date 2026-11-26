@@ -28,10 +28,14 @@ import {
   machine,
   member,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 const inHub = async <R>(
   fn: (i: BusHub, s: DurableObjectState) => R,
@@ -274,6 +278,7 @@ describe("offline reap (open-bus #422)", () => {
       v: 1,
       id: fid,
       type: "rename",
+      name_chosen: true,
       agent_ref: "f",
       proposed_name: now,
     });

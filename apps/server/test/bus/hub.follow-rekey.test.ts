@@ -20,9 +20,13 @@ import {
   machine,
   member,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ReturnType<typeof plainUp>;
 
 type Reply<T extends ServerFrame["type"]> = Extract<ServerFrame, { type: T }>;
 
@@ -106,7 +110,11 @@ const listed = async (s: S, ref: string) =>
     (f) => f.artifact_id,
   );
 const rename = (s: S, ref: string, name: string) =>
-  ask(s, { type: "rename", agent_ref: ref, proposed_name: name }, "renamed");
+  ask(
+    s,
+    { type: "rename", agent_ref: ref, proposed_name: name, name_chosen: true },
+    "renamed",
+  );
 
 /** A round trip through the hub: every frame sent before it has been handled. */
 async function settled(s: S, from: string): Promise<void> {

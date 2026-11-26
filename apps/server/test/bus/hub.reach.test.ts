@@ -18,10 +18,14 @@ import {
   inOwnerHub,
   machine,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 let seq = 0;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
@@ -391,6 +395,7 @@ describe("the reply path by every name", () => {
       v: 1,
       id: `r${++seq}`,
       type: "rename",
+      name_chosen: true,
       agent_ref: "h",
       proposed_name: fresh,
       name_kind: "chosen",
@@ -403,6 +408,7 @@ describe("the reply path by every name", () => {
       v: 1,
       id: `r${++seq}`,
       type: "rename",
+      name_chosen: true,
       agent_ref: "p",
       proposed_name: uniq("pr"),
       name_kind: "chosen",
@@ -439,6 +445,7 @@ async function renameTo(d: Daemon, ref: string, name: string) {
     v: 1,
     id,
     type: "rename",
+    name_chosen: true,
     agent_ref: ref,
     proposed_name: name,
   } as ClientFrame);

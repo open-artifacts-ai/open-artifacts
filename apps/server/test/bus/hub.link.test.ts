@@ -23,10 +23,14 @@ import {
   machine,
   member,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -302,6 +306,7 @@ describe("link_bind (#1822)", () => {
       v: 1,
       id: id("rn"),
       type: "rename",
+      name_chosen: true,
       agent_ref: "r1",
       proposed_name: "Captain",
     } as ClientFrame);
@@ -319,6 +324,7 @@ describe("link_bind (#1822)", () => {
       v: 1,
       id: id("rn"),
       type: "rename",
+      name_chosen: true,
       agent_ref: "r1",
       proposed_name: "Captain",
     } as ClientFrame);
