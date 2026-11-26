@@ -662,6 +662,7 @@ describe("RPC surface", () => {
       "putReach",
       "putRole",
       "revokeMachine",
+      "roleHolderFor",
       "runVersionChanged",
       "snapshot",
       "viewLinkProposal",
