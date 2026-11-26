@@ -547,12 +547,15 @@ describe("runDaemon claude session sync", () => {
     rec.live = false;
     rec.closedBy = "liveness";
     await h.next("agent_up", 2);
-    rec.live = false; // closed again at once
-    rec.closedBy = "liveness";
+    // The reopen made a new record: close that one again at once.
+    const again = h.daemon.agents.byRef("s4242");
+    if (!again) throw new Error("no record");
+    again.live = false;
+    again.closedBy = "liveness";
     await syncs.next(3); // several whole sync ticks
     await h.barrier();
     expect(h.of("agent_up")).toHaveLength(2);
-    expect(rec.live).toBe(false);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
   });
 
   it("#2110: an unknown start time or unreadable file never closes a live session", async () => {
