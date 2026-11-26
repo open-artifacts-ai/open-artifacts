@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.252.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.252.0...v0.252.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** a Codex entry signed in with codex mcp login links with no token ([#3108](https://github.com/open-artifacts-ai/open-artifacts/issues/3108)) ([#3125](https://github.com/open-artifacts-ai/open-artifacts/issues/3125)) ([3670730](https://github.com/open-artifacts-ai/open-artifacts/commit/3670730a5be9b2113016602e7a2d2368b99613da))
+
+## [0.252.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.1...v0.252.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session joins the bus at its first message (agy S2) ([#3135](https://github.com/open-artifacts-ai/open-artifacts/issues/3135)) ([dfa9126](https://github.com/open-artifacts-ai/open-artifacts/commit/dfa91264a74d1b15483fc6902fc09cde087b534e))
+
+
+### Bug Fixes
+
+* **bus:** an unsent agent_up no longer holds the update self-check ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3222](https://github.com/open-artifacts-ai/open-artifacts/issues/3222)) ([1eee203](https://github.com/open-artifacts-ai/open-artifacts/commit/1eee2034ed1cd82f5190203cd610911fb3aea090))
+* **bus:** sessions that exit read away within a minute ([#3192](https://github.com/open-artifacts-ai/open-artifacts/issues/3192)) ([#3198](https://github.com/open-artifacts-ai/open-artifacts/issues/3198)) ([b271979](https://github.com/open-artifacts-ai/open-artifacts/commit/b271979729e302ca1659835ed511557c3d88d28d))
+
 ## [0.251.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.0...v0.251.1) (2026-11-26)
 
 

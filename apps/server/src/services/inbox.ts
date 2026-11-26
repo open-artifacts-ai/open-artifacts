@@ -588,7 +588,13 @@ async function tellAsker(
       row.thread_id,
       commentId,
       c.author.ref,
-      await askingAddress(env, row.artifact_id, row.thread_id, c.author),
+      await askingAddress(
+        env,
+        row.artifact_id,
+        row.thread_id,
+        c.author,
+        c.createdAt,
+      ),
       { userId: caller.user.id, until: at.until, when: at.when },
     );
   } catch (e) {

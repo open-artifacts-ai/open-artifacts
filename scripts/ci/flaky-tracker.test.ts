@@ -25,7 +25,7 @@ import {
   parsePlaywright,
   parseStore,
   parseVitest,
-  RECONCILE_HOURS,
+  QUIET_DAYS,
   RERUN_DAYS,
   type Recorded,
   type RunInfo,
@@ -211,27 +211,38 @@ describe("the workflow", () => {
     for (const s of steps) if (s.run) expect(s.run).not.toContain("${{");
   });
 
-  it("reconciles hourly, through the same script", () => {
-    expect(wf.on.schedule).toEqual([{ cron: "17 * * * *" }]);
-    expect(wf.on.workflow_run).toEqual({
-      workflows: ["CI"],
-      types: ["completed"],
+  it("reconciles after every CI completion and on dispatch, never on a clock, through the same script", () => {
+    // cloud #264: event-only. A dropped tracker event is caught by the next
+    // CI completion's reconcile.
+    expect(wf.on).toEqual({
+      workflow_run: { workflows: ["CI"], types: ["completed"] },
+      workflow_dispatch: null,
     });
-    expect(wf.jobs.track.if).toContain("github.event_name == 'schedule'");
+    expect(wf.on.schedule).toBeUndefined();
+    expect(String(wf.jobs.track.if).replace(/\s+/g, " ").trim()).toBe(
+      "github.repository == 'open-artifacts-ai/open-artifacts' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.conclusion != 'cancelled' && github.event.workflow_run.conclusion != 'skipped'))",
+    );
     const steps = wf.jobs.track.steps as { if?: string; run?: string }[];
     const event = steps.find((s) => s.run?.includes("--run-id"));
-    const sched = steps.find((s) => s.run?.includes("--reconcile"));
-    expect(event?.if).toBe("github.event_name == 'workflow_run'");
-    expect(sched?.if).toBe("github.event_name == 'schedule'");
-    expect(sched?.run).toContain("scripts/ci/flaky-tracker.ts");
+    const recon = steps.find((s) => s.run?.includes("--reconcile"));
+    // The event's own run only when it passed on attempt 2 or later.
+    expect(String(event?.if).replace(/\s+/g, " ").trim()).toBe(
+      "github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt > 1",
+    );
+    // No condition: every tracker run reconciles, right after the record step.
+    expect(recon?.if).toBeUndefined();
+    expect(steps.indexOf(recon as (typeof steps)[number])).toBe(
+      steps.indexOf(event as (typeof steps)[number]) + 1,
+    );
+    expect(recon?.run).toContain("scripts/ci/flaky-tracker.ts");
   });
 });
 
 describe("decide", () => {
   it("records a first sighting and opens nothing", () => {
-    expect(
-      decide({ f: F, sighting: S, recorded: [], open: [], nowMs: NOW }).kind,
-    ).toBe("record");
+    expect(decide({ f: F, sighting: S, recorded: [], open: [] }).kind).toBe(
+      "record",
+    );
   });
 
   it("opens an issue on the second run within 7 days, with both runs", () => {
@@ -240,7 +251,6 @@ describe("decide", () => {
       sighting: S,
       recorded: [rec(800, "2026-11-22T00:00:00Z")],
       open: [],
-      nowMs: NOW,
     });
     expect(a.kind).toBe("create");
     expect(a.kind === "create" && a.seen.map((s) => s.run)).toEqual([800, 900]);
@@ -252,9 +262,9 @@ describe("decide", () => {
       rec(800, "2026-11-25T00:00:00Z", "vitest:other"),
       rec(900, "2026-11-26T10:00:00Z"),
     ])
-      expect(
-        decide({ f: F, sighting: S, recorded: [r], open: [], nowMs: NOW }).kind,
-      ).toBe("record");
+      expect(decide({ f: F, sighting: S, recorded: [r], open: [] }).kind).toBe(
+        "record",
+      );
   });
 
   it("bumps the open issue only with 2 runs in 7 days, and skips a run it already notes", () => {
@@ -269,7 +279,6 @@ describe("decide", () => {
         sighting: S,
         recorded: [rec(600, "2026-11-10T00:00:00Z")],
         open,
-        nowMs: NOW,
       }).kind,
     ).toBe("record");
     const a = decide({
@@ -277,7 +286,6 @@ describe("decide", () => {
       sighting: S,
       recorded: [rec(850, "2026-11-25T00:00:00Z")],
       open,
-      nowMs: NOW,
     });
     expect(a.kind).toBe("bump");
     expect(a.kind === "bump" && a.window.map((s) => s.run)).toEqual([850, 900]);
@@ -288,7 +296,6 @@ describe("decide", () => {
         sighting: S,
         recorded: [],
         open: [{ number: 5, body: noted }],
-        nowMs: NOW,
       }).kind,
     ).toBe("skip");
   });
@@ -340,7 +347,6 @@ describe("untrusted text", () => {
           sighting: S,
           recorded: [],
           open: [{ number: 1, body }],
-          nowMs: NOW,
         }).kind,
       ).toBe("record");
       const t = issueTitle(f);
@@ -481,12 +487,17 @@ function fakeGh(o: {
   /** The runs of ci.yml the runs API holds, for the reconcile's listing. */
   runs?: Listed[];
   headRepo?: string;
-  storeComments?: { user: string; body: string; issue?: number }[];
+  /** When each comment was last updated (GitHub's `since` reads by it); none: always read. */
+  storeComments?: { user: string; body: string; issue?: number; at?: number }[];
   issues?: FakeIssue[];
   /** How many `flaky` issue creates fail before they work again. */
   failCreates?: number;
+  /** When each run's failed test job completed, by run id. */
+  jobAt?: Record<number, number>;
 }) {
   let failCreates = o.failCreates ?? 0;
+  /** The fake clock: a comment written now is updated at clock.now. */
+  const clock = { now: NOW };
   const calls: string[][] = [];
   const created: { title: string; body: string; label: string }[] = [];
   const comments: { n: string; body: string }[] = [];
@@ -522,7 +533,9 @@ function fakeGh(o: {
             head_sha: SHA,
           }),
         );
-      if (/\/attempts\/1\/jobs/.test(path))
+      const jm = /\/runs\/(\d+)\/attempts\/1\/jobs/.exec(path);
+      if (jm) {
+        const at = o.jobAt?.[Number(jm[1])];
         return ok(
           JSON.stringify({
             jobs: [
@@ -530,7 +543,10 @@ function fakeGh(o: {
                 id: 1,
                 name: "test-shard (server)",
                 conclusion: o.jobConclusion ?? "failure",
-                completed_at: "2026-11-26T10:00:00.123Z",
+                completed_at:
+                  at === undefined
+                    ? "2026-11-26T10:00:00.123Z"
+                    : new Date(at).toISOString(),
               },
               {
                 id: 2,
@@ -547,18 +563,29 @@ function fakeGh(o: {
             ],
           }),
         );
+      }
       if (path.endsWith("/jobs/1/logs")) return ok(o.log);
       if (path.endsWith("/jobs/2/logs"))
         return ok("##[error]Process completed with exit code 1.");
       if (path.endsWith("/jobs/3/logs")) return ok(o.log);
       const cm = /\/issues\/(\d+)\/comments/.exec(path);
-      if (cm)
+      if (cm) {
+        const since = new URLSearchParams(
+          path.slice(path.indexOf("?") + 1),
+        ).get("since");
+        const from = since ? Date.parse(since) : -Infinity;
         return ok(
           store
-            .filter((c) => c.user === BOT && c.issue === Number(cm[1]))
+            .filter(
+              (c) =>
+                c.user === BOT &&
+                c.issue === Number(cm[1]) &&
+                (c.at === undefined || c.at >= from),
+            )
             .map((c) => JSON.stringify(c.body))
             .join("\n"),
         );
+      }
       const im = /\/issues\/(\d+)$/.exec(path);
       if (im) {
         const i = issues.find((x) => x.number === Number(im[1]));
@@ -622,6 +649,7 @@ function fakeGh(o: {
         issue: Number(args[2]),
         user: BOT,
         body: val(args, "--body"),
+        at: clock.now,
       });
       return ok("");
     }
@@ -638,7 +666,7 @@ function fakeGh(o: {
     }
     return { code: 1, stdout: "", stderr: `unexpected ${args.join(" ")}` };
   };
-  return { exec, calls, created, comments, issues };
+  return { exec, calls, created, comments, issues, clock };
 }
 
 const ONE_FAIL = VITEST_LOG.split("\n").slice(0, 7).join("\n");
@@ -991,10 +1019,17 @@ describe("track", () => {
     expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
   });
 
-  it("a failure outside the tests files nothing", () => {
+  it("a failure outside the tests files nothing, and marks the run handled so it is not read again", () => {
     const g = fakeGh({ log: "##[error]Process completed with exit code 1." });
     expect(track({ exec: g.exec, run: RUN, nowMs: NOW }).done).toEqual([]);
-    expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
+    expect(g.created.map((c) => c.label)).toEqual(["flaky-sightings"]);
+    expect(g.comments).toHaveLength(1);
+    const body = g.comments[0]?.body ?? "";
+    expect(parseStore(body)).toEqual([]);
+    expect(parseMarks(body).passed).toEqual(["900/2"]);
+    // A tracker rerun for the same event finds the mark and writes nothing.
+    track({ exec: g.exec, run: RUN, nowMs: NOW });
+    expect(g.comments).toHaveLength(1);
   });
 });
 
@@ -1003,7 +1038,7 @@ describe("reconcile", () => {
   const writes = (g: ReturnType<typeof fakeGh>) =>
     g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length;
 
-  it(`lists passing reruns updated in the last ${RECONCILE_HOURS} hours, forks' too, in small reads`, () => {
+  it("lists passing reruns created in the last 60 days and 26 hours, forks' too, in small reads", () => {
     const g = fakeGh({ log: ONE_FAIL });
     expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
     const list = g.calls.filter((c) =>
@@ -1013,11 +1048,11 @@ describe("reconcile", () => {
     const path = list[0]?.find((a) => a.startsWith("repos/")) ?? "";
     expect(path).toContain("status=success");
     expect(path).toContain("per_page=100&page=1");
-    // Created in the last 30 days and 26 hours: a rerun up to 30 days after
-    // creation, updated in the last 26 hours.
+    // Created in the last 60 days and 26 hours: a rerun up to 30 days after
+    // creation, up to 30 quiet days after it, and 26 hours of slack.
     expect(RERUN_DAYS).toBe(30);
     expect(decodeURIComponent(path)).toContain(
-      "created=2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "created=2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     const jq = list[0]?.[list[0].indexOf("--jq") + 1] ?? "";
     expect(jq).toContain("total_count");
@@ -1026,15 +1061,15 @@ describe("reconcile", () => {
     expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
   });
 
-  it("finds a run created days ago that passed on a rerun in the last 26 hours", () => {
+  it("finds every run created in the range that passed on a rerun, however long ago it passed", () => {
     const runs = [
       // Created 4 days ago, passed on attempt 3 two hours ago.
       rerun(901, { attempt: 3, created: 4 * DAY, updated: 2 * HOUR }),
       // Created 25 days ago: still inside GitHub's 30-day rerun period.
       rerun(902, { created: 25 * DAY, updated: 3 * HOUR }),
-      // Created 31 days and 3 hours ago: past 30 days plus 26 hours.
-      rerun(903, { created: 31 * DAY + 3 * HOUR, updated: 3 * HOUR }),
-      // Updated 27 hours ago: an earlier reconcile had it.
+      // Created 61 days and 3 hours ago: past 60 days plus 26 hours.
+      rerun(903, { created: 61 * DAY + 3 * HOUR, updated: 3 * HOUR }),
+      // Updated 27 hours ago: still listed, as no update window applies.
       rerun(904, { created: 2 * DAY, updated: 27 * HOUR }),
       // Passed on its first attempt: nothing to track.
       rerun(905, { attempt: 1, created: 2 * DAY }),
@@ -1043,6 +1078,7 @@ describe("reconcile", () => {
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([
       { runId: 901, attempt: 3 },
       { runId: 902, attempt: 2 },
+      { runId: 904, attempt: 2 },
     ]);
   });
 
@@ -1055,7 +1091,7 @@ describe("reconcile", () => {
     });
     const g = fakeGh({ log: ONE_FAIL, runs: [late] });
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
-    // Still found until its update leaves the 26-hour window.
+    // Still found 25 hours later: its creation is still in the range.
     expect(recentRuns(g.exec, REPO, NOW + 25 * HOUR)).toEqual([
       { runId: 901, attempt: 3 },
     ]);
@@ -1093,9 +1129,11 @@ describe("reconcile", () => {
     const g = fakeGh({ log: ONE_FAIL, runs });
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
     expect(ranges(g.calls)).toEqual([
-      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
-      "2026-10-26T10:00:00Z..2026-11-10T23:00:00Z",
-      "2026-11-10T23:00:01Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-10-26T23:00:00Z",
+      "2026-10-26T23:00:01Z..2026-11-26T12:00:00Z",
+      "2026-10-26T23:00:01Z..2026-11-11T05:30:00Z",
+      "2026-11-11T05:30:01Z..2026-11-26T12:00:00Z",
     ]);
   });
 
@@ -1112,7 +1150,7 @@ describe("reconcile", () => {
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
     // The whole range held 1,145, so it was split before paging.
     expect(ranges(g.calls)[0]).toBe(
-      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     expect(ranges(g.calls).length).toBeGreaterThan(1);
   });
@@ -1178,6 +1216,116 @@ describe("reconcile", () => {
     ).toBe(false);
   });
 
+  it("a run whose event was dropped is tracked when the next CI completion comes 3 days later", () => {
+    // Run 901 passed on a rerun 72 hours ago and its tracker event was
+    // dropped; no CI run completed since. Run 800 was recorded 20 days ago,
+    // past the 7-day sightings window: its mark still hides it.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [
+        rerun(800, { created: 21 * DAY, updated: 20 * DAY }),
+        rerun(901, { created: 4 * DAY, updated: 72 * HOUR }),
+      ],
+      issues: [STORE],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-06T09:00:00Z") },
+      ],
+    });
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r.map((x) => [x.runId, x.result])).toEqual([
+      [800, "recorded already"],
+      [901, "tracked"],
+    ]);
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["901/2"]);
+    // The marks are read from the start of the whole range, not 7 days.
+    const since = g.calls
+      .map((c) => c.find((a) => a.includes("/issues/1/comments?")))
+      .find(Boolean);
+    expect(since).toContain("since=2026-09-26T10:00:00.000Z");
+    // The next reconcile, another 30 hours on, has nothing left to do.
+    const before = g.comments.length;
+    const again = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: NOW + 30 * HOUR,
+    });
+    expect(again.map((x) => x.result)).toEqual([
+      "recorded already",
+      "recorded already",
+    ]);
+    expect(g.comments).toHaveLength(before);
+  });
+
+  it("a rerun on day 29 followed by 3 quiet days is still tracked", () => {
+    // Run 900 was created 32 days 23 hours ago. Attempt 1 failed, attempt 2
+    // passed 29 days 23 hours after creation (inside GitHub's rerun period),
+    // its event was dropped, and no CI run completed for 3 days.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(900, { created: 32 * DAY + 23 * HOUR, updated: 3 * DAY })],
+    });
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.runId).toBe(900);
+    expect(r?.result).toBe("tracked");
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
+  });
+
+  it(`a rerun on the last allowed day stays listed through ${QUIET_DAYS} days with no event`, () => {
+    // Created 30 days before its rerun passed, then QUIET_DAYS with no CI
+    // completion at all.
+    const quiet = rerun(901, {
+      created: (RERUN_DAYS + QUIET_DAYS) * DAY,
+      updated: QUIET_DAYS * DAY,
+    });
+    const g = fakeGh({ log: ONE_FAIL, runs: [quiet] });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
+  });
+
+  it("a run with no failed test is read once, then skipped by every later reconcile", () => {
+    const g = fakeGh({
+      log: "##[error]Process completed with exit code 1.",
+      runs: [rerun(900, { created: 3 * DAY, updated: 2 * DAY })],
+    });
+    const [first] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(first?.result).toBe("tracked");
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
+    const reads = g.calls.length;
+    const [second] = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: NOW + 5 * DAY,
+    });
+    expect(second?.result).toBe("recorded already");
+    expect(
+      g.calls.slice(reads).some((c) => c.some((a) => a.includes("/attempts/"))),
+    ).toBe(false);
+  });
+
+  it("reads the marks of a store that was continued 20 days ago", () => {
+    // Store #1 filled up and was closed 20 days ago; #2 continues it. Run 800
+    // was marked in #1.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(800, { created: 22 * DAY, updated: 21 * DAY })],
+      issues: [
+        { ...STORE, closed: true, created_at: "2026-10-28T00:00:00Z" },
+        {
+          number: 2,
+          body: storeBody(1),
+          label: "flaky-sightings",
+          created_at: "2026-11-06T12:00:00Z",
+        },
+      ],
+      storeComments: [
+        { user: BOT, issue: 1, body: priorStore(800, "2026-11-05T09:00:00Z") },
+      ],
+    });
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r.map((x) => [x.runId, x.result])).toEqual([
+      [800, "recorded already"],
+    ]);
+  });
+
   it("a forged passed line from someone else doesn't hide a run", () => {
     const g = fakeGh({
       log: ONE_FAIL,
@@ -1201,5 +1349,123 @@ describe("reconcile", () => {
     expect(parseStore(fork.comments[0]?.body ?? "")).toEqual([
       { key: keyOf(ID), run: 900, attempt: 1, at: "2026-11-26T10:00:00Z" },
     ]);
+  });
+});
+
+describe("a late replay files like an immediate one", () => {
+  // The same test failed in run 800 (Nov 18) and run 801 six days later
+  // (Nov 24). Then no event for 49 hours. Fake clocks only.
+  const A = Date.parse("2026-11-18T10:00:00Z");
+  const B = A + 6 * DAY;
+  const LATE = B + 49 * HOUR;
+  const listed = (id: number, at: number): Listed => ({
+    id,
+    run_attempt: 2,
+    conclusion: "success",
+    created_at: iso(at - HOUR),
+    updated_at: iso(at + 10 * 60 * 1000),
+  });
+  const runs = [listed(800, A), listed(801, B)];
+  const make = () => fakeGh({ log: ONE_FAIL, runs, jobAt: { 800: A, 801: B } });
+  const at = (g: ReturnType<typeof make>, ms: number) => {
+    g.clock.now = ms;
+    return ms;
+  };
+  const filed = (g: ReturnType<typeof make>) =>
+    g.created.filter((c) => c.label === "flaky");
+
+  /** Both events dropped; the next CI completion comes an hour after run 801. */
+  const immediate = () => {
+    const g = make();
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, B + HOUR) });
+    return { g, r };
+  };
+  /** Both events dropped; the next CI completion comes 49 hours after run 801. */
+  const delayed = () => {
+    const g = make();
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, LATE) });
+    return { g, r };
+  };
+  /** Run 800 tracked by its event; run 801's event dropped; 49 hours quiet. */
+  const halfLate = () => {
+    const g = make();
+    const n = at(g, A + HOUR);
+    const run = loadRun(g.exec, REPO, 800, 2);
+    expect(track({ exec: g.exec, run, nowMs: n }).done).toEqual([
+      { action: "record", id: ID },
+    ]);
+    reconcile({ exec: g.exec, repo: REPO, nowMs: n });
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, LATE) });
+    return { g, r };
+  };
+
+  for (const [name, replay] of [
+    ["an immediate replay", immediate],
+    ["a replay 49 hours late", delayed],
+    ["a replay 49 hours late of a run whose sighting is 8 days old", halfLate],
+  ] as const)
+    it(`${name} files the second run, with both run links`, () => {
+      const { g, r } = replay();
+      expect(r.at(-1)).toMatchObject({
+        runId: 801,
+        result: "tracked",
+        done: [{ action: "create", id: ID }],
+      });
+      const issues = filed(g);
+      expect(issues).toHaveLength(1);
+      expect(parseMarks(issues[0]?.body ?? "").seen).toEqual([
+        { at: iso(A), run: 800, attempt: 1 },
+        { at: iso(B), run: 801, attempt: 1 },
+      ]);
+    });
+
+  it("an immediate and a late replay leave the same store and issues", () => {
+    const now = immediate().g;
+    const late = delayed().g;
+    const half = halfLate().g;
+    expect(late.comments).toEqual(now.comments);
+    expect(late.created).toEqual(now.created);
+    expect(half.comments).toEqual(now.comments);
+    expect(half.created).toEqual(now.created);
+    // Delivered again, nothing more is written.
+    for (const g of [now, late, half]) {
+      const before = g.comments.length + g.created.length;
+      reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, LATE + HOUR) });
+      const run = loadRun(g.exec, REPO, 801, 2);
+      expect(track({ exec: g.exec, run, nowMs: LATE + HOUR }).done).toEqual([
+        { action: "skip", id: ID, issue: 101 },
+      ]);
+      expect(g.comments.length + g.created.length).toBe(before);
+    }
+  });
+
+  it("files a pair tracked out of order: the older run's event comes last", () => {
+    const g = make();
+    const late = loadRun(g.exec, REPO, 801, 2);
+    expect(
+      track({ exec: g.exec, run: late, nowMs: at(g, B + HOUR) }).done,
+    ).toEqual([{ action: "record", id: ID }]);
+    const early = loadRun(g.exec, REPO, 800, 2);
+    expect(
+      track({ exec: g.exec, run: early, nowMs: at(g, LATE) }).done,
+    ).toEqual([{ action: "create", id: ID }]);
+  });
+
+  it("still never pairs failures more than 7 days apart", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [listed(800, A), listed(801, A + 7 * DAY + 1000)],
+      jobAt: { 800: A, 801: A + 7 * DAY + 1000 },
+    });
+    const r = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: at(g, A + 7 * DAY + HOUR),
+    });
+    expect(r.map((x) => x.done)).toEqual([
+      [{ action: "record", id: ID }],
+      [{ action: "record", id: ID }],
+    ]);
+    expect(filed(g)).toEqual([]);
   });
 });

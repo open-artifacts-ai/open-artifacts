@@ -118,6 +118,7 @@ describe("hello caps", () => {
       noticeMeta: "notice_meta",
       ownerAway: "owner_away",
       guest: "guest",
+      codexCheck: "codex_check",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

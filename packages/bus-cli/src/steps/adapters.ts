@@ -37,6 +37,7 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
 import {
+  CODEX_OA_ENTRIES_FILE,
   CODEX_PROXY_ENTRY_FILE,
   codexBinFile,
   codexBinPin,
@@ -81,6 +82,7 @@ import {
   proxyProgramMissing as cxProxyProgramMissing,
   installEntry as installCxEntry,
   pendingEntry as pendingCxEntry,
+  recordEntries as recordCxEntries,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
 import {
@@ -315,6 +317,8 @@ export const paths = (deps: AdapterDeps) => {
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
     // agy S5: the user's Antigravity pages entries, kept for uninstall (0600).
     agyPages: join(busDir, "agy-pages-entries.json"),
+    // #3108: the Codex entries oa-bus leaves as they are, linked by the daemon's server check.
+    codexOaEntries: join(busDir, CODEX_OA_ENTRIES_FILE),
     // agy 1.5's user-level MCP config (`agy mcp add` writes it; the older
     // ~/.gemini/antigravity/mcp_config.json is the legacy path it migrated from).
     agyMcp: join(deps.home, ".gemini", "config", "mcp_config.json"),
@@ -740,6 +744,8 @@ const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
   moved: paths(deps).codexEntry,
   write: (text) => writeAtomic(paths(deps).codex, text),
   writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
+  entries: paths(deps).codexOaEntries,
+  writeEntries: (data) => writeAtomic(paths(deps).codexOaEntries, data, 0o600),
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
   // #2954: the PAT the connect guide tells people to save, so an entry that
@@ -1626,6 +1632,22 @@ export function skippedProxyEntries(
       out.push({ harness: "OpenCode", note });
   } catch {}
   return out;
+}
+
+/**
+ * #3108: on daemon start, records the Codex entries that reach the instance
+ * (names and origin only), so an install from before this existed, brought
+ * forward by an update, links with no step from the user. Writes only the
+ * bus home's own file, never Codex's config. Never throws.
+ */
+export function reapplyCodexEntries(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env"> & { hub: string },
+): void {
+  try {
+    const d = { ...deps, busBin: [] as string[] } as AdapterDeps;
+    if (!present(paths(d).codex)) return;
+    recordCxEntries(cxEntryIo(d), deps.hub);
+  } catch {}
 }
 
 /**
