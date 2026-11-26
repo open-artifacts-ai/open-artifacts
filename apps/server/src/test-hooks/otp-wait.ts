@@ -12,27 +12,39 @@
  */
 export const OTP_WAIT_CAP_MS = 8_000;
 
-/** Per address key: how many times its row changed since this DO started, and who waits. */
+/**
+ * Change numbers come from one counter for the whole DO, so they only grow.
+ * A key is held here only while someone waits on it; every other key reads as
+ * `floor`, the newest change number nobody holds, and a change to a key with
+ * no waiter just moves `floor` on. So reads and unwatched changes keep
+ * nothing, and a reader that took a number before a change always finds a
+ * different one after it (a spurious wake costs one read; a missed one would
+ * cost the whole hold).
+ */
 const state = new Map<string, { version: number; waiters: Set<() => void> }>();
-const of = (ek: string) => {
-  let s = state.get(ek);
-  if (!s) {
-    s = { version: 0, waiters: new Set() };
-    state.set(ek, s);
-  }
-  return s;
-};
+let counter = 0;
+let floor = 0;
 
 /** The row for `ek` changed: every waiter wakes. */
 export function otpChanged(ek: string): void {
-  const s = of(ek);
-  s.version++;
+  const s = state.get(ek);
+  counter++;
+  if (!s) {
+    floor = counter;
+    return;
+  }
+  s.version = counter;
   for (const w of [...s.waiters]) w();
 }
 
-/** The change count a reader took before reading the row. */
+/** The change number a reader took before reading the row. Keeps nothing. */
 export function otpVersion(ek: string): number {
-  return of(ek).version;
+  return state.get(ek)?.version ?? floor;
+}
+
+/** Keys held right now: only those with a waiter (for tests). */
+export function otpKeys(): number {
+  return state.size;
 }
 
 /**
@@ -44,15 +56,26 @@ export function otpWaitAfter(
   since: number,
   ms: number,
 ): Promise<void> {
-  const s = of(ek);
-  if (s.version !== since) return Promise.resolve();
+  if (otpVersion(ek) !== since) return Promise.resolve();
+  let s = state.get(ek);
+  if (!s) {
+    // Nothing changed since `since`: hold the key only while it is waited on.
+    s = { version: since, waiters: new Set() };
+    state.set(ek, s);
+  }
+  const held = s;
   return new Promise<void>((resolve) => {
     const done = () => {
       clearTimeout(timer);
-      s.waiters.delete(done);
+      held.waiters.delete(done);
+      if (held.waiters.size === 0) {
+        // Nobody waits: let the key go, its number becomes the floor.
+        floor = Math.max(floor, held.version);
+        state.delete(ek);
+      }
       resolve();
     };
     const timer = setTimeout(done, Math.min(ms, OTP_WAIT_CAP_MS));
-    s.waiters.add(done);
+    held.waiters.add(done);
   });
 }
