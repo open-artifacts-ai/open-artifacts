@@ -263,7 +263,7 @@ describe("Agents settings", () => {
     expect(document.body.textContent).not.toContain(SECRET);
   });
 
-  it("ignores Escape while creating and once the token is shown", async () => {
+  it("ignores Escape while creating, but Esc and the X close it once the token shows", async () => {
     let release: () => void = () => {};
     const gate = new Promise<void>((r) => {
       release = r;
@@ -283,7 +283,48 @@ describe("Agents settings", () => {
     const shown = await screen.findByRole("dialog");
     await within(shown).findAllByText(SECRET);
     fireEvent.keyDown(shown, { key: "Escape" });
-    expect(screen.queryByRole("dialog")).not.toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(dump()).not.toContain(SECRET);
+  });
+
+  it("the X closes the dialog while the token shows and drops the token", async () => {
+    serveCreate();
+    mount("/settings/connections");
+    const dlg = await openCreate();
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    const shown = await screen.findByRole("dialog");
+    await within(shown).findAllByText(SECRET);
+    fireEvent.click(within(shown).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.body.textContent).not.toContain(SECRET);
+    expect(dump()).not.toContain(SECRET);
+  });
+
+  it("shows the save command on one non-wrapping line with Copy beside it, and Done in a footer outside the scrolling body", async () => {
+    serveCreate();
+    mount("/settings/connections");
+    const dlg = await openCreate();
+    fireEvent.click(within(dlg).getByRole("button", { name: "Create" }));
+    const shown = await screen.findByRole("dialog");
+    await within(shown).findAllByText(SECRET);
+    const save = [...shown.querySelectorAll("pre")].find(
+      (p) => p.textContent === secretSnippet(FILE, SECRET_LABELS.pat),
+    );
+    if (!save) throw new Error("no save command");
+    expect(save.className).toContain("overflow-x-auto");
+    expect(save.className).not.toContain("whitespace-pre-wrap");
+    const copy = within(shown).getByRole("button", {
+      name: "Copy save command",
+    });
+    expect(save.contains(copy)).toBe(false);
+    const body = shown.querySelector('[data-slot="modal-body"]');
+    const done = within(shown).getByRole("button", { name: "Done" });
+    expect(body).not.toBeNull();
+    expect(body?.contains(done)).toBe(false);
+    expect(body?.contains(save)).toBe(true);
+    expect(done.closest('[data-slot="dialog-footer"]')).not.toBeNull();
+    expect(shown.className).toContain("sm:max-w-[720px]");
   });
 
   it("creates one token when the form is submitted twice", async () => {

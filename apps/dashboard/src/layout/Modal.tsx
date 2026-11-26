@@ -22,6 +22,8 @@ export function Modal({
   footer,
   children,
   sheetOnPhone = false,
+  wide = false,
+  stickyFooter = false,
 }: {
   open?: boolean;
   onClose: () => void;
@@ -31,6 +33,10 @@ export function Modal({
   children?: ReactNode;
   /** Below 640px: a full-width sheet from the bottom. */
   sheetOnPhone?: boolean;
+  /** From 640px up: 720px wide instead of 440px (full width below). */
+  wide?: boolean;
+  /** The body scrolls and the footer stays in view at the bottom. */
+  stickyFooter?: boolean;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -41,7 +47,9 @@ export function Modal({
         // The card is centered at a fixed spot, so a body taller than a phone
         // screen (the token-created dialog, #1383) would put its footer past
         // the viewport with nothing to scroll: cap it and let it scroll.
-        className={`max-h-[calc(100dvh-2rem)] gap-[var(--oa-space-4)] overflow-y-auto sm:max-w-[440px] ${sheetOnPhone ? SHEET : ""}`}
+        className={`max-h-[calc(100dvh-2rem)] gap-[var(--oa-space-4)] ${
+          stickyFooter ? "flex flex-col overflow-hidden" : "overflow-y-auto"
+        } ${wide ? "sm:max-w-[720px]" : "sm:max-w-[440px]"} ${sheetOnPhone ? SHEET : ""}`}
         // No Radix Trigger (the dialog is controlled), so put focus back on
         // whatever opened it, as a trigger would.
         onOpenAutoFocus={() => {
@@ -52,7 +60,7 @@ export function Modal({
           opener.current?.focus();
         }}
       >
-        <DialogHeader>
+        <DialogHeader className={stickyFooter ? "shrink-0" : undefined}>
           <DialogTitle className="text-[length:var(--oa-text-lg)]">
             {title}
           </DialogTitle>
@@ -62,8 +70,19 @@ export function Modal({
             </DialogDescription>
           )}
         </DialogHeader>
-        {children}
-        <DialogFooter>{footer}</DialogFooter>
+        {stickyFooter ? (
+          <div
+            data-slot="modal-body"
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            {children}
+          </div>
+        ) : (
+          children
+        )}
+        <DialogFooter className={stickyFooter ? "shrink-0" : undefined}>
+          {footer}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
