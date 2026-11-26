@@ -12,6 +12,7 @@ import { addReach, reachNamespaces } from "../../src/bus/reach.js";
 import {
   type Daemon,
   daemon,
+  fence,
   hubOf,
   inOwnerHub,
   machine,
@@ -472,8 +473,7 @@ async function expectBlocked(w: World, how: "up" | "rename") {
   const t = await takeName(w, how);
   expect(t.got).not.toBe(w.hn);
   expect(t.got.startsWith(w.hn)).toBe(true);
-  // sleep-ok: absence — a blocked name must never receive a delivery
-  await new Promise((res) => setTimeout(res, 200));
+  await fence(t.d);
   expect(delivers(t.d)).toEqual([]);
   t.extra?.close();
 }

@@ -25,6 +25,11 @@ import {
   softDelete,
   undelete,
 } from "../../services/artifacts.js";
+import {
+  findInText,
+  htmlToText,
+  unifiedDiff,
+} from "../../services/page-text.js";
 import { search } from "../../services/search.js";
 import {
   deleteShare,
@@ -42,6 +47,8 @@ export const INLINE_TEXT_BYTES = 1024 * 1024;
 const TEXT_TYPE =
   /^(text\/|application\/(json|javascript|ecmascript|xml|x-yaml|yaml|toml|x-sh|sql|graphql)\b|image\/svg\+xml\b|[a-z]+\/[\w.-]+\+(json|xml)\b)/i;
 export const isTextType = (ct: string) => TEXT_TYPE.test(ct);
+const HTML_TYPE = /^text\/html\b/i;
+const isHtmlType = (ct: string) => HTML_TYPE.test(ct);
 
 const notFound = () => new ApiError("not_found", "Not found");
 const viewUrl = (env: Env, id: string) => appOrigin(env) + viewerPath(id);
@@ -117,8 +124,26 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool("get_artifact", toolConfig("get_artifact", sp), (input) =>
     guard(async () => {
+      // #3165: sinceVersion cannot combine with find or view.
+      if (input.sinceVersion !== undefined) {
+        if (input.find !== undefined)
+          throw new ApiError(
+            "bad_request",
+            "sinceVersion cannot be combined with find",
+          );
+        if (input.view !== undefined)
+          throw new ApiError(
+            "bad_request",
+            "sinceVersion cannot be combined with view",
+          );
+      }
       const artifact = await getSummary(env, caller, input.id);
       const v = input.version ?? artifact.currentVersion;
+      if (input.sinceVersion !== undefined && input.sinceVersion >= v)
+        throw new ApiError(
+          "bad_request",
+          `sinceVersion (${input.sinceVersion}) must be less than version (${v})`,
+        );
       const [version] = await listVersions(env, caller, input.id, v + 1);
       if (!version || version.version !== v) throw notFound();
       const path = input.path ?? version.entry;
@@ -131,15 +156,60 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
         file.size <= INLINE_TEXT_BYTES
       ) {
         const { body } = await readVersionFile(env, caller, input.id, v, path);
-        out.content = await body.text();
+        let raw = await body.text();
         // A doc's room holds edits newer than its last saved version.
         if (artifact.format === "doc" && v === artifact.currentVersion) {
           const rooms = env.DOC_ROOM;
           if (rooms && path === DOC_ENTRY && docsAvailable(env))
-            out.content = await rooms
+            raw = await rooms
               .get(rooms.idFromName(input.id))
               .markdown()
-              .catch(() => out.content as string);
+              .catch(() => raw);
+        }
+        const html = isHtmlType(file.contentType);
+        // #3165: optional text view, block find, or unified diff from sinceVersion.
+        if (input.sinceVersion !== undefined) {
+          const [prevVersion] = await listVersions(
+            env,
+            caller,
+            input.id,
+            input.sinceVersion + 1,
+          );
+          if (!prevVersion || prevVersion.version !== input.sinceVersion)
+            throw notFound();
+          const prevPath = input.path ?? prevVersion.entry;
+          const prevFile = prevVersion.files.find((f) => f.path === prevPath);
+          let prevText = "";
+          if (
+            prevFile &&
+            isTextType(prevFile.contentType) &&
+            prevFile.size <= INLINE_TEXT_BYTES
+          ) {
+            const prev = await readVersionFile(
+              env,
+              caller,
+              input.id,
+              input.sinceVersion,
+              prevPath,
+            );
+            const prevRaw = await prev.body.text();
+            prevText = isHtmlType(prevFile.contentType)
+              ? htmlToText(prevRaw)
+              : prevRaw;
+          }
+          const curText = html ? htmlToText(raw) : raw;
+          out.content =
+            unifiedDiff(prevText, curText, input.sinceVersion, v) ||
+            `No text changes from v${input.sinceVersion} to v${v}.`;
+        } else if (input.find !== undefined) {
+          const text = html ? htmlToText(raw) : raw;
+          const found = findInText(text, input.find);
+          out.content = found.content;
+          out.matches = found.matches;
+        } else if (input.view === "text") {
+          out.content = html ? htmlToText(raw) : raw;
+        } else {
+          out.content = raw;
         }
       } else {
         out.downloadUrl = await downloadUrl(
@@ -152,7 +222,13 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       }
       const what =
         out.content !== undefined
-          ? `${path} inline`
+          ? input.sinceVersion !== undefined
+            ? `${path} diff v${input.sinceVersion}..v${v}`
+            : input.find !== undefined
+              ? `${path} ${plural(out.matches ?? 0, "match")}`
+              : input.view === "text"
+                ? `${path} text inline`
+                : `${path} inline`
           : `${path} at downloadUrl (10 min)`;
       return ok(
         `"${artifact.title}" ${artifact.format} v${v}, ${what}: ${viewUrl(env, artifact.id)}`,

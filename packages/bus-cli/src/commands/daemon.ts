@@ -5,6 +5,7 @@ import {
   createEventLog,
   type Daemon,
   type DaemonDeps,
+  defaultSkillRefresher,
   runDaemon,
   START_ERROR_CODES,
 } from "@oa/bus-daemon";
@@ -14,7 +15,9 @@ import { originOf, readMachine } from "../machine.ts";
 import { reapplyClaudeProof, reapplyCodexEntries } from "../steps/adapters.ts";
 import { readRecord } from "../steps/claude-proof.ts";
 import { PROOF_EVENT } from "../steps/claude-proof-check.ts";
+import { removeHabitsBlocks } from "../steps/habits.ts";
 import { REVOKED_EXIT } from "../steps/service.ts";
+import { HABITS_MOVED_LINE } from "./habits.ts";
 
 export type Signals = Pick<NodeJS.Process, "once" | "off">;
 
@@ -76,6 +79,21 @@ export async function daemon(
       env: ctx.env,
       hub: originOf(m.hub),
     });
+  // #3043: an auto-update restarts the daemon without running install, so
+  // remove any old habit blocks here too (only for the bus the harnesses name).
+  if (wiredTo(ctx)) {
+    try {
+      const removed = removeHabitsBlocks({
+        home: ctx.userHome,
+        env: ctx.env,
+        busHome: ctx.home,
+      });
+      if (removed.files.length > 0) {
+        sayErr(ctx, HABITS_MOVED_LINE(removed.files.length));
+        events("habits_removed", { files: removed.files.length });
+      }
+    } catch {}
+  }
   return new Promise<number>((resolve) => {
     let running: Daemon | undefined;
     let ended = false;
@@ -98,6 +116,12 @@ export async function daemon(
       onSocketLost: () => end(1),
       // #2552: the updater ends the daemon non-zero to restart it from a new `bin`.
       update: { entryFile: fileURLToPath(import.meta.url), exit: end },
+      // #3203: a new instance release rewrites the installed skills.
+      skillRefresh: defaultSkillRefresher(
+        ctx.home,
+        (msg) => sayErr(ctx, msg),
+        fileURLToPath(import.meta.url),
+      ),
     }).then(
       (d) => {
         running = d;

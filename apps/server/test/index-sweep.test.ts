@@ -82,19 +82,6 @@ const ctxOf = () => {
     drain: () => Promise.all(pending),
   };
 };
-/**
- * How long a publish whose DO gate never opens may take before it counts as
- * waiting on the DO: the gate never opens, so this only separates "never"
- * from "eventually" and can be generous (under the 20 s testTimeout) for a
- * loaded runner's real D1/R2 I/O.
- */
-const LATE_MS = 10_000;
-/** "late" when `p` hasn't settled within `ms`. */
-const within = <T>(p: Promise<T>, ms = LATE_MS) =>
-  Promise.race([
-    p,
-    new Promise<"late">((r) => setTimeout(() => r("late"), ms)),
-  ]);
 const inDo = <T>(
   id: string,
   cb: (i: ArtifactRuntime) => T | Promise<T>,
@@ -145,13 +132,11 @@ describe("enqueue after the response", () => {
     const g = gate();
     const slow = hooked({ scheduleIndex: (real) => g.p.then(real) });
     const c = ctxOf();
-    const r = await within(publish(slow, owner, input(), null, c.ctx));
-    if (r === "late") throw new Error("publish waited on the DO");
+    // The gate stays shut: a publish that waited on the DO would never
+    // return and the test would time out.
+    const r = await publish(slow, owner, input(), null, c.ctx);
     expect(r.version).toBe(1);
-    const back = await within(
-      restoreVersion(slow, owner, r.id, 1, null, c.ctx),
-    );
-    if (back === "late") throw new Error("restore waited on the DO");
+    const back = await restoreVersion(slow, owner, r.id, 1, null, c.ctx);
     expect(back.version).toBe(2);
     expect(c.pending).toHaveLength(2);
     expect(await pending(r.id)).toBeNull();
@@ -176,7 +161,7 @@ describe("enqueue after the response", () => {
     const g = gate();
     const c = ctxOf();
     const slow = hooked({ scheduleIndex: (real) => g.p.then(real) });
-    expect(await within(undelete(slow, owner, r.id, c.ctx))).not.toBe("late");
+    await undelete(slow, owner, r.id, c.ctx);
     g.open();
     await c.drain();
     expect(await pending(r.id)).toMatchObject({ version: 1 });

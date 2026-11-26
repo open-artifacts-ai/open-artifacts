@@ -4,8 +4,6 @@ import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
 
-const settle = () => new Promise((r) => setTimeout(r, 50));
-
 async function piHarness(
   transport: (...a: unknown[]) => Promise<DeliverOutcome>,
 ) {
@@ -50,7 +48,7 @@ describe("daemon.dedupe through runDaemon's deliver handler", () => {
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
     await vi.waitFor(() => expect(transport).toHaveBeenCalledOnce());
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
-    await settle();
+    await h.quiet();
     expect(transport).toHaveBeenCalledOnce();
     expect(h.of("ack")).toEqual([]);
     finish({ ok: true });
@@ -67,10 +65,10 @@ describe("daemon.dedupe through runDaemon's deliver handler", () => {
     const h = await piHarness(transport);
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
     await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(1));
-    await settle();
+    await h.quiet();
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));
     await vi.waitFor(() => expect(transport).toHaveBeenCalledTimes(2));
-    await settle();
+    await h.quiet();
     expect(h.of("ack")).toEqual([]);
     expect(h.of("refuse")).toEqual([]);
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1"));

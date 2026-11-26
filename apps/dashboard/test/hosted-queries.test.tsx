@@ -10,6 +10,7 @@ import {
   useRunTransfer,
   useSpaces,
 } from "../src/api/queries";
+import { installClock } from "./clock";
 import {
   calls,
   findVisibleToast,
@@ -22,6 +23,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 
 it("useSpaces pages Clients, Engineering and Exec for an admin", async () => {
   mountHosted("/");

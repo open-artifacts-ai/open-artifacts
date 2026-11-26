@@ -45,6 +45,12 @@ import {
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
 import {
+  agyPluginFiles,
+  agyPluginState,
+  installAgyPlugin,
+  uninstallAgyPlugin,
+} from "./antigravity.ts";
+import {
   busStopped,
   claudeConfigFile,
   installProof,
@@ -73,7 +79,6 @@ import {
   recordEntries as recordCxEntries,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
-import { habitsOptedOut } from "./habits.ts";
 import {
   HERMES_NO_CLI,
   hermesPluginDir,
@@ -220,7 +225,9 @@ const HARNESSES: Harness[] = [
 /**
  * Antigravity (agy) is wired only with OA_BUS_EXPERIMENTAL_AGY=1 until its
  * agent kind is live on the instances (agy S1a) and it can join and get
- * messages (S2, S3). Uninstall does not wait for it: it removes only our entry.
+ * messages (S2, S3). Install also writes the oa-bus agy plugin (S2,
+ * steps/antigravity.ts). Uninstall does not wait for it: it removes only our
+ * entry and our plugin folder.
  */
 export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
 export const agyOn = (env: Record<string, string | undefined> | undefined) =>
@@ -1041,7 +1048,7 @@ const install: Record<Harness, Step> = {
 
   // OpenClaw loads a native plugin folder; its own CLI installs and enables it.
   async openclaw(deps, notes) {
-    return installOpenclaw(deps, notes, habitsOptedOut(paths(deps).busDir));
+    return installOpenclaw(deps, notes);
   },
 
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
@@ -1059,6 +1066,8 @@ const install: Record<Harness, Step> = {
     if (made.length > 0 && record[p.agyMcp] === undefined)
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+    // agy S2: the plugin whose SessionStart hook joins each conversation.
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
     return "done";
   },
 };
@@ -1216,7 +1225,9 @@ const uninstall: Record<Harness, Step> = {
 
   async antigravity(deps) {
     const p = paths(deps);
-    if (!present(p.agyMcp)) return "none";
+    // Only our marked folder goes; a folder not ours stays as it is.
+    const plugin = uninstallAgyPlugin(deps.home);
+    if (!present(p.agyMcp)) return plugin ? "done" : "none";
     const before = readAgy(p.agyMcp);
     const record = readRecord(p.record);
     const next = (record[p.agyMcp] ?? []).reduce(
@@ -1233,7 +1244,7 @@ const uninstall: Record<Harness, Step> = {
       const { [p.agyMcp]: _, ...left } = record;
       writeRecord(p.record, record, left);
     }
-    return saved ? "done" : "none";
+    return saved || plugin ? "done" : "none";
   },
 };
 
@@ -1445,12 +1456,21 @@ export function checkAdapters(
           deps.openclawPlugin ?? OPENCLAW_PLUGIN,
         ) === "current",
     ),
-    antigravity: state("antigravity", () =>
-      agyEntryIs(
-        parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
-        deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-        movedHome(deps),
-      ),
+    antigravity: state(
+      "antigravity",
+      () =>
+        agyEntryIs(
+          parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
+          deps.busBin === undefined ? undefined : agyServer(deps.busBin),
+          movedHome(deps),
+        ) &&
+        // agy S2: and the plugin whose hook joins each conversation.
+        agyPluginState(
+          deps.home,
+          deps.busBin === undefined
+            ? undefined
+            : agyPluginFiles(deps.busBin, movedHome(deps)),
+        ) === "current",
     ),
   };
 }

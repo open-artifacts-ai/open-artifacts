@@ -50,6 +50,11 @@
       "name": "RL_ANON_WRITES",
       "namespace_id": "1004",
       "simple": { "limit": 120, "period": 60 }
+    },
+    {
+      "name": "RL_HOOKS",
+      "namespace_id": "1005",
+      "simple": { "limit": 600, "period": 60 }
     }
   ],
   "vars": {

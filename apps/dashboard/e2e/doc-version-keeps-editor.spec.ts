@@ -5,6 +5,9 @@ import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
 import { roomPort, startRoom, stopRoom } from "./room";
 
+/** How long a newer version is watched for a chip: the spec's original 2 s. */
+const OBSERVE_MS = 2_000;
+
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -37,7 +40,23 @@ const chip = (page: Page) =>
 test("in the room: a newer version keeps the editor node and the caret", async ({
   page,
 }, info) => {
+  await page.clock.install();
   await open(page, info, ["--hello", "edit"]);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        (id) =>
+          (
+            window as unknown as {
+              __oaEvents: { connections(id: string): number };
+            }
+          ).__oaEvents.connections(id),
+        LANDING,
+      ),
+    )
+    .toBe(1);
+  // The room has said hello (edit): the editor is live, so its content is the room's.
+  await expect(page.getByRole("toolbar")).toBeVisible();
   const prose = page.locator(".ProseMirror");
   await page.getByText("We ship the new landing page").click();
   await page.keyboard.press("Home");
@@ -50,7 +69,8 @@ test("in the room: a newer version keeps the editor node and the caret", async (
   const before = await caret();
   await prose.evaluate((n) => n.setAttribute("data-mark", "mine"));
   await newVersion(page);
-  await page.waitForTimeout(2_000);
+  // The original observation: 2 s after the event reaches the page.
+  await page.clock.runFor(OBSERVE_MS);
   await expect(chip(page)).toHaveCount(0);
   await expect(page.locator(".ProseMirror")).toHaveAttribute(
     "data-mark",

@@ -4,13 +4,7 @@
 // "Add label" and a ••• menu (Rename label, View published versions, Revoke…).
 import { type Me, type OAuthClient, R } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import {
-  act,
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { calls, installHarness, mount, mountHosted } from "./harness";
@@ -294,9 +288,10 @@ describe("labels, with the buttons", () => {
     expect(box).toHaveValue("Work laptop");
     expect(within(r).getByText("Example MCP client 1.2.0")).toBeVisible();
     // Radix returns the focus on a later tick, and frees the page.
-    await act(() => new Promise((done) => setTimeout(done, 20)));
-    expect(box).toHaveFocus();
-    expect(document.body.style.pointerEvents).not.toBe("none");
+    await waitFor(() => {
+      expect(box).toHaveFocus();
+      expect(document.body.style.pointerEvents).not.toBe("none");
+    });
     expect(screen.queryByRole("menu")).toBeNull();
   });
 

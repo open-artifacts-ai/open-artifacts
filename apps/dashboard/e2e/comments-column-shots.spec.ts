@@ -18,8 +18,11 @@ async function open(page: Page, w: number, theme: string, id = ID) {
 async function shot(page: Page, name: string) {
   if (!OUT) return;
   mkdirSync(OUT, { recursive: true });
-  await page.waitForTimeout(300);
-  await page.screenshot({ path: `${OUT}/${name}.png` });
+  await page.evaluate(() => document.fonts.ready);
+  await page.screenshot({
+    path: `${OUT}/${name}.png`,
+    animations: "disabled",
+  });
 }
 
 for (const w of [1280]) {

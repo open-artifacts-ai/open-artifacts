@@ -4,7 +4,7 @@ import { newId, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
-import { SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
+import { SKILL_PART_TEMPLATES } from "../src/mcp/skill.generated.js";
 import { DOC_SWITCH } from "../src/services/doc-switch.js";
 import { docsAvailable, docsState } from "../src/services/docs-available.js";
 import { api, errOf, login } from "./helpers.js";
@@ -80,9 +80,10 @@ describe("doc creation switch (off)", () => {
   });
 
   it("the skill's publish_artifact lists no doc format", () => {
-    const line = SKILL_TEMPLATE.split("\n").find(
-      (l) => l.includes("`content?`") && l.includes("`format?`"),
-    );
+    // #3169: the per-tool reference lives in the tools part.
+    const line = SKILL_PART_TEMPLATES.tools
+      .split("\n")
+      .find((l) => l.includes("`content?`") && l.includes("`format?`"));
     expect(line).toBeDefined();
     expect(line).not.toMatch(/"doc"/);
   });

@@ -4,21 +4,19 @@ import { describe, expect, it, vi } from "vitest";
 import { untilSettled } from "../e2e/staging/poll";
 import { stubTurnstile, TURNSTILE_DUMMY_TOKEN } from "../e2e/staging/turnstile";
 
-const noWait = { wait: async () => {} };
-
 describe("untilSettled", () => {
   it("reads until the answer isn't pending, with no fixed budget", async () => {
     const answers = ["pending", "pending", "pending", "ineligible"];
     const read = vi.fn(async () => answers.shift() as string);
-    await expect(
-      untilSettled(read, (v) => v === "pending", noWait),
-    ).resolves.toBe("ineligible");
+    await expect(untilSettled(read, (v) => v === "pending")).resolves.toBe(
+      "ineligible",
+    );
     expect(read).toHaveBeenCalledTimes(4);
   });
 
   it("returns at once when the first answer is settled", async () => {
     const read = vi.fn(async () => "code");
-    await untilSettled(read, (v) => v === "pending", noWait);
+    await untilSettled(read, (v) => v === "pending");
     expect(read).toHaveBeenCalledTimes(1);
   });
 
@@ -27,21 +25,10 @@ describe("untilSettled", () => {
       .fn<() => Promise<string>>()
       .mockResolvedValueOnce("pending")
       .mockRejectedValueOnce(new Error("rl-a otp hook: 429"));
-    await expect(
-      untilSettled(read, (v) => v === "pending", noWait),
-    ).rejects.toThrow("rl-a otp hook: 429");
-    expect(read).toHaveBeenCalledTimes(2);
-  });
-
-  it("waits the interval between reads", async () => {
-    const waits: number[] = [];
-    const answers = ["pending", "done"];
-    await untilSettled(
-      async () => answers.shift() as string,
-      (v) => v === "pending",
-      { intervalMs: 1000, wait: async (ms) => void waits.push(ms) },
+    await expect(untilSettled(read, (v) => v === "pending")).rejects.toThrow(
+      "rl-a otp hook: 429",
     );
-    expect(waits).toEqual([1000]);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -40,7 +40,8 @@ const send = (data: unknown) => {
   });
   win.dispatchEvent(ev);
 };
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 const ask = async (
   artifact: ArtifactSummary,
   gate: ReturnType<
@@ -66,6 +67,7 @@ const ask = async (
 };
 
 beforeEach(() => {
+  vi.useFakeTimers();
   frame = new FakeFrame(contentWindow);
   win = new EventTarget();
   post.mockReset();
@@ -78,6 +80,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const b of live.splice(0)) b.dispose();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
