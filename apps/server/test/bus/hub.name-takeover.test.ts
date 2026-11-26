@@ -18,10 +18,14 @@ import {
   hubOf,
   machine,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -81,6 +85,7 @@ async function rename(d: Daemon, ref: string, name: string): Promise<string> {
     v: 1,
     id: fid,
     type: "rename",
+    name_chosen: true,
     agent_ref: ref,
     proposed_name: name,
   } as ClientFrame);
@@ -314,5 +319,123 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(await asks(ref3)).toEqual([]);
     expect(await roleCount(n)).toBe(0);
     d.close();
+  });
+});
+
+// #3143 (Leo, 2026-11-26): only a name a PERSON gave is a role. A frame without
+// name_chosen is an agent's own pick: the pre-#3132 rules apply (#1742 reclaim
+// of an away name of the same kind, else a plain suffix), with no proposal,
+// no pendingRole and no hub text to the holder.
+describe("a self-picked name is no role (#3143)", () => {
+  const plainReg = async (d: Daemon, ref: string, name: string, n: string) => {
+    d.send(plainUp(id("u"), ref, name, n));
+    return (await waitFor(d, "agent_ok")).bus_name;
+  };
+  const plainRename = async (d: Daemon, ref: string, name: string) => {
+    const fid = id("r");
+    d.send({
+      v: 1,
+      id: fid,
+      type: "rename",
+      agent_ref: ref,
+      proposed_name: name,
+    } as ClientFrame);
+    for (;;) {
+      const f = await d.next();
+      if (f.type === "error" && f.id === fid)
+        throw new Error(JSON.stringify(f));
+      if (f.type === "renamed" && f.id === fid) return f.bus_name;
+    }
+  };
+  const proposalCount = async (n: string) =>
+    (
+      await sqlOf<{ c: number }>(
+        "select count(*) as c from role_proposals where namespace = ?",
+        n,
+      )
+    )[0]?.c ?? 0;
+  const noCardFor = async (
+    s: Awaited<ReturnType<typeof scene>>,
+    ref: string,
+  ) => {
+    await fence(s.d);
+    expect(await asks(ref)).toEqual([]);
+    expect(await proposalCount(s.n)).toBe(0);
+    expect(
+      said(s.d, s.holderRef).some((t) => t.includes("asks to take over")),
+    ).toBe(false);
+    const row = (await (await hubOf()).snapshot()).agents.find(
+      (a) => a.namespace === s.n && a.pendingRole !== undefined,
+    );
+    expect(row).toBeUndefined();
+  };
+
+  it("agent_up asking a live holder's name: a plain suffix, no proposal, no text to the holder", async () => {
+    const s = await scene();
+    const ref = uniq("new");
+    expect(await plainReg(s.d, ref, s.name, s.n)).toBe(`${s.name}-2`);
+    await noCardFor(s, ref);
+    s.d.close();
+  });
+
+  it("rename to a live holder's name: a plain suffix, no proposal, no text to the holder", async () => {
+    const s = await scene();
+    const ref = uniq("new");
+    expect(await plainReg(s.d, ref, uniq("Other"), s.n)).not.toBe(s.name);
+    expect(await plainRename(s.d, ref, s.name)).toBe(`${s.name}-2`);
+    await noCardFor(s, ref);
+    s.d.close();
+  });
+
+  it("agent_up asking an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
+    const s = await scene({ holderAway: true });
+    const sm = await machine("Snd");
+    const snd = await connect(sm.token);
+    await reg(snd, "snd", uniq("Snd"), s.n);
+    const fid = id("s");
+    snd.send({
+      v: 1,
+      id: fid,
+      type: "send",
+      from_ref: "snd",
+      to_name: s.name,
+      body: "queued",
+    } as ClientFrame);
+    const rc = await waitFor(snd, "receipt");
+    expect(rc.state).toBe("pending");
+    const ref = uniq("new");
+    expect(await plainReg(s.d, ref, s.name, s.n)).toBe(s.name);
+    const dl = await waitFor(s.d, "deliver");
+    expect(dl.msg_id).toBe(rc.msg_id);
+    expect(dl.to_ref).toBe(ref);
+    await noCardFor(s, ref);
+    snd.close();
+    s.d.close();
+  });
+
+  it("rename to an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
+    const s = await scene({ holderAway: true });
+    const sm = await machine("Snd");
+    const snd = await connect(sm.token);
+    await reg(snd, "snd", uniq("Snd"), s.n);
+    snd.send({
+      v: 1,
+      id: id("s"),
+      type: "send",
+      from_ref: "snd",
+      to_name: s.name,
+      body: "queued",
+    } as ClientFrame);
+    const rc = await waitFor(snd, "receipt");
+    expect(rc.state).toBe("pending");
+    const ref = uniq("new");
+    await plainReg(s.d, ref, uniq("Other"), s.n);
+    expect(await plainRename(s.d, ref, s.name)).toBe(s.name);
+    const dl = await waitFor(s.d, "deliver");
+    expect(dl.msg_id).toBe(rc.msg_id);
+    expect(dl.to_ref).toBe(ref);
+    await noCardFor(s, ref);
+    snd.close();
+    s.d.close();
   });
 });

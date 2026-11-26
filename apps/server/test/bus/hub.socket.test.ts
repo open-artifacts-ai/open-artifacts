@@ -24,12 +24,17 @@ import {
   inOwnerHub,
   machine,
   ns,
+  up as plainUp,
   ready,
-  up,
   upgrade,
   waitFor,
   workerFetch,
 } from "./helpers.js";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ReturnType<typeof plainUp>;
+
 import { withDeadline } from "./with-deadline.js";
 
 type ErrorBody = { error: { code: string } };

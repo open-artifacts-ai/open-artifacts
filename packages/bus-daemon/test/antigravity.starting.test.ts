@@ -18,7 +18,13 @@ import {
   agyHello,
   busHome,
 } from "@oa/bus-adapter-claude-code";
-import { connectDaemon } from "@oa/bus-ipc";
+import {
+  ADAPTER_CAPS,
+  AGY_NO_SESSION,
+  connectDaemon,
+  type Hello,
+  HelloRefused,
+} from "@oa/bus-ipc";
 import { AGY_STARTING_LABEL, BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -120,6 +126,17 @@ async function setup(
       attest(hello, {
         comm: (pid) => os.comm.get(pid) ?? null,
         procStart: (pid) => os.start.get(pid) ?? null,
+        // agy S3: a watcher is attested by the agy among its parents.
+        ancestors: (pid) => {
+          const out: number[] = [];
+          for (
+            let p: number | undefined = pid;
+            p !== undefined && p > 1 && out.length < 12;
+            p = os.ppid.get(p)
+          )
+            out.push(p);
+          return out;
+        },
       }),
     antigravity: {
       isRunning: (pid) => os.alive.has(pid),
@@ -533,6 +550,47 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(h.daemon.agents.byRef(A)?.live).toBe(true);
   });
 
+  it("agy S3: a starting session gets no watcher and no hand-off; the joined conversation does", async () => {
+    const { h, hook } = await setup();
+    // The watcher, in a shell agy ran.
+    os.alive.add(5151);
+    os.ppid.set(5151, 5150);
+    os.comm.set(5151, "node");
+    os.ppid.set(5150, AGY);
+    os.comm.set(5150, "/bin/zsh");
+    const watcher: Hello = {
+      v: 1,
+      id: "watch",
+      type: "hello",
+      kind: "antigravity",
+      agent_ref: A,
+      pid: 5151,
+      cwd: "/w/app",
+      proposed_name: "agy",
+      caps: [ADAPTER_CAPS.agyWatch],
+      attest: { proc_start: "t0" },
+    };
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    expect(h.daemon.agents.byRef(S0)?.starting).toBe(true);
+    const e = await connectDaemon({ path: h.socketPath, hello: watcher }).catch(
+      (x: unknown) => x,
+    );
+    expect(e).toBeInstanceOf(HelloRefused);
+    expect((e as HelloRefused).reason).toBe(AGY_NO_SESSION);
+    // Held for the starting record: queued, never handed to agy's transport.
+    h.toDaemon(deliver(S0, "mmmmmmmmmmmmmmm2"));
+    await settled(h);
+    expect(answered(h, "mmmmmmmmmmmmmmm2")).toEqual([]);
+    expect(h.daemon.agy.held()).toBe(0);
+    // Once the conversation joins, a watcher is admitted under its name.
+    await hook();
+    await upFor(h, A);
+    const c = await connectDaemon({ path: h.socketPath, hello: watcher });
+    expect(c.welcome.bus_name).toBe("agy");
+    c.close();
+  });
+
   it("closes when the agy process ends, joined or not", async () => {
     const { h } = await setup();
     h.daemon.syncNow();
@@ -941,8 +999,10 @@ describe("an agy process is listed at launch (agy S2b)", () => {
  */
 const HOOK_IF = `if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`;
 const LEGACY_HOOK = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; ${HOOK_IF}`;
+/** agy S3: the pinned hook also asks whether the conversation's watcher runs. */
+const WATCHED_IF = `if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$d/$PPID.json" 2>/dev/null && p=$(sed -n 's/^{"pid":\\([0-9][0-9]*\\),.*/\\1/p' "$d/$PPID.watch.json" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`;
 const pinnedHook = (home: string) =>
-  `export OA_BUS_HOME='${home.replaceAll("'", `'\\''`)}'; f="$OA_BUS_HOME/antigravity/$PPID.json"; ${HOOK_IF}`;
+  `export OA_BUS_HOME='${home.replaceAll("'", `'\\''`)}'; d="$OA_BUS_HOME/antigravity"; ${WATCHED_IF}`;
 /**
  * The bus home a hook command sends its join to, run in a real sh with the
  * agy process's environment: `oa-bus agy-hello` connects to
@@ -1218,7 +1278,7 @@ describe("the process reads (agy S2b)", () => {
     // The same literal bus-cli's antigravity-plugin test pins agyHookCommand
     // to, so this copy can't drift from what install writes.
     expect(pinnedHook("/tmp/it's here/.oa-bus")).toBe(
-      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; f="$OA_BUS_HOME/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
+      `export OA_BUS_HOME='/tmp/it'\\''s here/.oa-bus'; d="$OA_BUS_HOME/antigravity"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$d/$PPID.json" 2>/dev/null && p=$(sed -n 's/^{"pid":\\([0-9][0-9]*\\),.*/\\1/p' "$d/$PPID.watch.json" 2>/dev/null) && [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo '{}'; else exec '/bin/oa-bus' 'agy-hello'; fi`,
     );
     expect(parseAgyPluginHome("{}")).toBeNull();
     expect(parseAgyPluginHome("not json")).toBeNull();
