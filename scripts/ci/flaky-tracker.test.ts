@@ -30,6 +30,7 @@ import {
   RECONCILE_LOGS,
   RECONCILE_MS,
   RERUN_DAYS,
+  type Reconciled,
   type Recorded,
   type RunInfo,
   recentRuns,
@@ -339,6 +340,7 @@ describe("untrusted text", () => {
         passed: [],
         pending: [],
         tries: {},
+        fails: {},
         unreadable: [],
       });
       for (const text of [store ?? "", body]) {
@@ -1553,8 +1555,8 @@ describe("a backlog larger than one reconcile drains over the next events", () =
 
   it("stops starting runs once its log budget is spent, oldest first, and says how many are left", () => {
     const g = make();
-    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, logs: 5 });
-    // 2 logs a run: runs 1000-1002 spend 6, so 1003 on are left.
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, logs: 6 });
+    // 2 logs a run: runs 1000-1002 spend the 6, so 1003 on are left.
     expect(r.map((x) => [x.runId, x.result])).toEqual(
       ids.map((id) => [id, id <= 1002 ? "tracked" : "left"]),
     );
@@ -1580,7 +1582,7 @@ describe("a backlog larger than one reconcile drains over the next events", () =
         exec: g.exec,
         repo: REPO,
         nowMs: at(g, NOW + e * HOUR),
-        logs: 5,
+        logs: 6,
       });
       left.push(r.filter((x) => x.result === "left").length);
     }
@@ -1615,7 +1617,7 @@ describe("a backlog larger than one reconcile drains over the next events", () =
         exec: g.exec,
         repo: REPO,
         nowMs: at(g, NOW + e * HOUR),
-        logs: 5,
+        logs: 6,
       });
     expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
     expect(sightings(g).sort()).toEqual(ids);
@@ -1628,7 +1630,7 @@ describe("a backlog larger than one reconcile drains over the next events", () =
       exec: g.exec,
       repo: REPO,
       nowMs: NOW,
-      logs: 3,
+      logs: 4,
       onRun: (r) => seen.push(r.runId),
     });
     expect(seen).toEqual([1000, 1001]);
@@ -1857,51 +1859,58 @@ describe("a pending list while daily events go on", () => {
 });
 
 describe("runs whose logs can't be read", () => {
-  // The Prover's case: 32 runs, the oldest 25 with a job log that answers
-  // 404, the newest 7 readable. Default budgets.
+  // The Prover's case: 32 runs, the oldest 25 with a job log that fails, the
+  // newest 7 readable. Default budgets (25 logs).
   const ids = Array.from({ length: 32 }, (_, i) => 4000 + i);
   const bad = new Set(ids.slice(0, 25));
-  const setup = () => {
+  const setup = (error = "HTTP 404: Not Found") => {
     const g = fakeGh({
       log: ONE_FAIL,
       runs: ids.map((id, i) => rerun(id, { created: (40 - i) * HOUR })),
     });
     // Which run's jobs were listed last: its job log is read next.
     let current = 0;
+    const state = { broken: true, logs: 0 };
     const exec: Exec = (cmd, args) => {
       const m = args
         .map((a) => /\/runs\/(\d+)\/attempts\/1\/jobs/.exec(a))
         .find(Boolean);
       if (m) current = Number(m[1]);
-      if (
-        bad.has(current) &&
-        args.some((a) => /\/actions\/jobs\/1\/logs$/.test(a))
-      )
-        return { code: 1, stdout: "", stderr: "HTTP 404: Not Found" };
+      const log = args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a));
+      if (log) state.logs++;
+      if (state.broken && bad.has(current) && log)
+        return { code: 1, stdout: "", stderr: error };
       return g.exec(cmd, args);
     };
-    return { g, exec };
+    /** One completion an hour; the logs it read. */
+    const completion = (e: number) => {
+      g.clock.now = NOW + e * HOUR;
+      state.logs = 0;
+      const r = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      return { r, logs: state.logs };
+    };
+    return { g, exec, state, completion };
   };
   const marks = (g: ReturnType<typeof fakeGh>) =>
     g.comments.flatMap((c) => parseMarks(c.body).passed);
   const dropped = (g: ReturnType<typeof fakeGh>) =>
     g.comments.flatMap((c) => parseMarks(c.body).unreadable);
 
-  it("never starve the readable ones: all 7 are tracked on the first completion", () => {
-    const { g, exec } = setup();
-    const r = reconcile({ exec, repo: REPO, nowMs: NOW });
-    expect(r.filter((x) => x.result === "tracked").map((x) => x.runId)).toEqual(
-      ids.slice(25),
-    );
-    expect(r.filter((x) => x.result === "error")).toHaveLength(25);
-    expect(reconcileLines(r).at(-1)).toBe(
-      "backlog: 0 new, 25 to retry (the next CI completion's reconcile carries on)",
-    );
+  it("never starve the readable ones, and no completion reads more than 25 logs", () => {
+    const { g, completion } = setup();
+    const logs: number[] = [];
+    const tracked: number[][] = [];
+    for (let e = 0; e < 3; e++) {
+      const { r, logs: n } = completion(e);
+      logs.push(n);
+      tracked.push(r.filter((x) => x.result === "tracked").map((x) => x.runId));
+    }
+    expect(Math.max(...logs)).toBeLessThanOrEqual(RECONCILE_LOGS);
+    // The first spends its 25 logs on the 25 oldest; the next tracks all 7
+    // before any retry.
+    expect(tracked[0]).toEqual([]);
+    expect(tracked[1]).toEqual(ids.slice(25));
     expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
-    // Each is on the pending list with its first failed try.
-    expect(parseMarks(g.pendings.at(-1)?.body ?? "").tries).toEqual(
-      Object.fromEntries(ids.slice(0, 25).map((id) => [`${id}/2`, 1])),
-    );
   });
 
   it("are tried after the runs not yet tried", () => {
@@ -1921,35 +1930,58 @@ describe("runs whose logs can't be read", () => {
     expect(order.slice(0, 7)).toEqual(ids.slice(25));
   });
 
-  it(`are dropped visibly after ${UNREADABLE_TRIES} reconciles could not read them, and then skipped`, () => {
-    const { g, exec } = setup();
-    const results: string[][] = [];
-    let last: ReturnType<typeof reconcile> = [];
-    for (let e = 0; e < UNREADABLE_TRIES; e++) {
-      g.clock.now = NOW + e * HOUR;
-      last = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
-      results.push([
-        ...new Set(last.filter((x) => bad.has(x.runId)).map((x) => x.result)),
-      ]);
+  it(`a run found gone (404) is dropped on its ${UNREADABLE_TRIES}rd strike, visibly, and then skipped`, () => {
+    const { g, completion } = setup();
+    const strikes = new Map<number, number>();
+    const droppedAt = new Map<number, number>();
+    let last: Reconciled[] = [];
+    for (let e = 0; e < 20 && droppedAt.size < bad.size; e++) {
+      const { r, logs } = completion(e);
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      for (const x of r.filter((y) => bad.has(y.runId))) {
+        if (x.result === "error")
+          strikes.set(x.runId, (strikes.get(x.runId) ?? 0) + 1);
+        if (x.result === "unreadable") droppedAt.set(x.runId, e);
+      }
+      if (r.some((x) => x.result === "unreadable")) last = r;
     }
-    expect(results).toEqual([["error"], ["error"], ["unreadable"]]);
+    // Every one of the 25 is dropped, each after exactly 2 earlier strikes.
+    expect([...droppedAt.keys()].sort()).toEqual([...bad]);
+    expect([...strikes.values()].every((n) => n === UNREADABLE_TRIES - 1)).toBe(
+      true,
+    );
     expect(dropped(g).sort()).toEqual([...bad].map((id) => `${id}/2`));
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
     // The summary names each one it drops.
     const lines = reconcileLines(last);
-    expect(lines).toContain("- CI run 4000 attempt 2: unreadable");
     expect(lines.join("\n")).toContain(
-      `could not be read on ${UNREADABLE_TRIES} reconciles: dropped, and marked unreadable in the store`,
+      `found gone (404 or 410) on ${UNREADABLE_TRIES} reconciles: dropped, and marked unreadable in the store`,
     );
-    expect(lines.at(-1)).toBe("backlog: 0 new, 0 to retry");
     expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
     // Later, they are skipped like marked runs: no read of them at all.
     const reads = g.calls.length;
-    g.clock.now = NOW + 10 * HOUR;
-    const later = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
-    expect(later.every((x) => x.result === "recorded already")).toBe(true);
+    const { r } = completion(30);
+    expect(r.every((x) => x.result === "recorded already")).toBe(true);
     expect(
       g.calls.slice(reads).some((c) => c.some((a) => a.includes("/attempts/"))),
     ).toBe(false);
+  });
+
+  it("a 503 is never a strike: the runs wait, and are tracked once GitHub answers again", () => {
+    const { g, state, completion } = setup("HTTP 503: Service Unavailable");
+    for (let e = 0; e < 10; e++) {
+      const { r, logs } = completion(e);
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      expect(r.some((x) => x.result === "unreadable")).toBe(false);
+    }
+    expect(dropped(g)).toEqual([]);
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
+    expect(
+      Object.values(parseMarks(g.pendings.at(-1)?.body ?? "").tries),
+    ).toEqual(Array(25).fill(0));
+    state.broken = false;
+    for (let e = 10; e < 20; e++) completion(e);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
   });
 
   it("a failure that is not a read of the run never drops it", () => {
