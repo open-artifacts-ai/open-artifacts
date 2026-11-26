@@ -88,6 +88,19 @@ const SLOT = /^s(\d+)\.g(\d+)$/;
 /** Ledger directories already announced by this process. */
 const announced = new Set<string>();
 
+/**
+ * Parsed call times of write-once slot files (keyed by full path). Slot files
+ * are linked in complete and never rewritten, so caching valid timestamps
+ * avoids O(HOOK_LIMIT^2) file reads across a burst of claims in one process.
+ */
+const slotTimes = new Map<string, number>();
+const SLOT_CACHE_LIMIT = 4096;
+
+function cacheSlotTime(path: string, t: number): void {
+  if (slotTimes.size >= SLOT_CACHE_LIMIT) slotTimes.clear();
+  slotTimes.set(path, t);
+}
+
 /** A temp file older than this was left by a crash (takeSlot holds one for microseconds). */
 export const STALE_TMP_MS = 3 * HOOK_WINDOW_MS;
 
@@ -134,9 +147,14 @@ function sweepTemps(dir: string, now: number): void {
  * made. Never later than `now`; `now` if even the stat fails.
  */
 function callTime(path: string, now: number): number {
+  const cached = slotTimes.get(path);
+  if (cached !== undefined && cached <= now) return cached;
   try {
     const v = Number(readFileSync(path, "utf8"));
-    if (Number.isFinite(v) && v > 0 && v <= now) return v;
+    if (Number.isFinite(v) && v > 0 && v <= now) {
+      cacheSlotTime(path, v);
+      return v;
+    }
   } catch {}
   try {
     return Math.min(statSync(path).mtimeMs, now);
@@ -147,17 +165,34 @@ function callTime(path: string, now: number): number {
 
 /** Each slot's newest generation and its call time. */
 function scan(dir: string, now: number): Map<number, Slot> {
-  const slots = new Map<number, Slot>();
+  const newest = new Map<number, { gen: number; name: string }>();
   for (const name of readdirSync(dir)) {
     const m = SLOT.exec(name);
     if (!m) continue;
     const n = Number(m[1]);
     const gen = Number(m[2]);
-    const had = slots.get(n);
+    const had = newest.get(n);
     if (had && had.gen >= gen) continue;
-    slots.set(n, { n, gen, at: callTime(join(dir, name), now) });
+    newest.set(n, { gen, name });
   }
+  const slots = new Map<number, Slot>();
+  for (const [n, { gen, name }] of newest)
+    slots.set(n, { n, gen, at: callTime(join(dir, name), now) });
   return slots;
+}
+
+/** Highest generation present for one slot, or -1 if none. */
+function newestGen(dir: string, slot: number): number {
+  let max = -1;
+  const prefix = `s${slot}.g`;
+  for (const name of readdirSync(dir)) {
+    if (!name.startsWith(prefix)) continue;
+    const m = SLOT.exec(name);
+    if (!m) continue;
+    const gen = Number(m[2]);
+    if (gen > max) max = gen;
+  }
+  return max;
 }
 
 /**
@@ -166,9 +201,11 @@ function scan(dir: string, now: number): Map<number, Slot> {
  */
 function takeSlot(dir: string, name: string, t: number): boolean {
   const tmp = join(dir, `tmp.${process.pid}.${randomBytes(6).toString("hex")}`);
+  const dest = join(dir, name);
   writeFileSync(tmp, String(t), { flag: "wx", mode: 0o600 });
   try {
-    linkSync(tmp, join(dir, name));
+    linkSync(tmp, dest);
+    if (Number.isFinite(t) && t > 0) cacheSlotTime(dest, t);
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -230,18 +267,23 @@ export async function claimHookSlot(
       if (!takeSlot(dir, name, t)) break; // another process took it: scan again
       // A claim that stalled for windows can take a generation older than
       // the newest (one already unlinked): never counted, so not a call.
-      if ((scan(dir, t).get(n)?.gen ?? -1) !== gen) {
+      if (newestGen(dir, n) !== gen) {
+        const stale = join(dir, name);
+        slotTimes.delete(stale);
         try {
-          unlinkSync(join(dir, name));
+          unlinkSync(stale);
         } catch {}
         break;
       }
       // Older generations of slot n are never read again. The one before
       // stays, so a claim that scanned it long ago still collides.
-      if (gen >= 2)
+      if (gen >= 2) {
+        const old = join(dir, `s${n}.g${gen - 2}`);
+        slotTimes.delete(old);
         try {
-          unlinkSync(join(dir, `s${n}.g${gen - 2}`));
+          unlinkSync(old);
         } catch {}
+      }
       return fresh.length + 1;
     }
   }
