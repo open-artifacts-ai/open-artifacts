@@ -1,13 +1,18 @@
 // #3132: when a role moves from one session to another (the dashboard's
-// Change holder, or a confirmed proposal), what the old session was sent
-// follows the role: an ask's answer (identity-addressed), a mention (by
-// name) and its followed pages reach the new holder. A name alone moves
-// nothing (#3208). Real hub, real daemon sockets, the real follows service
-// on D1. Waits are signals (reply frames, a list round trip), never sleeps.
+// Change holder, or a confirmed proposal), what the old session did while it
+// held the role follows the role: an answer to an ask it posted then
+// (identity-addressed), a mention of it after the move (by name) and the
+// pages it began to follow then reach the new holder. What it began before
+// it held the role stays its own, a session that still holds a role keeps
+// its mail, and a name alone moves nothing (#3208). Real hub, real daemon
+// sockets, the real follows service on D1. Waits are signals (reply frames,
+// a list round trip), never sleeps; times are the hub's test clock and
+// explicit follow rows, never the wall clock's order.
 import { runInDurableObject } from "cloudflare:test";
 import type { ServerFrame } from "@oa/bus-protocol";
 import { type BusNotice, type Member, NOTICE_SENDER, newId } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { BusHub } from "../../src/bus/hub.js";
 import { publish } from "../../src/services/artifacts.js";
 import { noticeText, notifyChanged } from "../../src/services/follows.js";
 import { getUser } from "../../src/services/users.js";
@@ -66,8 +71,21 @@ async function setup() {
     if (!r.ok) throw new Error(`putRole refused: ${r.reason}`);
     return r;
   };
-  return { m, d, hub, namespace, reg, setRole, sql };
+  /** The hub's clock (ms), so a role's held_since is a known time. */
+  const clock = async (ms: number) => {
+    clocked.add(m.userId);
+    await runInDurableObject(hub, (i) => BusHub.setTestClock(i, ms));
+  };
+  return { m, d, hub, namespace, reg, setRole, sql, clock };
 }
+const clocked = new Set<string>();
+afterEach(async () => {
+  for (const u of clocked)
+    await runInDurableObject(await hubOf(u), (i) =>
+      BusHub.setTestClock(i, null),
+    );
+  clocked.clear();
+});
 type S = Awaited<ReturnType<typeof setup>>;
 
 const ask = async <T extends ServerFrame["type"]>(
@@ -150,30 +168,58 @@ const artifactOf = async (userId: string) =>
   ).id;
 
 describe("a moved role takes the old session's notices along (#3132)", () => {
-  it("an ask's answer to the old session's identity reaches the new holder", async () => {
+  it("an answer to an ask posted while it held the role reaches the new holder", async () => {
     const s = await setup();
     const old = await s.reg(uniq("plat-l"));
     const next = await s.reg(uniq("plat-w"));
     const role = uniq("platform");
+    const t0 = Date.now() - 60_000;
+    await s.clock(t0);
     await s.setRole(role, old.id);
+    await s.clock(t0 + 30_000);
     const moved = await s.setRole(role, next.id);
     expect(moved.moved).toMatchObject({
       fromAgentId: old.id,
       toAgentId: next.id,
+      heldFrom: t0,
       from: { namespace: s.namespace, name: old.name },
       to: { namespace: s.namespace, name: next.name },
     });
     const n = note(
       { namespace: s.namespace, name: old.name },
-      { toIdentity: old.identity },
+      { toIdentity: old.identity, originAt: t0 + 10_000 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
     const dl = await pageNotice(s);
     expect(dl.to_ref).toBe(next.ref);
     expect(dl.body).toBe(n.text);
+    // The Worker's lookup for a session gone from the hub answers the same.
+    expect(await s.hub.roleHolderFor(old.identity, t0 + 10_000)).toEqual({
+      namespace: s.namespace,
+      name: next.name,
+      identityId: next.identity,
+    });
   });
 
-  it("a mention of the old session's name reaches the new holder after the old one closed", async () => {
+  it("an answer to an ask it posted before it held the role stays its own", async () => {
+    const s = await setup();
+    const old = await s.reg(uniq("plat-l"));
+    const next = await s.reg(uniq("plat-w"));
+    const role = uniq("platform");
+    const t0 = Date.now() + 60_000;
+    await s.clock(t0);
+    await s.setRole(role, old.id);
+    await s.setRole(role, next.id);
+    const n = note(
+      { namespace: s.namespace, name: old.name },
+      { toIdentity: old.identity, originAt: t0 - 1 },
+    );
+    expect(await s.hub.deliverNotice(n)).toBe("delivered");
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
+    expect(await s.hub.roleHolderFor(old.identity, t0 - 1)).toBeNull();
+  });
+
+  it("a mention of the old session's name after the move reaches the new holder once the old one closed", async () => {
     const s = await setup();
     const old = await s.reg(uniq("plat-l"));
     const next = await s.reg(uniq("plat-w"));
@@ -187,20 +233,77 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect((await pageNotice(s)).to_ref).toBe(next.ref);
   });
 
-  it("the old session's followed pages move to the new holder, and their notices reach it", async () => {
+  it("only the pages it began to follow while it held the role move; the rest stay, and notices go where the follow is", async () => {
     const s = await setup();
-    const art = await artifactOf(s.m.userId);
+    const before = await artifactOf(s.m.userId);
+    const during = await artifactOf(s.m.userId);
     const old = await s.reg(uniq("plat-l"));
     const next = await s.reg(uniq("plat-w"));
-    await follow(s, old.ref, art);
     const role = uniq("platform");
+    const t0 = Date.now() - 60_000;
+    await follow(s, old.ref, before);
+    await follow(s, old.ref, during);
+    // Explicit times: one follow before the role, one while it was held.
+    await e.DB.batch([
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ?",
+      ).bind(t0 - 1, s.m.userId, before),
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ?",
+      ).bind(t0 + 1, s.m.userId, during),
+    ]);
+    await s.clock(t0);
     await s.setRole(role, old.id);
+    await s.clock(t0 + 30_000);
     await s.setRole(role, next.id);
     // following waits for the hub's queued re-key.
-    expect(await listed(s, next.ref)).toEqual([art]);
-    expect(await listed(s, old.ref)).toEqual([]);
-    await notifyChanged(e, art, 2, s.m.userId, Date.now());
+    expect(await listed(s, next.ref)).toEqual([during]);
+    expect(await listed(s, old.ref)).toEqual([before]);
+    await notifyChanged(e, during, 2, s.m.userId, Date.now());
     expect((await pageNotice(s)).to_ref).toBe(next.ref);
+    await notifyChanged(e, before, 2, s.m.userId, Date.now());
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
+  });
+
+  it("a session that still holds another role keeps its mail", async () => {
+    const s = await setup();
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const r1 = uniq("one");
+    const r2 = uniq("two");
+    await s.setRole(r1, a.id);
+    await s.setRole(r2, a.id);
+    await s.setRole(r1, b.id);
+    const n = note(
+      { namespace: s.namespace, name: a.name },
+      { toIdentity: a.identity },
+    );
+    expect(await s.hub.deliverNotice(n)).toBe("delivered");
+    expect((await pageNotice(s)).to_ref).toBe(a.ref);
+  });
+
+  it("a holder's earlier move never takes the mail of the role it holds now", async () => {
+    const s = await setup();
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const c = await s.reg(uniq("c"));
+    const r0 = uniq("zero");
+    const r = uniq("platform");
+    await s.setRole(r0, b.id);
+    await s.setRole(r0, c.id);
+    await s.setRole(r, a.id);
+    await s.setRole(r, b.id);
+    // A follow notice now addressed to b (its rows moved there) stays with b.
+    const n = note({ namespace: s.namespace, name: b.name });
+    expect(await s.hub.deliverNotice(n)).toBe("delivered");
+    expect((await pageNotice(s)).to_ref).toBe(b.ref);
+    // And a's mail goes to b, the holder of a's role, not on to c.
+    const m = note({ namespace: s.namespace, name: a.name });
+    expect(await s.hub.deliverNotice(m)).toBe("delivered");
+    expect((await pageNotice(s)).to_ref).toBe(b.ref);
+    expect(
+      framesSeen(s.d).filter((f) => f.type === "deliver" && !isRoleText(f)),
+    ).toHaveLength(2);
   });
 
   it("a namesake of the old session gets its own mail, not the role's", async () => {
@@ -238,24 +341,6 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect((await pageNotice(s)).to_ref).toBe(a.ref);
   });
 
-  it("two sessions that swapped roles never bounce a notice", async () => {
-    const s = await setup();
-    const a = await s.reg(uniq("a"));
-    const b = await s.reg(uniq("b"));
-    const r1 = uniq("one");
-    const r2 = uniq("two");
-    await s.setRole(r1, a.id);
-    await s.setRole(r2, b.id);
-    await s.setRole(r1, b.id);
-    await s.setRole(r2, a.id);
-    const n = note({ namespace: s.namespace, name: a.name });
-    expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await pageNotice(s)).to_ref).toBe(b.ref);
-    expect(
-      framesSeen(s.d).filter((f) => f.type === "deliver" && !isRoleText(f)),
-    ).toHaveLength(1);
-  });
-
   it("without a move, delivery is as addressed; a vacated role forwards nothing", async () => {
     const s = await setup();
     const a = await s.reg(uniq("a"));
@@ -279,7 +364,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     await s.setRole(role, old.id);
     await s.setRole(role, next.id);
     expect(await roleText(s, old.ref)).toBe(
-      `Your role "${role}" moved to ${next.name}. Its open asks, mentions and followed pages go there now.`,
+      `Your role "${role}" moved to ${next.name}. What you began while you held it (open asks, followed pages) and new mentions of you go there now.`,
     );
   });
 

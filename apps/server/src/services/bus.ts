@@ -150,6 +150,11 @@ export type BusHubRpc = {
   ): Promise<{ identityId: string; kind: string } | null>;
   /** #1889: the current bus name of each agent identity in this member's own hub, with its role (#3132). */
   namesOf(identityIds: string[]): Promise<AgentNameRow[]>;
+  /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
+  roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null>;
   /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
   waitingOf(
     identityIds: string[],
@@ -610,6 +615,35 @@ export async function agentFacesOf(
     logError("bus_names_lookup_failed", e);
   }
   return out;
+}
+
+/**
+ * #3132: the live holder of the role the session `identityId` handed on, for
+ * something it began at `originAt` while it held it (bus/roles.ts
+ * roleForward), as an asker address, or null: no such move, no live holder,
+ * or the hub didn't answer (fail closed, #2224). Never throws.
+ */
+export async function roleHolderFor(
+  env: Env,
+  userId: string,
+  identityId: string,
+  originAt: number,
+): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+  try {
+    if (!busOn(env)) return null;
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        return hub.roleHolderFor(identityId, originAt);
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_role_holder_lookup_failed", e);
+    return null;
+  }
 }
 
 /**
