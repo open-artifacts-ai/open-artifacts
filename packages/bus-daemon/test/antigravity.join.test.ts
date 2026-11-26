@@ -2,7 +2,7 @@
 // hook says hello once and closes; the record lives as long as the agy
 // process, follows a /clear, and is homed by the folder map. The S1a attest
 // runs for real over a fake process table: no real agy runs.
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -13,10 +13,11 @@ import {
   writeAgyConversation,
 } from "@oa/bus-adapter-claude-code";
 import { connectDaemon, HelloRefused } from "@oa/bus-ipc";
-import { BUS_CAPS } from "@oa/bus-protocol";
+import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import type { DaemonDeps } from "../src/index.ts";
+import { daemonHarness, stopAll, wsServer } from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -34,13 +35,31 @@ const os = {
 const byFolder = (cwd: string) =>
   cwd.startsWith("/u/")
     ? { unmapped: true as const }
-    : { instance: "main" as const };
+    : cwd.startsWith("/b/")
+      ? { instance: "b" }
+      : { instance: "main" as const };
 
-async function setup() {
-  os.alive = new Set([AGY]);
-  os.comm = new Map([[AGY, "/Users/u/.local/bin/agy"]]);
-  os.start = new Map([[AGY, "t0"]]);
+/** The daemon's own home file, shared by a run and the run that restarts it. */
+const files = () => ({
+  agentsFile: join(
+    mkdtempSync(join(tmpdir(), "ob-agj-")),
+    "antigravity-agents.json",
+  ),
+  announcedFile: join(mkdtempSync(join(tmpdir(), "ob-agn-")), "a.json"),
+});
+
+async function setup(
+  over: Partial<DaemonDeps> & { agentsFile?: string } = {},
+  fresh = true,
+) {
+  if (fresh) {
+    os.alive = new Set([AGY]);
+    os.comm = new Map([[AGY, "/Users/u/.local/bin/agy"]]);
+    os.start = new Map([[AGY, "t0"]]);
+  }
+  const { agentsFile, ...rest } = over;
   const h = await daemonHarness({
+    ...rest,
     homeLookup: byFolder,
     // S1a's attest, on the fake table: binary and start time.
     attest: (hello) =>
@@ -51,6 +70,10 @@ async function setup() {
     antigravity: {
       isRunning: (pid) => os.alive.has(pid),
       procStart: (pid) => os.start.get(pid) ?? null,
+      comm: (pid) => os.comm.get(pid) ?? null,
+      // Every tick reads the table afresh: a test's change is seen next tick.
+      procStartTtlMs: 0,
+      ...(agentsFile ? { agentsFile } : {}),
     },
     claude: { syncMs: 20 },
   });
@@ -204,5 +227,146 @@ describe("an agy conversation on the bus (agy S2)", () => {
     expect(r.isError).toBeFalsy();
     expect(JSON.stringify(r.content)).toContain("agy");
     expect(h.daemon.agents.byRef(A)?.live).toBe(true);
+  });
+});
+
+describe("an agy conversation is homed and resumed (agy S2)", () => {
+  it("a mapped folder registers on its instance's hub only", async () => {
+    const { wss, url } = await wsServer();
+    const hubB: { type: string; agent_ref?: string }[] = [];
+    wss.on("connection", (ws) =>
+      ws.on("message", (d) => {
+        const t = String(d);
+        if (t === PING) ws.send(PONG);
+        else hubB.push(JSON.parse(t));
+      }),
+    );
+    const home = mkdtempSync(join(tmpdir(), "ob-agb-"));
+    mkdirSync(join(home, "instances"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      join(home, "instances", "b.json"),
+      JSON.stringify({
+        name: "b",
+        hub: url.replace(/\/hub$/, ""),
+        machine_id: "",
+        label: "laptop",
+        machine_token: `oa_machine_${"b".repeat(28)}7f3a`,
+      }),
+      { mode: 0o600 },
+    );
+    const { h, hook } = await setup({ instancesHome: home });
+    await vi.waitFor(() => expect(h.daemon.hubs.get("b")?.open).toBe(true));
+    await hook({ cwd: "/b/proj" });
+    await vi.waitFor(() =>
+      expect(hubB.some((f) => f.type === "agent_up" && f.agent_ref === A)).toBe(
+        true,
+      ),
+    );
+    expect(h.daemon.agents.byRef(A)).toMatchObject({
+      instance: "b",
+      live: true,
+    });
+    // The main hub never hears of it: a later main-homed join is its only row.
+    await hook({ conversationId: B, cwd: "/w/app" });
+    await upFor(h, B);
+    expect(h.of("agent_up").map((u) => u.agent_ref)).toEqual([B]);
+  });
+
+  it("a conversation resumed in a new agy process: the closed record revives with the new pid and start", async () => {
+    const { h, hook } = await setup();
+    await hook();
+    await upFor(h, A);
+    os.alive.delete(AGY);
+    await closedRef(h, A);
+    // `agy --conversation=A` in a new process.
+    os.alive.add(7777);
+    os.comm.set(7777, "agy");
+    os.start.set(7777, "t7");
+    const w = await hook({ pid: 7777, procStart: "t7" });
+    expect(w.bus_name).toBe("agy");
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef(A)).toMatchObject({
+        live: true,
+        pid: 7777,
+        procStart: "t7",
+      }),
+    );
+    // Its liveness now follows the new process.
+    os.start.set(7777, "t8");
+    await vi.waitFor(() => expect(h.daemon.agents.byRef(A)?.live).toBe(false));
+  });
+});
+
+describe("an agy conversation survives a daemon restart (agy S2)", () => {
+  it("is kept 0600 in the daemon's home and is live again after a restart, with no hello", async () => {
+    const f = files();
+    const one = await setup(f);
+    await one.hook();
+    await upFor(one.h, A);
+    await vi.waitFor(() =>
+      expect(
+        JSON.parse(readFileSync(f.agentsFile, "utf8")).agents.map(
+          (a: { ref: string }) => a.ref,
+        ),
+      ).toEqual([A]),
+    );
+    expect((await import("node:fs")).statSync(f.agentsFile).mode & 0o777).toBe(
+      0o600,
+    );
+    await stopAll();
+    const two = await setup(f, false);
+    expect(two.h.daemon.agents.byRef(A)).toMatchObject({
+      kind: "antigravity",
+      live: true,
+      pid: AGY,
+      procStart: "t0",
+      cwd: "/w/app",
+      busName: "agy",
+      instance: "main",
+    });
+    expect(await upFor(two.h, A)).toMatchObject({
+      kind: "antigravity",
+      proposed_name: "agy",
+    });
+    // Liveness still follows the process.
+    os.alive.delete(AGY);
+    await closedRef(two.h, A);
+    await vi.waitFor(() =>
+      expect(JSON.parse(readFileSync(f.agentsFile, "utf8")).agents).toEqual([]),
+    );
+  });
+
+  it("is not taken back when its agy process ended, or its pid now runs another start or binary", async () => {
+    for (const change of [
+      () => os.alive.delete(AGY),
+      () => os.start.set(AGY, "t9"),
+      () => os.comm.set(AGY, "/bin/zsh"),
+    ]) {
+      const f = files();
+      const one = await setup(f);
+      await one.hook();
+      await upFor(one.h, A);
+      await stopAll();
+      change();
+      const two = await setup(f, false);
+      expect(two.h.daemon.agents.byRef(A)?.live ?? false).toBe(false);
+      await stopAll();
+    }
+  });
+
+  it("a start time ps cannot read yet is tried again on a later tick", async () => {
+    const f = files();
+    const one = await setup(f);
+    await one.hook();
+    await upFor(one.h, A);
+    await stopAll();
+    os.start.delete(AGY);
+    const two = await setup(f, false);
+    expect(two.h.daemon.agents.byRef(A)?.live ?? false).toBe(false);
+    os.start.set(AGY, "t0");
+    await vi.waitFor(() =>
+      expect(two.h.daemon.agents.byRef(A)?.live).toBe(true),
+    );
+    expect(await upFor(two.h, A)).toMatchObject({ kind: "antigravity" });
   });
 });
