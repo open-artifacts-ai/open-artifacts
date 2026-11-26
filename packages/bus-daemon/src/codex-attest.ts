@@ -13,6 +13,15 @@ import {
 import { homedir } from "node:os";
 import { basename, isAbsolute, join } from "node:path";
 import { type Hello, SPAWNED_SOURCES, systemTool } from "@oa/bus-ipc";
+import {
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
+  canonicalArgsSha256,
+  LinkProofHashSchema,
+} from "@oa/bus-protocol";
 import { lstartEpoch } from "./presence/opencode.ts";
 
 /**
@@ -66,6 +75,64 @@ export function codexProxyNamespaces(busHome: string): string[] {
     if (typeof name !== "string" || name === "") return [];
     const ns = `mcp__${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
     return ns === CODEX_TOOL_NAMESPACE ? [] : [ns];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * #3108: where install records the Codex config entries that reach an
+ * instance (`url` = `<origin>/mcp`) with a sign-in oa-bus cannot proxy (Codex's
+ * own OAuth). Names and origins only, never a value. The daemon reads it to
+ * know which tool namespaces to link through a server call check.
+ */
+export const CODEX_OA_ENTRIES_FILE = "codex-oa-entries.json";
+
+/** Codex's tool namespace for a config entry key (see `codexProxyNamespaces`). */
+export const codexEntryNamespace = (name: string): string =>
+  `mcp__${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
+
+/**
+ * A hub address as the origin install records (a ws or wss one as http or
+ * https). The same rule as the CLI's `originOf` (bus-cli/src/machine.ts); a
+ * test in bus-cli pins the two together.
+ */
+export const instanceOrigin = (hub: string): string => {
+  try {
+    return new URL(hub.replace(/^ws(s?):/, "http$1:")).origin;
+  } catch {
+    return hub;
+  }
+};
+
+/** At most this many entries are read per instance. */
+const OA_ENTRIES_MAX = 16;
+
+/**
+ * The recorded entry keys for the instance at `origin`. Empty when the file is
+ * missing, unreadable or names none. Never throws.
+ */
+export function codexOaEntries(busHome: string, origin: string): string[] {
+  try {
+    const v: unknown = JSON.parse(
+      readFileSync(`${busHome}/${CODEX_OA_ENTRIES_FILE}`, "utf8"),
+    );
+    const list = (v as { instances?: unknown } | null)?.instances;
+    if (!Array.isArray(list)) return [];
+    const out: string[] = [];
+    for (const i of list) {
+      if (!record(i) || i.origin !== origin || !Array.isArray(i.names))
+        continue;
+      for (const n of i.names)
+        if (
+          typeof n === "string" &&
+          n !== "" &&
+          n.length <= 128 &&
+          out.length < OA_ENTRIES_MAX
+        )
+          out.push(n);
+    }
+    return out;
   } catch {
     return [];
   }
@@ -163,6 +230,19 @@ export type CodexAttestor = {
    * than at the first hello. A thread that fails leaves nothing behind.
    */
   restore: (r: { thread: string; pid: number; start: string }) => CodexRestore;
+  /**
+   * #3108: a call the server saw at /mcp (an entry Codex signs in itself, so
+   * the call carries no proof) is open in `o.pid`'s thread. Returns the
+   * namespace that matched, or false. The frame is hostile: it is validated
+   * before any path is built. No process-tree check: the call came over the
+   * network, not from an adapter this daemon spawned, so the bar is the same
+   * rollout, lock and subagent checks plus the live Codex process the daemon
+   * itself holds (design page: https://artifacts.leourbina.com/a/zMwG9y2ED2KeBnmg).
+   */
+  remote: (
+    check: unknown,
+    o: { pid: number; namespaces: readonly string[] },
+  ) => Promise<{ ns: string } | false>;
 };
 
 /**
@@ -212,15 +292,39 @@ type Seen = {
   latest: string | undefined;
   /** `exec-<uuid>` call ids Codex reported done: never admitted. */
   done: Set<string>;
+  /**
+   * #3108, remote scans only: open function_calls under an instance entry's
+   * namespace, by call id, and open exec scripts by item id. Both close the
+   * way `open` and `execs` do.
+   */
+  remote: boolean;
+  calls: Map<string, RemoteCall>;
+  scripts: Map<string, OpenExec & { input: string }>;
 };
 
-const seen = (): Seen => ({
+type RemoteCall = OpenCall & { ns: string; tool: string; args: string };
+
+/** Remote scans keep this many open calls and scripts; the oldest go first. */
+const REMOTE_KEEP = 256;
+/** A script or arguments text longer than this is not kept (never attested). */
+const REMOTE_TEXT_CAP = 256 * 1024;
+
+const seen = (remote = false): Seen => ({
   open: new Map(),
   execs: new Map(),
   lookups: new Map(),
   latest: undefined,
   done: new Set(),
+  remote,
+  calls: new Map(),
+  scripts: new Map(),
 });
+
+const keep = <V>(m: Map<string, V>, k: string, v: V) => {
+  m.delete(k);
+  m.set(k, v);
+  while (m.size > REMOTE_KEEP) m.delete(m.keys().next().value as string);
+};
 
 /** Admitted call ids kept per thread, oldest dropped first. */
 const USED_CAP = 4096;
@@ -590,7 +694,97 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     return out;
   };
 
+  /** Remote scans, by thread: separate from the hello scans, which see other namespaces. */
+  const remoteScans = new Map<string, Scan>();
+  /** `${thread}\0${call}` links already given. */
+  const linked = new Map<string, Set<string>>();
+  /** Per `${thread}\0${item}`: links given, at most REMOTE_PER_ITEM. */
+  const perItem = new Map<string, number>();
+
+  const remote: CodexAttestor["remote"] = async (frame, o) => {
+    const f = parseRemote(frame);
+    if (!f || o.namespaces.length === 0) return false;
+    const home = deps.home ?? codexHome();
+    const rows = procs([o.pid]);
+    const proc = rows?.get(o.pid);
+    if (!proc || basename(proc.comm) !== "codex") return false;
+    // A reused pid or another start than the one this daemon pinned.
+    const was = pinned.get(o.pid);
+    if (was !== undefined && was !== proc.start) return false;
+    const lock = lockOf(home, f.thread);
+    if (!plainFile(lock) || !holding([{ pid: o.pid, file: lock }])?.[0])
+      return false;
+    if (!isUserThread(home, f.thread)) return false;
+    const row = threadRow(home, f.thread);
+    const rollout = row?.rollout_path ?? globRollout(home, f.thread);
+    if (!rollout || !plainFile(rollout)) return false;
+    let scan = remoteScans.get(f.thread);
+    if (scan?.rollout !== rollout) {
+      scan = { rollout, offset: -1, pid: o.pid, ...seen(true) };
+      remoteScans.set(f.thread, scan);
+      while (remoteScans.size > 64)
+        remoteScans.delete(remoteScans.keys().next().value as string);
+    }
+    const sc = scan;
+    const since =
+      ((lstartEpoch(proc.start) ?? Number.POSITIVE_INFINITY) + 1) * 1000;
+    const find = async (): Promise<{ ns: string } | false | undefined> => {
+      advance(sc, o.namespaces);
+      if (linked.get(f.thread)?.has(f.call)) return false;
+      if (f.mode === "direct") {
+        const c = sc.calls.get(f.call);
+        if (!c || !(c.at >= since) || c.tool !== f.tool) return undefined;
+        let args: unknown;
+        try {
+          args = JSON.parse(c.args);
+        } catch {
+          return false;
+        }
+        if ((await canonicalArgsSha256(args)) !== f.argsSha) return false;
+        return { ns: c.ns };
+      }
+      const e = sc.scripts.get(f.item);
+      if (
+        !e ||
+        !(e.at >= since) ||
+        e.turn === undefined ||
+        sc.latest !== e.turn ||
+        sc.done.has(f.call)
+      )
+        return undefined;
+      const ns = o.namespaces.find((n) =>
+        namesTool(e.input, `${n}__${f.tool}`),
+      );
+      if (ns === undefined) return false;
+      if ((perItem.get(`${f.thread}\0${f.item}`) ?? 0) >= REMOTE_PER_ITEM)
+        return false;
+      return { ns };
+    };
+    const admit = (hit: { ns: string }) => {
+      // Single use, checked again after the await: two checks never both link.
+      const set = linked.get(f.thread) ?? new Set<string>();
+      if (set.has(f.call)) return false as const;
+      set.add(f.call);
+      if (set.size > USED_CAP) set.delete(set.values().next().value as string);
+      linked.set(f.thread, set);
+      if (f.mode === "code") {
+        const k = `${f.thread}\0${f.item}`;
+        perItem.set(k, (perItem.get(k) ?? 0) + 1);
+        while (perItem.size > USED_CAP)
+          perItem.delete(perItem.keys().next().value as string);
+      }
+      return hit;
+    };
+    let r = await find();
+    if (r === undefined && retryMs > 0) {
+      await sleep(retryMs);
+      r = await find();
+    }
+    return r ? admit(r) : false;
+  };
+
   return {
+    remote,
     holders,
     attest: (hello) => check(hello, true),
     attestNow: (hello) => check(hello, false) as CodexAttest,
@@ -598,6 +792,54 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     startOf: (pid) => pinned.get(pid),
     restore,
   };
+}
+
+/** Most links one code-mode exec may give (#3108). */
+const REMOTE_PER_ITEM = 50;
+
+type RemoteFrame =
+  | {
+      thread: string;
+      tool: string;
+      call: string;
+      mode: "direct";
+      argsSha: string;
+    }
+  | { thread: string; tool: string; call: string; mode: "code"; item: string };
+
+/** The check frame, checked against the exact schemas; undefined for anything else. */
+function parseRemote(frame: unknown): RemoteFrame | undefined {
+  const f = record(frame);
+  const m = record(f?.mode);
+  if (!f || !m) return undefined;
+  const thread = CodexThreadIdSchema.safeParse(f.thread_id);
+  const tool = CodexToolNameSchema.safeParse(f.tool);
+  if (!thread.success || !tool.success) return undefined;
+  if (m.kind === "direct") {
+    const call = CodexDirectCallIdSchema.safeParse(m.call_id);
+    const sha = LinkProofHashSchema.safeParse(m.args_sha256);
+    if (!call.success || !sha.success) return undefined;
+    return {
+      thread: thread.data,
+      tool: tool.data,
+      call: call.data,
+      mode: "direct",
+      argsSha: sha.data,
+    };
+  }
+  if (m.kind === "code") {
+    const call = CodexExecCallIdSchema.safeParse(m.call_id);
+    const item = CodexItemIdSchema.safeParse(m.item_id);
+    if (!call.success || !item.success) return undefined;
+    return {
+      thread: thread.data,
+      tool: tool.data,
+      call: call.data,
+      mode: "code",
+      item: item.data,
+    };
+  }
+  return undefined;
 }
 
 /** Reads the rollout's new complete lines into `scan.open`. */
@@ -616,7 +858,7 @@ function advance(
     // Replaced or truncated: start over.
     if (scan.offset > size) {
       scan.offset = -1;
-      Object.assign(scan, seen());
+      Object.assign(scan, seen(scan.remote));
     }
     let skipFirst = false;
     if (scan.offset < 0) {
@@ -728,7 +970,7 @@ function visitLine(
     for (const [id, c] of open)
       if (turn === undefined || c.turn === undefined || c.turn === turn)
         open.delete(id);
-    for (const m of [execs, lookups])
+    for (const m of [execs, lookups, st.scripts, st.calls])
       for (const [id, c] of m)
         if (turn === undefined || c.turn === undefined || c.turn === turn)
           m.delete(id);
@@ -738,6 +980,7 @@ function visitLine(
     const id = record(p.item)?.id;
     if (typeof id === "string") {
       open.delete(id);
+      st.calls.delete(id);
       if (EXEC_CALL.test(id)) {
         st.done.add(id);
         if (st.done.size > USED_CAP)
@@ -765,6 +1008,8 @@ function visitLine(
       if ((p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`))
         execs.set(p.id, entry);
       else lookups.set(p.id, entry);
+      if (st.remote && (p.input as string).length <= REMOTE_TEXT_CAP)
+        keep(st.scripts, p.id, { ...entry, input: p.input as string });
     }
     return;
   }
@@ -782,6 +1027,21 @@ function visitLine(
     const ours = bus || proxied;
     // An unparseable timestamp reads as NaN: never at or after a start.
     const turn = record(p.internal_chat_message_metadata_passthrough)?.turn_id;
+    if (st.remote && typeof p.name === "string") {
+      const hit = remoteName(p, namespaces);
+      if (
+        hit &&
+        typeof p.arguments === "string" &&
+        p.arguments.length <= REMOTE_TEXT_CAP
+      )
+        keep(st.calls, p.call_id, {
+          at: Date.parse(String(line.timestamp)),
+          turn: typeof turn === "string" ? turn : undefined,
+          ns: hit.ns,
+          tool: hit.tool,
+          args: p.arguments,
+        });
+    }
     if (ours)
       open.set(p.call_id, {
         at: Date.parse(String(line.timestamp)),
@@ -792,9 +1052,42 @@ function visitLine(
   }
   if (p.type.endsWith("_output") || p.type.endsWith("_end")) {
     open.delete(p.call_id);
-    for (const m of [execs, lookups])
+    st.calls.delete(p.call_id);
+    for (const m of [execs, lookups, st.scripts])
       for (const [id, e] of m) if (e.call === p.call_id) m.delete(id);
   }
+}
+
+/** The namespace and bare tool name of a function_call under one of `namespaces`, by field or by name prefix. */
+function remoteName(
+  p: Record<string, unknown>,
+  namespaces: readonly string[],
+): { ns: string; tool: string } | undefined {
+  const name = p.name as string;
+  if (typeof p.namespace === "string")
+    return namespaces.includes(p.namespace)
+      ? { ns: p.namespace, tool: name }
+      : undefined;
+  if (p.namespace !== undefined) return undefined;
+  for (const ns of namespaces)
+    if (name.startsWith(`${ns}__`))
+      return { ns, tool: name.slice(ns.length + 2) };
+  return undefined;
+}
+
+/** `needle` in `script` as a whole identifier: no identifier character before or after it. */
+const IDENT = /[A-Za-z0-9_$]/;
+function namesTool(script: string, needle: string): boolean {
+  for (
+    let at = script.indexOf(needle);
+    at >= 0;
+    at = script.indexOf(needle, at + 1)
+  ) {
+    const before = at === 0 ? "" : (script[at - 1] as string);
+    const after = script[at + needle.length] ?? "";
+    if (!IDENT.test(before) && !IDENT.test(after)) return true;
+  }
+  return false;
 }
 
 /** Whether `callId` is an unanswered oa_bus call in the rollout's tail. */

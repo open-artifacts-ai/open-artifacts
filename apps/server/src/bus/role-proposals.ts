@@ -23,7 +23,13 @@ import {
 } from "@oa/shared";
 import { iso } from "./dto.js";
 import { reachOfRole } from "./reach.js";
-import { checkRole, deleteRole, putRole, type RoleRefusal } from "./roles.js";
+import {
+  checkRole,
+  deleteRole,
+  putRole,
+  type RoleMove,
+  type RoleRefusal,
+} from "./roles.js";
 
 /** Decided proposals kept for the dashboard: at most this many, and none older than RETAIN_MS. */
 const RETAIN_MAX = 100;
@@ -110,6 +116,8 @@ export type DecideResult =
       proposal: BusRoleProposal;
       /** The role as set (set, repoint); null after a clear. */
       role: BusRole | null;
+      /** #3132: set when the confirm moved the role between sessions. */
+      moved: RoleMove | null;
       audit: ProposalAudit;
       expired: ProposalAudit[];
     }
@@ -524,6 +532,7 @@ export function decideProposal(
   const why = blocker(sql, orgId, p, now, maxRoles);
   if (why !== null) return refuse(why);
   let role: BusRole | null = null;
+  let moved: RoleMove | null = null;
   if (p.action === "clear") {
     if (p.roleId === null) throw new Error("clear proposal without a role id");
     deleteRole(sql, orgId, p.roleId);
@@ -540,11 +549,13 @@ export function decideProposal(
     );
     if (!r.ok) return refuse(r.reason);
     role = r.role;
+    moved = r.moved;
   }
   return {
     ok: true,
     proposal: settle("applied", null),
     role,
+    moved,
     audit: auditOf(p),
     expired,
   };

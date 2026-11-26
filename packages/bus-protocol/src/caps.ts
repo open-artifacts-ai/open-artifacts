@@ -151,6 +151,13 @@ export const BUS_CAPS = {
    * refuse them).
    */
   guest: "guest",
+  /**
+   * #3108: the hub may send `codex_call_check` (a /mcp tools/call signed in
+   * as this member, with no proof, named a Codex thread and call) and the
+   * daemon answers `codex_call_checked`. Sent only to a socket whose hello
+   * listed it, and listed in `hello_ok.caps`.
+   */
+  codexCheck: "codex_check",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

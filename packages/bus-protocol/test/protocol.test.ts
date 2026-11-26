@@ -174,6 +174,7 @@ describe("frames", () => {
       "update_report",
       "guest_up",
       "guest_down",
+      "codex_call_checked",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -197,6 +198,7 @@ describe("frames", () => {
       "update_ack",
       "owner_away",
       "proof_seen",
+      "codex_call_check",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {
