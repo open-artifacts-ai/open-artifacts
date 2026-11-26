@@ -316,7 +316,12 @@ describe("pacing and rate limits", () => {
           onOpen: () => {
             if (conns > 1) return reopened();
             for (let i = 0; i < 50; i++)
-              hub.send({ v: 1, id: `q${i}`, type: "list", from_ref: "a1" });
+              hub.send({
+                v: 1,
+                id: `queued-${i}`,
+                type: "list",
+                from_ref: "a1",
+              });
             opened();
           },
           onClose: () => dropped(),
@@ -332,12 +337,13 @@ describe("pacing and rate limits", () => {
       await vi.advanceTimersByTimeAsync(5_000); // far past every refill
       await probeWs(url);
       // What the first link had not written is never replayed on the second.
+      // (Matched on a prefix frameId() never makes: a random hello id can start with "q".)
       expect(
-        seen.filter((f) => f.conn === 1 && f.id.startsWith("q")).length,
+        seen.filter((f) => f.conn === 1 && f.id.startsWith("queued-")).length,
       ).toBeLessThan(50);
-      expect(seen.filter((f) => f.conn === 2 && f.id.startsWith("q"))).toEqual(
-        [],
-      );
+      expect(
+        seen.filter((f) => f.conn === 2 && f.id.startsWith("queued-")),
+      ).toEqual([]);
       hub.stop();
     } finally {
       vi.useRealTimers();
