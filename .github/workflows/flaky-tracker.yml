@@ -10,7 +10,10 @@
 # Environment. The script comes from the default branch, never from the run
 # under test, and runs from forks are skipped (their logs are anyone's text).
 # Hourly, a reconcile tracks any such run of the last 26 hours whose event
-# this workflow missed; a run the store already has is skipped.
+# this workflow missed; a run the store already has is skipped. The watched
+# workflow is named by its file (workflow_run.path), never by
+# workflow_run.name: that is the run-name, which a workflow may set to
+# anything (cloud's redline-staging runs are named "redline-staging v0.247.0").
 name: flaky-tracker
 on:
   workflow_run:
@@ -25,7 +28,8 @@ jobs:
       github.event_name == 'schedule' || (
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt > 1 &&
-      github.event.workflow_run.head_repository.full_name == github.repository)
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml')
     # One group for every tracker run in this repo, so two runs never read
     # and write the store and the issues at once. It sits on the job, not the
     # workflow: every CI completion starts this workflow, and a skipped one

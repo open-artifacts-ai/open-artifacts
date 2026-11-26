@@ -5,8 +5,11 @@
 // group, queued). An hourly reconcile (--reconcile) catches any run that
 // event missed: it lists the last RECONCILE_HOURS of CI runs that passed on
 // attempt 2 or later and tracks each one the store has no `passed` line for,
-// through the same code. Every test that failed on an earlier attempt of that run, with the
-// same head commit, failed and then passed with nothing changed.
+// through the same code. That line means the run is fully handled: it is
+// written with the run's sightings when nothing is filed, else in its own
+// store comment after every filing succeeded, so a failed filing is retried.
+// Every test that failed on an earlier attempt of that run, with the same
+// head commit, failed and then passed with nothing changed.
 //
 // Where the failures come from: each earlier attempt's failed or timed-out
 // job logs.
@@ -69,7 +72,11 @@ const SEEN_KEEP = 100;
 const COMMENT_MAX = 60000;
 const TITLE_CLIP = 500;
 const STORE_CHAIN_MAX = 10;
-/** The workflow files whose runs the tracker watches (flaky-tracker.yml). */
+/**
+ * The workflow files whose runs the tracker watches (flaky-tracker.yml). The
+ * reconcile lists runs by file: a run's `name` is its run-name, not the
+ * workflow's name, so it is never read.
+ */
 export const WATCHED = ["ci.yml"];
 /** How far back the hourly reconcile looks for a run the event missed. */
 export const RECONCILE_HOURS = 26;
@@ -299,28 +306,43 @@ export function parseMarks(text: string): Marks {
 
 export const parseStore = (comment: string) => parseMarks(comment).sightings;
 
+const passedMark = (run: RunInfo) => `passed ${run.runId}/${run.attempt}`;
+
+/**
+ * The store comment that marks this run handled (`passed run/attempt`, which
+ * the reconcile skips): written after every filing for the run succeeded.
+ */
+export const runDoneComment = (run: RunInfo) =>
+  [
+    `Run ${run.url} passed on attempt ${run.attempt}: its issues are filed.`,
+    "",
+    markerBlock([passedMark(run)]),
+  ].join("\n");
+
 /**
  * The store comments for this run's sightings, split to stay under GitHub's
- * comment limit. Each ends with its own marker block, which also names the
- * run's passing attempt (`passed run/attempt`) for the reconcile.
+ * comment limit. Each ends with its own marker block. Only the last one names
+ * the run's passing attempt (`passed run/attempt`), and only when marksRun:
+ * a split part never marks the run on its own.
  */
 export function storeComments(
   run: RunInfo,
   rows: { f: Failure; sighting: Sighting }[],
+  marksRun = true,
 ): string[] {
   const head = `Run ${run.url} passed on attempt ${run.attempt} after these failed:`;
   const out: string[] = [];
   let text: string[] = [];
   let marks: string[] = [];
   let size = 0;
-  const flush = () => {
+  const flush = (last: boolean) => {
     if (!marks.length) return;
     out.push(
       [
         head,
         ...text,
         "",
-        markerBlock([`passed ${run.runId}/${run.attempt}`, ...marks]),
+        markerBlock([...(last && marksRun ? [passedMark(run)] : []), ...marks]),
       ].join("\n"),
     );
     text = [];
@@ -331,12 +353,12 @@ export function storeComments(
     const t = `- attempt ${s.attempt}: ${shown(f.title)} in ${shown(f.file)}`;
     const m = `sighting ${keyOf(f.id)} ${s.run}/${s.attempt} ${s.at}`;
     if (size + t.length + m.length + 2 > COMMENT_MAX - head.length - 100)
-      flush();
+      flush(false);
     text.push(t);
     marks.push(m);
     size += t.length + m.length + 2;
   }
-  flush();
+  flush(true);
   return out;
 }
 
@@ -870,16 +892,14 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   const { found, notes } = collect(exec, run);
   if (!found.length) return { done: [], notes };
 
-  // Record every sighting first, so the evidence survives a failure below. A
-  // rerun of the tracker finds this run's lines already there and adds none.
   const { store, read } = openStore(exec, run.repo, nowMs, notes);
-  const stored = readStore(exec, run.repo, read, nowMs).sightings;
+  const kept = readStore(exec, run.repo, read, nowMs);
+  const stored = kept.sightings;
+  const marked = kept.passed.has(`${run.runId}/${run.attempt}`);
   const fresh = found.filter(
     ({ f, sighting }) =>
       !stored.some((r) => r.key === keyOf(f.id) && r.run === sighting.run),
   );
-  for (const body of storeComments(run, fresh))
-    comment(exec, run.repo, store, body);
   const recorded: Recorded[] = [
     ...stored,
     ...fresh.map(({ f, sighting }) => ({ key: keyOf(f.id), ...sighting })),
@@ -908,6 +928,21 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
       });
   }
 
+  // Record every sighting before any filing, so the evidence survives a
+  // failure below; a rerun of the tracker finds this run's lines there and
+  // adds none. The run marker (`passed run/attempt`) means "fully handled",
+  // and the reconcile skips a marked run. With nothing to file it rides on
+  // the last store part. With filings it is written last (finish), so a
+  // failed create or bump leaves the run unmarked and the hourly reconcile
+  // tracks it again, where decide() sees the stored sightings.
+  for (const body of storeComments(run, fresh, !filed.length))
+    comment(exec, run.repo, store, body);
+  const finish = () => {
+    if (!marked && filed.length)
+      comment(exec, run.repo, store, runDoneComment(run));
+    return { done, notes };
+  };
+
   if (filed.length > MAX_FILED_PER_RUN) {
     const had = open.find((i) => parseMarks(i.body).summary === run.runId);
     if (had)
@@ -923,7 +958,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
       });
       done.push({ action: "summary", id: `summary:${run.runId}` });
     }
-    return { done, notes };
+    return finish();
   }
 
   for (const a of filed) {
@@ -966,7 +1001,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
     });
     done.push({ action: "create", id: f.id });
   }
-  return { done, notes };
+  return finish();
 }
 
 /**

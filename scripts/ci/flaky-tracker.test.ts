@@ -168,6 +168,24 @@ describe("the workflow", () => {
     expect(c?.["cancel-in-progress"]).toBe(false);
   });
 
+  it("names the watched workflow by its file, never by workflow_run.name (the run-name)", () => {
+    const text = readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        "../../.github/workflows/flaky-tracker.yml",
+      ),
+      "utf8",
+    );
+    // Only in comments: no expression or condition reads it.
+    expect(text).not.toMatch(
+      /\$\{\{[^}]*workflow_run\.name|workflow_run\.name\s*[!=]=/,
+    );
+    expect(JSON.stringify(wf.jobs)).not.toContain("workflow_run.name");
+    expect(wf.jobs.track.if).toContain(
+      "github.event.workflow_run.path == '.github/workflows/ci.yml'",
+    );
+  });
+
   it("skips runs from another repository", () => {
     expect(wf.jobs.track.if).toContain(
       "github.event.workflow_run.head_repository.full_name == github.repository",
@@ -348,6 +366,14 @@ describe("untrusted text", () => {
     expect(cs.length).toBeGreaterThan(1);
     for (const c of cs) expect(c.length).toBeLessThan(65536);
     expect(cs.flatMap(parseStore)).toHaveLength(400);
+    // Only the last part marks the run, and none when marksRun is false.
+    expect(cs.map((c) => parseMarks(c).passed.length)).toEqual([
+      ...cs.slice(1).map(() => 0),
+      1,
+    ]);
+    expect(
+      storeComments(RUN, rows, false).flatMap((c) => parseMarks(c).passed),
+    ).toEqual([]);
   });
 });
 
@@ -380,7 +406,10 @@ function fakeGh(o: {
   headRepo?: string;
   storeComments?: { user: string; body: string; issue?: number }[];
   issues?: FakeIssue[];
+  /** How many `flaky` issue creates fail before they work again. */
+  failCreates?: number;
 }) {
+  let failCreates = o.failCreates ?? 0;
   const calls: string[][] = [];
   const created: { title: string; body: string; label: string }[] = [];
   const comments: { n: string; body: string }[] = [];
@@ -491,6 +520,10 @@ function fakeGh(o: {
       );
     }
     if (args[0] === "issue" && args[1] === "create") {
+      if (val(args, "--label") === "flaky" && failCreates > 0) {
+        failCreates--;
+        return { code: 1, stdout: "", stderr: "HTTP 422: Validation Failed" };
+      }
       const c = {
         title: val(args, "--title"),
         body: val(args, "--body"),
@@ -649,6 +682,55 @@ describe("track", () => {
     expect(
       g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length,
     ).toBe(before);
+    // The sightings, then the run marker once the issue was filed.
+    expect(
+      g.comments.map((c) => [
+        parseStore(c.body).length,
+        parseMarks(c.body).passed,
+      ]),
+    ).toEqual([
+      [1, []],
+      [0, ["900/2"]],
+    ]);
+  });
+
+  it("a failed issue create leaves the run unmarked, so the next reconcile files it", () => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      recentRuns: "900 2\n",
+      issues: [STORE],
+      storeComments: [
+        { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") },
+      ],
+      failCreates: 1,
+    });
+    expect(() => track({ exec: g.exec, run: RUN, nowMs: NOW })).toThrow(
+      /issue create/,
+    );
+    // The sighting is kept, with no run marker.
+    expect(
+      g.comments.map((c) => [
+        parseStore(c.body).length,
+        parseMarks(c.body).passed,
+      ]),
+    ).toEqual([[1, []]]);
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.result).toBe("tracked");
+    expect(r?.done).toEqual([{ action: "create", id: ID }]);
+    expect(g.created.filter((c) => c.label === "flaky")).toHaveLength(1);
+    // Nothing stored twice; the run marked once the filing worked.
+    expect(
+      g.comments.map((c) => [
+        parseStore(c.body).length,
+        parseMarks(c.body).passed,
+      ]),
+    ).toEqual([
+      [1, []],
+      [0, ["900/2"]],
+    ]);
+    expect(
+      reconcile({ exec: g.exec, repo: REPO, nowMs: NOW }).map((x) => x.result),
+    ).toEqual(["recorded already"]);
   });
 
   it("bumps the open issue with the run links when seen twice in 7 days", () => {
@@ -789,10 +871,16 @@ describe("track", () => {
     expect(g.comments.find((c) => c.n === "1")?.body).toContain(
       `#${next?.number}`,
     );
-    // This run's line went to the new store; the old one's sighting counted.
-    expect(g.comments.filter((c) => c.n === String(next?.number))).toHaveLength(
-      1,
-    );
+    // This run's line, then its run marker after the filing, went to the new
+    // store; the old one's sighting counted.
+    expect(
+      g.comments
+        .filter((c) => c.n === String(next?.number))
+        .map((c) => [parseStore(c.body).length, parseMarks(c.body).passed]),
+    ).toEqual([
+      [1, []],
+      [0, ["900/2"]],
+    ]);
     expect(r.done).toEqual([{ action: "create", id: ID }]);
   });
 
