@@ -79,10 +79,10 @@ describe("AppLayout", () => {
     );
   });
 
-  it("anonymous at an unknown path keeps it as next", async () => {
+  it("anonymous at an unknown path goes to /sign-in?dead=1 (#3029)", async () => {
     const redirect = await mount("anonymous", "/invite/x");
     await waitFor(() =>
-      expect(redirect).toHaveBeenCalledWith("/auth/login?next=%2Finvite%2Fx"),
+      expect(redirect).toHaveBeenCalledWith("/sign-in?dead=1"),
     );
   });
 
