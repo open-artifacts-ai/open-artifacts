@@ -90,12 +90,15 @@ const announced = new Set<string>();
 
 /**
  * Parsed call times of write-once slot files, scoped to a ledger directory's
- * identity (dev + ino + birthtime). Slot files are linked in complete and never
- * rewritten, so caching valid timestamps avoids O(HOOK_LIMIT^2) file reads
- * across a burst of claims in one process; replacing the directory changes its
- * identity and invalidates the cache.
+ * identity (dev + ino + birthtime) and keyed by slot number so advancing
+ * generations (local or peer) overwrite retired entries instead of growing the
+ * map. Slot files are linked in complete and never rewritten, so caching valid
+ * timestamps avoids O(HOOK_LIMIT^2) file reads across a burst of claims in one
+ * process; replacing the directory changes its identity and invalidates the
+ * cache.
  */
-const dirCaches = new Map<string, { id: string; times: Map<string, number> }>();
+type SlotTimeCache = Map<number, { gen: number; at: number }>;
+const dirCaches = new Map<string, { id: string; times: SlotTimeCache }>();
 const DIR_CACHE_LIMIT = 64;
 
 /** A temp file older than this was left by a crash (takeSlot holds one for microseconds). */
@@ -110,7 +113,7 @@ export const STALE_TMP_MS = 3 * HOOK_WINDOW_MS;
 function ledgerDir(
   app: string,
   root: string,
-): { dir: string; times: Map<string, number> } {
+): { dir: string; times: SlotTimeCache } {
   const dir = hookLedgerDir(app, root);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const st = lstatSync(dir);
@@ -155,17 +158,19 @@ function sweepTemps(dir: string, now: number): void {
  */
 function callTime(
   dir: string,
+  n: number,
+  gen: number,
   name: string,
   now: number,
-  times: Map<string, number>,
+  times: SlotTimeCache,
 ): number {
-  const cached = times.get(name);
-  if (cached !== undefined && cached <= now) return cached;
+  const cached = times.get(n);
+  if (cached && cached.gen === gen && cached.at <= now) return cached.at;
   const path = join(dir, name);
   try {
     const v = Number(readFileSync(path, "utf8"));
     if (Number.isFinite(v) && v > 0 && v <= now) {
-      times.set(name, v);
+      times.set(n, { gen, at: v });
       return v;
     }
   } catch {}
@@ -180,7 +185,7 @@ function callTime(
 function scan(
   dir: string,
   now: number,
-  times: Map<string, number>,
+  times: SlotTimeCache,
 ): Map<number, Slot> {
   const newest = new Map<number, { gen: number; name: string }>();
   for (const name of readdirSync(dir)) {
@@ -192,9 +197,10 @@ function scan(
     if (had && had.gen >= gen) continue;
     newest.set(n, { gen, name });
   }
+  for (const n of times.keys()) if (!newest.has(n)) times.delete(n);
   const slots = new Map<number, Slot>();
   for (const [n, { gen, name }] of newest)
-    slots.set(n, { n, gen, at: callTime(dir, name, now, times) });
+    slots.set(n, { n, gen, at: callTime(dir, n, gen, name, now, times) });
   return slots;
 }
 
@@ -218,16 +224,18 @@ function newestGen(dir: string, slot: number): number {
  */
 function takeSlot(
   dir: string,
+  n: number,
+  gen: number,
   name: string,
   t: number,
-  times: Map<string, number>,
+  times: SlotTimeCache,
 ): boolean {
   const tmp = join(dir, `tmp.${process.pid}.${randomBytes(6).toString("hex")}`);
   const dest = join(dir, name);
   writeFileSync(tmp, String(t), { flag: "wx", mode: 0o600 });
   try {
     linkSync(tmp, dest);
-    if (Number.isFinite(t) && t > 0) times.set(name, t);
+    if (Number.isFinite(t) && t > 0) times.set(n, { gen, at: t });
     return true;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -288,11 +296,11 @@ export async function claimHookSlot(
       if (s && t - s.at < HOOK_WINDOW_MS) continue;
       const gen = s ? s.gen + 1 : 0;
       const name = `s${n}.g${gen}`;
-      if (!takeSlot(dir, name, t, times)) break; // another process took it: scan again
+      if (!takeSlot(dir, n, gen, name, t, times)) break; // another process took it: scan again
       // A claim that stalled for windows can take a generation older than
       // the newest (one already unlinked): never counted, so not a call.
       if (newestGen(dir, n) !== gen) {
-        times.delete(name);
+        if (times.get(n)?.gen === gen) times.delete(n);
         try {
           unlinkSync(join(dir, name));
         } catch {}
@@ -300,13 +308,10 @@ export async function claimHookSlot(
       }
       // Older generations of slot n are never read again. The one before
       // stays, so a claim that scanned it long ago still collides.
-      if (gen >= 2) {
-        const old = `s${n}.g${gen - 2}`;
-        times.delete(old);
+      if (gen >= 2)
         try {
-          unlinkSync(join(dir, old));
+          unlinkSync(join(dir, `s${n}.g${gen - 2}`));
         } catch {}
-      }
       return fresh.length + 1;
     }
   }
