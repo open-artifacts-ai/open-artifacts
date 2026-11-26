@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
+import { installClock } from "./clock";
 import {
   installHarness,
   mount,
@@ -34,6 +35,7 @@ vi.mock("../src/viewer/bridge", () => ({
 }));
 
 installHarness();
+installClock();
 
 const id = (title: string) =>
   (fixtures.artifacts.find((a) => a.title === title) as { id: string }).id;

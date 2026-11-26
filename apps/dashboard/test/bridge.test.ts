@@ -64,7 +64,8 @@ const send = (
   });
   win.dispatchEvent(ev);
 };
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 const call = (method: string, params: unknown, id = "c1") =>
   send({ oa: 1, type: "call", id, method, params });
 const mk = (art = ART) => {
@@ -87,6 +88,7 @@ const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status });
 
 beforeEach(() => {
+  vi.useFakeTimers();
   FakeWS.all = [];
   frame = new FakeFrame(contentWindow);
   iframe = asFrame(frame);

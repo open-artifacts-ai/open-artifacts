@@ -10,6 +10,7 @@ import {
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fullPath } from "../src/viewer/paths";
+import { installClock } from "./clock";
 import {
   calls,
   events,
@@ -60,6 +61,7 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+installClock();
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -86,11 +88,10 @@ const viewport = (width: number, coarse = false) => {
       }) as unknown as MediaQueryList,
   );
 };
-const hello = () =>
-  act(async () => {
-    await waitFor(() => expect(opts.length).toBeGreaterThan(0));
-    opts.at(-1)?.onHello();
-  });
+const hello = async () => {
+  await waitFor(() => expect(opts.length).toBeGreaterThan(0));
+  await act(async () => opts.at(-1)?.onHello());
+};
 /** The column starts closed (#1731): open it with the Comments button. */
 const col = async () => {
   const b = await screen.findByRole("button", { name: /^Comments/ });

@@ -378,7 +378,7 @@ describe("For you", () => {
 
 describe("staying fresh", () => {
   it("refreshes the counts every minute while visible and on focus, never while hidden", async () => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.useFakeTimers();
     try {
       const gets = calls("GET");
       forYou("mixed");
