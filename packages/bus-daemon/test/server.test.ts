@@ -6,7 +6,7 @@ import { decodeClientFrame } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import type { DeliverOutcome } from "../src/deliver.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import { daemonHarness, deliverFrame, ipcBarrier, stopAll } from "./helpers.ts";
 
 const realTmp = () => realpathSync(mkdtempSync(join(tmpdir(), "ob-srv-")));
 
@@ -443,10 +443,10 @@ describe("runDaemon local server", () => {
       await a.request({ type: "self" });
       a.close();
     }
-    // Absence: a close would be announced by now. A fresh connection is
-    // accepted and answered after the earlier ones closed, then the hub link drains.
-    const last = await h.adapter("A");
-    await last.request({ type: "self" });
+    // Absence: a close would be announced by now. A has no connection here: a
+    // fresh helper connection (not A) is answered after the earlier closes were
+    // handled, then the hub link drains.
+    await ipcBarrier(h.socketPath);
     await h.quiet();
     expect(h.daemon.agents.byRef("A")?.live).toBe(true);
     expect(h.of("agent_up")).toHaveLength(1);
