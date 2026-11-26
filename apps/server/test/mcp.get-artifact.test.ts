@@ -135,21 +135,6 @@ describe("get_artifact view, find, and sinceVersion (#3165)", () => {
     const findRes = sc<{ content?: string; matches?: number }>(
       await tool(client, "get_artifact", { id: v1.id, find: "quasar" }),
     );
-    const findRaw = await tool(client, "get_artifact", {
-      id: v1.id,
-      find: "quasar",
-    });
-    console.log("SIZE find total", JSON.stringify(findRaw).length);
-    const textRaw = await tool(client, "get_artifact", {
-      id: v1.id,
-      view: "text",
-    });
-    console.log(
-      "SIZE text total",
-      JSON.stringify(textRaw).length,
-      "full html",
-      htmlV1.length,
-    );
     expect(findRes.matches).toBe(2);
     expect(findRes.content).toBeDefined();
     expect((findRes.content as string).length).toBeLessThan(1024);
