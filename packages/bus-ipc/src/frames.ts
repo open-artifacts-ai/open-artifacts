@@ -330,6 +330,13 @@ export const LinkProofRequest = z.object({
     .string()
     .regex(/^[a-z0-9-]{1,32}$/)
     .optional(),
+  /**
+   * agy S5: the Antigravity conversation this proof is for, from the
+   * tools/call `_meta` agy sends. Present, `pid` is an agy process and the
+   * daemon binds the hash only to the live antigravity session of that pid
+   * and conversation. Absent, the request is Claude's, as before.
+   */
+  conversation: AGENT_REF.optional(),
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 

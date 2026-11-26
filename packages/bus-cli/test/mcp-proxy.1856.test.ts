@@ -58,7 +58,9 @@ describe("oa-bus mcp-proxy --for codex (#1856)", () => {
 
   it("refuses an unknown harness, and a variable name for OpenCode or beside a file", () => {
     const base = ["mcp-proxy", "--instance", "https://h"];
-    expect(() => parse([...base, "--for", "vim"])).toThrow(/opencode or codex/);
+    expect(() => parse([...base, "--for", "vim"])).toThrow(
+      /opencode, codex or antigravity/,
+    );
     expect(() => parse([...base, "--token-env", "X"])).toThrow(
       /needs --for codex/,
     );

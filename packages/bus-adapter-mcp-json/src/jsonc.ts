@@ -417,3 +417,48 @@ export function removeAgyMcp(text: string, name: string): string {
 export function removeAgyIfEmpty(text: string, path: JSONPath): string {
   return withoutBom(text, (body) => removeIfEmpty(body, path));
 }
+
+/**
+ * agy S5: the source text of `mcpServers.<name>`'s value, as it is in the
+ * file (a byte-order mark allowed); undefined when there is no such entry.
+ */
+export function agyEntryText(text: string, name: string): string | undefined {
+  return agyEntryAt(text, name)?.raw;
+}
+
+/** agyEntryText, and the leading whitespace of the line the value starts on. */
+export function agyEntryAt(
+  text: string,
+  name: string,
+): { raw: string; indent: string; eol: string } | undefined {
+  const body = text.startsWith(BOM) ? text.slice(BOM.length) : text;
+  const root = parseTree(body);
+  const node = root && findNodeAtLocation(root, ["mcpServers", name]);
+  if (node === undefined) return undefined;
+  return {
+    raw: body.slice(node.offset, node.offset + node.length),
+    indent: lineAt(body, member(node).offset).indent,
+    eol: eol(body),
+  };
+}
+
+/**
+ * agy S5: replaces the value of `mcpServers.<name>` with `raw`, source text
+ * that must parse to `want`. Nothing else in the file moves, so writing the
+ * old text back gives the file as it was, byte for byte.
+ */
+export function setAgyEntryText(
+  text: string,
+  name: string,
+  raw: string,
+  want: unknown,
+): string {
+  return withoutBom(text, (body) => {
+    const root = parseTree(body);
+    const node = root && findNodeAtLocation(root, ["mcpServers", name]);
+    if (node === undefined)
+      throw new Error(`mcp_config.json has no ${name} entry`);
+    const out = splice(body, node.offset, node.offset + node.length, raw);
+    return verified(out, ["mcpServers", name], want);
+  });
+}
