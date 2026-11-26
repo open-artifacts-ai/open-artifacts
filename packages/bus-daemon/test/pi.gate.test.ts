@@ -9,7 +9,8 @@ import { daemonHarness, deliverFrame, hello, stopAll } from "./helpers.ts";
 afterEach(stopAll);
 
 /** Pi's ack timer and the tests' own: moved by hand, never waited out. */
-const FAKE_TIMERS = { toFake: ["setTimeout", "clearTimeout"] } as const;
+const fakeTimers = () =>
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 const ID = "mmmmmmmmmmmmmmm1";
 type Deliver = Extract<DaemonFrame, { type: "deliver" }>;
 
@@ -88,7 +89,7 @@ describe("pi gate: delivery on the extension's connection", () => {
     a.onDeliver(() => {
       b.ack(ID);
     });
-    vi.useFakeTimers(FAKE_TIMERS);
+    fakeTimers();
     try {
       h.toDaemon(deliverFrame(ID));
       await b.request({ type: "self" }); // B's ack was read before this reply
@@ -124,7 +125,7 @@ describe("pi gate: late acks", () => {
     const a = await h.adapter("A", { kind: "pi" });
     const got: Deliver[] = [];
     // Pi took it (sendMessage ran) but the ack lands just past the timeout.
-    vi.useFakeTimers(FAKE_TIMERS);
+    fakeTimers();
     try {
       let delivered!: () => void;
       const arrived = new Promise<void>((r) => {
@@ -151,7 +152,7 @@ describe("pi gate: late acks", () => {
     const h = await daemonHarness({ pi: { ackTimeoutMs: 80 } });
     const a = await h.adapter("A", { kind: "pi" });
     const b = await h.adapter("B", { kind: "pi" });
-    vi.useFakeTimers(FAKE_TIMERS);
+    fakeTimers();
     try {
       let delivered!: () => void;
       const got = new Promise<void>((r) => {

@@ -41,7 +41,8 @@ async function probeHttp(base: string) {
     }).on("error", reject);
   });
 }
-const FAKE = { toFake: ["setTimeout", "clearTimeout", "Date"] } as const;
+const fakeTimers = () =>
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 
 const types = (seen: unknown[]) =>
   seen.map((f) => (f as { type: string }).type);
@@ -108,7 +109,7 @@ describe("hub connection", () => {
       revoked = r;
     });
     const url = await listen(wss);
-    vi.useFakeTimers(FAKE);
+    fakeTimers();
     try {
       const hub = new HubConnection(opts(url, { onRevoked: revoked }));
       hub.start();
@@ -137,7 +138,7 @@ describe("hub connection", () => {
       closed = r;
     });
     const url = await listen(wss);
-    vi.useFakeTimers(FAKE);
+    fakeTimers();
     try {
       const hub = new HubConnection(
         opts(url, { backoffMs: () => 60, onClose: closed }),
@@ -305,7 +306,7 @@ describe("pacing and rate limits", () => {
     const url = await listen(wss);
     // The pacer refills on the clock: fake it, so "the queue never replays"
     // is checked past every refill it could have, with no real wait.
-    vi.useFakeTimers(FAKE);
+    fakeTimers();
     try {
       const hub = new HubConnection(
         opts(url, {
