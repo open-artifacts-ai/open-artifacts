@@ -1834,13 +1834,6 @@ export function PinBeside({ frame }: { frame: HTMLElement | null }) {
   );
 }
 
-/**
- * #2426 B (draft): how long the ask card the page placed in a slot takes no
- * pick after it appears or moves. Part A's card beside a mark is gone (#3048);
- * the slot card keeps the delay.
- */
-export const ASK_BESIDE_HOLD_MS = 700;
-
 function NewThread({
   api,
   flat = false,

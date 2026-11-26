@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.246.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.0...v0.246.1) (2026-11-25)
+
+
+### Miscellaneous Chores
+
+* **release:** cut 0.246.1 so the t19 fix reaches the gate ([#3102](https://github.com/open-artifacts-ai/open-artifacts/issues/3102)) ([e472f91](https://github.com/open-artifacts-ai/open-artifacts/commit/e472f91709f2e0da315a28c54afca123136a93eb))
+
+## [0.246.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.1...v0.246.0) (2026-11-25)
+
+
+### Features
+
+* **auth:** an invited member outside the domains signs in by email code on a Google install ([#3082](https://github.com/open-artifacts-ai/open-artifacts/issues/3082)) ([14a9232](https://github.com/open-artifacts-ai/open-artifacts/commit/14a9232509f5c0fa2147bcb8b481df7426eb04fc))
+
+## [0.245.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.245.0...v0.245.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **tests:** pin the clock, wait on the comment's own path ([#3085](https://github.com/open-artifacts-ai/open-artifacts/issues/3085), [#3081](https://github.com/open-artifacts-ai/open-artifacts/issues/3081)) ([#3089](https://github.com/open-artifacts-ai/open-artifacts/issues/3089)) ([da707c1](https://github.com/open-artifacts-ai/open-artifacts/commit/da707c1f9fa2e6ef681b313f6a0e8edda40b3459))
+
+## [0.245.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.1...v0.245.0) (2026-11-25)
+
+
+### Features
+
+* **contract:** R29 also takes AUTH_PROVIDERS, email codes on or off ([#3083](https://github.com/open-artifacts-ai/open-artifacts/issues/3083)) ([bcf3822](https://github.com/open-artifacts-ai/open-artifacts/commit/bcf382261d98fa407d9cf34cfeb2b792f2ef183d))
+* **skill:** record by-hand steps with a "Done?" ask; check before asking ([#3079](https://github.com/open-artifacts-ai/open-artifacts/issues/3079)) ([#3080](https://github.com/open-artifacts-ai/open-artifacts/issues/3080)) ([efc884b](https://github.com/open-artifacts-ai/open-artifacts/commit/efc884bd979cdbaf86d9b81d02dff58058d54b5d))
+
+## [0.244.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.244.0...v0.244.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **bus:** a live session on no instance moves once its folder is tied ([#3073](https://github.com/open-artifacts-ai/open-artifacts/issues/3073)) ([#3077](https://github.com/open-artifacts-ai/open-artifacts/issues/3077)) ([a2cbb7a](https://github.com/open-artifacts-ai/open-artifacts/commit/a2cbb7a1bd33631274856a7bf170cf63241eedf4))
+* **bus:** an added instance's entry links again once its old bus has stopped ([#3075](https://github.com/open-artifacts-ai/open-artifacts/issues/3075)) ([#3076](https://github.com/open-artifacts-ai/open-artifacts/issues/3076)) ([13723b6](https://github.com/open-artifacts-ai/open-artifacts/commit/13723b61ec7ed57afe3daf98427b95481599aaf4))
+
+## [0.244.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.243.0...v0.244.0) (2026-11-25)
+
+
+### Features
+
+* **asks:** the in-page ask card opens its thread ([#2426](https://github.com/open-artifacts-ai/open-artifacts/issues/2426) B, [#3048](https://github.com/open-artifacts-ai/open-artifacts/issues/3048)) ([#3064](https://github.com/open-artifacts-ai/open-artifacts/issues/3064)) ([e8d7080](https://github.com/open-artifacts-ai/open-artifacts/commit/e8d7080c13c5e1e03c46d8714a2d9af2ad501d27))
+
+
+### Bug Fixes
+
+* **asks:** an agent can address its own person as "me" ([#3066](https://github.com/open-artifacts-ai/open-artifacts/issues/3066)) ([#3069](https://github.com/open-artifacts-ai/open-artifacts/issues/3069)) ([824e41b](https://github.com/open-artifacts-ai/open-artifacts/commit/824e41b0ebd5bed4155e260f04234ce9ca077151))
+* **dashboard:** ask about agent reach only after the bus is connected ([#3065](https://github.com/open-artifacts-ai/open-artifacts/issues/3065)) ([#3068](https://github.com/open-artifacts-ai/open-artifacts/issues/3068)) ([7c8b98c](https://github.com/open-artifacts-ai/open-artifacts/commit/7c8b98c7515175d1ae1aca54e33d472d39394d74))
+
+## [0.243.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.2...v0.243.0) (2026-11-25)
+
+
+### Features
+
+* **bus:** the habits every session is told, in one short text ([#3043](https://github.com/open-artifacts-ai/open-artifacts/issues/3043), slice 1) ([#3046](https://github.com/open-artifacts-ai/open-artifacts/issues/3046)) ([51c82a7](https://github.com/open-artifacts-ai/open-artifacts/commit/51c82a72b02368e74fd9f5e0b2b1cfba304764e8))
+
+
+### Bug Fixes
+
+* **viewer:** the events socket's hello refetches comments ([#3062](https://github.com/open-artifacts-ai/open-artifacts/issues/3062)) ([93234ce](https://github.com/open-artifacts-ai/open-artifacts/commit/93234ce4090cc1b9fc06fdf86c72c73dc2cb43f0))
+
 ## [0.242.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.242.1...v0.242.2) (2026-11-24)
 
 

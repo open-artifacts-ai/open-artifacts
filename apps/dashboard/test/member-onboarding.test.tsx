@@ -6,6 +6,7 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { firstName, fiveOf, mySteps } from "../src/api/myOnboarding";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mountHosted, page } from "./harness";
 
 installHarness();
@@ -54,6 +55,9 @@ const refusedPut = () =>
   );
 const card = () => document.querySelector("section[data-member]");
 const empty = () => http.get("*/api/v1/artifacts", () => page([], null));
+
+// A clock, not the wall (test/clock.ts).
+installClock();
 
 describe("myOnboarding (the #2639 contract)", () => {
   it("reads the caller's own steps from R.onboarding", () => {
@@ -182,7 +186,7 @@ describe("a member's Library card", () => {
     );
     expect(document.querySelector("[data-member-slot]")).toBeNull();
     answer();
-    await new Promise((r) => setTimeout(r, 100));
+    await settle(100);
     expect(card()).toBeNull();
   };
 
@@ -378,7 +382,7 @@ describe("a member's Library card", () => {
       empty(),
     ]);
     await waitFor(() => expect(card()).toBeNull());
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(puts.some((c) => JSON.stringify(c.body).includes("completed"))).toBe(
       false,
     );
@@ -423,7 +427,7 @@ describe("a member's Library card", () => {
     await waitFor(() => expect(card()).not.toBeNull());
     (await screen.findByRole("button", { name: "Hide" })).click();
     await waitFor(() => expect(card()).toBeNull());
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
     expect(puts.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(1);
     expect(document.body.textContent).not.toContain("Couldn't save that.");
@@ -431,7 +435,7 @@ describe("a member's Library card", () => {
     cleanup();
     mountHosted("/", true, as("member"), [onboarding(), empty()]);
     await screen.findByRole("heading", { name: "Library" });
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
   });
 
@@ -452,7 +456,7 @@ describe("a member's Library card", () => {
         puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
       ).toEqual([{ completed: true }]),
     );
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
     expect(document.body.textContent).not.toContain("Couldn't save that.");
   });
@@ -463,7 +467,7 @@ describe("a member's Library card", () => {
       empty(),
     ]);
     await screen.findByRole("heading", { name: "Library" });
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
   });
 

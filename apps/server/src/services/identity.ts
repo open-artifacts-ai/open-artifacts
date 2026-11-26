@@ -9,7 +9,7 @@ import {
   managesAdmins,
 } from "../auth/authz.js";
 import type { AuthConfig } from "../auth/config.js";
-import { isGuestRole, orgCan } from "../auth/policy.js";
+import { isGuestRole, isMemberRole, orgCan } from "../auth/policy.js";
 import type { VerifiedIdentity } from "../auth/providers/types.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -302,7 +302,8 @@ const admitted = (user: Member | null): AdmitResult =>
  * suspended. linked: the row has a Google link. invite_expired: a never-signed-in
  * invite past its window. domain_codes_off / domain_no_join: the address is in
  * the login domains, where codes are off or a new address can't join. not_guest:
- * a member or admin row outside the domains (they never sign in by code).
+ * an owner or admin row outside the domains, or a member row there on an
+ * install without Google (they never sign in by code).
  * no_share: no row and no live share. outsider_off: the owner's outside-sharing
  * switch is off.
  */
@@ -337,8 +338,10 @@ const SHARED = `select 1 as x from shares s join artifacts a on a.id = s.artifac
  * - in a verified domain: only while domain codes are on (trial, Google
  *   off): an existing row keeps its role, a new address joins as member if
  *   join = member;
- * - outside the domains: only invited guests (a guest row, or a share and no
- *   row); owner, admin and member rows there never sign in by code.
+ * - outside the domains: invited guests (a guest row, or a share and no
+ *   row), and on a Google install an invited member row at that exact
+ *   address (people with no Gmail or Workspace); owner and admin rows there
+ *   never sign in by code.
  */
 export async function codeEligibility(
   env: Env,
@@ -435,10 +438,15 @@ export async function codeRule(
       ? { kind: "member", userId: null, role: "member" }
       : { kind: "none", why: "domain_no_join" };
   }
-  if (row)
-    return isGuestRole(row.role)
-      ? { kind: "guest", userId: row.id }
-      : { kind: "none", why: "not_guest" };
+  if (row) {
+    if (isGuestRole(row.role)) return { kind: "guest", userId: row.id };
+    // An invited member with no Gmail or Workspace at the exact invited
+    // address (the row's email): a code proves that mailbox, on a Google
+    // install too. Owner and admin rows here still never sign in by code.
+    if (isMemberRole(row.role) && cfg.providers.has("google"))
+      return { kind: "member", userId: row.id, role: "member" };
+    return { kind: "none", why: "not_guest" };
+  }
   return (await shared())
     ? { kind: "guest", userId: null }
     : { kind: "none", why: "no_share" };

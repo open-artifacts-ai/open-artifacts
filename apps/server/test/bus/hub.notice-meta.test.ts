@@ -17,6 +17,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -38,7 +39,7 @@ async function setup(online: boolean, caps: string[]) {
   if (!online) {
     d.close();
     await d.closed;
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(
         await runInDurableObject(
           hub,

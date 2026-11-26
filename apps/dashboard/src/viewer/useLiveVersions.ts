@@ -1,6 +1,7 @@
 import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ASK_SLOTS_KEY } from "../api/askSlots";
 import { ApiClientError, api } from "../api/client";
 import { commentsKey } from "../api/comments";
 import { qk } from "../api/queries";
@@ -111,6 +112,14 @@ function useAnnouncer() {
   );
   return { text, announce };
 }
+
+/**
+ * Events that refetch the comments list: a `comments` frame, and every
+ * `hello`. A comment made after the list was fetched but before the socket
+ * joined sends its frame to no one; the hello catches it up (cloud #291).
+ */
+export const refetchesComments = (e: { type: string }): boolean =>
+  e.type === "comments" || e.type === "hello";
 
 /**
  * Live version updates for one viewer: one R.events socket, coalesced into
@@ -314,10 +323,14 @@ export function useLiveVersions(o: {
       id,
       embed,
       onEvent: (e) => {
-        if (e.type === "comments") {
-          // Someone commented, replied or resolved: refetch the list.
+        if (refetchesComments(e)) {
+          // A comment changed, or the socket (re)connected and may have
+          // missed some (cloud #291): refetch the list.
           void qc.invalidateQueries({ queryKey: commentsKey(id) });
-        } else if (e.type === "hello") {
+          // #2426 B: an ask shown in this page's slots may have been decided.
+          void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
+        }
+        if (e.type === "hello") {
           down.current = false;
           enqueue({ version: e.version });
         } else if (e.type === "version") {

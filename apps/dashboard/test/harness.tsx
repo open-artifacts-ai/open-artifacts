@@ -210,6 +210,20 @@ export const findVisibleToast = (text: Matcher, options?: waitForOptions) =>
     expect(el).toBeVisible();
     return el;
   }, options);
-export const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Let `ms` of the file's clock pass. A file on a fake clock (`installClock()` in
+ * test/clock.ts) has `ms` advanced inside `act`, so the sleeps that only gave
+ * React and MSW a turn cost no wall time; a file on real timers waits for real.
+ */
+export const wait = async (ms: number) => {
+  if (vi.isFakeTimers()) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+    return;
+  }
+  // sleep-ok: the real-timer path of this helper, for files not on the clock
+  await new Promise((r) => setTimeout(r, ms));
+};
 export const page = (items: unknown[], nextCursor: string | null) =>
   HttpResponse.json({ items, nextCursor });

@@ -496,7 +496,7 @@ export const actor = (
 ) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
 
 /** Who an ask is for: " you", else the addressees as the API names them (masked ones stay masked). */
-const askedWho = (to: { name: string }[], mine: boolean) => {
+export const askedWho = (to: { name: string }[], mine: boolean) => {
   if (mine) return " you";
   const [a, b] = to;
   if (!a) return "";
@@ -676,14 +676,7 @@ export function AskBlock({
   from = true,
   boxed = true,
   openCard,
-  holdPicks = false,
 }: {
-  /**
-   * #2426 review, #2736: the card beside a mark takes no pick and no other
-   * one-click change yet (take back, change); they show disabled. Only that
-   * card sets it; the pane never does.
-   */
-  holdPicks?: boolean;
   /** The "X asks you" line; off where the card's header already says it (#2486). */
   from?: boolean;
   /** The ask's own ring; off where the thread's card is the box (#2486). */
@@ -867,7 +860,6 @@ export function AskBlock({
     !answer.isPending &&
     !changing;
   const sendOwn = () => {
-    if (holdPicks) return;
     const words = ownText.trim();
     if (!words) return;
     setErr(null);
@@ -984,9 +976,8 @@ export function AskBlock({
                 size="xs"
                 variant="link"
                 className="h-auto p-0 font-normal text-primary underline"
-                disabled={takeBack.isPending || holdPicks}
+                disabled={takeBack.isPending}
                 onClick={() => {
-                  if (holdPicks) return;
                   setErr(null);
                   takeBack.mutate(
                     { thread: thread.id, comment: c.id },
@@ -1061,7 +1052,6 @@ export function AskBlock({
                       }`}
                       disabled={
                         !canAnswer ||
-                        holdPicks ||
                         answer.isPending ||
                         // Own words can be sent again once Change reopens the options.
                         (isOwn ? locked : sel || (locked && !sel))
@@ -1071,7 +1061,6 @@ export function AskBlock({
                       data-option={o.id}
                       data-own-words={isOwn ? "" : undefined}
                       onClick={() => {
-                        if (holdPicks) return;
                         // "Something else" opens its box; Send records it.
                         if (isOwn) {
                           if (!ownOpen && ownText === "" && sel && answerWords)
@@ -1205,7 +1194,6 @@ export function AskBlock({
                     size="xs"
                     variant="link"
                     className="h-auto p-0"
-                    disabled={holdPicks}
                     onClick={() => setChanging(true)}
                   >
                     Change
@@ -1235,7 +1223,6 @@ export function AskBlock({
                         size="xs"
                         variant="link"
                         className="h-auto p-0"
-                        disabled={holdPicks}
                         onClick={() => setChanging(true)}
                       >
                         Change

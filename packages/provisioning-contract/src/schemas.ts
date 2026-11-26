@@ -27,7 +27,11 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
-import { DOCS_PREVIEW_VALUES, OAUTH_STORE_MODES } from "./oauth-store.js";
+import {
+  AUTH_PROVIDERS_VALUES,
+  DOCS_PREVIEW_VALUES,
+  OAUTH_STORE_MODES,
+} from "./oauth-store.js";
 import { SLUG_RE, slugRule } from "./slugs.js";
 
 // Design v7 3.3. Times are epoch ms.
@@ -266,9 +270,10 @@ export const redlineCredsJobArgs = (b: RedlineCreds): RedlineCredsJobArgs =>
     : { revoke: false, recipientKey: b.recipientKey };
 
 /**
- * R29 (#1008): OAUTH_STORE, and DOCS_PREVIEW (open-artifacts#2641: "1" on,
- * "" removes it; staging only, the API refuses it on prod). At least one key;
- * every OAUTH_STORE flip is one person's yes.
+ * R29 (#1008): OAUTH_STORE, DOCS_PREVIEW (open-artifacts#2641: "1" on,
+ * "" removes it; staging only, the API refuses it on prod), and
+ * AUTH_PROVIDERS (cloud #435: "google" or "google,email", email codes off or
+ * on). At least one key; every flip is one person's yes.
  */
 export const SetOAuthStoreSchema = z
   .object({
@@ -277,11 +282,15 @@ export const SetOAuthStoreSchema = z
       .object({
         OAUTH_STORE: z.enum(OAUTH_STORE_MODES).optional(),
         DOCS_PREVIEW: z.enum(DOCS_PREVIEW_VALUES).optional(),
+        AUTH_PROVIDERS: z.enum(AUTH_PROVIDERS_VALUES).optional(),
       })
       .strict()
       .refine(
-        (v) => v.OAUTH_STORE !== undefined || v.DOCS_PREVIEW !== undefined,
-        "send OAUTH_STORE, DOCS_PREVIEW or both",
+        (v) =>
+          v.OAUTH_STORE !== undefined ||
+          v.DOCS_PREVIEW !== undefined ||
+          v.AUTH_PROVIDERS !== undefined,
+        "send OAUTH_STORE, DOCS_PREVIEW or AUTH_PROVIDERS",
       ),
   })
   .strict();

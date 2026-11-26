@@ -25,6 +25,7 @@ import {
   fitName,
   type Hello,
   type HelloResult,
+  habitsOff,
   isWellFormed,
   lateDeliveredText,
   receiptText,
@@ -35,6 +36,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
+  BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -307,6 +309,11 @@ export type DaemonDeps = {
    * still leaves the hub.
    */
   announcedFile?: string;
+  /**
+   * #3043: whether this install opted out of the habits the bus pushes at
+   * session start; default: install.json's `habits.optedOut`. Tests only.
+   */
+  habitsOff?: () => boolean;
   version?: string;
   log?: (msg: string) => void;
   /**
@@ -578,6 +585,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (instHome === undefined
       ? () => ({ instance: MAIN_INSTANCE })
       : folderHomeLookup(instHome));
+  /** The connected instance a folder maps to, or undefined. Quiet: no note. */
+  const connectedHome = (cwd: string): string | undefined => {
+    const r = lookup(cwd);
+    const name = "instance" in r ? r.instance : undefined;
+    return name !== undefined && lanes.get(name) ? name : undefined;
+  };
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -2090,7 +2103,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           sendLink(prev);
         }
       }
-      if (prev?.live) {
+      // #3073: a live session on no instance (its folder was untied, say when
+      // an update restart applied the folder map) moves once its folder is
+      // tied to a connected instance: `oa-bus use` while it runs is enough,
+      // with no restart or /mcp reconnect. It re-registers below like a
+      // reopen, and a proof held for it binds on the new link.
+      const rehome =
+        prev?.live === true &&
+        prev.instance === undefined &&
+        prev.pid === s.pid &&
+        prev.procStart === s.procStart &&
+        isAbsolute(s.cwd) &&
+        connectedHome(s.cwd) !== undefined;
+      if (prev?.live && !rehome) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
         if (!livePid(s.ref, prev.pid)) {
@@ -2110,7 +2135,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // the /resume case, handled the same way. The same process reopens at
       // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
       // deliveries does not flap.
-      if (prev && prev.pid === s.pid && prev.procStart === s.procStart) {
+      if (
+        !rehome &&
+        prev &&
+        prev.pid === s.pid &&
+        prev.procStart === s.procStart
+      ) {
         // A delivery refusal stays closed until a hello or a new process.
         if (prev.closedBy !== "liveness") continue;
         const last = reopenedAt.get(s.ref);
@@ -3360,6 +3390,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               ? "ok"
               : "old_hub";
         },
+        // #3043: the rules a session is told at start, or none when opted out.
+        habits: () =>
+          (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
         linked: (ref, hash) => {
           // The adapter then adds the argument to its calls: only for a hub
           // whose /mcp strips it (an older one fails a strict tool schema).

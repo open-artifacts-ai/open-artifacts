@@ -1,3 +1,4 @@
+import { eventually } from "./helpers.ts";
 // #1295 PR B: the mailbox wire. A hello that lists BUS_CAPS.mailbox gets
 // queued/since on a send receipt, `mailbox_full`, `reserved_name`, and away
 // rows in the roster; every other socket keeps exactly today's shapes (its
@@ -10,7 +11,7 @@ import {
   MAILBOX_BYTES_CAP,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -121,15 +122,13 @@ async function receiptFor(d: Daemon, fid: string): Promise<Receipt> {
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  for (let k = 0; k < 400; k++) {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
     );
-    if (r[0]?.live === 0) return;
-    await new Promise((res) => setTimeout(res, 5));
-  }
-  throw new Error("close never applied");
+    expect(r[0]?.live).toBe(0);
+  });
 };
 
 const MB = [BUS_CAPS.mailbox];
@@ -211,18 +210,17 @@ describe("mailbox wire (#1295 PR B)", () => {
   it("a send to a live agent on an offline machine: queued offline since disconnected_at", async () => {
     const { rcv, snd, ref, name } = await trio(MB);
     rcv.close();
-    let since: number | null = null;
-    for (let k = 0; k < 400 && since === null; k++) {
-      since =
+    const since = await eventually(async () => {
+      const at =
         (
           await sqlOf<{ t: number | null }>(
             "select m.disconnected_at as t from machines m join agents a on a.machine_id = m.id where a.native_ref = ?",
             ref,
           )
         )[0]?.t ?? null;
-      if (since === null) await new Promise((res) => setTimeout(res, 5));
-    }
-    expect(since).not.toBeNull();
+      expect(at).not.toBeNull();
+      return at as number;
+    });
     const r = await send(snd, "snd", name);
     expect(r).toMatchObject({
       state: "pending",
@@ -579,14 +577,13 @@ describe("mailbox wire (#1295 PR B)", () => {
     const d1 = await waitFor(rcv, "deliver");
     expect(d1.msg_id).toBe(first.msg_id);
     rcv.send({ v: 1, id: id("ak"), type: "ack", msg_id: first.msg_id });
-    for (let k = 0; k < 400; k++) {
+    await eventually(async () => {
       const st = await sqlOf<{ state: string }>(
         "select state from receipts where id = ?",
         first.msg_id,
       );
-      if (st[0]?.state === "delivered") break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(st[0]?.state).toBe("delivered");
+    });
     const second = await send(snd, "snd", name, "still pending");
     await waitFor(rcv, "deliver");
     const fresh = uniq("fresh");

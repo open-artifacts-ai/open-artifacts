@@ -30,6 +30,7 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ownWordsRefusal } from "../viewer/comments/ownWords";
+import { ASK_SLOTS_KEY } from "./askSlots";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -236,7 +237,11 @@ const useRefetching = <V, T>(
         }
       : undefined,
     // Settled, not success: a 404 or 403 means the list is stale too.
-    onSettled: () => qc.invalidateQueries({ queryKey: commentsKey(id) }),
+    onSettled: () => {
+      // #2426 B: an answer may be to an ask shown in other pages' slots.
+      void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
+      return qc.invalidateQueries({ queryKey: commentsKey(id) });
+    },
   });
 };
 
