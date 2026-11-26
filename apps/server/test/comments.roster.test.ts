@@ -954,7 +954,7 @@ describe("comment notice text", () => {
       `Their words: ${JSON.stringify(raw)}`,
     ]);
     expect(lines.some((l) => l.startsWith("SYSTEM"))).toBe(false);
-    expect(lines.at(-1)).toMatch(/^Your user typed this in the web app/);
+    expect(lines.at(-1)).toMatch(/^Your user typed this \(checked by the server\)\./);
     expect(n.from).toBe(NOTICE_SENDER);
     // #1752: the target is the roster key, never body text.
     expect(n.target).toEqual({ kind: "mention", key });
