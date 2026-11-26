@@ -259,6 +259,8 @@ export type StoredList = {
   threads: StoredThread[];
   open: number;
   truncated: boolean;
+  /** #3168: the newest change instant and its count, for the list_comments cursor. */
+  latest: LatestActivity;
 };
 
 type ThreadRow = {
@@ -309,6 +311,37 @@ export const openCount = (sql: SqlStorage): number =>
     .one().n;
 
 /**
+ * #3168: the newest change instant on this artifact (thread activity: a new
+ * comment, an answer, a withdraw, a resolve; or a comment edit) and how many
+ * changes carry exactly that instant. The count lets a cursor tell a later
+ * change in the same millisecond from the ones it already saw.
+ */
+export type LatestActivity = { at: string | null; n: number };
+
+/** #3168: how many thread activities and comment edits carry exactly `at`. */
+const changesAt = (sql: SqlStorage, at: string): number =>
+  sql
+    .exec<{ n: number }>(
+      `select (select count(*) from comment_threads where activity_at = ?1)
+            + (select count(*) from comments where edited_at = ?1) as n`,
+      at,
+    )
+    .one().n;
+
+export function latestActivity(sql: SqlStorage): LatestActivity {
+  const at = sql
+    .exec<{ latest: string | null }>(
+      `select max(t) as latest from (
+         select max(activity_at) as t from comment_threads
+         union all
+         select max(edited_at) as t from comments where edited_at is not null
+       )`,
+    )
+    .one().latest;
+  return { at, n: at === null ? 0 : changesAt(sql, at) };
+}
+
+/**
  * Threads by newest activity, at most COMMENTS_MAX_THREADS and at most
  * COMMENTS_MAX_TOTAL comments and COMMENTS_MAX_BYTES of bodies across them (the list stops at the first thread
  * that would pass it, truncated), each with its root and at most
@@ -320,9 +353,26 @@ export function listThreads(
   status: CommentStatus | "all",
   /** Bounds the answer by body bytes; injectable for tests. */
   maxBytes: number = COMMENTS_MAX_BYTES,
+  /** #3168: when set, only threads with a change after this cursor point. */
+  since?: LatestActivity,
 ): StoredList {
-  const where = status === "all" ? "" : "where status = ?";
-  const args = status === "all" ? [] : [status];
+  const conds: string[] = [];
+  const args: unknown[] = [];
+  if (status !== "all") {
+    conds.push("status = ?");
+    args.push(status);
+  }
+  if (since?.at) {
+    // Strictly after the cursor's instant, unless a change has landed at that
+    // very instant since the cursor was made (its count grew): then that
+    // instant is included, so a same-millisecond write is never missed.
+    const op = changesAt(sql, since.at) > since.n ? ">=" : ">";
+    conds.push(
+      `(activity_at ${op} ? or exists (select 1 from comments c where c.thread_id = comment_threads.id and c.edited_at ${op} ?))`,
+    );
+    args.push(since.at, since.at);
+  }
+  const where = conds.length > 0 ? `where ${conds.join(" and ")}` : "";
   const rows = sql
     .exec<ThreadRow>(
       `select ${THREAD_COLS} from comment_threads ${where}
@@ -397,6 +447,7 @@ export function listThreads(
     threads: kept.map((r) => toThread(r, byThread.get(r.id) ?? [])),
     open: openCount(sql),
     truncated,
+    latest: latestActivity(sql),
   };
 }
 

@@ -18,11 +18,13 @@ import {
   ROUTE_POLICY,
   TOOL_POLICY,
 } from "../src/auth/route-policy.js";
+import { featuresOf } from "../src/billing/features.js";
 import { contentApp } from "../src/content/app.js";
 import { DIRECTORY_DISCONNECT_CRON, scheduled } from "../src/cron.js";
 import { type AppEnv, readOnlyCap } from "../src/http/middleware.js";
 import worker from "../src/index.js";
 import manifest from "../src/mcp/tool-manifest.json";
+import { busOn } from "../src/services/bus.js";
 import {
   DOC_GATED_TOOLS,
   DOC_SWITCH,
@@ -49,6 +51,7 @@ import {
   cookieOf,
   E,
   googleCookie,
+  HOSTED_RUN,
   io,
   mismatchHealth,
   staleHealth,
@@ -416,6 +419,29 @@ describe("foreign credentials: another install's, valid there (#1137)", () => {
 const KNOWN: Partial<Record<CallerName, { via: string; traits: Traits }>> = {};
 
 /**
+ * The bus is off on this world (busOn false): the hosted run, as on
+ * staging's red-line installs (HOSTED 1, no bus feature for an rl- slug).
+ * Then its MCP tool isn't offered (mcp/tools/bus.ts registerBusTools) and
+ * these routes answer 404 to everyone (bus/routes.ts), as the live per-route
+ * file's bus-off cases on staging (cloud tests/redline/src/surfaces.ts
+ * BUS_TOOLS, BUS_OFF_ROUTES and the roleWriter writes). Self-hosted (the
+ * default run) the bus is on.
+ */
+const BUS_OFF = !busOn(E);
+const BUS_TOOL_SURFACES = new Set(["mcp bus_role_propose"]);
+const BUS_OFF_ROUTES = new Set([
+  "GET /api/v1/bus/ping",
+  "PUT /api/v1/bus/roles",
+  "DELETE /api/v1/bus/roles/:id",
+  "PUT /api/v1/bus/links",
+  "DELETE /api/v1/bus/links/:id",
+  "PUT /api/v1/bus/reach",
+  "DELETE /api/v1/bus/reach/:id",
+]);
+/** A surface this world doesn't offer: a bus tool while the bus is off. */
+const notOffered = (s: Surface) => BUS_OFF && BUS_TOOL_SURFACES.has(s.name);
+
+/**
  * One caller's row on one surface: every artifact, probed. A surface with a
  * real mode (#839) writes for real on a per-cell copy and counts only its
  * documented success as allowed.
@@ -460,48 +486,51 @@ const want = (who: CallerName, s: Surface) => (art: ArtifactName) => {
 };
 
 describe("artifact surfaces (sync stale 8 days)", () => {
-  describe.each(SURFACES.map((s) => ({ ...s })))("$name", (s) => {
-    it.concurrent.each(CALLERS.map((c) => [c]))(
-      "%s",
-      async (who) => {
-        const { got, exp } = await row(s, w.creds[who], want(who, s));
-        expect(got).toEqual(exp);
-      },
-      SLOW,
-    );
-    it.concurrent(
-      "staleSynced's PAT (its grant runs above)",
-      async () => {
-        const cred = { ...w.creds.staleSynced, token: w.staleSyncedPat };
-        const { got, exp } = await row(s, cred, want("staleSynced", s));
-        expect(got).toEqual(exp);
-      },
-      SLOW,
-    );
-    // The 24 h browser-session cap while sync is unhealthy (T18): a synced
-    // user's 25 h old cookie resolves to no one; a 23 h one still works.
-    it.concurrent.each([
-      [25, "anonymous"],
-      [23, "staleSynced"],
-    ] as const)(
-      "staleSynced's %i h old cookie",
-      async (hours, as) => {
-        const cred = {
-          cookie: await cookieOf(
-            w.users.staleSynced as string,
-            hours * 3_600_000,
-          ),
-        };
-        const { got, exp } = await row(s, cred, (art) =>
-          s.via === "rest"
-            ? expected(as, art, s.action, s.via)
-            : expected("anonymous", art, s.action, s.via),
-        );
-        expect(got).toEqual(exp);
-      },
-      SLOW,
-    );
-  });
+  describe.each(SURFACES.filter((s) => !notOffered(s)).map((s) => ({ ...s })))(
+    "$name",
+    (s) => {
+      it.concurrent.each(CALLERS.map((c) => [c]))(
+        "%s",
+        async (who) => {
+          const { got, exp } = await row(s, w.creds[who], want(who, s));
+          expect(got).toEqual(exp);
+        },
+        SLOW,
+      );
+      it.concurrent(
+        "staleSynced's PAT (its grant runs above)",
+        async () => {
+          const cred = { ...w.creds.staleSynced, token: w.staleSyncedPat };
+          const { got, exp } = await row(s, cred, want("staleSynced", s));
+          expect(got).toEqual(exp);
+        },
+        SLOW,
+      );
+      // The 24 h browser-session cap while sync is unhealthy (T18): a synced
+      // user's 25 h old cookie resolves to no one; a 23 h one still works.
+      it.concurrent.each([
+        [25, "anonymous"],
+        [23, "staleSynced"],
+      ] as const)(
+        "staleSynced's %i h old cookie",
+        async (hours, as) => {
+          const cred = {
+            cookie: await cookieOf(
+              w.users.staleSynced as string,
+              hours * 3_600_000,
+            ),
+          };
+          const { got, exp } = await row(s, cred, (art) =>
+            s.via === "rest"
+              ? expected(as, art, s.action, s.via)
+              : expected("anonymous", art, s.action, s.via),
+          );
+          expect(got).toEqual(exp);
+        },
+        SLOW,
+      );
+    },
+  );
 });
 
 // #681: the same data-write and anon-id surfaces on copies of every artifact
@@ -528,6 +557,18 @@ describe("artifact surfaces, dataWriters editors (#681)", () => {
   });
 });
 
+/**
+ * A route its policy switches off under one of this world's FEATURES (the
+ * table's offWhen: GET /api/v1/usage under hosted's usage_off) answers 404
+ * to everyone (enforcePolicy, src/auth/route-policy.ts), and so does a bus
+ * route while the bus is off (BUS_OFF_ROUTES).
+ */
+const switchedOff = (route: string) => {
+  if (BUS_OFF && BUS_OFF_ROUTES.has(route)) return true;
+  const p = ROUTE_POLICY[route];
+  return !!p && "org" in p && !!p.offWhen && featuresOf(E).includes(p.offWhen);
+};
+
 describe("instance routes", () => {
   describe.each(ORG_SURFACES.map((s) => ({ ...s })))("$route", (s) => {
     it.concurrent(
@@ -537,12 +578,14 @@ describe("instance routes", () => {
         const exp = {} as Record<CallerName, string>;
         await Promise.all(
           CALLERS.map(async (who) => {
-            // This world is self-hosted (fixture E): a hosted-only route
-            // refuses everyone.
-            exp[who] = orgExpected(who, s.rule, s.route, {
-              hosted: E.HOSTED === "1",
-              ...(s.hostedOnly ? { hostedOnly: true } : {}),
-            });
+            // On a self-hosted world (fixture E) a hosted-only route
+            // refuses everyone; on any world, so does a switched-off one.
+            exp[who] = switchedOff(s.route)
+              ? "deny"
+              : orgExpected(who, s.rule, s.route, {
+                  hosted: E.HOSTED === "1",
+                  ...(s.hostedOnly ? { hostedOnly: true } : {}),
+                });
             // Allowed, it changes the instance: "instance writes" runs it
             // last, on its own.
             if (s.instance && exp[who] === "allow") {
@@ -562,6 +605,48 @@ describe("instance routes", () => {
       },
       SLOW,
     );
+  });
+});
+
+// The bus tool, while the bus is off: never allowed. A caller MCP admits
+// finds no such tool; the rest are refused before the tool list.
+describe.runIf(BUS_OFF)("bus off: its MCP tool is offered to no one", () => {
+  const s = SURFACES.find((x) => x.name === "mcp bus_role_propose") as Surface;
+  it.concurrent.each(CALLERS.map((c) => [c]))(
+    "%s",
+    async (who) => {
+      const { got } = await row(s, w.creds[who], () => "deny");
+      for (const [art, v] of Object.entries(got))
+        expect(v, `${who} on ${art}`).toMatch(
+          /^(deny|error: bus_role_propose: Tool bus_role_propose not found)$/,
+        );
+    },
+    SLOW,
+  );
+});
+
+// The status table above can't see a body: GET R.loginSettings answers 200
+// whether or not the owner may change the login. On the hosted run (staging's
+// props: LOGIN and LOGIN_EDITABLE true) it says editable; self-hosted, no.
+describe("GET /api/v1/settings/login: editable as the install's setup says", () => {
+  it.each([
+    ["session", "cookie"],
+    ["PAT", "token"],
+  ] as const)("the owner and an admin by %s", async (_, kind) => {
+    for (const who of ["orgOwner", "orgAdmin"] as const) {
+      const v = w.creds[who][kind] as string;
+      const r = (await io.fetch?.(
+        new Request(`${BASE}${R.loginSettings}`, {
+          headers:
+            kind === "cookie"
+              ? { cookie: v }
+              : { authorization: `Bearer ${v}` },
+        }),
+      )) as Response;
+      expect(r.status, `${who} by ${kind}`).toBe(200);
+      const body = (await r.json()) as { editable?: unknown };
+      expect(body.editable, `${who} by ${kind}`).toBe(HOSTED_RUN);
+    }
   });
 });
 
@@ -785,12 +870,13 @@ const PING_CELL = "GET /api/v1/bus/ping";
 
 describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
   const names = [
-    ...SURFACES.filter((s) => !s.mutates).map((s) => s.name),
+    ...SURFACES.filter((s) => !s.mutates && !notOffered(s)).map((s) => s.name),
     // realOnly: no refusal mode holds in this world (the instance routes
     // above run them for real).
-    ...ORG_SURFACES.filter((s) => !s.mutates && !s.realOnly).map(
-      (s) => s.route,
-    ),
+    // A switched-off route is the instance routes' deny for everyone.
+    ...ORG_SURFACES.filter(
+      (s) => !s.mutates && !s.realOnly && !switchedOff(s.route),
+    ).map((s) => s.route),
     ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
   ];
   // The ping cell is the one answer that depends on latency: the hub must

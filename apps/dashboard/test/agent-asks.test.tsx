@@ -15,10 +15,19 @@ import { describe, expect, it, vi } from "vitest";
 import { allowedText, endDate, leftoverText } from "../src/foryou/held";
 import { agentAsksOn, forYouVariant } from "../src/mockForYou";
 import { MentionMenu } from "../src/viewer/comments/asks";
-import { calls, events, installHarness, mount, server } from "./harness";
+import { installClock, settle } from "./clock";
+import {
+  calls,
+  events,
+  installHarness,
+  lastClient,
+  mount,
+  server,
+} from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
+installClock();
 
 const asks = (...first: HttpHandler[]) =>
   server.use(
@@ -254,12 +263,19 @@ describe("the held-request notice", () => {
   });
 
   it("an unchanged refetch says nothing", async () => {
+    const gets = calls("GET");
     const panel = await openNotice();
+    const held = () => gets.filter((c) => c.path.endsWith(R.agentAskHeld));
+    const before = held().length;
     act(() => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
-    await new Promise((r) => setTimeout(r, 300));
+    // The refetch is the event: it has started, and only once the query has
+    // taken its answer (nothing left fetching) can it have changed anything.
+    await waitFor(() => expect(held().length).toBeGreaterThan(before));
+    await waitFor(() => expect(lastClient.isFetching()).toBe(0));
+    await settle(300);
     expect(within(panel).queryByText(/The words changed/)).toBeNull();
     expect(panel.querySelector("[data-changed]")).toBeNull();
   });
