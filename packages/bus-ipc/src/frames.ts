@@ -139,6 +139,8 @@ export const Hello = z.object({
     .max(64)
     .refine(isWellFormed, WELL_FORMED)
     .optional(),
+  /** Pi observed a person choose the proposed name. */
+  name_chosen: z.literal(true).optional(),
   /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
   caps: z.array(z.string().max(32)).max(16).optional(),
   /**
@@ -262,6 +264,8 @@ export const Rename = z.object({
   ...optIn,
   type: z.literal("rename"),
   name: z.string().min(1).max(64).refine(isWellFormed, WELL_FORMED),
+  /** Pi observed a person choose this name. */
+  name_chosen: z.literal(true).optional(),
 });
 /**
  * Follow, unfollow or list follows (#1317). The agent is the connection's

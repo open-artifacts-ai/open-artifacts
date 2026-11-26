@@ -128,7 +128,7 @@ import {
   trimAway,
   writeCodexAway,
 } from "./codex-away.ts";
-import { codexThreadNames } from "./codex-names.ts";
+import { type CodexThreadName, codexThreadNames } from "./codex-names.ts";
 import { AckTracker, replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
@@ -1640,14 +1640,34 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     flushRename(rec);
   };
   /**
-   * A Pi or omp session renamed (#1635), told by its extension on `rename` or
-   * by a reconnecting hello. The same rules as Claude: one frame per change,
-   * never an empty name or the kind the extension falls back to.
+   * A name from an adapter or the Codex index. The kind is a fallback for
+   * Pi-like adapters, while an index title is an actual observed name.
    */
-  const renameFromAdapter = (rec: AgentRecord, name: string) => {
+  const renameFromAdapter = (
+    rec: AgentRecord,
+    name: string,
+    chosen: boolean,
+  ) => {
     const was = rec.sessionName ?? rec.proposedName;
+    if (name === "" || (rec.kind !== "codex" && name === rec.kind && !chosen))
+      return;
     rec.sessionName = name;
-    if (name === was || name === "" || name === rec.kind) return;
+    if (name === was) {
+      // A person can choose the existing title. Report the new provenance
+      // once, without sending a duplicate rename.
+      if (chosen && !rec.nameChosen) {
+        rec.nameChosen = true;
+        if (
+          rec.sentName === rec.proposedName &&
+          laneOfRef(rec.ref)?.nameChosen &&
+          rec.replaces === undefined &&
+          !limited.has(rec.ref)
+        )
+          announceUp(rec);
+      }
+      return;
+    }
+    rec.nameChosen = chosen;
     rec.proposedName = name;
     flushRename(rec);
   };
@@ -1694,10 +1714,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
-        // #2311: a re-derived Claude title is a rename, not a user's choice.
-        ...(lane.nameChosen && rec.kind === "claude-code"
-          ? { name_chosen: rec.nameChosen === true }
-          : {}),
+        // #2311: the hub treats an omitted flag as chosen on a rename.
+        ...(lane.nameChosen ? { name_chosen: rec.nameChosen === true } : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -2296,18 +2314,23 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const g of guestSet.values())
       if (g.instance === lane.name) g.sent = undefined;
   };
-  /**
-   * A Codex `/rename` (#1748): the thread's name in Codex's session index
-   * changed. The same rules as Pi: one frame per change, a thread with no name
-   * stays as it was. Reads the index only while a Codex thread is live.
-   */
+  // A bounded read may have lost the first title. Keep any evidence of a
+  // rename from earlier ticks, and compare only actual index names.
+  const codexNameChosen = (rec?: AgentRecord, title?: CodexThreadName) =>
+    rec?.nameChosen === true ||
+    title?.chosen === true ||
+    (rec?.sessionName !== undefined &&
+      title !== undefined &&
+      rec.sessionName !== title.name);
+
   const renameCodexThreads = () => {
     const live = agents.all().filter((a) => a.kind === "codex" && a.live);
     if (!live.length) return;
     const names = codexThreadNames(codexIndexHome);
     for (const rec of live) {
-      const name = names.get(rec.ref);
-      if (name !== undefined) renameFromAdapter(rec, name);
+      const title = names.get(rec.ref);
+      if (title === undefined) continue;
+      renameFromAdapter(rec, title.name, codexNameChosen(rec, title));
     }
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
@@ -3544,7 +3567,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           if (!piLike(hello.kind)) tellOwed(prev.ref);
           // A rename made while the link was down (#1635).
           if (hello.proposed_name !== undefined && prev.kind === "pi")
-            renameFromAdapter(prev, hello.proposed_name);
+            renameFromAdapter(
+              prev,
+              hello.proposed_name,
+              hello.name_chosen === true,
+            );
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
@@ -3571,13 +3598,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           };
         attested(pid);
         noteFolder(cwd);
-        // A Codex thread the user named registers under that name (#1748).
-        const codexName =
+        // A Codex thread registers under its index title (#1748).
+        const codexTitle =
           hello.kind === "codex"
             ? codexThreadNames(codexIndexHome).get(hello.agent_ref)
             : undefined;
+        const codexName =
+          hello.kind === "codex"
+            ? (codexTitle?.name ?? prev?.sessionName)
+            : undefined;
         const proposedName =
           codexName ?? hello.proposed_name ?? hello.agent_ref;
+        const adapterChoseName =
+          hello.kind === "codex"
+            ? codexNameChosen(prev, codexTitle)
+            : hello.kind === "pi" &&
+              (hello.name_chosen === true ||
+                (prev?.nameChosen === true &&
+                  prev.proposedName === proposedName));
         // /clear (#1295): this new session runs in the process of a live
         // one whose session file is gone; it takes over that address.
         const files =
@@ -3627,7 +3665,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 ? { procStart: prev.procStart }
                 : {}),
           ...(mine ? { sessionName: mine.name } : {}),
-          ...(mine?.nameChosen ? { nameChosen: true } : {}),
+          ...(mine?.nameChosen || adapterChoseName ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...(carryLinks(instance, prev, old) !== undefined
             ? { linkHashes: carryLinks(instance, prev, old) as string[] }
@@ -3784,9 +3822,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           sendLink(rec, hash);
           return true;
         },
-        renamed: (ref, name) => {
+        renamed: (ref, name, chosen) => {
           const rec = agents.byRef(ref);
-          if (rec) renameFromAdapter(rec, name);
+          if (rec) renameFromAdapter(rec, name, chosen);
         },
         ownerAwayUntil: awayUntil,
         codexPendingLocal: (ref) => codexTaken.size(ref),

@@ -1,4 +1,5 @@
 import { ADAPTER_CAPS, type Hello } from "@oa/bus-ipc";
+import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentTable } from "../src/agents.ts";
@@ -83,7 +84,12 @@ describe("pi rename through the daemon (#1635)", () => {
     await vi.waitFor(() => expect(u.lines.some((l) => l.id === id)).toBe(true));
     await u.h.quiet();
   };
-  async function up(caps: string[] | undefined, name = "first", kind = "pi") {
+  async function up(
+    caps: string[] | undefined,
+    name = "first",
+    kind = "pi",
+    { hubTakesChosen = false, chosen = false } = {},
+  ) {
     const { daemonHarness, hello: mk } = await import("./helpers.ts");
     const { connect } = await import("node:net");
     const h = await daemonHarness({ claude: { syncMs: 20 } });
@@ -93,8 +99,13 @@ describe("pi rename through the daemon (#1635)", () => {
       machine_id: "1".repeat(16),
       machine_label: "laptop",
       server_version: "1",
-      caps: ["ids", "mailbox"],
+      caps: [
+        BUS_CAPS.ids,
+        BUS_CAPS.mailbox,
+        ...(hubTakesChosen ? [BUS_CAPS.nameChosen] : []),
+      ],
     });
+    await h.quiet();
     const sock = connect(h.socketPath);
     const lines: Record<string, unknown>[] = [];
     let buf = "";
@@ -110,14 +121,17 @@ describe("pi rename through the daemon (#1635)", () => {
     const helloFrame = {
       ...mk({ kind: kind as "pi", agent_ref: "P1", proposed_name: name }),
       ...(caps ? { caps } : {}),
+      ...(chosen ? { name_chosen: true } : {}),
     };
     sock.write(`${JSON.stringify(helloFrame)}\n`);
     await vi.waitFor(() =>
       expect(lines.some((l) => l.type === "welcome")).toBe(true),
     );
     await vi.waitFor(() => expect(h.of("agent_up")).toHaveLength(1));
-    const rename = (n: string, id = "r1") =>
-      sock.write(`${JSON.stringify({ v: 1, id, type: "rename", name: n })}\n`);
+    const rename = (n: string, id = "r1", chosen = false) =>
+      sock.write(
+        `${JSON.stringify({ v: 1, id, type: "rename", name: n, ...(chosen ? { name_chosen: true } : {}) })}\n`,
+      );
     return { h, lines, rename, sock, mk };
   }
   const socks: { destroy(): void }[] = [];
@@ -134,6 +148,37 @@ describe("pi rename through the daemon (#1635)", () => {
     expect(b.lines.find((l) => l.type === "welcome")).not.toHaveProperty(
       "caps",
     );
+  });
+
+  it("forwards Pi's startup choice and later /name, but leaves self-set names unchosen", async () => {
+    const u = await up(["rename"], "Startup name", "pi", {
+      hubTakesChosen: true,
+      chosen: true,
+    });
+    expect(await u.h.next("agent_up")).toMatchObject({
+      proposed_name: "Startup name",
+      name_chosen: true,
+    });
+    u.rename("Extension name");
+    expect(await u.h.next("rename")).toMatchObject({
+      proposed_name: "Extension name",
+      name_chosen: false,
+    });
+    u.rename("Typed name", "r2", true);
+    u.rename("Typed name", "r3", true);
+    await settle(u);
+    expect(u.h.of("rename")).toHaveLength(2);
+    expect(u.h.of("rename")[1]).toMatchObject({
+      proposed_name: "Typed name",
+      name_chosen: true,
+    });
+  });
+
+  it("omits name_chosen for an older hub", async () => {
+    const u = await up(["rename"], "Startup name", "pi", { chosen: true });
+    expect(await u.h.next("agent_up")).not.toHaveProperty("name_chosen");
+    u.rename("Typed name", "r1", true);
+    expect(await u.h.next("rename")).not.toHaveProperty("name_chosen");
   });
 
   it("never lists the cap for a claude-code or opencode hello", async () => {

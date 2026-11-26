@@ -232,7 +232,7 @@ export type RouteCtx = {
    */
   habits?: () => string | null;
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
-  renamed?: (ref: string, name: string) => void;
+  renamed?: (ref: string, name: string, chosen: boolean) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
   configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /**
@@ -375,7 +375,11 @@ export function routeLocal(
           code: "bad_frame",
           message: "rename is not supported on this connection",
         };
-      ctx.renamed(ref, frame.name);
+      ctx.renamed(
+        ref,
+        frame.name,
+        hello.kind === "pi" && frame.name_chosen === true,
+      );
       return undefined;
     case "link_proof":
       // Bound to the connection's own agent: the frame names none. An adapter
