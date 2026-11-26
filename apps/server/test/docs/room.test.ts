@@ -987,7 +987,19 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
     syncProtocol.writeSyncStep1(enc, new Y.Doc());
     const frame = encoding.toUint8Array(enc);
     for (let i = 0; i < 8; i++) a.ws.send(frame);
-    await new Promise((r) => setTimeout(r, 300));
+    // The room handles a socket's frames in order: an awareness frame sent
+    // after the surplus step 1s reaching a second client proves they were
+    // all handled.
+    const b = await connect(stub, { strict: true, role: "read" });
+    a.awareness.setLocalState({ name: "A" });
+    const upd = awarenessProtocol.encodeAwarenessUpdate(a.awareness, [
+      a.doc.clientID,
+    ]);
+    const aw = encoding.createEncoder();
+    encoding.writeVarUint(aw, 1);
+    encoding.writeVarUint8Array(aw, upd);
+    a.ws.send(encoding.toUint8Array(aw));
+    await b.until(() => b.awareness.getStates().has(a.doc.clientID));
     expect(a.ws.readyState).toBe(WebSocket.OPEN);
     expect(a.texts).toEqual([]);
   });

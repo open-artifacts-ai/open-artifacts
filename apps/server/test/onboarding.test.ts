@@ -206,9 +206,32 @@ describe("R.onboarding", () => {
     expect((await get(m.cookie)).body?.busConnected).toBe(false);
   });
 
-  it("rejects a flag turned off or unknown fields", async () => {
+  it("dismissed: false brings the hidden checklist back; completed stays one-way", async () => {
+    await clear();
     const o = await login(`own-${tag()}@example.com`, "owner");
-    expect((await put(o.cookie, { dismissed: false })).status).toBe(400);
+    const m = await login(`mem-${tag()}@example.com`, "member");
+    for (const who of [o, m]) {
+      expect((await put(who.cookie, { dismissed: true })).status).toBe(200);
+      expect((await get(who.cookie)).body?.dismissed).toBe(true);
+      const r = await put(who.cookie, { dismissed: false });
+      expect(r.status).toBe(200);
+      expect(((await r.json()) as { dismissed: boolean }).dismissed).toBe(
+        false,
+      );
+      expect((await get(who.cookie)).body?.dismissed).toBe(false);
+    }
+    // The owner's install-wide row from before is cleared too.
+    await env.DB.prepare(
+      "insert into settings (key, value) values ('onboarding:dismissed', '1')",
+    ).run();
+    expect((await get(o.cookie)).body?.dismissed).toBe(true);
+    expect((await put(o.cookie, { dismissed: false })).status).toBe(200);
+    expect((await get(o.cookie)).body?.dismissed).toBe(false);
+    expect((await put(o.cookie, { completed: false })).status).toBe(400);
+  });
+
+  it("rejects unknown fields", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
     expect((await put(o.cookie, { other: 1 })).status).toBe(400);
   });
 

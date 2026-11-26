@@ -3,7 +3,12 @@ import { env } from "cloudflare:workers";
 import { type Member, newId, R } from "@oa/shared";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
-import { runtimeStub } from "../src/runtime/do.js";
+import {
+  ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
+  runtimeStub,
+} from "../src/runtime/do.js";
+import { SKEW_MS } from "../src/runtime/presence.js";
 import { publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { api, doAsPaid, login, PAID_ENV } from "./helpers.js";
@@ -111,14 +116,40 @@ describe("B13 breaks", () => {
     ws.accept();
     const msgs: string[] = [];
     ws.addEventListener("message", (e) => msgs.push(String(e.data)));
+    const closed = new Promise<number>((res) =>
+      ws.addEventListener("close", (e) => res((e as CloseEvent).code)),
+    );
     await api(app, R.share(id, viewer.email), owner.cookie, {
       method: "DELETE",
     });
-    await api(app, R.dataDoc(id, "c", "secret"), owner.cookie, {
+    // The revoke closes the socket (the signal), so the write below has no
+    // open socket of the viewer's to reach.
+    expect(await closed).toBe(4403);
+    // A control subscriber authorized past the skew window of the revoke (the
+    // runtime accepts it): once it hears the write, the runtime has
+    // broadcast it to every socket it holds.
+    const c = await runtimeStub(env, id).fetch(
+      "https://runtime.invalid/subscribe?collection=c",
+      {
+        headers: {
+          Upgrade: "websocket",
+          [ACTOR_HEADER]: `u:${owner.userId}`,
+          [AUTHZ_AT_HEADER]: String(Date.now() + SKEW_MS + 1),
+        },
+      },
+    );
+    const cws = c.webSocket;
+    if (!cws) throw new Error(`no control ws (${c.status})`);
+    cws.accept();
+    const heard: string[] = [];
+    cws.addEventListener("message", (e) => heard.push(String(e.data)));
+    const put = await api(app, R.dataDoc(id, "c", "secret"), owner.cookie, {
       method: "PUT",
       body: { s: 1 },
     });
-    await new Promise((res) => setTimeout(res, 100));
+    expect(put.status).toBe(200);
+    await vi.waitFor(() => expect(heard.join("")).toContain("secret"));
+    cws.close();
     expect(msgs).toEqual([]);
   });
 
