@@ -4,6 +4,10 @@ import {
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import {
+  OPTOUT_CHECK_PATH,
+  OPTOUT_MINT_PATH,
+} from "@oa/provisioning-contract/optouts";
 import { newId } from "@oa/shared";
 import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
@@ -56,22 +60,39 @@ const ADMIT = { limit: async () => ({ success: true }) };
 
 /**
  * Red-line port: vitest.authz-hosted.config.ts binds AUTHZ_HOSTED, and the
- * same matrix runs with the settings provisioning gives every hosted install
- * (cloud packages/provision/src/metadata.ts userWorkerMetadata: PLAN paid,
- * ENVIRONMENT production, HOSTED 1, AUTH_DOMAIN_JOIN invite, the tier's
- * FEATURES plus usage_off and, on prod, bus; the business tier's FEATURES
- * are this world's own), the login broker, and the platform's props below.
+ * same matrix runs with the settings staging gives red-line's install B
+ * (rl-b, Business: cloud tests/redline/src/targets.ts), the install whose
+ * own credentials the live per-route file (cloud
+ * tests/redline/live/surfaces.test.ts) ran. All from the cloud repo's
+ * committed staging config, no secret values:
+ * - vars: packages/provision/src/metadata.ts userWorkerMetadata gives PLAN
+ *   paid, ENVIRONMENT production, HOSTED 1, AUTH_DOMAIN_JOIN invite and the
+ *   tier's FEATURES (Business: this world's own) plus spaces and usage_off.
+ *   No bus: STAGING_BUS_ALL skips rl- slugs, and STAGING_BUS_SLUGS
+ *   (apps/provisioner/wrangler.jsonc, env.staging) does not list rl-b.
+ *   Staging's provisioner has OPTOUT_LIST "1", so packages/provision/src/
+ *   wfp.ts adds OPTOUT_PLATFORM on, OPTOUT_UNSUBSCRIBE_URL and the
+ *   OPTOUT_HASH_KEY secret (a test value here).
+ * - props: apps/dispatch/wrangler.jsonc env.staging binds AUTH_BROKER,
+ *   DIRECTORY_BROKER, BILLING and LOGIN with LOGIN_CHANGE "1", so
+ *   apps/dispatch/src/login-gate.ts loginProps gives every install LOGIN and
+ *   LOGIN_EDITABLE true (PROPS below).
+ * A prod Business install differs: bus on (provisioner PROD_BUS_ALL "1",
+ * slug not rl-), no LOGIN binding in prod's dispatch (so no LOGIN and no
+ * LOGIN_EDITABLE), and OPTOUT_LIST "0" (no OPTOUT_PLATFORM). This run is
+ * staging's, the setup the live file proved.
  */
 export const HOSTED_RUN =
   (env as unknown as { AUTHZ_HOSTED?: string }).AUTHZ_HOSTED === "1";
-const HOSTED_SETTINGS: Partial<Env> = {
+const STAGING_SETTINGS: Partial<Env> = {
   ENVIRONMENT: "production",
   HOSTED: "1",
   AUTH_DOMAIN_JOIN: "invite",
-  // A prod customer install: bus with PROD_BUS_ALL "1" (cloud
-  // docs/ops/hosted.md, "PROD_BUS_ALL").
-  FEATURES: "spaces,sync_google,content_revocation,usage_off,bus",
+  FEATURES: "spaces,sync_google,content_revocation,usage_off",
   AUTH_BROKER_URL: "https://auth.h.test",
+  OPTOUT_PLATFORM: "on",
+  OPTOUT_HASH_KEY: "authz-hosted-test-key",
+  OPTOUT_UNSUBSCRIBE_URL: "https://signup.h.test/unsubscribe",
 };
 
 /**
@@ -82,7 +103,7 @@ const HOSTED_SETTINGS: Partial<Env> = {
 export const E: Env = (HOSTED_RUN ? hostedEnv : directEnv)({
   PLAN: "paid",
   FEATURES: "spaces,sync_google,content_revocation",
-  ...(HOSTED_RUN ? HOSTED_SETTINGS : {}),
+  ...(HOSTED_RUN ? STAGING_SETTINGS : {}),
   ...mail.env,
   RL_ANON: ADMIT as never,
 });
@@ -98,9 +119,28 @@ const nextIp = () => {
 };
 
 /**
- * A hosted run's ctx.props: the capabilities the platform's dispatch gives
- * every hosted install (the login and directory brokers, billing), faked as
- * the hosted tests fake them.
+ * Staging's LoginGate, faked: the opt-out list answers "not opted out" and
+ * mints a token (the shape of @oa/provisioning-contract's schemas), and any
+ * other route, a login-domain change included, is the gate's 404. The matrix
+ * never reaches a change (PUT stops at reauth_required).
+ */
+const fakeLoginGate = {
+  fetch: async (req: Request) => {
+    const path = new URL(req.url).pathname;
+    if (path === OPTOUT_CHECK_PATH) return Response.json({ optedOut: false });
+    if (path === OPTOUT_MINT_PATH)
+      return Response.json({ token: `${"T".repeat(31)}.${"m".repeat(43)}` });
+    return Response.json(
+      { error: "not_found" },
+      { status: 404, headers: { "x-oa-gate": "1" } },
+    );
+  },
+};
+
+/**
+ * A hosted run's ctx.props: what staging's dispatch gives every install (the
+ * login and directory brokers, billing, the login gate and LOGIN_EDITABLE),
+ * faked as the hosted tests fake them.
  */
 const billing = HOSTED_RUN ? fakeBilling(E.INSTALL_ID) : null;
 const PROPS = billing
@@ -108,6 +148,8 @@ const PROPS = billing
       ...hostedProps(),
       AUTH_BROKER: { fetch: async () => new Response(null, { status: 404 }) },
       ...billing.props,
+      LOGIN: fakeLoginGate,
+      LOGIN_EDITABLE: true,
     }
   : undefined;
 
