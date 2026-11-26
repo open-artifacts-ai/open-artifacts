@@ -186,6 +186,14 @@ describe("UserPresence", () => {
     // closes past CLOSE_FANOUT or failed ones go to an alarm-driven retry
     // queue (presence.ts:284-295). That queue is empty for the revoked user.
     expect(await inPresence(u.userId, (p) => p.pendingRetries())).toEqual([]);
+    // The negative window is that queue's: put the revoked user's presence
+    // clock past the longest backoff and run its alarm, so any queued close
+    // would be re-sent now.
+    await inPresence(u.userId, (p) => {
+      const at = Date.now() + retryBackoffMs(99);
+      p.now = () => at;
+    });
+    await runDurableObjectAlarm(presence(u.userId));
     // So the runtime still holds the other user's two sockets open.
     expect(await openSocketCount(art)).toBe(2);
     expect(theirs.data.isOpen()).toBe(true);

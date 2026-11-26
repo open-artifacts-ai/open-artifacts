@@ -18,7 +18,11 @@ import {
   SOCKET_TTL_MS,
   SOCKET_TTL_SLACK_MS,
 } from "../../src/runtime/do.js";
-import { presenceStub, type UserPresence } from "../../src/runtime/presence.js";
+import {
+  presenceStub,
+  retryBackoffMs,
+  type UserPresence,
+} from "../../src/runtime/presence.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
 import { publish } from "../../src/services/artifacts.js";
 import { DOC_SWITCH } from "../../src/services/doc-switch.js";
@@ -439,6 +443,17 @@ describe("room full, TTL, access change, delete", () => {
         (p) => p.pendingRetries(),
       ),
     ).toEqual([]);
+    // The negative window is that queue's: put the revoked user's presence
+    // clock past the longest backoff and run its alarm, so any queued close
+    // would be re-sent now.
+    await runInDurableObject(
+      presenceStub(env, u.userId) as unknown as DurableObjectStub<UserPresence>,
+      (p) => {
+        const at = Date.now() + retryBackoffMs(99);
+        p.now = () => at;
+      },
+    );
+    await runDurableObjectAlarm(presenceStub(env, u.userId) as never);
     // So the room still holds the other user's socket open.
     await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
       expect(

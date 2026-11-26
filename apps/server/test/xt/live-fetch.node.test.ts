@@ -17,7 +17,6 @@ const o = (
 ) => ({
   fetch: f,
   healthy,
-  healthPollMs: 1,
 });
 
 describe("liveFetch (xt:live, flake server #2)", () => {
@@ -70,7 +69,6 @@ describe("liveFetch (xt:live, flake server #2)", () => {
     }) as typeof fetch;
     const r = await liveFetch(new Request("https://x.test/a?q=1"), {
       fetch: f,
-      healthPollMs: 1,
     });
     expect(r.status).toBe(200);
     expect(seen).toEqual([
@@ -94,40 +92,34 @@ describe("liveFetch (xt:live, flake server #2)", () => {
   });
 
   it("resends once the health wait is up when the host never answers, and not before", async () => {
-    // Only Date is faked: the wait reads its bound from it, and vi.waitFor
-    // moves it by one poll per check, so no wall time is spent waiting.
+    // Only Date is faked; each health ask moves it forward by STEP, so the
+    // wait runs out on the fake clock and no wall time is spent.
     vi.useFakeTimers({ now: 0, toFake: ["Date"] });
-    const POLL = 5;
-    const WAIT = 20;
+    const STEP = 100;
+    const WAIT = 500;
     const asks: { at: number; sentThen: number }[] = [];
     const sent: number[] = [];
     const f = (async () => {
       sent.push(Date.now());
       return new Response("x", { status: sent.length === 1 ? 503 : 200 });
     }) as typeof fetch;
+    const wall = performance.now();
     const r = await liveFetch(new Request("https://x.test/"), {
       fetch: f,
       healthy: async () => {
         asks.push({ at: Date.now(), sentThen: sent.length });
+        vi.advanceTimersByTime(STEP);
         return false;
       },
-      healthPollMs: POLL,
       healthWaitMs: WAIT,
     });
+    expect(performance.now() - wall).toBeLessThan(200);
     expect(r.status).toBe(200);
-    // Exactly one resend, and only once the clock passed the wait.
-    expect(sent).toHaveLength(2);
-    expect(sent[1] as number).toBeGreaterThanOrEqual(WAIT);
-    // Right up to the deadline (the last ask is within one poll of it) exactly
-    // one request had gone out; the second came only after it.
-    expect(asks.length).toBeGreaterThan(0);
-    for (const a of asks) {
-      expect(a.at).toBeLessThan(WAIT);
-      expect(a.sentThen).toBe(1);
-    }
-    expect(Math.max(...asks.map((a) => a.at))).toBeGreaterThanOrEqual(
-      WAIT - POLL,
-    );
+    // Every ask before the deadline saw exactly one request; the last came
+    // one step before it. The second request followed, once, at the deadline.
+    expect(asks.map((a) => a.at)).toEqual([0, 100, 200, 300, 400]);
+    for (const a of asks) expect(a.sentThen).toBe(1);
+    expect(sent).toEqual([0, WAIT]);
   });
 
   it("never retries a 4xx", async () => {
