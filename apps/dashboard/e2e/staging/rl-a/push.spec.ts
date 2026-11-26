@@ -9,19 +9,20 @@ import {
   viewerPath,
 } from "@oa/shared";
 import { type BrowserContext, chromium, type Page } from "@playwright/test";
+import { gate } from "../gate";
 import {
   A,
   api,
   cleanup,
   expect,
   json,
-  needs,
   OAUTH_HOOK_EMAIL,
   oauthAgent,
   type Person,
   person,
   personAt,
   publish,
+  rlAVersion,
   SPACES,
   t19Spaces,
   test,
@@ -52,6 +53,18 @@ const TICK_WAIT_MS = 4 * 60_000;
 const { eng } = SPACES;
 const DEFAULT_BODY = "An agent is waiting for your answer";
 const MENTION_BODY = "Someone mentioned you";
+
+/** Skips (naming the version found and MIN) on an older rl-a; fails on a pinned gate run (gate.ts). */
+async function pushNeeds() {
+  const v = await rlAVersion();
+  const why = gate(
+    "browser push (#3024)",
+    MIN,
+    v,
+    process.env.T19_EXPECT_VERSION,
+  );
+  test.skip(why !== null, `${why}: rl-a is ${v}, browser push needs ${MIN}`);
+}
 
 let keeper: Person;
 let b: Person;
@@ -135,10 +148,11 @@ const shown = (page: Page) =>
 /**
  * Turns notifications on the way a person does: Settings > Notifications, the
  * "Needs you in this browser" switch (the real subscribe through the
- * dashboard's own code). `allAsks` also picks "Every ask put to me": a
- * plain ask from someone else's agent interrupts only then.
+ * dashboard's own code). Needs you is on by default, so the test sets nothing
+ * else: asks and @-mentions interrupt as they come. After enrolling it is
+ * still on.
  */
-async function enrol(a: Person, page: Page, allAsks: boolean) {
+async function enrol(a: Person, page: Page) {
   await page.goto("/settings/notifications");
   const sw = page.getByRole("switch", { name: "Needs you in this browser" });
   await expect(sw).toBeEnabled();
@@ -146,11 +160,6 @@ async function enrol(a: Person, page: Page, allAsks: boolean) {
   await expect(sw).toBeChecked();
   await expect.poll(async () => (await devices(a)).length).toBe(1);
   await expect.poll(async () => (await prefs(a)).needsYou.browser).toBe(true);
-  if (allAsks) {
-    await page.getByRole("combobox", { name: "Interrupt me for" }).click();
-    await page.getByRole("option", { name: "Every ask put to me" }).click();
-    await expect.poll(async () => (await prefs(a)).browserAllAsks).toBe(true);
-  }
 }
 
 /** Turns the switch off (the product's remove path): the device is gone. */
@@ -192,7 +201,7 @@ async function arrives(page: Page, body: string) {
 
 test("push: an ask put to A reaches A's Chrome", async ({ browser }) => {
   test.setTimeout(TICK_WAIT_MS + 90_000);
-  await needs("browser push (#3024)", MIN);
+  await pushNeeds();
   const a = await person(browser, "push-a-ask", "member", [
     { spaceId: eng.id, role: "viewer" },
   ]);
@@ -200,7 +209,7 @@ test("push: an ask put to A reaches A's Chrome", async ({ browser }) => {
   const chrome = await chromeAs(a);
   const agent = await oauthAgent("t19-push-agent");
   try {
-    await enrol(a, chrome.page, true);
+    await enrol(a, chrome.page);
     const question = "Push this one?";
     const asked = await agent.call("add_comment", {
       id,
@@ -232,14 +241,14 @@ test("push: an ask put to A reaches A's Chrome", async ({ browser }) => {
 
 test("push: B's @-mention of A reaches A's Chrome", async ({ browser }) => {
   test.setTimeout(TICK_WAIT_MS + 90_000);
-  await needs("browser push (#3024)", MIN);
+  await pushNeeds();
   const a = await person(browser, "push-a-mention", "member", [
     { spaceId: eng.id, role: "viewer" },
   ]);
   const id = await pageForB("T19 push mention");
   const chrome = await chromeAs(a);
   try {
-    await enrol(a, chrome.page, false);
+    await enrol(a, chrome.page);
     await json(
       await api(b, R.comments(id), {
         method: "POST",
