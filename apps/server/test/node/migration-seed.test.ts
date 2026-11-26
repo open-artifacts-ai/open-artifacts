@@ -40,14 +40,14 @@ describe("migration seeder", () => {
     // Seeding shares exercises 0054’s trigger on the current schema.
     const legacy = d
       .prepare("select count(*) as n from legacy_viewer_comments")
-      .get();
+      .get() as { n: number };
     const eligible = d
       .prepare(`
       select count(*) as n from shares s join users u on u.email = s.email
       where s.role = 'viewer' and s.can_comment = 0 and u.role in ('owner', 'admin', 'member')
     `)
       .get();
-    expect(legacy?.n).toBeGreaterThan(0);
+    expect(legacy.n).toBeGreaterThan(0);
     expect(legacy).toEqual(eligible);
     expect(d.prepare("pragma foreign_key_check").all()).toEqual([]);
     // 0021's backfill input: removed users whose latest user.status row
