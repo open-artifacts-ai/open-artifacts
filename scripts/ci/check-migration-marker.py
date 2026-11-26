@@ -13,7 +13,7 @@ TOKEN = re.compile(
 )
 
 
-def needs_review(sql):
+def needs_non_additive_marker(sql, reviewed):
     tokens = []
     for match in TOKEN.finditer(sql):
         token = match[0]
@@ -31,6 +31,17 @@ def needs_review(sql):
                 continue
         if re.match(r"ALTER TABLE (?:[\w$]+|\?) ADD\b", words):
             continue
+        if reviewed:
+            # Inspect the trigger body as SQL. AFTER UPDATE in its header
+            # describes the event; it does not update an existing row.
+            if words.startswith("CREATE TRIGGER "):
+                _, begin, words = words.partition(" BEGIN ")
+                if not begin:
+                    return True
+            if words == "END":
+                continue
+            if words.startswith("INSERT INTO ") and "ON CONFLICT" not in words:
+                continue
         return True
     return False
 
@@ -42,11 +53,20 @@ def main(root, tag, directory):
     ])
     for path in filter(None, diff.decode().split("\0")):
         sql = subprocess.check_output(["git", "-C", root, "show", "HEAD:" + path]).decode()
-        if sql.split("\n", 1)[0] == "-- oa:non-additive":
-            if not re.search(r"^-- oa:verify[ \t]+\S", sql, re.MULTILINE):
-                sys.exit(f"{path}: describe the verification plan in a -- oa:verify comment")
-        elif needs_review(sql):
-            sys.exit(f"{path}: destructive or unclassified SQL requires -- oa:non-additive on line 1 and a verification plan")
+        marker = sql.partition("\n")[0]
+        reviewed = marker == "-- oa:additive-reviewed"
+        if reviewed or marker == "-- oa:non-additive":
+            # Verification is a header comment, before the SQL starts.
+            header = re.match(r"(?:--[^\n]*(?:\n|$)|[ \t]*\n)*", sql)[0]
+            if not re.search(r"^-- oa:verify[ \t]+\S", header, re.MULTILINE):
+                sys.exit(f"{path}: describe the verification plan in a -- oa:verify header comment")
+        if marker != "-- oa:non-additive" and needs_non_additive_marker(sql, reviewed):
+            sys.exit(
+                f"{path}: destructive or unclassified SQL requires -- oa:non-additive. "
+                "For reviewed insert-only backfills or triggers use -- oa:additive-reviewed "
+                "on line 1 with a verification plan."
+            )
+
 
 
 if __name__ == "__main__":

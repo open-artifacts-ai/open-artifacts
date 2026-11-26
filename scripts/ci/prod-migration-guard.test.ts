@@ -120,6 +120,24 @@ describe("prod-migration-guard.sh detect", () => {
     expect(d.code).toBe(0);
     expect(d.out).toBe("hold=false\nguarded=false\n");
   });
+  it("keeps reviewed-additive 0054 on the automatic deploy path", () => {
+    const r = repo();
+    const name = "0054_member_viewer_comments.sql";
+    const sql = readFileSync(
+      new URL(`./fixtures/${name}`, import.meta.url),
+      "utf8",
+    );
+    r.release("v1.1.0", {
+      [`apps/server/migrations/${name}`]: `-- oa:additive-reviewed\n-- oa:verify Compare existing shares and expected compatibility rows.\n${sql}`,
+    });
+    const d = r.run("detect", {
+      TAG: "v1.1.0",
+      EVENT: "push",
+      PROD_VERSION: "1.0.0",
+    });
+    expect(d.code).toBe(0);
+    expect(d.out).toBe("hold=false\nguarded=false\n");
+  });
   it("a non-additive migration holds the automatic deploy, and a manual run deploys it guarded", () => {
     const r = repo();
     r.release("v1.1.0", {
