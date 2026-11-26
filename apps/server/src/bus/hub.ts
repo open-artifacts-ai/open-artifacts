@@ -1650,9 +1650,11 @@ function takeAwayName(
          from receipts r indexed by receipts_to
          join agents a on a.id = r.to_agent
         where r.to_agent = ? and r.state = 'pending' and r.rowid > a.session_start_rowid
+          and ${NOT_GONE_QUEUED_SQL}
        window w as (order by r.rowid)
      ) where n <= ? and b <= ? order by rid`,
     fromId,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP - (have?.n ?? 0),
     MAILBOX_BYTES_CAP - (have?.b ?? 0),
   );
@@ -3632,6 +3634,15 @@ const NOT_GONE_QUEUED_SQL = `not exists (
    where g.org_id = ? and g.key >= ? and g.key < ?
      and r.rowid <= json_extract(g.value, '$.through')
      and j.value = r.to_agent
+)`;
+/**
+ * #3208: true when agent `a` is not queued in any persisted gone drain.
+ * Binds: GONE_DRAIN_BINDS.
+ */
+const NOT_GONE_QUEUED_AGENT_SQL = `not exists (
+  select 1 from meta g, json_each(g.value, '$.ids') j
+   where g.org_id = ? and g.key >= ? and g.key < ?
+     and j.value = a.id
 )`;
 const GONE_DRAIN_BINDS: readonly [string, string, string] = [
   OWNER_ORG_ID,
@@ -7537,12 +7548,14 @@ export class BusHub extends DurableObject<Env> {
     if (capMail) {
       const ids = JSON.stringify(agentIds);
       sql.exec(
-        `update receipts set expires_at = (select a.away_since + ? from agents a where a.id = receipts.to_agent)
-          where state = 'pending' and to_agent in (select value from json_each(?))
-            and expires_at > (select a.away_since + ? from agents a where a.id = receipts.to_agent)`,
+        `update receipts as r set expires_at = (select a.away_since + ? from agents a where a.id = r.to_agent)
+          where r.state = 'pending' and r.to_agent in (select value from json_each(?))
+            and r.expires_at > (select a.away_since + ? from agents a where a.id = r.to_agent)
+            and ${NOT_GONE_QUEUED_SQL}`,
         MAILBOX_RETAIN_MS,
         ids,
         MAILBOX_RETAIN_MS,
+        ...GONE_DRAIN_BINDS,
       );
       sql.exec(
         `update mail set expires_at = (select a.away_since + ? from agents a where a.id = mail.to_agent)
@@ -7713,11 +7726,13 @@ export class BusHub extends DurableObject<Env> {
         sql,
         `select a.rid, a.id from (select rowid as rid, id from agents indexed by agents_machine_closed
             where machine_id = ? and live = 0 order by updated_at, rowid limit ?) a
-          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL} limit 1`,
+          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL}
+            and ${NOT_GONE_QUEUED_AGENT_SQL} limit 1`,
         machineId,
         CLOSED_AGENTS_PER_MACHINE,
         ...(outbox ? [this.#now() - SEND_KEY_RETAIN_MS] : []),
         this.#now(),
+        ...GONE_DRAIN_BINDS,
       );
     const away =
       oldest(true, true) ?? oldest(false, true) ?? oldest(false, false);
@@ -7725,8 +7740,11 @@ export class BusHub extends DurableObject<Env> {
     for (;;) {
       const rows = all<{ id: string; fromAgent: string }>(
         sql,
-        "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' limit ?",
+        `select r.id, r.from_agent as fromAgent from receipts r indexed by receipts_to
+          where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+          limit ?`,
         away.id,
+        ...GONE_DRAIN_BINDS,
         BATCH,
       );
       for (const r of rows) this.#expire(r.id, r.fromAgent, "recipient_closed");
@@ -8098,8 +8116,11 @@ export class BusHub extends DurableObject<Env> {
         visits++;
         const rows = all<{ id: string; fromAgent: string }>(
           sql,
-          "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' limit ?",
+          `select r.id, r.from_agent as fromAgent from receipts r indexed by receipts_to
+            where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+            limit ?`,
           agentId,
+          ...GONE_DRAIN_BINDS,
           receipts,
         );
         for (const r of rows) this.#expire(r.id, r.fromAgent, "revoked");
