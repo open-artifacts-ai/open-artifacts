@@ -240,7 +240,11 @@ export const execCodex =
       let timedOut = false;
       // execFile validates its own timeout before spawning (an integer in
       // 0..MAX_SAFE_INTEGER, else ERR_OUT_OF_RANGE); our timer keeps that.
-      if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
+      if (
+        !Number.isInteger(timeoutMs) ||
+        timeoutMs < 0 ||
+        timeoutMs > Number.MAX_SAFE_INTEGER
+      ) {
         throw Object.assign(
           new RangeError(
             `The value of "timeout" is out of range. It must be ${Number.isInteger(timeoutMs) ? ">= 0 && <= 9007199254740991" : "an integer"}. Received ${timeoutMs}`,
