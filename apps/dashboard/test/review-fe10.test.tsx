@@ -98,11 +98,14 @@ describe("instance review", () => {
     const input = await nameInput();
     fireEvent.change(input, { target: { value: "First" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
-    if (!input.disabled) {
-      fireEvent.change(input, { target: { value: "First Second" } });
-      await settle(400);
-      expect(input.value).toBe("First Second");
-    }
+    // While the save is in flight the box is locked, so nothing can be typed
+    // into it and then lost; what was typed stays in it.
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(input.value).toBe("First");
+    await settle(150);
+    // Once the save settles the box is open again, with what was saved.
+    await waitFor(() => expect(input).toBeEnabled());
+    expect(input.value).toBe("First");
   });
 
   it("an over-long name explains why Save is disabled", async () => {

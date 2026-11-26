@@ -256,11 +256,16 @@ describe("the held-request notice", () => {
   });
 
   it("an unchanged refetch says nothing", async () => {
+    const gets = calls("GET");
     const panel = await openNotice();
+    const held = () => gets.filter((c) => c.path.endsWith(R.agentAskHeld));
+    const before = held().length;
     act(() => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
+    // The refetch is the event: only once it has answered can it have changed anything.
+    await waitFor(() => expect(held().length).toBeGreaterThan(before));
     await settle(300);
     expect(within(panel).queryByText(/The words changed/)).toBeNull();
     expect(panel.querySelector("[data-changed]")).toBeNull();
