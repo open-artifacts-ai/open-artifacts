@@ -22,8 +22,9 @@ import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import type { StoredActor, StoredComment } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
-import { queueMentionPush, queueUpdatePush } from "./push.js";
+import { queueMentionPush } from "./push.js";
 import { getUsers } from "./users.js";
+import { pushOn } from "./web-push.js";
 
 /** Person-mention Needs-you items one sender may cause per day (#2770). */
 export const PERSON_MENTIONS_PER_DAY = 200;
@@ -46,8 +47,6 @@ export const itemExcerpt = (s: string): string => {
 };
 
 export type NewItem = {
-  /** #2770: "needs_you" for a mention of the person; every other item is an Update (a mention of their agent included). */
-  level?: "needs_you" | "update";
   userId: string;
   kind: ItemKind;
   /** The idempotency key, unique per person: "reply:<comment id>". */
@@ -61,6 +60,10 @@ export type NewItem = {
   agentName?: string;
   at: number;
 };
+
+/** Personal mentions belong in Needs you. Mentions of the recipient's agent belong in Updates. */
+const isPersonalMention = (item: NewItem) =>
+  item.kind === "mention" && item.key.startsWith("person:");
 
 /**
  * Writes the items whose person can still read the artifact now (a member,
@@ -115,7 +118,7 @@ export async function writeInboxItems(
             newId(),
             r.userId,
             r.kind,
-            r.level ?? "update",
+            isPersonalMention(r) ? "needs_you" : "update",
             r.key,
             r.artifactId,
             r.threadId ?? null,
@@ -127,24 +130,25 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // #2512 S5: browser push for each Update, for those who turned it on. A
-    // Needs-you item (a person @mentioned, #2770) is queued as Needs-you
-    // (#2781), never as an Update.
-    for (const r of rows) {
-      const base = {
+    // Updates stay in the inbox. Only personal mentions can need a delivery.
+    const mentions = rows.filter(isPersonalMention);
+    if (!pushOn(env) || mentions.length === 0) return;
+    const enrolled = await stmt(
+      env.DB,
+      "select distinct user_id from push_subscriptions where user_id in (select value from json_each(?1))",
+    )
+      .bind(JSON.stringify([...new Set(mentions.map((r) => r.userId))]))
+      .all<{ user_id: string }>();
+    const hasDevice = new Set(enrolled.results.map((r) => r.user_id));
+    for (const r of mentions) {
+      if (!hasDevice.has(r.userId)) continue;
+      await queueMentionPush(env, r.userId, {
         key: r.key,
         artifactId: r.artifactId,
         threadId: r.threadId ?? "",
         askerName: r.actor.agent?.name ?? r.actor.name ?? "Someone",
         excerpt: r.excerpt,
-      };
-      if (r.key.startsWith("person:"))
-        await queueMentionPush(env, r.userId, base);
-      else
-        await queueUpdatePush(env, r.userId, {
-          ...base,
-          agentKey: r.actor.agent?.identity?.identityId ?? null,
-        });
+      });
     }
   } catch (e) {
     logWarn("inbox_items_write_failed", e);
@@ -226,7 +230,6 @@ export async function recordCommentItems(
         items.push({
           userId,
           kind: "mention",
-          level: "needs_you",
           key: `person:${c.id}`,
           artifactId: j.artifactId,
           threadId: j.threadId,

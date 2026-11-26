@@ -1,9 +1,10 @@
 // #2512 S5: Web Push, with no dependency. The payload is encrypted as
 // RFC 8291 (aes128gcm, RFC 8188) to the browser's key and the request is
 // authorised with a VAPID JWT (RFC 8292, ES256), all through WebCrypto.
-// The VAPID key pair is an instance secret (VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY:
-// base64url, the 65-byte uncompressed point and the 32-byte scalar). This
-// code never makes a key: without both, push is off.
+// The VAPID key pair is derived per instance from SESSION_SECRET (#3024,
+// auth/keys.ts); the legacy VAPID_* env values are ignored. Without a
+// SESSION_SECRET, push is off. The RFC 8291 payload crypto below is separate.
+import { deriveVapidPair } from "../auth/keys.js";
 import type { Env } from "../env.js";
 
 type Bytes = Uint8Array<ArrayBuffer>;
@@ -21,9 +22,36 @@ export const unb64u = (s: string): Bytes => {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 };
 
-/** Push is on only when the instance holds a VAPID key pair. */
+/** Push is on whenever the instance has a SESSION_SECRET (the VAPID pair derives from it). */
 export const pushOn = (env: Env): boolean =>
-  !!env.VAPID_PUBLIC_KEY?.trim() && !!env.VAPID_PRIVATE_KEY?.trim();
+  typeof env.SESSION_SECRET === "string" && env.SESSION_SECRET.length > 0;
+
+type Vapid = { publicKey: string; signKey: CryptoKey };
+// One slot, keyed by the secret it came from: bounded, and a rotated
+// SESSION_SECRET misses it even in a warm worker.
+let vapidSlot: { secret: string; keys: Promise<Vapid> } | undefined;
+
+/**
+ * This instance's VAPID pair, derived from SESSION_SECRET (keys.ts). The
+ * private key is a non-extractable signing CryptoKey; only `publicKey`
+ * (base64url, 65-byte uncompressed point) is ever shown.
+ */
+export function vapidKeys(env: Pick<Env, "SESSION_SECRET">): Promise<Vapid> {
+  const secret = env.SESSION_SECRET;
+  if (typeof secret !== "string" || secret.length === 0)
+    return Promise.reject(new Error("SESSION_SECRET is not set"));
+  if (vapidSlot?.secret === secret) return vapidSlot.keys;
+  const keys = (async (): Promise<Vapid> => {
+    const { publicKey, signKey } = await deriveVapidPair(env);
+    return { publicKey: b64u(publicKey), signKey };
+  })();
+  const slot = { secret, keys };
+  vapidSlot = slot;
+  keys.catch(() => {
+    if (vapidSlot === slot) vapidSlot = undefined;
+  });
+  return keys;
+}
 
 /**
  * Whether a subscription's keys can be encrypted to: p256dh a 65-byte
@@ -196,23 +224,7 @@ export async function vapidHeader(
   endpoint: string,
   now = Date.now(),
 ): Promise<string> {
-  const pub = unb64u(env.VAPID_PUBLIC_KEY?.trim() ?? "");
-  const d = env.VAPID_PRIVATE_KEY?.trim() ?? "";
-  if (pub.length !== 65 || pub[0] !== 4 || !d) throw new Error("bad VAPID key");
-  const key = await crypto.subtle.importKey(
-    "jwk",
-    {
-      kty: "EC",
-      crv: "P-256",
-      d,
-      x: b64u(pub.slice(1, 33)),
-      y: b64u(pub.slice(33, 65)),
-      ext: true,
-    },
-    { name: "ECDSA", namedCurve: "P-256" },
-    false,
-    ["sign"],
-  );
+  const { publicKey, signKey: key } = await vapidKeys(env);
   const input = `${jwtPart({ typ: "JWT", alg: "ES256" })}.${jwtPart({
     aud: new URL(endpoint).origin,
     exp: Math.floor(now / 1000) + 12 * 3600,
@@ -225,7 +237,7 @@ export async function vapidHeader(
       enc.encode(input),
     ),
   );
-  return `vapid t=${input}.${b64u(sig)}, k=${env.VAPID_PUBLIC_KEY?.trim()}`;
+  return `vapid t=${input}.${b64u(sig)}, k=${publicKey}`;
 }
 
 export type PushResult = "sent" | "gone" | "failed" | "unusable";

@@ -174,6 +174,7 @@ describe("frames", () => {
       "update_report",
       "guest_up",
       "guest_down",
+      "codex_call_checked",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -197,6 +198,7 @@ describe("frames", () => {
       "update_ack",
       "owner_away",
       "proof_seen",
+      "codex_call_check",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {
@@ -626,12 +628,27 @@ describe("frames", () => {
         }),
       ),
     ).not.toBeNull();
-    const s = (open: string[], closed: string[]) =>
-      okc(JSON.stringify({ ...base, type: "sessions", open, closed }));
+    const s = (open: string[], closed: string[], gone?: string[]) =>
+      okc(
+        JSON.stringify({
+          ...base,
+          type: "sessions",
+          open,
+          closed,
+          ...(gone === undefined ? {} : { gone }),
+        }),
+      );
     expect(s(["a", "b"], ["c"])).not.toBeNull();
     expect(s(["a", "a"], [])).toBeNull();
     expect(s([], ["a", "a"])).toBeNull();
     expect(s(["a"], ["a"])).toBeNull();
+    expect(s(["a"], ["b", "c"], ["b"])).not.toBeNull();
+    expect(s(["a"], ["b", "c"], ["b", "c"])).not.toBeNull();
+    expect(s([], ["b"], [])).not.toBeNull();
+    expect(s(["a"], ["b"], ["c"])).toBeNull();
+    expect(s(["a"], ["b"], ["a"])).toBeNull();
+    expect(s([], [], ["a"])).toBeNull();
+    expect(s([], ["a"], ["a", "a"])).toBeNull();
     const dv = {
       ...base,
       type: "deliver",

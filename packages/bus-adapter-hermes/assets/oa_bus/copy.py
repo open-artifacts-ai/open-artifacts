@@ -493,10 +493,20 @@ def roster_line(a, now_ms, home=None):
     return f"- {a['name']} ({', '.join(parts)}){mark}{tail}"
 
 
+KIND_DEFAULT_NAMES = {"antigravity": "agy"}
+
+
 def is_fallback_name(name, kind):
     """bus-protocol isFallbackName: a name only the harness gave the session."""
     low = name.lower()
-    return low == kind or low.startswith(f"{kind}-") or low == "agent" or re.fullmatch(r"claude-\d+", low) is not None
+    d = KIND_DEFAULT_NAMES.get(kind)
+    return (
+        low == kind
+        or low.startswith(f"{kind}-")
+        or (d is not None and (low == d or low.startswith(f"{d}-")))
+        or low == "agent"
+        or re.fullmatch(r"claude-\d+", low) is not None
+    )
 
 
 AWAY_RECENT_MS = 60 * 60_000

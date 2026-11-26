@@ -286,7 +286,7 @@ describe("routing across a link (#1567)", () => {
       v: 1,
       id: `c${++seq}`,
       type: "sessions",
-      open: [],
+      open: ["me", "bl", "bh", "bo"],
       closed: ["own"],
     });
     await eventually(async () => {
@@ -457,7 +457,7 @@ describe("roster across a link (#1567)", () => {
       v: 1,
       id: `c${++seq}`,
       type: "sessions",
-      open: [],
+      open: ["me"],
       closed: ["away", "far"],
     });
     await eventually(async () => {
