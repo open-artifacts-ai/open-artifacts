@@ -427,6 +427,8 @@ export function deleteRole(
     orgId,
     id,
   );
+  // #3132: and the pages it carried.
+  sql.exec("delete from role_follows where role_id = ?", id);
   return (
     sql.exec("delete from roles where org_id = ? and id = ?", orgId, id)
       .rowsWritten > 0
