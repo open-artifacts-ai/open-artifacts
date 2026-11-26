@@ -216,7 +216,6 @@ type CheckRow = {
   conclusion: string | null;
   app: number;
   head_sha: string;
-  started_at: string | null;
 };
 
 /**
@@ -238,7 +237,7 @@ export async function ciProblems(
     "--paginate",
     `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`,
     "--jq",
-    ".check_runs[] | {id, name, status, conclusion, app: .app.id, head_sha, started_at} | @json",
+    ".check_runs[] | {id, name, status, conclusion, app: .app.id, head_sha} | @json",
   ]);
   const rows = out
     .split("\n")
@@ -247,18 +246,18 @@ export async function ciProblems(
     .filter((r) => r.head_sha === sha && r.app === ACTIONS_APP_ID);
   const problems: string[] = [];
   for (const name of REQUIRED_CHECKS) {
-    const newest = rows
-      .filter((r) => r.name === name)
-      .sort(
-        (a, b) =>
-          String(a.started_at ?? "").localeCompare(
-            String(b.started_at ?? ""),
-          ) || a.id - b.id,
-      )
+    const named = rows.filter((r) => r.name === name);
+    // Any run of this check still queued or running (a rerun) means CI has
+    // not finished on this head, whatever an older run said. A queued run has
+    // no start time, so order never decides this.
+    const open = named.find((r) => r.status !== "completed");
+    // Otherwise the newest completed run, by check-run id (ids only grow).
+    const newest = named
+      .filter((r) => r.status === "completed")
+      .sort((a, b) => a.id - b.id)
       .at(-1);
-    if (!newest) problems.push(`${name} has not reported`);
-    else if (newest.status !== "completed")
-      problems.push(`${name} is ${newest.status}`);
+    if (open) problems.push(`${name} is ${open.status}`);
+    else if (!newest) problems.push(`${name} has not reported`);
     else if (newest.conclusion !== "success")
       problems.push(`${name} is ${newest.conclusion}`);
   }

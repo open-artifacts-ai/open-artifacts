@@ -73,7 +73,7 @@ type CheckRow = {
   conclusion: string | null;
   app: number;
   head_sha: string;
-  started_at: string;
+  started_at: string | null;
 };
 /** A check run GitHub Actions reported on the head, green unless told. */
 const check = (name: string, o: Partial<CheckRow> = {}): Partial<CheckRow> => ({
@@ -378,6 +378,69 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
       ],
     });
     expect((await go(g2)).action).toBe("enqueued");
+  });
+
+  it("the Prover's case: an older green e2e and a newer queued rerun with no start time make zero enqueues", async () => {
+    const rest = REQUIRED_CHECKS.filter((n) => n !== "e2e").map((n) =>
+      check(n),
+    );
+    const green = check("e2e", { id: 100, started_at: hoursAgo(1) });
+    const queued = check("e2e", {
+      id: 200,
+      status: "queued",
+      conclusion: null,
+      started_at: null,
+    });
+    for (const checks of [
+      [...rest, green, queued],
+      // Order in the reply never matters.
+      [...rest, queued, green],
+      // A running rerun with a lower id than a later green one still holds.
+      [
+        ...rest,
+        check("e2e", { id: 50, status: "in_progress", conclusion: null }),
+        green,
+      ],
+    ]) {
+      const g = fake({ ...f3249, checks });
+      const l = logs();
+      expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+      expect(enqueues(g)).toEqual([]);
+      expect(l.out.join("\n")).toMatch(/e2e is (queued|in_progress)/);
+    }
+    // Once that rerun succeeds, the same head proceeds.
+    const done = fake({
+      ...f3249,
+      checks: [
+        ...rest,
+        green,
+        { ...queued, status: "completed", conclusion: "success" },
+      ],
+    });
+    expect(await go(done)).toEqual({ action: "enqueued", pr: 3249 });
+    expect(enqueues(done)[0]?.oid).toBe(SHA);
+  });
+
+  it("the newest completed run is picked by check-run id, not start time", async () => {
+    const rest = REQUIRED_CHECKS.filter((n) => n !== "e2e").map((n) =>
+      check(n),
+    );
+    // The red run has the higher id but an earlier (skewed) start time.
+    const g = fake({
+      ...f3249,
+      checks: [
+        ...rest,
+        check("e2e", {
+          id: 300,
+          conclusion: "failure",
+          started_at: hoursAgo(5),
+        }),
+        check("e2e", { id: 200, started_at: hoursAgo(0.1) }),
+      ],
+    });
+    const l = logs();
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("e2e is failure");
   });
 
   it("a required check missing, pending, red, from another app or on another SHA is untested", async () => {
