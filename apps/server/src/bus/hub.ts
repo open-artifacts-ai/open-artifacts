@@ -392,6 +392,7 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.mailExpiry,
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
 ];
@@ -492,6 +493,12 @@ const noticeGated = (ws: WebSocket): boolean => followGated(ws);
 const noticeMetaGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.noticeMeta);
+};
+
+/** `deliver.expires_at` goes only to a socket whose hello listed BUS_CAPS.mailExpiry. */
+const mailExpiryGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailExpiry);
 };
 
 /**
@@ -2747,6 +2754,18 @@ function agentList(
 export const HELD_BYTES_CAP = 8 * 1024 * 1024;
 const HELD_ENTRY_BYTES = 256;
 
+/**
+ * #3205: kinds whose daemon keeps a pushed message, unacked, for as long as
+ * its harness takes to say it has it, often past LIMITS.ackTimeoutMs: an agy
+ * session's message waits for its watcher (agy S3). Their bodies are stored
+ * in `mail` when pushed, never held in memory only, so an eviction while the
+ * daemon still has the message cannot lose the hub's copy and expire the
+ * receipt (`lost_body`) under it. Every other kind is held as before.
+ */
+export const STORED_ON_PUSH_KINDS: ReadonlySet<string> = new Set([
+  "antigravity",
+]);
+
 /** A held body: `at` is when it was pushed (its ack deadline is at + ackTimeoutMs). */
 type Held = {
   toAgent: string;
@@ -4030,6 +4049,7 @@ function noticeFrame(
   agent: AgentRow,
   text: string,
   meta?: NoticeMeta,
+  expiresAt?: number,
 ): ServerFrame {
   return {
     v: 1,
@@ -4041,6 +4061,9 @@ function noticeFrame(
     namespace: agent.namespace,
     body: text,
     ...(meta ? { meta } : {}),
+    ...(expiresAt !== undefined
+      ? { expires_at: new Date(expiresAt).toISOString() }
+      : {}),
   };
 }
 
@@ -6267,17 +6290,18 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
           hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.mailExpiry) ||
           hasCap(f, BUS_CAPS.sessionsGone) ||
           hasCap(f, BUS_CAPS.codexCheck)
-            ? // Everything the hub always listed, plus owner_away, guest,
-              // sessions_gone and codex_check only to a daemon that listed
-              // them: an older daemon decodes at most 16 caps, and HUB_CAPS
-              // outgrew that (#2759).
+            ? // Everything the hub always listed, plus caps added after 16
+              // only to a daemon that listed them: an older daemon decodes at
+              // most 16 caps, and HUB_CAPS outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
                     (c !== BUS_CAPS.ownerAway &&
                       c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.mailExpiry &&
                       c !== BUS_CAPS.sessionsGone &&
                       c !== BUS_CAPS.codexCheck) ||
                     hasCap(f, c),
@@ -7734,8 +7758,13 @@ export class BusHub extends DurableObject<Env> {
     const socket =
       target.live === 1 ? liveSocket(this.ctx, target.machineId) : null;
     const inline = size <= LIMITS.inlineBodyBytes;
-    // Held in memory only for an inline push to a live socket under the cap.
-    const held = socket !== null && inline && this.#fits(size);
+    // Held in memory only for an inline push to a live socket under the cap,
+    // and never for a kind whose daemon may keep it past the ack timeout.
+    const held =
+      socket !== null &&
+      inline &&
+      !STORED_ON_PUSH_KINDS.has(target.kind) &&
+      this.#fits(size);
     sql.exec(
       `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, reason, size, created_at, expires_at, acked_at, held_at)
        values (?, ?, ?, ?, ?, ?, ?, 'pending', null, ?, ?, ?, null, ?)`,
@@ -7755,8 +7784,9 @@ export class BusHub extends DurableObject<Env> {
     insertSendKey(sql, sender.id, f.id, key.hash, msgId, now, viaRole);
     if (this.#sendKeys !== null) this.#sendKeys++;
     this.#arm(now + SEND_KEY_RETAIN_MS + 1);
-    // Write-on-miss: an offline machine (agent queued), an oversized body or
-    // a full held cap is stored; only an inline push to a live socket is held.
+    // Write-on-miss: an offline machine (agent queued), an oversized body, a
+    // full held cap or a STORED_ON_PUSH_KINDS recipient is stored; only an
+    // inline push to a live socket is held.
     if (held) this.#hold(msgId, target.id, f.body, size, now, expiresAt, now);
     else storeBody(sql, msgId, target.id, f.body, now, expiresAt);
     this.#arm(expiresAt);
@@ -7783,6 +7813,9 @@ export class BusHub extends DurableObject<Env> {
       from_name: sender.name,
       ...(idsGated(socket) ? { from_id: sender.id } : {}),
       namespace: sender.namespace,
+      ...(mailExpiryGated(socket)
+        ? { expires_at: new Date(expiresAt).toISOString() }
+        : {}),
     } as const;
     if (inline) sendFrame(socket, { ...head, body: f.body });
     else sendFrame(socket, { ...head, notice: { size, msg_id: msgId } });
@@ -8806,6 +8839,9 @@ export class BusHub extends DurableObject<Env> {
         from_name: r.fromName,
         ...(idsGated(ws) ? { from_id: r.fromAgent } : {}),
         namespace: r.namespace,
+        ...(mailExpiryGated(ws)
+          ? { expires_at: new Date(r.expiresAt).toISOString() }
+          : {}),
       } as const;
       if (r.size > LIMITS.inlineBodyBytes) {
         sendFrame(ws, { ...head, notice: { size: r.size, msg_id: r.id } });
@@ -8813,8 +8849,13 @@ export class BusHub extends DurableObject<Env> {
       }
       // A body already on disk stays there until ack or expiry (never moved
       // into memory, so an eviction cannot lose it). A held body, never
-      // persisted, is re-held with a fresh ack deadline.
-      if (h) {
+      // persisted, is re-held with a fresh ack deadline; for a
+      // STORED_ON_PUSH_KINDS agent (#3205) it is stored instead.
+      if (h && STORED_ON_PUSH_KINDS.has(agent.kind)) {
+        storeBody(sql, r.id, agent.id, body, r.createdAt, r.expiresAt);
+        sql.exec("update receipts set held_at = null where id = ?", r.id);
+        this.#release(r.id);
+      } else if (h) {
         this.#hold(r.id, agent.id, body, r.size, r.createdAt, r.expiresAt, now);
         sql.exec("update receipts set held_at = ? where id = ?", now, r.id);
         this.#arm(now + LIMITS.ackTimeoutMs);
@@ -8919,10 +8960,12 @@ export class BusHub extends DurableObject<Env> {
     ack: string | null,
     metaJson: string | null,
   ): boolean {
+    const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
     const frame = noticeFrame(
       agent,
       text,
       noticeMetaGated(ws) ? parseNoticeMeta(metaJson) : undefined,
+      mailExpiryGated(ws) ? expiresAt : undefined,
     );
     if (!trySendFrame(ws, frame)) return false;
     if (ack !== null && !noticeAckGated(ws)) {
@@ -8942,7 +8985,6 @@ export class BusHub extends DurableObject<Env> {
     }
     if (ack !== null && noticeAckGated(ws) && frame.type === "deliver") {
       const sql = this.ctx.storage.sql;
-      const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
       sql.exec(
         "insert or replace into notice_acks (msg_id, machine_id, ack, expires_at) values (?, ?, ?, ?)",
         frame.msg_id,
