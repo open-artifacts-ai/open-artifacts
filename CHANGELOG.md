@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.257.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.256.0...v0.257.0) (2026-11-26)
+
+
+### Features
+
+* **api:** GET versions ?wait holds until the latest version is indexed ([#3115](https://github.com/open-artifacts-ai/open-artifacts/issues/3115)) ([#3221](https://github.com/open-artifacts-ai/open-artifacts/issues/3221)) ([147eca3](https://github.com/open-artifacts-ai/open-artifacts/commit/147eca392b6ca1f1240b7faa0f3fb74bae74e165))
+* **bus:** an agy session's pages link to that session through a local proxy (agy S5) ([#3141](https://github.com/open-artifacts-ai/open-artifacts/issues/3141)) ([339ff25](https://github.com/open-artifacts-ai/open-artifacts/commit/339ff25d788b5cd3f86fbfd5024b5ac5e3c7db7a))
+* **bus:** the role's holder hands it over at once ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3230](https://github.com/open-artifacts-ai/open-artifacts/issues/3230)) ([4395247](https://github.com/open-artifacts-ai/open-artifacts/commit/4395247d1f81d06d77794f94998f78b417db244c))
+
+
+### Bug Fixes
+
+* **ci:** the release PR jumps the merge queue as soon as it is green ([#3236](https://github.com/open-artifacts-ai/open-artifacts/issues/3236)) ([57c9f53](https://github.com/open-artifacts-ai/open-artifacts/commit/57c9f5393e97b0510b5bc73f10b781b645c59cf4))
+
 ## [0.256.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.255.0...v0.256.0) (2026-11-26)
 
 
