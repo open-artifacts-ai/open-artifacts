@@ -47,6 +47,7 @@ import {
 import { getUserWithEpoch, insertUser, toMember } from "../services/users.js";
 import { b64urlEncode, sameKey } from "../util/crypto.js";
 import { type HookEnv, testHooksOn } from "./on.js";
+import { OTP_WAIT_CAP_MS } from "./otp-wait.js";
 
 // /__test/* (P2 T14): hooks P5's cross-tenant suite uses against stg-a and
 // stg-b. Release builds drop this module (`hooks` in app.ts folds to
@@ -61,8 +62,6 @@ import { type HookEnv, testHooksOn } from "./on.js";
 // error.details.reason says why (TEST_HOOK_REFUSALS, a fixed enum).
 
 const OTP_TTL_S = 600;
-/** How often a held otp_latest call re-reads the row. */
-const OTP_REREAD_MS = 100;
 
 export { testHooksOn };
 
@@ -147,7 +146,9 @@ export async function noteTestOtp(
     ]);
   } catch {
     log("otp_note_failed");
+    return;
   }
+  await signalOtp(env, ek);
 }
 
 /**
@@ -165,6 +166,21 @@ export async function forgetTestOtp(env: Env, email: string, ek: string) {
     ]);
   } catch {
     log("otp_note_failed");
+    return;
+  }
+  await signalOtp(env, ek);
+}
+
+/** The install's one DirectorySync DO: it holds the otp/latest wait signal (otp-wait.ts). */
+const syncDo = (env: Env) =>
+  env.DIRECTORY_SYNC?.get(env.DIRECTORY_SYNC.idFromName(SYNC_DO_NAME));
+
+/** The row for `ek` changed: wakes the hook holding a request on it. Never throws. */
+async function signalOtp(env: Env, ek: string): Promise<void> {
+  try {
+    await syncDo(env)?.testOtpChanged(ek);
+  } catch {
+    log("otp_signal_failed");
   }
 }
 
@@ -700,19 +716,29 @@ export function mountTestHooks(app: AppType): void {
         return refused("bad_input");
       }
       const ek = await emailKey(env, email);
-      // `waitMs`: hold the call while the send is still pending (it runs after
-      // the code request's 202), re-reading next to the data, so a test makes
-      // one call. Bounded by OTP_WAIT_MAX_MS.
-      const until = Date.now() + (input.success ? (input.data.waitMs ?? 0) : 0);
+      // `wait`: while the send is "pending", hold the request until its row
+      // changes (the DO's signal, taken before each read so no change slips
+      // between them) or the bound: never a repeated read on a timer.
+      const deadline =
+        Date.now() +
+        Math.min(input.success ? (input.data.wait ?? 0) : 0, OTP_WAIT_CAP_MS);
+      const sync = syncDo(env);
+      let since = sync ? await sync.testOtpVersion(ek).catch(() => 0) : 0;
       let got = await readTestOtp(env, ek);
       while (
-        "outcome" in got &&
+        sync &&
+        !("code" in got) &&
         got.outcome === "pending" &&
-        Date.now() < until
+        deadline > Date.now()
       ) {
-        await new Promise<void>((r) =>
-          setTimeout(r, Math.min(OTP_REREAD_MS, until - Date.now())),
-        );
+        const woke = await sync
+          .testOtpWait(ek, since, deadline - Date.now())
+          .then(
+            () => true,
+            () => false,
+          );
+        if (!woke) break;
+        since = await sync.testOtpVersion(ek).catch(() => 0);
         got = await readTestOtp(env, ek);
       }
       await audit(env, hook, ip, "code" in got ? "ok" : "none", { email });

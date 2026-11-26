@@ -172,7 +172,7 @@ export const noCardKnown = (userId: string | undefined) => {
     return false;
   }
 };
-const rememberNoCard = (userId: string, gone: boolean) => {
+export const rememberNoCard = (userId: string, gone: boolean) => {
   try {
     if (gone) localStorage.setItem(NO_CARD(userId), "1");
     else localStorage.removeItem(NO_CARD(userId));

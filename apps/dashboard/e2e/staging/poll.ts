@@ -3,8 +3,8 @@
 // read that throws (a hook refusal, a bad status) fails at once.
 //
 // There is no interval and no sleep: a read that is still pending is held by
-// the host (the otp/latest hook's `waitMs` holds the call until the send
-// lands, up to a bound), so a loop turn is one request, not a spin. A caller
+// the host (the otp/latest hook's `wait` holds the call until the send's
+// own write signals it, up to a bound), so a loop turn is one request, not a spin. A caller
 // whose read returns at once while pending must not use this.
 
 export async function untilSettled<T>(
