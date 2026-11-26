@@ -4806,9 +4806,13 @@ export class BusHub extends DurableObject<Env> {
       if (!call.success || !hash.success) return null;
       mode = { kind: "direct", call_id: call.data, args_sha256: hash.data };
     } else return null;
-    const key = `${thread.data}\n${mode.call_id}`;
+    // `once` is the (thread, call) that links at most once; `key` also binds
+    // the tool and the args hash or item, so another tool or args never joins
+    // a running check nor shares its miss.
+    const once = `${thread.data}\n${mode.call_id}`;
+    const key = `${once}\n${tool.data}\n${mode.kind === "code" ? mode.item_id : mode.args_sha256}`;
     const now = this.#now();
-    if (this.#codexAdmitted.has(key)) return null;
+    if (this.#codexAdmitted.has(once)) return null;
     if (
       mode.kind === "code" &&
       (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
@@ -4816,8 +4820,8 @@ export class BusHub extends DurableObject<Env> {
       return null;
     const missUntil = this.#codexMiss.get(key);
     if (missUntil !== undefined && missUntil > now) return null;
-    const running = this.#codexFlight.get(key);
-    if (running) return running;
+    // A duplicate in flight is unlinked: the identity goes to the first only.
+    if (this.#codexFlight.has(key)) return null;
     this.#codexStarts = this.#codexStarts.filter(
       (t) => t > now - CODEX_CHECK_WINDOW_MS,
     );
@@ -4829,7 +4833,9 @@ export class BusHub extends DurableObject<Env> {
     const p = this.#codexAsk(thread.data, tool.data, mode).then(
       (id) => {
         if (id) {
-          this.#codexAdmitted.add(key);
+          // Another check for this (thread, call) linked first.
+          if (this.#codexAdmitted.has(once)) return null;
+          this.#codexAdmitted.add(once);
           if (this.#codexAdmitted.size > CODEX_MAP_MAX)
             this.#codexAdmitted.delete(
               this.#codexAdmitted.values().next().value as string,

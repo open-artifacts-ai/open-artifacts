@@ -300,16 +300,19 @@ describe("a Codex call with no proof (#3108)", () => {
     expect(await p).toBeNull();
   });
 
-  it("never asks another member's daemon", async () => {
+  it("a call naming another member's thread asks only the caller's own daemons", async () => {
     const a = await scene();
     const b = await scene();
+    // A's request names B's live thread; linkRequest routes by A's user id
+    // (busHub(env, userId)), so B's daemon is never asked and A's says no.
     const r = await run(
       a.m.userId,
       a.d,
-      body("ping", codeMeta(a.thread)),
-      true,
+      body("ping", codeMeta(b.thread)),
+      false,
     );
-    expect(r.identity).toBeDefined();
+    expect(r.identity).toBeUndefined();
+    expect(checksOf(a.d)).toHaveLength(1);
     expect(checksOf(b.d)).toEqual([]);
   });
 
@@ -340,7 +343,7 @@ describe("a Codex call with no proof (#3108)", () => {
     expect(checksOf(d)).toHaveLength(1);
   });
 
-  it("asks once for the same (thread, call) in flight", async () => {
+  it("asks once for the same check in flight, and links only the first", async () => {
     const { m, d, thread } = await scene();
     const meta = codeMeta(thread);
     const a = linkRequest(e as never, m.userId, req(body("ping", meta)));
@@ -349,8 +352,65 @@ describe("a Codex call with no proof (#3108)", () => {
     reply(d, f.id, true);
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra.identity).toBeDefined();
-    expect(rb.identity).toBeDefined();
+    expect(rb.identity).toBeUndefined();
     expect(checksOf(d)).toHaveLength(1);
+  });
+
+  it("other args on a running (thread, call) never join its check", async () => {
+    const { m, d, thread } = await scene();
+    const meta = directMeta(thread);
+    const real = { body: "mine" };
+    const realHash = await canonicalArgsSha256(real);
+    const a = linkRequest(
+      e as never,
+      m.userId,
+      req(body("add_comment", meta, real)),
+    );
+    const b = linkRequest(
+      e as never,
+      m.userId,
+      req(body("add_comment", meta, { body: "theirs" })),
+    );
+    const f1 = await waitFor(d, "codex_call_check");
+    const f2 = await waitFor(d, "codex_call_check");
+    for (const f of [f1, f2]) {
+      const mode = (f as unknown as Check).mode as { args_sha256?: string };
+      reply(d, f.id, mode.args_sha256 === realHash);
+    }
+    const [ra, rb] = await Promise.all([a, b]);
+    expect(ra.identity).toBeDefined();
+    expect(rb.identity).toBeUndefined();
+  });
+
+  it("another tool on a running (thread, call) never links too, even if its daemon says yes", async () => {
+    const { m, d, thread } = await scene();
+    const meta = codeMeta(thread);
+    const a = linkRequest(e as never, m.userId, req(body("ping", meta)));
+    const b = linkRequest(e as never, m.userId, req(body("add_comment", meta)));
+    reply(d, (await waitFor(d, "codex_call_check")).id, true);
+    reply(d, (await waitFor(d, "codex_call_check")).id, true);
+    const rs = await Promise.all([a, b]);
+    expect(rs.filter((r) => r.identity !== undefined)).toHaveLength(1);
+  });
+
+  it("a miss for other args does not hold back the real call", async () => {
+    const { m, d, thread } = await scene();
+    const meta = directMeta(thread);
+    const wrong = await run(
+      m.userId,
+      d,
+      body("add_comment", meta, { body: "theirs" }),
+      false,
+    );
+    expect(wrong.identity).toBeUndefined();
+    const real = await run(
+      m.userId,
+      d,
+      body("add_comment", meta, { body: "mine" }),
+      true,
+    );
+    expect(real.identity).toBeDefined();
+    expect(checksOf(d)).toHaveLength(2);
   });
 });
 
