@@ -44,6 +44,12 @@ import {
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
 import {
+  type AgyEntryIo,
+  type AgyTarget,
+  installAgyEntries,
+  restoreAgyEntries,
+} from "./agy-proof.ts";
+import {
   busStopped,
   claudeConfigFile,
   installProof,
@@ -300,6 +306,8 @@ export const paths = (deps: AdapterDeps) => {
     codexBin: codexBinFile(busDir),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
+    // agy S5: the user's Antigravity pages entries, kept for uninstall (0600).
+    agyPages: join(busDir, "agy-pages-entries.json"),
     // agy 1.5's user-level MCP config (`agy mcp add` writes it; the older
     // ~/.gemini/antigravity/mcp_config.json is the legacy path it migrated from).
     agyMcp: join(deps.home, ".gemini", "config", "mcp_config.json"),
@@ -551,6 +559,72 @@ function agyEntryIs(
     Array.isArray(args) &&
     isDeepStrictEqual(args.slice(-2), ["mcp", "antigravity"])
   );
+}
+
+/** agy S5: what the Antigravity pages entries step reads and writes. */
+export const agyEntryIo = (
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin" | "hub">,
+): AgyEntryIo => {
+  const p = paths(deps as AdapterDeps);
+  return {
+    file: p.agyMcp,
+    moved: p.agyPages,
+    write: (text) => {
+      target(p.agyMcp);
+      // Checked as it is read: a file that no longer parses is never written.
+      parseAgyMcp(text, p.agyMcp);
+      writeAtomic(p.agyMcp, text);
+    },
+    writeMoved: (data) => writeAtomic(p.agyPages, data, 0o600),
+    busBin: deps.busBin ?? [],
+    ...(movedHome(deps as AdapterDeps)
+      ? { busHome: movedHome(deps as AdapterDeps) as string }
+      : {}),
+    patFile: (origin) =>
+      join(
+        deps.home,
+        ".open-artifacts",
+        `${hostSlug(new URL(origin).host)}-pat-token`,
+      ),
+    stopped: stoppedBus(deps, false),
+  };
+};
+
+/** agy S5: main, and each added instance by its name (the --name form). */
+export const agyTargets = (
+  deps: Pick<AdapterDeps, "home" | "busHome" | "hub">,
+): AgyTarget[] => {
+  const out: AgyTarget[] = [];
+  const origin = (hub: string) => {
+    try {
+      return new URL(hub).origin;
+    } catch {
+      return undefined;
+    }
+  };
+  const main = deps.hub === undefined ? undefined : origin(deps.hub);
+  if (main !== undefined) out.push({ origin: main });
+  const bus = deps.busHome ?? join(deps.home, ".oa-bus");
+  for (const i of listInstances(bus)) {
+    if (i.main || i.hub === "") continue;
+    const o = origin(i.hub);
+    if (o !== undefined && o !== main) out.push({ origin: o, name: i.name });
+  }
+  return out;
+};
+
+/**
+ * agy S5: the instance's pages entries in agy's config go through the proxy,
+ * so a page an agy session publishes shows as that session. Never stops the install.
+ */
+function agyPagesStep(deps: AdapterDeps, notes: string[]) {
+  try {
+    notes.push(...installAgyEntries(agyEntryIo(deps), agyTargets(deps)).notes);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Antigravity's config: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 /** Writes `next` only when it differs; true if it did. */
@@ -1040,7 +1114,7 @@ const install: Record<Harness, Step> = {
 
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
   // byte for byte. `agy mcp add` would rewrite the whole file.
-  async antigravity(deps) {
+  async antigravity(deps, notes) {
     if (!agyOn(deps.env) || !hasAgy(deps)) return "absent";
     const p = paths(deps);
     const text = readAgy(p.agyMcp);
@@ -1053,6 +1127,7 @@ const install: Record<Harness, Step> = {
     if (made.length > 0 && record[p.agyMcp] === undefined)
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+    agyPagesStep(deps, notes);
     return "done";
   },
 };
@@ -1208,9 +1283,20 @@ const uninstall: Record<Harness, Step> = {
     return uninstallOpenclaw(deps, notes);
   },
 
-  async antigravity(deps) {
+  async antigravity(deps, notes) {
     const p = paths(deps);
     if (!present(p.agyMcp)) return "none";
+    // agy S5: the user's pages entries go back first, byte for byte.
+    let put = false;
+    try {
+      const r = restoreAgyEntries(agyEntryIo(deps));
+      put = r.restored.length > 0;
+      notes.push(...r.notes);
+    } catch (e) {
+      notes.push(
+        `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     const before = readAgy(p.agyMcp);
     const record = readRecord(p.record);
     const next = (record[p.agyMcp] ?? []).reduce(
@@ -1227,7 +1313,7 @@ const uninstall: Record<Harness, Step> = {
       const { [p.agyMcp]: _, ...left } = record;
       writeRecord(p.record, record, left);
     }
-    return saved ? "done" : "none";
+    return saved || put ? "done" : "none";
   },
 };
 

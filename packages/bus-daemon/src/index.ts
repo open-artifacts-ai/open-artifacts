@@ -445,6 +445,11 @@ export type DaemonDeps = {
     /** Prompts that timed out below the prompt-id floor; default ~/.oa-bus/opencode-uncertain.json. */
     uncertainFile?: string;
   };
+  /** agy S5: the process reads that tie a pages proof to an agy session. */
+  antigravity?: {
+    procStart?: (pid: number) => string | null;
+    comm?: (pid: number) => string | null;
+  };
   codex?: CodexAttestDeps & {
     /** Every this many syncs, each live thread's lock is proven again; default 15 (30 s). */
     relockEvery?: number;
@@ -2842,6 +2847,61 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     throw e;
   };
+  /**
+   * agy S5: `oa-bus mcp-proxy --for antigravity` names the agy process it
+   * runs under and the conversation agy put in the call's `_meta`. As for
+   * Claude, the pid is the caller's claim: what binds is a live antigravity
+   * record (the session S2 registers: agent_ref = conversation id, pid = the
+   * agy process it attested) with that pid, conversation and process start.
+   * No record yet binds nothing: the proxy asks again on its next call, so
+   * nothing is held. A proof for another instance than the session's home
+   * is dropped, as for Claude.
+   */
+  const ag = deps.antigravity ?? {};
+  const agyLinkProof = (
+    pid: number,
+    conversation: string,
+    hash: string,
+    instance: string | undefined,
+  ): { bound: boolean } => {
+    const want = instance ?? MAIN_INSTANCE;
+    const start = (ag.procStart ?? procStartOf)(pid);
+    if (!start) {
+      noteUnbound("no_process_start");
+      return { bound: false };
+    }
+    if (basename((ag.comm ?? commOf)(pid) ?? "") !== "agy") {
+      noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const rec = agents.byRef(conversation);
+    if (!rec || rec.kind !== "antigravity" || !rec.live) {
+      noteUnbound("no_live_record", pid);
+      return { bound: false };
+    }
+    if (rec.pid !== pid || (rec.procStart ?? start) !== start) {
+      noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const home = homedOf(rec);
+    if (home === undefined) {
+      noteUnbound("unmapped_folder", pid);
+      return { bound: false };
+    }
+    if (want !== home) {
+      dropProof(want, rec, hash);
+      return { bound: false };
+    }
+    // A hub that takes no proofs: the proxy sends none.
+    if (!laneOfRef(rec.ref)?.link) return { bound: false };
+    proofIssues.delete(pid);
+    // Asked on every call: the hub is told only once per hash.
+    if (!rec.linkHashes?.includes(hash)) {
+      rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+      sendLink(rec, hash);
+    }
+    return { bound: true };
+  };
   const server = await serveDaemon({
     path: listenPath,
     // A codex hello proves one call id, so it buys one request: `hello.pid`
@@ -2853,6 +2913,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      if (req.conversation !== undefined)
+        return agyLinkProof(req.pid, req.conversation, req.hash, req.instance);
       const want = req.instance ?? MAIN_INSTANCE;
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
       if (start === null || start === undefined) {
@@ -3281,11 +3343,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(instance !== undefined ? { instance } : {}),
           pid,
           // #2861: a lookup that misses keeps the start time the record had.
-          ...(mine
-            ? { procStart: mine.procStart }
-            : prev?.pid === pid && prev.procStart !== undefined
-              ? { procStart: prev.procStart }
-              : {}),
+          // agy S5: an antigravity hello's start time was attested above.
+          ...(hello.kind === "antigravity" && hello.attest.proc_start
+            ? { procStart: hello.attest.proc_start }
+            : mine
+              ? { procStart: mine.procStart }
+              : prev?.pid === pid && prev.procStart !== undefined
+                ? { procStart: prev.procStart }
+                : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.

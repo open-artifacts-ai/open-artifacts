@@ -1,4 +1,11 @@
 export {
+  AGY_CONVERSATION_META,
+  AGY_ROOT_META,
+  AgyProxy,
+  type AgyProxyDeps,
+  agyConversation,
+} from "./agy-proxy.ts";
+export {
   type CodexCall,
   type CodexDeps,
   codexCall,

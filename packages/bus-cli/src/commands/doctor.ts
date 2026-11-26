@@ -28,13 +28,16 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import {
+  agyEntryIo,
   agyProblem,
+  agyTargets,
   checkAdapters,
   codexProxyProblem,
   type Harness,
   opencodeProxyProblem,
   skippedProxyEntries,
 } from "../steps/adapters.ts";
+import { agyPagesState } from "../steps/agy-proof.ts";
 import {
   claudePluginsState,
   claudeVersion,
@@ -297,6 +300,28 @@ export async function doctor(ctx: Ctx): Promise<number> {
       else fail(c.notWired(h));
       if (bad?.problem === "disabled" && wiring[h] === "configured")
         warn(c.agyDisabled());
+      // agy S5: each Open Artifacts entry, and whether it links pages.
+      if (bad?.problem !== "malformed")
+        try {
+          const deps = {
+            home: ctx.userHome,
+            busHome: ctx.home,
+            env: ctx.env,
+            busBin: ctx.service.argv?.() ?? [],
+            ...(hub !== undefined ? { hub } : {}),
+          };
+          for (const l of agyPagesState(
+            agyEntryIo(deps),
+            agyTargets(deps),
+            ctx.which,
+          ))
+            if (l.state === "linked")
+              pass(c.agyPagesLinked(l.name, hostOf(l.origin), l.instance));
+            else if (l.state === "pending") warn(c.agyPagesPending(l.name));
+            else if (l.state === "missing")
+              fail(c.agyPagesMissing(l.name, l.program));
+            else warn(c.agyPagesLeft(l.note));
+        } catch {}
       continue;
     }
     let version: string | undefined;

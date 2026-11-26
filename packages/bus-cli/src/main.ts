@@ -143,6 +143,19 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
     case "mcp-proxy": {
       // #1856: OpenCode's or Codex's stand-in for the instance's /mcp; stdio, no listener.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;
+      if (cmd.for === "antigravity") {
+        // agy S5: each call carries its conversation's link proof.
+        const { startAgyProxy } = await import(
+          "@oa/bus-adapter-claude-code/agy-proxy"
+        );
+        await startAgyProxy({
+          instance: cmd.hub,
+          ...(cmd.name ? { instanceName: cmd.name } : {}),
+          ...(cmd.tokenFile ? { tokenFile: cmd.tokenFile } : {}),
+          ...(cmd.tokenEnv ? { tokenEnv: cmd.tokenEnv } : {}),
+        });
+        return undefined;
+      }
       if (cmd.for === "codex") {
         const { startCodexProxy } = await import(
           "@oa/bus-adapter-claude-code/codex-proxy"
