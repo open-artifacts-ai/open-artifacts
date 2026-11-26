@@ -803,6 +803,62 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     expect(gone?.closed).toContain(S0);
   });
 
+  describe("a starting agy that ends while the daemon is down (#3208)", () => {
+    const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
+    /** A run that lists the starting agy, then stops while it still runs. */
+    const firstRun = async () => {
+      const dir = mkdtempSync(join(tmpdir(), "ob-agsd-"));
+      const files = {
+        agentsFile: join(dir, "antigravity-agents.json"),
+        announcedFile: join(dir, "announced.json"),
+      };
+      const one = await setup({ caps, ...files });
+      one.h.daemon.syncNow();
+      await upFor(one.h, S0);
+      one.h.toDaemon({
+        id: "ok1",
+        type: "agent_ok",
+        agent_ref: S0,
+        bus_name: "agy",
+      });
+      await vi.waitFor(() =>
+        expect(one.h.daemon.agents.byRef(S0)?.busName).toBe("agy"),
+      );
+      expect(
+        readAnnounced(files.announcedFile).find((e) => e.ref === S0),
+      ).toMatchObject({ agy: { pid: AGY, procStart: "t0" } });
+      await one.h.daemon.stop();
+      return files;
+    };
+    const goneAfterRestart = async (files: {
+      agentsFile: string;
+      announcedFile: string;
+    }) => {
+      const two = await setup({ caps, ...files }, false);
+      // Frames are handled in order: the hello_ok's reaction is out by now.
+      await settled(two.h);
+      return two.h.of("sessions").some((f) => f.gone?.includes(S0) === true);
+    };
+
+    it("its process ended: the next run sends it as gone after hello_ok", async () => {
+      const files = await firstRun();
+      os.alive.delete(AGY);
+      expect(await goneAfterRestart(files)).toBe(true);
+    });
+
+    it("its pid now runs another process: gone too", async () => {
+      const files = await firstRun();
+      os.start.set(AGY, "t9");
+      expect(await goneAfterRestart(files)).toBe(true);
+    });
+
+    it("its start time can't be read: a plain close, not gone", async () => {
+      const files = await firstRun();
+      os.start.delete(AGY);
+      expect(await goneAfterRestart(files)).toBe(false);
+    });
+  });
+
   it("a reused pid is a new process: the old record closes, the new one is listed under a new ref", async () => {
     const { h } = await setup();
     h.daemon.syncNow();
