@@ -107,7 +107,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     socketPath: path,
     attest: () => ({ ok: true }),
     resolveNamespace: () => ({ namespace: "ns", global: false, source: "cwd" }),
-    hub: { backoffMs: () => 20 },
+    hub: { backoffMs: () => 0 },
     sentFile: join(mkdtempSync(join(tmpdir(), "ob-sf-")), "sent.json"),
     // #3028: never the real ~/.oa-bus/announced.json: a temp one, unless a test
     // brings its own (a restart test shares one across two runs).
@@ -178,7 +178,16 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     },
   });
   stops.push(daemon.stop);
-  await vi.waitFor(() => expect(daemon.hub.open).toBe(true));
+  // The hello is the first thing the hub link writes once open: wake on it.
+  if (!frames.some((f) => f.type === "hello"))
+    await new Promise<void>((resolve) => {
+      const off = onFrame((f) => {
+        if (f.type !== "hello") return;
+        off();
+        resolve();
+      });
+    });
+  expect(daemon.hub.open).toBe(true);
   /** #1608: a pi-like adapter echoes the binding token its first welcome issued; pass `bind_token: undefined` to be a stranger. */
   const tokens = new Map<string, string>();
   const adapter = (agent_ref: string, over: Partial<Hello> = {}) =>
