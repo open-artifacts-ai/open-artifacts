@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -324,6 +325,36 @@ describe("install removes old habit blocks and never asks (#3043)", () => {
     expect(readFileSync(claude, "utf8")).toBe("claude user text\n");
     expect(readFileSync(customCodex, "utf8")).toBe(
       "codex custom without newline",
+    );
+  });
+
+  it("keeps the record of a recorded path that is out of reach, and cleans it once it is back", () => {
+    const ctx = fakeCtx();
+    const dir = join(ctx.userHome, "codex-away");
+    const file = join(dir, "AGENTS.md");
+    putFile(file, `away user text\n\n${OLD_LF}\n`);
+    mkdirSync(ctx.home, { recursive: true });
+    const installJson = join(ctx.home, "install.json");
+    writeFileSync(
+      installJson,
+      JSON.stringify({
+        habits: { files: { [file]: { added: "\n\n", created: false } } },
+      }),
+    );
+    const deps = { home: ctx.userHome, env: {}, busHome: ctx.home };
+    const aside = `${dir}-aside`;
+    renameSync(dir, aside);
+    const away = removeHabits(deps);
+    expect(away.files).toEqual([]);
+    expect(
+      Object.keys(JSON.parse(readFileSync(installJson, "utf8")).habits.files),
+    ).toEqual([file]);
+    renameSync(aside, dir);
+    const back = removeHabits(deps);
+    expect(back.files).toEqual([file]);
+    expect(readFileSync(file, "utf8")).toBe("away user text");
+    expect(JSON.parse(readFileSync(installJson, "utf8")).habits.files).toEqual(
+      {},
     );
   });
 });

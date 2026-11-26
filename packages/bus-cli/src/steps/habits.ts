@@ -343,10 +343,9 @@ export function removeHabits(
     if (seen.has(path)) return;
     seen.add(path);
     try {
-      if (brokenLink(path) || !existsSync(path)) {
-        delete kept[path];
-        return;
-      }
+      // Unreachable now (a moved folder, a dangling link): keep the record, so a
+      // later run retries it, as plugin cleanup does.
+      if (brokenLink(path) || !existsSync(path)) return;
       const real = targetOf(path);
       const before = readFileSync(real, "utf8");
       if (spanOf(before.split("\n")) === undefined) {
