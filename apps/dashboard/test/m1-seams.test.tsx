@@ -17,6 +17,7 @@ import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import { createAppRouter } from "../src/router";
 import { useContentUrl } from "../src/viewer/useContentUrl";
+import { installClock, settle } from "./clock";
 import { arts, installHarness, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -164,6 +165,7 @@ describe("M1 keyboard: title edit returns focus", () => {
 });
 
 describe("M1 delete does not refetch the deleted artifact", () => {
+  installClock();
   it("no GET of the artifact after DELETE succeeds", async () => {
     const { router } = mount(`/a/${OWNED}`);
     await screen.findByRole("button", { name: "More actions" });
@@ -181,7 +183,7 @@ describe("M1 delete does not refetch the deleted artifact", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-    await act(() => new Promise((r) => setTimeout(r, 100)));
+    await settle(100);
     // Any GET here is a refetch of a now-404 artifact.
     expect(methods).toEqual(["DELETE"]);
   });

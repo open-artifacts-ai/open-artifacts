@@ -198,10 +198,18 @@ describe("boot readiness marker", () => {
     document.head.innerHTML =
       '<meta name="oa-format" content="code"><meta name="oa-entry" content="main.txt"><meta name="oa-language" content="text">';
     let release: (r: Response) => void = () => {};
-    vi.stubGlobal("fetch", () => new Promise<Response>((r) => (release = r)));
+    let fetching: () => void = () => {};
+    const requested = new Promise<void>((r) => {
+      fetching = r;
+    });
+    vi.stubGlobal("fetch", () => {
+      fetching();
+      return new Promise<Response>((r) => (release = r));
+    });
     vi.resetModules();
     await import("../src/index");
-    await new Promise((r) => setTimeout(r, 10));
+    // The body is now being fetched: the marker must wait for it.
+    await requested;
     expect(document.documentElement.hasAttribute("data-oa-rendered")).toBe(
       false,
     );

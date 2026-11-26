@@ -6,6 +6,7 @@ import { R, viewerPath } from "@oa/shared";
 import { act, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { setMockDoc } from "../src/viewer/doc/docMock";
+import { installClock, settle } from "./clock";
 import { arts, events, installHarness, mount } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -22,6 +23,7 @@ vi.mock("../src/viewer/doc/DocEditor", async (orig) => ({
 }));
 
 installHarness();
+installClock();
 
 const DOC = (arts.find((a) => a.title === "Landing page") as { id: string }).id;
 setMockDoc(DOC);
@@ -38,7 +40,7 @@ describe("a doc in the live editor", () => {
       }),
     );
     // Past the 1 s debounce.
-    await new Promise((r) => setTimeout(r, 1_500));
+    await settle(1_500);
     expect(screen.queryByRole("button", { name: /^View version/ })).toBeNull();
     expect(document.querySelectorAll(".oa-vlayer")).toHaveLength(1);
     expect(screen.queryByText(/new version/i)).toBeNull();

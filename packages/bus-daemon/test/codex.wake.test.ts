@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ClientFrame, LIMITS } from "@oa/bus-protocol";
@@ -34,7 +35,12 @@ import {
   splitArgv0,
 } from "../src/transports/codex.ts";
 import { queueDb } from "./codex-queue-fixture.ts";
-import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  deliverFrame,
+  eventCounter,
+  stopAll,
+} from "./helpers.ts";
 
 afterEach(stopAll);
 
@@ -43,13 +49,14 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
 /**
  * A fake `codex`: records its argv, CODEX_HOME and cwd to `out` (one JSON
- * line per run), then exits `code`, sleeps `sleepMs` first, kills itself
+ * line per run), then exits `code`, waits on `gate` first, kills itself
  * with `signal`, or floods stderr and never exits.
  */
 function fakeCodex(
   o: {
     code?: number;
-    sleepMs?: number;
+    /** A unix socket the child connects to and waits on: exits `code` on a byte, or when closed. */
+    gate?: string;
     signal?: NodeJS.Signals;
     flood?: boolean;
   } = {},
@@ -62,7 +69,7 @@ function fakeCodex(
     `#!${process.execPath}
 const fs = require("node:fs");
 fs.appendFileSync(${JSON.stringify(out)}, JSON.stringify({ argv: process.argv.slice(2), home: process.env.CODEX_HOME, cwd: process.cwd() }) + "\\n");
-${o.flood ? 'process.stderr.write("x".repeat(256 * 1024)); setInterval(() => {}, 1000);' : `setTimeout(() => process.exit(${o.code ?? 0}), ${o.sleepMs ?? 0});`}
+${o.flood ? 'process.stderr.write("x".repeat(256 * 1024)); setInterval(() => {}, 1000);' : o.gate ? `const c = require("node:net").connect(${JSON.stringify(o.gate)}); c.on("data", () => process.exit(${o.code ?? 0})); c.on("close", () => process.exit(${o.code ?? 0})); c.on("error", () => process.exit(97));` : `setImmediate(() => process.exit(${o.code ?? 0}));`}
 ${o.signal ? `process.kill(process.pid, ${JSON.stringify(o.signal)});` : ""}
 `,
   );
@@ -78,6 +85,47 @@ ${o.signal ? `process.kill(process.pid, ${JSON.stringify(o.signal)});` : ""}
   const text = (i = 0) => (runs()[i]?.argv[2] ?? "").replace(/^--message=/, "");
   return { bin, dir, runs, text };
 }
+
+/**
+ * A gate for a fake codex child: the test owns the unix socket the child
+ * connects to, so it sees when the run started (`connected`), releases it with
+ * `go()`, and sees it die (`closed`: the socket closes when the child does).
+ */
+async function gate() {
+  const path = join(tmp("ob-gate-"), "g.sock");
+  const conns: Socket[] = [];
+  const waiters: (() => void)[] = [];
+  const closed: Promise<void>[] = [];
+  let released = false;
+  const server = createServer((c) => {
+    conns.push(c);
+    if (released) c.write("go");
+    closed.push(new Promise((r) => c.once("close", () => r())));
+    for (const w of waiters.splice(0)) w();
+  });
+  await new Promise<void>((r) => server.listen(path, r));
+  cleanups.push(() => {
+    for (const c of conns) c.destroy();
+    server.close();
+  });
+  return {
+    path,
+    /** Resolves once `n` children have connected. */
+    async connected(n = 1) {
+      while (conns.length < n) await new Promise<void>((r) => waiters.push(r));
+    },
+    go: () => {
+      released = true;
+      for (const c of conns) c.write("go");
+    },
+    closed: () => Promise.all(closed),
+    count: () => conns.length,
+  };
+}
+const cleanups: (() => void)[] = [];
+afterEach(() => {
+  for (const c of cleanups.splice(0)) c();
+});
 
 const agent = (over: Partial<AgentRecord> = {}): AgentRecord => ({
   ref: THREAD,
@@ -272,13 +320,23 @@ describe("codex queue transport (C26d)", () => {
   });
 
   it("a timed-out run is killed, kept as maybe, and stays queued without a second run", async () => {
-    const f = fakeCodex({ sleepMs: 30_000 });
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path });
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const { t, log } = transport(
       { path: f.bin, from: "path" },
       { run: execCodex(2_000), takenFile },
     );
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const first = t.deliver(agent(), mail("x"));
+      await g.connected(); // the run started and is held: never released
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(first).resolves.toEqual(QUEUED);
+    } finally {
+      vi.useRealTimers();
+    }
+    await g.closed(); // the child was killed: its socket closed
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/timed out/));
     // A redelivery, even after a restart, stays queued: never a false Delivered.
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
@@ -290,6 +348,79 @@ describe("codex queue transport (C26d)", () => {
       state: "queued",
       maybe: true,
     });
+  });
+
+  it("execCodex(0) has no timeout: the child runs to completion and its exit is returned", async () => {
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path, code: 0 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(0)(f.bin, [], process.env);
+      await g.connected(); // started and held
+      await vi.advanceTimersByTimeAsync(10 * 60_000); // no timer to fire
+      g.go();
+      await expect(run).resolves.toEqual({ code: 0, stderr: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])(
+    "execCodex(%s) rejects like execFile (ERR_OUT_OF_RANGE) and spawns nothing",
+    async (ms) => {
+      const f = fakeCodex();
+      await expect(execCodex(ms)(f.bin, [], process.env)).rejects.toMatchObject(
+        { code: "ERR_OUT_OF_RANGE" },
+      );
+      expect(f.runs()).toHaveLength(0);
+    },
+  );
+
+  it("execCodex(MAX_SAFE_INTEGER) is accepted: the child runs and exits normally", async () => {
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path, code: 0 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(Number.MAX_SAFE_INTEGER)(f.bin, [], process.env);
+      await g.connected();
+      g.go();
+      await expect(run).resolves.toEqual({ code: 0, stderr: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a timed-out child whose grandchild holds its pipes open still resolves, as null", async () => {
+    const g = await gate();
+    const dir = tmp("ob-fcx-gc-");
+    const bin = join(dir, "codex");
+    // The child spawns a grandchild that inherits its stdout/stderr and waits
+    // on the gate; the child waits on it too.
+    writeFileSync(
+      bin,
+      `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const wait = () => { const c = require("node:net").connect(${JSON.stringify(g.path)}); c.on("data", () => process.exit(0)); c.on("close", () => process.exit(0)); c.on("error", () => process.exit(97)); };
+if (process.argv[2] === "gc") wait();
+else { spawn(process.execPath, [__filename, "gc"], { stdio: "inherit" }); wait(); }
+`,
+    );
+    chmodSync(bin, 0o755);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(2_000)(bin, [], process.env);
+      await g.connected(2); // the child and its grandchild
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(run).resolves.toMatchObject({ code: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
@@ -444,6 +575,7 @@ describe("the daemon delivers to codex threads", () => {
         },
       }),
     );
+    const syncs = eventCounter();
     const one = await daemonHarness({
       codex: {
         home,
@@ -452,10 +584,10 @@ describe("the daemon delivers to codex threads", () => {
         wakes: async () => true,
         takenFile,
       },
-      claude: { syncMs: 30 },
+      claude: { syncMs: 30, onSync: syncs.hook },
     });
     await one.adapter(THREAD, { kind: "codex" });
-    await new Promise((r) => setTimeout(r, 400));
+    await syncs.next(5); // several whole sync ticks
     expect(f.runs()).toHaveLength(0);
     expect(one.of("ack")).toEqual([]);
   });
@@ -471,12 +603,13 @@ describe("the daemon delivers to codex threads", () => {
       wakes: async () => true,
       takenFile,
     };
-    const claude = { syncMs: 30 };
+    const syncs = eventCounter();
+    const claude = { syncMs: 30, onSync: syncs.hook };
     const one = await daemonHarness({ codex, claude });
     await one.adapter(THREAD, { kind: "codex" });
     one.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
     await vi.waitFor(() => expect(f.runs()).toHaveLength(1));
-    await new Promise((r) => setTimeout(r, 150));
+    await syncs.next(3); // several whole sync ticks: the taken check ran each time
     expect(one.of("ack")).toEqual([]);
     // The thread unloads and loads again: the turn takes the item.
     writeRollout(home, [userItem(f.text())]);
@@ -491,10 +624,15 @@ describe("the daemon delivers to codex threads", () => {
   });
 
   it("without a binary, mail to a codex thread stays pending", async () => {
-    const h = await daemonHarness({ codex: { wakes: async () => true } });
+    const syncs = eventCounter();
+    const h = await daemonHarness({
+      codex: { wakes: async () => true },
+      claude: { syncMs: 20, onSync: syncs.hook },
+    });
     await h.adapter(THREAD, { kind: "codex" });
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
-    await new Promise((r) => setTimeout(r, 100));
+    await syncs.next(3); // several whole sync ticks after the delivery
+    await h.barrier();
     expect(h.of("ack")).toEqual([]);
     expect(h.of("refuse")).toEqual([]);
   });
@@ -529,10 +667,12 @@ describe("hostWakes", () => {
   });
 
   it("reads a live process's arguments; a gone one is undefined", async () => {
-    const child = spawn("sleep", ["30"]);
+    // A node child held open on its stdin pipe until killed.
+    const script = "process.stdin.resume()";
+    const child = spawn(process.execPath, ["-e", script]);
     try {
       await vi.waitFor(async () =>
-        expect(await processArgs(child.pid as number)).toEqual(["30"]),
+        expect(await processArgs(child.pid as number)).toEqual(["-e", script]),
       );
     } finally {
       child.kill();
@@ -1132,12 +1272,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
   });
 
   it("two concurrent delivers of one id run `codex queue` once", async () => {
-    const f = fakeCodex({ sleepMs: 300 });
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path });
     const { t } = transport({ path: f.bin, from: "path" });
-    const both = await Promise.all([
-      t.deliver(agent(), mail("hi")),
-      t.deliver(agent(), mail("hi")),
-    ]);
+    const one = t.deliver(agent(), mail("hi"));
+    await g.connected(); // the first run started and is held
+    const two = t.deliver(agent(), mail("hi"));
+    g.go();
+    const both = await Promise.all([one, two]);
     expect(both).toEqual([QUEUED, QUEUED]);
     expect(f.runs()).toHaveLength(1);
   });
@@ -1235,12 +1377,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         home,
         Array.from({ length: 30 }, () => padLine),
       );
+      const run = vi.fn(execCodex(5_000));
       const r = transport(
         { path: f.bin, from: "path" },
-        { takenFile, home, scanBudget: 100_000 },
+        { takenFile, home, scanBudget: 100_000, run },
       );
       for (let i = 0; i < 12; i++) r.watch.check();
-      await new Promise((res) => setTimeout(res, 150));
+      // Every spawn goes through `run`: it was never called.
+      expect(run).not.toHaveBeenCalled();
       expect(f.runs()).toHaveLength(0);
       expect(r.watch.state("mmmmmmmmmmmmmmm1")).toBe("attempt");
     });
@@ -1254,15 +1398,16 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         ...Array.from({ length: 30 }, () => padLine),
         userItem(text),
       ]);
+      const run = vi.fn(execCodex(5_000));
       const r = transport(
         { path: f.bin, from: "path" },
-        { takenFile, home, scanBudget: 100_000 },
+        { takenFile, home, scanBudget: 100_000, run },
       );
       for (let i = 0; i < 10; i++) r.watch.check();
       expect(r.onTaken.mock.calls.map((c) => c[0])).toEqual([
         "mmmmmmmmmmmmmmm1",
       ]);
-      await new Promise((res) => setTimeout(res, 100));
+      expect(run).not.toHaveBeenCalled();
       expect(f.runs()).toHaveLength(0);
     });
   });

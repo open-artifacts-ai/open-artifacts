@@ -14,6 +14,7 @@ import { createBridge } from "../src/viewer/bridge";
 import { asFrame, FakeFrame, stamped } from "./fake-frame";
 
 afterEach(() => {
+  vi.useRealTimers();
   setEmbedForTests(false);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -124,9 +125,10 @@ describe("bridge, framed", () => {
     });
     frame.loaded();
   };
-  const flush = () => new Promise((r) => setTimeout(r, 0));
+  const flush = () => vi.advanceTimersByTimeAsync(0);
 
   beforeEach(() => {
+    vi.useFakeTimers();
     urls.length = 0;
     post.mockReset();
     win = new EventTarget();

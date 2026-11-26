@@ -374,8 +374,9 @@ jobs:
       - run: pnpm --filter @oa/server test:authz
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       # Red-line split: the same matrix with hosted settings (ENVIRONMENT
-      # production, HOSTED 1, the business tier's FEATURES plus usage_off and
-      # bus), so the live per-route red-line file's hosted proof runs here.
+      # production, HOSTED 1, the business tier's FEATURES plus usage_off,
+      # bus off as on staging's rl-b install), so the live per-route red-line
+      # file's hosted proof runs here.
       - run: pnpm --filter @oa/server test:authz:hosted
         if: ${{ steps.ro.outputs.release_only != 'true' }}
   build:
@@ -636,7 +637,18 @@ jobs:
         run: |
           echo "e2e-shard: $SHARDS"
           [ "$SHARDS" = success ]
-      # The merged html report, also when a shard failed (that's when it's read).
+
+  # The merged html report, in its own job so nothing in it can fail the
+  # required e2e check: in merge queue run 45756613297 attempt 1 every shard
+  # passed, then a truncated shard blob failed the report merge and the check.
+  # Not a required check; it reports even when a shard failed (that's when
+  # the report is read).
+  e2e-report:
+    needs: [e2e-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false

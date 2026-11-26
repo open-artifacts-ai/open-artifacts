@@ -190,6 +190,10 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
+/** The msg_ids a session acked on its first link. */
+const acked = (d: { conns: Conn[] }) =>
+  d.conns[0].frames.filter((f) => f.type === "ack").map((f) => f.msg_id);
+
 async function started(
   answer?: (f: Frame) => Record<string, unknown> | undefined,
 ) {
@@ -620,24 +624,44 @@ describe("pi extension asset", () => {
       triggerTurn: true,
       deliverAs: "steer",
     });
-    await new Promise((r) => setTimeout(r, 30));
-    expect(d.conns[0].frames.some((f) => f.type === "ack")).toBe(false);
+    // A later delivery is handled after the notice, so once it is acked the
+    // notice's frames have all arrived.
+    d.push({
+      type: "deliver",
+      msg_id: "nnnnnnnnnnnnnnn2",
+      from_name: "peer",
+      namespace: "ns",
+      body: "next",
+    });
+    await vi.waitFor(() => expect(acked(d)).toContain("nnnnnnnnnnnnnnn2"));
+    expect(acked(d)).toEqual(["nnnnnnnnnnnnnnn2"]);
   });
 
   it("a failing sendMessage is not acked", async () => {
     const { d, p } = await started();
-    p.pi.sendMessage = () => {
-      throw new Error("pi is gone");
+    const shown = p.pi.sendMessage;
+    p.pi.sendMessage = (m, o) => {
+      if (m.content.includes("fail-me")) throw new Error("pi is gone");
+      shown(m, o);
     };
     d.push({
       type: "deliver",
       msg_id: ID,
       from_name: "peer",
       namespace: "ns",
-      body: "x",
+      body: "fail-me",
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(d.conns[0].frames.some((f) => f.type === "ack")).toBe(false);
+    // The next delivery is handled after the failing one: once it is acked,
+    // the failing one has run to its end.
+    d.push({
+      type: "deliver",
+      msg_id: "nnnnnnnnnnnnnnn2",
+      from_name: "peer",
+      namespace: "ns",
+      body: "next",
+    });
+    await vi.waitFor(() => expect(acked(d)).toContain("nnnnnnnnnnnnnnn2"));
+    expect(acked(d)).toEqual(["nnnnnnnnnnnnnnn2"]);
   });
 
   it("session shutdown closes the link; the next session says hello with its own id", async () => {
@@ -903,8 +927,12 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     // A fresh instance bound to a subagent opens nothing either.
     const child = ompHost();
     await child.emit("session_start", ompCtx("omp-child-2", "sub"));
-    await new Promise((r) => setTimeout(r, 100));
-    expect(d.conns).toHaveLength(1);
+    // A root that starts after the subagent connects after it would have: once
+    // it is there, the subagent's link would have been too.
+    const probe = ompHost();
+    await probe.emit("session_start", ompCtx("omp-probe", "main"));
+    await vi.waitFor(() => expect(d.conns).toHaveLength(2));
+    expect(d.conns[1]?.frames[0]).toMatchObject({ agent_ref: "omp-probe" });
     expect(d.conns[0]?.closed).toBe(false);
     expect(await o.call("self", {}, ompCtx("omp-root", "main"))).toContain(
       "pi-agent",
