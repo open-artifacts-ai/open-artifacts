@@ -128,14 +128,16 @@ async function holdOnboarding(page: Page) {
   const { port } = server.address() as AddressInfo;
   await page.route(
     (u) => u.pathname === R.onboarding,
-    async (route) =>
-      route.continue({
+    async (route) => {
+      // The cookie jar, not the request's headers: WebKit's route omits it.
+      const cookie = (await page.context().cookies(APP))
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
+      await route.continue({
         url: `http://127.0.0.1:${port}${R.onboarding}`,
-        headers: {
-          ...(await route.request().allHeaders()),
-          "x-forward-cookie": (await route.request().allHeaders()).cookie ?? "",
-        },
-      }),
+        headers: { ...route.request().headers(), "x-forward-cookie": cookie },
+      });
+    },
   );
   return {
     release,
