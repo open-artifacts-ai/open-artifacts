@@ -19,7 +19,11 @@ import {
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
 import { checkMemberComments } from "../staging/happy-path/member-comments";
-import { approveMachine, freshSignInUrl } from "./bus-confirm";
+import {
+  approveMachine,
+  freshSignInUrl,
+  spendDeviceCodes,
+} from "./bus-confirm";
 import {
   APP,
   createToken,
@@ -281,6 +285,7 @@ test.beforeEach(async ({ browser }) => {
 });
 
 test.afterEach(async () => {
+  await spendDeviceCodes();
   agentA?.close();
   agentB?.close();
   await Promise.all([pa, pb, pg].map((p) => p?.context().close()));

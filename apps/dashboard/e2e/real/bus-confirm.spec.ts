@@ -11,6 +11,7 @@ import {
   freshSignInUrl,
   openAgent,
   proposeRole,
+  spendDeviceCodes,
 } from "./bus-confirm";
 import { APP, expect, freshEmail, loginAs, test, uniq } from "./fixtures";
 
@@ -98,12 +99,28 @@ async function holdApproveBody(page: Page, status?: number) {
   };
 }
 
-test("a refused approval fails at once with its status, while the body is held", async ({
+// Every code a test leaves outstanding is spent after it, bounded.
+test.afterEach(async () => {
+  await spendDeviceCodes();
+});
+
+test("a refused approval fails at once with its status, while the body and the device token are held", async ({
   page,
 }, info) => {
   test.setTimeout(120_000);
   await loginAs(page, freshEmail(`refused-${info.project.name}`), "member");
   const held = await holdApproveBody(page, 403);
+  // /bus/device/token never answers until released: nothing on the failure
+  // path may wait for it.
+  const realFetch = globalThis.fetch;
+  let unhold: () => void = () => {};
+  const tokenGate = new Promise<void>((r) => {
+    unhold = r;
+  });
+  globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init) => {
+    if (String(input).endsWith("/bus/device/token")) await tokenGate;
+    return realFetch(input, init);
+  }) as typeof fetch;
   try {
     const refused = approveMachine(page).then(
       () => "approved",
@@ -114,7 +131,13 @@ test("a refused approval fails at once with its status, while the body is held",
     expect(await withDeadline(refused, 15_000, "the refused approval")).toMatch(
       /POST \/bus\/approve: 403/,
     );
+    // The teardown's spend is bounded: it ends though the token call is held.
+    const t0 = Date.now();
+    await spendDeviceCodes();
+    expect(Date.now() - t0).toBeLessThan(10_000);
   } finally {
+    globalThis.fetch = realFetch;
+    unhold();
     held.release();
     await held.close();
   }

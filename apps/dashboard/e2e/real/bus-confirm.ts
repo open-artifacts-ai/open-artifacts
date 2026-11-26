@@ -11,6 +11,33 @@ import { mcpWithToken } from "./mcp-client";
 export const freshSignInUrl = (email: string, next: string, role = "member") =>
   `${APP}/auth/dev-login?${new URLSearchParams({ email, role, fresh: "1", next })}`;
 
+/** Device codes made and not yet spent: a refusal leaves one behind (an IP holds five). */
+const outstanding = new Set<string>();
+
+/**
+ * Teardown for a test that approves machines: spends every code still
+ * outstanding (a redeem answers whatever the code's state), each under a short
+ * bound, errors ignored. Never blocks a failure: call it from afterEach.
+ */
+export async function spendDeviceCodes(): Promise<void> {
+  const codes = [...outstanding];
+  outstanding.clear();
+  await Promise.all(
+    codes.map((device_code) =>
+      withDeadline(
+        fetch(`${APP}/bus/device/token`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ device_code }),
+        }).then((r) => r.body?.cancel()),
+        SPEND_BOUND_MS,
+        "spending a device code",
+      ).catch(() => undefined),
+    ),
+  );
+}
+const SPEND_BOUND_MS = 3_000;
+
 /** Approves a new machine in the browser (the real device flow); returns its token. */
 export async function approveMachine(page: Page): Promise<string> {
   const res = await fetch(`${APP}/bus/device`, {
@@ -23,6 +50,7 @@ export async function approveMachine(page: Page): Promise<string> {
     user_code: string;
   };
   expect(res.status, JSON.stringify(dev)).toBe(201);
+  outstanding.add(dev.device_code);
   await page.goto(`${APP}/bus/approve`);
   await page.locator("#code").fill(dev.user_code);
   await page.getByRole("button", { name: /continue|next|check/i }).click();
@@ -36,17 +64,12 @@ export async function approveMachine(page: Page): Promise<string> {
   // The status is what counts, and it is known with the headers: neither a
   // success nor a failure waits on the body (a held body would stall it, and
   // WebKit drops a body once the page navigates). A failure names the status.
-  if (approved.status() >= 300) {
-    // Spend the code, so a refusal leaves none outstanding (an IP holds five).
-    await fetch(`${APP}/bus/device/token`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ device_code: dev.device_code }),
-    }).catch(() => undefined);
+  // A failure throws at once, with nothing awaited first: the code it leaves
+  // behind is spent by spendDeviceCodes in the test's teardown.
+  if (approved.status() >= 300)
     throw new Error(
       `POST /bus/approve: ${approved.status()} ${approved.statusText()}`,
     );
-  }
   // Approval is committed once POST /bus/approve answers, and this is the
   // first token request for the code (so inside its rate limit): it returns
   // the token. No polling.
@@ -57,6 +80,7 @@ export async function approveMachine(page: Page): Promise<string> {
   });
   const j = (await t.json()) as { status?: string; machine_token?: string };
   expect(j.machine_token, JSON.stringify(j)).toBeTruthy();
+  outstanding.delete(dev.device_code);
   return String(j.machine_token);
 }
 
