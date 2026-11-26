@@ -93,7 +93,7 @@ import {
   reconcileAsks,
 } from "./asks.js";
 import { askApproveAudit, audit, userActor } from "./audit.js";
-import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
+import { agentIdentityOf, agentNamesOf, busHub, roleHolderFor } from "./bus.js";
 import {
   type AskerAddress,
   agentKey,
@@ -2514,6 +2514,8 @@ export async function askingAddress(
   artifactId: string,
   threadId: string,
   author: StoredActor,
+  /** #3132: when the ask was posted (ISO): a moved role takes only asks posted while it was held. */
+  askedAt?: string,
 ): Promise<AskerAddress | null> {
   const id = author.kind === "user" ? author.agent?.identity : undefined;
   if (author.kind !== "user" || !id) return null;
@@ -2533,15 +2535,29 @@ export async function askingAddress(
     logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
     return null;
   };
+  const origin = askedAt ? Date.parse(askedAt) : Number.NaN;
+  const originAt = Number.isFinite(origin) ? { originAt: origin } : {};
   const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
     id.identityId,
   );
-  if (!current) return none("no_current_name");
+  if (!current) {
+    // #3132: the session is gone from its hub. If it handed its role on and
+    // posted this ask while it held it, the role's live holder is the asker
+    // now, as the hub answers it (roleForward); otherwise nothing is sent.
+    const holder = await roleHolderFor(
+      env,
+      row.owner,
+      id.identityId,
+      Number.isFinite(origin) ? origin : Date.now(),
+    );
+    if (!holder) return none("no_current_name");
+    return { ...holder, ...originAt };
+  }
   const address = { namespace: row.namespace, name: current };
   if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
   const at = await agentIdentityOf(env, row.owner, address);
   if (at?.identityId !== id.identityId) return none("name_not_theirs");
-  return { ...address, identityId: id.identityId };
+  return { ...address, identityId: id.identityId, ...originAt };
 }
 
 /** #2733: lets go of the holds a reply took up front; retried once. False when it failed (they stay held: masked, undelivered). Logs a fixed event, no content. Never throws. */
@@ -2663,6 +2679,10 @@ async function threadReply(
           online: false,
           userId: p.owner,
           address: { namespace: p.namespace, name: p.name },
+          // #3132: a moved role takes only threads joined while it was held.
+          ...(p.joinedAt && Number.isFinite(Date.parse(p.joinedAt))
+            ? { originAt: Date.parse(p.joinedAt) }
+            : {}),
         });
     }
     heldHere = heldNow;
@@ -3085,7 +3105,7 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
-        await askingAddress(env, artifactId, threadId, c.author),
+        await askingAddress(env, artifactId, threadId, c.author, c.createdAt),
         // Only an answer the asker picked themselves in the web app.
         decided &&
           c.ask?.answer !== undefined &&

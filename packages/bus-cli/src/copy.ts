@@ -835,6 +835,14 @@ export function copy(
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    // #3108: a Codex entry that signs in by itself, linked through the server check.
+    codexLinked: (name: string, ago: string) =>
+      done(`Codex's ${clip(name, 50)} entry is linked (last call ${ago}).`),
+    codexLinksOnFirstCall: (name: string) =>
+      p(
+        "muted",
+        `Codex's ${clip(name, 50)} entry links on its first Open Artifacts call.`,
+      ),
     // The Claude Code plugins (#2095). Drafts for OA Product: wording is theirs.
     outputStyleOn: () => [
       done("Turned on the Artifacts Teammate output style"),
