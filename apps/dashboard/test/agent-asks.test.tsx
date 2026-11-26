@@ -16,7 +16,14 @@ import { allowedText, endDate, leftoverText } from "../src/foryou/held";
 import { agentAsksOn, forYouVariant } from "../src/mockForYou";
 import { MentionMenu } from "../src/viewer/comments/asks";
 import { installClock, settle } from "./clock";
-import { calls, events, installHarness, mount, server } from "./harness";
+import {
+  calls,
+  events,
+  installHarness,
+  lastClient,
+  mount,
+  server,
+} from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
 installHarness();
@@ -264,8 +271,10 @@ describe("the held-request notice", () => {
       focusManager.setFocused(false);
       focusManager.setFocused(true);
     });
-    // The refetch is the event: only once it has answered can it have changed anything.
+    // The refetch is the event: it has started, and only once the query has
+    // taken its answer (nothing left fetching) can it have changed anything.
     await waitFor(() => expect(held().length).toBeGreaterThan(before));
+    await waitFor(() => expect(lastClient.isFetching()).toBe(0));
     await settle(300);
     expect(within(panel).queryByText(/The words changed/)).toBeNull();
     expect(panel.querySelector("[data-changed]")).toBeNull();
