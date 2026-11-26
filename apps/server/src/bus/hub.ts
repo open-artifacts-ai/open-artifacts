@@ -3599,6 +3599,16 @@ const CLOSE_PREFIX = "close_drain:";
 export const CLOSE_INLINE_BATCH = 10;
 const CLOSE_END = "close_drain;";
 /**
+ * The persisted gone drain (#3208): one meta row per `sessions{closed, gone}`
+ * frame whose gone agents still have pending mail past CLOSE_INLINE_BATCH,
+ * keyed GONE_PREFIX + padded timestamp + id; the value is {"through": max
+ * receipts rowid at the frame, "ids": [...]}. Only receipts at or before
+ * `through` expire, so a session reopened under the same ref mid-drain keeps
+ * its own new mail.
+ */
+const GONE_PREFIX = "gone_drain:";
+const GONE_END = "gone_drain;";
+/**
  * open-bus #422: a machine with no daemon socket for this long has its live
  * agents closed by the alarm, as agent_down closes one. Safe: a reconnecting
  * daemon re-sends agent_up for every session it still has (bus-daemon
@@ -4058,6 +4068,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
+            or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)) as x`,
       OWNER_ORG_ID,
       OWNER_ORG_ID,
@@ -4066,6 +4077,9 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       CLOSE_PREFIX,
       CLOSE_END,
+      OWNER_ORG_ID,
+      GONE_PREFIX,
+      GONE_END,
     );
     if (!work?.x) return;
     // Arms the earliest deadline even when a later alarm is set (a reap
@@ -7540,9 +7554,13 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #3208: closed sessions that will never reopen (such as an agy row whose
    * process ended before it joined a conversation). Drop their away
-   * reservations and expire their pending mail at once as recipient_closed so
-   * each sender is told. Mail never moves. Runs for rows closed by this frame
-   * and rows closed earlier (a repeated gone ref is a harmless no-op).
+   * reservations at once (making any held mail undeliverable to reopens,
+   * `replaces`, and #1742 takeovers) and expire up to CLOSE_INLINE_BATCH
+   * pending receipts inline as recipient_closed so each sender is told; any
+   * agents with more pending mail are queued in ONE meta row (GONE_PREFIX)
+   * for #drainGone. A repeated gone ref whose away row and pending mail are
+   * already gone is skipped in one indexed check with no writes and no roster
+   * notification.
    */
   #endGone(machineId: string, refs: string[]): RosterChange {
     const change: RosterChange = { namespaces: [], global: false };
@@ -7550,28 +7568,60 @@ export class BusHub extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const rows = all<{ id: string; namespace: string; global: number }>(
       sql,
-      `select id, namespace, global from agents
-        where machine_id = ? and org_id = ? and live = 0
-          and native_ref in (select value from json_each(?))`,
+      `select a.id, a.namespace, a.global from agents a
+        where a.machine_id = ? and a.org_id = ? and a.live = 0
+          and a.native_ref in (select value from json_each(?))
+          and (exists (select 1 from former_names f indexed by former_names_agent where f.agent_id = a.id and f.kind = 'away')
+               or exists (select 1 from receipts r indexed by receipts_to where r.to_agent = a.id and r.state = 'pending'))`,
       machineId,
       OWNER_ORG_ID,
       JSON.stringify(refs),
     );
+    if (rows.length === 0) return change;
+    const now = this.#now();
+    const through =
+      one<{ n: number | null }>(sql, "select max(rowid) as n from receipts")
+        ?.n ?? 0;
+    let budget = CLOSE_INLINE_BATCH;
+    const left: string[] = [];
     for (const a of rows) {
-      sql.exec(
-        "delete from former_names where agent_id = ? and kind = 'away'",
-        a.id,
-      );
+      const removedAway =
+        all(
+          sql,
+          "delete from former_names where agent_id = ? and kind = 'away' returning rowid",
+          a.id,
+        ).length > 0;
+      if (removedAway) {
+        change.namespaces.push(a.namespace);
+        if (a.global === 1) change.global = true;
+      }
+      if (budget === 0) {
+        left.push(a.id);
+        continue;
+      }
       const pending = all<{ id: string; fromAgent: string }>(
         sql,
-        "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' order by rowid limit ?",
+        "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' and rowid <= ? order by rowid limit ?",
         a.id,
-        MAILBOX_PENDING_CAP,
+        through,
+        budget + 1,
       );
-      for (const r of pending)
-        this.#expire(r.id, r.fromAgent, "recipient_closed");
-      change.namespaces.push(a.namespace);
-      if (a.global === 1) change.global = true;
+      const take = Math.min(pending.length, budget);
+      for (let i = 0; i < take; i++) {
+        const r = pending[i];
+        if (r) this.#expire(r.id, r.fromAgent, "recipient_closed");
+      }
+      budget -= take;
+      if (pending.length > take) left.push(a.id);
+    }
+    if (left.length > 0) {
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?)",
+        OWNER_ORG_ID,
+        `${GONE_PREFIX}${String(now).padStart(16, "0")}:${newId()}`,
+        JSON.stringify({ through, ids: left }),
+      );
+      this.#arm(now + 1);
     }
     return change;
   }
@@ -8052,6 +8102,81 @@ export class BusHub extends DurableObject<Env> {
         OWNER_ORG_ID,
         DRAIN_PREFIX,
         DRAIN_END,
+      ) !== null
+    );
+  }
+
+  /**
+   * One bounded step of the gone drain (#3208), oldest queue row first: for
+   * each queued agent, pending mail at or before the frame's rowid boundary
+   * expires as `recipient_closed` (#expire: bodies and held bytes dropped,
+   * sender told or left for replay). At most BATCH agents and BATCH receipts
+   * per step; a row is rewritten with the agents still to do and deleted once
+   * empty (or unreadable). True while any row remains.
+   */
+  #drainGone(): boolean {
+    const sql = this.ctx.storage.sql;
+    let visits = 0;
+    let receipts = BATCH;
+    const queue = all<{ key: string; value: string }>(
+      sql,
+      "select key, value from meta where org_id = ? and key >= ? and key < ? order by key limit ?",
+      OWNER_ORG_ID,
+      GONE_PREFIX,
+      GONE_END,
+      BATCH,
+    );
+    for (const q of queue) {
+      const entry = parseCloseEntry(q.value);
+      const ids = entry?.ids ?? [];
+      const through = entry?.through ?? 0;
+      let done = 0;
+      for (const agentId of ids) {
+        if (visits >= BATCH) break;
+        visits++;
+        const rows = all<{ id: string; fromAgent: string }>(
+          sql,
+          "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' and rowid <= ? order by rowid limit ?",
+          agentId,
+          through,
+          receipts,
+        );
+        for (const r of rows)
+          this.#expire(r.id, r.fromAgent, "recipient_closed");
+        receipts -= rows.length;
+        // Out of budget: this agent may have more; it stays queued.
+        if (receipts === 0) break;
+        done++;
+      }
+      if (done >= ids.length)
+        sql.exec(
+          "delete from meta where org_id = ? and key = ?",
+          OWNER_ORG_ID,
+          q.key,
+        );
+      else {
+        sql.exec(
+          "update meta set value = ? where org_id = ? and key = ?",
+          JSON.stringify({ through, ids: ids.slice(done) }),
+          OWNER_ORG_ID,
+          q.key,
+        );
+        break;
+      }
+    }
+    if (receipts < BATCH)
+      logEvent("drain_step", {
+        kind: "gone",
+        expired: BATCH - receipts,
+        bodies: 0,
+      });
+    return (
+      one(
+        sql,
+        "select 1 as x from meta where org_id = ? and key >= ? and key < ? limit 1",
+        OWNER_ORG_ID,
+        GONE_PREFIX,
+        GONE_END,
       ) !== null
     );
   }
@@ -8870,6 +8995,8 @@ export class BusHub extends DurableObject<Env> {
     if (this.#drainRevoked()) more = true;
     // 2c. Closed sessions' leftovers (B11), also before TTL (recipient_closed).
     if (this.#drainClosed()) more = true;
+    // 2d. Gone sessions' pending mail (#3208), before TTL (recipient_closed).
+    if (this.#drainGone()) more = true;
 
     // 3. TTL: pending past expires_at expires, bodies dropped, sender told.
     const due = all<{ id: string; fromAgent: string }>(
