@@ -31,8 +31,10 @@ import {
   b64u,
   encryptPayload,
   pushEndpointOk,
+  pushOn,
   unb64u,
   vapidHeader,
+  vapidKeys,
 } from "../src/services/web-push.js";
 import { api, login } from "./helpers.js";
 
@@ -43,25 +45,19 @@ const dec = new TextDecoder();
 
 // ------------------------------------------------------------------ keys
 
-async function vapidKeys() {
-  const kp = (await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  )) as CryptoKeyPair;
-  const jwk = (await crypto.subtle.exportKey(
-    "jwk",
-    kp.privateKey,
-  )) as JsonWebKey;
-  const pub = new Uint8Array([
-    4,
-    ...unb64u(jwk.x as string),
-    ...unb64u(jwk.y as string),
-  ]);
+// The instance's VAPID pair derives from SESSION_SECRET (#3024); the test only
+// reads the public half, as a verify key.
+async function verifyKeys(e: Env) {
+  const { publicKey: VAPID_PUBLIC_KEY } = await vapidKeys(e);
   return {
-    VAPID_PUBLIC_KEY: b64u(pub),
-    VAPID_PRIVATE_KEY: jwk.d as string,
-    publicKey: kp.publicKey,
+    VAPID_PUBLIC_KEY,
+    publicKey: await crypto.subtle.importKey(
+      "raw",
+      unb64u(VAPID_PUBLIC_KEY),
+      { name: "ECDSA", namedCurve: "P-256" },
+      false,
+      ["verify"],
+    ),
   };
 }
 
@@ -177,14 +173,8 @@ function fakePush(status: (url: string) => number = () => 201) {
 afterEach(() => vi.restoreAllMocks());
 
 async function world() {
-  const keys = await vapidKeys();
-  const E = {
-    ...(env as Env),
-    APP_HOST: "app.localhost",
-    VAPID_PUBLIC_KEY: keys.VAPID_PUBLIC_KEY,
-    VAPID_PRIVATE_KEY: keys.VAPID_PRIVATE_KEY,
-  } as Env;
-  return { E, keys };
+  const E = { ...(env as Env), APP_HOST: "app.localhost" } as Env;
+  return { E, keys: await verifyKeys(E) };
 }
 const mk = (p: string) => login(`${p}-${tag}@x.com`, "member");
 const prefs = (over: Partial<NotificationPrefs> = {}): NotificationPrefs => ({
@@ -363,6 +353,29 @@ describe("the encrypted payload (RFC 8291) and the VAPID header (RFC 8292)", () 
   });
 });
 
+describe("the derived VAPID key (#3024)", () => {
+  const S1 = { SESSION_SECRET: "synthetic-secret-one-0123456789abcdef" } as Env;
+  const S2 = { SESSION_SECRET: "synthetic-secret-two-0123456789abcdef" } as Env;
+
+  it("is stable for one secret and differs for another", async () => {
+    const a = (await vapidKeys(S1)).publicKey;
+    expect((await vapidKeys({ ...S1 } as Env)).publicKey).toBe(a);
+    expect((await vapidKeys(S2)).publicKey).not.toBe(a);
+    // Rotation takes effect in a warm worker: back to S1 is the same key again.
+    expect((await vapidKeys(S1)).publicKey).toBe(a);
+  });
+
+  it("the public key is a 65-byte uncompressed point, and the general key API refuses its label", async () => {
+    const { deriveKey } = await import("../src/auth/keys.js");
+    const pub = (await vapidKeys(S1)).publicKey;
+    expect(unb64u(pub)).toHaveLength(65);
+    expect(unb64u(pub)[0]).toBe(4);
+    await expect(deriveKey(S1, "oa:push-vapid" as never)).rejects.toThrow(
+      "is not a SESSION_SECRET label",
+    );
+  });
+});
+
 describe("the endpoint guard (SSRF)", () => {
   it("accepts only https on a known push service, the default port, no credentials", () => {
     for (const ok of [
@@ -394,21 +407,33 @@ describe("the endpoint guard (SSRF)", () => {
 // ---------------------------------------------------------------- routes
 
 describe("the routes", () => {
-  it("with no VAPID key pair every push route answers 404 push_unavailable", async () => {
-    const u = await mk("off");
-    const b = await browser();
-    for (const [path, method, body] of [
-      [R.mePushKey, "GET", undefined],
-      [R.mePushSubscriptions, "GET", undefined],
-      [R.mePushSubscriptions, "POST", b.body],
-      [R.mePushSubscription("x"), "DELETE", undefined],
-    ] as const) {
-      const r = await api(app, path, u.cookie, { method, body });
-      expect(r.status, `${method} ${path}`).toBe(404);
-      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
-        "push_unavailable",
-      );
+  it("with no SESSION_SECRET push is off and no key derives", async () => {
+    for (const s of [undefined, ""]) {
+      const off = { ...(env as Env), SESSION_SECRET: s } as unknown as Env;
+      expect(pushOn(off)).toBe(false);
+      await expect(vapidKeys(off)).rejects.toThrow("SESSION_SECRET is not set");
     }
+    expect(pushOn(env as Env)).toBe(true);
+  });
+
+  it("the key route answers 200 with the derived key and no legacy VAPID env at all (#3024)", async () => {
+    const E = { ...(env as Env) } as Env;
+    expect(E.VAPID_PUBLIC_KEY).toBeUndefined();
+    expect(E.VAPID_PRIVATE_KEY).toBeUndefined();
+    const u = await mk("derived");
+    const r = await api(app, R.mePushKey, u.cookie, {}, E);
+    expect(r.status).toBe(200);
+    const { publicKey } = (await r.json()) as { publicKey: string };
+    expect(publicKey).toBe((await vapidKeys(E)).publicKey);
+    expect(unb64u(publicKey)).toHaveLength(65);
+    // Legacy values are ignored, not echoed.
+    const legacy = {
+      ...E,
+      VAPID_PUBLIC_KEY: "legacy-pub",
+      VAPID_PRIVATE_KEY: "legacy-priv",
+    } as Env;
+    const r2 = await api(app, R.mePushKey, u.cookie, {}, legacy);
+    expect(await r2.json()).toEqual({ publicKey });
   });
 
   it("with a key pair: the public key, subscribe, list, remove; 201 { id }, 204", async () => {
@@ -807,11 +832,7 @@ describe("sending", () => {
   it("no key pair: nothing is queued and nothing is sent", async () => {
     const { E } = await world();
     const { u } = await enroll(E);
-    const bare = {
-      ...E,
-      VAPID_PUBLIC_KEY: undefined,
-      VAPID_PRIVATE_KEY: undefined,
-    } as Env;
+    const bare = { ...E, SESSION_SECRET: undefined } as unknown as Env;
     const { sent } = fakePush();
     await queuePush(bare, [u.userId], item("ask:np"), T0);
     expect(await pendingCount(u.userId)).toBe(0);
@@ -1394,7 +1415,7 @@ describe("the cron tick", () => {
       await Promise.all(pending);
       return pending.length;
     };
-    const off = { ...E, VAPID_PUBLIC_KEY: undefined } as Env;
+    const off = { ...E, SESSION_SECRET: undefined } as unknown as Env;
     const base = await run(off, T0);
     await queuePush(E, [u.userId], item("ask:cr"), T0);
     // Push off: the due item stays.

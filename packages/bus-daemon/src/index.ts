@@ -60,6 +60,11 @@ import {
 } from "./agents.ts";
 import { readAnnounced, writeAnnounced } from "./announced.ts";
 import {
+  type AntigravityAgent,
+  readAntigravityAgents,
+  writeAntigravityAgents,
+} from "./antigravity-agents.ts";
+import {
   type Attest,
   attest,
   claudeProcStartOf,
@@ -462,6 +467,20 @@ export type DaemonDeps = {
     /** Prompts that timed out below the prompt-id floor; default ~/.oa-bus/opencode-uncertain.json. */
     uncertainFile?: string;
   };
+  /**
+   * agy S2: an Antigravity (agy) record lives as long as its agy process, not
+   * a connection (its hook says hello once, its MCP server per tool call).
+   */
+  antigravity?: {
+    procStart?: (pid: number) => string | null;
+    isRunning?: (pid: number) => boolean;
+    /** How long a read start time is reused; default PROC_START_TTL_MS. */
+    procStartTtlMs?: number;
+    /** The binary a pid runs, checked again on restore; default commOf. */
+    comm?: (pid: number) => string | null;
+    /** Live conversations kept across a restart; default ~/.oa-bus/antigravity-agents.json. */
+    agentsFile?: string;
+  };
   codex?: CodexAttestDeps & {
     /** Every this many syncs, each live thread's lock is proven again; default 15 (30 s). */
     relockEvery?: number;
@@ -775,24 +794,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const id = frameId();
     const kind = rec.kind;
     lane.upIds.set(id, { ref: rec.ref, kind });
-    const sent = sendOn(lane, {
-      v: 1,
-      id,
-      type: "agent_up",
-      agent_ref: rec.ref,
-      kind,
-      proposed_name: fitName(rec.proposedName, 64),
-      namespace: rec.namespace,
-      global: rec.global,
-      ...(rec.nameChosen && lane.nameChosen
-        ? { name_chosen: true as const }
-        : {}),
-      // A /clear: the new ref takes over the old address and its mail (#1295).
-      ...(rec.replaces !== undefined && lane.mailbox
-        ? { replaces: rec.replaces }
-        : {}),
-    });
+    const sent = sendOn(
+      lane,
+      {
+        v: 1,
+        id,
+        type: "agent_up",
+        agent_ref: rec.ref,
+        kind,
+        proposed_name: fitName(rec.proposedName, 64),
+        namespace: rec.namespace,
+        global: rec.global,
+        ...(rec.nameChosen && lane.nameChosen
+          ? { name_chosen: true as const }
+          : {}),
+        // A /clear: the new ref takes over the old address and its mail (#1295).
+        ...(rec.replaces !== undefined && lane.mailbox
+          ? { replaces: rec.replaces }
+          : {}),
+      },
+      // #3218: a frame never written is no answer to wait for; the next
+      // link's onOpen announces again.
+      () => {
+        lane.upIds.delete(id);
+      },
+    );
     if (sent) rec.sentName = rec.proposedName;
+    // #3218: a link not open yet sends nothing; a kept id would hold the
+    // update self-check's `local` probe false until it steps back.
+    else lane.upIds.delete(id);
     return sent;
   };
   /**
@@ -1061,6 +1091,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ttlMs: cl.syncMs ?? 2000,
     jitter: 0,
   });
+  const ag = deps.antigravity ?? {};
+  const agRunning = ag.isRunning ?? isRunning;
+  // agy's attest reads lstart (procStartOf); cached so a tick never runs ps per record.
+  const agStart = cachedProcStart(
+    ag.procStart ?? procStartOf,
+    agRunning,
+    ag.procStartTtlMs === undefined ? {} : { ttlMs: ag.procStartTtlMs },
+  );
+  const agComm = ag.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -1425,6 +1464,44 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           Number(b.live) - Number(a.live) ||
           (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
       )[0];
+  /**
+   * agy S2: the conversation an agy process showed before `ref` (a /clear or a
+   * new conversation in the same process): `ref` takes over its address, as a
+   * Claude /clear does (#1295). The live one, else the one seen last.
+   */
+  const agySwitchedFrom = (
+    ref: string,
+    pid: number,
+    procStart: string,
+  ): AgentRecord | undefined =>
+    agents
+      .all()
+      .filter(
+        (a) =>
+          a.kind === "antigravity" &&
+          a.pid === pid &&
+          a.procStart === procStart &&
+          a.ref !== ref &&
+          !takenOver.has(a.ref),
+      )
+      .sort(
+        (a, b) =>
+          Number(b.live) - Number(a.live) ||
+          (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+      )[0];
+  /** agy S2: closes every other live conversation of `rec`'s agy process. */
+  const closeAgySiblings = (rec: AgentRecord) => {
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live || a.ref === rec.ref) continue;
+      if (a.pid !== rec.pid) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "conversation_switched"));
+    }
+    if (closed) announceSessions();
+  };
   /** Sessions whose address a later session of the same process took over. */
   const takenOver = new Set<string>();
   /** Order in which this process's sessions were last seen (higher is later). */
@@ -3283,6 +3360,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const mine = files.find(
           (x) => x.ref === hello.agent_ref && x.pid === pid,
         );
+        // agy S2: the start time the attest just checked, for liveness.
+        const agyStart =
+          hello.kind === "antigravity" ? hello.attest.proc_start : undefined;
         const old =
           mine && !prev
             ? clearedFrom(
@@ -3291,7 +3371,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 mine.procStart,
                 new Set(files.map((x) => x.ref)),
               )
-            : undefined;
+            : agyStart !== undefined && !prev
+              ? agySwitchedFrom(hello.agent_ref, pid, agyStart)
+              : undefined;
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
@@ -3310,9 +3392,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // #2861: a lookup that misses keeps the start time the record had.
           ...(mine
             ? { procStart: mine.procStart }
-            : prev?.pid === pid && prev.procStart !== undefined
-              ? { procStart: prev.procStart }
-              : {}),
+            : agyStart !== undefined
+              ? { procStart: agyStart }
+              : prev?.pid === pid && prev.procStart !== undefined
+                ? { procStart: prev.procStart }
+                : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           ...(mine?.nameChosen ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
@@ -3328,6 +3412,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(prev ? { state: "revived" } : {}),
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
+        // agy S2: one agy process shows one conversation at a time. A new one
+        // (the first message, /clear, a resumed one) closes the others there.
+        if (rec.kind === "antigravity") {
+          closeAgySiblings(rec);
+          persistAgy();
+        }
         if (rec.kind === "codex") {
           persistCodex();
           trackAway();
@@ -3523,6 +3613,127 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.onSocketLost?.();
   }, deps.socketCheckMs ?? 60_000);
   socketWatch.unref();
+
+  /**
+   * agy S2: each live Antigravity conversation, kept so a restarted daemon
+   * (an update, a crash) takes it back: its hook stays quiet while the
+   * conversation is unchanged, so no hello would bring it back.
+   */
+  const agyAgentsFile =
+    ag.agentsFile ?? join(home(), "antigravity-agents.json");
+  let agySaved: string | undefined;
+  /** Rows whose process start could not be read yet, with the ticks tried. */
+  const agyPending = new Map<
+    string,
+    { row: AntigravityAgent; tries: number }
+  >();
+  const AGY_RESTORE_TRIES = 5;
+  const persistAgy = () => {
+    const rows: AntigravityAgent[] = [];
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live || a.procStart === undefined)
+        continue;
+      rows.push({
+        ref: a.ref,
+        pid: a.pid,
+        procStart: a.procStart,
+        cwd: a.cwd,
+        proposedName: a.proposedName,
+        ...(a.sentName !== undefined ? { sentName: a.sentName } : {}),
+        busName: a.busName,
+      });
+    }
+    for (const [ref, p] of agyPending)
+      if (!rows.some((x) => x.ref === ref)) rows.push(p.row);
+    const text = JSON.stringify(rows);
+    // Never touches the home until a conversation has joined.
+    if (agySaved === undefined ? rows.length === 0 : text === agySaved) return;
+    try {
+      writeAntigravityAgents(agyAgentsFile, rows);
+      agySaved = text;
+    } catch (e) {
+      log(
+        `could not save the live Antigravity conversations: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  /**
+   * agy S2: takes back the conversations a previous run had attested, each
+   * only while its pid still runs agy started at the pinned time. A start
+   * time ps cannot give right now is retried on later ticks, a few times.
+   * `late`: a retry after start, announced here (at start, the hub's onOpen
+   * announces every live record).
+   */
+  const restoreAgy = (rows: AntigravityAgent[], late: boolean) => {
+    for (const r of rows) {
+      if (agents.byRef(r.ref)?.live) {
+        agyPending.delete(r.ref);
+        continue;
+      }
+      const drop = (reason: string) => {
+        agyPending.delete(r.ref);
+        ev("agy_restore_dropped", { ref: r.ref, pid: r.pid, reason });
+      };
+      if (!agRunning(r.pid)) {
+        drop("process_gone");
+        continue;
+      }
+      const start = agStart(r.pid);
+      if (start === null) {
+        const tries = (agyPending.get(r.ref)?.tries ?? 0) + 1;
+        if (tries >= AGY_RESTORE_TRIES) drop("ps_unknown");
+        else agyPending.set(r.ref, { row: r, tries });
+        continue;
+      }
+      if (start !== r.procStart) {
+        drop("start_moved");
+        continue;
+      }
+      if (basename(agComm(r.pid) ?? "") !== "agy") {
+        drop("not_agy");
+        continue;
+      }
+      const instance = homeInstance(r.cwd);
+      let ns: Namespace;
+      try {
+        ns = resolveNs(r.cwd, false, { instance });
+      } catch {
+        drop("no_namespace");
+        continue;
+      }
+      if (!WireNamespaceSchema.safeParse(ns.namespace).success) {
+        drop("no_namespace");
+        continue;
+      }
+      agyPending.delete(r.ref);
+      noteFolder(r.cwd);
+      const rec = agents.up({
+        ref: r.ref,
+        kind: "antigravity",
+        proposedName: r.proposedName,
+        busName: r.busName,
+        namespace: ns.namespace,
+        namespaceSource: ns.source,
+        global: ns.global,
+        ...(instance !== undefined ? { instance } : {}),
+        pid: r.pid,
+        procStart: r.procStart,
+        cwd: r.cwd,
+        live: true,
+        ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
+      });
+      seenAt.set(r.ref, ++seenSeq);
+      ev("agy_restored", { ref: r.ref, pid: r.pid });
+      if (late && laneOfRef(r.ref)?.hub.open) {
+        announceUp(rec);
+        tellOwed(r.ref);
+      }
+      if (debug)
+        log(
+          `restored antigravity conversation ${r.ref.slice(0, 8)} pid ${r.pid}`,
+        );
+    }
+  };
 
   /** #1748: each live attested Codex thread, kept so a restart can take it back. */
   const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
@@ -3984,11 +4195,40 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     persistCodex();
   };
 
+  /**
+   * agy S2: an Antigravity record closes when its agy process ends, or its
+   * pid now runs something started at another time. A start time that cannot
+   * be read right now (a loaded machine) is unknown, not gone.
+   */
+  const syncAntigravity = () => {
+    let closed = false;
+    for (const a of agents.all()) {
+      if (a.kind !== "antigravity" || !a.live) continue;
+      const gone = !agRunning(a.pid);
+      const start = gone ? null : agStart(a.pid);
+      const moved =
+        start !== null && a.procStart !== undefined && start !== a.procStart;
+      if (!gone && !moved) continue;
+      a.live = false;
+      a.closedBy = "liveness";
+      closed = true;
+      ev("agent_leave", agentFields(a, "process_gone"));
+    }
+    if (closed) announceSessions();
+    if (agyPending.size > 0)
+      restoreAgy(
+        [...agyPending.values()].map((p) => p.row),
+        true,
+      );
+    persistAgy();
+  };
+
   const sync = () => {
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],
       ["codex", syncCodex],
+      ["antigravity", syncAntigravity],
     ] as const) {
       try {
         fn();
@@ -4016,6 +4256,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   // #3028: read before the first sync, which writes the file as it goes.
   const savedAnnounced = readAnnounced(announcedFile, undefined, log);
   restoreCodex();
+  {
+    const rows = readAntigravityAgents(agyAgentsFile);
+    // What the file holds now: a row that does not come back is written out.
+    if (rows.length > 0) agySaved = "";
+    restoreAgy(rows, false);
+  }
   sync();
   // #3028: every ref the last run announced that this run cannot see (its
   // session is gone) starts as closed, so the link's first `sessions` frame

@@ -497,7 +497,7 @@ describe("closed-session work drains from the alarm", () => {
       v: 1,
       id: "warm",
       type: "sessions",
-      open: [],
+      open: ids.map((_, i) => `seed_${i}`),
       closed: closed.map((r) => `warm_${r}`),
     });
     await sync(d);

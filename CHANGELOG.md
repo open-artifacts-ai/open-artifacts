@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.252.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.1...v0.252.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** an Antigravity session joins the bus at its first message (agy S2) ([#3135](https://github.com/open-artifacts-ai/open-artifacts/issues/3135)) ([dfa9126](https://github.com/open-artifacts-ai/open-artifacts/commit/dfa91264a74d1b15483fc6902fc09cde087b534e))
+
+
+### Bug Fixes
+
+* **bus:** an unsent agent_up no longer holds the update self-check ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3222](https://github.com/open-artifacts-ai/open-artifacts/issues/3222)) ([1eee203](https://github.com/open-artifacts-ai/open-artifacts/commit/1eee2034ed1cd82f5190203cd610911fb3aea090))
+* **bus:** sessions that exit read away within a minute ([#3192](https://github.com/open-artifacts-ai/open-artifacts/issues/3192)) ([#3198](https://github.com/open-artifacts-ai/open-artifacts/issues/3198)) ([b271979](https://github.com/open-artifacts-ai/open-artifacts/commit/b271979729e302ca1659835ed511557c3d88d28d))
+
+## [0.251.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.251.0...v0.251.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **sign-in:** with login codes on, the page treats codes as a normal way in, no guest copy ([#3179](https://github.com/open-artifacts-ai/open-artifacts/issues/3179)) ([#3196](https://github.com/open-artifacts-ai/open-artifacts/issues/3196)) ([442f1f5](https://github.com/open-artifacts-ai/open-artifacts/commit/442f1f5c55360d69ede80d9a950b5230b7eb2236))
+
 ## [0.251.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.250.0...v0.251.0) (2026-11-26)
 
 
