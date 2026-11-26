@@ -42,6 +42,8 @@ export type RosterAgent = ArtifactAgent & {
   address: BusAddress;
   /** #2238: the verified identity the address was resolved to; a notice then goes only to it. */
   identityId?: string;
+  /** #3132: when the subject began (a thread reply: when the agent joined), BusNotice.originAt. */
+  originAt?: number;
 };
 
 export async function agentKey(
@@ -447,6 +449,7 @@ export async function notifyAgent(
     url,
     to: { namespace: to.address.namespace, name: to.address.name },
     ...(to.identityId ? { toIdentity: to.identityId } : {}),
+    ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
     text: commentNoticeText(
       kind,
       version,
