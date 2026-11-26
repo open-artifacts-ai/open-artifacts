@@ -350,6 +350,48 @@ describe("codex queue transport (C26d)", () => {
     });
   });
 
+  it("execCodex(0) has no timeout: the child runs to completion and its exit is returned", async () => {
+    const g = await gate();
+    const f = fakeCodex({ gate: g.path, code: 0 });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(0)(f.bin, [], process.env);
+      await g.connected(); // started and held
+      await vi.advanceTimersByTimeAsync(10 * 60_000); // no timer to fire
+      g.go();
+      await expect(run).resolves.toEqual({ code: 0, stderr: "" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a timed-out child whose grandchild holds its pipes open still resolves, as null", async () => {
+    const g = await gate();
+    const dir = tmp("ob-fcx-gc-");
+    const bin = join(dir, "codex");
+    // The child spawns a grandchild that inherits its stdout/stderr and waits
+    // on the gate; the child waits on it too.
+    writeFileSync(
+      bin,
+      `#!${process.execPath}
+const { spawn } = require("node:child_process");
+const wait = () => { const c = require("node:net").connect(${JSON.stringify(g.path)}); c.on("data", () => process.exit(0)); c.on("close", () => process.exit(0)); c.on("error", () => process.exit(97)); };
+if (process.argv[2] === "gc") wait();
+else { spawn(process.execPath, [__filename, "gc"], { stdio: "inherit" }); wait(); }
+`,
+    );
+    chmodSync(bin, 0o755);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const run = execCodex(2_000)(bin, [], process.env);
+      await g.connected(2); // the child and its grandchild
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(run).resolves.toMatchObject({ code: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ["a crash by signal", { signal: "SIGSEGV" as const }],
     ["too much output", { flood: true }],
