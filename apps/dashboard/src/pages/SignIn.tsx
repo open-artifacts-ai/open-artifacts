@@ -231,7 +231,12 @@ function AccessSignIn({
     <>
       <h1>Log in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
-      {deadLink && !failed && <Notice tone="info">{DEAD_LINK}</Notice>}
+      {/* Same 12px as the direct-mode banner, and the same below it before the button. */}
+      {deadLink && !failed && (
+        <div className="my-3">
+          <Notice tone="info">{DEAD_LINK}</Notice>
+        </div>
+      )}
       {failed && (
         <Notice tone="danger" title="Login didn't finish.">
           The login link expired or was cancelled. Try again.
