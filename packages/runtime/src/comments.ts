@@ -107,17 +107,21 @@ button.pin{border:0;padding:0}
 /* #2426: an unanswered ask for the reader: amber, and the word Ask, never colour alone. */
 .askchip{position:absolute;margin-top:-16px;height:14px;padding:0 6px;border:0;border-radius:7px;background:#e0a000;color:#1b1300;font:700 10.5px/14px system-ui,sans-serif;pointer-events:auto;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.3)}
 .askchip:focus-visible{outline:2px solid #1b1300;outline-offset:2px}
+/* #3128: on a pin the chip hangs past the bubble (30px tall, a 4px gap), above
+   it, or below when the bubble hangs under its point: never on the number or
+   the initials. Left/right comes from the pin's own edge. */
+.askchip.at-pin{margin-top:-48px}
+.askchip.at-pin.flip-y{margin-top:34px}
 .mark.ask{width:auto;height:14px;padding:0 6px;font:700 10.5px/14px system-ui,sans-serif;color:#1b1300;background:#e0a000;border:0}
-.pin.ask{background:#e0a000;color:#1b1300;box-shadow:0 0 0 2px #fff,0 0 0 4px #1b1300,0 3px 8px rgba(0,0,0,.3)}
-/* #3048: an ask outranks the face. A pin on an image or pdf shows a face, and
-   its colour lives in --face; an ask pin is amber whatever face it carries, or
-   the face (grey for an agent with no animal) wins and the ask look is lost. */
-.pin.ask.face{background:#e0a000}
-.pin.ask svg{stroke:#1b1300}
-/* The dashed robot's own grey would be unreadable on amber. */
-.pin.ask.face.dashed svg{stroke:#1b1300}
+/* #3128: an ask pin keeps its face, and the face's own colour (--face): the
+   amber ring marks the ask and the chip names it. Never a repaint. */
+.pin.ask{box-shadow:0 0 0 2px #fff,0 0 0 4px #e0a000,0 3px 8px rgba(0,0,0,.3)}
+/* A dashed robot brings its own ring (three classes); the ask's amber goes on
+   the outside of it, where the face's own ring was. */
+.pin.ask.face.dashed{box-shadow:0 0 0 2px #fff,0 0 0 4px #e0a000,0 3px 8px rgba(0,0,0,.3)}
 .dark .askchip,.dark .mark.ask{background:#f2b51d;color:#1b1300}
-.dark .pin.ask,.dark .pin.ask.face{background:#f2b51d;box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
+.dark .pin.ask{box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
+.dark .pin.ask.face.dashed{box-shadow:0 0 0 2px #17181a,0 0 0 4px #f2b51d,0 3px 8px rgba(0,0,0,.5)}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}::highlight(oa-comment-ask){background:rgba(245,158,11,.45);text-decoration:underline;text-decoration-color:#b45309;text-decoration-thickness:2px}";
@@ -485,7 +489,8 @@ export function createComments(
       label?: string,
       badgeIn?: PinBadge,
       id?: string,
-      ask = false,
+      /** True for the ask look's own name; a string names it otherwise (#3128). */
+      ask: boolean | string = false,
     ) => {
       // #2388: a badge only belongs on image and pdf pins, here as well as in the shell.
       const badge = hasPins ? badgeIn : undefined;
@@ -494,7 +499,8 @@ export function createComments(
       const d = document.createElement(live ? "button" : "div");
       if (d instanceof HTMLButtonElement) {
         d.type = "button";
-        if (ask) d.setAttribute("aria-label", "Ask: answer here");
+        if (ask)
+          d.setAttribute("aria-label", ask === true ? "Ask: answer here" : ask);
         else if (badge?.label) d.setAttribute("aria-label", badge.label);
       }
       d.className = cls;
@@ -520,13 +526,14 @@ export function createComments(
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         // A resolved thread is drawn (faded) only while it is the open one.
         if (!th.resolved || isActive) {
+          const flip = flips(x, clampTop(y));
           const cls = [
             "pin",
             isActive ? "on" : "",
             th.resolved ? "resolved" : "",
             th.changed ? "changed" : "",
             th.ask && !th.resolved ? "ask" : "",
-            flips(x, clampTop(y)),
+            flip,
           ]
             .filter(Boolean)
             .join(" ");
@@ -541,6 +548,21 @@ export function createComments(
           );
           if (th.changed) d.title = "Changed since this was placed.";
           d.addEventListener("click", () => open(th.id));
+          if (th.ask && !th.resolved) {
+            // #3128: the ring marks the ask, the chip names it: a colour alone
+            // is not the signal. Past the bubble, so the number or the initials
+            // stay visible; a flipped pin hangs the other way, so the chip does.
+            const chip = mark(
+              ["askchip", "at-pin", flip].filter(Boolean).join(" "),
+              x - (flip.includes("flip-x") ? 30 : 0),
+              clampTop(y),
+              "Ask",
+              undefined,
+              undefined,
+              "Ask",
+            );
+            chip.addEventListener("click", () => open(th.id));
+          }
         }
         continue;
       }

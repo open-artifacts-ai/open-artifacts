@@ -112,31 +112,67 @@ for (const kind of ["image"] as const)
     await shot(page, `1280-${kind}-open`);
   });
 
-test("image: a pin whose thread has an open ask for the viewer is amber (#3048)", async ({
+/** The ask pin's own look (#3128): its face's colour kept, an amber ring, and the chip. */
+async function expectAskPin(
+  frame: ReturnType<Page["frameLocator"]>,
+  theme: "light" | "dark",
+) {
+  const ask = frame.getByRole("button", { name: "Ask: answer here" });
+  await expect(ask).toBeVisible({ timeout: 15_000 });
+  // The face it carries, and the ask on top of it.
+  await expect(ask).toHaveClass(/\bask\b/);
+  await expect(ask).toHaveClass(/\bface\b/);
+  await expect(ask).toHaveClass(/\bdashed\b/);
+  const look = () =>
+    ask.evaluate((el) => {
+      const s = getComputedStyle(el);
+      const ink = el.querySelector("svg");
+      return {
+        background: s.backgroundColor,
+        ring: s.boxShadow,
+        ink: ink ? getComputedStyle(ink).stroke : null,
+        chip: null as string | null,
+      };
+    });
+  const pin = await look();
+  // The face's own bubble colour, never the amber.
+  expect(pin.background).toBe("rgb(255, 255, 255)");
+  // The amber, outside the white ring, in this theme's tone.
+  expect(pin.ring).toContain(
+    theme === "dark" ? "rgb(242, 181, 29)" : "rgb(224, 160, 0)",
+  );
+  // The dashed robot's grey ink, readable on its white bubble as it always was.
+  expect(pin.ink).toBe("rgb(95, 102, 112)");
+  // A colour alone is not the signal: the chip says Ask, by name.
+  const chip = frame.getByRole("button", { name: "Ask", exact: true });
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveText("Ask");
+  // Past the bubble: it never covers the initials or the number.
+  const [a, b] = await Promise.all([ask.boundingBox(), chip.boundingBox()]);
+  if (!a || !b) throw new Error("no box");
+  const overlaps =
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height;
+  expect(overlaps).toBe(false);
+  return ask;
+}
+
+test("image: an ask pin keeps its face, is ringed amber and says Ask (#3128)", async ({
   page,
 }) => {
   const frame = await open(page, "image", 1280);
-  const ask = frame.getByRole("button", { name: "Ask: answer here" });
-  await expect(ask).toBeVisible({ timeout: 15_000 });
-  // The pin carries a face, whose colour lives in --face (grey for an agent
-  // with no animal): the ask look is amber over it, never the face's colour.
-  await expect(ask).toHaveClass(/\bask\b/);
-  await expect(ask).toHaveClass(/\bface\b/);
-  expect(await ask.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
-    "rgb(224, 160, 0)",
-  );
+  await expectAskPin(frame, "light");
   await shot(page, "1280-image-ask-pin");
 });
 
-test("image: an ask pin is the dark theme's amber too (#3048)", async ({
+test("image: the ask pin's ring and chip in the dark theme (#3128)", async ({
   page,
 }) => {
   const frame = await open(page, "image", 1280, "dark");
-  const ask = frame.getByRole("button", { name: "Ask: answer here" });
-  await expect(ask).toBeVisible({ timeout: 15_000 });
-  expect(await ask.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
-    "rgb(242, 181, 29)",
-  );
+  await expectAskPin(frame, "dark");
+  await shot(page, "1280-image-ask-pin-dark");
 });
 
 test("image: click-to-comment opens the box beside the flag on a wide screen", async ({
