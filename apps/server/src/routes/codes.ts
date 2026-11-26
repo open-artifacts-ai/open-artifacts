@@ -80,9 +80,32 @@ type Pending = {
   next: string;
   exp: number;
   f: number;
-  /** 1: this request was made to link a Google account (see the link cookie). */
+  /** 1: this request was made to link a provider account (see the link cookie). */
   lk?: 1;
+  /**
+   * With lk: the link this code was requested for (linkBinding of its
+   * provider and subject). Verify links only a link cookie with the same
+   * binding (#3087), never one swapped in after the request.
+   */
+  lb?: string;
 };
+
+/** Binds a pending link code to one link: a keyed hash of provider and subject. */
+const LINK_BINDING = (l: { p: string; s: string }) =>
+  `oa:link-binding\0${l.p}\0${l.s}`;
+const linkBinding = async (c: Context<AppEnv>, l: { p: string; s: string }) =>
+  hmacSign(await codesKey(c.env, "oa:glink-cookie"), LINK_BINDING(l));
+const sameLink = async (
+  c: Context<AppEnv>,
+  p: Pending,
+  l: { p: string; s: string },
+) =>
+  typeof p.lb === "string" &&
+  (await hmacVerify(
+    await codesKey(c.env, "oa:glink-cookie"),
+    LINK_BINDING(l),
+    p.lb,
+  ));
 
 /**
  * The Google link, in this browser only (#2590 G2): a first Google login that
@@ -197,7 +220,8 @@ async function readPending(c: Context<AppEnv>): Promise<Pending | null> {
       typeof p.rid !== "string" ||
       typeof p.next !== "string" ||
       typeof p.exp !== "number" ||
-      typeof p.f !== "number"
+      typeof p.f !== "number" ||
+      (p.lb !== undefined && typeof p.lb !== "string")
     )
       return null;
     return p as Pending;
@@ -489,7 +513,6 @@ export function mountCodes(app: AppType): void {
     // { link: true }: the address is the one in this browser's own link cookie.
     const link =
       parsed.success && "link" in parsed.data ? await readLink(c) : null;
-    const linking = link !== null;
     const email = !parsed.success
       ? null
       : "link" in parsed.data
@@ -551,7 +574,7 @@ export function mountCodes(app: AppType): void {
       next: next.length > MAX_PENDING_NEXT ? "/" : next,
       exp: Date.now() + CODE_POLICY.ttlSec * 1000,
       f: 0,
-      ...(linking ? { lk: 1 as const } : {}),
+      ...(link ? { lk: 1 as const, lb: await linkBinding(c, link) } : {}),
     };
     // Test builds, TEST_DOMAIN only: "pending" before the 202, so the
     // otp/latest hook never reads an older request's outcome for this one.
@@ -618,11 +641,16 @@ export function mountCodes(app: AppType): void {
       logAuth({ provider: "code", outcome: "refused", stage: "ip_locked" });
       return rateLimited(r.ipLocked, "ip");
     }
-    // A code requested to link a Google account (#2590 G2), verified in the
+    // A code requested to link a provider account (#2590 G2), verified in the
     // same browser that holds the link: link it, or refuse like a bad code.
     const link = r.ok && p.lk === 1 ? await readLink(c) : null;
     if (link && link.e === email) {
-      const done = await verifyLink(c, p, email, link);
+      // Only the link this code was requested for (#3087): a link cookie
+      // swapped in since (another subject or provider) is refused, never
+      // linked and never signed in.
+      const done = (await sameLink(c, p, link))
+        ? await verifyLink(c, p, email, link)
+        : null;
       if (done) return done;
       const f = p.f + 1;
       const left = Math.max(0, CODE_POLICY.maxAttempts - f);
