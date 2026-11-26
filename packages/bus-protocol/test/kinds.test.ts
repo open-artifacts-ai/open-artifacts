@@ -10,6 +10,7 @@ it("accepts exactly the known kinds", () => {
     "hermes",
     "openclaw",
     "codex",
+    "antigravity",
   ]);
   for (const k of AGENT_KINDS) expect(AgentKindSchema.parse(k)).toBe(k);
   expect(AgentKindSchema.safeParse("cursor").success).toBe(false);

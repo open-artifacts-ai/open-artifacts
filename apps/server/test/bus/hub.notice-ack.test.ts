@@ -1,3 +1,4 @@
+import { eventually } from "./helpers.ts";
 // #1752 hub half: a notice sent to a notice_ack socket reads held (queued)
 // until the daemon's ack, then the comment target becomes delivered; a refuse
 // makes it gone. Real hub, real daemon sockets, real runtime DO for the
@@ -133,7 +134,7 @@ describe("notice_ack (#1752)", () => {
     const f = await waitFor(s.d, "deliver");
     expect(await targetState(art, "c1")).toBe("queued");
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
     // A duplicate ack changes nothing and draws no error.
@@ -156,7 +157,7 @@ describe("notice_ack (#1752)", () => {
       reason: "closed",
       detail: "dropped",
     } as never);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("gone"),
     );
   });
@@ -199,7 +200,7 @@ describe("notice_ack (#1752)", () => {
     expect(await targetState(art, "c1")).toBe("queued");
     // The real machine can still settle it.
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
   });
@@ -234,7 +235,7 @@ describe("notice_ack (#1752)", () => {
     const f = await waitFor(s.d, "deliver");
     expect(await targetState(art, "c1")).toBe("queued");
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
   });
@@ -274,7 +275,7 @@ describe("notice_ack (#1752)", () => {
       });
     try {
       s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, "c1")).toBe("delivered"),
       );
       expect(calls).toBe(2);
@@ -318,7 +319,7 @@ describe("notice_ack (#1752)", () => {
       reason: "closed",
       detail: "dropped",
     } as never);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("gone"),
     );
     const n0 = await runInDurableObject(
@@ -367,7 +368,7 @@ describe("notice_ack (#1752)", () => {
       reason: "closed",
       detail: "dropped",
     } as never);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(
         await runInDurableObject(
           ns_.get(ns_.idFromName(art)),
@@ -378,7 +379,7 @@ describe("notice_ack (#1752)", () => {
         ),
       ).toBe("gone"),
     );
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(
         await runInDurableObject(
           ns_.get(ns_.idFromName(art)),
@@ -428,7 +429,7 @@ describe("notice_ack (#1752)", () => {
       reason: "closed",
       detail: "dropped",
     } as never);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(
         await runInDurableObject(
           ns_.get(ns_.idFromName(art)),
@@ -516,7 +517,7 @@ describe("notice_ack (#1752)", () => {
     await waitFor(s.d, "deliver");
     expect(await targetState(art, "c1")).toBe("queued");
     await expireAcks(s);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("gone"),
     );
     expect(await askerN(art)).toBe(0);
@@ -539,7 +540,7 @@ describe("notice_ack (#1752)", () => {
     );
     await runDurableObjectAlarm(hub);
     for (const c of ["c1", "c2"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("gone"),
       );
   });
@@ -565,7 +566,7 @@ describe("notice_ack (#1752)", () => {
     );
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
     for (const c of ["c1", "c2"])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, c)).toBe("delivered"),
       );
   });
@@ -581,7 +582,7 @@ describe("notice_ack (#1752)", () => {
       sent[c] = (await waitFor(s.d, "deliver")).msg_id as string;
     }
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: sent.c1 });
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
     // Only c2's row is past its TTL; c3 is still pending.
@@ -592,7 +593,7 @@ describe("notice_ack (#1752)", () => {
       ),
     );
     await runDurableObjectAlarm(hub);
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c2")).toBe("gone"),
     );
     expect(await targetState(art, "c1")).toBe("delivered");
@@ -628,9 +629,9 @@ describe("notice_ack (#1752)", () => {
     await runDurableObjectAlarm(hub);
     expect(await left()).toBe(10);
     // The hub set its alarm again for the rest: it fires on its own.
-    await vi.waitFor(async () => expect(await left()).toBe(0));
+    await eventually(async () => expect(await left()).toBe(0));
     for (const i of [0, SWEEP_BATCH - 1, SWEEP_BATCH, N - 1])
-      await vi.waitFor(async () =>
+      await eventually(async () =>
         expect(await targetState(art, `c${i}`)).toBe("gone"),
       );
   });
@@ -657,7 +658,7 @@ describe("notice_ack (#1752)", () => {
     await seedTarget(art, "c2", "k2");
     await hub.deliverNotice(note(addr(s), art, "c2", "k2"));
     await waitFor(s.d, "deliver");
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect(await targetState(art, "c1")).toBe("gone"),
     );
   });

@@ -6,7 +6,7 @@
 // hub.links.test.ts uses putLink); no frame writes one.
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_REACH_MAX, BUS_REACH_PER_ROLE } from "@oa/shared";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OWNER_ORG_ID } from "../../src/bus/hub.js";
 import { addReach, reachNamespaces } from "../../src/bus/reach.js";
 import {
@@ -19,6 +19,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
@@ -108,11 +109,8 @@ const shape = (r: Receipt) => {
 };
 const changed = (d: Daemon) =>
   d.raw.filter((t) => t.includes('"roster_changed"'));
-async function waitUntil(ok: () => boolean) {
-  for (let i = 0; i < 400 && !ok(); i++)
-    await new Promise((r) => setTimeout(r, 25));
-  expect(ok()).toBe(true);
-}
+const waitUntil = (ok: () => boolean) =>
+  eventually(() => expect(ok()).toBe(true), { interval: 20 });
 
 /**
  * X holds `holder` (role `lead`, reaching Y) and `peer`; Y holds `bob` and
@@ -424,12 +422,13 @@ describe("the reply path by every name", () => {
 
 async function waitUntilAway(w: { x: string; hn: string }) {
   const hub = await hubOf();
-  for (let i = 0; i < 200; i++) {
-    const open = (await hub.snapshot()).agents.some((a) => a.name === w.hn);
-    if (!open) return;
-    await new Promise((r) => setTimeout(r, 25));
-  }
-  throw new Error("holder never went away");
+  await eventually(
+    async () =>
+      expect((await hub.snapshot()).agents.some((a) => a.name === w.hn)).toBe(
+        false,
+      ),
+    { interval: 20 },
+  );
 }
 
 async function renameTo(d: Daemon, ref: string, name: string) {
@@ -473,6 +472,7 @@ async function expectBlocked(w: World, how: "up" | "rename") {
   const t = await takeName(w, how);
   expect(t.got).not.toBe(w.hn);
   expect(t.got.startsWith(w.hn)).toBe(true);
+  // sleep-ok: absence — a blocked name must never receive a delivery
   await new Promise((res) => setTimeout(res, 200));
   expect(delivers(t.d)).toEqual([]);
   t.extra?.close();
@@ -593,13 +593,15 @@ describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1
       expect(r.state).toBe("pending");
       await expectReclaimed(w, how);
       dg.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "g" });
-      for (let i = 0; i < 200; i++) {
-        const open = (await hub.snapshot()).agents.some((a) =>
-          a.name.startsWith("glob"),
-        );
-        if (!open) break;
-        await new Promise((res) => setTimeout(res, 25));
-      }
+      await eventually(
+        async () =>
+          expect(
+            (await hub.snapshot()).agents.some((a) =>
+              a.name.startsWith("glob"),
+            ),
+          ).toBe(false),
+        { interval: 20 },
+      );
       dg.close();
       w.close();
     });
