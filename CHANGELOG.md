@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.259.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.0...v0.259.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* unify Viewer, Commenter and Editor across page shares ([#3272](https://github.com/open-artifacts-ai/open-artifacts/issues/3272)) ([5f3eb0c](https://github.com/open-artifacts-ai/open-artifacts/commit/5f3eb0c8a5e8aa11eaf740b9a0445b8a94dcc969))
+
 ## [0.259.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.1...v0.259.0) (2026-11-26)
 
 
