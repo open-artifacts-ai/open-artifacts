@@ -9,6 +9,7 @@ export const MCP_SERVER = {
   claude: () => import("@oa/bus-adapter-claude-code/main"),
   opencode: () => import("@oa/bus-adapter-opencode/main"),
   codex: () => import("@oa/bus-adapter-claude-code/codex"),
+  antigravity: () => import("@oa/bus-adapter-claude-code/antigravity"),
 } as const;
 
 type McpHarness = keyof typeof MCP_SERVER;

@@ -337,3 +337,83 @@ export function removePlugin(text: string, pluginPath: string): string {
     list.filter((e) => !names(e, pluginPath)),
   );
 }
+
+/** agy loads an mcp_config.json saved with a UTF-8 byte-order mark; the edit keeps it. */
+const BOM = "﻿";
+function withoutBom(text: string, edit: (body: string) => string): string {
+  if (!text.startsWith(BOM)) return edit(text);
+  return BOM + edit(text.slice(BOM.length));
+}
+
+/** The text of an Antigravity mcp_config.json, parsed (a byte-order mark allowed). */
+export function parseAgyMcp(text: string, where: string): Doc {
+  return parseJsonc(text.startsWith(BOM) ? text.slice(1) : text, where);
+}
+
+export type AgyServer = { command: string; args: string[] };
+
+/**
+ * Antigravity (agy): `mcpServers.<name>`, a stdio entry of command, args and
+ * env. Ours sets `command`, `args`, and `env.OA_BUS_HOME` only when `home` is
+ * given. Any other key of the entry (`disabled`, `enabledTools`, other env) is
+ * the user's and stays, so a server they turned off stays off.
+ */
+export function upsertAgyMcp(
+  text: string,
+  name: string,
+  server: AgyServer,
+  home?: string,
+): string {
+  return withoutBom(text, (body) => {
+    const doc = parseJsonc(body, "mcp_config.json");
+    const servers = record(doc.mcpServers, "mcpServers");
+    const at = ["mcpServers", name];
+    const entry = record(servers?.[name], `mcpServers.${name}`);
+    if (entry === undefined) {
+      const want = {
+        ...server,
+        ...(home === undefined ? {} : { env: { OA_BUS_HOME: home } }),
+      };
+      return verified(insert(body, at, want), at, want);
+    }
+    let out = body;
+    // An http entry under our name is not one agy would run as ours.
+    for (const k of ["url", "serverUrl"])
+      if (entry[k] !== undefined) out = removeAt(out, [...at, k]);
+    if (!same(entry.command, server.command))
+      out = insert(out, [...at, "command"], server.command);
+    if (!same(entry.args, server.args))
+      out = insert(out, [...at, "args"], server.args);
+    const env = record(entry.env, `mcpServers.${name}.env`);
+    if (home !== undefined && env?.OA_BUS_HOME !== home)
+      out = insert(out, [...at, "env", "OA_BUS_HOME"], home);
+    if (home === undefined && env?.OA_BUS_HOME !== undefined) {
+      out = removeAt(out, [...at, "env", "OA_BUS_HOME"]);
+      out = removeIfEmpty(out, [...at, "env"]);
+    }
+    verified(out, [...at, "command"], server.command);
+    verified(out, [...at, "env", "OA_BUS_HOME"], home);
+    return verified(out, [...at, "args"], server.args);
+  });
+}
+
+/** Removes `mcpServers.<name>` and nothing else; unchanged when it is not there. */
+export function removeAgyMcp(text: string, name: string): string {
+  return withoutBom(text, (body) => {
+    const servers = record(
+      parseJsonc(body, "mcp_config.json").mcpServers,
+      "mcpServers",
+    );
+    if (servers?.[name] === undefined) return body;
+    return verified(
+      removeAt(body, ["mcpServers", name]),
+      ["mcpServers", name],
+      undefined,
+    );
+  });
+}
+
+/** removeIfEmpty for an Antigravity config: a byte-order mark allowed. */
+export function removeAgyIfEmpty(text: string, path: JSONPath): string {
+  return withoutBom(text, (body) => removeIfEmpty(body, path));
+}

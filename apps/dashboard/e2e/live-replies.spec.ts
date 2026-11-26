@@ -67,3 +67,28 @@ for (const [w, h] of [[1280, 800]] as const)
     await expect(head).toBeInViewport();
     await expect(head).toContainText("Comments");
   });
+
+/** The mock's hold on the first comments fetch (src/mockHold.ts). */
+type Hold = Window & {
+  __oaCommentsHeld?: boolean;
+  __oaReleaseComments?: () => void;
+};
+
+// #3095: the reply lands while the panel's first comments fetch is still on
+// its way (that fetch's answer predates the reply). Its `comments` frame
+// must start a fresh fetch rather than wait on the stale one.
+test("a reply made while the comments are still loading shows", async ({
+  page,
+}) => {
+  await page.goto(`/a/${ID}?mock=agents&hold=comments`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await page.waitForFunction(() => (window as Hold).__oaCommentsHeld === true);
+  // The mock sends the frame before the reply's response: it is handled by now.
+  await reply(page, "Arrived while the list was loading");
+  await page.evaluate(() => (window as Hold).__oaReleaseComments?.());
+  await expect(
+    page
+      .locator("[data-comment]")
+      .filter({ hasText: "Arrived while the list was loading" }),
+  ).toBeVisible();
+});

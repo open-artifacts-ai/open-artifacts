@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.248.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.0...v0.248.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** the ack test's wait must assert, not just read ([#3099](https://github.com/open-artifacts-ai/open-artifacts/issues/3099) regression) ([#3114](https://github.com/open-artifacts-ai/open-artifacts/issues/3114)) ([68eed5e](https://github.com/open-artifacts-ai/open-artifacts/commit/68eed5ed303d4d83c5ab10f8cb626505a793af9c))
+* **sign-in:** dead=1 beside a next is ignored; drop the placeholder note ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029) review) ([#3112](https://github.com/open-artifacts-ai/open-artifacts/issues/3112)) ([000b534](https://github.com/open-artifacts-ai/open-artifacts/commit/000b534750da90c08f8ba4d8f99142d562b22697))
+* **viewer:** a reply that lands while the comments load still shows ([#3095](https://github.com/open-artifacts-ai/open-artifacts/issues/3095)) ([#3113](https://github.com/open-artifacts-ai/open-artifacts/issues/3113)) ([635b2e4](https://github.com/open-artifacts-ai/open-artifacts/commit/635b2e480223a542b61ef0cb48e4a44fd923b233))
+
+## [0.248.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.247.0...v0.248.0) (2026-11-26)
+
+
+### Features
+
+* **dashboard:** a mistyped link says so at sign-in and lands on the Library ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3111](https://github.com/open-artifacts-ai/open-artifacts/issues/3111)) ([948830c](https://github.com/open-artifacts-ai/open-artifacts/commit/948830c807b2c79ed7408e74a8bba00541099187))
+
+## [0.247.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.1...v0.247.0) (2026-11-26)
+
+
+### Features
+
+* **bus-protocol:** hub accepts agent kind antigravity (agy S1a) ([#3104](https://github.com/open-artifacts-ai/open-artifacts/issues/3104)) ([f030030](https://github.com/open-artifacts-ai/open-artifacts/commit/f030030a14f87fe00a74611b20c835093ea9d0f8))
+* **bus:** oa-bus install wires Antigravity behind OA_BUS_EXPERIMENTAL_AGY (agy S1b) ([#3106](https://github.com/open-artifacts-ai/open-artifacts/issues/3106)) ([113422c](https://github.com/open-artifacts-ai/open-artifacts/commit/113422c1473d60916d5920541222ff5682f99060))
+
 ## [0.246.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.246.0...v0.246.1) (2026-11-25)
 
 
