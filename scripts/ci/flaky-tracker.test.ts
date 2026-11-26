@@ -34,6 +34,7 @@ import {
   sleeper,
   storeBody,
   storeComments,
+  summaryText,
   track,
 } from "./flaky-tracker.ts";
 
@@ -186,10 +187,25 @@ describe("the workflow", () => {
     );
   });
 
-  it("skips runs from another repository", () => {
-    expect(wf.jobs.track.if).toContain(
-      "github.event.workflow_run.head_repository.full_name == github.repository",
-    );
+  it("counts runs from forks, but only ever runs this repo's default branch", () => {
+    expect(wf.jobs.track.if).not.toContain("head_repository");
+    const steps = wf.jobs.track.steps as {
+      uses?: string;
+      run?: string;
+      with?: Record<string, unknown>;
+    }[];
+    // No ref or repository: on workflow_run that is the default branch, never
+    // the run's head. Only scripts/ci, and no token left in the checkout.
+    expect(
+      steps.filter((s) => s.uses?.startsWith("actions/checkout@")),
+    ).toEqual([
+      {
+        uses: expect.any(String),
+        with: { "sparse-checkout": "scripts/ci", "persist-credentials": false },
+      },
+    ]);
+    // A fork's values reach a script only through env, never an expression.
+    for (const s of steps) if (s.run) expect(s.run).not.toContain("${{");
   });
 
   it("reconciles hourly, through the same script", () => {
@@ -595,7 +611,7 @@ describe("loadRun", () => {
       ),
     ).toEqual(RUN);
   });
-  it("skips a run whose head is in a fork", () => {
+  it("reads a fork PR's run the same way", () => {
     expect(
       loadRun(
         exec({
@@ -607,7 +623,31 @@ describe("loadRun", () => {
         900,
         2,
       ),
-    ).toBeNull();
+    ).toEqual(RUN);
+  });
+  it("refuses a head sha that is not a full sha", () => {
+    expect(() =>
+      loadRun(
+        exec({ conclusion: "success", head_sha: "main; $(x)" }),
+        REPO,
+        900,
+        2,
+      ),
+    ).toThrow("bad head sha");
+  });
+});
+
+describe("summaryText", () => {
+  it("keeps a fork's test names plain text in the step summary", () => {
+    const id = "vitest:a.test.ts:x ```` ![p](https://x.example) <!-- y";
+    const out = summaryText(["Flaky tracker:", `  record ${id}`]);
+    const lines = out.split("\n");
+    // A fence longer than the name's longest backtick run (4) opens and
+    // closes it, so nothing inside renders as markdown.
+    expect(lines[0]).toBe("`````");
+    expect(lines.at(-2)).toBe("`````");
+    expect(out).not.toContain("<!--");
+    expect(out).toContain("![p](https://x.example)");
   });
 });
 
@@ -902,7 +942,7 @@ describe("reconcile", () => {
   const writes = (g: ReturnType<typeof fakeGh>) =>
     g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length;
 
-  it(`lists passing reruns updated in the last ${RECONCILE_HOURS} hours from this repo, in small reads`, () => {
+  it(`lists passing reruns updated in the last ${RECONCILE_HOURS} hours, forks' too, in small reads`, () => {
     const g = fakeGh({ log: ONE_FAIL });
     expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
     const list = g.calls.find((c) =>
@@ -919,7 +959,7 @@ describe("reconcile", () => {
     const jq = list?.[list.indexOf("--jq") + 1] ?? "";
     expect(jq).toContain(".run_attempt > 1");
     expect(jq).toContain('.updated_at >= "2026-11-25T10:00:00Z"');
-    expect(jq).toContain(`.head_repository.full_name == "${REPO}"`);
+    expect(jq).not.toContain("head_repository");
     // Nothing to do: no store read, no write.
     expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
   });
@@ -983,16 +1023,16 @@ describe("reconcile", () => {
     expect(g.comments).toHaveLength(1);
   });
 
-  it("skips a run whose head is in a fork", () => {
-    const g = fakeGh({
-      log: ONE_FAIL,
-      recentRuns: "900 2\n",
-      headRepo: "mallory/open-artifacts",
-    });
-    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
-    expect(r?.result).toBe("fork");
-    expect(g.calls.some((c) => c[0] === "issue" && c[1] !== "list")).toBe(
-      false,
-    );
+  it("records a fork PR's run like any other", () => {
+    const o = { log: ONE_FAIL, recentRuns: "900 2\n" };
+    const fork = fakeGh({ ...o, headRepo: "mallory/open-artifacts" });
+    const ours = fakeGh(o);
+    const r = reconcile({ exec: fork.exec, repo: REPO, nowMs: NOW });
+    expect(r).toEqual(reconcile({ exec: ours.exec, repo: REPO, nowMs: NOW }));
+    expect(r.map((x) => x.result)).toEqual(["tracked"]);
+    expect(fork.comments).toEqual(ours.comments);
+    expect(parseStore(fork.comments[0]?.body ?? "")).toEqual([
+      { key: keyOf(ID), run: 900, attempt: 1, at: "2026-11-26T10:00:00Z" },
+    ]);
   });
 });

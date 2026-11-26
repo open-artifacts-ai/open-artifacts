@@ -20,8 +20,9 @@
 //     then `    [project] › <file>:L:C › <title>` per test.
 // A job that failed outside the tests (install, typecheck, lint, the `test`
 // and `e2e` roll-ups) parses to no test: it is infrastructure, not a flaky
-// test, and only shows in the step summary. Runs whose head repository is not
-// this repo (fork PRs) are skipped: their logs are anyone's text.
+// test, and only shows in the step summary. Runs from fork PRs count too:
+// their logs are anyone's text, so they are only parsed, never run, and every
+// title, file and id from them is untrusted (see inert()).
 //
 // Two in seven days. Every sighting (test, run, attempt, time) is recorded
 // first, in one open store issue labelled `flaky-sightings`, as comments by
@@ -513,7 +514,6 @@ export function decide(o: {
 type Attempt = {
   conclusion: string | null;
   head_sha: string;
-  head_repository?: { full_name?: string } | null;
 };
 type Job = {
   id: number;
@@ -523,22 +523,21 @@ type Job = {
 };
 
 /**
- * The run to track, from its passing attempt. Null for a run whose head
- * repository is not this repo (a fork PR): its logs are anyone's text.
+ * The run to track, from its passing attempt. A fork PR's run counts like any
+ * other: its logs are only read as text.
  */
 export function loadRun(
   exec: Exec,
   repo: string,
   runId: number,
   attempt: number,
-): RunInfo | null {
+): RunInfo {
   const last = JSON.parse(
     gh(exec, [
       "api",
       `repos/${repo}/actions/runs/${runId}/attempts/${attempt}`,
     ]),
   ) as Attempt;
-  if (last.head_repository?.full_name !== repo) return null;
   if (last.conclusion !== "success")
     throw new Error(`attempt ${attempt} did not pass (${last.conclusion})`);
   if (!/^[0-9a-f]{40}$/.test(last.head_sha)) throw new Error("bad head sha");
@@ -1006,8 +1005,8 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
 
 /**
  * The runs the reconcile looks at: runs of the watched workflows created in
- * the last WINDOW_DAYS days and updated in the last RECONCILE_HOURS whose latest attempt (2 or later) passed, with
- * this repo as head repository (fork PRs skipped), oldest first.
+ * the last WINDOW_DAYS days and updated in the last RECONCILE_HOURS whose latest attempt (2 or later) passed,
+ * fork PRs' runs too, oldest first.
  */
 export function recentRuns(
   exec: Exec,
@@ -1029,7 +1028,7 @@ export function recentRuns(
       "--paginate",
       `repos/${repo}/actions/workflows/${wf}/runs?status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`,
       "--jq",
-      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .updated_at >= "${touched}" and .head_repository.full_name == "${repo}") | "\\(.id) \\(.run_attempt)"`,
+      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .updated_at >= "${touched}") | "\\(.id) \\(.run_attempt)"`,
     ]);
     for (const l of lines.split("\n")) {
       const m = /^(\d+) (\d+)$/.exec(l.trim());
@@ -1052,7 +1051,7 @@ function passedRuns(exec: Exec, repo: string, nowMs: number): Set<Passed> {
 export type Reconciled = {
   runId: number;
   attempt: number;
-  result: "recorded already" | "fork" | "tracked" | "error";
+  result: "recorded already" | "tracked" | "error";
   done: Done[];
   notes: string[];
 };
@@ -1082,10 +1081,6 @@ export function reconcile(o: {
     }
     try {
       const run = loadRun(exec, repo, runId, attempt);
-      if (!run) {
-        out.push({ ...base, result: "fork" });
-        continue;
-      }
       out.push({ ...base, result: "tracked", ...track({ exec, run, nowMs }) });
     } catch (e) {
       out.push({ ...base, result: "error", notes: [(e as Error).message] });
@@ -1130,23 +1125,30 @@ function main(argv: string[]) {
   const lines = [
     `Flaky tracker, CI run ${runId} (passed on attempt ${attempt}):`,
   ];
-  if (!run) lines.push("  skipped: the run's head is in another repository");
-  else {
-    const { done, notes } = track({ exec: realExec, run, nowMs: Date.now() });
-    lines.push(
-      ...(done.length
-        ? []
-        : ["  no failed test found in the earlier attempts"]),
-      ...doneLines(done, notes),
-    );
-  }
+  const { done, notes } = track({ exec: realExec, run, nowMs: Date.now() });
+  lines.push(
+    ...(done.length ? [] : ["  no failed test found in the earlier attempts"]),
+    ...doneLines(done, notes),
+  );
   report(lines);
+}
+
+/**
+ * The step summary is markdown and the ids come from job logs (a fork PR's
+ * too): a fence longer than any backtick run in them keeps it all plain text.
+ */
+export function summaryText(lines: string[]): string {
+  const text = lines.map(inert).join("\n");
+  const fence = "`".repeat(
+    Math.max(3, ...(text.match(/`+/g) ?? []).map((r) => r.length + 1)),
+  );
+  return `${fence}\n${text}\n${fence}\n`;
 }
 
 function report(lines: string[]) {
   console.log(lines.join("\n"));
   const summary = process.env.GITHUB_STEP_SUMMARY;
-  if (summary) appendFileSync(summary, `${lines.join("\n")}\n`);
+  if (summary) appendFileSync(summary, summaryText(lines));
 }
 
 function mainReconcile(repo: string) {

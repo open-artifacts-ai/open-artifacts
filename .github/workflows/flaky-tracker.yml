@@ -8,7 +8,10 @@
 # workflow_run can't see another repo's runs, so the cloud repo runs its own
 # tracker for its CI. The default token only: no App, no secret, no
 # Environment. The script comes from the default branch, never from the run
-# under test, and runs from forks are skipped (their logs are anyone's text).
+# under test. Runs from forks (a PR from another repo) count too: this job
+# never checks out or runs a fork's code, and what their runs give it (logs
+# and the test names in them) is only read as text and made inert before it
+# is written to an issue.
 # Hourly, a reconcile tracks any such run created in the last 7 days and updated in the last 26 hours whose event
 # this workflow missed; a run the store already has is skipped. The watched
 # workflow is named by its file (workflow_run.path), never by
@@ -28,7 +31,6 @@ jobs:
       github.event_name == 'schedule' || (
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.run_attempt > 1 &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.path == '.github/workflows/ci.yml')
     # One group for every tracker run in this repo, so two runs never read
     # and write the store and the issues at once. It sits on the job, not the
