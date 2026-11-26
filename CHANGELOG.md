@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.249.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.2...v0.249.0) (2026-11-26)
+
+
+### Features
+
+* **agents:** show each agent's app and mark on the Agents page, and Antigravity (agy S6) ([#3105](https://github.com/open-artifacts-ai/open-artifacts/issues/3105)) ([648eace](https://github.com/open-artifacts-ai/open-artifacts/commit/648eace965f1ba2fd3591ab5ef1ad64f19eb10b8))
+* **bus:** list_agents lists live agents only by default ([#3166](https://github.com/open-artifacts-ai/open-artifacts/issues/3166)) ([#3182](https://github.com/open-artifacts-ai/open-artifacts/issues/3182)) ([78ccd1b](https://github.com/open-artifacts-ai/open-artifacts/commit/78ccd1b59fe30d3aa817086c81328a2b14b18ebb))
+* **ci:** track flaky CI tests, an issue once a test flakes twice in 7 days (cloud [#447](https://github.com/open-artifacts-ai/open-artifacts/issues/447)) ([#3119](https://github.com/open-artifacts-ai/open-artifacts/issues/3119)) ([7531a35](https://github.com/open-artifacts-ai/open-artifacts/commit/7531a3568c714b0dce8ee1f605581f9a2c39cfeb))
+* **comments:** a mention reads just its thread; your user's typed words come in the notice ([#3139](https://github.com/open-artifacts-ai/open-artifacts/issues/3139)) ([#3151](https://github.com/open-artifacts-ai/open-artifacts/issues/3151)) ([858642e](https://github.com/open-artifacts-ai/open-artifacts/commit/858642e0ccdf121cf464d81ce85f41c747751ec8))
+* **mcp:** get_artifact reads a page as text, finds a part, or diffs versions ([#3165](https://github.com/open-artifacts-ai/open-artifacts/issues/3165)) ([#3185](https://github.com/open-artifacts-ai/open-artifacts/issues/3185)) ([c3207e9](https://github.com/open-artifacts-ai/open-artifacts/commit/c3207e9ba27a52af572aab42513e7a425e25920f))
+* **mcp:** list_comments returns a cursor; since gives only what changed ([#3168](https://github.com/open-artifacts-ai/open-artifacts/issues/3168)) ([#3195](https://github.com/open-artifacts-ai/open-artifacts/issues/3195)) ([ed2af37](https://github.com/open-artifacts-ai/open-artifacts/commit/ed2af378d4b093f2d57f1dd1af69b7a6a49ec4ae))
+* **onboarding:** Show it again brings a hidden Get started checklist back ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029)) ([#3148](https://github.com/open-artifacts-ai/open-artifacts/issues/3148)) ([29ec0ba](https://github.com/open-artifacts-ai/open-artifacts/commit/29ec0baa5e567bd61bda9c8cf0bdf4b948825636))
+
+
+### Bug Fixes
+
+* **pictures:** downscale a comment picture at upload, only past the limits ([#3007](https://github.com/open-artifacts-ai/open-artifacts/issues/3007)) ([#3152](https://github.com/open-artifacts-ai/open-artifacts/issues/3152)) ([44f38c8](https://github.com/open-artifacts-ai/open-artifacts/commit/44f38c8b5e8cd89d916984054d5a6a1d29e73835))
+* **pictures:** downscale a comment picture in the browser, only past the limits ([#3007](https://github.com/open-artifacts-ai/open-artifacts/issues/3007)) ([#3176](https://github.com/open-artifacts-ai/open-artifacts/issues/3176)) ([f7379ec](https://github.com/open-artifacts-ai/open-artifacts/commit/f7379ecab48eecdd8e4e474845c46cbc675b6bf3))
+* **ui:** the oh-my-pi mark is a bold "o" that reads at 12px ([#3138](https://github.com/open-artifacts-ai/open-artifacts/issues/3138)) ([#3177](https://github.com/open-artifacts-ai/open-artifacts/issues/3177)) ([26ed879](https://github.com/open-artifacts-ai/open-artifacts/commit/26ed879d0f03eec6347e901591a5b48b3393f1ee))
+* **viewer:** an older version's phone pill reads the approved "Version 15, not the latest" ([#2622](https://github.com/open-artifacts-ai/open-artifacts/issues/2622)) ([#3147](https://github.com/open-artifacts-ai/open-artifacts/issues/3147)) ([dde638e](https://github.com/open-artifacts-ai/open-artifacts/commit/dde638e002687ddfc05d947cadebc75c76a0dccc))
+
 ## [0.248.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.1...v0.248.2) (2026-11-26)
 
 
