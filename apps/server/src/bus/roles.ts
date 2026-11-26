@@ -68,15 +68,17 @@ export function roleTakenSql(
   lname: string,
   namespace: string,
   global: boolean,
+  /** #3132: a role the agent itself holds never blocks it (the name is the role). */
+  selfId: string | null = null,
 ): { sql: string; binds: SqlStorageValue[] } {
   return global
     ? {
-        sql: "exists (select 1 from roles indexed by roles_lname where org_id = ? and lname = ?)",
-        binds: [orgId, lname],
+        sql: "exists (select 1 from roles indexed by roles_lname where org_id = ? and lname = ? and coalesce(agent_id, '') <> ?)",
+        binds: [orgId, lname, selfId ?? "-"],
       }
     : {
-        sql: "exists (select 1 from roles where org_id = ? and namespace = ? and lname = ?)",
-        binds: [orgId, namespace, lname],
+        sql: "exists (select 1 from roles where org_id = ? and namespace = ? and lname = ? and coalesce(agent_id, '') <> ?)",
+        binds: [orgId, namespace, lname, selfId ?? "-"],
       };
 }
 
@@ -204,22 +206,27 @@ export function checkRole(
     if (agent === null || (agent.global !== 1 && agent.namespace !== namespace))
       return { ok: false, reason: "agent_not_open" };
   }
+  const existing = roleRow(sql, orgId, namespace, lname);
+  // #3132: a role that exists already owns its name, even when a session
+  // (its holder, now named after it) wears it: a repoint is no new claim.
   const former = formerReservedSql(orgId, lname, now, namespace, false, null);
-  const taken = one<{ x: number }>(
-    sql,
-    `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
+  const taken =
+    existing !== null
+      ? null
+      : one<{ x: number }>(
+          sql,
+          `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
          or ${former.sql}
          or exists (select 1 from minted_names where org_id = ? and lname = ? and agent_id is not ?)) as x`,
-    orgId,
-    lname,
-    namespace,
-    ...former.binds,
-    orgId,
-    lname,
-    agentId,
-  );
+          orgId,
+          lname,
+          namespace,
+          ...former.binds,
+          orgId,
+          lname,
+          agentId,
+        );
   if (taken?.x === 1) return { ok: false, reason: "name_taken" };
-  const existing = roleRow(sql, orgId, namespace, lname);
   if (
     existing === null &&
     (one<{ n: number }>(

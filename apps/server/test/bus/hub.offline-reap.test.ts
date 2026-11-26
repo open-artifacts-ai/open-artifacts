@@ -317,10 +317,10 @@ describe("offline reap (open-bus #422)", () => {
     const w = await machine("Watcher");
     const v = await connect(w.token, true);
     await reg(v, "s", uniq("Sender"), n);
-    // The chosen former name stays reserved; the current one, away, goes to a
-    // restarted session (#1742).
+    // The chosen former name stays reserved; the current one, away, is its
+    // holder's: a new session asking it gets a suffix and asks (#3132).
     expect(await reg(v, "y", old, n)).toBe(`${old}-2`);
-    expect(await reg(v, "x", now, n)).toBe(now);
+    expect(await reg(v, "x", now, n)).toBe(`${now}-2`);
     v.close();
     // A close keeps the rename log (OpenBus #446): the rolling hour purges it.
     expect(await count("rename_rl")).toBeGreaterThan(0);

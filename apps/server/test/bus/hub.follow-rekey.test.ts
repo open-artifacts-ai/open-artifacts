@@ -3,7 +3,9 @@
 // the address) are cleared. Real hub, real daemon sockets, the real follows
 // service on D1. Waits are signals (a reply frame, a list round trip), never
 // sleeps; the hub's re-key is awaited before the next follow request, so a
-// `following` right after `renamed` is deterministic.
+// `following` right after `renamed` is deterministic. #3132: a new session
+// asking a held chosen name gets a suffixed one and asks for its role; nothing
+// of the holder's follows moves to it.
 
 import type { ServerFrame } from "@oa/bus-protocol";
 import { FOLLOW_LIMIT, type Member, newId } from "@oa/shared";
@@ -249,8 +251,8 @@ describe("an agent_up that moves a session takes the follows along", () => {
   });
 });
 
-describe("a reclaimed or restarted name keeps its follows (#1742)", () => {
-  it("a new session that reclaims an away name inherits the follows at that address", async () => {
+describe("a restarted name keeps its follows; a new session asking it gets none (#1742, #3132)", () => {
+  it("a new session asking an away name gets a suffix and no follows: they stay at the holder's address (#3132)", async () => {
     const s = await setup();
     const art = await artifactOf(s.m.userId);
     const keep = await s.reg(uniq("keeper"));
@@ -265,8 +267,8 @@ describe("a reclaimed or restarted name keeps its follows (#1742)", () => {
     } as never);
     await settled(s, keep.ref);
     const fresh = await s.reg(old.name);
-    expect(fresh.name).toBe(old.name);
-    expect(await listed(s, fresh.ref)).toEqual([art]);
+    expect(fresh.name).toBe(`${old.name}-2`);
+    expect(await listed(s, fresh.ref)).toEqual([]);
     expect(await rows(s.m.userId)).toMatchObject([{ name: old.name }]);
   });
 
@@ -313,27 +315,32 @@ describe("a closed session that reopens (#1766 review)", () => {
     const p = await s.reg(uniq("Lead"));
     await follow(s, p.ref, x);
     await closeP(s, keep.ref, p.ref);
-    // Q reclaims P's name and follows another artifact.
+    // Q asks for P's name (a suffix, #3132) and follows another artifact.
     const q = await s.reg(p.name);
-    expect(q.name).toBe(p.name);
+    expect(q.name).toBe(`${p.name}-2`);
     await follow(s, q.ref, y);
     return { s, x, y, p, q };
   };
 
-  it("P reopens under a suffixed name after Q reclaimed: Q's rows stay, nothing moves", async () => {
+  it("P reopens (same session) under its own name after Q asked: both keep their rows", async () => {
     const { s, x, y, p, q } = await taken();
-    const got = await reopen(s, p.ref, p.name);
-    expect(got).not.toBe(p.name);
-    expect((await listed(s, q.ref)).sort()).toEqual([x, y].sort());
-    expect((await rows(s.m.userId)).every((r) => r.name === p.name)).toBe(true);
+    expect(await reopen(s, p.ref, p.name)).toBe(p.name);
+    expect(await listed(s, p.ref)).toEqual([x]);
+    expect(await listed(s, q.ref)).toEqual([y]);
+    expect(
+      (await rows(s.m.userId)).map((r) => `${r.name}:${r.artifactId}`).sort(),
+    ).toEqual([`${p.name}:${x}`, `${q.name}:${y}`].sort());
   });
 
-  it("P reopens under a different name after Q reclaimed: Q's rows stay, nothing moves", async () => {
+  it("P reopens under a different name after Q asked: P's rows move, Q's stay", async () => {
     const { s, x, y, p, q } = await taken();
-    const got = await reopen(s, p.ref, uniq("Other"));
-    expect(got).not.toBe(p.name);
-    expect((await listed(s, q.ref)).sort()).toEqual([x, y].sort());
-    expect((await rows(s.m.userId)).every((r) => r.name === p.name)).toBe(true);
+    const other = uniq("Other");
+    expect(await reopen(s, p.ref, other)).toBe(other);
+    expect(await listed(s, p.ref)).toEqual([x]);
+    expect(await listed(s, q.ref)).toEqual([y]);
+    expect(
+      (await rows(s.m.userId)).map((r) => `${r.name}:${r.artifactId}`).sort(),
+    ).toEqual([`${other}:${x}`, `${q.name}:${y}`].sort());
   });
 
   it("an ordinary reopen under a new name of a session holding its away reservation moves its rows", async () => {

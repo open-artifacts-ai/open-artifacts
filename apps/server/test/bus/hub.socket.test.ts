@@ -217,7 +217,7 @@ describe("hub socket: hello and agents", () => {
     d.close();
   });
 
-  it("a close on agent_down and on sessions{closed} reserves the name for 7 d; a restarted session takes it back, a live holder still means a suffix (#1742)", async () => {
+  it("a close on agent_down and on sessions{closed} reserves the name for 7 d; a new session asking it gets a suffix, never the name (#1742, #3132)", async () => {
     const clock = async (ms: number | null) =>
       runInDurableObject(await hubOf(), (i: BusHub) =>
         BusHub.setTestClock(i, ms),
@@ -234,7 +234,7 @@ describe("hub socket: hello and agents", () => {
       d.send(hello("sync")); // the originating socket gets no roster_changed
       await waitFor(d, "hello_ok");
       d.send(up("u2", "ses_b", "Pi", a));
-      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi");
+      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-2");
       d.send({
         v: 1,
         id: "s1",
@@ -245,9 +245,9 @@ describe("hub socket: hello and agents", () => {
       d.send(hello("sync2"));
       await waitFor(d, "hello_ok");
       d.send(up("u3", "ses_c", "Pi", a));
-      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi");
+      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-3");
       d.send(up("u4", "ses_d", "Pi", a));
-      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-2");
+      expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-4");
       d.close();
     } finally {
       await clock(null);

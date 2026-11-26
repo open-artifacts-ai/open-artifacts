@@ -1156,7 +1156,7 @@ function nameTaken(
 ): boolean {
   const lname = name.toLowerCase();
   const scope = global ? "" : "and (a.namespace = ? or a.global = 1)";
-  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global);
+  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global, selfId);
   const former = formerReservedSql(
     OWNER_ORG_ID,
     lname,
@@ -1411,7 +1411,7 @@ function nameHolder(
     one<{ id: string }>(
       sql,
       `select id from agents where org_id = ? and lower(name) = ? and id <> ?
-         ${global ? "" : "and (namespace = ? or global = 1)"}
+         ${global ? "" : "and namespace = ? and global = 0"}
          and (live = 1 or exists (select 1 from former_names f where f.agent_id = agents.id
            and f.kind = 'away' and f.lname = lower(agents.name)))
        order by live desc limit 1`,
@@ -1487,6 +1487,7 @@ function assignName(
     // suffixed into the address: the newcomer gets a session name and asks.
     const holder =
       takeover &&
+      !global &&
       reclaim &&
       base === asked &&
       !droppedRefusedChars(proposed, { harness }) &&
@@ -2708,7 +2709,9 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   (exists (select 1 from role_moves rm where rm.org_id = a.org_id and rm.from_agent_id = a.id)
      and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver,
   (select p.name from role_proposals p where p.org_id = a.org_id and p.agent_id = a.id
-     and p.status = 'pending' and p.action = 'repoint' order by p.created_at desc limit 1) as pendingRole`;
+     and p.status = 'pending' and p.action = 'repoint'
+     and not exists (select 1 from roles ro where ro.id = p.role_id and ro.agent_id = a.id)
+     order by p.created_at desc limit 1) as pendingRole`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
