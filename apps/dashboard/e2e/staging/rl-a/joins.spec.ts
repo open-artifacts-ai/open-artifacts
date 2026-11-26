@@ -165,9 +165,7 @@ test("an invited member outside the domain signs in by code: a member session in
   // response body is gone by the time it could be read. /me below checks
   // the identity and that the session is not capped.
   expect((await verified).status()).toBe(200);
-  // Verify answers, then the page does a full load to `next`. Wait for that
-  // landing first: a name typed before the reload is lost with the old page,
-  // and the new page's Save stays disabled on an empty name.
+  // Verify answers, then the page does a full load to `next`: wait for it.
   await page.waitForURL((u) => !u.pathname.startsWith("/sign-in"), {
     waitUntil: "load",
   });
@@ -181,21 +179,20 @@ test("an invited member outside the domain signs in by code: a member session in
   expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
   expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
 
-  // The name prompt shows only when the server says a name is needed (an
-  // invite may already carry one); /me decides, so the test never races it.
+  // A new row may have no name, and the first page would ask for one. The
+  // guest test drives that prompt; here the name is set through the API (as
+  // the prompt does, PATCH me), so this test checks only the member session.
   if (me.needsDisplayName) {
-    const ask = page.getByRole("dialog", {
-      name: "What do you like to be called?",
+    const named = await page.request.patch(`${A.app}${R.me}`, {
+      headers: { "x-oa-request": "1" },
+      data: { displayName: `T19 ${RUN} invited` },
     });
-    await ask
-      .getByRole("textbox", { name: "Your name" })
-      .fill(`T19 ${RUN} invited`);
-    await expect(ask.getByRole("textbox", { name: "Your name" })).toHaveValue(
-      `T19 ${RUN} invited`,
-    );
-    await ask.getByRole("button", { name: "Save" }).click();
-    await expect(ask).toHaveCount(0);
+    expect(named.status()).toBe(200);
   }
+  await page.goto("/");
+  await expect(
+    page.getByRole("dialog", { name: "What do you like to be called?" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("heading", { level: 1, name: "Library" }),
   ).toBeVisible();
