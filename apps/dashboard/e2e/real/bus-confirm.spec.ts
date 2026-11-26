@@ -127,8 +127,10 @@ test("a refused approval fails at once with its status, while the body and the d
       (e: Error) => e.message,
     );
     await held.reached;
-    // The 403's body is still out: the failure comes from its headers.
-    expect(await withDeadline(refused, 15_000, "the refused approval")).toMatch(
+    // The 403's body is still out and the token call is held: the failure
+    // comes from the headers alone, inside 2 s (spending a code is bounded at
+    // 3 s, so a failure path that waited on it would miss this).
+    expect(await withDeadline(refused, 2_000, "the refused approval")).toMatch(
       /POST \/bus\/approve: 403/,
     );
     // The teardown's spend is bounded: it ends though the token call is held.
