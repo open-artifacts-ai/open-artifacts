@@ -397,7 +397,13 @@ export async function versionProblems(
       jsonField(manifest, (j) => (j as Record<string, unknown>)?.["."]),
     ],
     ["package.json", pkg],
-    ["CHANGELOG.md", /^## \[?(\d+\.\d+\.\d+)\]?/m.exec(changelog)?.[1] ?? ""],
+    [
+      "CHANGELOG.md",
+      /^## (?:\[([^\]\r\n]+)\]|([^\s]+))/m
+        .exec(changelog)
+        ?.slice(1)
+        .find(Boolean) ?? "",
+    ],
   ];
   const out: string[] = [];
   for (const [where, v] of found)

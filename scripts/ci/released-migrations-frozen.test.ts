@@ -69,7 +69,14 @@ describe("released-migrations-frozen.sh", () => {
     r.tag("v1.0.0");
     const path = `${M}/0003_cleanup.sql`;
     for (const sql of [
-      "-- 0053-shaped cleanup\nDeLeTe /* dead devices */ FROM a;",
+      readFileSync(
+        new URL(
+          "../../apps/server/migrations/0053_account_push.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      "DeLeTe /* dead devices */ FROM a;",
       "CREATE TRIGGER clean AFTER INSERT ON b BEGIN DELETE FROM a; END;",
       "CREATE TABLE tmp(x); INSERT INTO tmp SELECT x FROM a; DROP TABLE a;",
       "ALTER TABLE a DROP COLUMN x;",

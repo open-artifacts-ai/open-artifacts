@@ -106,5 +106,25 @@ esac
     expect(runTag("1.1.0", "1.10.0").stdout).toContain(
       "not above the latest tag",
     );
+    for (const heading of ["[1.2.0-rc.1](url)", "1.2.0-rc.1"]) {
+      manifest("1.2.0");
+      writeFileSync(join(d, "package.json"), pkg("1.2.0"));
+      writeFileSync(
+        join(d, "CHANGELOG.md"),
+        `## ${heading}\n## [1.2.0](older)\n`,
+      );
+      git(
+        d,
+        "add",
+        "package.json",
+        ".release-please-manifest.json",
+        "CHANGELOG.md",
+      );
+      git(d, "commit", "-qm", "release candidate heading");
+      const invalid = runTag("1.2.0", "1.1.0");
+      expect(invalid.status).toBe(1);
+      expect(invalid.stdout).toContain("no version readable from CHANGELOG.md");
+      git(d, "checkout", "-q", "--detach", "HEAD^");
+    }
   });
 });
