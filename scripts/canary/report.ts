@@ -7,14 +7,16 @@
 //
 //   node --experimental-strip-types scripts/canary/report.ts <results dir>
 //
-// Needs GH_TOKEN (issues: write), REPO, RUN (the run's URL) and CHANNEL in the env. It
+// Needs GH_TOKEN (issues: write), REPO, RUN (the run's URL) and CHANNEL in the
+// env. NOTIFY (vars.OA_ALERT_GITHUB_LOGIN, as the staging smoke alert uses) is
+// @-mentioned on each failure, so GitHub emails that person; empty skips it. It
 // reads only the canary's own result files; the text it writes holds the run
 // URL, the client, its version and the check lines, never a log excerpt.
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CLIENT_IDS, CLIENTS } from "./clients.ts";
-import type { ClientResult } from "./lib.ts";
+import { type ClientResult, versionText } from "./lib.ts";
 
 export const LABEL = "client-canary";
 export const titleFor = (label: string, channel: string) =>
@@ -30,11 +32,25 @@ const failed = (r: ClientResult) =>
     .map((c) => `- ${c.check}: ${c.detail}`)
     .join("\n");
 
+/** A GitHub login, as GitHub allows one. */
+const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+
 /** Brings the issues in step with `results`; returns one line per client. */
 export function report(
   results: ClientResult[],
-  { repo, run, gh = realGh }: { repo: string; run: string; gh?: Gh },
+  {
+    repo,
+    run,
+    notify = "",
+    gh = realGh,
+  }: { repo: string; run: string; notify?: string; gh?: Gh },
 ): string[] {
+  const login = notify.trim().replace(/^@/, "");
+  if (login && !LOGIN_RE.test(login))
+    throw new Error(
+      "OA_ALERT_GITHUB_LOGIN is set but is not a GitHub login; fix the repo variable",
+    );
+  const to = login ? `@${login} ` : "";
   const out: string[] = [];
   const open = JSON.parse(
     gh([
@@ -69,9 +85,10 @@ export function report(
   for (const r of results) {
     const title = titleFor(r.label, r.channel);
     const n = find(title);
-    const what = `${r.label} (${r.channel}${r.version ? `, ${r.version}` : ""})`;
+    const v = versionText(r);
+    const what = `${r.label} (${r.channel}${v ? `, ${v}` : ""}${r.target ? `, on ${r.target}` : ""})`;
     if (r.status === "fail") {
-      const body = `The client canary failed for ${what}.\n\nRun: ${run}\n\n${failed(r)}`;
+      const body = `${to}The client canary failed for ${what}.\n\nRun: ${run}\n\n${failed(r)}`;
       if (n !== undefined) {
         gh(["issue", "comment", String(n), "--repo", repo, "--body", body]);
         out.push(`${r.client}: failed again, commented on #${n}`);
@@ -153,7 +170,7 @@ export function readResults(dir: string): ClientResult[] {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const dir = process.argv[2];
-  const { REPO, RUN, CHANNEL } = process.env;
+  const { REPO, RUN, CHANNEL, NOTIFY } = process.env;
   if (!dir || !REPO || !RUN || !CHANNEL) {
     console.error(
       "usage: REPO=owner/name RUN=<url> CHANNEL=pinned|latest report.ts <results dir>",
@@ -161,5 +178,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.exit(2);
   }
   const results = withMissing(readResults(dir), CHANNEL);
-  for (const l of report(results, { repo: REPO, run: RUN })) console.log(l);
+  for (const l of report(results, {
+    repo: REPO,
+    run: RUN,
+    notify: NOTIFY ?? "",
+  }))
+    console.log(l);
 }

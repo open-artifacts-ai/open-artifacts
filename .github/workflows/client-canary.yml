@@ -1,16 +1,19 @@
 # The client canary (agy S7): do the real bus clients still work end to end?
 # Each job installs one real client (the pinned release nightly, the latest
-# release weekly), runs a LOCAL Open Artifacts server (`wrangler dev`, no
-# staging, no secret) and an `oa-bus` built from this commit, and checks that
-# the client joins the bus at start, answers a message, takes a message sent
-# mid-turn in that turn (where it can), has habits on, and that a page it
-# publishes shows as that session. scripts/canary/README.md has the details.
+# release weekly) and an `oa-bus` built from this commit, points it at the
+# STAGING instance as the dedicated canary member, and checks that the client
+# joins the bus at start, answers a message, takes a message sent mid-turn
+# (in that turn for Codex and Pi; at the start of the next turn for Claude
+# Code and OpenCode, which have no steer path), has habits on, and that a page
+# it publishes shows as that session. scripts/canary/README.md has the details.
 #
 # - Never on pull_request: it spends model tokens. Nightly, weekly, or by hand.
-# - Only model API keys are secrets. A client whose key is missing is skipped
-#   with a summary line saying which secret to add, and its job stays green.
+# - A client whose model key or staging secret is missing FAILS, with a summary
+#   line naming the secret, and the report job alerts as for any failure.
 # - One job per client, plus one report job: five jobs, far under the 180 cap.
-# - Each job gets only its own client's model key; npm and the server get none.
+#   They run one at a time: the canary member has one client machine and one
+#   probe machine, and the hub keeps one connection per machine.
+# - Each job gets only its own client's model key; npm gets no secret.
 # - The canary jobs get contents: read only. The report job has no model key:
 #   it reads the result files and keeps one issue per client and channel
 #   (label client-canary), as release-alert.yml keeps its blocker.
@@ -38,6 +41,10 @@ concurrency:
 
 env:
   CHANNEL: ${{ github.event.schedule == '30 4 * * 1' && 'latest' || inputs.channel || 'pinned' }}
+  # The scheduled target. A local server is for development only (README).
+  CANARY_TARGET: staging
+  # Optional: another staging instance; empty means staging.open-artifacts.com.
+  CANARY_STAGING_URL: ${{ vars.CANARY_STAGING_URL }}
 
 jobs:
   canary:
@@ -47,6 +54,8 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
+      # One machine per role on staging: the legs take turns.
+      max-parallel: 1
       matrix:
         client: [claude, codex, opencode, pi]
     env:
@@ -60,11 +69,15 @@ jobs:
         with:
           node-version-file: .nvmrc
       - id: need
-        name: Is this client's model key set?
+        name: Are this client's secrets set? (a missing one fails the job)
         env:
           # Only this leg's client gets its key (scripts/canary/clients.ts secrets).
           ANTHROPIC_API_KEY: ${{ contains(fromJSON('["claude","opencode","pi"]'), matrix.client) && secrets.ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ contains(fromJSON('["codex"]'), matrix.client) && secrets.OPENAI_API_KEY || '' }}
+          # The staging canary member's token and its two machines (README).
+          STAGING_CANARY_PAT: ${{ secrets.STAGING_CANARY_PAT }}
+          STAGING_CANARY_MACHINE: ${{ secrets.STAGING_CANARY_MACHINE }}
+          STAGING_CANARY_PROBE: ${{ secrets.STAGING_CANARY_PROBE }}
         run: node --experimental-strip-types --no-warnings scripts/canary/run.ts --check --client "$CLIENT" --channel "$CHANNEL" --out "$RESULT"
       - if: steps.need.outputs.run == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -75,17 +88,19 @@ jobs:
           cache: pnpm
       - if: steps.need.outputs.run == 'true'
         run: pnpm install --frozen-lockfile
-      - name: Build the server and oa-bus
+      - name: Build oa-bus
         if: steps.need.outputs.run == 'true'
-        run: |
-          pnpm --filter @oa/server build
-          pnpm --filter @open-artifacts/bus build
+        run: pnpm --filter @open-artifacts/bus build
       - name: Run the canary
         if: steps.need.outputs.run == 'true'
         env:
           # Only this leg's client gets its key (scripts/canary/clients.ts secrets).
           ANTHROPIC_API_KEY: ${{ contains(fromJSON('["claude","opencode","pi"]'), matrix.client) && secrets.ANTHROPIC_API_KEY || '' }}
           OPENAI_API_KEY: ${{ contains(fromJSON('["codex"]'), matrix.client) && secrets.OPENAI_API_KEY || '' }}
+          # The staging canary member's token and its two machines (README).
+          STAGING_CANARY_PAT: ${{ secrets.STAGING_CANARY_PAT }}
+          STAGING_CANARY_MACHINE: ${{ secrets.STAGING_CANARY_MACHINE }}
+          STAGING_CANARY_PROBE: ${{ secrets.STAGING_CANARY_PROBE }}
           # Optional repo variables; empty means the client's own cheap default.
           CANARY_MODEL_CLAUDE: ${{ vars.CANARY_MODEL_CLAUDE }}
           CANARY_MODEL_CODEX: ${{ vars.CANARY_MODEL_CODEX }}
@@ -103,8 +118,8 @@ jobs:
           path: ${{ env.RESULT }}
           if-no-files-found: ignore
           retention-days: 14
-      # The client, daemon and install logs of a failed run. Model keys and
-      # the local server's tokens are blanked; those tokens die with the job.
+      # The client, daemon and install logs of a failed run, with every secret
+      # value and every token shape (oa_machine_, oa_pat_, sk-) blanked.
       - if: failure() || cancelled()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -138,4 +153,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # The owner's GitHub login, @-mentioned on a failure (as the staging smoke alert).
+          NOTIFY: ${{ vars.OA_ALERT_GITHUB_LOGIN }}
         run: node --experimental-strip-types --no-warnings scripts/canary/report.ts "$RUNNER_TEMP/canary-results"

@@ -2,6 +2,7 @@
 // talking the hub's wire protocol directly (packages/bus-protocol). It sends
 // the client its messages and records every reply, in arrival order. It never
 // goes through the daemon under test.
+import { randomBytes } from "node:crypto";
 import { PATHS } from "./hub.ts";
 import { until } from "./lib.ts";
 
@@ -17,6 +18,11 @@ export class Probe {
   name = "";
   #ws: WebSocket;
   #n = 0;
+  /**
+   * The hub refuses a frame id a machine already used, across connections.
+   * A staging machine serves every run, so each probe takes its own prefix.
+   */
+  #idPrefix = `p${randomBytes(6).toString("hex")}-`;
 
   /** Why the hub closed the socket, once it has. */
   closed: string | undefined;
@@ -90,7 +96,9 @@ export class Probe {
   }
 
   #send(f: Record<string, unknown>) {
-    this.#ws.send(JSON.stringify({ v: 1, id: `p${++this.#n}`, ...f }));
+    this.#ws.send(
+      JSON.stringify({ v: 1, id: `${this.#idPrefix}${++this.#n}`, ...f }),
+    );
   }
 
   /** The first frame of `type` not yet taken. */
@@ -110,7 +118,23 @@ export class Probe {
   /** Sends `body` to the agent named `to`; resolves on the hub's receipt. */
   async send(to: string, body: string): Promise<Frame> {
     this.#send({ type: "send", from_ref: "probe", to_name: to, body });
-    const r = await this.next("receipt");
+    const r = await this.next("receipt").catch((e: Error) => {
+      // Say what the hub sent instead (an error frame names its code).
+      const other = this.frames
+        .filter((f) => f.type !== "deliver" && f.type !== "receipt_update")
+        .slice(-3)
+        .map((f) =>
+          JSON.stringify({
+            type: f.type,
+            code: f.code,
+            reason: f.reason,
+            message: f.message,
+          }),
+        );
+      throw new Error(
+        `${e.message}${other.length ? `; the hub sent ${other.join(", ")}` : ""}${this.closed ? `; ${this.closed}` : ""}`,
+      );
+    });
     if (r.state === "refused")
       throw new Error(`probe: the hub refused the send (${String(r.reason)})`);
     return r;

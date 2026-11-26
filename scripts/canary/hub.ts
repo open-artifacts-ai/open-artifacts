@@ -1,10 +1,14 @@
-// The local Open Artifacts server the canary runs against, and the few calls
-// it makes to it: a dev sign-in, a token, a machine approval through the real
-// approval form, the bus agent list, and a published page's versions.
+// The Open Artifacts instance the canary runs against, and the few calls it
+// makes to it: the bus agent list and a published page's versions, and for a
+// local server also a dev sign-in, a token and a machine approval through the
+// real approval form.
 //
-// The server is `wrangler dev` with ENVIRONMENT=dev on a fresh local D1, R2,
-// KV and Durable Objects, as the dashboard's real-server e2e starts it
-// (apps/dashboard/e2e/real/fixtures.ts). No staging, no secret.
+// Staging (the scheduled default) is the dedicated canary member on
+// https://staging.open-artifacts.com, by its personal token; its two machines
+// were approved ahead (README). The local server, for development only, is
+// `wrangler dev` with ENVIRONMENT=dev on a fresh local D1, R2, KV and Durable
+// Objects, as the dashboard's real-server e2e starts it
+// (apps/dashboard/e2e/real/fixtures.ts).
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
@@ -17,7 +21,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { withoutModelKeys } from "./clients.ts";
+import { withoutSecrets } from "./clients.ts";
 import { FETCH_MS, Session, until } from "./lib.ts";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
@@ -91,8 +95,8 @@ export async function startServer(
   const config = join(dir, "wrangler.json");
   const state = join(dir, "state");
   writeFileSync(config, JSON.stringify(devConfig(port), null, 2));
-  // The server never needs a model key.
-  const env: NodeJS.ProcessEnv = { ...withoutModelKeys(process.env), CI: "1" };
+  // The server never needs a canary secret.
+  const env: NodeJS.ProcessEnv = { ...withoutSecrets(process.env), CI: "1" };
   delete env.VITE_MOCK;
   execFileSync(
     WRANGLER,
@@ -174,6 +178,27 @@ export async function startServer(
     throw e;
   }
   return { origin, stop };
+}
+
+/** The staging instance; CANARY_STAGING_URL (a repo variable) may name another. */
+export const STAGING_URL = "https://staging.open-artifacts.com";
+
+/**
+ * The staging canary member, by its personal token. A token staging refuses
+ * fails here, by the secret's name, before anything else starts.
+ */
+export async function tokenMember(
+  origin: string,
+  pat: string,
+): Promise<Session> {
+  const s = new Session(origin, { bearer: pat });
+  const me = await s.fetch(PATHS.me);
+  if (me.status === 401 || me.status === 403)
+    throw new Error(
+      `${origin} refused STAGING_CANARY_PAT (HTTP ${me.status}): make a new token as the canary member and update the secret`,
+    );
+  if (!me.ok) throw new Error(`${origin}${PATHS.me}: HTTP ${me.status}`);
+  return s;
 }
 
 /** A member signed in through the dev login (ENVIRONMENT=dev only), with a display name. */

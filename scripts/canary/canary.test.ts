@@ -1,6 +1,7 @@
-// The client canary's own contract (agy S7): the workflow's shape, the skip
-// when a model key is missing, and the one-issue-per-client report. The end to
-// end run against a local server is `run.ts --client pi --fake` (README).
+// The client canary's own contract (agy S7): the workflow's shape, the red
+// result when a secret is missing, the mid-turn checks, and the
+// one-issue-per-client report. The end to end run against a local server is
+// `run.ts --client pi --fake --target local` (README).
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -20,7 +21,9 @@ import {
   canaryPrompt,
   MODEL_KEYS,
   missingSecrets,
-  withoutModelKeys,
+  STAGING_SECRETS,
+  steeringNote,
+  withoutSecrets,
 } from "./clients.ts";
 import { type ClientResult, overall, summaryMarkdown } from "./lib.ts";
 import type { Mail } from "./probe.ts";
@@ -29,9 +32,12 @@ import {
   copyLogs,
   inPty,
   markFailed,
+  missingDetail,
+  nextTurnCheck,
   runCanary,
   type SteerProbe,
   steerCheck,
+  targetOf,
 } from "./run.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -93,6 +99,15 @@ describe("client-canary.yml", () => {
     expect(JSON.stringify(wf.jobs.report)).not.toContain("secrets.");
   });
 
+  it("targets staging, one leg at a time, and alerts the owner's login", () => {
+    expect(wf.env.CANARY_TARGET).toBe("staging");
+    expect(wf.env.CANARY_STAGING_URL).toBe("${{ vars.CANARY_STAGING_URL }}");
+    expect(wf.jobs.canary.strategy["max-parallel"]).toBe(1);
+    expect(workflowText).not.toContain("@oa/server build");
+    const reportStep = wf.jobs.report.steps.at(-1);
+    expect(reportStep.env.NOTIFY).toBe("${{ vars.OA_ALERT_GITHUB_LOGIN }}");
+  });
+
   it("model keys reach only the key check and the canary step, and only for their client", () => {
     const steps = wf.jobs.canary.steps as {
       id?: string;
@@ -116,6 +131,9 @@ describe("client-canary.yml", () => {
           `\${{ contains(fromJSON('${JSON.stringify(takers)}'), matrix.client) && secrets.${key} || '' }}`,
         );
       }
+    for (const step of withKeys)
+      for (const key of STAGING_SECRETS)
+        expect(step.env?.[key]).toBe(`\${{ secrets.${key} }}`);
     expect(JSON.stringify(wf.env)).not.toContain("secrets.");
     expect(JSON.stringify(wf.jobs.canary.env)).not.toContain("secrets.");
   });
@@ -154,39 +172,50 @@ describe("client-canary.yml", () => {
   });
 });
 
-describe("a missing model key skips, never fails", () => {
-  it("each client names the keys it needs", () => {
+describe("a missing secret fails, never skips", () => {
+  it("each client names the keys it needs; staging adds its own three", () => {
     for (const c of Object.values(CLIENTS)) {
       expect(c.secrets.length).toBeGreaterThan(0);
-      expect(missingSecrets(c, {})).toEqual(c.secrets);
-      expect(
-        missingSecrets(c, Object.fromEntries(c.secrets.map((s) => [s, "x"]))),
-      ).toEqual([]);
+      expect(missingSecrets(c, {}, "local")).toEqual(c.secrets);
+      expect(missingSecrets(c, {})).toEqual([...c.secrets, ...STAGING_SECRETS]);
+      const all = Object.fromEntries(
+        [...c.secrets, ...STAGING_SECRETS].map((s) => [s, "x"]),
+      );
+      expect(missingSecrets(c, all)).toEqual([]);
     }
   });
 
-  it("runCanary skips with the secret to add, before it starts anything", async () => {
+  it("runCanary fails with each secret to add, before it starts anything", async () => {
     const lines: string[] = [];
     const r = await runCanary({
       client: "codex",
       channel: "pinned",
       port: 0,
-      env: NO_KEYS,
+      env: { ...NO_KEYS, OPENAI_API_KEY: "placeholder" },
       log: (l) => lines.push(l),
     });
-    expect(r.status).toBe("skip");
+    expect(r.status).toBe("fail");
+    expect(r.target).toBe("staging");
     expect(r.checks).toEqual([
       {
         check: "secrets",
-        status: "skip",
-        detail: "SKIPPED: add the repo secret OPENAI_API_KEY to run Codex",
+        status: "fail",
+        detail: missingDetail("Codex", "staging", [...STAGING_SECRETS]),
       },
     ]);
-    expect(summaryMarkdown(r)).toContain("### Codex (pinned): SKIPPED");
-    expect(lines).toEqual([]);
+    expect(r.checks[0]?.detail).toContain(
+      "MISSING SECRET: add the repo secret STAGING_CANARY_PAT and STAGING_CANARY_MACHINE and STAGING_CANARY_PROBE to run Codex on staging",
+    );
+    expect(summaryMarkdown(r)).toContain(
+      "### Codex (pinned, on staging): FAIL",
+    );
+    // One line, naming the secrets; nothing was started.
+    expect(lines).toEqual([
+      `FAIL codex secrets: ${missingDetail("Codex", "staging", [...STAGING_SECRETS])}`,
+    ]);
   });
 
-  it("--check says run=false, writes the skipped result and the summary, and exits 0", () => {
+  it("--check says run=false, writes the failed result and the summary, and exits 1", () => {
     const dir = mkdtempSync(join(tmpdir(), "canary-check-"));
     const out = join(dir, "r.json");
     const gho = join(dir, "output");
@@ -208,39 +237,62 @@ describe("a missing model key skips, never fails", () => {
         env: { ...NO_KEYS, GITHUB_OUTPUT: gho, GITHUB_STEP_SUMMARY: sum },
       },
     );
-    expect(r.status, r.stderr).toBe(0);
+    expect(r.status, r.stderr).toBe(1);
     expect(readFileSync(gho, "utf8")).toBe("run=false\n");
     expect(readFileSync(sum, "utf8")).toContain(
-      "add the repo secret ANTHROPIC_API_KEY to run Claude Code",
+      "MISSING SECRET: add the repo secret ANTHROPIC_API_KEY and STAGING_CANARY_PAT",
     );
+    expect(r.stdout).toContain("::error::MISSING SECRET:");
     expect((JSON.parse(readFileSync(out, "utf8")) as ClientResult).status).toBe(
-      "skip",
+      "fail",
     );
   });
 
-  it("--check says run=true when the key is set, and writes nothing else", () => {
+  it("--check says run=true when every secret is set, and writes nothing else", () => {
     const dir = mkdtempSync(join(tmpdir(), "canary-check-"));
     const out = join(dir, "r.json");
-    const r = spawnSync(
-      process.execPath,
-      [
-        "--experimental-strip-types",
-        "--no-warnings",
-        RUN,
-        "--check",
-        "--client",
-        "pi",
-        "--out",
-        out,
-      ],
-      {
-        encoding: "utf8",
-        env: { ...NO_KEYS, ANTHROPIC_API_KEY: "placeholder" },
-      },
-    );
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout.trim()).toBe("run=true");
+    const check = (env: Record<string, string>) =>
+      spawnSync(
+        process.execPath,
+        [
+          "--experimental-strip-types",
+          "--no-warnings",
+          RUN,
+          "--check",
+          "--client",
+          "pi",
+          "--out",
+          out,
+        ],
+        { encoding: "utf8", env: { ...NO_KEYS, ...env } },
+      );
+    const staging = check({
+      ANTHROPIC_API_KEY: "placeholder",
+      STAGING_CANARY_PAT: "placeholder",
+      STAGING_CANARY_MACHINE: "placeholder",
+      STAGING_CANARY_PROBE: "placeholder",
+    });
+    expect(staging.status, staging.stderr).toBe(0);
+    expect(staging.stdout.trim()).toBe("run=true");
+    // Local mode (development only) needs just the model key.
+    const local = check({
+      ANTHROPIC_API_KEY: "placeholder",
+      CANARY_TARGET: "local",
+    });
+    expect(local.status, local.stderr).toBe(0);
+    expect(local.stdout.trim()).toBe("run=true");
     expect(existsSync(out)).toBe(false);
+  });
+
+  it("the target is staging unless asked; --hub means local", () => {
+    expect(targetOf(undefined, {})).toBe("staging");
+    expect(targetOf(undefined, { CANARY_TARGET: "local" })).toBe("local");
+    expect(targetOf("local", { CANARY_TARGET: "staging" })).toBe("local");
+    expect(targetOf(undefined, {}, "http://localhost:8790")).toBe("local");
+    expect(() => targetOf("staging", {}, "http://localhost:8790")).toThrow(
+      "--hub is for --target local",
+    );
+    expect(() => targetOf("prod", {})).toThrow("staging or local");
   });
 
   it("--mark-failed writes a failed result only when the canary wrote none", () => {
@@ -276,6 +328,31 @@ describe("a missing model key skips, never fails", () => {
 });
 
 describe("results", () => {
+  it("the summary says the version as run, a self-update, and the steering expectation", () => {
+    const r: ClientResult = {
+      client: "claude",
+      label: "Claude Code",
+      channel: "latest",
+      target: "staging",
+      version: "2.1.332",
+      versionAfter: "2.1.340",
+      status: "pass",
+      checks: [{ check: "install", status: "pass", detail: "ok" }],
+      notes: [steeringNote(CLIENTS.claude)],
+    };
+    const md = summaryMarkdown(r);
+    expect(md).toContain(
+      "### Claude Code (latest, 2.1.332, updated itself to 2.1.340 during the run, on staging): PASS",
+    );
+    expect(md).toContain(
+      "- Steering: Claude Code has no steer path in the daemon. A message sent mid-turn must arrive at the start of its next turn.",
+    );
+    expect(steeringNote(CLIENTS.pi)).toContain("must land in that same turn");
+    expect(steeringNote(CLIENTS.opencode)).toContain("no steer path");
+    expect(CLIENTS.codex.steering && CLIENTS.pi.steering).toBe(true);
+    expect(CLIENTS.claude.steering || CLIENTS.opencode.steering).toBe(false);
+  });
+
   it("fail beats pass; all skipped is skipped", () => {
     const c = (status: "pass" | "fail" | "skip") => ({
       check: "x",
@@ -356,6 +433,28 @@ describe("one issue per client", () => {
     return { calls, gh };
   };
   const opts = { repo: "o/r", run: "https://github.test/run/1" };
+
+  it("a failure @-mentions the alert login and names the version as run", () => {
+    const { calls, gh } = fakeGh([]);
+    report(
+      [{ ...res("pi", "fail"), versionAfter: "1.0.1", target: "staging" }],
+      {
+        ...opts,
+        notify: "@owner-login",
+        gh,
+      },
+    );
+    const create = calls[2] ?? [];
+    const body = create[create.indexOf("--body") + 1] ?? "";
+    expect(
+      body.startsWith(
+        "@owner-login The client canary failed for Pi (pinned, 1.0.0, updated itself to 1.0.1 during the run, on staging)",
+      ),
+    ).toBe(true);
+    expect(() =>
+      report([res("pi", "fail")], { ...opts, notify: "not a login!", gh }),
+    ).toThrow("OA_ALERT_GITHUB_LOGIN");
+  });
 
   it("a failure with no open issue opens one, labelled client-canary", () => {
     const { calls, gh } = fakeGh([]);
@@ -548,6 +647,77 @@ describe("the mid-turn check decides on the order of replies", () => {
   });
 });
 
+describe("with no steer path, a mid-turn message must arrive at the start of the next turn", () => {
+  /** A stub client for nextTurnCheck: it answers by what has been released. */
+  const stub = (signals: string, mode: "next turn" | "steers" | "drops") => {
+    const mail: Mail[] = [];
+    let word = "";
+    let ping = "";
+    let n = 0;
+    const released = (k: number) =>
+      existsSync(join(signals, `hold-${word}-${k}.release`));
+    const put = (body: string) => {
+      if (!mail.some((m) => m.body === body))
+        mail.push({ from: "client", body, at: n++ });
+    };
+    return {
+      mail,
+      frames: [],
+      async send(_to: string, body: string) {
+        const hold = /HOLD (\w+)/.exec(body);
+        if (hold) {
+          word = hold[1] as string;
+          writeFileSync(join(signals, `hold-${word}-1.started`), "");
+        }
+        const p = /PING (\w+)/.exec(body);
+        if (p) ping = p[1] as string;
+        return { type: "receipt", msg_id: `m${n++}`, state: "sent" };
+      },
+      async reply(text: string) {
+        if (released(1) && mode === "steers") put(`PONG ${ping}`);
+        if (released(2)) put(`DONE ${word}`);
+        if (released(2) && mode === "next turn") put(`PONG ${ping}`);
+        const m = mail.find((x) => x.body.includes(text));
+        if (!m) throw new Error(`no reply containing "${text}"`);
+        return m;
+      },
+    } as unknown as SteerProbe;
+  };
+  const run = async (mode: Parameters<typeof stub>[1]) => {
+    const signals = mkdtempSync(join(tmpdir(), "canary-next-"));
+    const steps: [string, string, string][] = [];
+    await nextTurnCheck(
+      stub(signals, mode),
+      "client",
+      signals,
+      (c, st, d) => steps.push([c, st, d]),
+      { hold: 1000, reply: 0 },
+    );
+    expect(steps).toHaveLength(1);
+    return steps[0] as [string, string, string];
+  };
+
+  it("passes when PONG comes after DONE, and says there is no steering", async () => {
+    const [check, status, detail] = await run("next turn");
+    expect([check, status]).toEqual(["mid-turn message", "pass"]);
+    expect(detail).toContain(
+      "arrived at the start of the next turn (no steering)",
+    );
+  });
+
+  it("passes, and says so, when the client steers after all", async () => {
+    const [, status, detail] = await run("steers");
+    expect(status).toBe("pass");
+    expect(detail).toContain("it steers now");
+  });
+
+  it("fails when the message never arrives", async () => {
+    const [, status, detail] = await run("drops");
+    expect(status).toBe("fail");
+    expect(detail).toContain("never arrived in the next turn");
+  });
+});
+
 describe("logs", () => {
   it("a copied log has every model key and token blanked", () => {
     const from = mkdtempSync(join(tmpdir(), "canary-logs-"));
@@ -562,11 +732,27 @@ describe("logs", () => {
     );
   });
 
-  it("npm and the server get no model key", () => {
-    const env = withoutModelKeys({
+  it("a token shape is blanked even when its value was not known", () => {
+    const from = mkdtempSync(join(tmpdir(), "canary-logs-"));
+    const to = join(mkdtempSync(join(tmpdir(), "canary-logs-out-")), "logs");
+    writeFileSync(
+      join(from, "daemon.log"),
+      "m oa_machine_7Hq2Kd9XzP3aBcDeFgHiJkLmNoPqRsTu p oa_pat_7Hq2Kd9XzP3aBcDe k sk-ant-api03-abcdefghijklmnop end\n",
+    );
+    copyLogs(from, to, []);
+    expect(readFileSync(join(to, "daemon.log"), "utf8")).toBe(
+      "m [hidden] p [hidden] k [hidden] end\n",
+    );
+  });
+
+  it("npm and the server get no canary secret", () => {
+    const env = withoutSecrets({
       PATH: "/bin",
       ANTHROPIC_API_KEY: "a",
       OPENAI_API_KEY: "b",
+      STAGING_CANARY_PAT: "c",
+      STAGING_CANARY_MACHINE: "d",
+      STAGING_CANARY_PROBE: "e",
     });
     expect(env).toEqual({ PATH: "/bin" });
   });

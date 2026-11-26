@@ -1,28 +1,38 @@
-// The client canary (agy S7): one real bus client against a local Open
-// Artifacts server, through a real `oa-bus` built from this checkout.
+// The client canary (agy S7): one real bus client against a real Open
+// Artifacts instance, through a real `oa-bus` built from this checkout.
 //
 //   node --experimental-strip-types scripts/canary/run.ts --client pi [options]
 //
 //   --client <id>       claude, codex, opencode or pi
 //   --channel <c>       pinned (default) or latest: which client release to install
+//   --target <t>        staging (the default, and what the schedule runs) or
+//                       local (development only). CANARY_TARGET sets it too.
+//                       Staging needs STAGING_CANARY_PAT, STAGING_CANARY_MACHINE
+//                       and STAGING_CANARY_PROBE (README); CANARY_STAGING_URL
+//                       names another staging instance.
 //   --client-bin <dir>  use the client binary in <dir> instead of installing one
 //                       (the tests put a fake client there)
-//   --hub <origin>      a server that is already running (else one is started)
-//   --port <n>          the port for the server it starts (default 8790)
+//   --hub <origin>      local: a server that is already running (else one is started)
+//   --port <n>          local: the port for the server it starts (default 8790)
 //   --out <file>        write the result as JSON
 //   --logs <dir>        on a failure, copy the logs here with keys and tokens blanked
 //   --check             only decide: prints run=true or run=false (to
-//                       $GITHUB_OUTPUT too) and, when skipped, writes --out
+//                       $GITHUB_OUTPUT too). A missing secret writes a failed
+//                       result to --out and exits 1
 //   --mark-failed <why> write a failed result to --out unless one is there
 //                       (a job that broke before the canary ran)
 //   --fake              pi only: a stand-in pi (fake-pi.ts) that loads the real
 //                       extension; no model, no key (the local proof and tests)
 //   --fake-break steer  the fake answers a mid-turn message only after its turn,
 //                       as a client that lost steering would (proves the check)
+//   --fake-next-turn    with --fake-break steer: judge the fake as a client with
+//                       no steer path (Claude Code, OpenCode), so the next-turn
+//                       check runs end to end
 //
-// A client whose model secret is missing is skipped, never failed. The exit
-// code is 1 only when a check failed. The job summary ($GITHUB_STEP_SUMMARY)
-// gets one table per client. No secret or token value is ever printed.
+// A client whose model key or staging secret is missing fails, by the
+// secret's name: never a green skip. The exit code is 1 when a check failed.
+// The job summary ($GITHUB_STEP_SUMMARY) gets one table per client. No secret
+// or token value is ever printed.
 import {
   type ChildProcess,
   execFileSync,
@@ -55,7 +65,10 @@ import {
   canaryPrompt,
   type Launch,
   missingSecrets,
-  withoutModelKeys,
+  STAGING_SECRETS,
+  steeringNote,
+  type Target,
+  withoutSecrets,
 } from "./clients.ts";
 import {
   approveCode,
@@ -65,8 +78,10 @@ import {
   PATHS,
   publishedBy,
   ROOT,
+  STAGING_URL,
   signIn,
   startServer,
+  tokenMember,
 } from "./hub.ts";
 import {
   type CheckResult,
@@ -76,6 +91,7 @@ import {
   type Session,
   summaryMarkdown,
   until,
+  versionText,
 } from "./lib.ts";
 import { Probe } from "./probe.ts";
 
@@ -93,6 +109,10 @@ export const LIMITS = {
 export type Options = {
   client: ClientId;
   channel: "pinned" | "latest";
+  /** Where it runs (default staging). */
+  target?: Target;
+  /** The fake only: run the next-turn check, as for a client with no steer path. */
+  nextTurn?: boolean;
   clientBin?: string;
   hub?: string;
   port: number;
@@ -203,25 +223,43 @@ function childEnv(
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const USER_CODE = /\b([A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4})\b/;
 
+/** The failed check a missing secret makes: it names each one to add. */
+export const missingDetail = (
+  label: string,
+  target: Target,
+  missing: string[],
+): string =>
+  `MISSING SECRET: add the repo secret ${missing.join(" and ")} to run ${label} on ${target}. Without it the canary is red, never skipped.`;
+
 /** Runs one client through every check. Never throws: a failure is a failed check. */
 export async function runCanary(o: Options): Promise<ClientResult> {
   const client = CLIENTS[o.client];
+  const target: Target = o.target ?? "staging";
   const checks: CheckResult[] = [];
-  const result = (version = ""): ClientResult => ({
-    client: client.id,
-    label: client.label,
-    channel: o.channel,
-    version,
-    status: overall(checks),
-    checks,
-  });
-  const missing = missingSecrets(client, o.env);
+  let version = "";
+  let versionAfter = "";
+  const result = (): ClientResult => {
+    const r: ClientResult = {
+      client: client.id,
+      label: client.label,
+      channel: o.channel,
+      target,
+      version,
+      ...(versionAfter && versionAfter !== version ? { versionAfter } : {}),
+      status: overall(checks),
+      checks,
+    };
+    r.notes = [
+      `Version as run: ${versionText(r) || "unknown (the client was not installed)"}`,
+      steeringNote(o.nextTurn ? { ...client, steering: false } : client),
+    ];
+    return r;
+  };
+  const missing = missingSecrets(client, o.env, target);
   if (missing.length > 0) {
-    checks.push({
-      check: "secrets",
-      status: "skip",
-      detail: `SKIPPED: add the repo secret ${missing.join(" and ")} to run ${client.label}`,
-    });
+    const detail = missingDetail(client.label, target, missing);
+    checks.push({ check: "secrets", status: "fail", detail });
+    o.log(`FAIL ${client.id} secrets: ${detail}`);
     return result();
   }
 
@@ -248,9 +286,11 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   let daemon: Proc | undefined;
   let session: Proc | undefined;
   let probe: Probe | undefined;
-  let version = "";
+  let clientVersion: (() => string) | undefined;
   /** Values a copied log must never hold. */
-  const secrets = client.secrets.flatMap((k) => o.env[k] ?? []);
+  const secrets = [...client.secrets, ...STAGING_SECRETS].flatMap(
+    (k) => o.env[k] ?? [],
+  );
   try {
     // 1. The client binary: installed from npm, or the one given.
     let clientBin = o.clientBin;
@@ -263,7 +303,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         {
           stdio: ["ignore", "ignore", "inherit"],
           // Install scripts never see a model key.
-          env: withoutModelKeys(o.env),
+          env: withoutSecrets(o.env),
           timeout: LIMITS.install,
         },
       );
@@ -283,27 +323,42 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     writeFileSync(join(bin, "oa-canary-hold"), HOLD_SCRIPT);
     chmodSync(join(bin, "oa-bus"), 0o755);
     chmodSync(join(bin, "oa-canary-hold"), 0o755);
-    const v = spawnSync(join(clientBin, client.bin), ["--version"], {
-      env: childEnv(client, home, path, o.env),
-      encoding: "utf8",
-      timeout: LIMITS.command,
-    });
-    version = (v.stdout || "").trim().split("\n")[0] ?? "";
+    // Its version as run, read again at the end: some clients update themselves.
+    const binDir = clientBin;
+    clientVersion = () => {
+      const v = spawnSync(join(binDir, client.bin), ["--version"], {
+        env: childEnv(client, home, path, o.env),
+        encoding: "utf8",
+        timeout: LIMITS.command,
+      });
+      return (v.stdout || "").trim().split("\n")[0] ?? "";
+    };
+    version = clientVersion();
+    o.log(`${client.id} version as run: ${version || "unknown"}`);
 
-    // 2. The server, a member, and the member's token file.
-    server = o.hub
-      ? { origin: o.hub, stop: async () => {} }
-      : await startServer(o.port);
+    // 2. The instance, the member, and the member's token file.
+    let member: Session;
+    let pat: string;
+    if (target === "staging") {
+      const origin = (o.env.CANARY_STAGING_URL || STAGING_URL).replace(
+        /\/+$/,
+        "",
+      );
+      server = { origin, stop: async () => {} };
+      pat = o.env.STAGING_CANARY_PAT as string;
+      member = await tokenMember(origin, pat);
+    } else {
+      server = o.hub
+        ? { origin: o.hub, stop: async () => {} }
+        : await startServer(o.port);
+      member = await signIn(server.origin, `canary-${client.id}@canary.test`);
+      pat = await createToken(member, `canary ${client.id}`);
+      secrets.push(pat);
+    }
     const origin = server.origin;
-    const member: Session = await signIn(
-      origin,
-      `canary-${client.id}@canary.test`,
-    );
     const tokenFile = join(home, ".open-artifacts/canary-pat-token");
     mkdirSync(join(home, ".open-artifacts"), { recursive: true, mode: 0o700 });
-    const pat = await createToken(member, `canary ${client.id}`);
     writeFileSync(tokenFile, pat, { mode: 0o600 });
-    secrets.push(pat);
     const env = childEnv(client, home, path, o.env, {
       CANARY_SIGNALS: signals,
       // Codex's token form reads it by name (bearer_token_env_var).
@@ -334,7 +389,25 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         throw new Error(`${r.cmd} ${r.args[0]} failed (exit ${out.status})`);
     }
 
-    // 3. oa-bus install, approved on the approval page by the member.
+    // 3. oa-bus install. Local: approved on the approval page by the member.
+    // Staging: the machine the member approved ahead (STAGING_CANARY_MACHINE),
+    // since that page needs a person signed in; install keeps it and wires
+    // the client. Instance-driven updates are off, so the oa-bus under test
+    // stays the one built from this commit.
+    if (target === "staging") {
+      const busHome = join(home, ".oa-bus");
+      mkdirSync(busHome, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(busHome, "machine.json"),
+        `${JSON.stringify({ hub: origin, label: "canary-client", machine_token: o.env.STAGING_CANARY_MACHINE }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
+    }
+    spawnSync("oa-bus", ["auto-update", "off"], {
+      cwd: work,
+      env,
+      timeout: LIMITS.command,
+    });
     const installLog = join(logs, "install.log");
     install = startProc(
       "oa-bus",
@@ -345,12 +418,14 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         log: installLog,
       },
     );
-    const code = await until(
-      "oa-bus install to show a code",
-      () => USER_CODE.exec(plain(readFileSync(installLog, "utf8")))?.[1],
-      { ms: 60_000 },
-    );
-    await approveCode(member, code);
+    if (target === "local") {
+      const code = await until(
+        "oa-bus install to show a code",
+        () => USER_CODE.exec(plain(readFileSync(installLog, "utf8")))?.[1],
+        { ms: 60_000 },
+      );
+      await approveCode(member, code);
+    }
     await until(
       "oa-bus install to finish",
       () => (install?.exited() ? true : undefined),
@@ -365,7 +440,9 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     step(
       "install",
       "pass",
-      `oa-bus install approved on ${origin} and wired ${client.label}`,
+      target === "local"
+        ? `oa-bus install approved on ${origin} and wired ${client.label}`
+        : `oa-bus install connected to ${origin} with the canary machine and wired ${client.label}`,
     );
 
     // 4. The daemon, run by hand (no service on a runner), then habits.
@@ -407,9 +484,14 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       );
 
     // 5. The probe: a second machine on the same bus.
-    const probeToken = await approveProbeMachine(member, "canary-probe");
+    const probeToken =
+      target === "staging"
+        ? (o.env.STAGING_CANARY_PROBE as string)
+        : await approveProbeMachine(member, "canary-probe");
     secrets.push(probeToken);
     probe = await Probe.open(origin, probeToken, "canary-probe");
+    // Sessions a run before this one left on the list are never taken for this one.
+    const before = new Set((await busAgents(member)).map((a) => a.name));
 
     // 6. The client, headless, with the canary's prompt.
     const title = `canary-${client.id}-${marker()}`;
@@ -432,7 +514,8 @@ export async function runCanary(o: Options): Promise<ClientResult> {
             (x) =>
               x.kind === client.kind &&
               x.state === "live" &&
-              x.name !== probe?.name,
+              x.name !== probe?.name &&
+              !before.has(x.name),
           ),
         { ms: LIMITS.join },
       );
@@ -444,7 +527,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       );
     } catch (e) {
       step("joins at start", "fail", (e as Error).message);
-      return result(version);
+      return result();
     }
 
     // A page it publishes shows as that session.
@@ -480,16 +563,11 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       step("receives and replies", "fail", (e as Error).message);
     }
 
-    // A message sent mid-turn reaches that turn.
-    if (!client.steering) {
-      step(
-        "mid-turn message",
-        "skip",
-        `${client.label} takes a mid-turn message in its next turn`,
-      );
-    } else {
+    // A message sent mid-turn: steered into that turn (Codex, Pi), or at the
+    // start of the next turn (Claude Code, OpenCode: no steer path yet).
+    if (client.steering && !o.nextTurn)
       await steerCheck(probe, name, signals, step);
-    }
+    else await nextTurnCheck(probe, name, signals, step);
   } catch (e) {
     step("run", "fail", (e as Error).message);
   } finally {
@@ -498,6 +576,11 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     await stopProc(session);
     await stopProc(daemon);
     await server?.stop().catch(() => {});
+    try {
+      versionAfter = clientVersion?.() ?? "";
+    } catch {}
+    if (versionAfter && versionAfter !== version)
+      o.log(`${client.id} updated itself during the run: ${versionAfter}`);
     if (overall(checks) !== "fail") {
       try {
         rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
@@ -507,7 +590,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       if (o.logsOut) copyLogs(logs, o.logsOut, secrets);
     }
   }
-  return result(version);
+  return result();
 }
 
 /** What steerCheck needs from the probe (a stub stands in for it in the tests). */
@@ -594,13 +677,83 @@ export async function steerCheck(
   }
 }
 
-/** Copies each log to `to`, with every value in `secrets` blanked. */
+/**
+ * For a client with no steer path (Claude Code, OpenCode): HOLD <a> starts a
+ * turn with two held commands; PING <b> is sent while the first is held, then
+ * both are released. The message must arrive at the start of the next turn:
+ * PONG <b> comes after DONE <a>. A PONG before DONE means the client steers
+ * now, which passes and says so. No PONG at all fails.
+ */
+export async function nextTurnCheck(
+  probe: SteerProbe,
+  name: string,
+  signals: string,
+  step: (check: string, status: CheckResult["status"], detail: string) => void,
+  limits: { hold: number; reply: number } = {
+    hold: LIMITS.hold,
+    reply: LIMITS.reply,
+  },
+) {
+  const a = marker();
+  const b = marker();
+  const file = (n: number, what: string) =>
+    join(signals, `hold-${a}-${n}.${what}`);
+  const release = (n: number) => writeFileSync(file(n, "release"), "");
+  const at = (text: string) =>
+    probe.mail.findIndex((m) => m.body.includes(text));
+  try {
+    await probe.send(name, `HOLD ${a}`);
+    await until(
+      "the first held command",
+      () => (existsSync(file(1, "started")) ? true : undefined),
+      { ms: limits.hold },
+    );
+    await probe.send(name, `PING ${b}`);
+    release(1);
+    release(2);
+    await probe.reply(`DONE ${a}`, limits.reply);
+    const pong = await probe
+      .reply(`PONG ${b}`, limits.reply)
+      .catch(() => undefined);
+    if (!pong)
+      step(
+        "mid-turn message",
+        "fail",
+        `PING ${b}, sent during HOLD ${a}, never arrived in the next turn`,
+      );
+    else if (at(`PONG ${b}`) > at(`DONE ${a}`))
+      step(
+        "mid-turn message",
+        "pass",
+        `PING ${b}, sent during HOLD ${a}, arrived at the start of the next turn (no steering)`,
+      );
+    else
+      step(
+        "mid-turn message",
+        "pass",
+        `PING ${b}, sent during HOLD ${a}, was answered inside that turn: it steers now, so set steering in clients.ts`,
+      );
+  } catch (e) {
+    release(1);
+    release(2);
+    step("mid-turn message", "fail", (e as Error).message);
+  }
+}
+
+/** Token shapes blanked even when their value was not known: machine and personal tokens, API keys. */
+const TOKEN_SHAPES = [
+  /\boa_(?:machine|pat)_[1-9A-HJ-NP-Za-km-z]{8,}/g,
+  /\bsk-[A-Za-z0-9_-]{16,}/g,
+];
+
+/** Copies each log to `to`, with every value in `secrets` and every token shape blanked. */
 export function copyLogs(from: string, to: string, secrets: string[]) {
   mkdirSync(to, { recursive: true });
   const blank = secrets.filter((v) => v.length >= 8);
   for (const f of readdirSync(from)) {
     let text = readFileSync(join(from, f), "utf8");
     for (const v of blank) text = text.replaceAll(v, "[hidden]");
+    for (const re of TOKEN_SHAPES) text = text.replace(re, "[hidden]");
     writeFileSync(join(to, f), text);
   }
 }
@@ -622,6 +775,19 @@ export function markFailed(
   };
 }
 
+/** --target, else CANARY_TARGET, else staging; --hub means local. */
+export function targetOf(
+  flag: string | undefined,
+  env: Record<string, string | undefined>,
+  hub?: string,
+): Target {
+  const t = flag ?? env.CANARY_TARGET ?? (hub ? "local" : "staging");
+  if (t !== "staging" && t !== "local")
+    throw new Error("--target must be staging or local");
+  if (hub && t !== "local") throw new Error("--hub is for --target local");
+  return t;
+}
+
 /** A bin dir whose `pi` is fake-pi.ts, run by this same node. */
 export function fakePiBin(brk?: string): string {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "oa-canary-fake-")));
@@ -639,6 +805,7 @@ async function main() {
     options: {
       client: { type: "string" },
       channel: { type: "string", default: "pinned" },
+      target: { type: "string" },
       "client-bin": { type: "string" },
       hub: { type: "string" },
       port: { type: "string", default: "8790" },
@@ -646,6 +813,7 @@ async function main() {
       logs: { type: "string" },
       fake: { type: "boolean", default: false },
       "fake-break": { type: "string" },
+      "fake-next-turn": { type: "boolean", default: false },
       check: { type: "boolean", default: false },
       "mark-failed": { type: "string" },
     },
@@ -660,6 +828,13 @@ async function main() {
     process.exit(2);
   }
   const channel = values.channel;
+  let target: Target;
+  try {
+    target = targetOf(values.target, process.env, values.hub);
+  } catch (e) {
+    console.error((e as Error).message);
+    process.exit(2);
+  }
   if (values["mark-failed"] !== undefined) {
     if (!values.out) throw new Error("--mark-failed needs --out");
     if (!existsSync(values.out))
@@ -670,7 +845,7 @@ async function main() {
     return;
   }
   if (values.check) {
-    const missing = missingSecrets(CLIENTS[id], process.env);
+    const missing = missingSecrets(CLIENTS[id], process.env, target);
     const go = missing.length === 0;
     console.log(`run=${go}`);
     if (process.env.GITHUB_OUTPUT)
@@ -679,16 +854,22 @@ async function main() {
       const r = await runCanary({
         client: id,
         channel,
+        target,
         port: 0,
         env: process.env,
         log: () => {},
       });
       const md = summaryMarkdown(r);
       console.log(md);
+      // The workflow's error line names the secret on the run page too.
+      console.log(
+        `::error::${missingDetail(CLIENTS[id].label, target, missing)}`,
+      );
       if (process.env.GITHUB_STEP_SUMMARY)
         appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
       if (values.out)
         writeFileSync(values.out, `${JSON.stringify(r, null, 2)}\n`);
+      process.exit(1);
     }
     return;
   }
@@ -700,12 +881,14 @@ async function main() {
   const r = await runCanary({
     client: id,
     channel,
+    target,
     port: Number(values.port),
     // The fake needs no key: a placeholder stands in, never sent anywhere.
     env: values.fake
       ? { ...process.env, ANTHROPIC_API_KEY: "fake-no-model" }
       : process.env,
     log: (l) => console.log(l),
+    ...(values.fake && values["fake-next-turn"] ? { nextTurn: true } : {}),
     ...(fakeDir ? { clientBin: fakeDir } : {}),
     ...(values["client-bin"] ? { clientBin: values["client-bin"] } : {}),
     ...(values.hub ? { hub: values.hub } : {}),

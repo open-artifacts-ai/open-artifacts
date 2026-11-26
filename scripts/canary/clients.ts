@@ -14,7 +14,7 @@ export type Ctx = {
   home: string;
   /** The project folder the session starts in. */
   work: string;
-  /** The local server's /mcp. */
+  /** The instance's /mcp. */
   mcpUrl: string;
   /** The member's token file (0600), as the dashboard's file form names it. */
   tokenFile: string;
@@ -40,7 +40,7 @@ export type Client = {
   kind: string;
   /** The product a linked page shows (apps/server agent-display.ts). */
   product: string;
-  /** Model API keys it needs; any one missing skips the client. */
+  /** Model API keys it needs; any one missing fails the client's run. */
   secrets: string[];
   /** The npm package and the version the nightly pins; the weekly leg takes latest. */
   npm: string;
@@ -48,7 +48,10 @@ export type Client = {
   bin: string;
   /** The cheapest model that can call tools, unless CANARY_MODEL_<ID> says otherwise. */
   model: string;
-  /** A message sent mid-turn lands in that turn (the daemon steers it). */
+  /**
+   * A message sent mid-turn lands in that turn (the daemon steers it). False:
+   * it must arrive at the start of the next turn (Claude Code and OpenCode).
+   */
   steering: boolean;
   /** First-run settings and the pages connection, before `oa-bus install`. */
   prepare(ctx: Ctx): {
@@ -251,20 +254,52 @@ export const MODEL_KEYS = [
   ...new Set(Object.values(CLIENTS).flatMap((c) => c.secrets)),
 ];
 
-/** `env` with no model key in it: for npm, wrangler and anything not the client. */
-export function withoutModelKeys(
+/**
+ * Where the canary runs. staging (the scheduled default) is a dedicated
+ * canary member on the staging instance; local is a `wrangler dev` server on
+ * the runner, for development only (CANARY_TARGET=local or --target local).
+ */
+export type Target = "staging" | "local";
+
+/**
+ * What staging needs, each a repo secret: the canary member's personal token
+ * (reads its agent list and pages, and is the client's pages token), and two
+ * machines approved ahead by that member, one for the client's daemon and one
+ * for the probe. scripts/canary/README.md says how to make each one.
+ */
+export const STAGING_SECRETS = [
+  "STAGING_CANARY_PAT",
+  "STAGING_CANARY_MACHINE",
+  "STAGING_CANARY_PROBE",
+] as const;
+
+/** Every secret the canary takes: the model keys and the staging ones. */
+export const CANARY_SECRETS = [...MODEL_KEYS, ...STAGING_SECRETS];
+
+/** `env` with no canary secret in it: for npm, wrangler and anything not the client. */
+export function withoutSecrets(
   env: Record<string, string | undefined>,
 ): Record<string, string | undefined> {
   const out = { ...env };
-  for (const k of MODEL_KEYS) delete out[k];
+  for (const k of CANARY_SECRETS) delete out[k];
   return out;
 }
 
-/** The secrets `client` needs that `env` lacks. */
+/** The secrets a `client` run on `target` needs that `env` lacks. */
 export const missingSecrets = (
   client: Client,
   env: Record<string, string | undefined>,
-): string[] => client.secrets.filter((s) => !env[s]);
+  target: Target = "staging",
+): string[] =>
+  [...client.secrets, ...(target === "staging" ? STAGING_SECRETS : [])].filter(
+    (s) => !env[s],
+  );
+
+/** The steering line every summary carries: what the mid-turn check expects. */
+export const steeringNote = (c: Client): string =>
+  c.steering
+    ? `Steering: ${c.label} steers. A message sent mid-turn must land in that same turn.`
+    : `Steering: ${c.label} has no steer path in the daemon. A message sent mid-turn must arrive at the start of its next turn. Steering it is a product change.`;
 
 /**
  * What every client is told. Plain steps with markers the canary checks; the

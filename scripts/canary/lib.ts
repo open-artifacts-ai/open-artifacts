@@ -9,9 +9,16 @@ export type ClientResult = {
   client: string;
   label: string;
   channel: string;
+  /** Where it ran: staging or local. */
+  target?: string;
+  /** The client's own `--version`, as the run started. */
   version: string;
+  /** Its `--version` again as the run ended, when that differs (it updated itself). */
+  versionAfter?: string;
   status: Status;
   checks: CheckResult[];
+  /** Plain lines for the summary: the steering expectation, the versions. */
+  notes?: string[];
 };
 
 export class Timeout extends Error {}
@@ -46,16 +53,22 @@ export async function until<T>(
 /** How long one call to the server may take. */
 export const FETCH_MS = 30_000;
 
-/** Fetch with one cookie jar: what a signed-in browser would send. */
+/**
+ * Fetch with one cookie jar, what a signed-in browser would send; or, with a
+ * `bearer` token, what an API client sends (the staging canary member's token).
+ */
 export class Session {
   #cookies = new Map<string, string>();
+  #bearer: string | undefined;
   readonly origin: string;
-  constructor(origin: string) {
+  constructor(origin: string, opts: { bearer?: string } = {}) {
     this.origin = origin;
+    this.#bearer = opts.bearer;
   }
 
   async fetch(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
+    if (this.#bearer) headers.set("authorization", `Bearer ${this.#bearer}`);
     if (this.#cookies.size > 0)
       headers.set(
         "cookie",
@@ -92,9 +105,18 @@ const MARK: Record<Status, string> = {
   skip: "SKIPPED",
 };
 
+/** The version as run: "2.1.0", or "2.1.0, updated itself to 2.1.1 during the run". */
+export const versionText = (r: ClientResult): string =>
+  r.versionAfter && r.versionAfter !== r.version
+    ? `${r.version || "unknown"}, updated itself to ${r.versionAfter} during the run`
+    : r.version;
+
 /** The job summary: one line per client, then one row per check. Never a secret. */
 export function summaryMarkdown(r: ClientResult): string {
-  const head = `### ${r.label} (${r.channel}${r.version ? `, ${r.version}` : ""}): ${MARK[r.status]}`;
+  const v = versionText(r);
+  const where = r.target ? `, on ${r.target}` : "";
+  const head = `### ${r.label} (${r.channel}${v ? `, ${v}` : ""}${where}): ${MARK[r.status]}`;
+  const notes = (r.notes ?? []).map((n) => `- ${n}`);
   const rows = r.checks.map(
     (c) =>
       `| ${c.check} | ${MARK[c.status]} | ${c.detail.replaceAll("|", "/")} |`,
@@ -102,6 +124,7 @@ export function summaryMarkdown(r: ClientResult): string {
   return [
     head,
     "",
+    ...(notes.length > 0 ? [...notes, ""] : []),
     "| Check | Result | Detail |",
     "| --- | --- | --- |",
     ...rows,
