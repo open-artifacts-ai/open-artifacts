@@ -135,15 +135,24 @@ async function mcp(
   return data ? (JSON.parse(data) as Json) : undefined;
 }
 
-async function publish(title: string) {
-  // The proof header comes once the session's link is bound; a real Pi
-  // connects when it first needs the server, which is after that too.
-  const deadline = Date.now() + 30_000;
-  while (
-    !JSON.stringify(pages?.config ?? {}).includes("Proof") &&
-    Date.now() < deadline
-  )
-    await new Promise((r) => setTimeout(r, 100));
+/** Resolves once the pages entry carries the session proof, or after 30 s. */
+const proofed: (() => void)[] = [];
+const hasProof = () => JSON.stringify(pages?.config ?? {}).includes("Proof");
+const proofReady = () =>
+  new Promise<void>((resolve) => {
+    if (hasProof()) return resolve();
+    const t = setTimeout(resolve, 30_000);
+    proofed.push(() => {
+      clearTimeout(t);
+      resolve();
+    });
+  });
+
+async function publish(title: string, probe: string | undefined) {
+  // The proof header comes once the session's link is bound (the extension
+  // registers it again then); a real Pi connects when it first needs the
+  // server, which is after that too.
+  await proofReady();
   if (!pages) throw new Error("no pages server registered");
   const s: { id?: string } = {};
   await mcp(s, {
@@ -167,6 +176,7 @@ async function publish(title: string) {
     },
   });
   say(`published ${title}: ${JSON.stringify(r).slice(0, 200)}`);
+  if (probe) await send(probe, `PUBLISHED ${title}`);
 }
 
 const pi = {
@@ -175,6 +185,7 @@ const pi = {
     handlers.set(event, [...(handlers.get(event) ?? []), h]),
   registerMcpServer: (name: string, config: Json) => {
     pages = { name, config };
+    if (hasProof()) for (const f of proofed.splice(0)) f();
   },
   unregisterMcpServer: () => {
     pages = undefined;
@@ -217,10 +228,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (cmd.type !== "prompt") return;
-  const title = /title "([^"]+)"/.exec(String(cmd.message))?.[1];
+  const msg = String(cmd.message);
+  const title = /title "([^"]+)"/.exec(msg)?.[1];
+  const probe = /bus agent "([^"]+)"/.exec(msg)?.[1];
   if (title) {
     queue.push(async () => {
-      await publish(title).catch((e) => say(`error: ${(e as Error).message}`));
+      await publish(title, probe).catch((e) =>
+        say(`error: ${(e as Error).message}`),
+      );
     });
     void pump();
   }

@@ -1,7 +1,9 @@
 // Small helpers the client canary shares: deadlines, a cookie session and the
 // result table. No dependencies outside Node, so the workflow runs it with
 // `node --experimental-strip-types` and no package of its own.
+import type { ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { watch } from "node:fs";
 
 export type Status = "pass" | "fail" | "skip";
 export type CheckResult = { check: string; status: Status; detail: string };
@@ -26,31 +28,179 @@ export type ClientResult = {
 
 export class Timeout extends Error {}
 
+/** Stops listening; what `waitFor`'s `on` returns. */
+export type Unsubscribe = () => void;
+
 /**
- * Polls `probe` until it returns a value other than undefined, or throws
- * Timeout once `ms` has passed. `everyMs` spaces the polls; the harness waits
- * on real processes and a real server, so a poll with a deadline is the signal.
+ * Waits on a signal, never on a timer: `check` runs once now and again each
+ * time a source `on` subscribes to wakes it (a file event, a socket frame, a
+ * process exit). Resolves with the first value other than undefined; throws
+ * Timeout once `ms` has passed with none. A `check` that throws ends the wait
+ * with that error. Checks never overlap: a wake during one runs it again after.
  */
-export async function until<T>(
+export function waitFor<T>(
   what: string,
-  probe: () => Promise<T | undefined> | T | undefined,
-  { ms, everyMs = 500 }: { ms: number; everyMs?: number },
+  check: () => Promise<T | undefined> | T | undefined,
+  { ms, on = [] }: { ms: number; on?: ((wake: () => void) => Unsubscribe)[] },
 ): Promise<T> {
-  const deadline = Date.now() + ms;
-  let last: unknown;
-  for (;;) {
-    try {
-      const v = await probe();
-      if (v !== undefined) return v;
-    } catch (e) {
-      last = e;
-    }
-    if (Date.now() >= deadline) {
-      const why = last instanceof Error ? `: ${last.message}` : "";
-      throw new Timeout(`${what}: not within ${Math.round(ms / 1000)} s${why}`);
-    }
-    await new Promise((r) => setTimeout(r, everyMs));
-  }
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    let running = false;
+    let again = false;
+    const offs: Unsubscribe[] = [];
+    const finish = (f: () => void) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      for (const off of offs) off();
+      f();
+    };
+    const timer = setTimeout(
+      () =>
+        finish(() =>
+          reject(new Timeout(`${what}: not within ${Math.round(ms / 1000)} s`)),
+        ),
+      ms,
+    );
+    const wake = () => {
+      if (done) return;
+      if (running) {
+        again = true;
+        return;
+      }
+      running = true;
+      void (async () => {
+        try {
+          do {
+            again = false;
+            const v = await check();
+            if (v !== undefined) return finish(() => resolve(v));
+          } while (again && !done);
+        } catch (e) {
+          finish(() => reject(e));
+        } finally {
+          running = false;
+        }
+      })();
+    };
+    for (const sub of on) offs.push(sub(wake));
+    wake();
+  });
+}
+
+/** A `waitFor` source: wakes on any change to each file or folder in `paths` (fs.watch, no polling). */
+export const onFiles =
+  (...paths: string[]) =>
+  (wake: () => void): Unsubscribe => {
+    const ws = paths.map((d) => watch(d, { persistent: false }, () => wake()));
+    return () => {
+      for (const w of ws) w.close();
+    };
+  };
+
+/** A `waitFor` source: wakes on a stream's output. */
+export const onData =
+  (s: NodeJS.ReadableStream | null | undefined) =>
+  (wake: () => void): Unsubscribe => {
+    if (!s) return () => {};
+    s.on("data", wake);
+    return () => s.off("data", wake);
+  };
+
+/** A `waitFor` source: wakes when the process exits or fails to start. */
+export const onExit =
+  (child: ChildProcess) =>
+  (wake: () => void): Unsubscribe => {
+    child.on("exit", wake);
+    child.on("error", wake);
+    return () => {
+      child.off("exit", wake);
+      child.off("error", wake);
+    };
+  };
+
+// ---------------------------------------------------------------- sanitizing
+
+/** The most text one detail may carry into a result, summary or issue. */
+export const DETAIL_MAX = 300;
+
+/**
+ * Token shapes blanked even when their value was not known: Open Artifacts
+ * machine, personal and session tokens, model API keys, GitHub tokens, and
+ * anything sent as a bearer token.
+ */
+export const TOKEN_SHAPES = [
+  /\boa_(?:machine|pat|sess|proof)_[A-Za-z0-9_-]{8,}/g,
+  /\bsk-[A-Za-z0-9_-]{16,}/g,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
+  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+  /\b(authorization|cookie|set-cookie|x-oa-proof)\s*[:=]\s*\S+/gi,
+];
+
+/** `text` with every value in `secrets` (8 characters or more) and every token shape blanked. */
+export function redact(text: string, secrets: readonly string[] = []): string {
+  let out = text;
+  for (const v of secrets)
+    if (v && v.length >= 8) out = out.replaceAll(v, "[hidden]");
+  for (const re of TOKEN_SHAPES)
+    out = out.replace(re, (_m, name: unknown) =>
+      typeof name === "string" ? `${name} [hidden]` : "[hidden]",
+    );
+  return out;
+}
+
+/** Control, bidi and zero-width characters: never kept in a detail. */
+const CONTROLS = new RegExp(
+  "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u2028-\\u202e\\u2060-\\u206f\\ufeff]+",
+  "g",
+);
+
+/**
+ * A detail fit to record: redacted, one line (terminal codes and control
+ * characters out), at most `max` characters. What a client, a log or the hub
+ * said goes through this before it is kept anywhere.
+ */
+export function clean(
+  text: string,
+  secrets: readonly string[] = [],
+  max = DETAIL_MAX,
+): string {
+  const one = redact(String(text), secrets)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the escapes are what it removes
+    .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(CONTROLS, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
+/** The zero-width space that keeps GitHub from reading @name, #123 or a URL. */
+const ZWSP = "\u200b";
+
+/**
+ * `text` (cleaned first) as inert GitHub markdown: no HTML, no markdown, no
+ * table break, no @-mention, no #-link or cross-repo reference, no autolinked
+ * URL. Every text from a client, a log or the hub that reaches a summary, an
+ * issue or a comment goes through this.
+ */
+export function inert(
+  text: string,
+  secrets: readonly string[] = [],
+  max = DETAIL_MAX,
+): string {
+  return (
+    clean(text, secrets, max)
+      // @name, #123, owner/repo#123: a zero-width space after the sign.
+      .replace(/([@#])/g, `$1${ZWSP}`)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/[\\`*_{}[\]|~^$]/g, (c) => (c === "|" ? "&#124;" : `\\${c}`))
+      .replace(/:\/\//g, `:${ZWSP}//`)
+      .replace(/^([-+=>]|\d+\.)/, "\\$1")
+      .replace(/(www)\./gi, `$1${ZWSP}.`)
+  );
 }
 
 /** How long one call to the server may take. */
@@ -83,13 +233,23 @@ export class Session {
         "cookie",
         [...this.#cookies].map(([k, v]) => `${k}=${v}`).join("; "),
       );
-    const res = await fetch(new URL(path, this.origin), {
-      // A call that hangs fails, rather than holding the job to its timeout.
-      signal: AbortSignal.timeout(FETCH_MS),
-      ...init,
-      headers,
-      redirect: "manual",
-    });
+    let res: Response;
+    try {
+      res = await fetch(new URL(path, this.origin), {
+        // A call that hangs fails, rather than holding the job to its timeout.
+        signal: AbortSignal.timeout(FETCH_MS),
+        ...init,
+        headers,
+        redirect: "manual",
+      });
+    } catch (e) {
+      // Say which call and why (the cause's code), never the request itself.
+      const cause = (e as { cause?: { code?: string; message?: string } })
+        .cause;
+      throw new Error(
+        `${init.method ?? "GET"} ${path.split("?")[0]}: ${(e as Error).message}${cause ? ` (${cause.code ?? cause.message ?? ""})` : ""}`,
+      );
+    }
     for (const c of res.headers.getSetCookie()) {
       const [pair] = c.split(";");
       const eq = (pair ?? "").indexOf("=");
@@ -126,15 +286,23 @@ export const busVersionText = (r: ClientResult): string =>
     ? `${r.busVersion || "unknown"}, then ${r.busVersionAfter} as the run ended`
     : (r.busVersion ?? "");
 
-/** The job summary: one line per client, then one row per check. Never a secret. */
-export function summaryMarkdown(r: ClientResult): string {
+/**
+ * The job summary: one line per client, then one row per check. Every text
+ * in it is inert (no markdown, HTML, mention or link from a client), and no
+ * secret or token shape survives.
+ */
+export function summaryMarkdown(
+  r: ClientResult,
+  secrets: readonly string[] = [],
+): string {
+  const t = (s: string, max?: number) => inert(s, secrets, max);
   const v = versionText(r);
   const where = r.target ? `, on ${r.target}` : "";
-  const head = `### ${r.label} (${r.channel}${v ? `, ${v}` : ""}${where}): ${MARK[r.status]}`;
-  const notes = (r.notes ?? []).map((n) => `- ${n}`);
+  const head = `### ${t(`${r.label} (${r.channel}${v ? `, ${v}` : ""}${where})`, 200)}: ${MARK[r.status] ?? "FAIL"}`;
+  const notes = (r.notes ?? []).map((n) => `- ${t(n)}`);
   const rows = r.checks.map(
     (c) =>
-      `| ${c.check} | ${MARK[c.status]} | ${c.detail.replaceAll("|", "/")} |`,
+      `| ${t(c.check, 60)} | ${MARK[c.status] ?? "FAIL"} | ${t(c.detail)} |`,
   );
   return [
     head,
@@ -149,3 +317,16 @@ export function summaryMarkdown(r: ClientResult): string {
 
 /** Words for a short random marker the canary asks clients to echo back. */
 export const marker = (): string => randomBytes(5).toString("hex");
+
+/** A run id: lowercase letters, digits and hyphens, so it fits an address and a name. */
+export const RUN_ID_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+/** CANARY_RUN_ID (the workflow sets it from the run), else a new one. */
+export function runIdOf(v: string | undefined): string {
+  if (!v) return marker();
+  if (!RUN_ID_RE.test(v))
+    throw new Error(
+      "CANARY_RUN_ID must be lowercase letters, digits and hyphens, at most 40",
+    );
+  return v;
+}

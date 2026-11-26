@@ -29,9 +29,16 @@ export type Launch = {
   args: string[];
   /** A TUI: run it inside a pseudo-terminal. */
   pty: boolean;
-  /** Written to stdin once it starts; stdin stays open. */
-  stdin?: string;
 };
+
+/**
+ * The first prompt as the bytes to write to the session's stdin, once it is
+ * on the bus: never on its command line, so "joins at start" is seen before
+ * any prompt. A TUI gets it typed as one line and Enter; Pi's RPC mode gets
+ * one JSON line.
+ */
+export const typed = (prompt: string): string =>
+  `${prompt.replace(/\s*\n\s*/g, " ")}\r`;
 
 export type Client = {
   id: ClientId;
@@ -57,7 +64,10 @@ export type Client = {
   prepare(ctx: Ctx): {
     run?: { cmd: string; args: string[]; stdin?: string }[];
   };
-  start(ctx: Ctx, prompt: string): Launch;
+  /** Starts the session with no prompt; stdin stays open for `prompt`. */
+  start(ctx: Ctx): Launch;
+  /** The first prompt, as written to the running session's stdin. */
+  prompt(text: string): string;
 };
 
 const writeJson = (file: string, v: unknown) => {
@@ -109,7 +119,7 @@ export const CLIENTS: Record<ClientId, Client> = {
       });
       return {};
     },
-    start(c, prompt) {
+    start(c) {
       return {
         cmd: "claude",
         args: [
@@ -118,11 +128,11 @@ export const CLIENTS: Record<ClientId, Client> = {
           "--dangerously-skip-permissions",
           "-n",
           "canary-claude",
-          prompt,
         ],
         pty: true,
       };
     },
+    prompt: typed,
   },
   codex: {
     id: "codex",
@@ -164,9 +174,10 @@ export const CLIENTS: Record<ClientId, Client> = {
         ],
       };
     },
-    start(_c, prompt) {
-      return { cmd: "codex", args: [prompt], pty: true };
+    start() {
+      return { cmd: "codex", args: [], pty: true };
     },
+    prompt: typed,
   },
   opencode: {
     id: "opencode",
@@ -197,9 +208,10 @@ export const CLIENTS: Record<ClientId, Client> = {
       });
       return {};
     },
-    start(_c, prompt) {
-      return { cmd: "opencode", args: ["--prompt", prompt], pty: true };
+    start() {
+      return { cmd: "opencode", args: [], pty: true };
     },
+    prompt: typed,
   },
   pi: {
     id: "pi",
@@ -226,7 +238,7 @@ export const CLIENTS: Record<ClientId, Client> = {
       });
       return {};
     },
-    start(c, prompt) {
+    start(c) {
       // RPC mode: no terminal, stays up between turns, takes prompts on stdin.
       return {
         cmd: "pi",
@@ -241,9 +253,9 @@ export const CLIENTS: Record<ClientId, Client> = {
           "canary-pi",
         ],
         pty: false,
-        stdin: `${JSON.stringify({ type: "prompt", message: prompt })}\n`,
       };
     },
+    prompt: (text) => `${JSON.stringify({ type: "prompt", message: text })}\n`,
   },
 };
 
@@ -299,13 +311,14 @@ export const steeringNote = (c: Client): string =>
     : `Steering: ${c.label} has no steer path in the daemon. A message sent mid-turn must arrive at the start of its next turn. Steering it is a product change.`;
 
 /**
- * What every client is told. Plain steps with markers the canary checks; the
- * fake clients in the tests follow the same words.
+ * What every client is told, as its first prompt once it is on the bus.
+ * Plain steps with markers the canary checks; the fake clients in the tests
+ * follow the same words. `probe` is the canary's own bus agent.
  */
-export function canaryPrompt(title: string): string {
+export function canaryPrompt(title: string, probe: string): string {
   return [
     "You are a test session for the Open Artifacts bus. Follow these rules exactly and do nothing else.",
-    `1. Now: publish a page with the ${PAGES} publish_artifact tool, title "${title}", format "html", content "<p>canary</p>". Then end your turn.`,
+    `1. Now: publish a page with the ${PAGES} publish_artifact tool, title "${title}", format "html", content "<p>canary</p>". Then send the bus agent "${probe}" exactly "PUBLISHED ${title}" with the bus send message tool. Then end your turn.`,
     '2. When a bus message says "PING <word>", answer it at once, even in the middle of other work and before your next command: send its sender exactly "PONG <word>" with the bus send message tool. Then go on with what you were doing, or end your turn if there is nothing.',
     '3. When a bus message says "HOLD <word>", run the shell command `oa-canary-hold <word> 1`, then `oa-canary-hold <word> 2`. Each waits until it is released. Then send the sender exactly "DONE <word>" and end your turn.',
     "Never ask questions. Keep every message to one line.",

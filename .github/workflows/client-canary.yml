@@ -15,8 +15,13 @@
 #   Each job has its own member and machines, so they run side by side.
 # - Each job gets only its own client's model key; npm gets no secret.
 # - The canary jobs get contents: read only. The report job has no model key:
-#   it reads the result files and keeps one issue per client and channel
-#   (label client-canary), as release-alert.yml keeps its blocker.
+#   it reads the result files and keeps ONE issue per client (label
+#   client-canary), with each channel's result in it, as release-alert.yml
+#   keeps its blocker. It closes once every channel has passed.
+# - Credentials never outlive a job: the canary deletes its token, bus home,
+#   machine file and scratch HOME on every way out, and erases its staging
+#   member; a cleanup step under always() does it again for a job cut off by
+#   its timeout or a cancel.
 name: client-canary
 
 on:
@@ -47,6 +52,9 @@ env:
   # means rl-a (https://rl-a.open-artifacts-staging.app, oa-redline-a.fyi).
   CANARY_STAGING_URL: ${{ vars.CANARY_STAGING_URL }}
   CANARY_STAGING_TEST_DOMAIN: ${{ vars.CANARY_STAGING_TEST_DOMAIN }}
+  # This run's id: in each member's address, token label and page title, so
+  # every check is bound to this run, and the cleanup step finds its member.
+  CANARY_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
 
 jobs:
   canary:
@@ -68,6 +76,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
+      - name: A scratch temp folder the cleanup step deletes
+        run: |
+          mkdir -p "$RUNNER_TEMP/canary-scratch"
+          echo "TMPDIR=$RUNNER_TEMP/canary-scratch" >> "$GITHUB_ENV"
       - id: need
         name: Are this client's secrets set? (a missing one fails the job)
         env:
@@ -123,6 +135,16 @@ jobs:
           path: ${{ runner.temp }}/canary-logs
           if-no-files-found: ignore
           retention-days: 14
+      # Every way out, a cancel and a timeout too: erase this run's staging
+      # member (its token, machines and pages) and delete the scratch HOME,
+      # bus home and machine file, in case the canary was cut off.
+      - name: Clean up credentials
+        if: always()
+        env:
+          CANARY_RL_A_HOOK_KEY: ${{ secrets.CANARY_RL_A_HOOK_KEY }}
+        run: |
+          node --experimental-strip-types --no-warnings scripts/canary/run.ts --cleanup --client "$CLIENT"
+          rm -rf "$RUNNER_TEMP/canary-scratch" "$RUNNER_TEMP/canary-logs"
 
   report:
     needs: [canary]

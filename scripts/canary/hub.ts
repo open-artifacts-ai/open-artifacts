@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { withoutSecrets } from "./clients.ts";
-import { FETCH_MS, Session, until } from "./lib.ts";
+import { clean, FETCH_MS, onExit, onFiles, Session, waitFor } from "./lib.ts";
 
 export const ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const SERVER = join(ROOT, "apps/server");
@@ -36,6 +36,7 @@ export const PATHS = {
   me: "/api/v1/me",
   tokens: "/api/v1/tokens",
   busAgents: "/api/v1/bus/agents",
+  busMachines: "/api/v1/bus/machines",
   artifacts: "/api/v1/artifacts",
   device: "/bus/device",
   deviceToken: "/bus/device/token",
@@ -134,8 +135,11 @@ export async function startServer(
       "127.0.0.1",
       "--show-interactive-dev-session=false",
     ],
+    // Straight to the file: the canary's own blocking steps (spawnSync) must
+    // never leave wrangler stuck on a full pipe.
     { cwd: SERVER, stdio: ["ignore", log, log], detached: true, env },
   );
+  const seen = () => readFileSync(logPath, "utf8");
   let exited = false;
   child.on("exit", () => {
     exited = true;
@@ -148,36 +152,32 @@ export async function startServer(
   };
   const stop = async () => {
     kill("SIGTERM");
-    await until("wrangler dev to stop", () => (exited ? true : undefined), {
+    await waitFor("wrangler dev to stop", () => (exited ? true : undefined), {
       ms: 10_000,
-      everyMs: 200,
+      on: [onExit(child)],
     }).catch(() => kill("SIGKILL"));
     rmSync(dir, { recursive: true, force: true });
   };
   try {
-    await until(
-      "the local server to answer /healthz",
-      async () => {
+    // "Ready on" in its log is the signal: read on each change to the file.
+    await waitFor(
+      "the local server to say it is ready",
+      () => {
+        // The log stays in the scratch folder; only its last line, cleaned, is told.
         if (exited)
           throw new Error(
-            `wrangler dev exited\n${readFileSync(logPath, "utf8")}`,
+            `wrangler dev exited: ${clean(seen().trim().split("\n").at(-1) ?? "")}`,
           );
-        if (
-          !readFileSync(logPath, "utf8").includes(
-            `Ready on http://127.0.0.1:${port}`,
-          )
-        )
-          return undefined;
-        return (
-          await fetch(`${origin}/healthz`, {
-            signal: AbortSignal.timeout(10_000),
-          })
-        ).ok
+        return seen().includes(`Ready on http://127.0.0.1:${port}`)
           ? true
           : undefined;
       },
-      { ms: 180_000, everyMs: 500 },
+      { ms: 180_000, on: [onFiles(logPath), onExit(child)] },
     );
+    const h = await fetch(`${origin}/healthz`, {
+      signal: AbortSignal.timeout(FETCH_MS),
+    });
+    if (!h.ok) throw new Error(`the local server's /healthz: HTTP ${h.status}`);
   } catch (e) {
     await stop();
     throw e;
@@ -309,15 +309,19 @@ export async function signIn(origin: string, email: string): Promise<Session> {
   return s;
 }
 
-/** A personal token for the signed-in member. The value is never printed. */
-export async function createToken(s: Session, label: string): Promise<string> {
+/** A personal token for the signed-in member, and its id. The value is never printed. */
+export async function createToken(
+  s: Session,
+  label: string,
+): Promise<{ token: string; id: string }> {
   const res = await s.fetch(PATHS.tokens, {
     method: "POST",
     headers: { "X-OA-Request": "1", "content-type": "application/json" },
     body: JSON.stringify({ label }),
   });
   if (!res.ok) throw new Error(`create token: HTTP ${res.status}`);
-  return ((await res.json()) as { token: string }).token;
+  const j = (await res.json()) as { token: string; id?: string };
+  return { token: j.token, id: String(j.id ?? "") };
 }
 
 const csrfOf = (html: string): string => {
@@ -378,24 +382,58 @@ export async function approveProbeMachine(
     interval: number;
   };
   await approveCode(s, dev.user_code);
-  return until(
-    "the probe machine token",
-    async () => {
-      const t = await fetch(`${s.origin}${PATHS.deviceToken}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ device_code: dev.device_code }),
-        signal: AbortSignal.timeout(FETCH_MS),
-      });
-      if (t.status === 429) return undefined;
-      const j = (await t.json()) as { machine_token?: string };
-      return j.machine_token;
-    },
-    { ms: 60_000, everyMs: (dev.interval + 0.5) * 1000 },
-  );
+  // Approved above, so the first ask has the token: no wait, no retry.
+  const t = await fetch(`${s.origin}${PATHS.deviceToken}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ device_code: dev.device_code }),
+    signal: AbortSignal.timeout(FETCH_MS),
+  });
+  const j = t.ok ? ((await t.json()) as { machine_token?: string }) : {};
+  if (!j.machine_token)
+    throw new Error(
+      `the probe machine token: HTTP ${t.status} after its approval`,
+    );
+  return j.machine_token;
+}
+
+/** Every machine on the member's bus, newest first, as the Bus page lists them. */
+export async function busMachines(
+  s: Session,
+): Promise<{ id: string; label: string; revokedAt: string | null }[]> {
+  const res = await s.fetch(PATHS.busMachines);
+  if (!res.ok) throw new Error(`bus machines: HTTP ${res.status}`);
+  return (
+    (await res.json()) as {
+      machines: { id: string; label: string; revokedAt: string | null }[];
+    }
+  ).machines;
+}
+
+/** Revokes a machine (local runs: a staging member is purged whole instead). */
+export async function revokeMachine(s: Session, id: string): Promise<void> {
+  const res = await s.fetch(`${PATHS.busMachines}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-OA-Request": "1" },
+  });
+  if (!res.ok && res.status !== 404)
+    throw new Error(`revoke machine: HTTP ${res.status}`);
+}
+
+/** Revokes a personal token by id (local runs). */
+export async function revokeToken(s: Session, id: string): Promise<void> {
+  const res = await s.fetch(`${PATHS.tokens}/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { "X-OA-Request": "1" },
+  });
+  if (!res.ok && res.status !== 404)
+    throw new Error(`revoke token: HTTP ${res.status}`);
 }
 
 export type BusAgent = {
+  /** The hub's agent id: a reply to the probe carries it as from_id. */
+  id: string;
+  machineId: string;
   name: string;
   kind: string;
   namespace: string;

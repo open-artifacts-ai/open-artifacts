@@ -28,6 +28,17 @@
 //   --fake-next-turn    with --fake-break steer: judge the fake as a client with
 //                       no steer path (Claude Code, OpenCode), so the next-turn
 //                       check runs end to end
+//   --cleanup           only clean up after a run that was cut off: erase this
+//                       run's staging member (CANARY_RUN_ID) and delete every
+//                       oa-canary scratch folder under the temp folder
+//
+// Each run has its own id (CANARY_RUN_ID, else a random one) in its member's
+// address, its token's label and its page title. Every check is bound to this
+// run's session: its machine (the one this run approved), its hub agent id,
+// and its name. Credentials (the token, the bus home and machine file, the
+// scratch HOME) are deleted on every way out: a pass, a failure, a timeout,
+// SIGINT, SIGTERM or SIGHUP. A staging member is erased each time; a local
+// run revokes its token and machines.
 //
 // A client whose model key or staging secret is missing fails, by the
 // secret's name: never a green skip. The exit code is 1 when a check failed.
@@ -54,8 +65,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
+import { shortSocketDir } from "../../packages/bus-adapter-claude-code/src/socket-path.ts";
 import {
   CLIENT_IDS,
   CLIENTS,
@@ -73,13 +85,17 @@ import {
 import {
   approveCode,
   approveProbeMachine,
+  type BusAgent,
   busAgents,
+  busMachines,
   createToken,
   hookMember,
   PATHS,
   publishedBy,
   purgeMembers,
   ROOT,
+  revokeMachine,
+  revokeToken,
   STAGING_TEST_DOMAIN,
   signIn,
   stagingOrigin,
@@ -89,14 +105,19 @@ import {
   busVersionText,
   type CheckResult,
   type ClientResult,
+  clean,
   marker,
+  onExit,
+  onFiles,
   overall,
+  redact,
+  runIdOf,
   type Session,
   summaryMarkdown,
-  until,
   versionText,
+  waitFor,
 } from "./lib.ts";
-import { Probe } from "./probe.ts";
+import { type Peer, Probe } from "./probe.ts";
 
 /** How long each step may take. A real model is slow; a fake one is not. */
 export const LIMITS = {
@@ -109,11 +130,16 @@ export const LIMITS = {
   command: 60_000,
 };
 
+/** How long one held command waits for its release before it says "timed out". */
+export const HOLD_MS = 300_000;
+
 export type Options = {
   client: ClientId;
   channel: "pinned" | "latest";
   /** Where it runs (default staging). */
   target?: Target;
+  /** This run's id (default: CANARY_RUN_ID, else a new one). */
+  runId?: string;
   /** The fake only: run the next-turn check, as for a client with no steer path. */
   nextTurn?: boolean;
   clientBin?: string;
@@ -124,20 +150,25 @@ export type Options = {
   logsOut?: string;
   env: Record<string, string | undefined>;
   log: (line: string) => void;
+  /**
+   * A signal (SIGINT, SIGTERM, SIGHUP) stopped the run: called with the failed
+   * result once every credential is cleaned up, then the process exits.
+   * Default: write nothing and exit.
+   */
+  onSignal?: (r: ClientResult, signal: NodeJS.Signals) => void;
 };
 
-/** The hold command the prompt names: marks itself started, waits for its release file. */
-const HOLD_SCRIPT = `#!/bin/sh
-# oa-canary-hold <word> <n>: the canary's slow tool call (agy S7).
-d="$CANARY_SIGNALS"
-f="$d/hold-$1-$2"
-: > "$f.started"
-i=0
-while [ ! -e "$f.release" ] && [ $i -lt 3000 ]; do i=$((i+1)); sleep 0.1; done
-echo released
-`;
+/** The hold command the prompt names: hold.mjs, run by this same node. */
+const holdScript = () =>
+  `#!/bin/sh\nexec "${process.execPath}" "${new URL("./hold.mjs", import.meta.url).pathname}" "$@"\n`;
 
-type Proc = { child: ChildProcess; log: string; exited: () => boolean };
+type Proc = {
+  child: ChildProcess;
+  log: string;
+  exited: () => boolean;
+  /** Everything it printed so far (stdout and stderr), read from `log`. */
+  output: () => string;
+};
 
 function startProc(
   cmd: string,
@@ -146,14 +177,17 @@ function startProc(
     cwd: string;
     env: Record<string, string>;
     log: string;
-    stdin?: string;
+    stdin?: boolean;
   },
 ): Proc {
   const fd = openSync(opts.log, "a");
+  // Straight to the log file: the canary's blocking steps (spawnSync) must
+  // never leave a client or the daemon stuck on a full pipe. Waits watch the
+  // file instead.
   const child = spawn(cmd, args, {
     cwd: opts.cwd,
     env: opts.env,
-    stdio: [opts.stdin === undefined ? "ignore" : "pipe", fd, fd],
+    stdio: [opts.stdin ? "pipe" : "ignore", fd, fd],
     detached: true,
   });
   let gone = false;
@@ -163,11 +197,17 @@ function startProc(
   child.on("error", () => {
     gone = true;
   });
-  if (opts.stdin !== undefined) child.stdin?.write(opts.stdin);
-  return { child, log: opts.log, exited: () => gone };
+  // A session that exits early must not crash the run on a write to its stdin.
+  child.stdin?.on("error", () => {});
+  return {
+    child,
+    log: opts.log,
+    exited: () => gone,
+    output: () => readFileSync(opts.log, "utf8"),
+  };
 }
 
-/** SIGTERM to the process group, then SIGKILL if it is still up after 5 s. */
+/** SIGTERM to the process group, then SIGKILL if it has not exited 5 s later. */
 async function stopProc(p: Proc | undefined) {
   if (!p || p.exited() || p.child.pid === undefined) return;
   const pid = p.child.pid;
@@ -177,9 +217,9 @@ async function stopProc(p: Proc | undefined) {
     } catch {}
   };
   kill("SIGTERM");
-  await until("the process to stop", () => (p.exited() ? true : undefined), {
+  await waitFor("the process to stop", () => (p.exited() ? true : undefined), {
     ms: 5000,
-    everyMs: 100,
+    on: [onExit(p.child)],
   }).catch(() => kill("SIGKILL"));
 }
 
@@ -234,6 +274,68 @@ export const missingDetail = (
 ): string =>
   `MISSING SECRET: add the repo secret ${missing.join(" and ")} to run ${label} on ${target}. Without it the canary is red, never skipped.`;
 
+/** This run's names: its member's address, its token's label, its staging purge prefix. */
+export function runNames(
+  runId: string,
+  client: ClientId,
+  target: Target,
+  domain = STAGING_TEST_DOMAIN,
+): { prefix: string; email: string; tokenLabel: string } {
+  // t19-: the only prefix the purge hook erases (T19's own sweep of old runs
+  // takes a cut-off run's member too).
+  const prefix =
+    target === "staging"
+      ? `t19-canary-${runId}-${client}`
+      : `canary-${runId}-${client}`;
+  return {
+    prefix,
+    email: `${prefix}@${target === "staging" ? domain : "canary.test"}`,
+    tokenLabel: `canary ${runId} ${client}`,
+  };
+}
+
+/**
+ * The one session of this run on the roster: live, the client's kind, on the
+ * machine this run approved. Undefined while there is none; throws when there
+ * are two, since then neither can be told to be this run's.
+ */
+export function thisRunsAgent(
+  agents: BusAgent[],
+  kind: string,
+  machineId: string,
+): BusAgent | undefined {
+  const mine = agents.filter(
+    (a) => a.machineId === machineId && a.kind === kind && a.state === "live",
+  );
+  if (mine.length > 1)
+    throw new Error(
+      `${mine.length} live ${kind} sessions on this run's machine: cannot tell which is the one under test`,
+    );
+  return mine[0];
+}
+
+/**
+ * Cleans up on SIGINT, SIGTERM and SIGHUP while `run` is active: `stop` runs
+ * once, then the process exits with 128 + the signal's number.
+ */
+function onSignals(stop: (sig: NodeJS.Signals) => Promise<void>): () => void {
+  const codes: Partial<Record<NodeJS.Signals, number>> = {
+    SIGHUP: 1,
+    SIGINT: 2,
+    SIGTERM: 15,
+  };
+  const handlers = Object.entries(codes).map(([sig, n]) => {
+    const h = () => {
+      void stop(sig as NodeJS.Signals).finally(() => process.exit(128 + n));
+    };
+    process.once(sig as NodeJS.Signals, h);
+    return [sig as NodeJS.Signals, h] as const;
+  });
+  return () => {
+    for (const [sig, h] of handlers) process.off(sig, h);
+  };
+}
+
 /** Runs one client through every check. Never throws: a failure is a failed check. */
 export async function runCanary(o: Options): Promise<ClientResult> {
   const client = CLIENTS[o.client];
@@ -243,20 +345,27 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   let versionAfter = "";
   let busVersion = "";
   let busVersionAfter = "";
+  /** Values no output may hold: the model keys, the hook key, the run's tokens. */
+  const secrets = [...client.secrets, ...STAGING_SECRETS].flatMap(
+    (k) => o.env[k] ?? [],
+  );
+  const log = (line: string) => o.log(redact(line, secrets));
   const result = (): ClientResult => {
     const r: ClientResult = {
       client: client.id,
       label: client.label,
       channel: o.channel,
       target,
-      version,
-      ...(versionAfter && versionAfter !== version ? { versionAfter } : {}),
-      ...(busVersion ? { busVersion } : {}),
+      version: clean(version, secrets, 80),
+      ...(versionAfter && versionAfter !== version
+        ? { versionAfter: clean(versionAfter, secrets, 80) }
+        : {}),
+      ...(busVersion ? { busVersion: clean(busVersion, secrets, 80) } : {}),
       ...(busVersionAfter && busVersionAfter !== busVersion
-        ? { busVersionAfter }
+        ? { busVersionAfter: clean(busVersionAfter, secrets, 80) }
         : {}),
       status: overall(checks),
-      checks,
+      checks: [...checks],
     };
     r.notes = [
       `Version as run: ${versionText(r) || "unknown (the client was not installed)"}`,
@@ -265,11 +374,26 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     ];
     return r;
   };
+  /** Records a check. Its detail is cleaned: one line, capped, no secret or token. */
+  const step = (
+    check: string,
+    status: CheckResult["status"],
+    detail: string,
+  ) => {
+    const d = clean(detail, secrets);
+    checks.push({ check, status, detail: d });
+    log(`${status.toUpperCase()} ${client.id} ${check}: ${d}`);
+  };
   const missing = missingSecrets(client, o.env, target);
   if (missing.length > 0) {
-    const detail = missingDetail(client.label, target, missing);
-    checks.push({ check: "secrets", status: "fail", detail });
-    o.log(`FAIL ${client.id} secrets: ${detail}`);
+    step("secrets", "fail", missingDetail(client.label, target, missing));
+    return result();
+  }
+  let runId: string;
+  try {
+    runId = o.runId ?? runIdOf(o.env.CANARY_RUN_ID);
+  } catch (e) {
+    step("run", "fail", (e as Error).message);
     return result();
   }
 
@@ -282,15 +406,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   const signals = join(scratch, "signals");
   const logs = join(scratch, "logs");
   for (const d of [home, work, bin, signals, logs])
-    mkdirSync(d, { recursive: true });
-  const step = (
-    check: string,
-    status: CheckResult["status"],
-    detail: string,
-  ) => {
-    checks.push({ check, status, detail });
-    o.log(`${status.toUpperCase()} ${client.id} ${check}: ${detail}`);
-  };
+    mkdirSync(d, { recursive: true, mode: 0o700 });
   let server: { origin: string; stop: () => Promise<void> } | undefined;
   let install: Proc | undefined;
   let daemon: Proc | undefined;
@@ -300,12 +416,104 @@ export async function runCanary(o: Options): Promise<ClientResult> {
   let busVersionNow: (() => string) | undefined;
   /** Staging: the hook key and this run's member prefix, for the purge. */
   let purge: { origin: string; key: string; prefix: string } | undefined;
-  /** Values a copied log must never hold. */
-  const secrets = [...client.secrets, ...STAGING_SECRETS].flatMap(
-    (k) => o.env[k] ?? [],
-  );
+  /** Local: this run's member, token and machines, revoked at the end. */
+  let member: Session | undefined;
+  let tokenId = "";
+  const machineIds: string[] = [];
+
+  /**
+   * Every credential goes, whatever the outcome: the processes stop, the
+   * staging member is erased (its token, machines and pages with it) or the
+   * local token and machines are revoked, the logs of a failed run are copied
+   * with every secret blanked, and the scratch HOME (token file, bus home,
+   * machine file, client settings) and the daemon's socket folder are deleted.
+   * Runs once; a signal and the normal end share it.
+   */
+  let cleaning: Promise<void> | undefined;
+  const cleanup = () =>
+    (cleaning ??= (async () => {
+      probe?.close();
+      await stopProc(install);
+      await stopProc(session);
+      await stopProc(daemon);
+      if (purge) {
+        try {
+          const n = await purgeMembers(purge.origin, purge.key, purge.prefix);
+          log(`erased the run's member on ${purge.origin} (${n})`);
+        } catch (e) {
+          step(
+            "cleanup",
+            "fail",
+            `could not erase the run's member: ${(e as Error).message}`,
+          );
+        }
+      } else if (member) {
+        try {
+          for (const id of machineIds) await revokeMachine(member, id);
+          if (tokenId) await revokeToken(member, tokenId);
+          log("revoked the run's token and machines");
+        } catch (e) {
+          step(
+            "cleanup",
+            "fail",
+            `could not revoke the run's token and machines: ${(e as Error).message}`,
+          );
+        }
+      }
+      await server?.stop().catch(() => {});
+      if (overall(checks) === "fail") {
+        const to =
+          o.logsOut ?? join(tmpdir(), `oa-canary-logs-${runId}-${client.id}`);
+        try {
+          copyLogs(logs, to, secrets);
+          log(`logs, with every key and token blanked, are in ${to}`);
+        } catch {}
+      }
+      // The short socket folder is named from this run's bus home: it is ours.
+      const sockDir = shortSocketDir(join(home, ".oa-bus"));
+      for (const d of [scratch, sockDir])
+        try {
+          rmSync(d, { recursive: true, force: true, maxRetries: 5 });
+        } catch {}
+      if (existsSync(scratch))
+        step("cleanup", "fail", `could not delete ${scratch}`);
+    })());
+  const offSignals = onSignals(async (sig) => {
+    step("run", "fail", `stopped by ${sig} before the run finished`);
+    await cleanup();
+    (o.onSignal ?? (() => {}))(result(), sig);
+  });
+
   try {
-    // 1. The client binary: installed from npm, or the one given.
+    // 1. The instance, this run's own new member, and the member's token file.
+    // Staging: signed in through rl-a's session hook, as its staging e2e does.
+    // Local: the dev login.
+    const names = runNames(
+      runId,
+      client.id,
+      target,
+      o.env.CANARY_STAGING_TEST_DOMAIN || STAGING_TEST_DOMAIN,
+    );
+    if (target === "staging") {
+      const origin = stagingOrigin(o.env.CANARY_STAGING_URL);
+      server = { origin, stop: async () => {} };
+      const key = o.env.CANARY_RL_A_HOOK_KEY as string;
+      purge = { origin, key, prefix: names.prefix };
+      member = await hookMember(origin, key, names.email);
+    } else {
+      server = o.hub
+        ? { origin: o.hub, stop: async () => {} }
+        : await startServer(o.port);
+      member = await signIn(server.origin, names.email);
+    }
+    const pat = await createToken(member, names.tokenLabel);
+    secrets.push(pat.token);
+    tokenId = pat.id;
+    const origin = server.origin;
+    const tokenFile = join(home, ".open-artifacts/canary-pat-token");
+    mkdirSync(join(home, ".open-artifacts"), { recursive: true, mode: 0o700 });
+    writeFileSync(tokenFile, pat.token, { mode: 0o600 });
+    // 2. The client binary: installed from npm, or the one given.
     let clientBin = o.clientBin;
     if (!clientBin) {
       const prefix = join(scratch, "npm");
@@ -333,7 +541,7 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       join(bin, "oa-bus"),
       `#!/bin/sh\nexec "${process.execPath}" "${busEntry}" "$@"\n`,
     );
-    writeFileSync(join(bin, "oa-canary-hold"), HOLD_SCRIPT);
+    writeFileSync(join(bin, "oa-canary-hold"), holdScript());
     chmodSync(join(bin, "oa-bus"), 0o755);
     chmodSync(join(bin, "oa-canary-hold"), 0o755);
     // Its version as run, read again at the end: some clients update themselves.
@@ -347,38 +555,13 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       return (v.stdout || "").trim().split("\n")[0] ?? "";
     };
     version = clientVersion();
-    o.log(`${client.id} version as run: ${version || "unknown"}`);
+    log(`${client.id} version as run: ${version || "unknown"} (run ${runId})`);
 
-    // 2. The instance, a new member, and the member's token file. Staging:
-    // signed in through rl-a's session hook, as its staging e2e does. Local:
-    // the dev login.
-    let member: Session;
-    if (target === "staging") {
-      const origin = stagingOrigin(o.env.CANARY_STAGING_URL);
-      server = { origin, stop: async () => {} };
-      const key = o.env.CANARY_RL_A_HOOK_KEY as string;
-      // t19-: the only prefix the purge hook erases (T19's own sweep of old
-      // runs takes a failed run's member too).
-      const prefix = `t19-canary-${marker()}-${client.id}`;
-      const domain = o.env.CANARY_STAGING_TEST_DOMAIN || STAGING_TEST_DOMAIN;
-      member = await hookMember(origin, key, `${prefix}@${domain}`);
-      purge = { origin, key, prefix };
-    } else {
-      server = o.hub
-        ? { origin: o.hub, stop: async () => {} }
-        : await startServer(o.port);
-      member = await signIn(server.origin, `canary-${client.id}@canary.test`);
-    }
-    const pat = await createToken(member, `canary ${client.id}`);
-    secrets.push(pat);
-    const origin = server.origin;
-    const tokenFile = join(home, ".open-artifacts/canary-pat-token");
-    mkdirSync(join(home, ".open-artifacts"), { recursive: true, mode: 0o700 });
-    writeFileSync(tokenFile, pat, { mode: 0o600 });
     const env = childEnv(client, home, path, o.env, {
       CANARY_SIGNALS: signals,
+      CANARY_HOLD_MS: String(HOLD_MS),
       // Codex's token form reads it by name (bearer_token_env_var).
-      ...(client.id === "codex" ? { OA_TOKEN: pat } : {}),
+      ...(client.id === "codex" ? { OA_TOKEN: pat.token } : {}),
     });
     const ctx: Ctx = {
       home,
@@ -418,9 +601,10 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       return (v.stdout || "").trim().split("\n")[0] ?? "";
     };
     busVersion = busVersionNow();
-    o.log(`oa-bus version as run: ${busVersion || "unknown"}`);
+    log(`oa-bus version as run: ${busVersion || "unknown"}`);
     // auto-update off writes into the bus home, which a fresh home lacks.
-    mkdirSync(join(home, ".oa-bus"), { recursive: true, mode: 0o700 });
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(busHome, { recursive: true, mode: 0o700 });
     const off = spawnSync("oa-bus", ["auto-update", "off"], {
       cwd: work,
       env,
@@ -431,53 +615,83 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       throw new Error(
         `oa-bus auto-update off exited ${off.status}: the oa-bus under test could update itself from ${origin}`,
       );
-    const installLog = join(logs, "install.log");
+    const machinesBefore = new Set(
+      (await busMachines(member)).map((m) => m.id),
+    );
     install = startProc(
       "oa-bus",
       ["install", "--instance", origin, "--no-open", "--no-service"],
-      {
-        cwd: work,
-        env,
-        log: installLog,
-      },
+      { cwd: work, env, log: join(logs, "install.log") },
     );
-    const code = await until(
+    const inst = install;
+    const code = await waitFor(
       "oa-bus install to show a code",
-      () => USER_CODE.exec(plain(readFileSync(installLog, "utf8")))?.[1],
-      { ms: 60_000 },
+      () => {
+        const c = USER_CODE.exec(plain(inst.output()))?.[1];
+        if (c) return c;
+        if (inst.exited())
+          throw new Error(
+            `oa-bus install exited ${inst.child.exitCode} before it showed a code`,
+          );
+        return undefined;
+      },
+      {
+        ms: 60_000,
+        on: [onFiles(inst.log), onExit(inst.child)],
+      },
     );
     await approveCode(member, code);
-    await until(
+    await waitFor(
       "oa-bus install to finish",
-      () => (install?.exited() ? true : undefined),
-      {
-        ms: LIMITS.install,
-      },
+      () => (inst.exited() ? true : undefined),
+      { ms: LIMITS.install, on: [onExit(inst.child)] },
     );
-    if (install.child.exitCode !== 0)
+    if (inst.child.exitCode !== 0)
       throw new Error(
-        `oa-bus install exited ${install.child.exitCode}: see ${installLog}`,
+        `oa-bus install exited ${inst.child.exitCode}: see install.log`,
       );
+    // The machine this run approved: the one that was not there before.
+    const fresh = (await busMachines(member)).filter(
+      (m) => !machinesBefore.has(m.id) && m.revokedAt === null,
+    );
+    machineIds.push(...fresh.map((m) => m.id));
+    if (fresh.length !== 1)
+      throw new Error(
+        `expected one new machine after oa-bus install, found ${fresh.length}`,
+      );
+    const machineId = (fresh[0] as { id: string }).id;
     step(
       "install",
       "pass",
       `oa-bus install approved on ${origin} and wired ${client.label}`,
     );
 
-    // 4. The daemon, run by hand (no service on a runner), then habits.
+    // 4. The daemon, run by hand (no service on a runner), then habits. It is
+    // up once `oa-bus status` answers: asked again on each change in the bus
+    // home or the daemon's output, never on a timer.
     daemon = startProc("oa-bus", ["daemon"], {
       cwd: work,
       env,
       log: join(logs, "daemon.log"),
     });
-    await until(
+    const dmn = daemon;
+    await waitFor(
       "the daemon to answer",
-      () =>
-        spawnSync("oa-bus", ["status"], { cwd: work, env, timeout: 10_000 })
-          .status === 0
+      () => {
+        if (dmn.exited())
+          throw new Error(`the daemon exited ${dmn.child.exitCode}`);
+        return spawnSync("oa-bus", ["status"], {
+          cwd: work,
+          env,
+          timeout: 10_000,
+        }).status === 0
           ? true
-          : undefined,
-      { ms: 30_000 },
+          : undefined;
+      },
+      {
+        ms: 30_000,
+        on: [onFiles(busHome, dmn.log), onExit(dmn.child)],
+      },
     );
     spawnSync("oa-bus", ["install", "--habits-project"], {
       cwd: work,
@@ -503,87 +717,112 @@ export async function runCanary(o: Options): Promise<ClientResult> {
       );
 
     // 5. The probe: a second machine on the same bus, approved the same way.
+    // It is connected before the client starts, so it hears every roster change.
+    const probeIdsBefore = new Set(
+      (await busMachines(member)).map((m) => m.id),
+    );
     const probeToken = await approveProbeMachine(member, "canary-probe");
     secrets.push(probeToken);
-    probe = await Probe.open(origin, probeToken, "canary-probe");
-    // Sessions a run before this one left on the list are never taken for this one.
-    const before = new Set((await busAgents(member)).map((a) => a.name));
+    for (const m of await busMachines(member))
+      if (!probeIdsBefore.has(m.id)) machineIds.push(m.id);
+    probe = await Probe.open(origin, probeToken, `canary-probe-${runId}`);
+    const pr = probe;
 
-    // 6. The client, headless, with the canary's prompt.
-    const title = `canary-${client.id}-${marker()}`;
-    const launch = client.start(ctx, canaryPrompt(title));
+    // 6. The client, headless, with NO prompt yet.
+    const launch = client.start(ctx);
     const run = inPty(launch);
     session = startProc(run.cmd, run.args, {
       cwd: work,
       env,
       log: join(logs, "client.log"),
-      ...(launch.stdin !== undefined ? { stdin: launch.stdin } : {}),
+      stdin: true,
     });
+    const sess = session;
 
-    // Joins at start.
-    let name = "";
+    // Joins at start: on the roster, as this run's session, before any prompt.
+    // Asked once now and again on each roster change the probe hears.
+    let peer: Peer | undefined;
     try {
-      const a = await until(
-        `${client.label} on the bus`,
-        async () =>
-          (await busAgents(member)).find(
-            (x) =>
-              x.kind === client.kind &&
-              x.state === "live" &&
-              x.name !== probe?.name &&
-              !before.has(x.name),
-          ),
-        { ms: LIMITS.join },
+      const m = member;
+      const a = await waitFor(
+        `${client.label} on the bus before its first prompt`,
+        async () => {
+          if (sess.exited())
+            throw new Error(
+              `${client.label} exited ${sess.child.exitCode} before it joined`,
+            );
+          return thisRunsAgent(await busAgents(m), client.kind, machineId);
+        },
+        { ms: LIMITS.join, on: [pr.onFrame, onExit(sess.child)] },
       );
-      name = a.name;
+      peer = { name: a.name, id: a.id };
       step(
         "joins at start",
         "pass",
-        `on the agent list as ${a.name} (${a.kind})`,
+        `on the agent list as ${a.name} (${a.kind}, agent ${a.id}, this run's machine) before any prompt was sent`,
       );
     } catch (e) {
       step("joins at start", "fail", (e as Error).message);
-      return result();
     }
+    // Not on the bus as this run's session: no prompt is sent, nothing else is checked.
+    if (peer) {
+      const me = peer;
 
-    // A page it publishes shows as that session.
-    try {
-      const agent = await until(
-        "the canary page",
-        () => publishedBy(member, title),
-        { ms: LIMITS.page },
-      );
-      if (agent?.linked === true && agent.product === client.product)
+      // The first prompt, now that it is on the bus.
+      const title = `canary-${client.id}-${runId}-${marker()}`;
+      sess.child.stdin?.write(client.prompt(canaryPrompt(title, pr.name)));
+
+      // A page it publishes shows as this run's session. It says PUBLISHED on
+      // the bus when done (the signal); then the page is read once.
+      try {
+        const told = await pr
+          .reply(`PUBLISHED ${title}`, LIMITS.page, me)
+          .then(() => true)
+          .catch(() => false);
+        const agent = await publishedBy(member, title);
+        // Only this run's session may be on the member's bus besides the probe,
+        // so a linked publish can only have come from it.
+        const others = (await busAgents(member)).filter(
+          (x) => x.state === "live" && x.id !== me.id && x.name !== pr.name,
+        );
+        const ok =
+          told &&
+          agent?.linked === true &&
+          agent.product === client.product &&
+          agent.name === names.tokenLabel &&
+          others.length === 0;
         step(
           "page shows as the session",
+          ok ? "pass" : "fail",
+          !agent
+            ? `${title} was ${agent === undefined ? "not published" : "published with no agent"}${told ? "" : ", and no PUBLISHED came"}`
+            : `${title} shows ${agent.name}, linked ${agent.linked === true}, product ${agent.product ?? "none"}${told ? "" : "; no PUBLISHED came from this run's session"}${others.length ? `; ${others.length} other live sessions on the bus` : ""}${agent.name === names.tokenLabel ? "" : "; not this run's token"}`,
+        );
+      } catch (e) {
+        step("page shows as the session", "fail", (e as Error).message);
+      }
+
+      // Receives a message and replies: sent to this run's agent id, the reply
+      // counted only from it.
+      const w = marker();
+      try {
+        await pr.send(me, `PING ${w}`);
+        await pr.reply(`PONG ${w}`, LIMITS.reply, me);
+        step(
+          "receives and replies",
           "pass",
-          `${title} shows ${agent.name} (${agent.product})`,
+          `PING ${w} answered with PONG ${w} by ${me.name}`,
         );
-      else
-        step(
-          "page shows as the session",
-          "fail",
-          `${title} shows ${agent ? `${agent.name}, linked ${agent.linked === true}, product ${agent.product ?? "none"}` : "no agent"}`,
-        );
-    } catch (e) {
-      step("page shows as the session", "fail", (e as Error).message);
-    }
+      } catch (e) {
+        step("receives and replies", "fail", (e as Error).message);
+      }
 
-    // Receives a message and replies.
-    const w = marker();
-    try {
-      await probe.send(name, `PING ${w}`);
-      await probe.reply(`PONG ${w}`, LIMITS.reply);
-      step("receives and replies", "pass", `PING ${w} answered with PONG ${w}`);
-    } catch (e) {
-      step("receives and replies", "fail", (e as Error).message);
+      // A message sent mid-turn: steered into that turn (Codex, Pi), or at the
+      // start of the next turn (Claude Code, OpenCode: no steer path yet).
+      if (client.steering && !o.nextTurn)
+        await steerCheck(pr, me, signals, step);
+      else await nextTurnCheck(pr, me, signals, step);
     }
-
-    // A message sent mid-turn: steered into that turn (Codex, Pi), or at the
-    // start of the next turn (Claude Code, OpenCode: no steer path yet).
-    if (client.steering && !o.nextTurn)
-      await steerCheck(probe, name, signals, step);
-    else await nextTurnCheck(probe, name, signals, step);
   } catch (e) {
     step("run", "fail", (e as Error).message);
   } finally {
@@ -591,12 +830,11 @@ export async function runCanary(o: Options): Promise<ClientResult> {
     await stopProc(install);
     await stopProc(session);
     await stopProc(daemon);
-    await server?.stop().catch(() => {});
     try {
       versionAfter = clientVersion?.() ?? "";
     } catch {}
     if (versionAfter && versionAfter !== version)
-      o.log(`${client.id} updated itself during the run: ${versionAfter}`);
+      log(`${client.id} updated itself during the run: ${versionAfter}`);
     try {
       busVersionAfter = busVersionNow?.() ?? "";
     } catch {}
@@ -606,31 +844,37 @@ export async function runCanary(o: Options): Promise<ClientResult> {
         "fail",
         `oa-bus was ${busVersion} as the run started and ${busVersionAfter} as it ended: the run did not test the oa-bus built from this commit`,
       );
-    // A passing staging run erases its member, and its pages and machines with
-    // it. A failed one keeps them to look at; T19's sweep of runs older than
-    // two hours takes them later.
-    if (purge && overall(checks) === "pass") {
-      try {
-        const n = await purgeMembers(purge.origin, purge.key, purge.prefix);
-        o.log(`erased the run's member on ${purge.origin} (${n})`);
-      } catch (e) {
-        o.log(`could not erase the run's member: ${(e as Error).message}`);
-      }
-    }
-    if (overall(checks) !== "fail") {
-      try {
-        rmSync(scratch, { recursive: true, force: true, maxRetries: 5 });
-      } catch {}
-    } else {
-      o.log(`logs kept in ${logs}`);
-      if (o.logsOut) copyLogs(logs, o.logsOut, secrets);
-    }
+    await cleanup();
+    // Only now: a signal during the cleanup above waits for it, then exits.
+    offSignals();
   }
   return result();
 }
 
-/** What steerCheck needs from the probe (a stub stands in for it in the tests). */
-export type SteerProbe = Pick<Probe, "send" | "reply" | "frames" | "mail">;
+/** What the mid-turn checks need from the probe (a stub stands in for it in the tests). */
+export type SteerProbe = Pick<
+  Probe,
+  "send" | "reply" | "frames" | "mail" | "onFrame" | "indexOf"
+>;
+
+type Step = (
+  check: string,
+  status: CheckResult["status"],
+  detail: string,
+) => void;
+
+/** The held commands of HOLD <a> that said "timed out" (their marker files). */
+const timedOut = (signals: string, a: string): number[] =>
+  [1, 2].filter((n) => existsSync(join(signals, `hold-${a}-${n}.timedout`)));
+
+/** Waits for hold <a> <n> to say it started: on file events in `signals`. */
+const started = (signals: string, a: string, n: number, ms: number) =>
+  waitFor(
+    `held command ${n} to start`,
+    () =>
+      existsSync(join(signals, `hold-${a}-${n}.started`)) ? true : undefined,
+    { ms, on: [onFiles(signals)] },
+  );
 
 /**
  * HOLD <a> starts a turn that runs two held commands. While the first is held,
@@ -639,13 +883,14 @@ export type SteerProbe = Pick<Probe, "send" | "reply" | "frames" | "mail">;
  * the turn cannot end before that, and the order of replies decides: PONG <b>
  * before the second release and before DONE <a> means the message reached
  * that turn. It does not matter whether the client answered before or after
- * it started the second command.
+ * it started the second command. Only replies from `peer` count. A held
+ * command that timed out fails the check.
  */
 export async function steerCheck(
   probe: SteerProbe,
-  name: string,
+  peer: Peer,
   signals: string,
-  step: (check: string, status: CheckResult["status"], detail: string) => void,
+  step: Step,
   limits: { hold: number; reply: number; late: number } = {
     hold: LIMITS.hold,
     reply: LIMITS.reply,
@@ -654,20 +899,13 @@ export async function steerCheck(
 ) {
   const a = marker();
   const b = marker();
-  const file = (n: number, what: string) =>
-    join(signals, `hold-${a}-${n}.${what}`);
-  const release = (n: number) => writeFileSync(file(n, "release"), "");
-  const at = (text: string) =>
-    probe.mail.findIndex((m) => m.body.includes(text));
+  const release = (n: number) =>
+    writeFileSync(join(signals, `hold-${a}-${n}.release`), "");
   try {
-    await probe.send(name, `HOLD ${a}`);
-    await until(
-      "the first held command",
-      () => (existsSync(file(1, "started")) ? true : undefined),
-      { ms: limits.hold },
-    );
-    const r = await probe.send(name, `PING ${b}`);
-    await until(
+    await probe.send(peer, `HOLD ${a}`);
+    await started(signals, a, 1, limits.hold);
+    const r = await probe.send(peer, `PING ${b}`);
+    await waitFor(
       "the mid-turn message to be delivered",
       () =>
         probe.frames.some(
@@ -676,18 +914,27 @@ export async function steerCheck(
             f.msg_id === r.msg_id &&
             f.state === "delivered",
         ) || undefined,
-      { ms: 60_000, everyMs: 100 },
+      { ms: 60_000, on: [probe.onFrame] },
     );
     release(1);
     const pong = await probe
-      .reply(`PONG ${b}`, limits.reply)
+      .reply(`PONG ${b}`, limits.reply, peer)
       .catch(() => undefined);
     // Read before the release: whatever is in the mail now came inside the turn.
-    const done = at(`DONE ${a}`);
-    const inTurn = pong !== undefined && (done < 0 || at(`PONG ${b}`) < done);
+    const done = probe.indexOf(`DONE ${a}`, peer);
+    const inTurn =
+      pong !== undefined &&
+      (done < 0 || probe.indexOf(`PONG ${b}`, peer) < done);
     release(2);
-    await probe.reply(`DONE ${a}`, limits.reply);
-    if (inTurn)
+    await probe.reply(`DONE ${a}`, limits.reply, peer);
+    const late = timedOut(signals, a);
+    if (late.length > 0)
+      step(
+        "mid-turn message",
+        "fail",
+        `held command ${late.join(" and ")} of HOLD ${a} timed out before its release`,
+      );
+    else if (inTurn)
       step(
         "mid-turn message",
         "pass",
@@ -695,13 +942,15 @@ export async function steerCheck(
       );
     else {
       // Answered after the turn ended: delivered, but not steered into it.
-      const late =
+      const after =
         pong ??
-        (await probe.reply(`PONG ${b}`, limits.late).catch(() => undefined));
+        (await probe
+          .reply(`PONG ${b}`, limits.late, peer)
+          .catch(() => undefined));
       step(
         "mid-turn message",
         "fail",
-        late
+        after
           ? `PING ${b}, sent during HOLD ${a}, was answered only after that turn ended`
           : `PING ${b}, sent during HOLD ${a}, was never answered`,
       );
@@ -709,7 +958,14 @@ export async function steerCheck(
   } catch (e) {
     release(1);
     release(2);
-    step("mid-turn message", "fail", (e as Error).message);
+    const late = timedOut(signals, a);
+    step(
+      "mid-turn message",
+      "fail",
+      late.length > 0
+        ? `held command ${late.join(" and ")} of HOLD ${a} timed out before its release`
+        : (e as Error).message,
+    );
   }
 }
 
@@ -718,13 +974,14 @@ export async function steerCheck(
  * turn with two held commands; PING <b> is sent while the first is held, then
  * both are released. The message must arrive at the start of the next turn:
  * PONG <b> comes after DONE <a>. A PONG before DONE means the client steers
- * now, which passes and says so. No PONG at all fails.
+ * now, which passes and says so. No PONG at all fails, as does a held command
+ * that timed out. Only replies from `peer` count.
  */
 export async function nextTurnCheck(
   probe: SteerProbe,
-  name: string,
+  peer: Peer,
   signals: string,
-  step: (check: string, status: CheckResult["status"], detail: string) => void,
+  step: Step,
   limits: { hold: number; reply: number } = {
     hold: LIMITS.hold,
     reply: LIMITS.reply,
@@ -732,32 +989,34 @@ export async function nextTurnCheck(
 ) {
   const a = marker();
   const b = marker();
-  const file = (n: number, what: string) =>
-    join(signals, `hold-${a}-${n}.${what}`);
-  const release = (n: number) => writeFileSync(file(n, "release"), "");
-  const at = (text: string) =>
-    probe.mail.findIndex((m) => m.body.includes(text));
+  const release = (n: number) =>
+    writeFileSync(join(signals, `hold-${a}-${n}.release`), "");
   try {
-    await probe.send(name, `HOLD ${a}`);
-    await until(
-      "the first held command",
-      () => (existsSync(file(1, "started")) ? true : undefined),
-      { ms: limits.hold },
-    );
-    await probe.send(name, `PING ${b}`);
+    await probe.send(peer, `HOLD ${a}`);
+    await started(signals, a, 1, limits.hold);
+    await probe.send(peer, `PING ${b}`);
     release(1);
     release(2);
-    await probe.reply(`DONE ${a}`, limits.reply);
+    await probe.reply(`DONE ${a}`, limits.reply, peer);
     const pong = await probe
-      .reply(`PONG ${b}`, limits.reply)
+      .reply(`PONG ${b}`, limits.reply, peer)
       .catch(() => undefined);
-    if (!pong)
+    const late = timedOut(signals, a);
+    if (late.length > 0)
+      step(
+        "mid-turn message",
+        "fail",
+        `held command ${late.join(" and ")} of HOLD ${a} timed out before its release`,
+      );
+    else if (!pong)
       step(
         "mid-turn message",
         "fail",
         `PING ${b}, sent during HOLD ${a}, never arrived in the next turn`,
       );
-    else if (at(`PONG ${b}`) > at(`DONE ${a}`))
+    else if (
+      probe.indexOf(`PONG ${b}`, peer) > probe.indexOf(`DONE ${a}`, peer)
+    )
       step(
         "mid-turn message",
         "pass",
@@ -772,26 +1031,25 @@ export async function nextTurnCheck(
   } catch (e) {
     release(1);
     release(2);
-    step("mid-turn message", "fail", (e as Error).message);
+    const late = timedOut(signals, a);
+    step(
+      "mid-turn message",
+      "fail",
+      late.length > 0
+        ? `held command ${late.join(" and ")} of HOLD ${a} timed out before its release`
+        : (e as Error).message,
+    );
   }
 }
 
-/** Token shapes blanked even when their value was not known: machine and personal tokens, API keys. */
-const TOKEN_SHAPES = [
-  /\boa_(?:machine|pat)_[1-9A-HJ-NP-Za-km-z]{8,}/g,
-  /\bsk-[A-Za-z0-9_-]{16,}/g,
-];
-
 /** Copies each log to `to`, with every value in `secrets` and every token shape blanked. */
 export function copyLogs(from: string, to: string, secrets: string[]) {
-  mkdirSync(to, { recursive: true });
-  const blank = secrets.filter((v) => v.length >= 8);
-  for (const f of readdirSync(from)) {
-    let text = readFileSync(join(from, f), "utf8");
-    for (const v of blank) text = text.replaceAll(v, "[hidden]");
-    for (const re of TOKEN_SHAPES) text = text.replace(re, "[hidden]");
-    writeFileSync(join(to, f), text);
-  }
+  mkdirSync(to, { recursive: true, mode: 0o700 });
+  for (const f of readdirSync(from))
+    writeFileSync(
+      join(to, f),
+      redact(readFileSync(join(from, f), "utf8"), secrets),
+    );
 }
 
 /** A failed result for a job that broke before the canary could run. */
@@ -852,6 +1110,7 @@ async function main() {
       "fake-next-turn": { type: "boolean", default: false },
       check: { type: "boolean", default: false },
       "mark-failed": { type: "string" },
+      cleanup: { type: "boolean", default: false },
     },
   });
   const id = values.client as ClientId;
@@ -870,6 +1129,11 @@ async function main() {
   } catch (e) {
     console.error((e as Error).message);
     process.exit(2);
+  }
+  if (values.cleanup) {
+    for (const line of await cleanupAfter(id, target, process.env))
+      console.log(line);
+    return;
   }
   if (values["mark-failed"] !== undefined) {
     if (!values.out) throw new Error("--mark-failed needs --out");
@@ -914,6 +1178,15 @@ async function main() {
     process.exit(2);
   }
   const fakeDir = values.fake ? fakePiBin(values["fake-break"]) : undefined;
+  const finish = (r: ClientResult) => {
+    if (fakeDir) rmSync(fakeDir, { recursive: true, force: true });
+    const md = summaryMarkdown(r);
+    console.log(md);
+    if (process.env.GITHUB_STEP_SUMMARY)
+      appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
+    if (values.out)
+      writeFileSync(values.out, `${JSON.stringify(r, null, 2)}\n`);
+  };
   const r = await runCanary({
     client: id,
     channel,
@@ -924,18 +1197,64 @@ async function main() {
       ? { ...process.env, ANTHROPIC_API_KEY: "fake-no-model" }
       : process.env,
     log: (l) => console.log(l),
+    onSignal: finish,
     ...(values.fake && values["fake-next-turn"] ? { nextTurn: true } : {}),
     ...(fakeDir ? { clientBin: fakeDir } : {}),
     ...(values["client-bin"] ? { clientBin: values["client-bin"] } : {}),
     ...(values.hub ? { hub: values.hub } : {}),
     ...(values.logs ? { logsOut: values.logs } : {}),
   });
-  const md = summaryMarkdown(r);
-  console.log(md);
-  if (process.env.GITHUB_STEP_SUMMARY)
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${md}\n`);
-  if (values.out) writeFileSync(values.out, `${JSON.stringify(r, null, 2)}\n`);
+  finish(r);
   process.exit(r.status === "fail" ? 1 : 0);
+}
+
+/** The temp folder the workflow gives each job (TMPDIR), which --cleanup may empty. */
+export const SCRATCH_DIR = "canary-scratch";
+
+/**
+ * After a run that was cut off (a job timeout, a cancel, a kill): erases this
+ * run's staging member by its prefix (CANARY_RUN_ID), with its token,
+ * machines and pages, and deletes every oa-canary scratch folder, bus socket
+ * folder and fake bin under the temp folder. The workflow runs it under
+ * `if: always()`. Safe to run when there is nothing left.
+ */
+export async function cleanupAfter(
+  id: ClientId,
+  target: Target,
+  env: Record<string, string | undefined>,
+  tmp = tmpdir(),
+): Promise<string[]> {
+  const out: string[] = [];
+  // Only a temp folder the job owns (the workflow's $RUNNER_TEMP/canary-scratch):
+  // a shared one may hold another run's live folders.
+  if (basename(tmp) === SCRATCH_DIR) {
+    let removed = 0;
+    for (const e of readdirSync(tmp))
+      if (/^oa-canary-(?!logs-)/.test(e)) {
+        rmSync(join(tmp, e), { recursive: true, force: true, maxRetries: 5 });
+        removed++;
+      }
+    out.push(`deleted ${removed} scratch folders under ${tmp}`);
+  } else
+    out.push(
+      `left ${tmp} alone: only a temp folder named ${SCRATCH_DIR} is the job's own`,
+    );
+  const key = env.CANARY_RL_A_HOOK_KEY;
+  if (target === "staging" && key && env.CANARY_RUN_ID) {
+    const runId = runIdOf(env.CANARY_RUN_ID);
+    const origin = stagingOrigin(env.CANARY_STAGING_URL);
+    const { prefix } = runNames(runId, id, target);
+    try {
+      out.push(
+        `erased ${await purgeMembers(origin, key, prefix)} members named ${prefix} on ${origin}`,
+      );
+    } catch (e) {
+      out.push(
+        `could not erase ${prefix} on ${origin}: ${clean((e as Error).message, [key])}`,
+      );
+    }
+  } else out.push("no staging member to erase");
+  return out;
 }
 
 if (
