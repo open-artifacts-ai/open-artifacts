@@ -11,7 +11,7 @@ import {
   MAILBOX_PENDING_CAP,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -24,6 +24,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -118,15 +119,13 @@ async function rename(
 
 const close = async (d: Daemon, ref: string) => {
   d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: [ref] });
-  for (let k = 0; k < 400; k++) {
+  await eventually(async () => {
     const r = await sqlOf<{ live: number }>(
       "select live from agents where native_ref = ? order by rowid desc limit 1",
       ref,
     );
-    if (r[0]?.live === 0) return;
-    await new Promise((res) => setTimeout(res, 5));
-  }
-  throw new Error("close never applied");
+    expect(r[0]?.live).toBe(0);
+  });
 };
 
 const delivers = (d: Daemon) =>
@@ -235,14 +234,13 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const dl = await waitFor(s.d, "deliver");
     expect(dl.msg_id).toBe(acked.msg_id);
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: acked.msg_id });
-    for (let k = 0; k < 400; k++) {
+    await eventually(async () => {
       const st = await sqlOf<{ state: string }>(
         "select state from receipts where id = ?",
         acked.msg_id,
       );
-      if (st[0]?.state === "delivered") break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(st[0]?.state).toBe("delivered");
+    });
     await close(s.d, s.oldRef);
     const queued = await send(s.snd, "snd", s.name, "unacked");
     const ref = uniq("new");
@@ -503,14 +501,13 @@ describe("a restarted session takes back its own name (#1742)", () => {
     // The machine goes offline; the hub reaps its agents into `away`.
     d.close();
     await d.closed;
-    for (let k = 0; k < 400; k++) {
+    await eventually(async () => {
       const r = await sqlOf<{ t: number | null }>(
         "select disconnected_at as t from machines where id = ?",
         dm.id,
       );
-      if (typeof r[0]?.t === "number") break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(typeof r[0]?.t).toBe("number");
+    });
     await setClock(t0 + OFFLINE_REAP_MS);
     await inHub(async (_, st) => {
       if ((await st.storage.getAlarm()) === null)
@@ -537,8 +534,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       (await rename(d2, refs[1] as string, names[1] as string)).bus_name,
     ).toBe(names[1]);
     // reg() skips frames it does not wait for: read every deliver received.
-    for (let k = 0; k < 400 && delivers(d2).length < 3; k++)
-      await new Promise((res) => setTimeout(res, 5));
+    await eventually(() => expect(delivers(d2)).toHaveLength(3));
     const got = new Map(delivers(d2).map((x) => [x.msg_id, x.to_ref]));
     for (const [msgId, name] of mail)
       expect(got.get(msgId)).toBe(refs[names.indexOf(name)]);
@@ -559,6 +555,8 @@ describe("a restarted session takes back its own name (#1742)", () => {
     expect(dl).toMatchObject({ msg_id: q.msg_id, to_ref: ref });
     // A's old session comes back.
     expect(await reg(s.d, s.oldRef, s.name, s.n)).toBe(`${s.name}-2`);
+    // sleep-ok: absence — nothing signals that a delivery does not come, and a
+    // frame already on the wire would show up here
     await new Promise((res) => setTimeout(res, 50));
     expect(s.d.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     b.close();
@@ -593,14 +591,13 @@ describe("a restarted session takes back its own name (#1742)", () => {
       await waitFor(s.d, "deliver");
       s.d.send({ v: 1, id: `ak${k}`, type: "ack", msg_id: r.msg_id });
     }
-    for (let k = 0; k < 400; k++) {
+    await eventually(async () => {
       const st = await sqlOf<{ n: number }>(
         "select count(*) as n from receipts where state = 'delivered' and id in (select value from json_each(?))",
         JSON.stringify(ids),
       );
-      if (st[0]?.n === 12) break;
-      await new Promise((res) => setTimeout(res, 5));
-    }
+      expect(st[0]?.n).toBe(12);
+    });
     await close(s.d, s.oldRef);
     const left = () =>
       sqlOf<{ n: number }>(
@@ -632,6 +629,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     ["pi", "pi"],
     ["omp", "omp"],
     ["openclaw", "openclaw"],
+    ["antigravity", "antigravity"],
     ["hermes", "hermes"],
     ["hermes", "hermes-myproject"],
     ["claude-code", "agent"],
@@ -652,6 +650,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
       const ref2 = uniq("new2");
       await reg(s.d, ref2, uniq("Other"), s.n, { kind });
       expect((await rename(s.d, ref2, fallback)).bus_name).not.toBe(fallback);
+      // sleep-ok: absence — the check is that no delivery is pushed at all
       await new Promise((res) => setTimeout(res, 50));
       expect(delivers(s.d)).toEqual([]);
       expect(await awayRows(fallback)).toContain(oldRef);
@@ -678,29 +677,25 @@ describe("a restarted session takes back its own name (#1742)", () => {
     await close(s.d, s.oldRef);
     const ref = uniq("new");
     expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
-    for (
-      let k = 0;
-      k < 400 && !delivers(s.d).some((x) => x.to_ref === ref);
-      k++
-    )
-      await new Promise((res) => setTimeout(res, 5));
+    await eventually(() =>
+      expect(delivers(s.d).some((x) => x.to_ref === ref)).toBe(true),
+    );
     const dl = delivers(s.d).find((x) => x.to_ref === ref);
     expect(dl).toMatchObject({ msg_id: r.msg_id });
     expect(dl && "body" in dl && dl.body).toBe("pushed, never acked");
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: r.msg_id });
-    for (let k = 0; k < 400; k++) {
-      const st = await sqlOf<{ state: string; ref: string }>(
+    const st = await eventually(async () => {
+      const rows = await sqlOf<{ state: string; ref: string }>(
         "select r.state as state, a.native_ref as ref from receipts r join agents a on a.id = r.to_agent where r.id = ?",
         r.msg_id,
       );
-      if (st[0]?.state === "delivered") {
-        expect(st[0].ref).toBe(ref);
-        shut(s);
-        return;
-      }
-      await new Promise((res) => setTimeout(res, 5));
-    }
-    throw new Error("ack never settled");
+      // The assertion is what retries: returning the row alone would let the
+      // first read (still pending) through.
+      expect(rows[0]).toMatchObject({ state: "delivered", ref });
+      return rows[0];
+    });
+    expect(st).toMatchObject({ state: "delivered", ref });
+    shut(s);
   });
 
   it("#1480: a name with parentheses is cleaned; a restart gets a suffix, never the old address", async () => {

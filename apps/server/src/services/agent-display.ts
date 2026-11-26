@@ -124,6 +124,7 @@ const PRODUCTS: Record<string, string> = {
   omp: "omp",
   hermes: "Hermes",
   openclaw: "OpenClaw",
+  antigravity: "Antigravity",
 };
 
 /**

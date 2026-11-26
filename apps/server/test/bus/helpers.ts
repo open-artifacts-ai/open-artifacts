@@ -323,6 +323,16 @@ export async function daemon(
 }
 
 /** Consumes frames until one matches `type` (roster broadcasts may interleave). */
+/**
+ * `vi.waitFor` with this suite's budget: 10 s, not its 1 s default. A loaded CI
+ * runner takes seconds to let the hub's Durable Object run a frame or a write,
+ * and the loops these replaced waited 10 s, 2 s or forever.
+ */
+export const eventually = <T>(
+  fn: () => T | Promise<T>,
+  o: { timeout?: number; interval?: number } = {},
+) => vi.waitFor(fn, { timeout: 10_000, interval: 10, ...o });
+
 export async function waitFor<T extends ServerFrame["type"]>(
   conn: { next: () => Promise<ServerFrame> },
   type: T,
