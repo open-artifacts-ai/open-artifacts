@@ -29,7 +29,13 @@ const get = (e: Env, path: string, cookie?: string) =>
     e,
     ctx,
   );
-const post = async (e: Env, path: string, body: unknown, cookie?: string) => {
+const post = async (
+  e: Env,
+  path: string,
+  body: unknown,
+  cookie?: string,
+  ip = "198.51.100.88",
+) => {
   const waits: Promise<unknown>[] = [];
   const r = await app.fetch(
     new Request(`${APP}${path}`, {
@@ -38,7 +44,7 @@ const post = async (e: Env, path: string, body: unknown, cookie?: string) => {
         "content-type": "application/json",
         "x-oa-request": "1",
         "sec-fetch-site": "same-origin",
-        "cf-connecting-ip": "198.51.100.88",
+        "cf-connecting-ip": ip,
         ...(cookie ? { cookie } : {}),
       },
       body: JSON.stringify(body),
@@ -413,6 +419,99 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
       kind: "none",
       why: "linked",
     });
+  });
+
+  it("a link code verifies only the link it was requested for (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("swap", "custom.example");
+    const uid = await seedUser(email, "member", { googleSub: `g-${email}` });
+    const body = { e: email, h: null, n: null, p: "github" };
+    const linkA = await sealLink(e, { ...body, s: `ghA-${email}` });
+    const ip = "198.51.100.92";
+    const req = await post(e, AUTH.codeRequest, { link: true }, linkA, ip);
+    expect(req.status).toBe(202);
+    const pending = cookieOf(req, /oa_code=/);
+    const code = m.codeFor(email);
+    // Another subject, or another provider for the same subject, swapped in.
+    for (const swapped of [
+      await sealLink(e, { ...body, s: `ghB-${email}` }),
+      await sealLink(e, { ...body, s: `ghA-${email}`, p: "microsoft" }),
+    ]) {
+      const r = await post(
+        e,
+        AUTH.codeVerify,
+        { code },
+        `${swapped}; ${pending}`,
+        ip,
+      );
+      expect(r.status).toBe(401);
+      expect(cookieOf(r, SESSION)).toBeUndefined();
+    }
+    const links = await env.DB.prepare(
+      "select provider p from identities where user_id = ?",
+    )
+      .bind(uid)
+      .all();
+    expect(links.results).toEqual([{ p: "google" }]);
+  });
+
+  it("overlapping attempts: a plain code after a link request signs in; a link code after a plain request links (#3087)", async () => {
+    const { e, m } = install();
+    const ip = "198.51.100.91";
+    const pendingOf = (r: Response) => cookieOf(r, /oa_code=/) ?? "";
+    // Link first, then a plain request in the same browser: the plain code
+    // signs in by code, nothing links.
+    const email = uniq("ovl", "custom.example");
+    await seedShare(email);
+    const link = cookieOf(await google(e, weak(email)), /oa_glink=/);
+    const lr = await post(e, AUTH.codeRequest, { link: true }, link, ip);
+    expect(lr.status).toBe(202);
+    const plain = await post(
+      e,
+      AUTH.codeRequest,
+      { email },
+      `${link}; ${pendingOf(lr)}`,
+      ip,
+    );
+    expect(plain.status).toBe(202);
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      `${link}; ${pendingOf(plain)}`,
+      ip,
+    );
+    expect(ok.status).toBe(200);
+    expect(
+      await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]),
+    ).toMatchObject({ p: "code" });
+    expect(await subjectOf(email)).toBeNull();
+    // Plain first, then a link request: the link code links.
+    const email2 = uniq("ovl2", "custom.example");
+    await seedShare(email2);
+    const link2 = cookieOf(await google(e, weak(email2)), /oa_glink=/);
+    const pr = await post(e, AUTH.codeRequest, { email: email2 }, link2, ip);
+    expect(pr.status).toBe(202);
+    const lreq = await post(
+      e,
+      AUTH.codeRequest,
+      { link: true },
+      `${link2}; ${pendingOf(pr)}`,
+      ip,
+    );
+    expect(lreq.status).toBe(202);
+    const ok2 = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email2) },
+      `${link2}; ${pendingOf(lreq)}`,
+      ip,
+    );
+    expect(ok2.status).toBe(200);
+    expect(
+      await readSession(e, cookieOf(ok2, SESSION)?.split("=")[1]),
+    ).toMatchObject({ p: "google" });
+    expect(await subjectOf(email2)).toBe(`sub-${email2}`);
   });
 
   it("a GitHub link never creates a row, not even a share recipient's (#3087)", async () => {
