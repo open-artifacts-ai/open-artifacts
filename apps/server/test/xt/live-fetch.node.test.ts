@@ -131,7 +131,9 @@ describe("liveFetch (xt:live, flake server #2)", () => {
       fetch: f,
       healthy: async () => {
         asks++;
-        return false;
+        // Past the cap, answer so an uncapped loop ends and fails the count
+        // below instead of hanging.
+        return asks > HEALTH_ASKS_MAX * 2;
       },
       healthWaitMs: 10_000,
     });
