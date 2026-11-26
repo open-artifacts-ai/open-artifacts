@@ -102,12 +102,9 @@ describe("a moved role on the real paths (#3132)", () => {
         },
       });
       expect(r.isError, JSON.stringify(r.content)).toBeFalsy();
-      const t = (
-        r.structuredContent as {
-          thread: { id: string; comments: { id: string }[] };
-        }
-      ).thread;
-      return { threadId: t.id, commentId: t.comments[0]?.id ?? "" };
+      // #3163: add_comment returns the short result.
+      const t = r.structuredContent as { threadId: string; commentId: string };
+      return { threadId: t.threadId, commentId: t.commentId };
     };
     const put = (agentId: string) =>
       api(app, R.busRoles, m.cookie, {
@@ -119,8 +116,7 @@ describe("a moved role on the real paths (#3132)", () => {
     // A thread the old session joined before it held the role.
     const pre = await tool(old, "add_comment", { id, body: "Before the role" });
     expect(pre.isError, JSON.stringify(pre.content)).toBeFalsy();
-    const preThread = (pre.structuredContent as { thread: { id: string } })
-      .thread.id;
+    const preThread = (pre.structuredContent as { threadId: string }).threadId;
     expect((await put(await idOf(names[0]!))).status).toBe(200);
     const asked = await askOf("Roll the PostHog host?");
     expect((await put(await idOf(names[1]!))).status).toBe(200);
