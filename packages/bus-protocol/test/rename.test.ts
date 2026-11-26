@@ -118,6 +118,7 @@ describe("hello caps", () => {
       noticeMeta: "notice_meta",
       ownerAway: "owner_away",
       guest: "guest",
+      mailExpiry: "mail_expiry",
       sessionsGone: "sessions_gone",
       codexCheck: "codex_check",
     });

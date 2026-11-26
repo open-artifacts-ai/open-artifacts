@@ -89,17 +89,20 @@ describe("answer.yes over MCP (#2224)", () => {
       },
     });
     expect(made.isError, JSON.stringify(made.content)).toBeFalsy();
-    const t = (
-      made.structuredContent as {
-        thread: { id: string; comments: { id: string }[] };
-      }
-    ).thread;
-    const cid = t.comments[0]?.id ?? "";
+    const { threadId, commentId } = made.structuredContent as {
+      threadId: string;
+      commentId: string;
+    };
     // The person answers in the web app.
-    const res = await api(app, R.commentAnswer(id, t.id, cid), m.cookie, {
-      method: "POST",
-      body: { optionId: "wide" },
-    });
+    const res = await api(
+      app,
+      R.commentAnswer(id, threadId, commentId),
+      m.cookie,
+      {
+        method: "POST",
+        body: { optionId: "wide" },
+      },
+    );
     expect(res.status).toBe(200);
 
     const yes = async (c: typeof asker) => {
