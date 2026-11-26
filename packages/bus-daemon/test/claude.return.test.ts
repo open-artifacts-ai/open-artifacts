@@ -6,9 +6,9 @@ import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeTransport, RETURN_TTL_MS } from "../src/transports/claude.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-cr-"));
 const agent = {
@@ -40,6 +40,11 @@ const mail = (
 
 const servers: Server[] = [];
 const transports: ClaudeTransport[] = [];
+/** Lines the return sockets handled: the signal that a reply was taken (acted on or dropped). */
+let lines = eventCounter();
+beforeEach(() => {
+  lines = eventCounter();
+});
 afterEach(async () => {
   await stopAll();
   await Promise.all(transports.splice(0).map((t) => t.close()));
@@ -93,6 +98,7 @@ function transport(
     socketsDir: join(d, "sinks"),
     returnIndexFile: join(d, "claude-return.json"),
     statusWindowMs: 20,
+    onLineHandled: lines.hook,
     target,
     onReply: (...r) => onReply(...(r as Reply)),
     ...over,
@@ -165,8 +171,9 @@ describe("stale Claude return sockets (open-bus #426)", () => {
     await t.deliver(agent, mail());
     await t.drop(agent.ref);
     await t.revive(agent.ref);
+    const handled = lines.next();
     await dial(froms[0] as string, reply(join(d, "someone-else.sock"), "x"));
-    await new Promise((r) => setTimeout(r, 50));
+    await handled;
     expect(replies).toEqual([]);
   });
 

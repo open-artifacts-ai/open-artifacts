@@ -119,9 +119,18 @@ describe("a ref switch under one process keeps the proof (#2861)", () => {
     await vi.waitFor(() =>
       expect(h.daemon.agents.byRef("A")?.live).toBe(false),
     );
-    expect(
-      h.of("link_bind").some((f) => f.agent_ref === "B" && f.hash === H1),
-    ).toBe(true);
+    // The rebind is written after A closes: wake on the frame, not a clock.
+    const bound = () =>
+      h.of("link_bind").some((f) => f.agent_ref === "B" && f.hash === H1);
+    if (!bound())
+      await new Promise<void>((resolve) => {
+        const off = h.onFrame(() => {
+          if (!bound()) return;
+          off();
+          resolve();
+        });
+      });
+    expect(bound()).toBe(true);
     const proofs = new Map<string, string>();
     for (const f of h.frames) {
       if (f.type === "link_bind") proofs.set(f.hash, f.agent_ref);
