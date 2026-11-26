@@ -4194,7 +4194,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ev("codex_liveness", { thread, state: live ? "not_live" : "live" });
       log(`codex thread ${thread} ${live ? "not live" : "live again"}`);
     }
-    if (changed) announceSessions();
+    if (changed) {
+      announceSessions();
+      busyChanged();
+    }
     // persistCodex keeps only live threads: a restart during a drop still needs a hello.
     persistCodex();
   };
@@ -4334,7 +4337,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         busy: () => ({
           pending: pending.size,
           outbox: outbox.size,
-          codexQueue: codexTaken.size(),
+          codexQueue: codexTaken.size((ref) => {
+            const agent = agents.byRef(ref);
+            return agent?.kind === "codex" && agent.live;
+          }),
         }),
         loginActive: () => loginActive(home()),
         hubReady: () => hub.open && main.helloed,
