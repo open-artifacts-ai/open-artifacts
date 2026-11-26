@@ -29,6 +29,8 @@ export type RoleResolution =
  * role_moves: the sessions' addresses at the time of the move.
  */
 export type RoleMove = {
+  /** The role_moves row (and its bus.role.moved audit row's) id. */
+  id: string;
   roleId: string;
   /** When the old session started holding the role (ms). */
   heldFrom: number;
@@ -36,6 +38,10 @@ export type RoleMove = {
   at: number;
   fromAgentId: string;
   toAgentId: string;
+  /** The old holder's session link identity, if it had one. */
+  fromIdentity: string | null;
+  /** member: a browser or API write; holder: the holding session handed it over. */
+  by: "member" | "holder";
   from: { namespace: string; name: string };
   to: { namespace: string; name: string };
 };
@@ -345,7 +351,90 @@ export function handOver(
   if (named.length > 1) return { ok: false, reason: "ambiguous" };
   const to = named[0]?.id ?? "";
   if (to === holder.id) return notHolder;
-  return putRole(sql, orgId, namespace, name, to, now, newId, max);
+  const r = putRole(sql, orgId, namespace, name, to, now, newId, max);
+  if (!r.ok || r.moved === null) return r;
+  sql.exec(
+    "update role_moves set moved_by = 'holder' where id = ?",
+    r.moved.id,
+  );
+  return { ...r, moved: { ...r.moved, by: "holder" } };
+}
+
+/** #3132: a move whose bus.role.moved audit row D1 does not have yet. */
+export type MoveAudit = {
+  id: string;
+  roleId: string;
+  fromAgentId: string;
+  toAgentId: string;
+  /** The holder's session link identity, for a hand-over by the holder. */
+  fromIdentity: string | null;
+  by: "member" | "holder";
+  at: number;
+  /** The moving request's credential, kept when its first write failed. */
+  cred: { kind: string; id: string | null } | null;
+};
+
+/** The oldest `max` moves not audited yet. */
+export function pendingMoveAudits(
+  sql: SqlStorage,
+  orgId: string,
+  max: number,
+): MoveAudit[] {
+  return all<{
+    id: string;
+    roleId: string;
+    fromAgentId: string;
+    toAgentId: string;
+    fromIdentity: string | null;
+    by: string;
+    at: number;
+    credKind: string | null;
+    credId: string | null;
+  }>(
+    sql,
+    `select id, role_id as roleId, from_agent_id as fromAgentId, to_agent_id as toAgentId,
+       from_identity as fromIdentity, moved_by as by, at, cred_kind as credKind, cred_id as credId
+     from role_moves indexed by role_moves_unaudited where audited = 0 and org_id = ? order by at limit ?`,
+    orgId,
+    max,
+  ).map((r) => ({
+    id: r.id,
+    roleId: r.roleId,
+    fromAgentId: r.fromAgentId,
+    toAgentId: r.toAgentId,
+    fromIdentity: r.fromIdentity,
+    by: r.by === "holder" ? "holder" : "member",
+    at: r.at,
+    cred: r.credKind === null ? null : { kind: r.credKind, id: r.credId },
+  }));
+}
+
+/**
+ * Settles move audits: `done` are in D1 now; `held` failed and keep the
+ * moving request's credential for the retry (a credential already kept is
+ * never replaced).
+ */
+export function settleMoveAudits(
+  sql: SqlStorage,
+  orgId: string,
+  done: string[],
+  held: { id: string; cred: { kind: string; id: string | null } | null }[],
+): void {
+  for (const id of done)
+    sql.exec(
+      "update role_moves set audited = 1 where org_id = ? and id = ?",
+      orgId,
+      id,
+    );
+  for (const h of held)
+    if (h.cred !== null)
+      sql.exec(
+        "update role_moves set cred_kind = ?, cred_id = ? where org_id = ? and id = ? and audited = 0 and cred_kind is null",
+        h.cred.kind,
+        h.cred.id,
+        orgId,
+        h.id,
+      );
 }
 
 /**
@@ -374,10 +463,11 @@ function recordMove(
   const from = row(fromId);
   const to = row(toId);
   if (from === null || to === null) return null;
+  const id = newId();
   sql.exec(
-    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    newId(),
+    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, audited)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    id,
     orgId,
     roleId,
     fromId,
@@ -389,11 +479,14 @@ function recordMove(
     now,
   );
   return {
+    id,
     roleId,
     heldFrom,
     at: now,
     fromAgentId: fromId,
     toAgentId: toId,
+    fromIdentity: from.identity,
+    by: "member",
     from: { namespace: from.namespace, name: from.name },
     to: { namespace: to.namespace, name: to.name },
   };
