@@ -774,6 +774,441 @@ describe("revoke drain (B9) is persisted", () => {
   });
 });
 
+describe("gone-session drain (#3208)", () => {
+  const expiredClosed = (h: BusHubStub) =>
+    count(
+      h,
+      "select count(*) as n from receipts where state = 'expired' and reason = 'recipient_closed'",
+    );
+
+  it("bounds inline expiry to CLOSE_INLINE_BATCH, makes held mail undeliverable before drain, and drains from the alarm with one expiry per message", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const total = 120;
+    const msgIds = await seedReceipts(h, victim, total, {
+      state: "pending",
+      body: true,
+      now: t0 - 10,
+      from: s.id,
+    });
+    const msgSet = new Set(msgIds);
+
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+
+    // Inline work is bounded to CLOSE_INLINE_BATCH; the rest stays pending for the alarm.
+    const inlineExpired = await expiredClosed(h);
+    expect(inlineExpired).toBe(CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(total - CLOSE_INLINE_BATCH);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from former_names where agent_id = ? and kind = 'away'",
+        victim,
+      ),
+    ).toBe(0);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from meta where key like 'gone_drain:%'",
+      ),
+    ).toBe(1);
+
+    // Before the alarm drains: a new agent taking the name gets none of the old mail.
+    d.seen.length = 0;
+    d.send(up("u-new", "newcomer", "Victim", n));
+    const newOk = await until(d, "agent_ok");
+    expect(newOk.bus_name).toBe("Victim");
+    await sync(d);
+    expect(
+      d.seen.filter((f) => f.type === "deliver" && msgSet.has(f.msg_id)),
+    ).toEqual([]);
+
+    // Reopening the same ref before the drain also receives none of the old mail.
+    d.seen.length = 0;
+    d.send(up("u-reopen", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    await sync(d);
+    expect(
+      d.seen.filter((f) => f.type === "deliver" && msgSet.has(f.msg_id)),
+    ).toEqual([]);
+
+    // Drive the alarm until every old message is drained; each step is bounded by SWEEP_BATCH.
+    let left = await pendingCount(h);
+    let runs = 0;
+    while (left > 0 && runs < 50) {
+      await alarmOnce(h);
+      runs++;
+      const now = await pendingCount(h);
+      expect(left - now).toBeLessThanOrEqual(SWEEP_BATCH);
+      left = now;
+    }
+    expect(left).toBe(0);
+    expect(await expiredClosed(h)).toBe(total);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from meta where key like 'gone_drain:%'",
+      ),
+    ).toBe(0);
+
+    // Every sender gets exactly ONE expiry receipt_update per message.
+    await sync(s.d);
+    const told = new Map<string, number>();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
+      }
+    expect(told.size).toBe(total);
+    for (const id of msgIds) expect(told.get(id)).toBe(1);
+  });
+
+  it("replaying sessions{closed, gone} sends no roster_changed, no extra receipt_update, and makes no SQL changes after drain", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone-replay");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const total = 120;
+    const msgIds = await seedReceipts(h, victim, total, {
+      state: "pending",
+      body: true,
+      now: t0 - 10,
+      from: s.id,
+    });
+
+    // Initial close + gone: watcher s.d gets roster_changed.
+    await sync(s.d);
+    s.d.seen.length = 0;
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    await sync(s.d);
+    expect(s.d.seen.some((f) => f.type === "roster_changed")).toBe(true);
+
+    // Mid-drain replay: away row is already gone, so no roster_changed to watcher.
+    const beforeMidReplay = s.d.seen.length;
+    d.send({
+      v: 1,
+      id: "g2",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    await sync(s.d);
+    expect(
+      s.d.seen.slice(beforeMidReplay).some((f) => f.type === "roster_changed"),
+    ).toBe(false);
+
+    // Finish draining.
+    await drain(
+      h,
+      async () =>
+        (await pendingCount(h)) === 0 &&
+        (await count(
+          h,
+          "select count(*) as n from meta where key like 'gone_drain:%'",
+        )) === 0,
+    );
+    await sync(s.d);
+    const told = new Map<string, number>();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
+      }
+    expect(told.size).toBe(total);
+    for (const id of msgIds) expect(told.get(id)).toBe(1);
+
+    // Snapshot SQL state, then replay twice after the drain.
+    const snapshot = () =>
+      inHub(h, (_, st) => ({
+        agent: st.storage.sql
+          .exec(
+            "select live, updated_at, away_since from agents where id = ?",
+            victim,
+          )
+          .toArray(),
+        receipts: st.storage.sql
+          .exec(
+            "select id, state, reason, final_at, notified_at from receipts where to_agent = ? order by rowid",
+            victim,
+          )
+          .toArray(),
+        former: st.storage.sql
+          .exec(
+            "select count(*) as n from former_names where agent_id = ?",
+            victim,
+          )
+          .one().n,
+        meta: st.storage.sql
+          .exec("select key, value from meta where key like 'gone_drain:%'")
+          .toArray(),
+      }));
+    const before = await snapshot();
+    s.d.seen.length = 0;
+
+    for (const fid of ["g3", "g4"]) {
+      d.send({
+        v: 1,
+        id: fid,
+        type: "sessions",
+        open: [],
+        closed: ["victim"],
+        gone: ["victim"],
+      });
+      await sync(d);
+      await sync(s.d);
+    }
+
+    expect(s.d.seen.filter((f) => f.type === "receipt_update")).toEqual([]);
+    expect(s.d.seen.filter((f) => f.type === "roster_changed")).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("queued gone receipts expire only as recipient_closed even past TTL and ignore late acks", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone-ttl");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const total = 120;
+    const msgIds = await seedReceipts(h, victim, total, {
+      state: "pending",
+      body: true,
+      now: t0,
+      from: s.id,
+    });
+
+    // Send gone just before TTL expires.
+    await clock(h, t0 + MAILBOX_RETAIN_MS - 10);
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    expect(await expiredClosed(h)).toBe(CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(total - CLOSE_INLINE_BATCH);
+
+    // An ack from the same machine for a still-queued msg_id must not settle it.
+    const queuedId = await inHub(
+      h,
+      (_, st) =>
+        st.storage.sql
+          .exec<{ id: string }>(
+            "select id from receipts where to_agent = ? and state = 'pending' order by rowid limit 1",
+            victim,
+          )
+          .one().id,
+    );
+    d.send({ v: 1, id: "late-ack", type: "ack", msg_id: queuedId });
+    await sync(d);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where id = ? and state = 'pending'",
+        queuedId,
+      ),
+    ).toBe(1);
+
+    // Advance past expires_at before the first alarm; drive alarms until done.
+    await clock(h, t0 + MAILBOX_RETAIN_MS + 1000);
+    await drain(
+      h,
+      async () =>
+        (await pendingCount(h)) === 0 &&
+        (await count(
+          h,
+          "select count(*) as n from meta where key like 'gone_drain:%'",
+        )) === 0,
+    );
+
+    expect(await pendingCount(h)).toBe(0);
+    expect(await expiredClosed(h)).toBe(total);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from receipts where state = 'delivered'",
+      ),
+    ).toBe(0);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+
+    await sync(s.d);
+    const told = new Map<string, number>();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        told.set(f.msg_id, (told.get(f.msg_id) ?? 0) + 1);
+      }
+    expect(told.size).toBe(total);
+    for (const id of msgIds) expect(told.get(id)).toBe(1);
+  });
+
+  it("reopening a gone ref and revoking its machine drains pre-gone mail as recipient_closed and post-reopen mail as revoked", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const n = ns("gone-revoke");
+    const s = await senderOn(h, n);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    d.send(up("u1", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    const victim = await agentIdOf(h, m.id, "victim");
+    const oldTotal = 120;
+    const oldIds = await seedReceipts(h, victim, oldTotal, {
+      state: "pending",
+      body: true,
+      now: t0 - 10,
+      from: s.id,
+    });
+
+    // Session goes gone: only CLOSE_INLINE_BATCH expire inline; the rest are queued in gone_drain.
+    d.send({
+      v: 1,
+      id: "g1",
+      type: "sessions",
+      open: [],
+      closed: ["victim"],
+      gone: ["victim"],
+    });
+    await sync(d);
+    expect(await expiredClosed(h)).toBe(CLOSE_INLINE_BATCH);
+    expect(await pendingCount(h)).toBe(oldTotal - CLOSE_INLINE_BATCH);
+
+    // Same ref reopens before the gone drain finishes.
+    await clock(h, t0 + 10);
+    d.send(up("u2", "victim", "Victim", n));
+    await until(d, "agent_ok");
+    await sync(d);
+
+    // Sender sends new mail to the reopened session (stays unacked/pending).
+    const newIds: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      s.d.send({
+        v: 1,
+        id: `new-${i}`,
+        type: "send",
+        from_ref: "sender",
+        to_name: "Victim",
+        body: `after reopen ${i}`,
+      });
+      const r = await until(s.d, "receipt");
+      expect(r.state).toBe("pending");
+      newIds.push(r.msg_id);
+    }
+    await sync(d);
+
+    // Revoke the machine while the gone drain is still pending.
+    expect(await h.revokeMachine(m.id)).toBe(true);
+
+    // Drive alarms until every drain finishes.
+    await drain(
+      h,
+      async () =>
+        (await pendingCount(h)) === 0 &&
+        (await count(
+          h,
+          "select count(*) as n from meta where key like 'gone_drain:%' or key like 'revoke_drain:%'",
+        )) === 0,
+    );
+
+    expect(await pendingCount(h)).toBe(0);
+    expect(await count(h, "select count(*) as n from mail")).toBe(0);
+    expect(
+      await count(
+        h,
+        "select count(*) as n from meta where key like 'gone_drain:%' or key like 'revoke_drain:%'",
+      ),
+    ).toBe(0);
+
+    // Every pre-gone message ended expired with reason recipient_closed;
+    // every post-reopen message ended expired with reason revoked.
+    const rows = await inHub(h, (_, st) =>
+      st.storage.sql
+        .exec<{ id: string; state: string; reason: string | null }>(
+          "select id, state, reason from receipts where to_agent = ?",
+          victim,
+        )
+        .toArray(),
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.size).toBe(oldIds.length + newIds.length);
+    for (const id of oldIds)
+      expect(byId.get(id)).toEqual({
+        id,
+        state: "expired",
+        reason: "recipient_closed",
+      });
+    for (const id of newIds)
+      expect(byId.get(id)).toEqual({
+        id,
+        state: "expired",
+        reason: "revoked",
+      });
+
+    // Sender gets exactly one receipt_update per msg_id (both recipient_closed
+    // and revoked map to wire reason recipient_closed).
+    await sync(s.d);
+    const told = new Map<
+      string,
+      { count: number; reason: string | undefined }
+    >();
+    for (const f of s.d.seen)
+      if (f.type === "receipt_update") {
+        expect(f.state).toBe("expired");
+        expect(f.reason).toBe("recipient_closed");
+        const prev = told.get(f.msg_id);
+        told.set(f.msg_id, { count: (prev?.count ?? 0) + 1, reason: f.reason });
+      }
+    expect(told.size).toBe(oldIds.length + newIds.length);
+    for (const id of [...oldIds, ...newIds])
+      expect(told.get(id)).toEqual({ count: 1, reason: "recipient_closed" });
+  });
+});
+
 // ------------------------------------------------------------------- logs
 
 describe("hub logs", () => {

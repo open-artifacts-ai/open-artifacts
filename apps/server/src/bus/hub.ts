@@ -386,6 +386,7 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
 ];
 
@@ -1650,8 +1651,12 @@ function takeAwayName(
   }
   const have = one<{ n: number; b: number }>(
     sql,
-    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+    `select count(*) as n, coalesce(sum(size), 0) as b
+       from (select r.size from receipts r indexed by receipts_to
+              where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+              limit ?)`,
     toId,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP,
   );
   const moved = all<{ id: string; rid: number }>(
@@ -1661,9 +1666,11 @@ function takeAwayName(
          from receipts r indexed by receipts_to
          join agents a on a.id = r.to_agent
         where r.to_agent = ? and r.state = 'pending' and r.rowid > a.session_start_rowid
+          and ${NOT_GONE_QUEUED_SQL}
        window w as (order by r.rowid)
      ) where n <= ? and b <= ? order by rid`,
     fromId,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP - (have?.n ?? 0),
     MAILBOX_BYTES_CAP - (have?.b ?? 0),
   );
@@ -2503,11 +2510,13 @@ function waitingCounts(
   for (const r of all<{ id: string; n: number }>(
     sql,
     `select to_agent as id, count(*) as n from (
-       select to_agent, row_number() over (partition by to_agent order by rowid) as rn
-         from receipts indexed by receipts_to
-        where to_agent in (select value from json_each(?)) and state = 'pending'
+       select r.to_agent, row_number() over (partition by r.to_agent order by r.rowid) as rn
+         from receipts r indexed by receipts_to
+        where r.to_agent in (select value from json_each(?)) and r.state = 'pending'
+          and ${NOT_GONE_QUEUED_SQL}
      ) where rn <= ? group by to_agent`,
     JSON.stringify(ids),
+    ...GONE_DRAIN_BINDS,
     WAITING_CAP,
   ))
     out.set(r.id, r.n);
@@ -3185,8 +3194,12 @@ function resolveTarget(
 function inboxFull(sql: SqlStorage, agent: AgentRow, size: number): boolean {
   const row = one<{ n: number; b: number }>(
     sql,
-    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+    `select count(*) as n, coalesce(sum(size), 0) as b
+       from (select r.size from receipts r indexed by receipts_to
+              where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+              limit ?)`,
     agent.id,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP,
   );
   return (
@@ -3504,11 +3517,13 @@ function settle(
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
      where r.id = ? and r.org_id = ? and a.machine_id = ?
        and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
-       and r.rowid > a.session_start_rowid`,
+       and r.rowid > a.session_start_rowid
+       and ${NOT_GONE_QUEUED_SQL}`,
     msgId,
     OWNER_ORG_ID,
     machineId,
     outcome,
+    ...GONE_DRAIN_BINDS,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
@@ -3551,10 +3566,12 @@ function canStillSettle(
       `select 1 as n from receipts r join agents a on a.id = r.to_agent
        where r.id = ? and r.org_id = ? and a.machine_id = ?
          and (r.state = 'pending' or (r.state = 'expired' and r.reason = 'lost_body'))
-         and r.rowid > a.session_start_rowid`,
+         and r.rowid > a.session_start_rowid
+         and ${NOT_GONE_QUEUED_SQL}`,
       msgId,
       OWNER_ORG_ID,
       machineId,
+      ...GONE_DRAIN_BINDS,
     ) !== null
   );
 }
@@ -3601,6 +3618,41 @@ const CLOSE_PREFIX = "close_drain:";
  */
 export const CLOSE_INLINE_BATCH = 10;
 const CLOSE_END = "close_drain;";
+/**
+ * The persisted gone drain (#3208): one meta row per `sessions{closed, gone}`
+ * frame whose gone agents still have pending mail past CLOSE_INLINE_BATCH,
+ * keyed GONE_PREFIX + padded timestamp + id; the value is {"through": max
+ * receipts rowid at the frame, "ids": [...]}. Only receipts at or before
+ * `through` expire, so a session reopened under the same ref mid-drain keeps
+ * its own new mail.
+ */
+const GONE_PREFIX = "gone_drain:";
+const GONE_END = "gone_drain;";
+/**
+ * #3208: true when receipt `r` is not queued in any persisted gone drain
+ * (a GONE_PREFIX meta row whose `ids` contains `r.to_agent` and whose
+ * `through` covers `r.rowid`). Binds: GONE_DRAIN_BINDS.
+ */
+const NOT_GONE_QUEUED_SQL = `not exists (
+  select 1 from meta g, json_each(g.value, '$.ids') j
+   where g.org_id = ? and g.key >= ? and g.key < ?
+     and r.rowid <= json_extract(g.value, '$.through')
+     and j.value = r.to_agent
+)`;
+/**
+ * #3208: true when agent `a` is not queued in any persisted gone drain.
+ * Binds: GONE_DRAIN_BINDS.
+ */
+const NOT_GONE_QUEUED_AGENT_SQL = `not exists (
+  select 1 from meta g, json_each(g.value, '$.ids') j
+   where g.org_id = ? and g.key >= ? and g.key < ?
+     and j.value = a.id
+)`;
+const GONE_DRAIN_BINDS: readonly [string, string, string] = [
+  OWNER_ORG_ID,
+  GONE_PREFIX,
+  GONE_END,
+];
 /**
  * open-bus #422: a machine with no daemon socket for this long has its live
  * agents closed by the alarm, as agent_down closes one. Safe: a reconnecting
@@ -4066,6 +4118,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
+            or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)) as x`,
       OWNER_ORG_ID,
       OWNER_ORG_ID,
@@ -4074,6 +4127,9 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       CLOSE_PREFIX,
       CLOSE_END,
+      OWNER_ORG_ID,
+      GONE_PREFIX,
+      GONE_END,
     );
     if (!work?.x) return;
     // Arms the earliest deadline even when a later alarm is set (a reap
@@ -6068,15 +6124,18 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
           hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.sessionsGone) ||
           hasCap(f, BUS_CAPS.codexCheck)
-            ? // Everything the hub always listed, plus owner_away only to a
-              // daemon that listed it: an older daemon decodes at most 16
-              // caps, and HUB_CAPS outgrew that (#2759).
+            ? // Everything the hub always listed, plus owner_away, guest,
+              // sessions_gone and codex_check only to a daemon that listed
+              // them: an older daemon decodes at most 16 caps, and HUB_CAPS
+              // outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
                     (c !== BUS_CAPS.ownerAway &&
                       c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.sessionsGone &&
                       c !== BUS_CAPS.codexCheck) ||
                     hasCap(f, c),
                 ),
@@ -6140,6 +6199,11 @@ export class BusHub extends DurableObject<Env> {
           if (a.global === 1) change.global = true;
         }
         this.#closeSessions(downed.map((a) => a.id));
+        if (f.gone !== undefined && f.gone.length > 0) {
+          const goneChange = this.#endGone(machineId, f.gone);
+          change.namespaces.push(...goneChange.namespaces);
+          if (goneChange.global) change.global = true;
+        }
         notifyRoster(this.ctx, change, ws);
         return;
       }
@@ -7717,13 +7781,14 @@ export class BusHub extends DurableObject<Env> {
       `select r.state as state, m.body as body from receipts r join mail m on m.id = r.id
        where r.id = ? and r.org_id = ? and r.to_agent = ? and m.expires_at > ?
          and r.rowid > ?
-         and (r.state = 'delivered' or (r.state = 'pending' and r.expires_at > ?))`,
+         and (r.state = 'delivered' or (r.state = 'pending' and r.expires_at > ? and ${NOT_GONE_QUEUED_SQL}))`,
       f.msg_id,
       OWNER_ORG_ID,
       sender.id,
       now,
       sender.sessionStartRowid,
       now,
+      ...GONE_DRAIN_BINDS,
     );
     if (!r) {
       sendError(ws, f.id, "not_found", FETCH_NOT_FOUND);
@@ -7850,12 +7915,14 @@ export class BusHub extends DurableObject<Env> {
     if (capMail) {
       const ids = JSON.stringify(agentIds);
       sql.exec(
-        `update receipts set expires_at = (select a.away_since + ? from agents a where a.id = receipts.to_agent)
-          where state = 'pending' and to_agent in (select value from json_each(?))
-            and expires_at > (select a.away_since + ? from agents a where a.id = receipts.to_agent)`,
+        `update receipts as r set expires_at = (select a.away_since + ? from agents a where a.id = r.to_agent)
+          where r.state = 'pending' and r.to_agent in (select value from json_each(?))
+            and r.expires_at > (select a.away_since + ? from agents a where a.id = r.to_agent)
+            and ${NOT_GONE_QUEUED_SQL}`,
         MAILBOX_RETAIN_MS,
         ids,
         MAILBOX_RETAIN_MS,
+        ...GONE_DRAIN_BINDS,
       );
       sql.exec(
         `update mail set expires_at = (select a.away_since + ? from agents a where a.id = mail.to_agent)
@@ -7893,6 +7960,81 @@ export class BusHub extends DurableObject<Env> {
       JSON.stringify({ through, ids: left }),
     );
     this.#arm(closedAt + 1);
+  }
+
+  /**
+   * #3208: closed sessions that will never reopen (such as an agy row whose
+   * process ended before it joined a conversation). Drop their away
+   * reservations at once (making any held mail undeliverable to reopens,
+   * `replaces`, and #1742 takeovers) and expire up to CLOSE_INLINE_BATCH
+   * pending receipts inline as recipient_closed so each sender is told; any
+   * agents with more pending mail are queued in ONE meta row (GONE_PREFIX)
+   * for #drainGone. A repeated gone ref whose away row and pending mail are
+   * already gone is skipped in one indexed check with no writes and no roster
+   * notification.
+   */
+  #endGone(machineId: string, refs: string[]): RosterChange {
+    const change: RosterChange = { namespaces: [], global: false };
+    if (refs.length === 0) return change;
+    const sql = this.ctx.storage.sql;
+    const rows = all<{ id: string; namespace: string; global: number }>(
+      sql,
+      `select a.id, a.namespace, a.global from agents a
+        where a.machine_id = ? and a.org_id = ? and a.live = 0
+          and a.native_ref in (select value from json_each(?))
+          and (exists (select 1 from former_names f indexed by former_names_agent where f.agent_id = a.id and f.kind = 'away')
+               or exists (select 1 from receipts r indexed by receipts_to where r.to_agent = a.id and r.state = 'pending'))`,
+      machineId,
+      OWNER_ORG_ID,
+      JSON.stringify(refs),
+    );
+    if (rows.length === 0) return change;
+    const now = this.#now();
+    const through =
+      one<{ n: number | null }>(sql, "select max(rowid) as n from receipts")
+        ?.n ?? 0;
+    let budget = CLOSE_INLINE_BATCH;
+    const left: string[] = [];
+    for (const a of rows) {
+      const removedAway =
+        all(
+          sql,
+          "delete from former_names where agent_id = ? and kind = 'away' returning rowid",
+          a.id,
+        ).length > 0;
+      if (removedAway) {
+        change.namespaces.push(a.namespace);
+        if (a.global === 1) change.global = true;
+      }
+      if (budget === 0) {
+        left.push(a.id);
+        continue;
+      }
+      const pending = all<{ id: string; fromAgent: string }>(
+        sql,
+        "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' and rowid <= ? order by rowid limit ?",
+        a.id,
+        through,
+        budget + 1,
+      );
+      const take = Math.min(pending.length, budget);
+      for (let i = 0; i < take; i++) {
+        const r = pending[i];
+        if (r) this.#expire(r.id, r.fromAgent, "recipient_closed");
+      }
+      budget -= take;
+      if (pending.length > take) left.push(a.id);
+    }
+    if (left.length > 0) {
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?)",
+        OWNER_ORG_ID,
+        `${GONE_PREFIX}${String(now).padStart(16, "0")}:${newId()}`,
+        JSON.stringify({ through, ids: left }),
+      );
+      this.#arm(now + 1);
+    }
+    return change;
   }
 
   /**
@@ -7951,11 +8093,13 @@ export class BusHub extends DurableObject<Env> {
         sql,
         `select a.rid, a.id from (select rowid as rid, id from agents indexed by agents_machine_closed
             where machine_id = ? and live = 0 order by updated_at, rowid limit ?) a
-          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL} limit 1`,
+          where ${inbox ? `${IDLE_INBOX_SQL} and ` : ""}${outbox ? `${IDLE_OUTBOX_SQL} and ` : ""}${AWAY_ROW_SQL}
+            and ${NOT_GONE_QUEUED_AGENT_SQL} limit 1`,
         machineId,
         CLOSED_AGENTS_PER_MACHINE,
         ...(outbox ? [this.#now() - SEND_KEY_RETAIN_MS] : []),
         this.#now(),
+        ...GONE_DRAIN_BINDS,
       );
     const away =
       oldest(true, true) ?? oldest(false, true) ?? oldest(false, false);
@@ -7963,8 +8107,11 @@ export class BusHub extends DurableObject<Env> {
     for (;;) {
       const rows = all<{ id: string; fromAgent: string }>(
         sql,
-        "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' limit ?",
+        `select r.id, r.from_agent as fromAgent from receipts r indexed by receipts_to
+          where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+          limit ?`,
         away.id,
+        ...GONE_DRAIN_BINDS,
         BATCH,
       );
       for (const r of rows) this.#expire(r.id, r.fromAgent, "recipient_closed");
@@ -8336,8 +8483,11 @@ export class BusHub extends DurableObject<Env> {
         visits++;
         const rows = all<{ id: string; fromAgent: string }>(
           sql,
-          "select id, from_agent as fromAgent from receipts where to_agent = ? and state = 'pending' limit ?",
+          `select r.id, r.from_agent as fromAgent from receipts r indexed by receipts_to
+            where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+            limit ?`,
           agentId,
+          ...GONE_DRAIN_BINDS,
           receipts,
         );
         for (const r of rows) this.#expire(r.id, r.fromAgent, "revoked");
@@ -8376,6 +8526,81 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * One bounded step of the gone drain (#3208), oldest queue row first: for
+   * each queued agent, pending mail at or before the frame's rowid boundary
+   * expires as `recipient_closed` (#expire: bodies and held bytes dropped,
+   * sender told or left for replay). At most BATCH agents and BATCH receipts
+   * per step; a row is rewritten with the agents still to do and deleted once
+   * empty (or unreadable). True while any row remains.
+   */
+  #drainGone(): boolean {
+    const sql = this.ctx.storage.sql;
+    let visits = 0;
+    let receipts = BATCH;
+    const queue = all<{ key: string; value: string }>(
+      sql,
+      "select key, value from meta where org_id = ? and key >= ? and key < ? order by key limit ?",
+      OWNER_ORG_ID,
+      GONE_PREFIX,
+      GONE_END,
+      BATCH,
+    );
+    for (const q of queue) {
+      const entry = parseCloseEntry(q.value);
+      const ids = entry?.ids ?? [];
+      const through = entry?.through ?? 0;
+      let done = 0;
+      for (const agentId of ids) {
+        if (visits >= BATCH) break;
+        visits++;
+        const rows = all<{ id: string; fromAgent: string }>(
+          sql,
+          "select id, from_agent as fromAgent from receipts indexed by receipts_to where to_agent = ? and state = 'pending' and rowid <= ? order by rowid limit ?",
+          agentId,
+          through,
+          receipts,
+        );
+        for (const r of rows)
+          this.#expire(r.id, r.fromAgent, "recipient_closed");
+        receipts -= rows.length;
+        // Out of budget: this agent may have more; it stays queued.
+        if (receipts === 0) break;
+        done++;
+      }
+      if (done >= ids.length)
+        sql.exec(
+          "delete from meta where org_id = ? and key = ?",
+          OWNER_ORG_ID,
+          q.key,
+        );
+      else {
+        sql.exec(
+          "update meta set value = ? where org_id = ? and key = ?",
+          JSON.stringify({ through, ids: ids.slice(done) }),
+          OWNER_ORG_ID,
+          q.key,
+        );
+        break;
+      }
+    }
+    if (receipts < BATCH)
+      logEvent("drain_step", {
+        kind: "gone",
+        expired: BATCH - receipts,
+        bodies: 0,
+      });
+    return (
+      one(
+        sql,
+        "select 1 as x from meta where org_id = ? and key >= ? and key < ? limit 1",
+        OWNER_ORG_ID,
+        GONE_PREFIX,
+        GONE_END,
+      ) !== null
+    );
+  }
+
+  /**
    * Reconnect flush: the agent's pending mail to its live socket, oldest
    * first. A body in `mail` is sent from there and its row kept until the
    * ack (inline) or expiry; only a never-persisted held body is re-held.
@@ -8394,9 +8619,13 @@ export class BusHub extends DurableObject<Env> {
     for (let page = 0; page <= MAILBOX_PENDING_CAP / BATCH; page++) {
       const rows = all<ReceiptRow & { rid: number }>(
         sql,
-        `select ${RECEIPT_COLS}, rowid as rid from receipts where to_agent = ? and state = 'pending' and rowid > ? order by rowid limit ?`,
+        `select ${RECEIPT_COLS}, r.rowid as rid from receipts r
+          where r.to_agent = ? and r.state = 'pending' and r.rowid > ?
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.rowid limit ?`,
         agent.id,
         after,
+        ...GONE_DRAIN_BINDS,
         BATCH,
       );
       for (const r of rows) this.#flushOne(ws, agent, r, now);
@@ -9180,11 +9409,14 @@ export class BusHub extends DurableObject<Env> {
     // body died with an eviction. Expired, never delivered.
     const lost = all<{ id: string; fromAgent: string; expiresAt: number }>(
       sql,
-      `select id, from_agent as fromAgent, expires_at as expiresAt from receipts
-       where state = 'pending' and held_at is not null and held_at <= ?
-         and not exists (select 1 from mail where mail.id = receipts.id)
-       order by held_at limit ?`,
+      `select r.id, r.from_agent as fromAgent, r.expires_at as expiresAt
+        from receipts r indexed by receipts_held
+       where r.state = 'pending' and r.held_at is not null and r.held_at <= ?
+         and not exists (select 1 from mail where mail.id = r.id)
+         and ${NOT_GONE_QUEUED_SQL}
+       order by r.held_at limit ?`,
       now - LIMITS.ackTimeoutMs,
+      ...GONE_DRAIN_BINDS,
       BATCH,
     );
     if (lost.length >= BATCH) more = true;
@@ -9207,12 +9439,19 @@ export class BusHub extends DurableObject<Env> {
     if (this.#drainRevoked()) more = true;
     // 2c. Closed sessions' leftovers (B11), also before TTL (recipient_closed).
     if (this.#drainClosed()) more = true;
+    // 2d. Gone sessions' pending mail (#3208), before TTL (recipient_closed).
+    if (this.#drainGone()) more = true;
 
     // 3. TTL: pending past expires_at expires, bodies dropped, sender told.
     const due = all<{ id: string; fromAgent: string }>(
       sql,
-      "select id, from_agent as fromAgent from receipts where state = 'pending' and expires_at <= ? order by expires_at limit ?",
+      `select r.id, r.from_agent as fromAgent
+        from receipts r indexed by receipts_due
+       where r.state = 'pending' and r.expires_at <= ?
+         and ${NOT_GONE_QUEUED_SQL}
+       order by r.expires_at limit ?`,
       now,
+      ...GONE_DRAIN_BINDS,
       BATCH,
     );
     if (due.length >= BATCH) more = true;
@@ -9305,8 +9544,12 @@ export class BusHub extends DurableObject<Env> {
   /** The earliest remaining deadline, each one indexed lookup; null if none. */
   #nextDeadline(want: number | null): number | null {
     const sql = this.ctx.storage.sql;
-    const min = (q: string, add = 0): number | null => {
-      const t = one<{ t: number | null }>(sql, q)?.t ?? null;
+    const min = (
+      q: string,
+      add = 0,
+      ...b: SqlStorageValue[]
+    ): number | null => {
+      const t = one<{ t: number | null }>(sql, q, ...b)?.t ?? null;
       return t === null ? null : t + add;
     };
     let heldNext: number | null = null;
@@ -9317,11 +9560,29 @@ export class BusHub extends DurableObject<Env> {
       this.#ownerAwayDue(),
       this.#soakDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
+      one(
+        sql,
+        "select 1 as x from meta where org_id = ? and key >= ? and key < ? limit 1",
+        ...GONE_DRAIN_BINDS,
+      ) !== null
+        ? this.#now() + 1
+        : null,
       min(
-        "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",
+        `select r.held_at as t from receipts r indexed by receipts_held
+          where r.state = 'pending' and r.held_at is not null
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.held_at limit 1`,
         LIMITS.ackTimeoutMs,
+        ...GONE_DRAIN_BINDS,
       ),
-      min("select min(expires_at) as t from receipts where state = 'pending'"),
+      min(
+        `select r.expires_at as t from receipts r indexed by receipts_due
+          where r.state = 'pending'
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.expires_at limit 1`,
+        0,
+        ...GONE_DRAIN_BINDS,
+      ),
       min("select min(expires_at) as t from mail"),
       min(
         "select min(notified_at) as t from receipts where notified_at is not null",
