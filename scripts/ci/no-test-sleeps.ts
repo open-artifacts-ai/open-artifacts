@@ -208,7 +208,11 @@ function shellSleep(code: string): Found[] {
     out.push({ index: m.index as number, why: "shell sleep" });
   // `sleep` then any argument: a number, a variable, "$T"s, $(( x )), ${N}.
   for (const m of code.matchAll(/(?:^|[\s;&|("'`])sleep\s+[\d$"'`(.{]/gm))
-    out.push({ index: m.index as number, why: "shell sleep" });
+    out.push({
+      // The word itself, not the whitespace before it: the line is its own.
+      index: (m.index as number) + m[0].indexOf("sleep"),
+      why: "shell sleep",
+    });
   return out;
 }
 

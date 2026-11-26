@@ -28,6 +28,8 @@ describe("no-test-sleeps: planted shapes are caught, legitimate forms are not", 
   it("reports the line of the wait, not of the statement start", () => {
     const planted = cases.find((c) => c.name === "multi-line executor");
     expect(planted && scanText(planted.text, planted.file)[0]?.line).toBe(1);
+    const sh = cases.find((c) => c.name === "shell sleep with a variable");
+    expect(sh && scanText(sh.text, sh.file)[0]?.line).toBe(3);
     const late = cases.find(
       (c) => c.name === "a wait after a commented-out one",
     );
