@@ -13,7 +13,7 @@ import {
   writeAgyConversation,
 } from "@oa/bus-adapter-claude-code";
 import { connectDaemon, HelloRefused } from "@oa/bus-ipc";
-import { BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
+import { BRIEF_RULES, BUS_CAPS, PING, PONG } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import type { DaemonDeps } from "../src/index.ts";
@@ -368,5 +368,36 @@ describe("an agy conversation survives a daemon restart (agy S2)", () => {
       expect(two.h.daemon.agents.byRef(A)?.live).toBe(true),
     );
     expect(await upFor(two.h, A)).toMatchObject({ kind: "antigravity" });
+  });
+});
+
+describe("the bus rules for an agy conversation (agy S4, #3043)", () => {
+  /** What the hook does at SessionStart: hello, then the rules, then close. */
+  const rulesAfterHello = async (h: H) => {
+    const hello = agyHello({
+      pid: AGY,
+      procStart: "t0",
+      conversationId: A,
+      cwd: "/w/app",
+    });
+    if (!hello) throw new Error("no hello");
+    const client = await connectDaemon({ path: h.socketPath, hello });
+    try {
+      return await client.request({ type: "habits" });
+    } finally {
+      client.close();
+    }
+  };
+
+  it("the hook's connection gets the rules the daemon serves", async () => {
+    const { h } = await setup();
+    const r = await rulesAfterHello(h);
+    expect(r.type === "habits" && r.rules).toBe(BRIEF_RULES);
+  });
+
+  it("gets none when the install opted out", async () => {
+    const { h } = await setup({ habitsOff: () => true });
+    const r = await rulesAfterHello(h);
+    expect(r.type === "habits" && r.rules).toBeNull();
   });
 });

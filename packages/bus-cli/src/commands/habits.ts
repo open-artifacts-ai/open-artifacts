@@ -3,7 +3,7 @@
 // files it goes in, are steps/habits.ts.
 
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -21,7 +21,6 @@ import {
   habitsOptedOut,
   habitsQuestion,
   habitsQuestionLines,
-  habitsTarget,
   linkInfo,
   OMP_NOTE,
   PLUGIN_HARNESSES,
@@ -772,36 +771,13 @@ const projectHere = (
   return { files, changed, declined };
 };
 
-/**
- * agy S4: a file Antigravity reads is named so, while agy is wired, so doctor
- * says "Habits: on" for Antigravity. Its global file, or the project file it
- * shares with the others (AGENTS.md).
- */
-const shownFor = (
-  ctx: Ctx,
-  files: string[],
-  agy: boolean,
-  project = false,
-): string =>
-  files
-    .map((f) =>
-      agy &&
-      (project
-        ? basename(f) === PROJECT_HABITS_FILE.antigravity
-        : f === habitsTarget(deps(ctx), "antigravity"))
-        ? `${one(ctx, f)} (Antigravity)`
-        : one(ctx, f),
-    )
-    .join(", ");
-
 /** The words for one place, kept in one function so a plugin source can join it. */
-const habitsWhere = (ctx: Ctx, files: string[], agy = false): string =>
-  `on in this project, ${shownFor(ctx, files, agy, true)}`;
+const habitsWhere = (ctx: Ctx, files: string[]): string =>
+  `on in this project, ${shown(ctx, files)}`;
 
 /** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
 export function habitsLine(ctx: Ctx): string | undefined {
   const { targets, plugins } = wired(ctx);
-  const agy = targets.includes("antigravity");
   if (habitsOptedOut(ctx.home)) return "Habits: off (you opted out)";
   const on = habitsOn(deps(ctx));
   // "Hermes plugin: on" or "off", for each plugin harness in use (wired, or already on).
@@ -815,9 +791,9 @@ export function habitsLine(ctx: Ctx): string | undefined {
   if (here.files.length > 0)
     return here.changed
       ? `Habits: out of date in this project, ${shown(ctx, here.files)}. Run ${ctx.busCmd} install to update them${tail}`
-      : `Habits: ${habitsWhere(ctx, here.files, agy)}${tail}`;
+      : `Habits: ${habitsWhere(ctx, here.files)}${tail}`;
   if (here.declined) return `Habits: off in this project${tail}`;
-  if (on.length > 0) return `Habits: on in ${shownFor(ctx, on, agy)}${tail}`;
+  if (on.length > 0) return `Habits: on in ${shown(ctx, on)}${tail}`;
   if (used.some((p) => pluginHabitsState(deps(ctx), p) === "on"))
     return `Habits: ${states.join("; ")}`;
   if (targets.length > 0 || plugins.length > 0)

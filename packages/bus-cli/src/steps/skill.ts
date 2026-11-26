@@ -611,7 +611,14 @@ export const uninstallSkill = (
       scan(join(dirname(base), "skills"));
       continue;
     }
+    const before = written.length;
     scan(base);
+    // agy S4: ~/.gemini/config/skills holds only skills, so a folder we just
+    // emptied goes too (rmdir: never one with anything left in it).
+    if (h === "antigravity" && written.length > before)
+      try {
+        rmdirSync(base);
+      } catch {}
   }
   return { written, notes };
 };

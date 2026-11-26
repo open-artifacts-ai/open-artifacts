@@ -14,7 +14,14 @@ import {
   writeAgyConversation,
 } from "@oa/bus-adapter-claude-code";
 import { createEventLog } from "@oa/bus-daemon";
-import { connectDaemon, type Hello, HelloRefused } from "@oa/bus-ipc";
+import {
+  BRIEF_RULES,
+  connectDaemon,
+  type Hello,
+  HelloRefused,
+  habitsOff,
+} from "@oa/bus-ipc";
+import { BRIEF_RULES_MAX_BYTES } from "@oa/bus-protocol";
 import { type Ctx, say } from "../context.ts";
 
 /** The most the hook waits for agy's payload on stdin. */
@@ -35,8 +42,18 @@ export type AgyHelloDeps = {
   proc: Proc;
   procStart: (pid: number) => string | null;
   title: (conversationId: string) => Promise<string | undefined>;
-  /** Says hello and closes; resolves to the bus name, rejects with the refusal. */
-  hello: (hello: Hello) => Promise<string>;
+  /**
+   * Says hello and closes; resolves to the bus name, rejects with the
+   * refusal. With `rules`, it first asks the daemon for the bus rules over the
+   * same connection (#3043): a string, null when this install opted out, or
+   * undefined when the daemon did not say.
+   */
+  hello: (
+    hello: Hello,
+    rules: boolean,
+  ) => Promise<{ name: string; rules?: string | null }>;
+  /** The bus rules without a daemon: the bundled text, or null when opted out. */
+  localRules: () => string | null;
   /** The hook's parent: the shell agy ran the hook in, or agy itself. */
   ppid: number;
 };
@@ -68,21 +85,59 @@ const defaults = (ctx: Ctx): AgyHelloDeps => ({
   proc: readProc,
   procStart: procStartOf,
   title: (id) => agyTitle(id),
-  hello: async (hello) => {
+  hello: async (hello, rules) => {
     const problem = socketDirProblem(ctx.home);
     if (problem) throw new Error(problem);
     const client = await connectDaemon({
       path: daemonSocketPath(ctx.home),
       hello,
       timeoutMs: DAEMON_WAIT_MS,
+      requestTimeoutMs: DAEMON_WAIT_MS,
       unref: true,
     });
     const name = client.welcome.bus_name;
-    client.close();
-    return name;
+    try {
+      if (!rules) return { name };
+      const r = await client.request({ type: "habits" });
+      return r.type === "habits" ? { name, rules: r.rules } : { name };
+    } catch {
+      return { name };
+    } finally {
+      client.close();
+    }
   },
+  localRules: () => (habitsOff(ctx.home) ? null : BRIEF_RULES),
   ppid: process.ppid,
 });
+
+/** The event agy ran the hook for, from its payload's `hookEventName`. */
+const eventOf = (text: string): string | undefined => {
+  try {
+    const e = (JSON.parse(text) as { hookEventName?: unknown })?.hookEventName;
+    return typeof e === "string" ? e : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** Rules fit to inject: a non-empty text under BRIEF_RULES_MAX_BYTES. */
+const fits = (r: unknown): r is string =>
+  typeof r === "string" &&
+  r.trim() !== "" &&
+  new TextEncoder().encode(r).length <= BRIEF_RULES_MAX_BYTES;
+
+/**
+ * #3043, agy S4: what the hook prints. At SessionStart, the bus rules as one
+ * system message agy keeps in the conversation; otherwise, or when opted out,
+ * `{}`. Only the rules ever go here: never a sender's or a peer's text.
+ */
+export function agyHookOutput(rules: string | null | undefined): string {
+  return fits(rules)
+    ? JSON.stringify({
+        injectSteps: [{ systemMessage: { systemMessage: rules } }],
+      })
+    : "{}";
+}
 
 /**
  * agy S2: the hook of the oa-bus agy plugin. agy runs it at a conversation's
@@ -93,7 +148,13 @@ const defaults = (ctx: Ctx): AgyHelloDeps => ({
  * shows now (the MCP server agy started speaks for it), and says hello for
  * it: kind antigravity, the conversation as the agent ref, the agy pid and
  * its start time, which the daemon checks. The daemon homes it by the folder
- * map. It always prints `{}` and exits 0: a failed join never stops agy.
+ * map. It always exits 0: a failed join never stops agy.
+ *
+ * agy S4 (#3043): at SessionStart it also hands agy the bus rules, which agy
+ * keeps in the conversation as a system message: the daemon's, asked over the
+ * same connection, else the bundled text. Opted out (`habits.optedOut`), it
+ * prints `{}`. No file holds them. PreInvocation never adds them: it runs
+ * again after a failed join, and a conversation keeps its start's rules.
  */
 export async function agyHello(
   ctx: Ctx,
@@ -101,8 +162,12 @@ export async function agyHello(
 ): Promise<number> {
   const deps = { ...defaults(ctx), ...over };
   const fields: Record<string, string | number> = {};
+  let atStart = false;
+  let rules: string | null | undefined;
   try {
-    const start = parseSessionStart(await deps.stdin());
+    const text = await deps.stdin();
+    atStart = eventOf(text) === "SessionStart";
+    const start = parseSessionStart(text);
     if (!start) fields.reason = "bad_payload";
     const agy = start ? findAgy(deps.ppid, deps.proc) : undefined;
     if (start && agy === undefined) fields.reason = "no_agy_ancestor";
@@ -124,8 +189,10 @@ export async function agyHello(
       if (!hello) fields.reason = "bad_hello";
       else
         try {
-          fields.name = await deps.hello(hello);
+          const joined = await deps.hello(hello, atStart);
+          fields.name = joined.name;
           fields.state = "joined";
+          rules = joined.rules;
           // Only once the daemon took it: the MCP server then speaks for this
           // conversation, and the hook's shell skips Node until it changes.
           writeAgyConversation(ctx.home, conv);
@@ -142,8 +209,24 @@ export async function agyHello(
   } catch {
     fields.reason ??= "error";
   }
-  // agy reads the hook's answer from stdout: nothing to add to the turn.
-  say(ctx, "{}");
+  // agy reads the hook's answer from stdout.
+  let out = "{}";
+  if (atStart) {
+    // Which rules went out, for the log: the daemon's, the bundled ones, none.
+    let from = "rules_daemon";
+    try {
+      // The daemon's answer, unless it gave none that fits; null is the opt-out.
+      if (rules !== null && !fits(rules)) {
+        from = "rules_bundled";
+        rules = deps.localRules();
+      }
+    } catch {
+      rules = undefined;
+    }
+    out = agyHookOutput(rules);
+    fields.code = out === "{}" ? "rules_none" : from;
+  }
+  say(ctx, out);
   try {
     const events = createEventLog(join(ctx.home, "logs", "events.log"));
     events(AGY_HELLO_EVENT, fields);

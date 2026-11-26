@@ -8,11 +8,6 @@
 //   pi        <agent dir>/AGENTS.override.md if it exists, else AGENTS.md
 //   opencode  $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else
 //             ~/.config/opencode, then AGENTS.md
-//   antigravity  ~/.gemini/config/AGENTS.md (agy S4; only written while agy is
-//             wired, which needs OA_BUS_EXPERIMENTAL_AGY=1). agy's bundled
-//             agy-customizations guide names ~/.gemini/config/ its global root,
-//             and its changelog lists AGENTS.md and GEMINI.md there as global
-//             rules. Never ~/.gemini/GEMINI.md: Gemini CLI reads that one too.
 //   omp       none: its always-on file is unverified, so nothing is written
 //   hermes    none: the plugin adds the lines itself, only while a habits.on
 //             marker sits in its folder (PLUGIN_HARNESSES below)
@@ -51,18 +46,12 @@ import { readInstallFile, updateInstallFile } from "./step.ts";
 type Env = Record<string, string | undefined>;
 
 /** The harnesses whose always-on file we know and write. */
-export type HabitsHarness =
-  | "claude"
-  | "codex"
-  | "pi"
-  | "opencode"
-  | "antigravity";
+export type HabitsHarness = "claude" | "codex" | "pi" | "opencode";
 export const HABITS_HARNESSES: HabitsHarness[] = [
   "claude",
   "codex",
   "pi",
   "opencode",
-  "antigravity",
 ];
 
 export const HABITS_LEAD = "When you're connected to the Open Artifacts bus:";
@@ -128,8 +117,6 @@ export function habitsFiles(
           "AGENTS.md",
         ),
       ];
-    case "antigravity":
-      return [join(deps.home, ".gemini", "config", "AGENTS.md")];
   }
 }
 
@@ -325,15 +312,12 @@ const saveRecord = (
  *   project's own AGENTS.md instead of adding to it, so we never write it.
  * - pi: AGENTS.md (context files from the working directory).
  * - opencode: AGENTS.md, with CLAUDE.md only as a fallback.
- * - antigravity: AGENTS.md (agy walks from the cwd up to the repository root
- *   reading GEMINI.md and AGENTS.md: its bundled rules guide).
  */
 export const PROJECT_HABITS_FILE: Record<HabitsHarness, string> = {
   claude: "CLAUDE.local.md",
   codex: "AGENTS.md",
   pi: "AGENTS.md",
   opencode: "AGENTS.md",
-  antigravity: "AGENTS.md",
 };
 
 /** The project's own file for `h`, under `cwd`. */
@@ -639,6 +623,46 @@ export function writeHabits(
 }
 
 /**
+ * Takes our block out of each of `paths`, restoring the file's own bytes, and
+ * forgets them in the record. A file goes only when we created it and it is
+ * not a link.
+ */
+function dropBlocks(
+  deps: HabitsDeps,
+  paths: string[],
+): { files: string[]; notes: string[] } {
+  const files: string[] = [];
+  const notes: string[] = [];
+  const kept = { ...record(deps.busHome).files };
+  for (const path of new Set(paths)) {
+    try {
+      if (brokenLink(path) || !existsSync(path)) continue;
+      const real = targetOf(path);
+      const before = readFileSync(real, "utf8");
+      if (blockState(before).state === "absent") continue;
+      const rec = kept[path];
+      const after = withHabits(before, null, rec?.added);
+      if (rec?.created && !isLink(path) && after.trim() === "")
+        rmSync(real, { force: true });
+      else writeAtomic(real, after);
+      delete kept[path];
+      files.push(path);
+    } catch (e) {
+      notes.push(
+        e instanceof Error && e.message === "unterminated"
+          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
+          : `Could not update ${path}: ${reason(e)}`,
+      );
+    }
+  }
+  // Uninstall must not create a record in a folder that has none (it would make
+  // a foreign OA_BUS_HOME look like ours to --purge).
+  if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
+    saveRecord(deps.busHome, { files: kept });
+  return { files, notes };
+}
+
+/**
  * Removes our block from every file a harness may have it in, restoring the
  * file's own bytes. A file goes only when we created it and it is not a link.
  */
@@ -646,43 +670,14 @@ export function removeHabits(
   deps: HabitsDeps,
   harnesses: HabitsHarness[] = HABITS_HARNESSES,
 ): HabitsResult {
-  const files: string[] = [];
-  const notes: string[] = [];
-  const seen = new Set<string>();
-  const kept = { ...record(deps.busHome).files };
-  for (const h of harnesses) {
-    for (const path of habitsFiles(deps, h)) {
-      if (seen.has(path)) continue;
-      seen.add(path);
-      try {
-        if (brokenLink(path) || !existsSync(path)) continue;
-        const real = targetOf(path);
-        const before = readFileSync(real, "utf8");
-        if (blockState(before).state === "absent") continue;
-        const rec = kept[path];
-        const after = withHabits(before, null, rec?.added);
-        if (rec?.created && !isLink(path) && after.trim() === "")
-          rmSync(real, { force: true });
-        else writeAtomic(real, after);
-        delete kept[path];
-        files.push(path);
-      } catch (e) {
-        notes.push(
-          e instanceof Error && e.message === "unterminated"
-            ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
-            : `Could not update ${path}: ${reason(e)}`,
-        );
-      }
-    }
-  }
+  const { files, notes } = dropBlocks(
+    deps,
+    harnesses.flatMap((h) => habitsFiles(deps, h)),
+  );
   // Plugin harnesses have no file above: their marker goes here (also on uninstall).
   const p = setPluginHabits(deps, PLUGIN_HARNESSES, false);
   files.push(...p.markers);
   notes.push(...p.notes);
-  // Uninstall must not create a record in a folder that has none (it would make
-  // a foreign OA_BUS_HOME look like ours to --purge).
-  if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
-    saveRecord(deps.busHome, { files: kept });
   return {
     files,
     notes,
@@ -691,6 +686,20 @@ export function removeHabits(
     incomplete: p.incomplete,
   };
 }
+
+/**
+ * #3043, agy S4: Antigravity gets no habits file. An earlier build of agy S4
+ * wrote our block into agy's global rules; install and uninstall take it out
+ * of both files agy reads there, and only our block: the user's text stays
+ * byte for byte.
+ */
+export const agyHabitsFiles = (home: string): string[] => [
+  join(home, ".gemini", "config", "AGENTS.md"),
+  join(home, ".gemini", "config", "GEMINI.md"),
+];
+
+export const removeAgyHabits = (deps: HabitsDeps): HabitsResult =>
+  dropBlocks(deps, agyHabitsFiles(deps.home));
 
 /** Files that hold the current or an older block, across every harness. */
 export function habitsOn(deps: HabitsDeps): string[] {

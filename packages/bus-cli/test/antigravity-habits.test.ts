@@ -1,6 +1,7 @@
-// agy S4: habits and the skill for Antigravity, behind OA_BUS_EXPERIMENTAL_AGY=1.
-// A fake agy on PATH (ctx.which), a fake instance and scratch homes only: no
-// real agy runs.
+// agy S4: the skill for Antigravity, and no habits in any agy file (#3043),
+// behind OA_BUS_EXPERIMENTAL_AGY=1. The rules reach agy from the plugin's
+// SessionStart hook instead (antigravity-rules.test.ts). A fake agy on PATH
+// (ctx.which), a fake instance and scratch homes only: no real agy runs.
 import {
   existsSync,
   mkdirSync,
@@ -13,16 +14,16 @@ import { join } from "node:path";
 import { harnessSkills } from "@oa/shared/harness-skills";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
-import { habitsLine } from "../src/commands/habits.ts";
 import { install } from "../src/commands/install.ts";
 import { uninstall } from "../src/commands/uninstall.ts";
 import type { Ctx } from "../src/context.ts";
 import {
-  HABITS_BEGIN,
-  HABITS_END,
-  habitsFiles,
+  agyHabitsFiles,
+  HABITS_HARNESSES,
+  habitsBlock,
   PROJECT_HABITS_FILE,
 } from "../src/steps/habits.ts";
+import { leftoverTargets } from "../src/steps/leftovers.ts";
 import { SKILL_MARKER, skillDir } from "../src/steps/skill.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
@@ -96,14 +97,20 @@ const fetched = (ctx: Ctx) =>
     String(c[0]),
   );
 
+const gemini = (ctx: Ctx) => join(ctx.userHome, ".gemini/config/GEMINI.md");
+/** The block an earlier S4 build wrote, as it wrote it. */
+const BLOCK = `${habitsBlock().join("\n")}\n`;
+
 describe("Antigravity's files (agy S4)", () => {
-  it("rules in ~/.gemini/config/AGENTS.md, skills in ~/.gemini/config/skills, AGENTS.md per project", () => {
+  it("skills in ~/.gemini/config/skills; agy is no habits harness and has no project file", () => {
     const home = "/h";
-    expect(habitsFiles({ home }, "antigravity")).toEqual([
+    expect(HABITS_HARNESSES).not.toContain("antigravity");
+    expect(Object.keys(PROJECT_HABITS_FILE)).not.toContain("antigravity");
+    expect(agyHabitsFiles(home)).toEqual([
       "/h/.gemini/config/AGENTS.md",
+      "/h/.gemini/config/GEMINI.md",
     ]);
     expect(skillDir({ home }, "antigravity")).toBe("/h/.gemini/config/skills");
-    expect(PROJECT_HABITS_FILE.antigravity).toBe("AGENTS.md");
     expect(harnessSkills.antigravity.skillPath).toBe(
       "~/.gemini/config/skills/open-artifacts/SKILL.md",
     );
@@ -113,88 +120,104 @@ describe("Antigravity's files (agy S4)", () => {
   });
 });
 
-describe("install, doctor, uninstall (agy S4)", () => {
-  it("install saves our skill for agy; --habits adds our block; doctor says on for Antigravity; uninstall takes back only ours", async () => {
+describe("install, uninstall (agy S4, #3043)", () => {
+  it("install saves our skill and writes no habits into any agy file, even with --habits", async () => {
     const ctx = make();
-    // The user's own rules, Gemini CLI's file, and a skill of theirs.
     put(rules(ctx), "# my agy rules\n");
-    const gemini = join(ctx.userHome, ".gemini/GEMINI.md");
-    put(gemini, "# gemini cli\n");
-    const theirs = join(ctx.userHome, ".gemini/config/skills/mine/SKILL.md");
-    put(theirs, "---\nname: mine\n---\n\n# mine\n");
-
+    put(gemini(ctx), "# my gemini rules\n");
+    const cli = join(ctx.userHome, ".gemini/GEMINI.md");
+    put(cli, "# gemini cli\n");
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(fetched(ctx)).toContain(`${HUB}/skill.md?harness=antigravity`);
-    const saved = read(skillFile(ctx));
-    expect(saved.split("\n")[3]).toBe(SKILL_MARKER);
-    // Install alone never writes the block: it asks.
+    expect(read(skillFile(ctx)).split("\n")[3]).toBe(SKILL_MARKER);
+    // agy is the only harness: --habits has nowhere to go.
+    expect(await install({ habits: "yes" }, ctx)).toBe(1);
     expect(read(rules(ctx))).toBe("# my agy rules\n");
-
-    expect(await install({ habits: "yes" }, ctx)).toBe(0);
-    const on = read(rules(ctx));
-    expect(on.startsWith("# my agy rules\n\n")).toBe(true);
-    expect(on).toContain(HABITS_BEGIN);
-    expect(on).toContain(HABITS_END);
-    expect(read(gemini)).toBe("# gemini cli\n");
-    expect(habitsLine(ctx)).toBe(
-      "Habits: on in ~/.gemini/config/AGENTS.md (Antigravity)",
-    );
-    await doctor(ctx);
-    expect(ctx.all().join("\n")).toContain(
-      "Habits: on in ~/.gemini/config/AGENTS.md (Antigravity)",
-    );
-
-    expect(await uninstall({ purge: false }, ctx)).toBe(0);
-    expect(read(rules(ctx))).toBe("# my agy rules\n");
-    expect(existsSync(skillFile(ctx))).toBe(false);
-    expect(existsSync(join(skillFile(ctx), ".."))).toBe(false);
-    expect(read(theirs)).toBe("---\nname: mine\n---\n\n# mine\n");
-    expect(read(gemini)).toBe("# gemini cli\n");
+    expect(read(gemini(ctx))).toBe("# my gemini rules\n");
+    expect(read(cli)).toBe("# gemini cli\n");
+    expect(ctx.all().join("\n")).not.toContain("(Antigravity)");
   });
 
-  it("a block install created goes with its file; uninstall works with the switch off", async () => {
+  it("--habits-project writes no project file for agy", async () => {
+    const repo = mkdtempSync(join(tmpdir(), "ob-agy-proj-"));
+    const ctx = make({ cwd: repo });
+    await install({ label: LABEL, hub: HUB }, ctx);
+    await install({ habits: "project" }, ctx);
+    expect(existsSync(join(repo, "AGENTS.md"))).toBe(false);
+    expect(existsSync(join(repo, "GEMINI.md"))).toBe(false);
+  });
+
+  it("the next install takes an earlier build's block out of agy's files: ours only, the rest byte for byte, one line", async () => {
+    const ctx = make();
+    const mine = "# my agy rules\r\nkeep   this\n";
+    put(rules(ctx), `${mine}\n${BLOCK}`);
+    put(gemini(ctx), `# top\n\n${BLOCK}\n# below, mine\n`);
+    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    expect(read(rules(ctx))).toBe(mine);
+    expect(read(gemini(ctx))).toBe("# top\n\n\n# below, mine\n");
+    const lines = ctx
+      .all()
+      .filter((l) => l.includes("old Open Artifacts habits block"));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("~/.gemini/config/AGENTS.md");
+    expect(lines[0]).toContain("~/.gemini/config/GEMINI.md");
+    // Nothing left to take out: a second install says nothing.
+    const again = make();
+    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    await install({ label: LABEL, hub: HUB }, again);
+    expect(again.all().join("\n")).not.toContain("old Open Artifacts habits");
+  });
+
+  it("a block with no END marker is left alone, with a note", async () => {
+    const ctx = make();
+    const text = `# mine\n\n${habitsBlock()[0]}\nnot ours to guess\n`;
+    put(rules(ctx), text);
+    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
+    expect(read(rules(ctx))).toBe(text);
+    expect(ctx.all().join("\n")).toContain("has no END marker");
+  });
+
+  it("uninstall takes the block and our skill out, with the switch off too, and the skills folder it emptied", async () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
-    expect(await install({ habits: "yes" }, ctx)).toBe(0);
-    expect(existsSync(rules(ctx))).toBe(true);
+    put(rules(ctx), `# mine\n\n${BLOCK}`);
     ctx.env = {};
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
-    expect(existsSync(rules(ctx))).toBe(false);
+    expect(read(rules(ctx))).toBe("# mine\n");
     expect(existsSync(skillFile(ctx))).toBe(false);
+    expect(existsSync(join(skillFile(ctx), ".."))).toBe(false);
+    // The skills folder it emptied goes too.
+    expect(existsSync(join(ctx.userHome, ".gemini/config/skills"))).toBe(false);
+    expect(leftoverTargets({ home: ctx.userHome }).dirs).toContain(
+      join(ctx.userHome, ".gemini/config/skills"),
+    );
+    // A user's own skill keeps the folder, and itself.
+    const keep = make();
+    put(
+      join(keep.userHome, ".gemini/config/skills/mine/SKILL.md"),
+      "---\nname: mine\n---\n",
+    );
+    await install({ label: LABEL, hub: HUB }, keep);
+    await uninstall({ purge: false }, keep);
+    expect(
+      read(join(keep.userHome, ".gemini/config/skills/mine/SKILL.md")),
+    ).toBe("---\nname: mine\n---\n");
   });
 
-  it("--no-habits removes our block and a reinstall leaves it out", async () => {
-    const ctx = make();
-    put(rules(ctx), "# mine\n");
-    await install({ label: LABEL, hub: HUB }, ctx);
-    await install({ habits: "yes" }, ctx);
-    expect(read(rules(ctx))).toContain(HABITS_BEGIN);
-    expect(await install({ habits: "no" }, ctx)).toBe(0);
-    expect(read(rules(ctx))).toBe("# mine\n");
-    expect(habitsLine(ctx)).toBe("Habits: off (you opted out)");
-    expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
-    expect(read(rules(ctx))).toBe("# mine\n");
-  });
-
-  it("with the switch off: no skill, no block, and doctor's line names no Antigravity", async () => {
+  it("with the switch off: no skill and nothing in agy's folders", async () => {
     const ctx = make({ env: {} });
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(fetched(ctx).some((u) => u.includes("harness=antigravity"))).toBe(
       false,
     );
     expect(existsSync(join(ctx.userHome, ".gemini/config/skills"))).toBe(false);
-    // No harness wired: --habits has nowhere to go and says so.
-    expect(await install({ habits: "yes" }, ctx)).toBe(1);
-    expect(existsSync(rules(ctx))).toBe(false);
     await doctor(ctx);
     expect(ctx.all().join("\n")).not.toContain("Antigravity");
   });
 
-  it("a second bus home (--alongside) writes no skill or block, and its uninstall leaves the main bus's alone", async () => {
+  it("a second bus home (--alongside) writes no skill, and its uninstall leaves the main bus's alone", async () => {
     const main = make();
     await install({ label: LABEL, hub: HUB }, main);
-    await install({ habits: "yes" }, main);
-    const block = read(rules(main));
     const skill = read(skillFile(main));
     const second = make({ second: true });
     Object.assign(second, { userHome: main.userHome });
@@ -215,7 +238,6 @@ describe("install, doctor, uninstall (agy S4)", () => {
     ).toBe(0);
     expect(fetched(second).some((u) => u.includes("harness="))).toBe(false);
     expect(await uninstall({ purge: false }, second)).toBe(0);
-    expect(read(rules(main))).toBe(block);
     expect(read(skillFile(main))).toBe(skill);
   });
 
@@ -225,24 +247,5 @@ describe("install, doctor, uninstall (agy S4)", () => {
       await install({ label: LABEL, hub: HUB, alongside: true }, ctx),
     ).toBe(0);
     expect(existsSync(join(ctx.userHome, ".gemini/config"))).toBe(false);
-  });
-});
-
-describe("per project (agy S4, #2966)", () => {
-  it("--habits-project writes the project's AGENTS.md, doctor there says on for Antigravity, --no-habits-project takes it back", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "ob-agy-proj-"));
-    const ctx = make({ cwd: repo });
-    await install({ label: LABEL, hub: HUB }, ctx);
-    expect(await install({ habits: "project" }, ctx)).toBe(0);
-    const file = join(repo, "AGENTS.md");
-    expect(read(file)).toContain(HABITS_BEGIN);
-    // Only the project: agy's global rules file is untouched.
-    expect(existsSync(rules(ctx))).toBe(false);
-    expect(read(join(repo, ".git/info/exclude"))).toContain("/AGENTS.md");
-    expect(habitsLine(ctx)).toMatch(
-      /^Habits: on in this project, .*AGENTS\.md \(Antigravity\)$/,
-    );
-    expect(await install({ habits: "project-off" }, ctx)).toBe(0);
-    expect(existsSync(file)).toBe(false);
   });
 });

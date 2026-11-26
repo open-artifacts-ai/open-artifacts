@@ -275,7 +275,8 @@ const payload = JSON.stringify({
   cwd: "/w/app",
   workspacePaths: ["/w"],
   transcriptPath: "/t",
-  hookEventName: "SessionStart",
+  // agy S4: SessionStart also prints the rules (antigravity-rules.test.ts).
+  hookEventName: "PreInvocation",
 });
 const events = (ctx: Ctx) =>
   read(join(ctx.home, "logs", "events.log"))
@@ -308,7 +309,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
         title: async () => undefined,
         hello: async (h) => {
           hellos.push(h);
-          return "agy";
+          return { name: "agy" };
         },
         ppid: 300,
       }),
@@ -349,7 +350,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
       title: async () => "Bus Check",
       hello: async (h) => {
         name = h.proposed_name;
-        return "bus-check";
+        return { name: "bus-check" };
       },
       ppid: 300,
     });
@@ -358,7 +359,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
 
   it("never says hello without an agy above it; still prints {} and exits 0", async () => {
     const ctx = fakeCtx();
-    const hello = vi.fn(async () => "x");
+    const hello = vi.fn(async () => ({ name: "x" }));
     expect(
       await agyHello(ctx, {
         stdin: async () => payload,
@@ -381,7 +382,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
       proc: (pid) => TABLE[pid] ?? null,
       procStart: () => "t0",
       title: async () => undefined,
-      hello: async () => "x",
+      hello: async () => ({ name: "x" }),
       ppid: 300,
     });
     expect(events(bad).at(-1)).toMatchObject({ reason: "bad_payload" });
