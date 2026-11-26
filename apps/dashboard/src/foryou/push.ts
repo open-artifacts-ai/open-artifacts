@@ -289,9 +289,10 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
     },
     z.object({ id: z.string() }),
   );
-  // The new endpoint got a new row; the old key's row would stay as a dead one.
+  // A new endpoint got a new row; the earlier row (an old key's, even after a
+  // failed POST and a retry) would stay as a dead one.
   const old = storedSub();
-  if (rekeyed && old && old.userId === userId && old.id !== id)
+  if (old && old.userId === userId && old.id !== id)
     await api
       .send("DELETE", R.mePushSubscription(old.id), undefined)
       .catch(() => undefined);

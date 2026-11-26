@@ -141,14 +141,15 @@ function Levels({
   // This browser's own row, from the list (S5, #2774).
   const subs = usePushSubscriptions(pushKey !== null && supported);
   const userId = useMeId();
-  // #3024: a device listed but made with another key can't be reached: off.
+  // #3024: On needs the key check verified (unknown shows off, never On); a device
+  // listed but made with another key can't be reached.
   const [on] = useThisBrowserOn(
     pushKey,
     subs.isError ? [] : subs.data?.items,
     userId,
   );
   const listed = thisSubscription(subs.data, userId);
-  const mine = on === false ? undefined : listed;
+  const mine = on === true ? listed : undefined;
   const note =
     pushKey === null
       ? noKeyLine

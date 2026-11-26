@@ -87,6 +87,10 @@ describe("turnOn with an existing browser subscription (#3024)", () => {
   });
 
   it("the same key: reused, no unsubscribe, no subscribe, no DELETE", async () => {
+    localStorage.setItem(
+      "oa.push.subscription.v2",
+      JSON.stringify({ userId: "u1", id: "sub_new" }),
+    );
     existing = mkSub("https://push.example.com/old", keyBytes());
     await turnOn(KEY, "Chrome", "u1");
     expect(existing.unsubscribe).not.toHaveBeenCalled();
@@ -95,5 +99,25 @@ describe("turnOn with an existing browser subscription (#3024)", () => {
     expect(send.mock.calls.find((c) => c[0] === "POST")?.[2]).toMatchObject({
       endpoint: "https://push.example.com/old",
     });
+  });
+});
+
+describe("a failed POST then a retry (#3024)", () => {
+  it("the retry deletes the old row even though the key now matches", async () => {
+    existing = mkSub("https://push.example.com/old", OTHER);
+    let posts = 0;
+    send.mockImplementation(async (m: string) => {
+      if (m !== "POST") return undefined;
+      if (++posts === 1) throw new Error("offline");
+      return { id: "sub_new" };
+    });
+    await expect(turnOn(KEY, "Chrome", "u1")).rejects.toThrow("offline");
+    // The browser now holds the new-key subscription.
+    existing = fresh;
+    expect(await turnOn(KEY, "Chrome", "u1")).toBe("sub_new");
+    expect(send.mock.calls.map((c) => [c[0], c[1]])).toContainEqual([
+      "DELETE",
+      expect.stringContaining("sub_old"),
+    ]);
   });
 });

@@ -392,6 +392,18 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(updates).toHaveAttribute("aria-checked", "true");
   });
 
+  it("while the browser's key check is unknown, the switch is never On (#3024)", async () => {
+    const sub = subscribed();
+    server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
+    const f = fakePush("default");
+    f.pushManager.getSubscription = () => new Promise(() => {});
+    mount("/settings/notifications");
+    const sw = await needs();
+    // Everything else has loaded (the list lists this browser); the check hasn't.
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(sw).toHaveAttribute("aria-checked", "false");
+  });
+
   it("a failed PATCH puts the switch back and says so", async () => {
     const sub = subscribed({}, 500);
     server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
