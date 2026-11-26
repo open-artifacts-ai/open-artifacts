@@ -123,12 +123,7 @@ import {
   type CommentStatus,
   cleanGuestName,
 } from "./comment-rules.js";
-import {
-  addressKey,
-  follow,
-  inBackground,
-  notifyCommented,
-} from "./follows.js";
+import { addressKey, inBackground, notifyCommented } from "./follows.js";
 import {
   forgetCommentItems,
   recordCommentItems,
@@ -1642,8 +1637,6 @@ type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
-  /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
-  follow: RosterAgent[];
   mentions: string[];
   /** #2770: the people @mentioned, resolved (each can read the artifact). */
   people?: string[];
@@ -1789,7 +1782,6 @@ async function resolveExtras(
   const none: Resolved = {
     extras: undefined,
     agents: [],
-    follow: [],
     mentions: [],
     mentionKind: "mention",
     participants: [],
@@ -1829,15 +1821,11 @@ async function resolveExtras(
   // sits in the DO write, so moving it ahead of this read is not a small change.
   // Only the viewer's own agents, never another member's.
   let own: Promise<RosterAgent[]> | undefined;
-  /** Keys resolved from the viewer's own running agents: not in the follows. */
-  const viaOwn = new Set<string>();
   const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
     if (a || !viewerId || !AGENT_KEY.test(key)) return a;
     own ??= viewerRosterAgents(env, artifactId, viewerId);
-    const found = (await own).find((r) => r.key === key);
-    if (found) viaOwn.add(key);
-    return found;
+    return (await own).find((r) => r.key === key);
   };
   const agentOf = async (key: string): Promise<RosterAgent> => {
     const a = await find(key);
@@ -2014,11 +2002,9 @@ async function resolveExtras(
       if (!wake) agents.delete(e.agent.key);
     }
   }
-  // A mention makes an agent follow (#1535); an ask alone does
-  // not. Only one the follows did not hold: another member's unfollow is never undone.
-  const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
+  // #3164: a mention no longer creates a page follow; later replies reach the
+  // mentioned agent through thread_reply participants (#1900).
   return {
-    follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length
@@ -2061,22 +2047,6 @@ const stateOf = (out: DeliveryState): "delivered" | "queued" | "gone" =>
 /** The most a comment POST waits, in total, for its notices to reach their hubs. */
 export const NOTICE_BUDGET_MS = 2500;
 
-/** The mentioned agent follows the artifact; never throws (a follow_limit or a lapsed member is logged). */
-async function followMentioned(
-  env: Env,
-  artifactId: string,
-  agent: RosterAgent,
-): Promise<void> {
-  try {
-    await follow(env, agent.userId, agent.address, artifactId);
-  } catch (e) {
-    logInfo("comment_mention_follow_failed", {
-      artifactId,
-      code: e instanceof ApiError ? e.code : "error",
-    });
-  }
-}
-
 /** #2577: a person's typed comment going to another person's agent from their list is remembered for "Who asked what". Best effort. */
 const listedFrom = (
   env: Env,
@@ -2108,38 +2078,29 @@ async function deliver(
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
   });
   try {
-    // A mentioned agent of the viewer's that did not follow now
-    // follows (#1535), beside the notice and under the same budget. Best
-    // effort: a failure is logged and changes neither the notice nor the comment.
-    const follows = r.follow.map((agent) =>
-      Promise.race([followMentioned(env, a.id, agent), late]),
-    );
-    const [outs] = await Promise.all([
-      Promise.all(
-        r.agents.map(({ agent, kind }) =>
-          Promise.all([
-            Promise.race([
-              notifyAgent(
-                env,
-                a.id,
-                version,
-                threadId,
-                c.id,
-                kind,
-                agent,
-                // Only a comment a person typed, to an agent of that same person.
-                isTyped(c.author) && c.author.ref === agent.userId,
-                c.body,
-              ),
-              late,
-            ]),
-            // Never delays delivery: the record is raced against `late` (best effort).
-            Promise.race([listedFrom(env, a.id, c, agent), late]),
-          ]).then(([o]) => o),
-        ),
+    const outs = await Promise.all(
+      r.agents.map(({ agent, kind }) =>
+        Promise.all([
+          Promise.race([
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              kind,
+              agent,
+              // Only a comment a person typed, to an agent of that same person.
+              isTyped(c.author) && c.author.ref === agent.userId,
+              c.body,
+            ),
+            late,
+          ]),
+          // Never delays delivery: the record is raced against `late` (best effort).
+          Promise.race([listedFrom(env, a.id, c, agent), late]),
+        ]).then(([o]) => o),
       ),
-      Promise.all(follows),
-    ]);
+    );
     r.agents.forEach(({ agent }, i) => {
       outcome.set(agent.key, outs[i] ?? "dropped");
     });
