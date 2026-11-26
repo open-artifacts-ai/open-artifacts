@@ -53,9 +53,28 @@ case "${1:-}" in
     # next one must still count its migrations (0.73.0 shipped 0017 unguarded
     # after 0.72.0 was held).
     running="${PROD_VERSION:-}"
-    [[ "$running" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+    if [[ "$running" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      prev="v$running"
+    elif [[ "$running" =~ ^[0-9]+\.[0-9]+\.[0-9]+-dev\+([0-9a-f]{7,40})$ ]]; then
+      sha="${BASH_REMATCH[1]}"
+      commit="$(git -C "$root" rev-parse -q --verify "${sha}^{commit}" 2>/dev/null)" ||
+        hold "could not read the version prod runs (got '${running:0:40}')"
+      tags=()
+      raw_tags="$(git -C "$root" tag --points-at "$commit" 2>/dev/null)" ||
+        hold "could not read the version prod runs (got '${running:0:40}')"
+      while IFS= read -r t; do
+        if [[ "$t" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          tags+=("$t")
+        fi
+      done <<< "$raw_tags"
+      if [ "${#tags[@]}" -ne 1 ]; then
+        hold "could not read the version prod runs (got '${running:0:40}')"
+      fi
+      prev="${tags[0]}"
+      echo "prod runs a build of $prev ($running); comparing from $prev"
+    else
       hold "could not read the version prod runs (got '${running:0:40}')"
-    prev="v$running"
+    fi
     git -C "$root" rev-parse -q --verify "refs/tags/$prev" > /dev/null ||
       hold "prod runs $running, which has no release tag $prev to compare migrations with"
     git -C "$root" rev-parse -q --verify "refs/tags/$TAG" > /dev/null ||

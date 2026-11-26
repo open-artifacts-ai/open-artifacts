@@ -252,6 +252,87 @@ describe("prod-migration-guard.sh detect", () => {
         .out,
     ).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
   });
+  describe("-dev+<sha> prod version", () => {
+    const rev = (dir: string, ref: string) =>
+      execFileSync("git", ["rev-parse", "--short=7", ref], {
+        cwd: dir,
+        encoding: "utf8",
+      }).trim();
+    it("resolves a -dev+<sha> matching one stable tag and compares from that tag", () => {
+      const r = repo();
+      r.release("v0.253.0", {
+        "apps/server/migrations/0002_rebuild.sql": `${MARK}\ncreate table a2 (x);\n`,
+      });
+      r.release("v0.254.0", {
+        "apps/server/migrations/0003_add.sql": "alter table a add y;\n",
+      });
+      const sha = rev(r.dir, "v0.253.0");
+      const version = `0.252.1-dev+${sha}`;
+      const d = r.run("detect", {
+        TAG: "v0.254.0",
+        EVENT: "push",
+        PROD_VERSION: version,
+      });
+      expect(d.code).toBe(0);
+      expect(d.out).toBe("hold=false\nguarded=false\n");
+      expect(d.stdout).toContain(
+        `prod runs a build of v0.253.0 (${version}); comparing from v0.253.0`,
+      );
+    });
+    it("holds when a -dev+<sha> matches no stable tag", () => {
+      const r = repo();
+      r.release("v1.1.0", {
+        "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+      });
+      // An untagged commit and an unknown sha both hold with the standard message.
+      writeFileSync(join(r.dir, "README.md"), "untagged\n");
+      execFileSync("git", ["add", "-A"], { cwd: r.dir });
+      execFileSync("git", ["commit", "-qm", "untagged"], { cwd: r.dir });
+      execFileSync("git", ["tag", "v1.1.1-rc.1"], { cwd: r.dir });
+      const untaggedSha = rev(r.dir, "HEAD");
+      for (const PROD_VERSION of [
+        `0.252.1-dev+${untaggedSha}`,
+        "0.252.1-dev+deadbee",
+      ]) {
+        const d = r.run("detect", { TAG: "v1.1.0", EVENT: "push", PROD_VERSION });
+        expect(d.code).toBe(0);
+        expect(d.out).toMatch(
+          /^hold=true\nguarded=false\nreason=could not read the version prod runs \(got '[^']+'\)\n$/,
+        );
+      }
+    });
+    it("holds when a -dev+<sha> matches two stable tags", () => {
+      const r = repo();
+      r.release("v1.1.0", {
+        "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+      });
+      execFileSync("git", ["tag", "v1.0.1", "v1.0.0"], { cwd: r.dir });
+      const sha = rev(r.dir, "v1.0.0");
+      const d = r.run("detect", {
+        TAG: "v1.1.0",
+        EVENT: "push",
+        PROD_VERSION: `0.252.1-dev+${sha}`,
+      });
+      expect(d.code).toBe(0);
+      expect(d.out).toMatch(
+        /^hold=true\nguarded=false\nreason=could not read the version prod runs \(got '[^']+'\)\n$/,
+      );
+    });
+    it("leaves plain X.Y.Z unchanged", () => {
+      const r = repo();
+      r.release("v1.1.0", {
+        "apps/server/migrations/0002_add.sql": "alter table a add y;\n",
+      });
+      const d = r.run("detect", {
+        TAG: "v1.1.0",
+        EVENT: "push",
+        PROD_VERSION: "1.0.0",
+      });
+      expect(d.code).toBe(0);
+      expect(d.out).toBe("hold=false\nguarded=false\n");
+      expect(d.stdout).not.toContain("prod runs a build of");
+    });
+  });
 });
 
 describe("prod-migration-guard.sh record, verify, restore", () => {
