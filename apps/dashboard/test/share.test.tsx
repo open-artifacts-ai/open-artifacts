@@ -372,12 +372,12 @@ describe("share panel", () => {
     mount(panel(OWNED));
     await screen.findByRole("checkbox", { name: "Database" });
     // Nothing called yet: every box says so.
-    expect(screen.getAllByText("This page doesn't use it.")).toHaveLength(3);
+    expect(screen.getAllByText("Not used yet on this visit.")).toHaveLength(3);
     await act(async () => {
       capReporters.at(-1)?.("db");
     });
     expect(screen.getAllByText("This page uses it.")).toHaveLength(1);
-    expect(screen.getAllByText("This page doesn't use it.")).toHaveLength(2);
+    expect(screen.getAllByText("Not used yet on this visit.")).toHaveLength(2);
     // The box is on: a plain mark, not a warning.
     expect(screen.queryByText(/asked for it/)).toBeNull();
   });

@@ -882,7 +882,10 @@ export function Share({
                     ? artifact.capabilities[k]
                       ? "This page uses it."
                       : `This page asked for it. It's off.${k === "viewer" ? " Turning it on shows this page each viewer's name and email." : ""}`
-                    : "This page doesn't use it."}
+                    : // The marks are calls seen this visit, not a promise about
+                      // the page: a box used on a click or after a delay is not
+                      // "unused", it just has not been used yet.
+                      "Not used yet on this visit."}
                 </small>
               )}
             </div>
