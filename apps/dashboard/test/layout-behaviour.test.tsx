@@ -15,6 +15,7 @@ import { qk } from "../src/api/queries";
 import { makeQueryClient, QUOTA_KEY } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import { createAppRouter } from "../src/router";
+import { installClock, settle } from "./clock";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -56,14 +57,15 @@ const signOut = async () => {
   fireEvent.keyDown(t, { key: "Enter" });
   fireEvent.click(await screen.findByRole("menuitem", { name: "Log out" }));
 };
-const settle = () => new Promise((r) => setTimeout(r, 100));
+
+installClock();
 
 describe("layout behaviour", () => {
   // Backend: callback for a non-member responds 302 /no-access WITHOUT a session,
   // so /me is 401 there. Redirecting to login sends them straight back: infinite loop.
   it("anonymous at /no-access is not bounced to login (loop)", async () => {
     const { redirect } = mount(async () => unauth(), "/no-access");
-    await settle();
+    await settle(100);
     expect(redirect).not.toHaveBeenCalled();
   });
 
@@ -88,7 +90,7 @@ describe("layout behaviour", () => {
     const { redirect } = mount(async () => unauth(), "/A/x");
     // Wait for the viewer's redirect, then a beat for any extra one.
     await waitFor(() => expect(redirect).toHaveBeenCalled());
-    await settle();
+    await settle(100);
     // Only the viewer's own login redirect (to the lowercase path); the layout adds none.
     expect(redirect.mock.calls).toEqual([["/auth/login?next=%2Fa%2Fx"]]);
   });
@@ -115,8 +117,8 @@ describe("layout behaviour", () => {
       async () => json({ error: { code: "internal", message: "x" } }, 500),
       "/",
     );
-    await settle();
-    await settle();
+    await settle(100);
+    await settle(100);
     expect(screen.queryByRole("link", { name: "Library" })).toBeNull();
   });
 
@@ -206,7 +208,7 @@ describe("layout behaviour", () => {
   it("anonymous at /sign-in is not redirected and sees the login page", async () => {
     const { redirect } = mount(async () => unauth(), "/sign-in");
     await screen.findByRole("heading", { name: /Log in/ });
-    await settle();
+    await settle(100);
     expect(redirect).not.toHaveBeenCalled();
     expect(screen.getByRole("main")).toBeInTheDocument();
   });

@@ -79,7 +79,6 @@ import {
   pendingEntry as pendingCxEntry,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
-import { habitsOptedOut } from "./habits.ts";
 import {
   HERMES_NO_CLI,
   hermesPluginDir,
@@ -1045,7 +1044,7 @@ const install: Record<Harness, Step> = {
 
   // OpenClaw loads a native plugin folder; its own CLI installs and enables it.
   async openclaw(deps, notes) {
-    return installOpenclaw(deps, notes, habitsOptedOut(paths(deps).busDir));
+    return installOpenclaw(deps, notes);
   },
 
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays

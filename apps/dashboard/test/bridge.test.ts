@@ -64,7 +64,8 @@ const send = (
   });
   win.dispatchEvent(ev);
 };
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 const call = (method: string, params: unknown, id = "c1") =>
   send({ oa: 1, type: "call", id, method, params });
 const mk = (art = ART) => {
@@ -87,6 +88,7 @@ const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status });
 
 beforeEach(() => {
+  vi.useFakeTimers();
   FakeWS.all = [];
   frame = new FakeFrame(contentWindow);
   iframe = asFrame(frame);
@@ -193,6 +195,29 @@ describe("hello / welcome", () => {
 });
 
 describe("calls", () => {
+  it("reports the live data box a call reaches for, denied or not (#3037)", async () => {
+    const used: string[] = [];
+    const b = createBridge({
+      iframe,
+      url: URL_,
+      artifact: ART,
+      version: 1,
+      viewer: VIEWER,
+      theme: "light",
+      onPdfText: vi.fn(),
+      onThumb: vi.fn(),
+      onCapability: (cap) => used.push(cap),
+    });
+    live.push(b);
+    call("db.get", { collection: "c", id: "d" }, "a");
+    // storage is off on this artifact: the refused call still marks the box.
+    call("storage.get", { key: "k" }, "b");
+    // The Welcome page's own call is not viewer identity.
+    call("onboarding.get", {}, "c");
+    await flush();
+    expect(used).toEqual(["db", "storage"]);
+  });
+
   it("capability_denied makes zero fetches", async () => {
     mk();
     call("storage.get", { key: "k" });

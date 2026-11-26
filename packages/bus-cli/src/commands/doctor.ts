@@ -461,8 +461,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   if (others.length > 0) say(ctx, c.otherHomes(others));
 
   // Not a pass or a warning: the habits are the user's choice either way.
-  const habits = habitsLine(ctx);
-  if (habits) say(ctx, habits);
+  say(ctx, habitsLine(ctx));
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

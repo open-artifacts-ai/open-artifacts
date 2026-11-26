@@ -960,6 +960,13 @@ async function startMocks() {
   extra.unshift(
     ...(await import("./mockWaiting")).waitingHandlers(mainHandlers, params),
   );
+  // #3095: &hold=comments holds the first comments fetch until the test releases it.
+  extra.unshift(
+    ...(await import("./mockHold")).holdHandlers(
+      [...extra, ...mainHandlers],
+      params,
+    ),
+  );
   // ?mock=askslots (#2426 B): the Landing page loads a real page from this dev server, with the runtime and three data-oa-ask slots.
   // A frame must be on another origin, so the page is served from the other loopback name (localhost <-> 127.0.0.1).
   if (params.get("mock") === "askslots") {

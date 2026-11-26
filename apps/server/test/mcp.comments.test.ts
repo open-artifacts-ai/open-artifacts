@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
+import { insertComment } from "../src/runtime/comments-store.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import { publish } from "../src/services/artifacts.js";
 import {
@@ -191,11 +192,88 @@ describe("comment tools over MCP", () => {
     ).thread;
     expect(again.status).toBe("open");
 
+    // #3139: one thread by id, and one comment with the one before it and the first.
+    const other = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "Another thread." }),
+    ).thread;
+    const one = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    );
+    expect(one.threads.map((x) => x.id)).toEqual([t.id]);
+    expect(one.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "Is this right?",
+      "Yes.",
+    ]);
+    for (const b of ["third", "fourth", "fifth"])
+      sc(
+        await tool(owner.client, "add_comment", {
+          id,
+          threadId: t.id,
+          body: b,
+        }),
+      );
+    const all = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    ).threads[0]?.comments as Comment[];
+    const fifth = all.at(-1) as Comment;
+    const trimmed = sc<CommentList>(
+      await tool(owner.client, "list_comments", {
+        id,
+        threadId: t.id,
+        commentId: fifth.id,
+      }),
+    );
+    expect(trimmed.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "Is this right?",
+      "fourth",
+      "fifth",
+    ]);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: "nope0000nope0000",
+        }),
+      ),
+    ).toMatch(/^not_found: No such thread/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: t.id,
+          commentId: "nope0000nope0000",
+        }),
+      ),
+    ).toMatch(/^not_found: No such comment in this thread/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", { id, commentId: fifth.id }),
+      ),
+    ).toMatch(/^bad_request: commentId needs threadId/);
+    expect(
+      textOf(
+        await tool(owner.client, "list_comments", {
+          id,
+          threadId: t.id,
+          compact: true,
+        }),
+      ),
+    ).toMatch(/^bad_request: threadId reads one thread/);
+    // A stranger can't read a thread by id either.
+    expect(
+      textOf(
+        await tool(stranger.client, "list_comments", { id, threadId: t.id }),
+      ),
+    ).toMatch(/^not_found/);
+    expect(other.id).not.toBe(t.id);
+
     // The same threads over REST.
     const rest = (await (
       await api(app, comments(id), owner.cookie)
     ).json()) as CommentList;
-    expect(rest.threads.map((x) => x.id)).toEqual([t.id]);
+    expect(rest.threads.map((x) => x.id).sort()).toEqual(
+      [t.id, other.id].sort(),
+    );
   });
 
   it("a text anchor on html is verified like REST", async () => {
@@ -303,6 +381,53 @@ describe("comment tools over MCP", () => {
       const r = await tool(owner.client, name, { id, ...args });
       expect(textOf(r)).toMatch(/^comments_off: .*turn them on/);
     }
+  });
+
+  it("#3139: a thread at the reply cap reads whole, root plus every reply", async () => {
+    const id = await pub();
+    const t = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "root" }),
+    ).thread;
+    const author = (t.comments[0] as Comment).author;
+    // The store's cap: the root plus COMMENTS_MAX_REPLIES (200) replies.
+    await inDo(id, (i) => {
+      const sql = (i as unknown as { ctx: DurableObjectState }).ctx.storage.sql;
+      const actor = sql
+        .exec<{ author: string }>(
+          "select author from comments where thread_id = ?",
+          t.id,
+        )
+        .toArray()[0]?.author as string;
+      for (let n = 1; n <= 200; n++)
+        insertComment(
+          sql,
+          new Date(Date.UTC(2030, 0, 1, 0, 0, n)).toISOString(),
+          t.id,
+          JSON.parse(actor),
+          `reply ${n}`,
+        );
+    });
+    expect(author).toBeTruthy();
+    const whole = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id, threadId: t.id }),
+    );
+    const cs = whole.threads[0]?.comments as Comment[];
+    expect(cs).toHaveLength(201);
+    expect(whole.truncated).toBe(false);
+    const last = cs.at(-1) as Comment;
+    expect(last.body).toBe("reply 200");
+    const one = sc<CommentList>(
+      await tool(owner.client, "list_comments", {
+        id,
+        threadId: t.id,
+        commentId: last.id,
+      }),
+    );
+    expect(one.threads[0]?.comments.map((c) => c.body)).toEqual([
+      "root",
+      "reply 199",
+      "reply 200",
+    ]);
   });
 
   it("shares the 30 a minute bucket with REST", async () => {
@@ -683,7 +808,7 @@ describe("the comment notice", () => {
     expect(got[1]?.userId).toBe(owner.userId);
     // A token's comment tells no follower.
     sc(await tool(owner.client, "add_comment", { id, body: "from a token" }));
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(owner.client);
     expect(bus.sent.filter((s) => s.notice.artifactId === id)).toHaveLength(2);
 
     // A resolve is not a comment, and a refused comment is not one either.
@@ -770,9 +895,8 @@ describe("the comment notice", () => {
     });
     expect(r.status).toBe(201);
     // #2577: on a public page the list never applies, so a member's comment
-    // is held too and there is no marker to wait for: give the after-response
-    // work a moment, then check nothing went out.
-    await new Promise((r) => setTimeout(r, 100));
+    // is held too. `api` has already waited for the after-response work, so
+    // nothing more can go out.
     expect(forId(id)).toEqual([]);
   });
 

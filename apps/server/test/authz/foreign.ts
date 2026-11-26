@@ -81,10 +81,18 @@ export async function seedSubjectAtA(
     .run();
 }
 
-const REDIRECT = "https://agent.example/cb";
+export const REDIRECT = "https://agent.example/cb";
 
-/** An OAuth access token from A's own provider (consent, then /oauth/token at A). */
-async function oauthAtA(a: Env, userId: string): Promise<string> {
+/** An OAuth client registered at A, and one unused grant code it holds. */
+export type GrantAtA = {
+  clientId: string;
+  code: string;
+  verifier: string;
+  resource: string;
+};
+
+/** Registers a client at A's provider and approves one grant for `userId`. */
+export async function grantAtA(a: Env, userId: string): Promise<GrantAtA> {
   const api = oauthApi(a);
   const clientName = "Foreign Agent";
   const client = await api.createClient({
@@ -118,25 +126,38 @@ async function oauthAtA(a: Env, userId: string): Promise<string> {
     props: { userId, clientName, issuedAt: Date.now() },
   });
   const code = new URL(redirectTo).searchParams.get("code") ?? "";
-  const r = await fetchAndWait(
+  return { clientId: client.clientId, code, verifier, resource };
+}
+
+let tokenIp = 0;
+/** POSTs `body` to `e`'s own /oauth/token (A's or B's), from a fresh IP. */
+export const tokenAt = (e: Env, body: Record<string, string>) =>
+  fetchAndWait(
     worker as never,
-    new Request(`https://${a.APP_HOST}/oauth/token`, {
+    new Request(`https://${e.APP_HOST}/oauth/token`, {
       method: "POST",
       headers: {
         "content-type": "application/x-www-form-urlencoded",
-        "cf-connecting-ip": "2001:db8:a::1",
+        "cf-connecting-ip": `2001:db8:a::${(++tokenIp).toString(16)}`,
       },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: REDIRECT,
-        client_id: client.clientId,
-        code_verifier: verifier,
-        resource,
-      }).toString(),
+      body: new URLSearchParams(body).toString(),
     }),
-    a,
+    e,
   );
+
+/** The authorization_code exchange of `g`, sent with `clientId`. */
+export const codeExchange = (g: GrantAtA, clientId = g.clientId) => ({
+  grant_type: "authorization_code",
+  code: g.code,
+  redirect_uri: REDIRECT,
+  client_id: clientId,
+  code_verifier: g.verifier,
+  resource: g.resource,
+});
+
+/** An OAuth access token from A's own provider (consent, then /oauth/token at A). */
+async function oauthAtA(a: Env, userId: string): Promise<string> {
+  const r = await tokenAt(a, codeExchange(await grantAtA(a, userId)));
   if (r.status !== 200)
     throw new Error(`install A's token endpoint: ${r.status}`);
   return ((await r.json()) as { access_token: string }).access_token;

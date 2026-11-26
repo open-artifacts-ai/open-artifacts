@@ -556,12 +556,16 @@ describe("the phone page bar (#2622)", () => {
     );
   });
 
-  it("an older version reads 'v1' and is named 'v1, not the latest version' (the name starts with the visible text)", async () => {
+  it("an older version reads 'v1' and is named 'Version 1, not the latest' (the approved line, #2622)", async () => {
     mount(`${viewerPath(OWNED)}/v/1`);
+    // The exact approved string, from issue #2622: `Version {n}, not the latest`.
     const chip = await screen.findByRole("button", {
-      name: /^v\d+, not the latest version$/,
+      name: "Version 1, not the latest",
     });
     expect(chip).toHaveTextContent(/^v1/);
+    // The visible "v1" is out of the name (it cannot start with both), so
+    // label-in-name keeps passing: the clipped copy carries the whole line.
+    expect(chip).not.toHaveAttribute("aria-label");
   });
 });
 

@@ -28,7 +28,8 @@ const live: { dispose(): void }[] = [];
 let fetchMock: ReturnType<typeof vi.fn>;
 
 const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200 });
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 /** Posts `data` as is (no nonce added). */
 const raw = (data: unknown) => {
   const ev = new Event("message");
@@ -55,6 +56,7 @@ const mk = (extra: object = {}) => {
 };
 
 beforeEach(() => {
+  vi.useFakeTimers();
   win = new EventTarget();
   frame = new FakeFrame(contentWindow);
   post.mockReset();
@@ -65,6 +67,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   for (const b of live.splice(0)) b.dispose();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 

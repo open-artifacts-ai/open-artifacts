@@ -1,4 +1,5 @@
 import { mkdtempSync } from "node:fs";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connectDaemon, type DaemonClient, type Hello } from "@oa/bus-ipc";
@@ -69,6 +70,12 @@ export const hello = (over: Partial<Hello>): Hello => ({
 export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
   const { wss, url } = await wsServer();
   const frames: DaemonToHub[] = [];
+  /** Called with each frame as it arrives, before `of` can see the next one. */
+  const frameListeners = new Set<(f: DaemonToHub) => void>();
+  const onFrame = (fn: (f: DaemonToHub) => void) => {
+    frameListeners.add(fn);
+    return () => frameListeners.delete(fn);
+  };
   /** Each frame as written, in order. */
   const raw: string[] = [];
   let hubSock: WebSocket | undefined;
@@ -82,7 +89,9 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       if (text === PING) ws.send(PONG);
       else {
         raw.push(text);
-        frames.push(JSON.parse(text));
+        const f = JSON.parse(text) as DaemonToHub;
+        frames.push(f);
+        for (const fn of frameListeners) fn(f);
       }
     });
   });
@@ -98,7 +107,7 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     socketPath: path,
     attest: () => ({ ok: true }),
     resolveNamespace: () => ({ namespace: "ns", global: false, source: "cwd" }),
-    hub: { backoffMs: () => 20 },
+    hub: { backoffMs: () => 0 },
     sentFile: join(mkdtempSync(join(tmpdir(), "ob-sf-")), "sent.json"),
     // #3028: never the real ~/.oa-bus/announced.json: a temp one, unless a test
     // brings its own (a restart test shares one across two runs).
@@ -177,7 +186,16 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     },
   });
   stops.push(daemon.stop);
-  await vi.waitFor(() => expect(daemon.hub.open).toBe(true));
+  // The hello is the first thing the hub link writes once open: wake on it.
+  if (!frames.some((f) => f.type === "hello"))
+    await new Promise<void>((resolve) => {
+      const off = onFrame((f) => {
+        if (f.type !== "hello") return;
+        off();
+        resolve();
+      });
+    });
+  expect(daemon.hub.open).toBe(true);
   /** #1608: a pi-like adapter echoes the binding token its first welcome issued; pass `bind_token: undefined` to be a stranger. */
   const tokens = new Map<string, string>();
   const adapter = (agent_ref: string, over: Partial<Hello> = {}) =>
@@ -201,17 +219,35 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       (f): f is Extract<DaemonToHub, { type: T }> => f.type === type,
     );
   const next = async <T extends DaemonToHub["type"]>(type: T, n = 1) => {
-    // A signal, so the timeout costs nothing when it passes; a fake codex is a node process, >1 s under a full-package run.
-    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n), {
-      timeout: 15_000,
-      interval: 10,
-    });
+    // Woken by the frame itself, never by a clock.
+    if (of(type).length < n)
+      await new Promise<void>((resolve) => {
+        const off = onFrame(() => {
+          if (of(type).length < n) return;
+          off();
+          resolve();
+        });
+      });
     return of(type)[n - 1] as Extract<DaemonToHub, { type: T }>;
   };
   const toDaemon = (f: object) =>
     (hubSock as WebSocket).send(JSON.stringify({ v: 1, ...f }));
+  /**
+   * Resolves once every frame the daemon had already written to the hub link
+   * has been received here: a websocket ping is answered by the client at
+   * once, and the stream is in order. The signal for "nothing was sent":
+   * check `of(...)` after it.
+   */
+  const barrier = () =>
+    new Promise<void>((resolve) => {
+      const ws = hubSock as WebSocket;
+      ws.once("pong", () => resolve());
+      ws.ping();
+    });
   return {
     daemon,
+    barrier,
+    onFrame,
     socketPath: path,
     wss,
     frames,
@@ -233,6 +269,25 @@ export async function stopAll() {
   await closeAll();
 }
 
+/**
+ * Resolves once the daemon has answered a fresh connection on its socket (a
+ * frame before any hello is refused). The daemon handles what became ready
+ * earlier, such as a client that hung up, before a connection made after it.
+ */
+export function ipcBarrier(socketPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const c = createConnection(socketPath);
+    c.once("error", reject);
+    c.once("data", () => {
+      c.destroy();
+      resolve();
+    });
+    c.once("connect", () =>
+      c.write(`${JSON.stringify({ v: 1, id: "barrier", type: "self" })}\n`),
+    );
+  });
+}
+
 export const deliverFrame = (msg_id: string, to_ref = "A") => ({
   id: `d-${msg_id}`,
   type: "deliver",
@@ -242,3 +297,37 @@ export const deliverFrame = (msg_id: string, to_ref = "A") => ({
   namespace: "ns",
   body: "hi",
 });
+
+/**
+ * A counter of events a test waits on instead of sleeping: `hook` is passed to
+ * a daemon seam (`claude.onSync`, `claude.onLineHandled`); `next(n)` resolves
+ * once n more events have happened since the call (or since `mark()`).
+ */
+export function eventCounter() {
+  let count = 0;
+  const waiters: { at: number; resolve: () => void }[] = [];
+  return {
+    hook: () => {
+      count++;
+      for (const w of waiters.splice(0)) {
+        if (count >= w.at) w.resolve();
+        else waiters.push(w);
+      }
+    },
+    get count() {
+      return count;
+    },
+    /** Resolves after n more events (default 1) from now. */
+    next: (n = 1) =>
+      new Promise<void>((resolve) => {
+        waiters.push({ at: count + n, resolve });
+      }),
+    /** Resolves once the total count reaches n. */
+    reach: (n: number) =>
+      count >= n
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            waiters.push({ at: n, resolve });
+          }),
+  };
+}

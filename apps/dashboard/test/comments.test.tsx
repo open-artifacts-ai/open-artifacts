@@ -1809,9 +1809,12 @@ describe("comments: guests and Retry-After", () => {
     );
     mount(viewerPath(PUBLIC));
     const c = await col();
-    await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
-    // The read sent no token and minted none.
-    expect(seenTokens).toEqual([null]);
+    // The list's first read starts at mount, before the socket says hello;
+    // the hello reads it once more (#291, #3095). Both reads done:
+    await waitFor(() => expect(events.connections(PUBLIC)).toBe(1));
+    await waitFor(() => expect(lastClient.isFetching()).toBe(0));
+    // Exactly those two reads, and neither sent a token or minted one.
+    expect(seenTokens).toEqual([null, null]);
     expect(localStorage.getItem("oa.anonId")).toBeNull();
     const box = within(c).getByRole("textbox", {
       name: "Comment on the whole page",
@@ -2667,6 +2670,42 @@ describe("comments: unavailable is not forever", () => {
     // L-r6-3: the visible label keeps its space, inside the name.
     expect(btn.textContent).toBe("Comments 1");
     expect(await col()).toBeInTheDocument();
+  });
+
+  it("#3095: comments turned on while the first read is out (it answers comments_off): the list still comes back", async () => {
+    let off = true;
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let reads = 0;
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", async () => {
+        reads++;
+        const stale = off; // the answer as of when the read reached the server
+        if (reads === 1) await held;
+        return stale
+          ? HttpResponse.json(
+              { error: { code: "comments_off", message: "off" } },
+              { status: 403 },
+            )
+          : list([oneThread]);
+      }),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "More actions" });
+    await waitFor(() => expect(reads).toBe(1));
+    await waitFor(() => expect(events.connections(OWNED)).toBe(1));
+    // The owner turns comments on while that first read is still out.
+    off = false;
+    await act(async () => {
+      events.emitComments(OWNED, 1);
+    });
+    release();
+    expect(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    ).toBeInTheDocument();
+    expect(reads).toBe(2);
   });
 
   it("the summary refetching with comments: true (after false) re-enables the list", async () => {

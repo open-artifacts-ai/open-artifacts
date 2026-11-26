@@ -10,6 +10,7 @@ import { api } from "../api/client";
 import { withLocal } from "../api/myOnboarding";
 import { qk, useOnboarding, useSetOnboarding } from "../api/queries";
 import { useMe } from "../auth/useMe";
+import { useNamePromptOpen } from "../layout/DisplayNamePrompt";
 import { isMember } from "./MemberGetStarted";
 
 /** Ids already handled in this page load, whatever the server says: never twice. */
@@ -25,6 +26,11 @@ export function useWelcomeRedirect(enabled: boolean) {
     state.status === "authed" && isMember(state.me.user.role)
       ? state.me.user.id
       : undefined;
+  // #3130: the name prompt first. /a/* has no app shell, so the prompt would
+  // vanish under the Welcome; once the name is saved (or skipped), it opens.
+  const naming = useNamePromptOpen(
+    state.status === "authed" ? state.me : undefined,
+  );
   const onboarding = useOnboarding(enabled && owner);
   // A member's save may be refused today (403): kept for the session instead.
   const { mutate: save } = useSetOnboarding(
@@ -37,7 +43,7 @@ export function useWelcomeRedirect(enabled: boolean) {
   const welcomeId = o?.welcomeId;
   const unopened = o?.welcomeOpened === false;
   useEffect(() => {
-    if (!enabled || !owner || !welcomeId || !unopened) return;
+    if (!enabled || !owner || naming || !welcomeId || !unopened) return;
     if (handled.has(welcomeId)) return;
     handled.add(welcomeId);
     // Asked for once, whether or not the page opens: a missing one is not retried.
@@ -56,7 +62,7 @@ export function useWelcomeRedirect(enabled: boolean) {
       },
       () => {},
     );
-  }, [enabled, owner, welcomeId, unopened, save, qc, navigate, router]);
+  }, [enabled, owner, naming, welcomeId, unopened, save, qc, navigate, router]);
 }
 
 /** Test hook: forget what was handled. */
