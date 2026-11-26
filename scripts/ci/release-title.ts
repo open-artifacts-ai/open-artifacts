@@ -1,10 +1,10 @@
 // A pull request that changes what installs serve to agents (the skill, the
 // upgrade guide, llms.txt, the MCP instructions and tool text) must open a
 // release: its title (the squash commit's subject, which release-please reads)
-// starts with `fix:` or `feat:`, not `test:`, `docs:` or `chore:`, which
-// release-please ships in no release. Without this, a skill fix titled
-// `docs:` lands on main and no install serves it until some unrelated fix
-// cuts a release.
+// is `fix:`, `feat:` (with any scope) or a breaking change (`type!:`). Any
+// other title (`test:`, `docs:`, `chore:`, `ci:`, `refactor:`, or no type at
+// all) ships in no release. Without this, a skill fix titled `docs:` lands on
+// main and no install serves it until some unrelated fix cuts a release.
 // Usage (CI, pull_request): PR_TITLE, PR_NUMBER, GH_TOKEN in the environment;
 // node --experimental-strip-types scripts/ci/release-title.ts --repo owner/name
 import { spawnSync } from "node:child_process";
@@ -20,8 +20,8 @@ export const SERVED: readonly RegExp[] = [
   /^apps\/server\/scripts\/emit-(skill|upgrade)\.ts$/,
 ];
 
-/** Title types release-please puts in no release. */
-export const NO_RELEASE = new Set(["test", "docs", "chore"]);
+/** The title types that open a release (a breaking `type!:` does too). */
+export const RELEASING = new Set(["fix", "feat"]);
 
 const TYPE = /^([a-z]+)(\([^)]*\))?(!)?:/i;
 
@@ -29,23 +29,24 @@ export type Verdict =
   | { ok: true }
   | { ok: false; type: string; served: string[] };
 
-/** Fails a no-release title on a change to any served path. */
+/** Fails any title but fix:, feat: or a breaking change on a served path. */
 export function check(title: string, files: string[]): Verdict {
-  const m = TYPE.exec(title.trim());
-  // Not a conventional title, or a breaking change (`chore!:`), which
-  // release-please releases: nothing to say here.
-  if (!m || m[3]) return { ok: true };
-  const type = (m[1] as string).toLowerCase();
-  if (!NO_RELEASE.has(type)) return { ok: true };
   const served = files.filter((f) => SERVED.some((r) => r.test(f)));
-  return served.length ? { ok: false, type, served } : { ok: true };
+  if (!served.length) return { ok: true };
+  const m = TYPE.exec(title.trim());
+  // A breaking change (`chore!:`) releases whatever its type.
+  if (m?.[3]) return { ok: true };
+  const type = m ? (m[1] as string).toLowerCase() : "";
+  return RELEASING.has(type) ? { ok: true } : { ok: false, type, served };
 }
 
 export function message(v: Verdict & { ok: false }): string {
   return [
-    `This PR is titled \`${v.type}:\` but changes what installs serve to agents:`,
+    v.type
+      ? `This PR is titled \`${v.type}:\` but changes what installs serve to agents:`
+      : "This PR's title has no fix: or feat: type, but it changes what installs serve to agents:",
     ...v.served.map((f) => `  ${f}`),
-    "release-please ships no release for test:, docs: or chore:, so no install would serve this change.",
+    "release-please opens a release only for fix:, feat: or a breaking change (type!:), so no install would serve this change.",
     "Retitle it fix: or feat: so it opens a release.",
   ].join("\n");
 }

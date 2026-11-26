@@ -38,11 +38,20 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-      # Read-only: does the release PR need to be queued at all?
+      # Read-only: does the release PR need to be queued at all? It fails, and
+      # says why in the run summary, when the release PR's versions disagree
+      # or are not above the latest tag.
       - id: plan
         name: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          # The CI run this event reports, so only the head it tested is
+          # queued (#3240 merged a head release-please had just replaced).
+          TESTED_PATH: ${{ github.event.workflow_run.path }}
+          TESTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TESTED_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          TESTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts plan --repo "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
       # The App token exists only right before queueing, scoped to the PR merge:
       # a merge started with GITHUB_TOKEN would trigger no workflows on the
@@ -59,6 +68,13 @@ jobs:
         if: ${{ steps.plan.outputs.write == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
+          # The CI run this event reports, so only the head it tested is
+          # queued (#3240 merged a head release-please had just replaced).
+          TESTED_PATH: ${{ github.event.workflow_run.path }}
+          TESTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          TESTED_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          TESTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts arm --repo "$GITHUB_REPOSITORY"
       - name: blocker
         if: ${{ !cancelled() }}

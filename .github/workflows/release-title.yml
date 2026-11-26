@@ -1,9 +1,10 @@
 name: release-title
 # A PR that changes what installs serve to agents (the skill, the upgrade
 # guide, llms.txt, the MCP instructions and tool text) must be titled fix: or
-# feat:. The squash commit takes the PR title, and release-please ships no
-# release for test:, docs: or chore:, so such a change would sit on main and no
-# install would serve it. Runs again when the title is edited, so a retitle
+# feat: (or a breaking type!:). The squash commit takes the PR title, and
+# release-please ships no release for any other title (test:, docs:, chore:,
+# ci:, no type at all), so such a change would sit on main and no install
+# would serve it. Runs again when the title is edited, so a retitle
 # clears it. scripts/ci/release-title.ts holds the same path list as `paths`.
 on:
   pull_request:

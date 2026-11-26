@@ -9,6 +9,7 @@
 // Needs GH_TOKEN in the environment. `arm` runs with the release App's token
 // (so the merge triggers workflows); `blocker` runs with GITHUB_TOKEN.
 import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const RELEASE_BRANCH =
@@ -31,6 +32,8 @@ const QUERY = `query($owner: String!, $name: String!, $head: String!, $branch: S
         url
         title
         createdAt
+        isDraft
+        isCrossRepository
         isInMergeQueue
         commits(last: 1) {
           nodes {
@@ -79,6 +82,9 @@ export type ReleasePr = {
   title: string;
   createdAt: string;
   queued: boolean;
+  draft: boolean;
+  /** The head branch is in a fork (a PR that merely shares the branch name). */
+  fork: boolean;
   rollup: string;
   contexts: Context[];
   oid: string;
@@ -96,23 +102,44 @@ async function gh(exec: Exec, args: string[]): Promise<string> {
   return r.stdout;
 }
 
+/** A file's raw text at a ref, or "" when it cannot be read. */
+async function rawFile(
+  exec: Exec,
+  repo: string,
+  file: string,
+  ref: string,
+): Promise<string> {
+  try {
+    return await gh(exec, [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      `repos/${repo}/contents/${file}?ref=${ref}`,
+    ]);
+  } catch {
+    return "";
+  }
+}
+
+const jsonField = (text: string, read: (j: unknown) => unknown): string => {
+  try {
+    const v = read(JSON.parse(text));
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+};
+
 /** The root package.json version at a ref, or "" when it cannot be read. */
 async function packageVersion(
   exec: Exec,
   repo: string,
   ref: string,
 ): Promise<string> {
-  try {
-    const out = await gh(exec, [
-      "api",
-      "-H",
-      "Accept: application/vnd.github.raw",
-      `repos/${repo}/contents/package.json?ref=${ref}`,
-    ]);
-    return String(JSON.parse(out)?.version ?? "");
-  } catch {
-    return "";
-  }
+  return jsonField(
+    await rawFile(exec, repo, "package.json", ref),
+    (j) => (j as { version?: unknown })?.version,
+  );
 }
 
 async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
@@ -157,6 +184,8 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
       title: n.title,
       createdAt: n.createdAt,
       queued: Boolean(n.isInMergeQueue),
+      draft: Boolean(n.isDraft),
+      fork: Boolean(n.isCrossRepository),
       rollup: rollup?.state ?? "NONE",
       contexts,
       oid,
@@ -168,17 +197,110 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
 export type ArmResult =
   | { action: "none" }
   | { action: "already"; pr: number }
+  | { action: "draft"; pr: number }
   | { action: "not-green"; pr: number; state: string }
+  | { action: "untested"; pr: number }
   | { action: "landed"; pr: number }
-  | { action: "enqueued"; pr: number; jumped: boolean };
+  | { action: "refused"; pr: number; reasons: string[] }
+  | { action: "enqueued"; pr: number };
 
-type Opts = { exec: Exec; repo: string };
+/**
+ * The CI run this event reports: the head it tested, when it is a successful
+ * CI run (by its workflow file, never its run-name) on the release branch of
+ * this repo. Anything else (release-please finishing, a dispatch, another
+ * PR's CI, a merge-group run) tested no release head.
+ */
+export type Tested = {
+  path?: string;
+  branch?: string;
+  repo?: string;
+  conclusion?: string;
+  sha?: string;
+};
+export function testedHead(t: Tested, repo: string): string | undefined {
+  return t.path === ".github/workflows/ci.yml" &&
+    t.branch === RELEASE_BRANCH &&
+    t.repo === repo &&
+    t.conclusion === "success" &&
+    /^[0-9a-f]{40}$/.test(t.sha ?? "")
+    ? t.sha
+    : undefined;
+}
+
+type Opts = { exec: Exec; repo: string; tested?: Tested };
 type Plan =
   | { do: "none"; result: ArmResult; msg: string }
-  | { do: "enqueue"; pr: ReleasePr; ahead: number };
+  | { do: "enqueue"; pr: ReleasePr; sha: string; ahead: number };
 
-function plan(s: Snapshot): Plan {
-  const { pr, others } = s;
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+const cmpSemver = (a: string, b: string): number => {
+  const x = SEMVER.exec(a)?.slice(1).map(Number) ?? [];
+  const y = SEMVER.exec(b)?.slice(1).map(Number) ?? [];
+  for (let k = 0; k < 3; k++)
+    if ((x[k] ?? 0) !== (y[k] ?? 0)) return (x[k] ?? 0) - (y[k] ?? 0);
+  return 0;
+};
+
+/** The highest vX.Y.Z tag, or "" when none can be read. */
+async function latestTag(exec: Exec, repo: string): Promise<string> {
+  const out = await gh(exec, [
+    "api",
+    "--paginate",
+    `repos/${repo}/git/matching-refs/tags/v`,
+    "--jq",
+    ".[].ref",
+  ]);
+  const vs = out
+    .split("\n")
+    .map((r) => r.trim().replace(/^refs\/tags\/v/, ""))
+    .filter((v) => SEMVER.test(v));
+  return vs.sort(cmpSemver).at(-1) ?? "";
+}
+
+/**
+ * Why this head must not be queued, or [] when it may: the title's version,
+ * the manifest, package.json and CHANGELOG.md's first heading all agree, and
+ * that version is above the latest vX.Y.Z tag. Anything unreadable refuses.
+ * #3240 merged an old head (0.252.1 files under the 0.253.0 title), and the
+ * next release PR (#3243) then proposed 0.246.1 below tag v0.253.0.
+ */
+export async function versionProblems(
+  exec: Exec,
+  repo: string,
+  pr: { title: string; sha: string },
+): Promise<string[]> {
+  const [manifest, pkg, changelog, tag] = await Promise.all([
+    rawFile(exec, repo, ".release-please-manifest.json", pr.sha),
+    packageVersion(exec, repo, pr.sha),
+    rawFile(exec, repo, "CHANGELOG.md", pr.sha),
+    latestTag(exec, repo),
+  ]);
+  const found: [string, string][] = [
+    ["title", /\brelease (\d+\.\d+\.\d+)$/.exec(pr.title.trim())?.[1] ?? ""],
+    [
+      ".release-please-manifest.json",
+      jsonField(manifest, (j) => (j as Record<string, unknown>)?.["."]),
+    ],
+    ["package.json", pkg],
+    ["CHANGELOG.md", /^## \[?(\d+\.\d+\.\d+)\]?/m.exec(changelog)?.[1] ?? ""],
+  ];
+  const out: string[] = [];
+  for (const [where, v] of found)
+    if (!SEMVER.test(v)) out.push(`no version readable from ${where}`);
+  const versions = new Set(found.map(([, v]) => v));
+  if (!out.length && versions.size > 1)
+    out.push(
+      `versions disagree: ${found.map(([w, v]) => `${w} ${v}`).join(", ")}`,
+    );
+  if (!tag) out.push("no vX.Y.Z tag readable");
+  const v = found[0]?.[1] ?? "";
+  if (!out.length && cmpSemver(v, tag) <= 0)
+    out.push(`version ${v} is not above the latest tag v${tag}`);
+  return out;
+}
+
+async function plan(o: Opts): Promise<Plan> {
+  const { pr, others } = await snapshot(o.exec, o.repo);
   if (!pr)
     return {
       do: "none",
@@ -199,18 +321,66 @@ function plan(s: Snapshot): Plan {
       result: { action: "already", pr: pr.number },
       msg: `release PR #${pr.number} is already queued`,
     };
+  if (pr.draft || pr.fork)
+    return {
+      do: "none",
+      result: { action: "draft", pr: pr.number },
+      msg: `release PR #${pr.number} is ${pr.draft ? "a draft" : "from a fork"}, not queueing`,
+    };
   if (pr.rollup !== "SUCCESS")
     return {
       do: "none",
       result: { action: "not-green", pr: pr.number, state: pr.rollup },
       msg: `release PR #${pr.number} checks are ${pr.rollup}, not queueing`,
     };
-  return { do: "enqueue", pr, ahead: others };
+  // Only the head a green CI run just tested is queued, and only by that run's
+  // event: a head release-please pushed since is queued by its own CI run.
+  const sha = testedHead(o.tested ?? {}, o.repo);
+  if (!sha || sha !== pr.oid)
+    return {
+      do: "none",
+      result: { action: "untested", pr: pr.number },
+      msg: sha
+        ? `release PR #${pr.number} head is ${pr.oid}, but this CI run tested ${sha}: the next CI completion handles the new head`
+        : `this event is no green CI run on release PR #${pr.number}'s head: its CI completion queues it`,
+    };
+  const reasons = await versionProblems(o.exec, o.repo, {
+    title: pr.title,
+    sha,
+  });
+  if (reasons.length)
+    return {
+      do: "none",
+      result: { action: "refused", pr: pr.number, reasons },
+      msg: `release PR #${pr.number} not queued: ${reasons.join("; ")}`,
+    };
+  return { do: "enqueue", pr, sha, ahead: others };
 }
 
 /** True when `arm` would change the release PR (so it needs the App token). Read-only. */
 export async function willWrite(o: Opts): Promise<boolean> {
-  return plan(await snapshot(o.exec, o.repo)).do !== "none";
+  return (await planStep(o)).write;
+}
+
+/**
+ * The read-only plan step: whether arm needs the App token, and why the
+ * release PR was refused, if it was (the step fails and says so).
+ */
+export async function planStep(
+  o: Opts,
+): Promise<{ write: boolean; msg: string; refused: string[] }> {
+  const p = await plan(o);
+  if (p.do !== "none")
+    return {
+      write: true,
+      msg: `queueing release PR #${p.pr.number}`,
+      refused: [],
+    };
+  return {
+    write: false,
+    msg: p.msg,
+    refused: p.result.action === "refused" ? p.result.reasons : [],
+  };
 }
 
 const ENQUEUE = `mutation($id: ID!, $oid: GitObjectID!) {
@@ -219,20 +389,37 @@ const ENQUEUE = `mutation($id: ID!, $oid: GitObjectID!) {
   }
 }`;
 
+/** The PR's head commit right now, read fresh (not from the planning read). */
+async function headNow(exec: Exec, repo: string, n: number): Promise<string> {
+  return (
+    await gh(exec, ["api", `repos/${repo}/pulls/${n}`, "--jq", ".head.sha"])
+  ).trim();
+}
+
 /**
  * Puts the green release PR at the front of the merge queue, pinned to the
- * head commit it checked (expectedHeadOid), with no wait for queued code PRs.
+ * head the green CI run tested (expectedHeadOid), with no wait for queued code
+ * PRs. Anything short of the front is an error.
  */
 export async function arm(
   o: Opts & { log: (line: string) => void },
 ): Promise<ArmResult> {
-  const p = plan(await snapshot(o.exec, o.repo));
+  const p = await plan(o);
   if (p.do === "none") {
+    if (p.result.action === "refused") throw new Error(p.msg);
     o.log(p.msg);
     return p.result;
   }
-  if (!p.pr.id || !p.pr.oid)
-    throw new Error(`release PR #${p.pr.number}: no node id or head commit`);
+  if (!p.pr.id) throw new Error(`release PR #${p.pr.number}: no node id`);
+  // release-please may push a new head between the plan and now (#3240): read
+  // it fresh, and leave a moved head to its own CI run.
+  const now = await headNow(o.exec, o.repo, p.pr.number);
+  if (now !== p.sha) {
+    o.log(
+      `release PR #${p.pr.number} head moved to ${now} after CI tested ${p.sha}: not queueing; the next CI completion handles the new head`,
+    );
+    return { action: "untested", pr: p.pr.number };
+  }
   const out = await gh(o.exec, [
     "api",
     "graphql",
@@ -241,20 +428,21 @@ export async function arm(
     "-f",
     `id=${p.pr.id}`,
     "-f",
-    `oid=${p.pr.oid}`,
+    `oid=${p.sha}`,
   ]);
   const entry = JSON.parse(out)?.data?.enqueuePullRequest?.mergeQueueEntry;
   if (!entry)
     throw new Error(
       `release PR #${p.pr.number}: enqueuePullRequest returned no queue entry`,
     );
-  const jumped = entry.jump === true;
+  if (entry.position !== 1 && entry.jump !== true)
+    throw new Error(
+      `release PR #${p.pr.number} was queued at position ${entry.position} without jumping (jump: ${entry.jump}): it is not at the front, so ${p.ahead} code PRs may merge with it. The release App may need to be allowed to jump the queue.`,
+    );
   o.log(
-    jumped
-      ? `queued release PR #${p.pr.number} at the front of the merge queue, ahead of ${p.ahead} code PRs`
-      : `queued release PR #${p.pr.number}, but GitHub did not let it jump (position ${entry.position}); ${p.ahead} code PRs may merge with it`,
+    `queued release PR #${p.pr.number} at the front of the merge queue (position ${entry.position}, jump: ${entry.jump}), ahead of ${p.ahead} code PRs`,
   );
-  return { action: "enqueued", pr: p.pr.number, jumped };
+  return { action: "enqueued", pr: p.pr.number };
 }
 
 const FAILED = new Set([
@@ -444,25 +632,51 @@ async function main(argv: string[]) {
     );
     return 2;
   }
+  const tested: Tested = {
+    path: process.env.TESTED_PATH,
+    branch: process.env.TESTED_BRANCH,
+    repo: process.env.TESTED_REPO,
+    conclusion: process.env.TESTED_CONCLUSION,
+    sha: process.env.TESTED_SHA,
+  };
   if (mode === "plan") {
+    const p = await planStep({ exec: realExec, repo, tested });
     // stdout is appended to $GITHUB_OUTPUT: `write=true` when arm needs the App token
-    console.log(`write=${await willWrite({ exec: realExec, repo })}`);
+    console.log(`write=${p.write}`);
+    console.error(p.msg);
+    if (p.refused.length) {
+      summary([`Release not queued: ${p.msg}`]);
+      return 1;
+    }
     return 0;
   }
   const log = (s: string) => console.log(s);
   const r =
     mode === "arm"
-      ? await arm({ exec: realExec, repo, log })
+      ? await arm({ exec: realExec, repo, log, tested })
       : await blocker({ exec: realExec, repo, now: Date.now, log });
   console.log(JSON.stringify(r));
   return 0;
+}
+
+/** Appends lines to the run summary, as plain text (no markdown from titles). */
+function summary(lines: string[]) {
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (!file) return;
+  const text = lines.join("\n");
+  const fence = "`".repeat(
+    Math.max(3, ...(text.match(/`+/g) ?? []).map((r) => r.length + 1)),
+  );
+  appendFileSync(file, `${fence}\n${text}\n${fence}\n`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   main(process.argv.slice(2)).then(
     (c) => process.exit(c),
     (e) => {
-      console.error(String(e instanceof Error ? e.message : e));
+      const m = String(e instanceof Error ? e.message : e);
+      console.error(m);
+      summary([`release-cadence ${process.argv[2] ?? ""} failed: ${m}`]);
       process.exit(1);
     },
   );

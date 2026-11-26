@@ -10,7 +10,7 @@ import {
   check,
   type Exec,
   message,
-  NO_RELEASE,
+  RELEASING,
   SERVED,
 } from "./release-title.ts";
 
@@ -18,13 +18,17 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const SKILL = "apps/server/src/mcp/skill-template.ts";
 
 describe("check", () => {
-  it("fails test:, docs: and chore: titles that change a served file", () => {
+  it("fails every title but fix:, feat: or breaking on a served file", () => {
     for (const t of [
       "docs: say how to share a page",
       "docs(skill): say how to share a page",
       "test: cover the skill text",
       "chore: tidy the upgrade guide",
       "Chore(mcp): tool text",
+      // #3207's paths with the titles the Prover tried.
+      "ci: update upload instructions",
+      "refactor(mcp): split the skill",
+      "perf: faster skill",
     ]) {
       const v = check(t, ["README.md", SKILL]);
       expect(v, t).toEqual({
@@ -35,7 +39,15 @@ describe("check", () => {
     }
   });
 
-  it("passes fix: and feat: (and other releasing titles) on a served file", () => {
+  it("fails a title with no type on a served file, and says what to do", () => {
+    for (const t of ["update upload instructions", "Fix the skill", ""]) {
+      const v = check(t, [SKILL]);
+      expect(v, t).toEqual({ ok: false, type: "", served: [SKILL] });
+      if (!v.ok) expect(message(v)).toContain("has no fix: or feat: type");
+    }
+  });
+
+  it("passes fix:, feat: and breaking titles on a served file", () => {
     for (const t of [
       "fix(skill): say how to share a page",
       "feat: a new tool",
@@ -54,6 +66,7 @@ describe("check", () => {
       ok: true,
     });
     expect(check("chore: nothing", [])).toEqual({ ok: true });
+    expect(check("update readme", ["README.md"])).toEqual({ ok: true });
   });
 
   it("the served paths are the skill, upgrade, llms, MCP instructions and tool text, and their emitters", () => {
@@ -79,7 +92,7 @@ describe("check", () => {
       "xapps/server/src/mcp/skill.ts",
     ])
       expect(served(f), f).toBe(false);
-    expect([...NO_RELEASE].sort()).toEqual(["chore", "docs", "test"]);
+    expect([...RELEASING].sort()).toEqual(["feat", "fix"]);
   });
 
   it("names the files and the fix in its message", () => {
