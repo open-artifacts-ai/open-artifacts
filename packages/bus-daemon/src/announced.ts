@@ -30,6 +30,8 @@ const EntrySchema = z.strictObject({
     .string()
     .regex(/^[a-z0-9-]{1,32}$/)
     .optional(),
+  /** #3208: this closed ref can never reopen (a starting agy whose process ended). */
+  gone: z.literal(true).optional(),
 });
 export type AnnouncedRef = z.infer<typeof EntrySchema>;
 

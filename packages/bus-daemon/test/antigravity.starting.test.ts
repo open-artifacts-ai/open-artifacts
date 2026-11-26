@@ -24,6 +24,7 @@ import {
   parseAgyPluginHome,
   parseLsofCwd,
 } from "../src/agy-procs.ts";
+import { readAnnounced } from "../src/announced.ts";
 import { attest } from "../src/attest.ts";
 import { home as busHomeNow } from "../src/config.ts";
 import type { DaemonDeps } from "../src/index.ts";
@@ -606,6 +607,141 @@ describe("an agy process is listed at launch (agy S2b)", () => {
       .at(-1);
     expect(closing).toBeDefined();
     expect("gone" in (closing as object)).toBe(false);
+  });
+
+  it("a starting agy that exits while the hub link is down is sent as gone after reconnect hello_ok, and not again on a later reconnect (#3208)", async () => {
+    const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
+    let onDisconnect: (() => void) | undefined;
+    const { h } = await setup({
+      caps,
+      events: (e) => {
+        if (e === "hub_disconnect") {
+          const fn = onDisconnect;
+          onDisconnect = undefined;
+          if (fn) queueMicrotask(fn);
+        }
+      },
+    });
+    await settled(h);
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    h.toDaemon({ id: "ok1", type: "agent_ok", agent_ref: S0, bus_name: "agy" });
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef(S0)?.busName).toBe("agy"),
+    );
+    const sessionsBefore = h.of("sessions").length;
+    const upsBefore = h.of("agent_up").length;
+
+    // Exit happens strictly while the link is down (between close and reconnect).
+    const exitedDown = new Promise<void>((resolve) => {
+      onDisconnect = () => {
+        os.alive.delete(AGY);
+        h.daemon.syncNow();
+        resolve();
+      };
+    });
+    h.hubSock()?.close();
+    await exitedDown;
+
+    // Reconnect: open-time sessions frame goes before hello_ok and carries no gone.
+    await h.next("hello", 2);
+    const openSessions = await h.next("sessions", sessionsBefore + 1);
+    expect(openSessions.closed).toContain(S0);
+    expect(openSessions.gone).toBeUndefined();
+
+    // hello_ok with sessions_gone triggers a sessions frame carrying gone.
+    h.toDaemon({
+      id: "w2",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps,
+    });
+    const goneSessions = await h.next("sessions", sessionsBefore + 2);
+    expect(goneSessions.closed).toContain(S0);
+    expect(goneSessions.gone).toEqual([S0]);
+    await settled(h);
+    // No other session event (no agent_up, no extra close) for it.
+    expect(h.of("agent_up")).toHaveLength(upsBefore);
+    expect(h.of("sessions")).toHaveLength(sessionsBefore + 2);
+
+    // A later reconnect + hello_ok does not send gone for it again.
+    h.hubSock()?.close();
+    await h.next("hello", 3);
+    const reopenSessions = await h.next("sessions", sessionsBefore + 3);
+    expect(reopenSessions.closed).toContain(S0);
+    expect(reopenSessions.gone).toBeUndefined();
+    h.toDaemon({
+      id: "w3",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps,
+    });
+    await settled(h);
+    expect(h.of("sessions")).toHaveLength(sessionsBefore + 3);
+    expect(h.of("agent_up")).toHaveLength(upsBefore);
+  });
+
+  it("a starting agy that exits while the link is down stays gone across a daemon restart, and is cleared once taken (#3208)", async () => {
+    const caps = [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone];
+    const dir = mkdtempSync(join(tmpdir(), "ob-agsg-"));
+    const agentsFile = join(dir, "antigravity-agents.json");
+    const announcedFile = join(dir, "announced.json");
+    let onDisconnect: (() => void) | undefined;
+    const one = await setup({
+      caps,
+      agentsFile,
+      announcedFile,
+      events: (e) => {
+        if (e === "hub_disconnect") {
+          const fn = onDisconnect;
+          onDisconnect = undefined;
+          if (fn) queueMicrotask(fn);
+        }
+      },
+    });
+    await settled(one.h);
+    one.h.daemon.syncNow();
+    await upFor(one.h, S0);
+    one.h.toDaemon({
+      id: "ok1",
+      type: "agent_ok",
+      agent_ref: S0,
+      bus_name: "agy",
+    });
+    await vi.waitFor(() =>
+      expect(one.h.daemon.agents.byRef(S0)?.busName).toBe("agy"),
+    );
+
+    const exitedDown = new Promise<void>((resolve) => {
+      onDisconnect = () => {
+        os.alive.delete(AGY);
+        one.h.daemon.syncNow();
+        resolve();
+      };
+    });
+    one.h.hubSock()?.close();
+    await exitedDown;
+    await one.h.daemon.stop();
+    expect(readAnnounced(announcedFile)).toContainEqual(
+      expect.objectContaining({ ref: S0, gone: true }),
+    );
+
+    // Restart with the same announcedFile; hello_ok with sessions_gone receives gone.
+    const two = await setup({ caps, agentsFile, announcedFile }, false);
+    await vi.waitFor(() =>
+      expect(
+        two.h.of("sessions").some((f) => f.gone?.includes(S0) === true),
+      ).toBe(true),
+    );
+    await settled(two.h);
+    // Once taken, announced.json no longer marks it gone.
+    const after = readAnnounced(announcedFile).find((e) => e.ref === S0);
+    expect(after).toBeDefined();
+    expect(after?.gone).toBeUndefined();
   });
 
   it("a reused pid is a new process: the old record closes, the new one is listed under a new ref", async () => {
