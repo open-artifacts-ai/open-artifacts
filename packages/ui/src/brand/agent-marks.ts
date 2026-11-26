@@ -4,7 +4,7 @@
 // `mono` marks draw in the text colour (currentColor), so they read in light
 // and dark; the others carry their own colours. Antigravity's mark is our own
 // glyph (a chevron lifting off a dot), not Google's logo; oh-my-pi's is our own
-// "omp" tile. A kind with no mark of its own gets a tile with its first letter.
+// bold "o" tile. A kind with no mark of its own gets a tile with its first letter.
 
 export type SvgMark = {
   viewBox: string;
@@ -68,11 +68,11 @@ export const AGENT_MARKS = {
     mono: true,
     body: '<path d="M12 1.5l9.5 9.5-3.2 3.2L12 7.9l-6.3 6.3-3.2-3.2z"/><circle cx="12" cy="19.5" r="3"/>',
   },
-  /** Our own tile: "omp" knocked out of a filled square, in the text colour. */
+  /** Our own tile: a bold "o" knocked out of a filled square, in the text colour. */
   "oh-my-pi": {
     viewBox: "0 0 24 24",
     mono: true,
-    body: '<mask id="omp"><rect width="24" height="24" fill="#fff"/><text x="12" y="15.6" text-anchor="middle" font-family="ui-monospace,Menlo,Consolas,monospace" font-size="10" font-weight="700" letter-spacing="-0.6" fill="#000">omp</text></mask><rect x="1" y="1" width="22" height="22" rx="5" mask="url(#omp)"/>',
+    body: '<mask id="omp"><rect width="24" height="24" fill="#fff"/><circle cx="12" cy="12" r="6.5" fill="#000"/><circle cx="12" cy="12" r="3.2" fill="#fff"/></mask><rect x="1" y="1" width="22" height="22" rx="5" mask="url(#omp)"/>',
   },
   /** An agent with no name at all: a plain tile, in the text colour. */
   Agent: {

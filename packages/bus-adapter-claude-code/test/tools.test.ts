@@ -167,49 +167,56 @@ describe("claude mcp tools", () => {
     });
   });
 
-  it("lists the roster", async () => {
-    const r = await callTool(
-      "list_agents",
-      {},
-      client(async () => ({
-        v: 1,
-        id: "1",
-        type: "roster",
-        agents: [
-          {
-            name: "alpha",
-            kind: "pi",
-            namespace: "ns",
-            live: true,
-            state: "live",
-            global: false,
-          },
-          {
-            name: "beta",
-            kind: "claude-code",
-            namespace: "ns",
-            live: false,
-            state: "queued",
-            global: false,
-          },
-          {
-            name: "gamma",
-            kind: "claude-code",
-            namespace: "ns",
-            live: false,
-            state: "away",
-            since: "2026-11-05T10:00:00.000Z",
-            global: false,
-          },
-        ],
-      })),
-    );
-    expect(r.content[0].text).toBe(
-      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)",
-    );
+  it("lists the roster (default hides old away; all: true lists them)", async () => {
+    const c = client(async () => ({
+      v: 1,
+      id: "1",
+      type: "roster",
+      agents: [
+        {
+          name: "alpha",
+          kind: "pi",
+          namespace: "ns",
+          live: true,
+          state: "live",
+          global: false,
+        },
+        {
+          name: "beta",
+          kind: "claude-code",
+          namespace: "ns",
+          live: false,
+          state: "queued",
+          global: false,
+        },
+        {
+          name: "gamma",
+          kind: "claude-code",
+          namespace: "ns",
+          live: false,
+          state: "away",
+          since: "2026-11-05T10:00:00.000Z",
+          global: false,
+        },
+      ],
+    }));
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse("2026-11-09T12:00:00.000Z"));
+      const compact = await callTool("list_agents", {}, c);
+      expect(compact.content[0].text).toBe(
+        "Namespace ns:\n- alpha (pi)\n- beta (claude-code) (queued)\n1 away agent not listed (still reachable by name; all: true lists them)",
+      );
+      const full = await callTool("list_agents", { all: true }, c);
+      expect(full.content[0].text).toBe(
+        "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("#1860: collapses away fallback-named rows into one count", async () => {
+  it("#1860: with all: true, collapses away fallback-named rows into one count", async () => {
     const row = (name: string, state: string, kind = "claude-code") => ({
       name,
       kind,
@@ -219,27 +226,51 @@ describe("claude mcp tools", () => {
       ...(state === "away" ? { since: "2026-11-05T10:00:00.000Z" } : {}),
       global: false,
     });
-    const roster = (agents: unknown[]) =>
+    const roster = (agents: unknown[], args: Record<string, unknown> = {}) =>
       callTool(
         "list_agents",
-        {},
+        args,
         client(async () => ({ type: "roster", agents }) as never),
       );
-    const many = await roster([
-      row("claude-1262814", "live"),
-      row("claude-1", "away"),
-      row("omp-3", "away", "omp"),
-      row("gamma", "away"),
-    ]);
-    expect(many.content[0].text).toBe(
-      "- claude-1262814 (claude-code, ns)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)\n2 more away sessions with no chosen name (not listed, still reachable by name)",
-    );
-    const one = await roster([row("alpha", "live"), row("claude-1", "away")]);
-    expect(one.content[0].text).toBe(
-      "- alpha (claude-code, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
-    );
-    const none = await roster([row("alpha", "live")]);
-    expect(none.content[0].text).toBe("- alpha (claude-code, ns)");
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(Date.parse("2026-11-09T12:00:00.000Z"));
+      const many = await roster(
+        [
+          row("claude-1262814", "live"),
+          row("claude-1", "away"),
+          row("omp-3", "away", "omp"),
+          row("gamma", "away"),
+        ],
+        { all: true },
+      );
+      expect(many.content[0].text).toBe(
+        "- claude-1262814 (claude-code, ns)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)\n2 more away sessions with no chosen name (not listed, still reachable by name)",
+      );
+      // #3166: default merges old chosen-name away and fallback away into one count line.
+      const merged = await roster([
+        row("claude-1262814", "live"),
+        row("claude-1", "away"),
+        row("omp-3", "away", "omp"),
+        row("gamma", "away"),
+      ]);
+      expect(merged.content[0].text).toBe(
+        "Namespace ns:\n- claude-1262814 (claude-code)\n3 away agents not listed (still reachable by name; all: true lists them)",
+      );
+      const one = await roster(
+        [row("alpha", "live"), row("claude-1", "away")],
+        {
+          all: true,
+        },
+      );
+      expect(one.content[0].text).toBe(
+        "- alpha (claude-code, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+      );
+      const none = await roster([row("alpha", "live")]);
+      expect(none.content[0].text).toBe("Namespace ns:\n- alpha (claude-code)");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows the machine when the roster names one", async () => {
@@ -263,7 +294,7 @@ describe("claude mcp tools", () => {
         ],
       })),
     );
-    expect(r.content[0].text).toBe("- alpha (pi, ns, desktop)");
+    expect(r.content[0].text).toBe("Namespace ns:\n- alpha (pi, desktop)");
   });
 
   it("returns isError instead of throwing when the daemon is down", async () => {
@@ -461,7 +492,9 @@ describe("an unknown kind over the socket (C26h)", () => {
 
   it("list_agents and self show zz unchanged", async () => {
     const c = await connected(true);
-    expect(await say(c, "list_agents")).toBe("- alpha (zz, ns)\n- b (omp, ns)");
+    expect(await say(c, "list_agents")).toBe(
+      "Namespace ns:\n- alpha (zz)\n- b (omp)",
+    );
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
   });
 });
@@ -552,7 +585,7 @@ describe("linked projects (#1567)", () => {
       })),
     );
     expect(r.content[0].text).toBe(
-      "- me (claude, github.com/acme/app)\n- docs (claude, github.com/acme/docs)",
+      "Namespace github.com/acme/app:\n- me (claude)\n- docs (claude, github.com/acme/docs)",
     );
     const empty = await callTool(
       "list_agents",

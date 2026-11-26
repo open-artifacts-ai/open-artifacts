@@ -94,7 +94,9 @@ describe("ci.yml", () => {
         expect(wr["branches-ignore"]).toBeUndefined();
       }
     }
-    expect(onCi).toEqual(["release-cadence.yml"]);
+    // flaky-tracker reads a finished run's own attempts and logs (cloud #447),
+    // never a check on main's commit.
+    expect(onCi).toEqual(["flaky-tracker.yml", "release-cadence.yml"]);
     // release-cadence reads the release PR's check rollup and the merge
     // queue, never a check on main's commit.
     const cadence = ci("release-cadence.ts");
@@ -125,6 +127,21 @@ describe("ci.yml", () => {
     );
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
     expect(sh).toContain("pnpm --filter @oa/server test:cpu");
+  });
+  it("e2e fails only when a shard did: the report is its own job", () => {
+    // Run 45756613297 attempt 1: every shard passed, but one shard's blob zip
+    // was truncated and the report merge failed the required check. Nothing
+    // but the shard result may decide e2e, so the report has its own job.
+    const steps = w.jobs.e2e.steps as { name?: string }[];
+    expect(steps.map((s) => s.name)).toEqual(["Every shard passed"]);
+    const report = w.jobs["e2e-report"];
+    expect(report.needs).toEqual(["e2e-shard"]);
+    expect(report.if).toBe("${{ !cancelled() }}");
+    expect(
+      (report.steps as { run?: string }[]).some(
+        (s) => s.run === "bash scripts/ci/e2e.sh merge",
+      ),
+    ).toBe(true);
   });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");

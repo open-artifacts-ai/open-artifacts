@@ -53,7 +53,6 @@ const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 beforeEach(() => {
   vi.useFakeTimers({
     toFake: ["setTimeout", "clearTimeout"],
-    shouldAdvanceTime: true,
   });
 });
 afterEach(() => {
