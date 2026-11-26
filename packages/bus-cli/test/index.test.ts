@@ -315,6 +315,26 @@ s.on("data", () => {});
     expect(r.stderr).toMatch(/ERR_INVALID_ARG_VALUE/);
   });
 
+  it("kills a command that overflows maxBuffer with SIGKILL, even one that traps SIGTERM", async () => {
+    const g = await gate();
+    // Writes 9 MiB, then holds the gate: only SIGKILL ends it.
+    const big = join(g.dir, "big.mjs");
+    writeFileSync(
+      big,
+      `import { connect } from "node:net";
+process.on("SIGTERM", () => {});
+process.stdout.on("error", () => {});
+process.stdout.write("a".repeat(9 * 1024 * 1024));
+connect(${JSON.stringify(join(g.dir, "g.sock"))}).on("error", () => process.exit(0)).on("data", () => {});
+`,
+    );
+    const r = await makeExec(0)(process.execPath, [big]);
+    // Not a timeout: the output so far, a plain failure.
+    expect(r.code).toBe(1);
+    expect(r.stdout).toHaveLength(8 * 1024 * 1024);
+    expect(r.stderr).not.toMatch(/timed out/);
+  });
+
   it("returns the output collected before the timeout", async () => {
     const g = await gate();
     const oc = script(g);
