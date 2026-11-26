@@ -8,6 +8,7 @@ export const AGENT_KINDS = [
   "hermes",
   "openclaw",
   "codex",
+  "antigravity",
 ] as const;
 export const AgentKindSchema = z.enum(AGENT_KINDS);
 export type AgentKind = z.infer<typeof AgentKindSchema>;

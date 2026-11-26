@@ -14,7 +14,7 @@ import {
   MAILBOX_RETAIN_MS,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, OFFLINE_REAP_MS, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { busCloseKind } from "../../src/services/bus.js";
 import {
@@ -29,6 +29,7 @@ import {
   up,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const inHub = async <R>(
   fn: (i: BusHub, s: DurableObjectState) => R,
@@ -128,12 +129,12 @@ async function goOffline(
 ): Promise<number> {
   d.close();
   await d.closed;
-  for (let k = 0; k < 200; k++) {
-    const t = await disconnectedAt(machineId, userId);
-    if (typeof t === "number") return t;
-    await new Promise((r) => setTimeout(r, 5));
-  }
-  throw new Error("machine never recorded offline");
+  const t = await eventually(async () => {
+    const at = await disconnectedAt(machineId, userId);
+    expect(typeof at).toBe("number");
+    return at as number;
+  });
+  return t;
 }
 
 /** Runs the alarm at hub time `t` (armed first, so it always runs). */
@@ -228,6 +229,7 @@ describe("offline reap (open-bus #422)", () => {
     const d2 = await connect(m.token);
     const c = await d1.closed;
     expect(c.reason).toBe("replaced");
+    // sleep-ok: absence — a replaced machine must not be marked offline at all
     await new Promise((r) => setTimeout(r, 20));
     expect(await disconnectedAt(m.id)).toBeNull();
     await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS);
@@ -360,12 +362,11 @@ describe("offline reap (open-bus #422)", () => {
     const since = (await disconnectedAt(m.id)) as number;
     expect(since).toBeGreaterThanOrEqual(before);
     expect(since).toBeLessThanOrEqual(after);
-    let armed: number | null = null;
-    for (let k = 0; k < 100 && armed === null; k++) {
-      armed = await alarmAt();
-      if (armed === null) await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(armed).not.toBeNull();
+    const armed = await eventually(async () => {
+      const at = await alarmAt();
+      expect(at).not.toBeNull();
+      return at as number;
+    });
     expect(armed as number).toBeLessThanOrEqual(since + OFFLINE_REAP_MS);
 
     await alarmAtTime(since + OFFLINE_REAP_MS - 1);
@@ -392,17 +393,16 @@ describe("offline reap (open-bus #422)", () => {
     await inHub((_, s) => {
       new BusHub(s, e);
     }, uid);
-    let since: number | null | undefined = null;
-    for (let k = 0; k < 100 && typeof since !== "number"; k++) {
-      since = await disconnectedAt(m.id, uid);
-      if (typeof since !== "number") await new Promise((r) => setTimeout(r, 5));
-    }
-    expect(typeof since).toBe("number");
-    let armed: number | null = far;
-    for (let k = 0; k < 100 && armed === far; k++) {
-      armed = await inHub((_, s) => s.storage.getAlarm(), uid);
-      if (armed === far) await new Promise((r) => setTimeout(r, 5));
-    }
+    const since = await eventually(async () => {
+      const at = await disconnectedAt(m.id, uid);
+      expect(typeof at).toBe("number");
+      return at as number;
+    });
+    const armed = await eventually(async () => {
+      const at = await inHub((_, s) => s.storage.getAlarm(), uid);
+      expect(at).not.toBe(far);
+      return at as number;
+    });
     expect(armed as number).toBeLessThanOrEqual(
       (since as number) + OFFLINE_REAP_MS,
     );
@@ -544,6 +544,7 @@ describe("closeAll and the offline clock (#1350)", () => {
     const { uid, t0, m, d, name, stub } = await setup("Access");
     expect(await stub.closeAll("space role lowered", "access")).toBe(1);
     expect((await d.closed).code).toBe(4403);
+    // sleep-ok: absence — an access close is not an offline machine
     await new Promise((r) => setTimeout(r, 20));
     expect(await disconnectedAt(m.id, uid)).toBeNull();
     const d2 = await connect(m.token);

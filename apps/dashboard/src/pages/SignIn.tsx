@@ -145,6 +145,13 @@ export const NEEDS_CODE = "That took too long. Start again.";
 export const INVITE_EXPIRED =
   "This invite has expired. Ask whoever invited you to send a new one.";
 
+/**
+ * #3029 item 2: the dashboard had no route for the address asked (a
+ * mistyped /invite/x, /connect, /docs). Copy checked by OA Product.
+ */
+export const DEAD_LINK =
+  "That link doesn't go to a page here. Log in to go to your Library.";
+
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
   error: SignInError,
@@ -211,12 +218,25 @@ const startHref = (start: string, next: string) => {
  * Today's page: the self-hosted install and every Access-mode instance. An
  * older server (or one that cannot answer) lands here too.
  */
-function AccessSignIn({ failed }: { failed: boolean }) {
+function AccessSignIn({
+  failed,
+  deadLink,
+}: {
+  failed: boolean;
+  /** #3029: the dashboard had no route for the address asked. */
+  deadLink?: boolean;
+}) {
   const name = useInstanceName();
   return (
     <>
       <h1>Log in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
+      {/* Same 12px as the direct-mode banner, and the same below it before the button. */}
+      {deadLink && !failed && (
+        <div className="my-3">
+          <Notice tone="info">{DEAD_LINK}</Notice>
+        </div>
+      )}
       {failed && (
         <Notice tone="danger" title="Login didn't finish.">
           The login link expired or was cancelled. Try again.
@@ -255,9 +275,12 @@ function HostedSignIn({
   method,
   via,
   link,
+  deadLink,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
+  /** #3029: `next` named a path with no route; it is already "/". */
+  deadLink?: boolean;
   next: string;
   /** #2590 G2: needs_code came with link=1 (the server holds the address). */
   link?: boolean;
@@ -309,10 +332,16 @@ function HostedSignIn({
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
   // Design (#2590): 12px between the heading and a notice under it.
-  const banner = error && (
+  const banner = error ? (
     <div className="mt-3">
       <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
     </div>
+  ) : (
+    deadLink && (
+      <div className="mt-3">
+        <Notice tone="info">{DEAD_LINK}</Notice>
+      </div>
+    )
   );
   const secondary = Boolean(google || email);
   const accessButton = access && (
@@ -579,7 +608,10 @@ export function SignIn({
   method,
   via,
   link,
+  dead,
 }: {
+  /** #3029: ?dead=1, the dashboard had no route for the address asked. */
+  dead?: boolean;
   error?: string;
   next?: string;
   method?: string;
@@ -592,13 +624,16 @@ export function SignIn({
   const parsed =
     error !== undefined ? SignInErrorSchema.safeParse(error) : null;
   const shownError = parsed ? (parsed.success ? parsed.data : "failed") : null;
-
+  // #3029: the dashboard itself sent an anonymous visitor here from a path it
+  // has no route for (?dead=1); server redirects never carry the flag. A
+  // `next` wins: dead=1 beside one is not ours, so it is ignored.
+  const deadLink = dead === true && !next;
   if (!providers.data)
     // An older server or a network failure: today's page. Still asking: an
     // empty panel, never a claim about the mode that may change in a moment.
     return providers.isError ? (
       <Shell hosted={false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     ) : (
       <Shell hosted={null} />
@@ -609,7 +644,7 @@ export function SignIn({
   if (data.mode === "access")
     return (
       <Shell hosted={data.hosted ?? false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     );
   // Direct mode covers hosted and self-hosted installs alike; an older server
@@ -620,6 +655,7 @@ export function SignIn({
         providers={data}
         error={shownError}
         next={safeNext(next)}
+        deadLink={deadLink}
         method={method === "code" ? "code" : undefined}
         via={via}
         link={link}
