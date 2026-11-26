@@ -816,5 +816,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          n=$(gh api "repos/$GITHUB_REPOSITORY/rules/branches/main" --jq '[.[] | select(.type == "required_status_checks")] | length')
-          [ "$n" -ge 1 ] || { echo "no required_status_checks rule readable on main" >&2; exit 1; }
+          # Every page, as the planner reads it; a failed page fails the step.
+          out=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" --jq '.[] | select(.type == "required_status_checks") | .type')
+          [ -n "$out" ] || { echo "no required_status_checks rule readable on main" >&2; exit 1; }

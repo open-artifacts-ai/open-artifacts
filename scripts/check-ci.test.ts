@@ -251,6 +251,8 @@ describe("ci.yml", () => {
       "${{ github.token }}",
     );
     expect(steps[0].run).toContain("rules/branches/main");
+    // Every page, as the planner reads it.
+    expect(steps[0].run).toContain("gh api --paginate");
     expect(steps[0].run).toContain('select(.type == "required_status_checks")');
     for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
       w.jobs,

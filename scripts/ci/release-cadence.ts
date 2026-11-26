@@ -236,14 +236,30 @@ export async function requiredChecks(
   exec: Exec,
   repo: string,
 ): Promise<Required[]> {
-  const rules = JSON.parse(
-    await gh(exec, ["api", `repos/${repo}/rules/branches/main`]),
-  ) as {
-    type?: string;
-    parameters?: {
-      required_status_checks?: { context?: string; integration_id?: number }[];
-    };
-  }[];
+  // Every page (a failed page fails the whole read), one rule per line.
+  const rules = (
+    await gh(exec, [
+      "api",
+      "--paginate",
+      `repos/${repo}/rules/branches/main?per_page=100`,
+      "--jq",
+      ".[] | @json",
+    ])
+  )
+    .split("\n")
+    .filter((l) => l.trim())
+    .map(
+      (l) =>
+        JSON.parse(l) as {
+          type?: string;
+          parameters?: {
+            required_status_checks?: {
+              context?: string;
+              integration_id?: number;
+            }[];
+          };
+        },
+    );
   const out = new Map<string, Required>();
   const add = (name: string | undefined, app: number | null | undefined) => {
     if (!name) return;
@@ -251,7 +267,7 @@ export async function requiredChecks(
     out.set(`${r.app}/${r.name}`, r);
   };
   for (const n of REQUIRED_CHECKS) add(n, ACTIONS_APP_ID);
-  for (const r of Array.isArray(rules) ? rules : [])
+  for (const r of rules)
     if (r.type === "required_status_checks")
       for (const c of r.parameters?.required_status_checks ?? [])
         add(c.context, c.integration_id);

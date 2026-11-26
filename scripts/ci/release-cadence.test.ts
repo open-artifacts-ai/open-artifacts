@@ -63,6 +63,13 @@ type Fixture = {
   checks?: Partial<CheckRow>[];
   /** main's applied rules (default: the ruleset's five); null: unreadable. */
   rules?: unknown[] | null;
+  /** The rules split into pages (overrides `rules`). */
+  rulesPages?: unknown[][];
+  /** The check runs split into pages (overrides `checks`). */
+  checkPages?: Partial<CheckRow>[][];
+  /** A page index that fails to read (the call fails when it reaches it). */
+  rulesFailPage?: number;
+  checksFailPage?: number;
   release?: { tag_name: string; published_at: string } | null;
   /** What enqueuePullRequest answers (default: the front, jumped). */
   enqueue?: { position: number; jump: boolean } | null;
@@ -165,11 +172,22 @@ function fake(f: Fixture) {
       );
     }
     const unreadable = { code: 1, stdout: "", stderr: "HTTP 403" };
-    if (args[0] === "api" && path.endsWith("/rules/branches/main"))
+    // gh api --paginate: every page, one --jq line per item; without it, page
+    // 1 only. A page that fails fails the call.
+    const pages = <T>(all: T[][], failAt?: number) => {
+      if (failAt !== undefined && (args.includes("--paginate") || failAt === 0))
+        return unreadable;
+      return ok(
+        (args.includes("--paginate") ? all.flat() : (all[0] ?? []))
+          .map((x) => `${JSON.stringify(x)}\n`)
+          .join(""),
+      );
+    };
+    if (args[0] === "api" && path.includes("/rules/branches/main"))
       return f.rules === null
         ? unreadable
-        : ok(
-            JSON.stringify(
+        : pages(
+            f.rulesPages ?? [
               f.rules ?? [
                 {
                   type: "required_status_checks",
@@ -185,14 +203,16 @@ function fake(f: Fixture) {
                 },
                 { type: "merge_queue", parameters: {} },
               ],
-            ),
+            ],
+            f.rulesFailPage,
           );
     const checks = /\/commits\/([0-9a-f]+)\/check-runs\?/.exec(path);
     if (args[0] === "api" && checks)
-      return ok(
-        (f.checks ?? allGreen())
-          .map((r) => `${JSON.stringify({ head_sha: checks[1], ...r })}\n`)
-          .join(""),
+      return pages(
+        (f.checkPages ?? [f.checks ?? allGreen()]).map((p) =>
+          p.map((r) => ({ head_sha: checks[1], ...r })),
+        ),
+        f.checksFailPage,
       );
     const file = /\/contents\/([^?]+)\?ref=(.+)$/.exec(path);
     if (args[0] === "api" && file) {
@@ -463,6 +483,56 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
       checks: [...allGreen(), check("scan", { app: 777 })],
     });
     expect((await go(otherOk)).action).toBe("enqueued");
+  });
+
+  it("a required check on page 2 of main's rules is required (the Prover's one-entry pages)", async () => {
+    const page2 = [
+      [{ type: "merge_queue", parameters: {} }],
+      [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [
+              { context: "public-only", integration_id: 15368 },
+            ],
+          },
+        },
+      ],
+    ];
+    const g = fake({ ...f3249, rulesPages: page2 });
+    const l = logs();
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("public-only has not reported");
+    expect(enqueues(g)).toEqual([]);
+    const rules = g.calls.find((c) =>
+      c.join(" ").includes("/rules/branches/main"),
+    );
+    expect(rules).toContain("--paginate");
+    // A page that can't be read fails closed.
+    const bad = fake({ ...f3249, rulesPages: page2, rulesFailPage: 1 });
+    await expect(go(bad)).rejects.toThrow(/HTTP 403/);
+    expect(enqueues(bad)).toEqual([]);
+  });
+
+  it("a red check run on page 2 of the head's check runs blocks; a page that fails fails closed", async () => {
+    const g = fake({
+      ...f3249,
+      checkPages: [
+        allGreen(),
+        [check("e2e", { id: 99_999, conclusion: "failure" })],
+      ],
+    });
+    const l = logs();
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("e2e is failure");
+    expect(enqueues(g)).toEqual([]);
+    const bad = fake({
+      ...f3249,
+      checkPages: [allGreen(), []],
+      checksFailPage: 1,
+    });
+    await expect(go(bad)).rejects.toThrow(/HTTP 403/);
+    expect(enqueues(bad)).toEqual([]);
   });
 
   it("fails closed when main's rules can't be read, and reads no classic protection", async () => {
