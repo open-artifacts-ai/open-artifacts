@@ -81,17 +81,11 @@ for (const [w, h] of [[390, 844]] as const)
             "position:absolute;left:0;top:100%;height:300px;width:10px";
           document.querySelector(".oa-vbody")?.append(d);
         });
-      const thread = page
-        .locator("[data-thread]")
-        .filter({
-          has: page.getByRole("button", { name: /Show \d+ earlier repl/ }),
-        })
-        .first();
-      const expand = thread.getByRole("button", {
-        name: /Show \d+ earlier repl/,
-      });
-      await expand.click();
-      await expect(expand).toHaveCount(0);
+      const folds = page.getByRole("button", { name: /Show \d+ earlier repl/ });
+      const before = await folds.count();
+      await folds.first().click();
+      // That fold opened: one fewer is left.
+      await expect(folds).toHaveCount(before - 1);
       await page.evaluate(
         () =>
           new Promise<void>((r) =>
@@ -113,17 +107,13 @@ for (const [w, h] of [[390, 844]] as const)
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`/a/${ID}?mock=agents`);
     await page.getByRole("button", { name: /^Comments/ }).click();
-    const thread = page
-      .locator("[data-thread]")
-      .filter({
-        has: page.getByRole("button", { name: /^Show 1\d earlier replies$/ }),
-      })
-      .first();
-    const expand = thread.getByRole("button", {
+    const folds = page.getByRole("button", {
       name: /^Show 1\d earlier replies$/,
     });
-    await expand.click();
-    await expect(expand).toHaveCount(0);
+    const before = await folds.count();
+    await folds.first().click();
+    // That fold opened: one fewer is left.
+    await expect(folds).toHaveCount(before - 1);
     await page.evaluate(
       () =>
         new Promise<void>((r) =>

@@ -53,6 +53,8 @@ test("in the room: a newer version keeps the editor node and the caret", async (
       ),
     )
     .toBe(1);
+  // The room has said hello (edit): the editor is live, so its content is the room's.
+  await expect(page.getByRole("toolbar")).toBeVisible();
   const prose = page.locator(".ProseMirror");
   await page.getByText("We ship the new landing page").click();
   await page.keyboard.press("Home");
