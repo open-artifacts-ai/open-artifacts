@@ -717,6 +717,11 @@ describe("resetIdentity", () => {
       .bind(`gh-${email}`, uid, Date.now())
       .run();
     await createPat(env, uid, "t");
+    await env.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(`bm-${email}`, uid, `h-${email}`, Date.now(), Date.now())
+      .run();
     const links = async (provider: string) =>
       count("identities where user_id = ? and provider = ?", uid, provider);
     await resetIdentity(env, admin, uid, undefined, "github");
@@ -733,6 +738,9 @@ describe("resetIdentity", () => {
     ).toBe(0);
     expect((await rowOf(uid)).e).toBe(1);
     expect(await pats(uid)).toBe(0);
+    expect(
+      await count("bus_machines where user_id = ? and revoked_at is null", uid),
+    ).toBe(0);
   });
 
   it("a provider with no link on the row: not found, nothing changes (#3087)", async () => {
