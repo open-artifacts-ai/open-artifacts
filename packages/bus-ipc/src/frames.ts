@@ -3,6 +3,7 @@ import {
   AgentKindSchema,
   AgentRefSchema,
   BusNameSchema,
+  CODEX_SPAWNED_SOURCES,
   IsoTimeSchema,
   KindTokenSchema,
   LinkProofHashSchema,
@@ -176,11 +177,7 @@ export type Hello = z.infer<typeof Hello>;
  * not the user's (codex-rs `ThreadSource`, all present in the 0.165 binary).
  * The adapter refuses them; the daemon decides from Codex's own state.
  */
-export const SPAWNED_SOURCES: ReadonlySet<string> = new Set([
-  "subagent",
-  "guardian_review",
-  "memory_consolidation",
-]);
+export const SPAWNED_SOURCES: ReadonlySet<string> = CODEX_SPAWNED_SOURCES;
 
 /** A tool call's request: its reply carries the agent's late-delivery notices. */
 const optIn = { late: z.literal(true).optional() };

@@ -812,6 +812,16 @@ export function copy(
       fail(`Antigravity is not wired: ${clip(file, 33)} isn't valid JSON`),
       next(`Fix that file, then run ${bus} again.`),
     ],
+    // Doctor, when ~/.gemini/config/plugins/oa-bus is a folder install didn't make.
+    agyPluginForeign: (dir: string) => [
+      fail(`Antigravity is not wired: ${clip(dir, 33)} isn't oa-bus's`),
+      next(`Move that folder away, then run ${bus} again.`),
+    ],
+    // Doctor, when agy has the oa-bus plugin switched off.
+    agyPluginOff: () => [
+      warn("Antigravity has the oa-bus plugin turned off"),
+      next("Turn it on with: agy plugin enable oa-bus"),
+    ],
     // Doctor, when our entry is in agy's config but turned off there.
     agyDisabled: () => [
       warn("Antigravity has the bus turned off"),
@@ -825,6 +835,14 @@ export function copy(
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    // #3108: a Codex entry that signs in by itself, linked through the server check.
+    codexLinked: (name: string, ago: string) =>
+      done(`Codex's ${clip(name, 50)} entry is linked (last call ${ago}).`),
+    codexLinksOnFirstCall: (name: string) =>
+      p(
+        "muted",
+        `Codex's ${clip(name, 50)} entry links on its first Open Artifacts call.`,
+      ),
     // The Claude Code plugins (#2095). Drafts for OA Product: wording is theirs.
     outputStyleOn: () => [
       done("Turned on the Artifacts Teammate output style"),
