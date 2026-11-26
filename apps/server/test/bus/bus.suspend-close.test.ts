@@ -56,6 +56,7 @@ describe("suspend's close-sockets job closes a live daemon socket (#202)", () =>
     );
     const c = await Promise.race([
       d.closed,
+      // sleep-ok: a race deadline, so a missing close fails instead of hanging
       new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
     ]);
     expect(c, "socket still open 10 s after the job").not.toBeNull();
