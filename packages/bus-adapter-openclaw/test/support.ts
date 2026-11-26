@@ -119,7 +119,8 @@ export class FakeClient {
   }
 }
 
-export const flush = () => new Promise<void>((r) => setTimeout(r, 5));
+/** Lets every pending promise settle: one turn of the event loop, no wall time. */
+export const flush = () => new Promise<void>((r) => setImmediate(r));
 
 export const caller = (over: Record<string, unknown> = {}) => ({
   agentId: "main",
