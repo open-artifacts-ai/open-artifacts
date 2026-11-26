@@ -2679,6 +2679,10 @@ async function threadReply(
           online: false,
           userId: p.owner,
           address: { namespace: p.namespace, name: p.name },
+          // #3132: a moved role takes only threads joined while it was held.
+          ...(p.joinedAt && Number.isFinite(Date.parse(p.joinedAt))
+            ? { originAt: Date.parse(p.joinedAt) }
+            : {}),
         });
     }
     heldHere = heldNow;

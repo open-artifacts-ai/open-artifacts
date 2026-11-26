@@ -199,6 +199,25 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(await s.hub.roleHolderFor(old.identity, t0 - 1)).toBeNull();
   });
 
+  it("an answer to an ask it posted after it handed the role on stays its own", async () => {
+    const s = await setup();
+    const old = await s.reg(uniq("plat-l"));
+    const next = await s.reg(uniq("plat-w"));
+    const role = uniq("platform");
+    const t0 = Date.now() - 60_000;
+    await s.clock(t0);
+    await s.setRole(role, old.id);
+    await s.clock(t0 + 30_000);
+    await s.setRole(role, next.id);
+    const n = note(
+      { namespace: s.namespace, name: old.name },
+      { toIdentity: old.identity, originAt: t0 + 30_001 },
+    );
+    expect(await s.hub.deliverNotice(n)).toBe("delivered");
+    expect((await waitFor(s.d, "deliver")).to_ref).toBe(old.ref);
+    expect(await s.hub.roleHolderFor(old.identity, t0 + 30_001)).toBeNull();
+  });
+
   it("a mention of the old session's name after the move reaches the new holder once the old one closed", async () => {
     const s = await setup();
     const old = await s.reg(uniq("plat-l"));
