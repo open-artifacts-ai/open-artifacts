@@ -36,10 +36,17 @@ export async function approveMachine(page: Page): Promise<string> {
   // The status is what counts, and it is known with the headers: neither a
   // success nor a failure waits on the body (a held body would stall it, and
   // WebKit drops a body once the page navigates). A failure names the status.
-  if (approved.status() >= 300)
+  if (approved.status() >= 300) {
+    // Spend the code, so a refusal leaves none outstanding (an IP holds five).
+    await fetch(`${APP}/bus/device/token`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ device_code: dev.device_code }),
+    }).catch(() => undefined);
     throw new Error(
       `POST /bus/approve: ${approved.status()} ${approved.statusText()}`,
     );
+  }
   // Approval is committed once POST /bus/approve answers, and this is the
   // first token request for the code (so inside its rate limit): it returns
   // the token. No polling.
