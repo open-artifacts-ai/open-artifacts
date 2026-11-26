@@ -28,7 +28,7 @@ import type { AgentAttr } from "../services/agent-usage.js";
 import {
   getSummary,
   list,
-  listVersions,
+  listVersionsWaiting,
   patch,
   publish,
   putThumbnail,
@@ -279,12 +279,19 @@ export function mountArtifacts(app: AppType): void {
         path: "before",
         reason: "invalid",
       });
+    const w = c.req.query("wait");
+    if (w !== undefined && !/^\d{1,9}$/.test(w))
+      throw new ApiError("bad_request", "wait must be a non-negative integer", {
+        path: "wait",
+        reason: "invalid",
+      });
     return c.json(
-      await listVersions(
+      await listVersionsWaiting(
         c.env,
         caller(c),
         id,
         b === undefined ? undefined : Number(b),
+        w === undefined ? 0 : Number(w),
       ),
     );
   });

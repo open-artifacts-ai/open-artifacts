@@ -261,7 +261,7 @@ describe("get_artifact view, find, and sinceVersion (#3165)", () => {
     expect(res.status).toBe(200);
     const skill = await res.text();
     expect(skill).toContain(
-      'Read pages with `get_artifact` using `view: "text"`, `find` or `sinceVersion` unless you are editing the HTML.',
+      'Unless you are editing the HTML, read with `view: "text"` (visible text only), `find: "<words>"` (just the matching parts) or `sinceVersion: n` (a diff).',
     );
   });
 });

@@ -28,7 +28,12 @@ import { cancelUnreadOnRefusal } from "./http/unread-body.js";
 import { LLMS_PATH, serveLlms } from "./mcp/llms.js";
 import { mountOAuthCopy } from "./mcp/oauth-copy.js";
 import { oauthStoreHealth } from "./mcp/oauth-store.js";
-import { SKILL_PATH, serveSkill } from "./mcp/skill.js";
+import {
+  SKILL_PART_PATH,
+  SKILL_PATH,
+  serveSkill,
+  serveSkillPart,
+} from "./mcp/skill.js";
 import { serveUpgrade, UPGRADE_PATH } from "./mcp/upgrade.js";
 import { type AppType, mountRoutes } from "./routes/index.js";
 import { publicHome, withInstanceMeta } from "./routes/shell.js";
@@ -213,6 +218,7 @@ export function createApp(
   // unless OAUTH_COPY_KEY is set (mcp/oauth-copy.ts decides).
   mountOAuthCopy(app);
   app.get(SKILL_PATH, serveSkill);
+  app.get(SKILL_PART_PATH, serveSkillPart);
   app.get(UPGRADE_PATH, serveUpgrade);
   app.get(LLMS_PATH, serveLlms);
   // Public sign-in offering (#359 AuthProviders): config only, before the
@@ -226,6 +232,7 @@ export function createApp(
   app.all("/healthz", methodNotAllowed);
   app.all("/robots.txt", methodNotAllowed);
   app.all(SKILL_PATH, methodNotAllowed);
+  app.all(SKILL_PART_PATH, methodNotAllowed);
   app.all(UPGRADE_PATH, methodNotAllowed);
   app.all(LLMS_PATH, methodNotAllowed);
 
