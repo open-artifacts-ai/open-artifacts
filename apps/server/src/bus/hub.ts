@@ -134,6 +134,7 @@ import {
   viewProposal,
 } from "./role-proposals.js";
 import {
+  type AgentNameRow,
   deleteRole,
   formerReservedSql,
   type HandOverResult,
@@ -145,6 +146,7 @@ import {
   resolveRoleAnywhere,
   resolveRoleIn,
   roleForward,
+  roleOfIdentity,
   roleTakenSql,
 } from "./roles.js";
 import {
@@ -4833,9 +4835,7 @@ export class BusHub extends DurableObject<Env> {
    * kind, machine or state (one row per identity). At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
-  async namesOf(
-    identityIds: string[],
-  ): Promise<{ identityId: string; name: string }[]> {
+  async namesOf(identityIds: string[]): Promise<AgentNameRow[]> {
     if (!Array.isArray(identityIds)) return [];
     const ids = [
       ...new Set(identityIds.filter((x) => typeof x === "string" && x !== "")),
@@ -4851,11 +4851,16 @@ export class BusHub extends DurableObject<Env> {
       )
       .toArray();
     const seen = new Set<string>();
-    const out: { identityId: string; name: string }[] = [];
+    const out: AgentNameRow[] = [];
     for (const r of rows) {
       if (seen.has(r.identityId)) continue;
       seen.add(r.identityId);
-      out.push({ identityId: r.identityId, name: r.name });
+      const role = roleOfIdentity(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        r.identityId,
+      );
+      out.push({ identityId: r.identityId, name: r.name, ...role });
     }
     return out;
   }
