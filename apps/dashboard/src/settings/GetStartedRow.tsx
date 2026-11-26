@@ -6,11 +6,11 @@ import { toast } from "../layout/toast";
 import { isMember, rememberNoCard } from "../library/MemberGetStarted";
 import { muted } from "./ui";
 
-// Placeholder copy for OA Product's check (#3029).
-export const GET_STARTED_ROW_LABEL = "Get started checklist";
+// Copy checked by OA Product (#3029); the label matches the card title.
+export const GET_STARTED_ROW_LABEL = "Get started";
 export const GET_STARTED_ROW_TEXT = "Hidden from your Library.";
 export const GET_STARTED_ROW_BUTTON = "Show it again";
-export const GET_STARTED_BACK_TOAST = "The checklist is back in your Library.";
+export const GET_STARTED_BACK_TOAST = "Get started is back in your Library.";
 
 /**
  * Settings › Profile: a hidden Get started checklist (member or owner card)
