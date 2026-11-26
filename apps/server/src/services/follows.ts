@@ -284,16 +284,30 @@ export async function moveFollows(
   to: BusAddress,
   /** #3132: only rows created at or after this (ms); absent: every row. */
   since = 0,
+  /**
+   * #3132: a role move's time (ms): the moved rows start then for the new
+   * holder, so its own later move takes them on too. Absent (a rename): each
+   * row keeps its start.
+   */
+  startAt?: number,
 ): Promise<void> {
   if (from.namespace === to.namespace && from.name === to.name) return;
   await env.DB.batch([
     stmt(
       env.DB,
       `insert into follows (user_id, artifact_id, namespace, agent_name, created_at, last_notice_at)
-       select user_id, artifact_id, ?4, ?5, created_at, last_notice_at from follows
+       select user_id, artifact_id, ?4, ?5, coalesce(?7, created_at), last_notice_at from follows
        where user_id = ?1 and namespace = ?2 and agent_name = ?3 and created_at >= ?6
        on conflict do update set created_at = min(follows.created_at, excluded.created_at)`,
-    ).bind(userId, from.namespace, from.name, to.namespace, to.name, since),
+    ).bind(
+      userId,
+      from.namespace,
+      from.name,
+      to.namespace,
+      to.name,
+      since,
+      startAt ?? null,
+    ),
     stmt(
       env.DB,
       "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3 and created_at >= ?4",

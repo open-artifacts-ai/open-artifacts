@@ -32,6 +32,8 @@ export type RoleMove = {
   roleId: string;
   /** When the old session started holding the role (ms). */
   heldFrom: number;
+  /** When the role moved (ms): the new holder's held_since. */
+  at: number;
   fromAgentId: string;
   toAgentId: string;
   from: { namespace: string; name: string };
@@ -339,6 +341,7 @@ function recordMove(
   return {
     roleId,
     heldFrom,
+    at: now,
     fromAgentId: fromId,
     toAgentId: toId,
     from: { namespace: from.namespace, name: from.name },
