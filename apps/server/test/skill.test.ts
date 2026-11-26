@@ -114,11 +114,13 @@ describe("skill.md drift", () => {
     );
   });
 
-  it("leaves the installer's habits question to the human", async () => {
+  it("leaves a tool's question for the human, with no installer habits question", async () => {
     const md = await skill();
-    expect(md).toContain("QUESTION FOR YOUR USER");
-    expect(md).toContain("(`install --habits`) only on their yes");
-    expect(md).toContain("until they answer, run neither");
+    expect(md).toContain(
+      "A question a tool asks for your human is theirs to answer.",
+    );
+    expect(md).not.toContain("QUESTION FOR YOUR USER");
+    expect(md).not.toContain("install --habits");
   });
 
   it("tells every page writer how links open", async () => {

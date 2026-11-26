@@ -279,16 +279,12 @@ const marker = (ctx: ReturnType<typeof fakeCtx>) =>
   join(hermesPluginDir(ctx.userHome, ctx.env), HERMES_HABITS_MARKER);
 
 describe("install and uninstall with Hermes", () => {
-  it("a Hermes-only machine is not asked about project habits", async () => {
+  it("a Hermes-only machine is not asked about habits", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
-    // #2966 (Product): the plugin is machine-wide, so it is not part of the
-    // "this project only" question at all.
     expect(ctx.out().join("\n")).not.toContain("QUESTION FOR YOUR USER");
-    expect(ctx.out().join("\n")).toContain("machine-wide");
-    expect(habitsLine(ctx)).toContain("Habits: not decided");
-    expect(habitsLine(ctx)).toContain("Hermes plugin: off");
+    expect(habitsLine(ctx)).toBe("Habits: on, sent by the bus");
   });
   it("--habits writes it, a reinstall keeps it, --no-habits and uninstall remove it", async () => {
     const ctx = setup();
@@ -296,7 +292,7 @@ describe("install and uninstall with Hermes", () => {
     await install({ habits: "yes" }, ctx);
     expect(existsSync(marker(ctx))).toBe(true);
     expect(ctx.out().join("\n")).toContain("Habits on in the Hermes plugin.");
-    expect(habitsLine(ctx)).toBe("Habits: Hermes plugin: on");
+    expect(habitsLine(ctx)).toBe("Habits: on, sent by the bus");
     // Make the plugin stale so the reinstall recopies it.
     writeFileSync(
       join(hermesPluginDir(ctx.userHome, ctx.env), "bus.py"),
@@ -354,33 +350,35 @@ describe("install and uninstall with Hermes", () => {
     expect(code).toBe(0);
     expect(ctx.out().join("\n")).toContain("Habits off");
   });
-  it("a project yes never touches the machine-wide plugin, and --no-habits opts out", async () => {
-    const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
+  it("install never prompts for habits, and --no-habits opts out", async () => {
+    const readLine = vi.fn(async () => "y");
+    const yes = setup({ stdinIsTTY: true, readLine });
     await install({ hub: HUB }, yes);
-    // #2966 (Product): the plugin is machine-wide, so a per-project yes leaves
-    // it alone; it is not even asked about.
     expect(existsSync(marker(yes))).toBe(false);
-    expect(yes.out().join("\n")).toContain("machine-wide");
+    expect(readLine).not.toHaveBeenCalled();
     const no = setup();
     await install({ habits: "no" }, no);
     expect(existsSync(marker(no))).toBe(false);
     expect(habitsLine(no)).toBe("Habits: off (you opted out)");
   });
-  it("a symlinked marker is refused by --habits", async () => {
+  it("a symlinked marker is refused by --habits without following it", async () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     const target = join(ctx.userHome, "t");
     writeFileSync(target, "keep");
     symlinkSync(target, marker(ctx));
     const code = await install({ habits: "yes" }, ctx);
-    expect(code).toBe(1);
+    expect(code).toBe(0);
     expect(readFileSync(target, "utf8")).toBe("keep");
+    expect(ctx.out().join("\n")).toContain("symlink");
     rmSync(marker(ctx));
   });
-  it("--show-habits lists each plugin's state, including not installed", async () => {
+  it("--show-habits prints BRIEF_RULES and exits 0", async () => {
     const ctx = setup();
-    await install({ habits: "show" }, ctx);
-    expect(ctx.out().join("\n")).toContain("Hermes plugin: not installed");
+    expect(await install({ habits: "show" }, ctx)).toBe(0);
+    expect(ctx.out().join("\n")).toContain(
+      "When you're connected to the Open Artifacts bus",
+    );
   });
 });
 
