@@ -382,10 +382,14 @@ describe("M2/M3 + manager pin: machine-keyed bucket, burst 512, 4429 and cooldow
       frames.push(up(`u${i}`, `seed_${i}`, `seed-${m.id.slice(0, 4)}-${i}`, n));
     // More than the burst in total: only pacing keeps it open.
     while (frames.length < FRAME_BUDGET.burst + 100) frames.push(junkAck());
+    // The bucket refills on the hub's clock: one frame every 25 ms of it, moved
+    // by hand, never waited for.
+    let t = Date.now() + HOUR;
+    await clock(h, t);
     for (const f of frames) {
       d.send(f);
-      // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-      await new Promise((r) => setTimeout(r, 25));
+      t += 25;
+      await clock(h, t);
       if (d.isClosed()) break;
     }
     await sync(d);

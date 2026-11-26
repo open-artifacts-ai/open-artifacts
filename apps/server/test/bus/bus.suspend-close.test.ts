@@ -206,6 +206,7 @@ describe("a suspended install refuses bus connects at once (cloud #228)", () => 
     await expect(job(CLOSE_SOCKETS_CRON, failing)).rejects.toThrow("d1 down");
     const c = await Promise.race([
       d.closed,
+      // sleep-ok: a race deadline, so a missing close fails instead of hanging
       new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
     ]);
     expect(c?.code).toBe(4403);

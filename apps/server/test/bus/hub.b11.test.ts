@@ -28,7 +28,7 @@ import {
   OWNER_ORG_ID,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, hello, ns, trackSocket, up } from "./helpers.js";
+import { e, hello, idleOf, ns, trackSocket, up } from "./helpers.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -216,8 +216,7 @@ async function drain(h: BusHubStub, done: () => Promise<boolean>) {
   for (let k = 0; k < 200; k++) {
     if (await done()) return;
     await runDurableObjectAlarm(stubOf(h));
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 5));
+    await idleOf(stubOf(h));
   }
 }
 
@@ -332,9 +331,9 @@ describe("per-socket frame budget (token bucket)", () => {
     const m = await machineOn(h);
     const d = await daemonOn(h, m.id);
     await emptyBucket(h, m.id, 1);
+    // The pings precede the hello on this socket: the hub reads the hello
+    // after them, so its reply is the end of what the pings could have done.
     for (let k = 0; k < 100; k++) d.ws.send("ping");
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 100));
     d.send(hello("last"));
     await until(d, "hello_ok");
     expect(d.isClosed()).toBe(false);

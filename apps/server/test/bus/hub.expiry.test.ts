@@ -21,6 +21,7 @@ import {
   e,
   framesSeen,
   hello,
+  hubIdle,
   hubOf,
   inOwnerHub,
   machine,
@@ -199,8 +200,7 @@ async function setup() {
 async function offline(d: Daemon) {
   d.close();
   await d.closed;
-  // sleep-ok: absence — the hub's own bookkeeping after a close emits no frame
-  await new Promise((r) => setTimeout(r, 50));
+  await hubIdle(); // the hub's close handling is done
 }
 
 /** A new socket for the machine, registering `ref` again (the reconnect). */

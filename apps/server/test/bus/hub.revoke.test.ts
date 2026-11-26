@@ -28,6 +28,7 @@ import {
   e,
   hello,
   hubOf,
+  idleOf,
   machine,
   ns,
   ready,
@@ -206,8 +207,6 @@ const list = (from_ref: string): ClientFrame => ({
   from_ref,
 });
 
-const tick = () => new Promise((r) => setTimeout(r, 30));
-
 const receiptRow = (h: BusHubStub, id: string) =>
   inHub(
     h,
@@ -309,7 +308,7 @@ describe("revoke drops the machine's agents", () => {
 
     // The close lands: no second roster_changed.
     await v.d.closed;
-    await tick();
+    await idleOf(h); // the hub's close handling is done
 
     s.d.send(list(s.ref));
     const r = await until(s.d, "roster");
@@ -465,7 +464,8 @@ describe("revoke and mail", () => {
     s.d.send(send(s.ref, "victim", "hello"));
     const r = await until(s.d, "receipt");
     s.d.ws.close(1000, "bye");
-    await tick();
+    await s.d.closed;
+    await idleOf(h); // the hub has seen the sender go
     expect(await h.revokeMachine(v.m.id)).toBe(true);
     await v.d.closed;
 
@@ -498,7 +498,8 @@ describe("revoke and mail", () => {
     expect(await mailCount(h, [r.msg_id])).toBe(1);
     // Mail the victim sent the sender, still pending.
     s.d.ws.close(1000, "bye");
-    await tick();
+    await s.d.closed;
+    await idleOf(h); // the hub has seen the sender go
     v.d.send(send(v.ref, "sender", "from victim"));
     const out = await until(v.d, "receipt");
 

@@ -13,6 +13,7 @@ import {
   type Daemon,
   daemon,
   eventually,
+  fence,
   hello,
   inOwnerHub,
   machine,
@@ -151,8 +152,6 @@ describe("F2: a replaced socket is dead", () => {
       // Already closed on this side.
     }
     await first.closed;
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 50));
     second.send(hello());
     await waitFor(second, "hello_ok");
     const w = await ready(watcher.token);
@@ -182,15 +181,13 @@ describe("F3: targeted roster_changed fan-out", () => {
     await waitFor(hasGlobal, "agent_ok");
     elsewhere.send(up("u3", "el", "Else", ns()));
     await waitFor(elsewhere, "agent_ok");
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(inNs, hasGlobal, elsewhere);
     const before = [inNs, hasGlobal, elsewhere].map((d) => changed(d).length);
     actor.send(up("u4", "act", "Actor", n));
     await waitFor(actor, "agent_ok");
     await until(() => changed(inNs).length > before[0]);
     await until(() => changed(hasGlobal).length > before[1]);
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 50));
+    await fence(inNs, hasGlobal, elsewhere);
     expect(changed(inNs).slice(before[0])).toEqual([n]);
     expect(changed(hasGlobal).slice(before[1])).toEqual([n]);
     expect(changed(elsewhere).slice(before[2])).toEqual([]);
@@ -212,8 +209,7 @@ describe("F3: targeted roster_changed fan-out", () => {
     // Seeded after the watchers register: 1000 live agents is the org-wide
     // live-agent cap (B11), past which agent_up is refused.
     await seedAgents(m.id, LIMITS.maxRosterAgents, (i) => `${prefix}-${i}`);
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 100));
+    await fence(d, ...watchers);
     const before = watchers.map((w) => changed(w).length);
     const t0 = Date.now();
     d.send({
@@ -230,8 +226,7 @@ describe("F3: targeted roster_changed fan-out", () => {
     await waitFor(d, "hello_ok");
     const wall = Date.now() - t0;
     await until(() => watchers.every((w, i) => changed(w).length > before[i]));
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 50));
+    await fence(...watchers);
     watchers.forEach((w, i) => {
       expect(changed(w).slice(before[i])).toEqual([`${prefix}-${i}`]);
     });
@@ -260,8 +255,7 @@ describe("spec-review minors", () => {
       (await waitFor(w, "roster")).agents.find((x) => x.bus_name === "Away")
         ?.state,
     ).toBe("queued");
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(w);
     const before = changed(w).length;
     const back = await daemon(away.token);
     await until(() => changed(w).length > before);
@@ -290,14 +284,12 @@ describe("fix round 2: global changes reach every daemon; no self-broadcast", ()
     other.send(up("u1", "o", "Other", n2));
     await waitFor(other, "agent_ok");
     const actor = await ready((await machine("Actor")).token);
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(other, actor);
     const before = changed(other).length;
     actor.send(up("u2", "g", `Glob${Date.now()}`, n1, true));
     await waitFor(actor, "agent_ok");
     await until(() => changed(other).length > before);
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(other, actor);
     expect(changed(other).slice(before)).toEqual([n2]);
     // And its agent_down too.
     const mid = changed(other).length;
@@ -320,8 +312,7 @@ describe("fix round 2: global changes reach every daemon; no self-broadcast", ()
     d.send({ v: 1, id: "s1", type: "sessions", open: [], closed: ["a"] });
     d.send(hello("sync"));
     await waitFor(d, "hello_ok");
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(d);
     expect(changed(d)).toEqual([]);
     d.close();
   });
@@ -335,8 +326,7 @@ describe("fix round 2: global changes reach every daemon; no self-broadcast", ()
     a.close();
     await a.closed;
     const b = await ready(m.token);
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(b);
     expect(changed(b)).toEqual([]);
     b.close();
   });

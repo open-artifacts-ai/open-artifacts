@@ -16,6 +16,7 @@ import {
   type Daemon,
   framesSeen,
   hello,
+  hubIdle,
   hubOf,
   inOwnerHub,
   machine,
@@ -279,8 +280,7 @@ describe("mail: delivery", () => {
     await agent(t, "rref", receiver, n);
     t.close();
     await t.closed;
-    // sleep-ok: absence — a machine that just closed must not be marked offline
-    await new Promise((r) => setTimeout(r, 50));
+    await hubIdle(); // the hub's close handling is done
 
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "later"));
     expect(r.state).toBe("pending");

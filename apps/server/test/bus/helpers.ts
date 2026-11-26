@@ -19,7 +19,7 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterAll, expect, vi } from "vitest";
-import { type BusHub, busHubName } from "../../src/bus/hub.js";
+import { BusHub, busHubName } from "../../src/bus/hub.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
 import { sha256Hex } from "../../src/util/crypto.js";
@@ -357,6 +357,44 @@ export const framesSeen = (d: Daemon): ServerFrame[] =>
 let seq = 0;
 /** A namespace no other test uses, so names never collide across tests. */
 export const ns = (tag = "ns") => `test.local/${tag}-${++seq}-${Date.now()}`;
+
+/** Resolves once the hub's started close handlers, index calls and recorded writes have settled (no clock). */
+export const idleOf = (h: DurableObjectStub<BusHub>) =>
+  runInDurableObject(h, (i: BusHub) => BusHub.whenIdle(i));
+/** `idleOf` for a member's hub (the owner's by default). */
+export const hubIdle = async (userId?: string) => idleOf(await hubOf(userId));
+
+let fenceSeq = 0;
+/**
+ * Fences the hub's reaction to everything these daemons sent before: the hub
+ * handles a socket's frames in order and its sync reactions (roster fan-out,
+ * writes) happen inside that handling, so once the hello_ok for this hello is
+ * back, every frame the hub emitted to the daemon for earlier work is in
+ * `raw`. Only for a reaction that is synchronous in the handler; a timer or an
+ * alarm is awaited on its own end event.
+ */
+export async function fence(...ds: Daemon[]): Promise<void> {
+  await Promise.all(
+    ds.map((d) => {
+      const id = `fence-${++fenceSeq}`;
+      const back = new Promise<void>((resolve) => {
+        const on = (ev: MessageEvent) => {
+          const text = String(ev.data);
+          if (
+            text.includes('"type":"hello_ok"') &&
+            text.includes(`"id":"${id}"`)
+          ) {
+            d.ws.removeEventListener("message", on);
+            resolve();
+          }
+        };
+        d.ws.addEventListener("message", on);
+      });
+      d.send(hello(id));
+      return back;
+    }),
+  );
+}
 
 export const hello = (id = "h1"): ClientFrame => ({
   v: 1,

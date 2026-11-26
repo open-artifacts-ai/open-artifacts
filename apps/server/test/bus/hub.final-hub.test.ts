@@ -28,7 +28,7 @@ import {
   SEND_KEY_RETAIN_MS,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, ns, trackSocket, up } from "./helpers.js";
+import { e, fence, idleOf, ns, trackSocket, up } from "./helpers.js";
 
 type BusHubStub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -145,8 +145,7 @@ const exists = async (h: BusHubStub, id: string) =>
 async function alarms(h: BusHubStub, n = 5) {
   for (let k = 0; k < n; k++) {
     await runDurableObjectAlarm(stubOf(h));
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 2));
+    await idleOf(stubOf(h));
   }
 }
 
@@ -179,8 +178,7 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
       expect(f.type).not.toBe("error");
       if (f.type === "agent_ok") k++;
     }
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 50));
+    await fence(d); // every up/down pair was handled, in order
     expect(
       await count(h, "select count(*) as n from agents where live = 1"),
     ).toBe(0);
@@ -325,8 +323,7 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
     d.send(up("u1", "ref_a", "Idle", n));
     await until(d, "agent_ok");
     d.send({ v: 1, id: "d1", type: "agent_down", agent_ref: "ref_a" });
-    // sleep-ok: a settle for the hub's own bookkeeping (no frame reports it)
-    await new Promise((r) => setTimeout(r, 30));
+    await fence(d);
     const id = (
       await inHub(h, (_, s) =>
         s.storage.sql

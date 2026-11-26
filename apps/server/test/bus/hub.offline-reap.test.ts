@@ -22,6 +22,7 @@ import {
   daemon,
   e,
   hello,
+  hubIdle,
   hubOf,
   machine,
   member,
@@ -229,8 +230,7 @@ describe("offline reap (open-bus #422)", () => {
     const d2 = await connect(m.token);
     const c = await d1.closed;
     expect(c.reason).toBe("replaced");
-    // sleep-ok: absence — a replaced machine must not be marked offline at all
-    await new Promise((r) => setTimeout(r, 20));
+    await hubIdle(); // the hub's close handling for the replaced socket is done
     expect(await disconnectedAt(m.id)).toBeNull();
     await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS);
     expect(await liveOf(m.id)).toEqual([name]);
@@ -544,8 +544,7 @@ describe("closeAll and the offline clock (#1350)", () => {
     const { uid, t0, m, d, name, stub } = await setup("Access");
     expect(await stub.closeAll("space role lowered", "access")).toBe(1);
     expect((await d.closed).code).toBe(4403);
-    // sleep-ok: absence — an access close is not an offline machine
-    await new Promise((r) => setTimeout(r, 20));
+    await hubIdle(uid); // the hub's close handling is done
     expect(await disconnectedAt(m.id, uid)).toBeNull();
     const d2 = await connect(m.token);
     await alarmAtTime(t0 + 2 * OFFLINE_REAP_MS, uid);
