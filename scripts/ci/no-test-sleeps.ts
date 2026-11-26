@@ -8,11 +8,8 @@
 //     `promisify(setTimeout)`;
 //   - `timers/promises`: a static or dynamic import or a require of it (but a
 //     lone `setImmediate`), however its `setTimeout` is aliased, and
-//     `scheduler.wait(`; `Atomics.wait` / `waitAsync` with a finite timeout,
-//     always, whatever notifies it (write a bounded signal wait as an untimed
-//     wait under the deadline helper: `withDeadline(Atomics.waitAsync(ia, i,
-//     v).value, ms, label)`; no timeout, Infinity, `undefined` and `void 0`
-//     are not flagged);
+//     `scheduler.wait(`; `Atomics.wait` / `waitAsync` with a finite timeout
+//     unless something notifies that same array (see below);
 //   - a `sleep` helper or call;
 //   - Playwright's `waitForTimeout`, and `toPass` / `expect.poll` given
 //     `intervals`;
@@ -27,6 +24,15 @@
 // `polling` number, a busy `while (Date.now() < end)`, and in Python
 // `Event().wait`, `getattr(time, "sleep")`, `from time import *`, and a timed
 // empty `select`.
+//
+// A finite-timeout `Atomics.wait` / `waitAsync` is a sleep when nothing can
+// notify it and a deadline on a real signal when something can. Names do not
+// scope, so the wait's array is resolved to its binding with the TypeScript
+// checker (one file, no libs): the wait passes only when an `Atomics.notify`
+// argument, or something handed to a Worker / `postMessage` / `workerData`,
+// names the same binding (the array, its `.buffer`, or the buffer it was built
+// over). An array that cannot be resolved is flagged, and so is a notify under
+// another name for the same memory.
 //
 // Deliberately not covered (a static scan cannot tell them from real use):
 //   - a bare `setTimeout(fn, ms)` outside a Promise executor: it is how
@@ -51,6 +57,7 @@
 
 import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -179,7 +186,170 @@ function* calls(code: string, opener: RegExp) {
   }
 }
 
-const JS_RULES: ((code: string) => Found[])[] = [
+type Ts = typeof import("typescript");
+let tsModule: Ts | undefined;
+/** The `typescript` package, loaded on first use: only a file with a finite Atomics wait pays for it. */
+const loadTs = (): Ts =>
+  (tsModule ??= createRequire(import.meta.url)("typescript") as Ts);
+
+/**
+ * `Atomics.wait` / `waitAsync` with a finite timeout is a sleep when nothing
+ * can notify it, and a bounded wait on a real signal when something can. A
+ * name does not tell them apart (two blocks may each have a local `a`), so the
+ * wait's array is resolved to its binding with the TypeScript checker (one
+ * file, no libs, no module resolution): the wait is let through only when an
+ * `Atomics.notify(...)` argument, or something handed to a Worker /
+ * `postMessage` / `workerData`, names the same binding (the array, its
+ * `.buffer`, or the buffer it was built over). A binding that cannot be
+ * resolved is flagged. No timeout, Infinity, `undefined` and `void 0` wait
+ * for a notify and are not flagged here.
+ */
+function atomicsFinite(code: string, file: string): Found[] {
+  const finite: { index: number }[] = [];
+  for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
+    const timeout = topLevelArgs(c.body.slice(1))[3]?.trim();
+    if (
+      timeout &&
+      !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
+        timeout,
+      )
+    )
+      finite.push({ index: c.index });
+  }
+  if (finite.length === 0) return [];
+  const flagged = (): Found[] =>
+    finite.map((f) => ({ index: f.index, why: "timers/promises" }));
+  try {
+    const ts = loadTs();
+    const name = /\.(?:[cm]?[jt]sx?)$/.test(file)
+      ? file.replace(/^.*\//, "")
+      : "a.ts";
+    const sf = ts.createSourceFile(name, code, ts.ScriptTarget.Latest, true);
+    const host: import("typescript").CompilerHost = {
+      getSourceFile: (f) => (f === name ? sf : undefined),
+      getDefaultLibFileName: () => "lib.d.ts",
+      writeFile: () => {},
+      getCurrentDirectory: () => "/",
+      getDirectories: () => [],
+      fileExists: (f) => f === name,
+      readFile: () => undefined,
+      getCanonicalFileName: (f) => f,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => "\n",
+    };
+    const program = ts.createProgram(
+      [name],
+      { allowJs: true, noResolve: true, noLib: true },
+      host,
+    );
+    const checker = program.getTypeChecker();
+    type N = import("typescript").Node;
+    type Sym = import("typescript").Symbol;
+    const unwrap = (n: N): N => {
+      let x = n;
+      while (
+        ts.isParenthesizedExpression(x) ||
+        ts.isNonNullExpression(x) ||
+        ts.isAsExpression(x) ||
+        ts.isSatisfiesExpression(x)
+      )
+        x = x.expression;
+      return x;
+    };
+    /** The binding an expression names: a variable, or a property (`this.ia`). */
+    const symbolOf = (n: N): Sym | undefined => {
+      const x = unwrap(n);
+      if (ts.isIdentifier(x)) return checker.getSymbolAtLocation(x);
+      if (ts.isPropertyAccessExpression(x))
+        return checker.getSymbolAtLocation(x.name);
+      return undefined;
+    };
+    /** Every binding named anywhere inside `n` (a notify's or a share's argument). */
+    const named = (n: N): Set<Sym> => {
+      const out = new Set<Sym>();
+      const visit = (x: N) => {
+        if (ts.isIdentifier(x)) {
+          // `{ sab }` names the variable, not the property it makes
+          const sy = ts.isShorthandPropertyAssignment(x.parent)
+            ? checker.getShorthandAssignmentValueSymbol(x.parent)
+            : checker.getSymbolAtLocation(x);
+          if (sy) out.add(sy);
+        }
+        ts.forEachChild(x, visit);
+      };
+      visit(n);
+      return out;
+    };
+    // The buffer(s) an array was built over: `arr = new Int32Array(buf)`.
+    const over = new Map<Sym, Set<Sym>>();
+    const note = (target: N, init: N) => {
+      const sy = symbolOf(target);
+      const i = unwrap(init);
+      if (!sy || !ts.isNewExpression(i)) return;
+      const set = over.get(sy) ?? new Set<Sym>();
+      for (const a of i.arguments ?? []) for (const b of named(a)) set.add(b);
+      over.set(sy, set);
+    };
+    const notified = new Set<Sym>();
+    const waits = new Map<number, N>();
+    const walk = (n: N) => {
+      if (ts.isVariableDeclaration(n) && n.initializer)
+        note(n.name, n.initializer);
+      else if (ts.isPropertyDeclaration(n) && n.initializer)
+        note(n.name, n.initializer);
+      else if (
+        ts.isBinaryExpression(n) &&
+        n.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      )
+        note(n.left, n.right);
+      else if (
+        ts.isPropertyAssignment(n) ||
+        ts.isShorthandPropertyAssignment(n)
+      ) {
+        if (n.name.getText(sf) === "workerData")
+          for (const y of named(n)) notified.add(y);
+      } else if (ts.isCallExpression(n) || ts.isNewExpression(n)) {
+        const callee = n.expression.getText(sf).replace(/\s+/g, "");
+        if (/^Atomics\.notify$/.test(callee)) {
+          const first = n.arguments?.[0];
+          if (first) for (const y of named(first)) notified.add(y);
+        } else if (/^Atomics\.(?:wait|waitAsync)$/.test(callee))
+          waits.set(n.getStart(sf), n);
+        else if (
+          /(?:^|\.)postMessage$/.test(callee) ||
+          (ts.isNewExpression(n) && /(?:^|\.)Worker$/.test(callee))
+        )
+          for (const a of n.arguments ?? [])
+            for (const y of named(a)) notified.add(y);
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(sf);
+    // a notified view reaches the buffer it was built over
+    for (const y of [...notified])
+      for (const b of over.get(y) ?? []) notified.add(b);
+    const out: Found[] = [];
+    for (const f of finite) {
+      const call = waits.get(f.index) as
+        | import("typescript").CallExpression
+        | undefined;
+      const arr = call?.arguments[0];
+      const key = arr ? symbolOf(arr) : undefined;
+      const keys = new Set<Sym>();
+      if (key) {
+        keys.add(key);
+        for (const b of over.get(key) ?? []) keys.add(b);
+      }
+      if (![...keys].some((k) => notified.has(k)))
+        out.push({ index: f.index, why: "timers/promises" });
+    }
+    return out;
+  } catch {
+    return flagged();
+  }
+}
+
+const JS_RULES: ((code: string, file: string) => Found[])[] = [
   // new Promise(<executor>) whose executor reaches a timer, however it is
   // written: setTimeout / setInterval (also on globalThis, window, self),
   // a name `setTimeout` was assigned or destructured to, AbortSignal.timeout.
@@ -281,25 +451,9 @@ const JS_RULES: ((code: string) => Found[])[] = [
     }
     for (const m of code.matchAll(/\bscheduler\.wait\s*\(/g))
       out.push({ index: m.index as number, why: "timers/promises" });
-    // Atomics.wait / waitAsync with a finite timeout is always flagged: a static
-    // scan cannot tell a sleep on a buffer nothing notifies from a bounded wait
-    // on a real signal (names do not scope). A bounded signal wait is written
-    // as an untimed wait under the sanctioned deadline helper:
-    // `withDeadline(Atomics.waitAsync(ia, i, v).value, ms, label)`. No timeout,
-    // Infinity, or an explicit undefined / void 0 (the same as omitted) waits
-    // for a notify and is not flagged.
-    for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
-      const timeout = topLevelArgs(c.body.slice(1))[3]?.trim();
-      if (
-        timeout &&
-        !/^(?:Infinity|Number\s*\.\s*POSITIVE_INFINITY|undefined|void\s*\(?\s*0\s*\)?)$/.test(
-          timeout,
-        )
-      )
-        out.push({ index: c.index, why: "timers/promises" });
-    }
     return out;
   },
+  atomicsFinite,
   (code) =>
     [
       ...code.matchAll(
@@ -411,7 +565,7 @@ function pySleepNames(code: string) {
   return { modules, funcs };
 }
 
-const PY_RULES: ((code: string) => Found[])[] = [
+const PY_RULES: ((code: string, file: string) => Found[])[] = [
   // time.sleep, asyncio.sleep, trio/anyio/gevent/eventlet sleep, under any
   // alias, `sleep` imported (and aliased) from them, and __import__("time").sleep.
   (code) => {
@@ -521,7 +675,7 @@ const PY_RULES: ((code: string) => Found[])[] = [
   shellSleep,
 ];
 
-const SH_RULES: ((code: string) => Found[])[] = [shellSleep];
+const SH_RULES: ((code: string, file: string) => Found[])[] = [shellSleep];
 
 /** The rules and the comment style for a file, by extension. */
 const kindOf = (file: string) =>
@@ -555,7 +709,7 @@ export function scanText(text: string, file = ""): Hit[] {
   const seen = new Set<string>();
   const out: Hit[] = [];
   for (const rule of kind.rules)
-    for (const f of rule(code)) {
+    for (const f of rule(code, file)) {
       const line = lineOf(f.index);
       const key = `${line}:${f.why}`;
       if (seen.has(key)) continue;
