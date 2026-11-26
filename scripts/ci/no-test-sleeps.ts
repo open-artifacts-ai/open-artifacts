@@ -284,7 +284,14 @@ const JS_RULES: ((code: string) => Found[])[] = [
     // workerData. No timeout, Infinity, or an explicit undefined / void 0 (the
     // same as omitted) waits for a notify; a notifiable one with a finite
     // timeout is a bounded signal wait, a deadline on a real signal.
-    const ident = /^[A-Za-z_$][\w$]*$/;
+    const seg = "[A-Za-z_$][\\w$]*";
+    const chain = new RegExp(`^${seg}(?:\\s*\\.\\s*${seg})*$`);
+    // A member chain as a pattern: whitespace around the dots is free.
+    const pattern = (text: string) =>
+      text
+        .split(".")
+        .map((x) => x.trim().replace(/\$/g, "\\$"))
+        .join("\\s*\\.\\s*");
     for (const c of calls(code, /\bAtomics\s*\.\s*(?:wait|waitAsync)\s*\(/g)) {
       const args = topLevelArgs(c.body.slice(1));
       const timeout = args[3]?.trim();
@@ -296,20 +303,20 @@ const JS_RULES: ((code: string) => Found[])[] = [
       )
         continue;
       const arr = (args[0] ?? "").trim();
-      if (ident.test(arr)) {
-        const names = new Set([arr]);
-        // the buffer the array views: `arr = new Int32Array(buf)` / `buf.buffer`
+      if (chain.test(arr)) {
+        const names = [arr];
+        // the buffer the array views: `arr = new Int32Array(buf)`
         const view = code.match(
           new RegExp(
-            `\\b${arr.replace(/\$/g, "\\$")}\\s*=\\s*new\\s+\\w+Array\\s*\\(\\s*([A-Za-z_$][\\w$]*)`,
+            `(?<![\\w$.])${pattern(arr)}\\s*=\\s*new\\s+\\w+Array\\s*\\(\\s*(${seg}(?:\\s*\\.\\s*${seg})*)`,
           ),
         );
-        if (view) names.add(view[1] as string);
+        if (view) names.push((view[1] as string).replace(/\s+/g, ""));
+        // `.buffer` of the array is the same memory, and is covered by the
+        // array's own text appearing inside it.
         const mentions = (text: string) =>
-          [...names].some((n) =>
-            new RegExp(`(?<![\\w$.])${n.replace(/\$/g, "\\$")}(?![\\w$])`).test(
-              text,
-            ),
+          names.some((n) =>
+            new RegExp(`(?<![\\w$.])${pattern(n)}(?![\\w$])`).test(text),
           );
         const notified = [...calls(code, /\bAtomics\s*\.\s*notify\s*\(/g)].some(
           (n) => mentions(topLevelArgs(n.body.slice(1))[0] ?? ""),

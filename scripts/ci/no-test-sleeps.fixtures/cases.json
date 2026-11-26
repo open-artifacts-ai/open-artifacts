@@ -832,5 +832,53 @@
     "file": "a.test.ts",
     "text": "Atomics.notify(other, 0);\nAtomics.wait(ia, 0, 0, 50);",
     "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait bounded on this.ia, notified as this.ia (pass)",
+    "file": "a.test.ts",
+    "text": "Atomics.wait(this.ia, 0, 0, 5000);\nAtomics.notify(this.ia, 0);",
+    "why": []
+  },
+  {
+    "name": "Atomics.waitAsync bounded on ctx.ia, notified as ctx . ia (pass)",
+    "file": "a.test.ts",
+    "text": "const r = Atomics.waitAsync(ctx.ia, 0, 0, 5000);\nAtomics.notify(ctx . ia, 0);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded on state.buf.ia, array posted to a worker (pass)",
+    "file": "a.test.ts",
+    "text": "w.postMessage({ ia: state.buf.ia });\nAtomics.wait(state.buf.ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded on this.ia, its buffer shared with a Worker (pass)",
+    "file": "a.test.ts",
+    "text": "this.ia = new Int32Array(this.sab);\nnew Worker(f, { workerData: this.sab });\nAtomics.wait(this.ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded on this.ia, notified through its .buffer (pass)",
+    "file": "a.test.ts",
+    "text": "Atomics.notify(new Int32Array(this.ia.buffer), 0);\nAtomics.wait(this.ia, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "Atomics.wait bounded on this.ia, never notified (flag)",
+    "file": "a.test.ts",
+    "text": "this.ia = new Int32Array(new SharedArrayBuffer(4));\nAtomics.wait(this.ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait bounded on ctx.ia, a different member notified (flag)",
+    "file": "a.test.ts",
+    "text": "Atomics.notify(ctx.other, 0);\nAtomics.wait(ctx.ia, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "Atomics.wait bounded on state.buf.ia, only state.buf.iab notified (flag)",
+    "file": "a.test.ts",
+    "text": "Atomics.notify(state.buf.iab, 0);\nAtomics.wait(state.buf.ia, 0, 0, 50);",
+    "why": ["timers/promises"]
   }
 ]
