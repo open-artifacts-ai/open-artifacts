@@ -326,6 +326,42 @@ export function removeProjectHabits(
 }
 
 /**
+ * Takes our block out of `path`, restoring the file's own bytes, and forgets it
+ * in `kept`. The file goes only when install created it and it is not a link.
+ */
+function dropBlock(
+  path: string,
+  kept: Record<string, FileRecord>,
+  files: string[],
+  notes: string[],
+): void {
+  try {
+    // Unreachable now (a moved folder, a dangling link): keep the record, so a
+    // later run retries it, as plugin cleanup does.
+    if (brokenLink(path) || !existsSync(path)) return;
+    const real = targetOf(path);
+    const before = readFileSync(real, "utf8");
+    if (spanOf(before.split("\n")) === undefined) {
+      delete kept[path];
+      return;
+    }
+    const rec = kept[path];
+    const after = withoutHabits(before, rec?.added);
+    if (rec?.created && !isLink(path) && after.trim() === "")
+      rmSync(real, { force: true });
+    else writeAtomic(real, after);
+    delete kept[path];
+    files.push(path);
+  } catch (e) {
+    notes.push(
+      e instanceof Error && e.message === "unterminated"
+        ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
+        : `Could not update ${path}: ${reason(e)}`,
+    );
+  }
+}
+
+/**
  * Removes our block from every file a harness may have it in, restoring the
  * file's own bytes. A file goes only when install created it and it is not a link.
  * Set `opts.plugins` to `false` to leave the Hermes/OpenClaw plugin markers alone.
@@ -342,30 +378,7 @@ export function removeHabits(
   const visit = (path: string) => {
     if (seen.has(path)) return;
     seen.add(path);
-    try {
-      // Unreachable now (a moved folder, a dangling link): keep the record, so a
-      // later run retries it, as plugin cleanup does.
-      if (brokenLink(path) || !existsSync(path)) return;
-      const real = targetOf(path);
-      const before = readFileSync(real, "utf8");
-      if (spanOf(before.split("\n")) === undefined) {
-        delete kept[path];
-        return;
-      }
-      const rec = kept[path];
-      const after = withoutHabits(before, rec?.added);
-      if (rec?.created && !isLink(path) && after.trim() === "")
-        rmSync(real, { force: true });
-      else writeAtomic(real, after);
-      delete kept[path];
-      files.push(path);
-    } catch (e) {
-      notes.push(
-        e instanceof Error && e.message === "unterminated"
-          ? `Left ${path} alone: its Open Artifacts habits block has no END marker. Fix or remove the block.`
-          : `Could not update ${path}: ${reason(e)}`,
-      );
-    }
+    dropBlock(path, kept, files, notes);
   };
   for (const h of harnesses) {
     for (const path of habitsFiles(deps, h)) visit(path);
