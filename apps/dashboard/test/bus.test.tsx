@@ -803,6 +803,37 @@ describe("Agents › Agents (the roster)", () => {
     ).toBeInTheDocument();
   });
 
+  it("an Antigravity session found before its first message shows as Starting, not as something it said (agy S2b)", async () => {
+    withBus();
+    const m = agentNamed("oa-manager");
+    const starting: BusAgent = {
+      ...m,
+      id: "BaS9nPqRsTu4vWxY",
+      name: "agy",
+      kind: "antigravity",
+      status: "idle",
+      statusLabel: "starting",
+    };
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          agents: [starting, m],
+          live: true,
+          droppedNotices: 0,
+        }),
+      ),
+    );
+    mount("/agents");
+    const rows = within(await roster())
+      .getAllByRole("row")
+      .slice(1);
+    expect(rows[0]).toHaveTextContent(
+      `agy · open-artifactsStarting—${m.machineLabel}`,
+    );
+    // Every other agent keeps its badge and its own words.
+    expect(rows[1]).toHaveTextContent(`Live${m.statusLabel}`);
+  });
+
   it("an org in the rail scopes the roster and its summary", async () => {
     withBus();
     mount("/agents");

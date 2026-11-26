@@ -1,5 +1,5 @@
 // #1293: Agents › Agents: the namespace rail and the roster.
-import type { BusAgent } from "@oa/shared";
+import { type BusAgent, busAgentStarting } from "@oa/shared";
 import {
   Button,
   cn,
@@ -217,11 +217,20 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
 
 function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   const stacked = useIsMobile();
+  // agy S2b: a starting session's label is the bus's, shown as its status.
   const status = (a: BusAgent) => (
-    <StatusBadge status={a.state === "live" ? "Live" : "Queued"} />
+    <StatusBadge
+      status={
+        busAgentStarting(a)
+          ? "Starting"
+          : a.state === "live"
+            ? "Live"
+            : "Queued"
+      }
+    />
   );
   const says = (a: BusAgent) =>
-    a.statusLabel ? (
+    a.statusLabel && !busAgentStarting(a) ? (
       <span title={`${a.statusLabel} (reported by the agent)`}>
         {a.statusLabel}
       </span>
@@ -243,7 +252,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
               </span>
             </span>
             <span className="justify-self-end">{status(a)}</span>
-            {a.statusLabel && (
+            {a.statusLabel && !busAgentStarting(a) && (
               <span className="col-span-2 text-[length:var(--oa-text-xs)]">
                 {says(a)}
               </span>

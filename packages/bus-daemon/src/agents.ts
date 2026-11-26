@@ -46,6 +46,13 @@ export type AgentRecord = {
    * helper.
    */
   linkHashes?: string[];
+  /**
+   * agy S2b: an agy process listed from the process table before its first
+   * message, under `agyStartingRef`. It has no conversation yet: mail to it is
+   * held, and the conversation that joins in the same process takes over its
+   * address (`replaces`). Never persisted: the next scan lists it again.
+   */
+  starting?: true;
 };
 
 /** #1984: most proof hashes a session keeps; the hub holds the same number. */
