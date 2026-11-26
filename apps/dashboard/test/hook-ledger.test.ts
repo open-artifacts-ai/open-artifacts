@@ -71,11 +71,8 @@ function rlHooks(file: string): { limit: number; period: number } {
 }
 
 describe("the budget is RL_HOOKS's, less a stated margin", () => {
-  for (const file of [
-    "wrangler.template.jsonc",
-    "wrangler.staging.jsonc",
-    "wrangler.test.jsonc",
-  ])
+  // Not the install template: no release code reads RL_HOOKS.
+  for (const file of ["wrangler.staging.jsonc", "wrangler.test.jsonc"])
     it(`matches ${file}`, () => {
       expect(rlHooks(file)).toEqual({
         limit: RL_HOOKS_LIMIT,
