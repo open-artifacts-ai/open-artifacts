@@ -211,7 +211,7 @@ export interface Env {
   EMAIL_FROM?: string;
   /**
    * Direct sign-in (auth/config.ts). Comma list of "access", "google",
-   * "email"; unset means "access" (Cloudflare Access, today's behaviour).
+   * "apple", "email"; unset means "access" (Cloudflare Access, today's behaviour).
    */
   AUTH_PROVIDERS?: string;
   /** Comma list of verified domains: the Google `hd` allow-list and code domains. */
@@ -227,6 +227,10 @@ export interface Env {
   /** "on": domain members may sign in with emailed codes (trial; only while Google is off). */
   EMAIL_CODE_DOMAIN?: string;
   GOOGLE_CLIENT_ID?: string;
+  /** Sign in with Apple (self-hosted direct transport only, #3087 slice 4). */
+  APPLE_SERVICES_ID?: string;
+  APPLE_TEAM_ID?: string;
+  APPLE_KEY_ID?: string;
   /** Hosted broker origin (https); set, it selects the broker transport. */
   AUTH_BROKER_URL?: string;
   /**
@@ -263,6 +267,8 @@ export interface Env {
   ACCESS_CLIENT_SECRET: string;
   /** Google client secret (direct transport only). */
   GOOGLE_CLIENT_SECRET?: string;
+  /** Sign in with Apple PKCS#8 PEM private key (.p8, self-hosted direct transport only). */
+  APPLE_PRIVATE_KEY?: string;
   /** Ed25519 private key, PKCS#8 DER base64url (broker transport). */
   BROKER_SIGNING_KEY?: string;
   /**

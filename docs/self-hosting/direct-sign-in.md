@@ -12,11 +12,15 @@ Open Artifacts logs people in through Cloudflare Access by default. Direct login
 
 | Variable | Kind | Setup flag | Meaning |
 |---|---|---|---|
-| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, or `email`), optionally with `access`. Unset means Access only. |
+| `AUTH_PROVIDERS` | var | `--auth-providers` | `google,email` (or `google`, `apple`, or `email`), optionally with `access`. Unset means Access only. |
 | `AUTH_DOMAINS` | var | `--auth-domains` | Your verified domains, comma separated, e.g. `example.com`. |
 | `AUTH_DOMAIN_JOIN` | var | `--auth-domain-join` | `member` (anyone in the domain joins) or `invite` (default). |
 | `GOOGLE_CLIENT_ID` | var | `--google-client-id` | Your Google OAuth client id. |
 | `GOOGLE_CLIENT_SECRET` | secret | none | Its secret. |
+| `APPLE_SERVICES_ID` | var | none | Your Apple Services ID (used as `client_id`). |
+| `APPLE_TEAM_ID` | var | none | Your 10-character Apple Developer Team ID. |
+| `APPLE_KEY_ID` | var | none | The Key ID of your Sign in with Apple private key. |
+| `APPLE_PRIVATE_KEY` | secret | none | The PKCS#8 PEM contents of the `.p8` key file. |
 | `EMAIL_CODE_DOMAIN` | var | `--email-code-domain` | `on` lets domain members use codes, only while Google is off. |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET` | var, secret | `--turnstile-site-key` (the key only) | When set, every code request needs a Turnstile token. Required for domain codes. |
 | `CODE_EMAILS_PER_DAY` | var | `--code-emails-per-day` | Daily cap on code emails (default 200, at most 10000), separate from invites (`EMAIL_DAILY_CAP`, default 100). |
@@ -63,6 +67,15 @@ Direct login keys everything it signs from `SESSION_SECRET`: one key per purpose
 2. Add the redirect URI `https://<your app host>/auth/callback/google`.
 3. Use only the `openid`, `email` and `profile` scopes.
 4. Put the client id and secret in the variables above.
+
+## Setting up Apple
+
+Sign in with Apple is link-only: people must already have an active account (for example, from an invite) and link their Apple account with an emailed one-time code on first login. Enable `email` alongside `apple` in `AUTH_PROVIDERS` so first-time linking can send that code.
+
+1. In Apple Developer, register an App ID (if you do not already have one) with **Sign in with Apple** enabled, then create a **Services ID** linked to it. Use this Services ID as `APPLE_SERVICES_ID`.
+2. In the Services ID's **Sign in with Apple** settings, add your app host as the domain and `https://<your app host>/auth/callback/apple` as the Return URL.
+3. Under **Keys**, create a key with **Sign in with Apple** enabled, download the `.p8` file once, and note its Key ID (`APPLE_KEY_ID`) and your Developer Team ID (`APPLE_TEAM_ID`).
+4. Set `APPLE_SERVICES_ID`, `APPLE_TEAM_ID` and `APPLE_KEY_ID` as Worker vars, put the full `.p8` PEM text in `APPLE_PRIVATE_KEY` (`wrangler secret put APPLE_PRIVATE_KEY`), and include `apple` in `AUTH_PROVIDERS`.
 
 ## Switching an existing install
 

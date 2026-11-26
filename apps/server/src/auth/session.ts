@@ -24,6 +24,7 @@ const MAX_COOKIE_LEN = 1024;
 const PROVIDERS: readonly SessionProvider[] = [
   "access",
   "google",
+  "apple",
   "code",
   "dev",
   "test",

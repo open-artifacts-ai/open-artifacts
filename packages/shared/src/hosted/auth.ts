@@ -24,6 +24,11 @@ export const AuthProviderSchema = z.discriminatedUnion("id", [
     /** Present whenever Turnstile is configured: code requests then need CodeRequest.turnstileToken. */
     turnstileSiteKey: z.string().optional(),
   }),
+  z.object({
+    id: z.literal("apple"),
+    /** AUTH.loginApple; navigate (full page) to `${start}?next=…`. */
+    start: z.string(),
+  }),
 ]);
 export type AuthProvider = z.infer<typeof AuthProviderSchema>;
 
@@ -66,7 +71,7 @@ export type SignInError = z.infer<typeof SignInErrorSchema>;
  * Google callback). Present on every no_access redirect, absent otherwise.
  * Params: `error` (SignInError), `next` (a safe same-origin path), `via`.
  */
-export const SignInViaSchema = z.enum(["access", "google"]);
+export const SignInViaSchema = z.enum(["access", "google", "apple"]);
 export type SignInVia = z.infer<typeof SignInViaSchema>;
 
 /** Code policy, as the server applies it and the UI shows it. */
@@ -192,7 +197,7 @@ export type SessionPayload = {
   uid: string;
   exp: number;
   iat: number;
-  p: "access" | "google" | "code" | "dev" | "test";
+  p: "access" | "google" | "apple" | "code" | "dev" | "test";
   t?: string;
   /**
    * The signature-checked Google token's `hd` (lowercase), set at the Google

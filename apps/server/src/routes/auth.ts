@@ -23,6 +23,7 @@ import {
   safeNext,
 } from "../auth/oidc.js";
 import { accessProvider } from "../auth/providers/access.js";
+import { appleProvider } from "../auth/providers/apple.js";
 import { googleProvider } from "../auth/providers/google.js";
 import {
   clearSessionCookie,
@@ -422,6 +423,115 @@ export function mountAuth(app: AppType): void {
       // Anything unexpected (D1, signing): the sign-in page, never a 500.
       logOidcFail("internal");
       return toSignIn("failed", next, clear, "google");
+    }
+  });
+
+  app.get(AUTH.loginApple, async (c) => {
+    if (!authConfig(c.env).apple) throw new ApiError("not_found", "Not found");
+    const { location, stateCookie, evict } = await buildAuthorizeRedirect(
+      c.env,
+      appleProvider,
+      c.req.query("next") ?? "/",
+      {
+        retry: c.req.query("retry") === "1",
+        cookieHeader: c.req.header("cookie"),
+      },
+    );
+    return redirect(location, [...evict, stateCookie]);
+  });
+
+  // Apple uses response_mode=form_post (cross-site POST). CSRF defence is the
+  // SameSite=None HMAC-signed state cookie path-scoped to /auth/callback/apple.
+  app.post(AUTH.callbackApple, async (c) => {
+    if (!authConfig(c.env).apple) throw new ApiError("not_found", "Not found");
+    const params = new URLSearchParams();
+    try {
+      const form = await c.req.formData();
+      for (const [k, v] of form.entries()) {
+        if (typeof v === "string") params.append(k, v);
+      }
+    } catch {
+      // Malformed or non-form body: leave empty so state check fails cleanly.
+    }
+    const picked = await pickStateCookie(
+      c.env,
+      c.req.raw,
+      params.get("state") ?? "",
+      appleProvider,
+    );
+    const clear = picked
+      ? [clearOidcCookie(c.env, picked.name, appleProvider)]
+      : [];
+    let next = "/";
+    try {
+      const id = await handleCallback(c.env, appleProvider, c.req.raw, params);
+      next = id.next;
+      const r = await admit(c.env, authConfig(c.env), id);
+      if (!r.ok) {
+        logOidcFail(r.reason);
+        logAuth({ provider: "apple", outcome: "refused", stage: r.reason });
+        if (r.reason === "needs_code") {
+          const link = await linkSetCookie(c, {
+            sub: id.subject,
+            email: id.email,
+            hd: null,
+            name: id.name,
+            provider: "apple",
+          });
+          if (link)
+            return redirect(
+              `${SIGN_IN_PAGE}?error=needs_code&next=${encodeURIComponent(
+                id.next,
+              )}&link=1`,
+              [...clear, link],
+            );
+        }
+        return toSignIn(r.reason, id.next, clear, "apple");
+      }
+      await seedWelcomeAfter(c, r.user);
+      const row = await getUserWithEpoch(c.env, r.user.id);
+      if (!row) {
+        logAuth({ provider: "apple", outcome: "error", stage: "no_user" });
+        return toSignIn("failed", id.next, clear, "apple");
+      }
+      const now = Date.now();
+      const sess = sessionCookie(
+        await signSession(c.env, r.user.id, now, {
+          provider: "apple",
+          epoch: row.sessionEpoch,
+        }),
+        c.env,
+      );
+      logAuth({ provider: "apple", outcome: "ok", uid: r.user.id });
+      return redirect(id.next, [...clear, sess]);
+    } catch (e) {
+      logAuth({
+        provider: "apple",
+        outcome: e instanceof ApiError ? "refused" : "error",
+        stage: catchStage(e),
+      });
+      if (e instanceof OidcStateError) {
+        if (e.retry) return toSignIn("expired", e.next, clear, "apple");
+        return redirect(
+          `${AUTH.loginApple}?next=${encodeURIComponent(e.next)}&retry=1`,
+          clear,
+        );
+      }
+      if (e instanceof OidcRedeemError)
+        return toSignIn(
+          e.stage === "expired" ? e.stage : "failed",
+          e.next,
+          clear,
+          "apple",
+        );
+      if (e instanceof ApiError) {
+        const res = toErrorResponse(e);
+        for (const k of clear) res.headers.append("set-cookie", k);
+        res.headers.set("cache-control", "no-store");
+        return res;
+      }
+      logOidcFail("internal");
+      return toSignIn("failed", next, clear, "apple");
     }
   });
 

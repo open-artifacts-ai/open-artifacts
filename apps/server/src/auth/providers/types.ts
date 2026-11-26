@@ -39,6 +39,13 @@ export interface OidcProvider {
   id: ProviderId;
   /** The path its authorization response comes back to. */
   callbackPath: string;
+  /**
+   * True when the provider posts the authorization response cross-site
+   * (`response_mode=form_post`, e.g. Apple). oidc.ts then sets a separate
+   * SameSite=None; Secure; HttpOnly state cookie path-scoped to callbackPath
+   * because browsers omit SameSite=Lax cookies on cross-site POSTs.
+   */
+  formPost?: boolean;
   authorizeUrl(
     env: Env,
     a: {
@@ -66,6 +73,8 @@ export interface OidcProvider {
       nonce: string;
       /** The broker's own state, relayed back by the hosted broker. */
       bstate?: string;
+      /** Raw `user` JSON posted by Apple on first sign-in only. */
+      user?: string;
     },
   ): Promise<VerifiedIdentity>;
 }

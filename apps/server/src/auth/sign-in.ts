@@ -15,7 +15,9 @@ import { type AuthConfig, authConfig } from "./config.js";
 export const ACCESS_START = `${AUTH.login}?via=access`;
 
 export const signInMode = (cfg: AuthConfig): "access" | "direct" =>
-  cfg.providers.has("google") || cfg.providers.has("email")
+  cfg.providers.has("google") ||
+  cfg.providers.has("apple") ||
+  cfg.providers.has("email")
     ? "direct"
     : "access";
 
@@ -55,6 +57,11 @@ export function authProviders(env: Env): AuthProviders {
       domainCodes: cfg.domainCodes,
       guests: true,
       ...(cfg.turnstile ? { turnstileSiteKey: cfg.turnstile.siteKey } : {}),
+    });
+  if (cfg.apple)
+    providers.push({
+      id: "apple",
+      start: AUTH.loginApple,
     });
   return { mode, providers, hosted: env.HOSTED === "1" };
 }

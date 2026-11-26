@@ -590,6 +590,10 @@ export const AUTH = {
   loginGoogle: "/auth/login/google",
   /** GET (OAuth) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=google (SignInVia). */
   callbackGoogle: "/auth/callback/google",
+  /** GET ?next -> 302 to Apple (404 when Apple is off). */
+  loginApple: "/auth/login/apple",
+  /** POST (OAuth form_post) -> 302 next, or (any refusal) SIGN_IN_PAGE?error=SignInError&next; no_access adds &via=apple (SignInVia). */
+  callbackApple: "/auth/callback/apple",
   /** POST CodeRequest -> 202 CodeRequested. */
   codeRequest: "/auth/code/request",
   /** POST CodeVerify -> 200 CodeVerified. */

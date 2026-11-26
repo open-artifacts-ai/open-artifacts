@@ -38,7 +38,7 @@ describe("authConfig", () => {
     const c = authConfig(base({ AUTH_PROVIDERS: "saml" }));
     expect(c.providers.size).toBe(0);
     expect(c.problems).toContain(
-      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google or email.`,
+      `AUTH_PROVIDERS lists "saml", which isn't a login method, so it's ignored. Use access, google, apple or email.`,
     );
   });
 

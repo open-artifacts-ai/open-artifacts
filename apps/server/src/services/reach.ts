@@ -122,6 +122,15 @@ export async function reachOf(
     (await codeRule(cfg, email, row, shared)).kind !== "none"
   )
     methods.push("email");
+  // Link-only provider (#3087 slice 4): admits an existing active row once
+  // linked, or via the emailed code link flow when codes are offered.
+  if (
+    offered.has("apple") &&
+    row !== null &&
+    row.status === "active" &&
+    (row.linked || offered.has("email"))
+  )
+    methods.push("apple");
   return {
     methods: orderSignInMethods(methods),
     googleUncertain,

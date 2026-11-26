@@ -50,12 +50,28 @@ export { accessIssuer } from "./providers/access.js";
  */
 const OIDC_BASE = "oa_oidc_";
 const hostPrefixed = (env: Env) => env.ENVIRONMENT !== "dev";
-const oidcPrefix = (env: Env) =>
-  hostPrefixed(env) ? `__Host-${OIDC_BASE}` : OIDC_BASE;
-const oidcNameRe = (env: Env) =>
-  hostPrefixed(env)
-    ? /^__Host-oa_oidc_[A-Za-z0-9_-]{10}$/
-    : /^oa_oidc_[A-Za-z0-9_-]{10}$/;
+const oidcPrefix = (
+  env: Env,
+  provider?: Pick<OidcProvider, "id" | "formPost">,
+) =>
+  provider?.formPost
+    ? // Cross-site POST (Apple form_post) needs SameSite=None; Secure; Path=/auth/callback/apple.
+      // __Host- requires Path=/ and cannot be path-scoped, so use __Secure- outside dev.
+      `${hostPrefixed(env) ? "__Secure-" : ""}${OIDC_BASE}${provider.id}_`
+    : hostPrefixed(env)
+      ? `__Host-${OIDC_BASE}`
+      : OIDC_BASE;
+const oidcNameRe = (
+  env: Env,
+  provider?: Pick<OidcProvider, "id" | "formPost">,
+) =>
+  provider?.formPost
+    ? new RegExp(
+        `^${hostPrefixed(env) ? "__Secure-" : ""}oa_oidc_${provider.id}_[A-Za-z0-9_-]{10}$`,
+      )
+    : hostPrefixed(env)
+      ? /^__Host-oa_oidc_[A-Za-z0-9_-]{10}$/
+      : /^oa_oidc_[A-Za-z0-9_-]{10}$/;
 /** Browsers silently drop cookies over ~4096 bytes; stay well under. */
 const MAX_SET_COOKIE_LEN = 3800;
 const OIDC_MAX_AGE_S = 900;
@@ -125,7 +141,16 @@ function oidcCookie(
   name: string,
   value: string,
   maxAge: number,
+  provider?: Pick<OidcProvider, "callbackPath" | "formPost">,
 ): string {
+  // Cross-site form_post callbacks (Apple) are POST requests from the IdP's
+  // origin, so browsers do NOT send SameSite=Lax cookies on them. Use a
+  // separate SameSite=None; Secure; HttpOnly cookie path-scoped strictly to
+  // the provider's callback path (e.g. /auth/callback/apple) so it is only
+  // sent on that callback and never on any other route.
+  if (provider?.formPost) {
+    return `${name}=${value}; HttpOnly; Secure; SameSite=None; Path=${provider.callbackPath}; Max-Age=${maxAge}`;
+  }
   // __Host- requires Secure, Path=/ and no Domain.
   const attrs = hostPrefixed(env)
     ? "HttpOnly; Secure; SameSite=Lax; Path=/"
@@ -133,15 +158,19 @@ function oidcCookie(
   return `${name}=${value}; ${attrs}; Max-Age=${maxAge}`;
 }
 
-export const clearOidcCookie = (env: Env, name: string) =>
-  oidcCookie(env, name, "", 0);
+export const clearOidcCookie = (
+  env: Env,
+  name: string,
+  provider?: Pick<OidcProvider, "callbackPath" | "formPost">,
+) => oidcCookie(env, name, "", 0, provider);
 
 /** Per-attempt cookie name for a state value. */
 export async function stateCookieName(
   env: Env,
   state: string,
+  provider?: Pick<OidcProvider, "id" | "formPost">,
 ): Promise<string> {
-  return `${oidcPrefix(env)}${(await s256(state)).slice(0, 10)}`;
+  return `${oidcPrefix(env, provider)}${(await s256(state)).slice(0, 10)}`;
 }
 
 function parseCookies(header: string | null | undefined): [string, string][] {
@@ -159,10 +188,11 @@ async function evictions(
   env: Env,
   keys: StateKeys,
   cookieHeader: string | null | undefined,
+  provider?: Pick<OidcProvider, "id" | "callbackPath" | "formPost">,
 ): Promise<string[]> {
   const seen = new Map<string, string>();
   for (const [n, v] of parseCookies(cookieHeader))
-    if (oidcNameRe(env).test(n) && !seen.has(n)) seen.set(n, v);
+    if (oidcNameRe(env, provider).test(n) && !seen.has(n)) seen.set(n, v);
   const excess = seen.size - (MAX_ATTEMPTS - 1);
   if (excess <= 0) return [];
   const ranked: { name: string; exp: number }[] = [];
@@ -173,7 +203,9 @@ async function evictions(
     ranked.push({ name, exp: r?.st ? r.st.exp : Number.NEGATIVE_INFINITY });
   }
   ranked.sort((a, b) => a.exp - b.exp);
-  return ranked.slice(0, excess).map((x) => clearOidcCookie(env, x.name));
+  return ranked
+    .slice(0, excess)
+    .map((x) => clearOidcCookie(env, x.name, provider));
 }
 
 export async function buildAuthorizeRedirect(
@@ -204,7 +236,7 @@ export async function buildAuthorizeRedirect(
     ...(reauth ? { ra: true as const } : {}),
     ...(silent ? { sl: true as const } : {}),
   };
-  const name = await stateCookieName(env, st.state);
+  const name = await stateCookieName(env, st.state, provider);
   const sign = async () => {
     const p = b64urlEncode(new TextEncoder().encode(JSON.stringify(st)));
     return oidcCookie(
@@ -212,6 +244,7 @@ export async function buildAuthorizeRedirect(
       name,
       `${p}.${await hmacSign(keys.key, p)}`,
       OIDC_MAX_AGE_S,
+      provider,
     );
   };
   // Measure the final Set-Cookie (JSON escaping can inflate `next`, e.g.
@@ -230,7 +263,7 @@ export async function buildAuthorizeRedirect(
       ...(silent ? { silent } : {}),
     }),
     stateCookie,
-    evict: await evictions(env, keys, opts.cookieHeader),
+    evict: await evictions(env, keys, opts.cookieHeader, provider),
   };
 }
 
@@ -318,8 +351,9 @@ export async function pickStateCookie(
   env: Env,
   req: Request,
   state: string,
+  provider?: Pick<OidcProvider, "id" | "formPost">,
 ): Promise<{ name: string; value: string } | null> {
-  const name = await stateCookieName(env, state);
+  const name = await stateCookieName(env, state, provider);
   const hit = parseCookies(req.headers.get("cookie")).find(([n]) => n === name);
   return hit ? { name, value: hit[1] } : null;
 }
@@ -356,7 +390,10 @@ async function readOidcState(
       typeof o.next !== "string" ||
       typeof o.exp !== "number" ||
       !Number.isFinite(o.exp) ||
-      (o.p !== undefined && o.p !== "access" && o.p !== "google")
+      (o.p !== undefined &&
+        o.p !== "access" &&
+        o.p !== "google" &&
+        o.p !== "apple")
     )
       return bad;
     const st = o as OidcState;
@@ -407,11 +444,12 @@ export async function handleCallback(
   env: Env,
   provider: OidcProvider,
   req: Request,
+  params?: URLSearchParams,
 ): Promise<
   VerifiedIdentity & { next: string; reauth: boolean; silent?: true }
 > {
   const keys = await stateKeys(env);
-  const q = new URL(req.url).searchParams;
+  const q = params ?? new URL(req.url).searchParams;
   const state = q.get("state") ?? "";
   const failState = (stage: string, from?: OidcState): never => {
     logOidcFail(stage);
@@ -422,7 +460,7 @@ export async function handleCallback(
       stage,
     );
   };
-  const picked = await pickStateCookie(env, req, state);
+  const picked = await pickStateCookie(env, req, state, provider);
   if (!picked) return failState("no_state_cookie");
   const read = await readOidcState(keys, picked.value);
   if (read.stage === "state_bad_sig") return failState("state_bad_sig");
@@ -457,6 +495,7 @@ export async function handleCallback(
       verifier: st.verifier,
       nonce: st.nonce,
       bstate: q.get("bstate") ?? undefined,
+      user: q.get("user") ?? undefined,
     });
     return {
       ...id,
