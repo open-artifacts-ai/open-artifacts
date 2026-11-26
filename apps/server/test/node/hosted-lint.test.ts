@@ -54,6 +54,10 @@ const READS: Record<string, string> = {
     "tightens: the hosted skill (no upgrade line) gets its own ETag (review item 39)",
   "mcp/skill.ts: upgradeLine":
     "tightens: the skill omits its upgrade line (review item 39)",
+  "mcp/skill.ts: renderSkillPart":
+    "tightens: memo key for a skill part without the upgrade line (#3169)",
+  "mcp/skill.ts: skillPartEtag":
+    "tightens: a hosted skill part gets its own ETag (#3169)",
   "mcp/upgrade.ts: serveUpgrade":
     "tightens: GET /upgrade.md is 404 (review item 39)",
   "billing/plan.ts: billingActive":
