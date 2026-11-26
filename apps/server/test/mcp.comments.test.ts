@@ -402,7 +402,11 @@ describe("comment tools over MCP", () => {
   it("#3139: a thread at the reply cap reads whole, root plus every reply", async () => {
     const id = await pub();
     const t = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "root" }),
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "root",
+        verbose: true,
+      }),
     ).thread;
     const author = (t.comments[0] as Comment).author;
     // The store's cap: the root plus COMMENTS_MAX_REPLIES (200) replies.
