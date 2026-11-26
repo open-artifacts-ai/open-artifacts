@@ -11,6 +11,9 @@ describe("isFallbackName (#1860)", () => {
     ["agent", "pi"],
     ["Agent", "codex"],
     ["hermes-myproject", "hermes"],
+    ["agy", "antigravity"],
+    ["agy-2", "antigravity"],
+    ["AGY-ab12", "antigravity"],
   ])("%s (%s) is a harness fallback", (name, kind) => {
     expect(isFallbackName(name, kind)).toBe(true);
   });
@@ -22,6 +25,10 @@ describe("isFallbackName (#1860)", () => {
     ["pilot", "pi"],
     ["omp-3", "pi"],
     ["Backend lead", "claude-code"],
+    ["agy", "pi"],
+    ["agyle", "antigravity"],
+    ["Backend lead", "antigravity"],
+    ["agy", "constructor"],
   ])("%s (%s) is a chosen name", (name, kind) => {
     expect(isFallbackName(name, kind)).toBe(false);
   });
