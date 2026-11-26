@@ -3,7 +3,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { mw } from "../src/auth/route-policy.js";
 import type { AppType } from "../src/routes/index.js";
@@ -117,7 +117,18 @@ const inPresence = <T>(
     presence(userId) as unknown as DurableObjectStub<UserPresence>,
     cb,
   );
-const tick = () => new Promise((r) => setTimeout(r, 50));
+/**
+ * Sockets the artifact's runtime still holds open. A socket the runtime
+ * closes is closed in its own state before any client hears of it, so this is
+ * the state to read, not a wait for a close that may never come.
+ */
+const openSocketCount = (id: string) =>
+  runInDurableObject(
+    runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+    (_i, state) =>
+      state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN)
+        .length,
+  );
 
 beforeAll(async () => {
   owner = await mk("pr-owner", "member");
@@ -155,7 +166,7 @@ describe("UserPresence", () => {
     // Authorized after the revocation plus the skew margin (a reactivated
     // user): stays open.
     const after = await direct(art, uid, at + 2001);
-    await tick();
+    expect(await openSocketCount(art)).toBe(1);
     expect(after.isOpen()).toBe(true);
     after.ws.close();
   });
@@ -168,7 +179,7 @@ describe("UserPresence", () => {
     await revokeUserLive(env, u.userId, "suspended");
     expect(await mine.data.closed).toBe(4403);
     expect(await mine.events.closed).toBe(4403);
-    await tick();
+    expect(await openSocketCount(art)).toBe(2);
     expect(theirs.data.isOpen()).toBe(true);
     expect(theirs.events.isOpen()).toBe(true);
     theirs.data.ws.close();
@@ -300,13 +311,18 @@ describe("UserPresence", () => {
   it("a revocation between the session read and the handler closes the socket 4403", async () => {
     const u = await mk(`pr-mid-${newId().slice(0, 4)}`, "member");
     const art = await pub();
+    // Only Date is faked: the middleware moves the clock past the skew margin.
+    vi.useFakeTimers({ now: Date.now(), toFake: ["Date"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     // Runs after the policy gate (session read, prefetched access) and
     // before the socket handlers: the revocation lands in between.
     const revokeNow = mw(async (_c: unknown, next: () => Promise<void>) => {
       await revokeUserLive(env, u.userId, "suspended");
       // Past the skew margin: only an authzAt stamped before the session
       // read (not at the handler) is still refused.
-      await new Promise((r) => setTimeout(r, SKEW_MS + 200));
+      vi.setSystemTime(Date.now() + SKEW_MS + 200);
       await next();
     });
     const racing = createApp((a: AppType) => {
@@ -448,7 +464,7 @@ describe("UserPresence", () => {
     expect(await wrap(r.webSocket).closed).toBe(4403);
     // Authorized after the change plus the skew margin: accepted.
     const later = await direct(art, `pr-v2-${newId()}`, (at as number) + 2001);
-    await tick();
+    expect(await openSocketCount(art)).toBe(1);
     expect(later.isOpen()).toBe(true);
     later.ws.close();
   });
@@ -498,7 +514,7 @@ describe("UserPresence", () => {
       `pr-v3-${newId()}`,
       Date.now() + g.retryAfterMs!,
     );
-    await tick();
+    expect(await openSocketCount(art)).toBe(1);
     expect(later.isOpen()).toBe(true);
     later.ws.close();
   });
@@ -520,7 +536,7 @@ describe("UserPresence", () => {
     expect(n).toBe(2);
     expect(await a.data.closed).toBe(4403);
     expect(await a.events.closed).toBe(4403);
-    await tick();
+    expect(await openSocketCount(art)).toBe(1);
     expect(b.isOpen()).toBe(true);
     b.ws.close();
   });

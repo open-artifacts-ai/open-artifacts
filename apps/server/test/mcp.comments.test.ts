@@ -683,7 +683,7 @@ describe("the comment notice", () => {
     expect(got[1]?.userId).toBe(owner.userId);
     // A token's comment tells no follower.
     sc(await tool(owner.client, "add_comment", { id, body: "from a token" }));
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(owner.client);
     expect(bus.sent.filter((s) => s.notice.artifactId === id)).toHaveLength(2);
 
     // A resolve is not a comment, and a refused comment is not one either.
@@ -770,9 +770,8 @@ describe("the comment notice", () => {
     });
     expect(r.status).toBe(201);
     // #2577: on a public page the list never applies, so a member's comment
-    // is held too and there is no marker to wait for: give the after-response
-    // work a moment, then check nothing went out.
-    await new Promise((r) => setTimeout(r, 100));
+    // is held too. `api` has already waited for the after-response work, so
+    // nothing more can go out.
     expect(forId(id)).toEqual([]);
   });
 

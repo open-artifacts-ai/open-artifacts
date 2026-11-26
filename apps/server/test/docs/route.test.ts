@@ -2,7 +2,7 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import {
@@ -182,8 +182,7 @@ describe("roles by caller", () => {
     const s = await sock(id, owner.cookie);
     await s.hello;
     expect(s.all[0]).toBeTypeOf("string");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(s.all.length).toBeGreaterThanOrEqual(2);
+    await vi.waitFor(() => expect(s.all.length).toBeGreaterThanOrEqual(2));
     expect(s.all[1]).not.toBeTypeOf("string");
     s.ws.close();
   });
@@ -328,12 +327,13 @@ describe("room full, TTL, access change, delete", () => {
       expect(at).not.toBeNull();
     });
     await runDurableObjectAlarm(roomOf(id));
-    let closed = false;
-    void s.closed.then(() => {
-      closed = true;
+    // The alarm closes a stale socket inside its handler; the room's own
+    // socket list is the state to read once it has returned.
+    await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      expect(
+        state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),
+      ).toHaveLength(1);
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(closed).toBe(false);
     s.ws.close();
   });
 
@@ -400,12 +400,13 @@ describe("room full, TTL, access change, delete", () => {
     await other.hello;
     await revokeUserLive(env, u.userId, "member removed");
     expect((await mine.closed).code).toBe(4403);
-    let otherClosed = false;
-    void other.closed.then(() => {
-      otherClosed = true;
+    // The revoke has finished (mine is closed); the room still holds the
+    // other socket open.
+    await runInDurableObject(roomOf(id), (_r: DocRoom, state) => {
+      expect(
+        state.getWebSockets().filter((w) => w.readyState === WebSocket.OPEN),
+      ).toHaveLength(1);
     });
-    await new Promise((r) => setTimeout(r, 50));
-    expect(otherClosed).toBe(false);
     other.ws.close();
   });
 

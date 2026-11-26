@@ -11,6 +11,7 @@ import {
   TEST_HOOKS,
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
+import { vi } from "vitest";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
 
 export type Install = {
@@ -201,8 +202,6 @@ async function requestCode(to: Install, email: string): Promise<string> {
   return set.split(";")[0] as string;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 /**
  * How long the OTP hook may answer "pending": the send runs after the 202 and
  * gives up after EMAIL_TIMEOUT_MS, so its outcome is final by then (+ slack).
@@ -222,26 +221,38 @@ async function otpOutcome(r: Response): Promise<string | null> {
 }
 
 /**
- * The OTP hook's code (it is mailed after the response): asked once a second
- * while the hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. Any
- * other 404 outcome is final and fails with it.
+ * The OTP hook's answer once the send is final: asked once a second while the
+ * hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. Any other
+ * answer (a code, or a 404 with a final outcome) is returned as it is.
  */
-async function latestOtp(to: Install, email: string): Promise<Response> {
-  const end = Date.now() + OTP_DEADLINE_MS;
-  for (;;) {
-    const r = await hook(to, TEST_HOOKS.otpLatest, { email });
-    if (r.status !== 404) return r;
-    const outcome = await otpOutcome(r);
-    if (outcome !== "pending")
-      throw new Refusal(
-        `otp hook on ${to.origin}: no code (outcome ${outcome ?? "unknown"})`,
-      );
-    if (Date.now() >= end)
+async function settledOtp(to: Install, email: string): Promise<Response> {
+  let final: Response | undefined;
+  await vi
+    .waitFor(
+      async () => {
+        const r = await hook(to, TEST_HOOKS.otpLatest, { email });
+        if (r.status === 404 && (await otpOutcome(r)) === "pending")
+          throw new Error("otp send still pending");
+        final = r;
+      },
+      { timeout: OTP_DEADLINE_MS, interval: 1000 },
+    )
+    .catch(() => {
       throw new Refusal(
         `otp hook on ${to.origin}: still pending after ${OTP_DEADLINE_MS} ms`,
       );
-    await sleep(1000);
-  }
+    });
+  return final as Response;
+}
+
+/** The OTP hook's code (it is mailed after the response); a final 404 fails with its outcome. */
+async function latestOtp(to: Install, email: string): Promise<Response> {
+  const r = await settledOtp(to, email);
+  if (r.status === 404)
+    throw new Refusal(
+      `otp hook on ${to.origin}: no code (outcome ${(await otpOutcome(r)) ?? "unknown"})`,
+    );
+  return r;
 }
 
 async function codeAt(to: Install, email: string): Promise<string> {
@@ -367,9 +378,10 @@ export const SIGNIN_NEGATIVE_CASES: NegativeCase[] = [
       const codeA = await codeAt(a, email);
       // Same answer as for a known address: 202 and a pending cookie.
       const pendingB = await requestCode(b, email);
-      await sleep(1500);
+      // Wait for B's send to be final (it never sends to a stranger), so a
+      // code that would still arrive cannot slip past the check.
       await expectStatus(
-        await hook(b, TEST_HOOKS.otpLatest, { email }),
+        await settledOtp(b, email),
         [404],
         "B otp hook for an address B doesn't know",
       );

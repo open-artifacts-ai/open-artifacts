@@ -111,14 +111,20 @@ describe("B13 breaks", () => {
     ws.accept();
     const msgs: string[] = [];
     ws.addEventListener("message", (e) => msgs.push(String(e.data)));
+    const closed = new Promise<number>((res) =>
+      ws.addEventListener("close", (e) => res((e as CloseEvent).code)),
+    );
     await api(app, R.share(id, viewer.email), owner.cookie, {
       method: "DELETE",
     });
-    await api(app, R.dataDoc(id, "c", "secret"), owner.cookie, {
+    // The revoke closes the socket (the signal), so the write below has no
+    // open socket of the viewer's to reach.
+    expect(await closed).toBe(4403);
+    const put = await api(app, R.dataDoc(id, "c", "secret"), owner.cookie, {
       method: "PUT",
       body: { s: 1 },
     });
-    await new Promise((res) => setTimeout(res, 100));
+    expect(put.status).toBe(200);
     expect(msgs).toEqual([]);
   });
 
