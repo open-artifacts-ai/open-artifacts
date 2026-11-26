@@ -5492,6 +5492,25 @@ export class BusHub extends DurableObject<Env> {
    * handler and recorded write this instance started has settled (in flight
    * 0), woken by the last one finishing, never by a clock.
    */
+  #closesDone = 0;
+  #closeWaiters: { n: number; resolve: () => void }[] = [];
+  #closeDone(): void {
+    this.#closesDone++;
+    for (const w of [...this.#closeWaiters])
+      if (this.#closesDone >= w.n) {
+        this.#closeWaiters.splice(this.#closeWaiters.indexOf(w), 1);
+        w.resolve();
+      }
+  }
+  /** Tests only (static, not RPC): how many close/error handlers have finished. */
+  static closesDone(hub: BusHub): number {
+    return hub.#closesDone;
+  }
+  /** Tests only (static, not RPC): resolves once `n` close/error handlers have finished, woken by the n-th. */
+  static whenClosesDone(hub: BusHub, n: number): Promise<void> {
+    if (hub.#closesDone >= n) return Promise.resolve();
+    return new Promise((resolve) => hub.#closeWaiters.push({ n, resolve }));
+  }
   static whenIdle(hub: BusHub): Promise<void> {
     if (hub.#inFlight === 0) return Promise.resolve();
     return new Promise((resolve) => hub.#whenIdle.push(resolve));
@@ -6867,6 +6886,7 @@ export class BusHub extends DurableObject<Env> {
       await this.#goneFromIndex(ws);
     } finally {
       this.indexInFlight--;
+      this.#closeDone();
     }
   }
 
@@ -6885,6 +6905,7 @@ export class BusHub extends DurableObject<Env> {
       await this.#goneFromIndex(ws);
     } finally {
       this.indexInFlight--;
+      this.#closeDone();
     }
   }
 

@@ -13,6 +13,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, HELD_BYTES_CAP } from "../../src/bus/hub.js";
 import {
+  closing,
   type Daemon,
   framesSeen,
   hello,
@@ -278,9 +279,10 @@ describe("mail: delivery", () => {
     const receiver = uniq("Receiver");
     await agent(s, "sref", uniq("Sender"), n);
     await agent(t, "rref", receiver, n);
-    t.close();
-    await t.closed;
-    await hubIdle(); // the hub's close handling is done
+    await closing(await hubOf(), async () => {
+      t.close();
+      await t.closed;
+    });
 
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "later"));
     expect(r.state).toBe("pending");

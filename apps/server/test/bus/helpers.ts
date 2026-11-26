@@ -364,6 +364,24 @@ export const idleOf = (h: DurableObjectStub<BusHub>) =>
 /** `idleOf` for a member's hub (the owner's by default). */
 export const hubIdle = async (userId?: string) => idleOf(await hubOf(userId));
 
+/**
+ * Runs `act` (a close the hub will handle once: a client close, a replacement,
+ * a closeAll) and resolves when the hub's close handler for it has finished:
+ * counted inside the hub, woken by the handler itself.
+ */
+export async function closing(
+  h: DurableObjectStub<BusHub>,
+  act: () => unknown,
+): Promise<void> {
+  const before = await runInDurableObject(h, (i: BusHub) =>
+    BusHub.closesDone(i),
+  );
+  await act();
+  await runInDurableObject(h, (i: BusHub) =>
+    BusHub.whenClosesDone(i, before + 1),
+  );
+}
+
 let fenceSeq = 0;
 /**
  * Fences the hub's reaction to everything these daemons sent before: the hub
@@ -373,7 +391,9 @@ let fenceSeq = 0;
  * `raw`. Only for a reaction that is synchronous in the handler; a timer or an
  * alarm is awaited on its own end event.
  */
-export async function fence(...ds: Daemon[]): Promise<void> {
+export async function fence(
+  ...ds: Pick<Daemon, "ws" | "send">[]
+): Promise<void> {
   await Promise.all(
     ds.map((d) => {
       const id = `fence-${++fenceSeq}`;
