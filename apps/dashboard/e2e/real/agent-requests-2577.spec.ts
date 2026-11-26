@@ -19,6 +19,7 @@ import {
 } from "@oa/shared";
 import type { Page } from "@playwright/test";
 import { checkMemberComments } from "../staging/happy-path/member-comments";
+import { withDeadline } from "../staging/with-deadline";
 import {
   approveMachine,
   freshSignInUrl,
@@ -66,24 +67,22 @@ async function agentSocket(token: string, namespace: string) {
     ws.addEventListener("error", () => reject(new Error("socket error")));
   });
   const next = (pred: (f: Frame) => boolean, label: string): Promise<Frame> =>
-    new Promise<Frame>((resolve, reject) => {
-      const check = () => {
-        const f = frames.find(pred);
-        if (!f) return false;
-        clearTimeout(timer);
-        resolve(f);
-        return true;
-      };
-      const onMsg = () => {
+    withDeadline(
+      new Promise<Frame>((resolve) => {
+        const check = () => {
+          const f = frames.find(pred);
+          if (!f) return false;
+          resolve(f);
+          return true;
+        };
+        const onMsg = () => {
+          if (!check()) waiters.push(onMsg);
+        };
         if (!check()) waiters.push(onMsg);
-      };
-      const timer = setTimeout(() => {
-        const idx = waiters.indexOf(onMsg);
-        if (idx >= 0) waiters.splice(idx, 1);
-        reject(new Error(`no ${label} frame`));
-      }, 15_000);
-      if (!check()) waiters.push(onMsg);
-    });
+      }),
+      15_000,
+      `a ${label} frame`,
+    );
   let seq = 0;
   ws.send(
     JSON.stringify({
