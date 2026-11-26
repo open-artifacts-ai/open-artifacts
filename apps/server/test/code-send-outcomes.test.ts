@@ -17,6 +17,7 @@ import { noteTestOtp } from "../src/test-hooks/index.js";
 import {
   OTP_WAIT_CAP_MS,
   otpChanged,
+  otpKeys,
   otpVersion,
   otpWaitAfter,
 } from "../src/test-hooks/otp-wait.js";
@@ -520,11 +521,12 @@ describe("otp/latest wait: the hold is an event, not a poll", () => {
       } as never,
     );
     expect(req.status).toBe(202);
-    const t0 = Date.now();
     // The mail goes only once the hook has begun to hold: the hook's own call
     // into the DO releases it (this env's binding wraps the real one).
     const real = env.DIRECTORY_SYNC;
     if (!real) throw new Error("DIRECTORY_SYNC unbound");
+    // What each wait RPC was asked, and the change number it found when it ended.
+    const waitsSeen: { since: number; endedAt?: number }[] = [];
     const holding = {
       ...e,
       DIRECTORY_SYNC: {
@@ -535,7 +537,11 @@ describe("otp/latest wait: the hold is an event, not a poll", () => {
             testOtpVersion: (k: string) => stub.testOtpVersion(k),
             testOtpChanged: (k: string) => stub.testOtpChanged(k),
             testOtpWait: (k: string, v: number, ms: number) => {
-              const w = stub.testOtpWait(k, v, ms);
+              const seen: { since: number; endedAt?: number } = { since: v };
+              waitsSeen.push(seen);
+              const w = stub.testOtpWait(k, v, ms).then(async () => {
+                seen.endedAt = await stub.testOtpVersion(k);
+              });
               release();
               return w;
             },
@@ -543,24 +549,50 @@ describe("otp/latest wait: the hold is an event, not a poll", () => {
         },
       },
     } as unknown as Env;
-    const held = waitFor(holding, email, OTP_WAIT_CAP_MS);
-    await Promise.all(waits);
-    const r = await held;
+    // The hold's bound is a timer on the fake clock that never moves: only the
+    // send landing can end the hold, so no elapsed time is judged.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    let r: Response;
+    try {
+      const held = waitFor(holding, email, OTP_WAIT_CAP_MS);
+      await Promise.all(waits);
+      r = await held;
+    } finally {
+      vi.useRealTimers();
+    }
     expect(r.status).toBe(200);
     expect(((await r.json()) as { code: string }).code).toBe(m.codeFor(email));
-    // Answered by the send landing, not by the hold running out its bound.
-    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+    // Answered by the send landing: the one wait ended on a changed row.
+    expect(waitsSeen).toHaveLength(1);
+    expect(waitsSeen[0]?.endedAt).not.toBe(waitsSeen[0]?.since);
   });
 
-  it("a final answer is not held", async () => {
-    const email = uniq("final", TD);
-    await seedUser(email, "guest");
+  it("a final answer never calls the DO: three immediate reads keep no entry", async () => {
     const e = on(withMail(direct()));
-    await requestCode(e, email);
-    const t0 = Date.now();
-    const r = await waitFor(e, email, OTP_WAIT_CAP_MS);
-    expect(r.status).toBe(200);
-    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+    const real = e.DIRECTORY_SYNC;
+    if (!real) throw new Error("DIRECTORY_SYNC unbound");
+    let calls = 0;
+    const counted = {
+      ...e,
+      DIRECTORY_SYNC: {
+        idFromName: (n: string) => real.idFromName(n),
+        get: (id: DurableObjectId) => {
+          calls++;
+          return real.get(id);
+        },
+      },
+    } as unknown as Env;
+    const keys = otpKeys();
+    for (const tag of ["fa", "fb", "fc"]) {
+      const email = uniq(tag, TD);
+      await seedUser(email, "guest");
+      await requestCode(e, email);
+      const r = await waitFor(counted, email, OTP_WAIT_CAP_MS);
+      expect(r.status).toBe(200);
+    }
+    // No DO call from the hook (the request's own noting goes through `e`).
+    expect(calls).toBe(0);
+    expect(otpKeys()).toBe(keys);
   });
 
   it("the DO signal wakes a waiter a note makes; a change since the version taken wakes at once", async () => {
@@ -572,10 +604,14 @@ describe("otp/latest wait: the hold is an event, not a poll", () => {
     const woke = otpWaitAfter(ek, since, OTP_WAIT_CAP_MS);
     await noteTestOtp(e, email, ek, "sent", "12345678");
     await woke;
-    // A change after `since` is already past: no wait at all.
-    const t0 = Date.now();
-    await otpWaitAfter(ek, since, OTP_WAIT_CAP_MS);
-    expect(Date.now() - t0).toBeLessThan(OTP_WAIT_CAP_MS / 2);
+    // A change after `since` is already past: no wait at all, no timer armed.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await otpWaitAfter(ek, since, OTP_WAIT_CAP_MS);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(otpVersion(ek)).toBeGreaterThan(since);
   });
 
@@ -607,5 +643,55 @@ describe("otp/latest wait: the hold is an event, not a poll", () => {
       vi.useRealTimers();
     }
     otpChanged("bound-key");
+  });
+
+  it("a key is held only while it is waited on: reads, changes and finished waits keep nothing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const keys = otpKeys();
+      for (let i = 0; i < 3; i++) otpVersion(`read-${i}`);
+      for (let i = 0; i < 100; i++) otpChanged(`flood-${i}`);
+      expect(otpKeys()).toBe(keys);
+      // A waited-on key is held; woken, or run out, it is let go.
+      const woken = otpWaitAfter("held", otpVersion("held"), 5_000);
+      const bound = otpWaitAfter("bound", otpVersion("bound"), 5_000);
+      expect(otpKeys()).toBe(keys + 2);
+      otpChanged("held");
+      await woken;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await bound;
+      expect(otpKeys()).toBe(keys);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a change between taking the number and waiting is never missed, held key or not", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      // The key unheld; held by another waiter; and its number after a waiter left.
+      const other = otpWaitAfter("race-held", otpVersion("race-held"), 5_000);
+      for (const ek of ["race-unheld", "race-held"]) {
+        const since = otpVersion(ek);
+        otpChanged(ek); // the change slips in before the wait
+        for (let i = 0; i < 50; i++) otpChanged(`push-${i}`);
+        let woke = false;
+        void otpWaitAfter(ek, since, OTP_WAIT_CAP_MS).then(() => {
+          woke = true;
+        });
+        await vi.advanceTimersByTimeAsync(0); // no clock time passes
+        expect(woke).toBe(true);
+      }
+      await vi.advanceTimersByTimeAsync(5_000);
+      await other;
+      // A waiter that left raised the floor: a number taken before it differs.
+      const w = otpWaitAfter("race-left", otpVersion("race-left"), 1_000);
+      const before = otpVersion("race-left");
+      otpChanged("race-left");
+      await w;
+      expect(otpVersion("race-left")).not.toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

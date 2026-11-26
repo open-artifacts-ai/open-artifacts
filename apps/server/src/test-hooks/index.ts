@@ -712,20 +712,32 @@ export function mountTestHooks(app: AppType): void {
       }
       const ek = await emailKey(env, email);
       // `wait`: while the send is "pending", hold the request until its row
-      // changes (the DO's signal, taken before each read so no change slips
-      // between them) or the bound: never a repeated read on a timer.
-      const deadline =
-        Date.now() +
-        Math.min(input.success ? (input.data.wait ?? 0) : 0, OTP_WAIT_CAP_MS);
-      const sync = syncDo(env);
-      let since = sync ? await sync.testOtpVersion(ek).catch(() => 0) : 0;
+      // changes (the DO's signal) or the bound: never a repeated read on a
+      // timer. A read that is already final never calls the DO.
+      const waitMs = Math.min(
+        input.success ? (input.data.wait ?? 0) : 0,
+        OTP_WAIT_CAP_MS,
+      );
+      const deadline = Date.now() + waitMs;
       let got = await readTestOtp(env, ek);
+      const holding =
+        waitMs > 0 && !("code" in got) && got.outcome === "pending";
+      const sync = holding ? syncDo(env) : undefined;
       while (
         sync &&
         !("code" in got) &&
         got.outcome === "pending" &&
         deadline > Date.now()
       ) {
+        // The change number is taken before the read that decides to wait, so
+        // a change between them wakes the wait at once.
+        const since = await sync.testOtpVersion(ek).then(
+          (v) => v,
+          () => undefined,
+        );
+        if (since === undefined) break;
+        got = await readTestOtp(env, ek);
+        if ("code" in got || got.outcome !== "pending") break;
         const woke = await sync
           .testOtpWait(ek, since, deadline - Date.now())
           .then(
@@ -733,7 +745,6 @@ export function mountTestHooks(app: AppType): void {
             () => false,
           );
         if (!woke) break;
-        since = await sync.testOtpVersion(ek).catch(() => 0);
         got = await readTestOtp(env, ek);
       }
       await audit(env, hook, ip, "code" in got ? "ok" : "none", { email });
