@@ -238,6 +238,16 @@ export const execCodex =
       // The timeout is our own timer (not execFile's) so a test can drive it
       // with fake timers instead of waiting it out.
       let timedOut = false;
+      // execFile validates its own timeout before spawning (an integer in
+      // 0..MAX_SAFE_INTEGER, else ERR_OUT_OF_RANGE); our timer keeps that.
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 0) {
+        throw Object.assign(
+          new RangeError(
+            `The value of "timeout" is out of range. It must be ${Number.isInteger(timeoutMs) ? ">= 0 && <= 9007199254740991" : "an integer"}. Received ${timeoutMs}`,
+          ),
+          { code: "ERR_OUT_OF_RANGE" },
+        );
+      }
       const child = execFile(
         bin,
         args,
