@@ -280,15 +280,41 @@ function atomicsFinite(code: string, file: string): Found[] {
       visit(n);
       return out;
     };
-    // The buffer(s) an array was built over: `arr = new Int32Array(buf)`.
-    const over = new Map<Sym, Set<Sym>>();
+    // Buffer identity is the binding that holds a buffer or typed array (made
+    // with `new SharedArrayBuffer` / `new ArrayBuffer` / `new XArray`, or taken
+    // from `.buffer`), never the size or other arguments it was built from.
+    const inits: [Sym, N][] = [];
     const note = (target: N, init: N) => {
       const sy = symbolOf(target);
-      const i = unwrap(init);
-      if (!sy || !ts.isNewExpression(i)) return;
-      const set = over.get(sy) ?? new Set<Sym>();
-      for (const a of i.arguments ?? []) for (const b of named(a)) set.add(b);
-      over.set(sy, set);
+      if (sy) inits.push([sy, unwrap(init)]);
+    };
+    const ctor = (n: N) =>
+      ts.isNewExpression(n) ? n.expression.getText(sf).replace(/\s+/g, "") : "";
+    const holders = new Set<Sym>();
+    const over = new Map<Sym, Set<Sym>>();
+    const build = () => {
+      for (const [sy, i] of inits)
+        if (
+          /^(?:SharedArrayBuffer|ArrayBuffer|\w+Array)$/.test(ctor(i)) ||
+          (ts.isPropertyAccessExpression(i) && i.name.text === "buffer")
+        )
+          holders.add(sy);
+      // The buffer binding(s) an array was built over: `arr = new Int32Array(buf)`
+      // or `new Int32Array(other.buffer)`, followed only when that binding holds one.
+      for (const [sy, i] of inits) {
+        if (
+          !/^\w+Array$/.test(ctor(i)) ||
+          /^(?:Shared)?ArrayBuffer$/.test(ctor(i))
+        )
+          continue;
+        const first = (i as import("typescript").NewExpression).arguments?.[0];
+        if (!first) continue;
+        let x = unwrap(first);
+        if (ts.isPropertyAccessExpression(x) && x.name.text === "buffer")
+          x = unwrap(x.expression);
+        const k = symbolOf(x);
+        if (k && holders.has(k)) over.set(sy, new Set([k]));
+      }
     };
     const notified = new Set<Sym>();
     const waits = new Map<number, N>();
@@ -325,6 +351,7 @@ function atomicsFinite(code: string, file: string): Found[] {
       ts.forEachChild(n, walk);
     };
     walk(sf);
+    build();
     // a notified view reaches the buffer it was built over
     for (const y of [...notified])
       for (const b of over.get(y) ?? []) notified.add(b);

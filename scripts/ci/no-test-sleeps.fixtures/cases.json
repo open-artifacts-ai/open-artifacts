@@ -892,5 +892,29 @@
     "file": "a.test.ts",
     "text": "await withDeadline(Atomics.waitAsync(ia, 0, 0).value, 5000, \"worker notify\");",
     "why": []
+  },
+  {
+    "name": "two buffers built from one size constant: a notify on one does not mask a sleep on the other (flag)",
+    "file": "a.test.ts",
+    "text": "const BYTES = 4;\nconst a = new Int32Array(new SharedArrayBuffer(BYTES));\nconst b = new Int32Array(new SharedArrayBuffer(BYTES));\nAtomics.notify(a, 0);\nAtomics.wait(b, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "two buffers made by name from one size constant (flag)",
+    "file": "a.test.ts",
+    "text": "const BYTES = 4;\nconst sab1 = new SharedArrayBuffer(BYTES);\nconst sab2 = new SharedArrayBuffer(BYTES);\nconst a = new Int32Array(sab1);\nconst b = new Int32Array(sab2);\nAtomics.notify(a, 0);\nAtomics.wait(b, 0, 0, 50);",
+    "why": ["timers/promises"]
+  },
+  {
+    "name": "two views over one shared buffer binding: a notify on one reaches the other (pass)",
+    "file": "a.test.ts",
+    "text": "const sab = new SharedArrayBuffer(4);\nconst a = new Int32Array(sab);\nconst b = new Int32Array(sab);\nAtomics.notify(a, 0);\nAtomics.wait(b, 0, 0, 5000);",
+    "why": []
+  },
+  {
+    "name": "a view over another array's .buffer shares its memory (pass)",
+    "file": "a.test.ts",
+    "text": "const a = new Int32Array(new SharedArrayBuffer(4));\nconst b = new Int32Array(a.buffer);\nAtomics.notify(a, 0);\nAtomics.wait(b, 0, 0, 5000);",
+    "why": []
   }
 ]
