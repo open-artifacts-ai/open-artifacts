@@ -1,7 +1,7 @@
 // agy S3: `oa-bus agy-watch` against a real daemon (the bus-daemon test
 // harness, a fake hub) and a fake agy: `send` records each agentapi
-// send-message call, the process table is a map. No sleeps: every wait is
-// a signal with a deadline.
+// send-message call and puts what agy took in a fake agy mailbox, the
+// process table is a map. No sleeps: every wait is a signal with a deadline.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -93,12 +93,23 @@ async function setup() {
   // What the S2 hook leaves behind at the first message.
   writeAgyConversation(ctx.home, conv, () => true);
   const calls: { bin: string; conversation: string; text: string }[] = [];
+  /** agy's mailbox: every message agentapi took, as agy keeps it. */
+  const box = { took: [] as string[], readable: true };
+  const inBox = (id: string) =>
+    box.took.filter((t) => t.includes(`(msg_id ${id})`)).length;
+  /** agy takes it: what a real agentapi send-message does before it returns. */
+  const agyTakes = (bin: string, conversation: string, text: string) => {
+    calls.push({ bin, conversation, text });
+    box.took.push(text);
+  };
   /** One watcher process: its own pid, its own link, its own liveness tick. */
   const start = (pid: number, send?: AgyWatchDeps["send"]) => {
     let tick: (() => void) | undefined;
     const clients: DaemonClient[] = [];
     const logs: string[] = [];
     const failed: string[] = [];
+    const unknown: string[] = [];
+    const slept: number[] = [];
     const run = agyWatch(ctx, {
       proc: (p) => table[p] ?? null,
       procStart: (p) => starts.get(p) ?? null,
@@ -108,9 +119,16 @@ async function setup() {
       send:
         send ??
         (async (bin, conversation, text): Promise<SendResult> => {
-          calls.push({ bin, conversation, text });
+          agyTakes(bin, conversation, text);
           return { ok: true };
         }),
+      mailbox: (conversation, text) =>
+        !box.readable
+          ? "unreadable"
+          : conversation === A && box.took.includes(text)
+            ? "present"
+            : "absent",
+      now: () => 1_000_000,
       connect: async (hello) => {
         // A killed watcher process never reaches the daemon again.
         if (!starts.has(pid)) throw new Error("this watcher was killed");
@@ -120,14 +138,20 @@ async function setup() {
           failed.push(id);
           giveBack(id);
         };
+        const notSure = c.agyUnknown;
+        c.agyUnknown = (id) => {
+          unknown.push(id);
+          notSure(id);
+        };
         clients.push(c);
         return c;
       },
       rejoin: async (hello) => {
         (await connectDaemon({ path: h.socketPath, hello })).close();
       },
-      sleep: (_ms, abort) =>
+      sleep: (ms, abort) =>
         new Promise((r) => {
+          slept.push(ms);
           // A killed one just waits for the end of the test.
           if (starts.has(pid)) setImmediate(r);
           abort.addEventListener("abort", () => r());
@@ -141,7 +165,15 @@ async function setup() {
       log: (l) => logs.push(l),
       onStop: () => {},
     });
-    return { run, clients, logs, failed, tick: () => tick?.() };
+    return {
+      run,
+      clients,
+      logs,
+      failed,
+      unknown,
+      slept,
+      tick: () => tick?.(),
+    };
   };
   let n = 0;
   const send = (body = "hello there") => {
@@ -165,7 +197,37 @@ async function setup() {
       () => expect(h.of("agent_up").some((u) => u.agent_ref === A)).toBe(true),
       { timeout: 5000, interval: 5 },
     );
-  return { h, ctx, conv, start, send, acked, calls, up };
+  /** The hub delivers an id again (its receipt is still pending). */
+  const again = (msg_id: string, body = "hello there") =>
+    h.toDaemon({
+      id: `again-${msg_id}`,
+      type: "deliver",
+      msg_id,
+      to_ref: A,
+      from_name: "peer",
+      namespace: "ns",
+      body,
+    });
+  /** A watcher process dies (SIGKILL): its link drops, nothing else runs. */
+  const kill = (w: { clients: DaemonClient[] }, pid: number) => {
+    starts.delete(pid);
+    for (const c of w.clients) c.close();
+  };
+  return {
+    h,
+    ctx,
+    conv,
+    start,
+    send,
+    again,
+    kill,
+    acked,
+    calls,
+    box,
+    inBox,
+    agyTakes,
+    up,
+  };
 }
 
 const until = (fn: () => void) =>
@@ -201,44 +263,166 @@ describe("oa-bus agy-watch (agy S3)", () => {
     expect(readAgyWatch(ctx.home, AGY)).toBeUndefined();
   });
 
-  it("never hands an id to agy twice across a watcher restart", async () => {
-    const { start, send, acked, calls, up } = await setup();
-    // The first watcher dies inside its call to agy (it never answers).
-    let entered!: () => void;
+  // A watcher can die at any step of a hand-off. Whatever the step, agy ends
+  // up with the message exactly once, and the receipt says delivered only
+  // when agy said it took it.
+  /** A hand-off that never reaches agy and never comes back. */
+  const neverReaches =
+    (reached: () => void) => async (): Promise<SendResult> => {
+      reached();
+      return new Promise<SendResult>(() => {});
+    };
+
+  it("dies before the hand-off reached agy: the next watcher sees agy's mailbox without it and sends it once", async () => {
+    const { start, send, kill, acked, calls, inBox, up } = await setup();
+    let reached!: () => void;
     const inCall = new Promise<void>((r) => {
-      entered = r;
+      reached = r;
+    });
+    // The mark is written, then the process dies before agy is called.
+    const w1 = start(W1, neverReaches(reached));
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    expect(inBox(id)).toBe(0);
+    const w2 = start(W2);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(inBox(id)).toBe(1);
+    expect(calls).toHaveLength(1);
+    // It first let the dead watcher's agy call run out.
+    expect(w2.slept).toContain(20_000);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("dies after agy took it, before the watcher wrote that down: the next watcher finds it in agy's mailbox and only acks", async () => {
+    const { start, send, kill, acked, calls, inBox, agyTakes, up } =
+      await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
     });
     const w1 = start(W1, async (bin, conversation, text) => {
-      calls.push({ bin, conversation, text });
-      entered();
+      agyTakes(bin, conversation, text);
+      reached();
       return new Promise<SendResult>(() => {});
     });
     await up();
     await until(() => expect(w1.clients).toHaveLength(1));
     const id = send();
     await inCall;
-    // Its process is gone: the link drops, and its liveness check sees it.
-    starts.delete(W1);
-    for (const c of w1.clients) c.close();
-    // A second watcher for the same agy process takes over.
+    kill(w1, W1);
     const w2 = start(W2);
     await until(() => expect(acked(id)).toBe(1));
     expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    expect(w2.logs.join("\n")).toContain(
+      `delivered ${id} (agy already had it)`,
+    );
     starts.delete(AGY);
-    w1.tick();
     w2.tick();
     expect(await w2.run).toBe(0);
   });
 
+  it("dies after it wrote agy's yes down, before the ack: the next watcher only acks", async () => {
+    const { start, send, kill, acked, calls, inBox, up } = await setup();
+    const w1 = start(W1);
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    // The process dies the moment it would ack.
+    let reached!: () => void;
+    const atAck = new Promise<void>((r) => {
+      reached = r;
+    });
+    for (const c of w1.clients)
+      c.ack = () => {
+        reached();
+      };
+    const id = send();
+    await atAck;
+    kill(w1, W1);
+    expect(acked(id)).toBe(0);
+    expect(inBox(id)).toBe(1);
+    const w2 = start(W2);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("when agy's mailbox cannot be read after a watcher died mid hand-off, the receipt stays pending: never sent again, never called delivered", async () => {
+    const { start, send, again, kill, acked, calls, box, inBox, agyTakes, up } =
+      await setup();
+    let reached!: () => void;
+    const inCall = new Promise<void>((r) => {
+      reached = r;
+    });
+    const w1 = start(W1, async (bin, conversation, text) => {
+      agyTakes(bin, conversation, text);
+      reached();
+      return new Promise<SendResult>(() => {});
+    });
+    await up();
+    await until(() => expect(w1.clients).toHaveLength(1));
+    const id = send();
+    await inCall;
+    kill(w1, W1);
+    box.readable = false;
+    const w2 = start(W2);
+    await until(() => expect(w2.unknown).toContain(id));
+    expect(acked(id)).toBe(0);
+    expect(calls).toHaveLength(1);
+    // The mailbox reads again and the hub delivers again: now it is acked.
+    box.readable = true;
+    again(id);
+    await until(() => expect(acked(id)).toBe(1));
+    expect(calls).toHaveLength(1);
+    expect(inBox(id)).toBe(1);
+    starts.delete(AGY);
+    w2.tick();
+    expect(await w2.run).toBe(0);
+  });
+
+  it("a hand-off that timed out is delivered only if agy's mailbox has it, else unknown", async () => {
+    const { start, send, acked, calls, inBox, agyTakes, up } = await setup();
+    let n = 0;
+    const w = start(W1, async (bin, conversation, text) => {
+      n += 1;
+      // The first call times out after agy took it; the second before.
+      if (n === 1) agyTakes(bin, conversation, text);
+      else calls.push({ bin, conversation, text });
+      return { ok: false, unknown: true, detail: "timed out" };
+    });
+    await up();
+    await until(() => expect(w.clients).toHaveLength(1));
+    const took = send();
+    await until(() => expect(acked(took)).toBe(1));
+    expect(inBox(took)).toBe(1);
+    const lost = send();
+    await until(() => expect(w.unknown).toContain(lost));
+    expect(acked(lost)).toBe(0);
+    expect(inBox(lost)).toBe(0);
+    expect(calls).toHaveLength(2);
+    starts.delete(AGY);
+    w.tick();
+    await w.run;
+  });
+
   it("gives agy back a message it refused, and tries again", async () => {
-    const { start, send, acked, calls, up } = await setup();
+    const { start, send, acked, calls, inBox, agyTakes, up } = await setup();
     let first = true;
     const w = start(W1, async (bin, conversation, text) => {
-      calls.push({ bin, conversation, text });
       if (first) {
         first = false;
+        calls.push({ bin, conversation, text });
         return { ok: false, detail: "conversation is loading" };
       }
+      agyTakes(bin, conversation, text);
       return { ok: true };
     });
     await up();
@@ -246,6 +430,7 @@ describe("oa-bus agy-watch (agy S3)", () => {
     const id = send();
     await until(() => expect(acked(id)).toBe(1));
     expect(calls).toHaveLength(2);
+    expect(inBox(id)).toBe(1);
     starts.delete(AGY);
     w.tick();
     await w.run;

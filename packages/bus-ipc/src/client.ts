@@ -57,6 +57,11 @@ export type DaemonClient = {
   ) => void;
   /** agy S3: agy did not take `msg_id`; the daemon may push it again. */
   agyFailed: (msg_id: string) => void;
+  /**
+   * agy S3: whether agy got `msg_id` is unknown (an earlier hand-off may
+   * have reached it); the receipt stays pending, never delivered.
+   */
+  agyUnknown: (msg_id: string) => void;
   /** Called once when the connection closes, for any reason. */
   onClose: (cb: () => void) => void;
   close: () => void;
@@ -259,6 +264,12 @@ export async function connectDaemon(opts: {
       if (state === "closed") return;
       sock.write(
         `${JSON.stringify({ v: 1, type: "agy_failed", id: `agyf-${++seq}`, msg_id })}\n`,
+      );
+    },
+    agyUnknown: (msg_id) => {
+      if (state === "closed") return;
+      sock.write(
+        `${JSON.stringify({ v: 1, type: "agy_failed", id: `agyf-${++seq}`, msg_id, outcome: "unknown" })}\n`,
       );
     },
     onClose: (cb) => {

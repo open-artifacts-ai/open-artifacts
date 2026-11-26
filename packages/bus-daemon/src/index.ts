@@ -3481,8 +3481,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           (frame.type === "ack" || frame.type === "agy_failed") &&
           watcher.w
         ) {
-          const ok = frame.type === "ack";
-          if (!agyT.answered(frame.msg_id, watcher.w, ok) && ok)
+          const said =
+            frame.type === "ack"
+              ? "ok"
+              : frame.outcome === "unknown"
+                ? "unknown"
+                : "failed";
+          if (said === "unknown")
+            ev("agy_unknown", { pid: watcher.pid, msg_id: frame.msg_id });
+          if (!agyT.answered(frame.msg_id, watcher.w, said) && said === "ok")
             log(`agy watcher acked ${frame.msg_id}, which it was not handed`);
           return undefined;
         }

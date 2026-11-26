@@ -33,9 +33,12 @@ type Waiting = {
   wake: (why: "up" | "closed") => void;
 };
 
+/** What a watcher said of a push, or that it never said. */
+type Said = "ok" | "failed" | "unknown" | "lost";
+
 type InFlight = {
   watcher: Watcher;
-  done: (o: "ok" | "failed" | "lost") => void;
+  done: (o: Said) => void;
 };
 
 export type AgyTransportOptions = {
@@ -98,11 +101,15 @@ export class AgyTransport {
   }
 
   /** The watcher answered msgId; true only for a push to that same watcher. */
-  answered(msgId: string, w: Watcher, ok: boolean): boolean {
+  answered(
+    msgId: string,
+    w: Watcher,
+    said: "ok" | "failed" | "unknown",
+  ): boolean {
     const f = this.#inflight.get(msgId);
     if (f?.watcher !== w) return false;
     this.#inflight.delete(msgId);
-    f.done(ok ? "ok" : "failed");
+    f.done(said);
     return true;
   }
 
@@ -142,13 +149,20 @@ export class AgyTransport {
         continue;
       }
       const got = await this.#push(w, agent.ref, mail.msg_id, text);
+      // The watcher acks only what agy's agentapi or agy's own mailbox says
+      // agy took.
       if (got === "ok") return { ok: true };
       // agy said no (it may be starting up): the deliver chain retries.
       if (got === "failed")
         return { ok: false, reason: "timeout", retryable: true };
+      // An earlier hand-off may have reached agy and its mailbox cannot say:
+      // a timeout that may have delivered (#2110). Never acked, never pushed
+      // again here: the receipt stays pending until the hub delivers again.
+      if (got === "unknown") return { ok: false, reason: "timeout" };
       // "lost": the watcher went away or went quiet before it answered. The
-      // next push carries the same msg_id, and a watcher never hands one id
-      // to agy twice, so this never doubles a message.
+      // next push carries the same msg_id; a watcher checks agy's mailbox
+      // before it hands over an id an earlier one may have, so this never
+      // doubles a message.
     }
   }
 
@@ -166,12 +180,7 @@ export class AgyTransport {
     });
   }
 
-  #push(
-    w: Watcher,
-    ref: string,
-    msgId: string,
-    text: string,
-  ): Promise<"ok" | "failed" | "lost"> {
+  #push(w: Watcher, ref: string, msgId: string, text: string): Promise<Said> {
     // One push per id at a time; a second deliver of it joins the hub's chain.
     this.#inflight.get(msgId)?.done("lost");
     return new Promise((resolve) => {

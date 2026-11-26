@@ -229,6 +229,38 @@ describe("an agy session gets bus messages through its watcher (agy S3)", () => 
     await vi.waitFor(() => expect(acked(id)).toBe(1));
   });
 
+  it("an unknown answer (agy may have it, its mailbox cannot say) is never delivered or refused: the receipt stays pending until the hub delivers again", async () => {
+    const { h, join, watcher, send, acked } = await setup();
+    await join();
+    const { c, got } = await watcher();
+    const id = send();
+    await wait(c, got, 1);
+    c.agyUnknown(id);
+    // A later message goes through at once: the unknown one held nothing up.
+    const next = send();
+    await wait(c, got, 2);
+    expect(got[1]?.msg_id).toBe(next);
+    c.ack(next);
+    await vi.waitFor(() => expect(acked(next)).toBe(1));
+    expect(acked(id)).toBe(0);
+    expect(h.of("refuse").filter((f) => f.msg_id === id)).toHaveLength(0);
+    expect(h.daemon.agents.byRef(A)?.live).toBe(true);
+    // The hub delivers it again: pushed again, and acked once agy says so.
+    h.toDaemon({
+      id: "again",
+      type: "deliver",
+      msg_id: id,
+      to_ref: A,
+      from_name: "peer",
+      namespace: "ns",
+      body: "hello there",
+    });
+    await wait(c, got, 3);
+    expect(got[2]?.msg_id).toBe(id);
+    c.ack(id);
+    await vi.waitFor(() => expect(acked(id)).toBe(1));
+  });
+
   it("pushes again to a watcher that went quiet (it never hands an id over twice)", async () => {
     const { join, watcher, send } = await setup(30);
     await join();

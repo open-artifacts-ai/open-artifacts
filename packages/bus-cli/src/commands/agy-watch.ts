@@ -1,8 +1,11 @@
 import { execFile } from "node:child_process";
 import {
   type AgyConversation,
+  type AgyMailboxState,
   AgySentIds,
+  agyAppDataDir,
   agyHello,
+  agyMailboxHas,
   clearAgyWatch,
   daemonSocketPath,
   findAgy,
@@ -38,7 +41,7 @@ export const AGY_MESSAGE_TITLE = "Open Artifacts bus";
 
 type AgyDeliver = Extract<DaemonFrame, { type: "agy_deliver" }>;
 
-/** `ok: false` with `unknown` when the call may have reached agy (a timeout). */
+/** `ok: false` with `unknown` when the call may have reached agy (a timeout or a kill). */
 export type SendResult =
   | { ok: true }
   | { ok: false; unknown?: true; detail: string };
@@ -62,6 +65,17 @@ export type AgyWatchDeps = {
   rejoin: (hello: Hello) => Promise<void>;
   /** Resolves after `ms`, or at once when `abort` fires. */
   sleep: (ms: number, abort: AbortSignal) => Promise<void>;
+  /**
+   * Whether agy's own mailbox holds this exact message for the conversation:
+   * agy's receipt, written before agentapi returns.
+   */
+  mailbox: (
+    conversation: string,
+    text: string,
+    msgId: string,
+  ) => AgyMailboxState;
+  /** Now, in ms. */
+  now: () => number;
   /** Calls `fn` every `ms` until the returned stop is called. */
   every: (ms: number, fn: () => void) => () => void;
   log: (line: string) => void;
@@ -69,7 +83,6 @@ export type AgyWatchDeps = {
   onStop: (fn: () => void) => void;
 };
 
-/** Exit and timeout: a killed call may have been taken, so it is never sent again. */
 /**
  * One line of agy's error, for the watcher's own output (which the session
  * reads): agy's agentapi address and token taken out, should agy ever echo them.
@@ -120,6 +133,15 @@ const defaults = (ctx: Ctx): AgyWatchDeps => ({
   pid: process.pid,
   env: process.env,
   send: execSend(process.env),
+  mailbox: (conversation, text, msgId) =>
+    agyMailboxHas(
+      agyAppDataDir(process.env),
+      conversation,
+      AGY_MESSAGE_TITLE,
+      text,
+      msgId,
+    ),
+  now: Date.now,
   connect: async (hello) => {
     const problem = socketDirProblem(ctx.home);
     if (problem) throw new Error(problem);
@@ -174,8 +196,11 @@ export function agyWatchHello(
  * process its agentapi address and token). It finds that agy process among
  * its parents, proves itself to the daemon by it, and hands each bus message
  * for that process's conversation to `agy agentapi send-message`: a running
- * turn gets it at its next tool step, an idle session wakes. It never hands
- * one msg_id to agy twice, also across restarts, and it exits when its agy
+ * turn gets it at its next tool step, an idle session wakes. A message is
+ * acked (delivered) only when agy says it took it: agentapi's success, or
+ * agy's own mailbox holding it. An id an earlier watcher may have handed
+ * over is sent again only when that mailbox shows agy does not have it, and
+ * answered "unknown" when the mailbox cannot be read. It exits when its agy
  * process does. A second start for the same agy process exits at once.
  */
 export async function agyWatch(
@@ -224,9 +249,16 @@ export async function agyWatch(
   const handing = new Set<string>();
   let client: DaemonClient | undefined;
 
+  /**
+   * One push. `delivered` (ack) only on agy's word: agentapi said it took
+   * the message, or agy's mailbox holds it. An id an earlier hand-off may
+   * have reached agy with is never sent again before the mailbox says agy
+   * does not have it; when the mailbox cannot say, the answer is "unknown"
+   * and the receipt stays pending.
+   */
   const hand = async (f: AgyDeliver, via: DaemonClient) => {
-    if (sent.has(f.msg_id)) return via.ack(f.msg_id);
-    if (handing.has(f.msg_id)) return;
+    const id = f.msg_id;
+    if (handing.has(id)) return;
     // Only the conversation the hook recorded for this agy process, ever.
     const conv = readAgyConversation(ctx.home, agy);
     if (
@@ -235,27 +267,53 @@ export async function agyWatch(
       conv.conversationId !== f.conversation_id
     ) {
       deps.log(
-        `oa-bus agy-watch: ${f.msg_id} is for another conversation; not handed on`,
+        `oa-bus agy-watch: ${id} is for another conversation; not handed on`,
       );
-      return via.agyFailed(f.msg_id);
+      return via.agyFailed(id);
     }
-    handing.add(f.msg_id);
-    // Written first: a watcher that dies mid-call never sends it again.
-    sent.add(f.msg_id);
-    const r = await deps.send(agyBin, f.conversation_id, f.text);
-    handing.delete(f.msg_id);
-    const to = client ?? via;
-    if (r.ok || r.unknown) {
+    // agentapi said agy took it (the watcher stopped before it acked).
+    if (sent.has(id)) return via.ack(id);
+    handing.add(id);
+    const to = () => client ?? via;
+    const box = () => deps.mailbox(f.conversation_id, f.text, id);
+    const took = (why: string) => {
+      sent.add(id);
+      deps.log(`oa-bus agy-watch: delivered ${id}${why}`);
+      to().ack(id);
+    };
+    const unknown = (why: string) => {
       deps.log(
-        r.ok
-          ? `oa-bus agy-watch: delivered ${f.msg_id}`
-          : `oa-bus agy-watch: ${f.msg_id} may have been delivered (${r.detail}); not sent again`,
+        `oa-bus agy-watch: ${id} may have reached agy (${why}); not sent again, not called delivered`,
       );
-      return to.ack(f.msg_id);
+      to().agyUnknown(id);
+    };
+    try {
+      const since = sent.tryingSince(id);
+      if (since !== undefined) {
+        // An earlier watcher began this hand-off and never wrote agy's
+        // answer down. Its agy call ends within SEND_TIMEOUT_MS; only then
+        // is agy's mailbox the whole story.
+        const left = since + SEND_TIMEOUT_MS - deps.now();
+        if (left > 0) await deps.sleep(left, gone.signal);
+      }
+      const before = box();
+      if (before === "present") return took(" (agy already had it)");
+      if (since !== undefined && before === "unreadable")
+        return unknown("agy's mailbox cannot be read");
+      // Written first: a watcher that dies mid-call leaves the mark behind.
+      sent.begin(id, deps.now());
+      const r = await deps.send(agyBin, f.conversation_id, f.text);
+      if (r.ok) return took("");
+      const after = box();
+      if (after === "present") return took(" (agy has it)");
+      if (r.unknown) return unknown(r.detail);
+      // agy said no: nothing of it reached the session; the daemon retries.
+      sent.delete(id);
+      deps.log(`oa-bus agy-watch: agy did not take ${id}: ${r.detail}`);
+      to().agyFailed(id);
+    } finally {
+      handing.delete(id);
     }
-    sent.delete(f.msg_id);
-    deps.log(`oa-bus agy-watch: agy did not take ${f.msg_id}: ${r.detail}`);
-    to.agyFailed(f.msg_id);
   };
 
   let tries = 0;

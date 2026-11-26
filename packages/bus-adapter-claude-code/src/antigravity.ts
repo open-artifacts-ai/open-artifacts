@@ -318,14 +318,18 @@ export function agyWatchLive(
 export const AGY_SENT_MAX = 1000;
 
 /**
- * agy S3: `<bus home>/antigravity/<agy pid>.sent.json`, the msg ids a watcher
- * handed to agy for that agy process (written before each hand-off). A
- * watcher started again for the same agy process reads it, so no id reaches
- * agy twice; a file for an earlier agy process with that pid counts for nothing.
+ * agy S3: `<bus home>/antigravity/<agy pid>.sent.json`, what a watcher knows
+ * of each msg id it handed to agy for that agy process. `ids`: agy's agentapi
+ * said it took them (written after agy said so). `trying`: a hand-off began
+ * then (written before the call), and agy's answer was never recorded; only
+ * agy's mailbox can say whether it got one of those. A watcher started again
+ * for the same agy process reads the file; a file for an earlier agy process
+ * with that pid counts for nothing.
  */
 export class AgySentIds {
   readonly #file: string;
   #ids: string[];
+  #trying: Record<string, number>;
   constructor(
     private readonly busHome: string,
     agyPid: number,
@@ -333,34 +337,163 @@ export class AgySentIds {
   ) {
     this.#file = join(agyStateDir(busHome), `${agyPid}.sent.json`);
     const doc = readOwnJson(this.#file, 1_048_576) as
-      | { agyStart?: unknown; ids?: unknown }
+      | { agyStart?: unknown; ids?: unknown; trying?: unknown }
       | undefined;
+    const ours = doc?.agyStart === agyStart;
     this.#ids =
-      doc?.agyStart === agyStart && Array.isArray(doc.ids)
+      ours && Array.isArray(doc.ids)
         ? doc.ids.filter((x): x is string => typeof x === "string")
         : [];
+    this.#trying = {};
+    if (ours && doc.trying && typeof doc.trying === "object")
+      for (const [k, v] of Object.entries(doc.trying))
+        if (typeof v === "number" && Number.isFinite(v)) this.#trying[k] = v;
   }
+  /** agy said it took this id. */
   has(id: string): boolean {
     return this.#ids.includes(id);
   }
+  /** When a hand-off of this id began whose answer was never recorded. */
+  tryingSince(id: string): number | undefined {
+    return this.#trying[id];
+  }
+  /** A hand-off begins: written before agy is called. */
+  begin(id: string, at: number): void {
+    this.#trying[id] = at;
+    const keys = Object.keys(this.#trying);
+    for (const k of keys.slice(0, Math.max(0, keys.length - AGY_SENT_MAX)))
+      delete this.#trying[k];
+    this.#save();
+  }
+  /** agy took it: written only after agy said so. */
   add(id: string): void {
-    if (this.has(id)) return;
+    const was = id in this.#trying;
+    delete this.#trying[id];
+    if (this.has(id)) {
+      if (was) this.#save();
+      return;
+    }
     this.#ids.push(id);
     if (this.#ids.length > AGY_SENT_MAX)
       this.#ids = this.#ids.slice(-AGY_SENT_MAX);
     this.#save();
   }
+  /** agy refused it: nothing of it reached the session. */
   delete(id: string): void {
     const n = this.#ids.length;
+    const was = id in this.#trying;
+    delete this.#trying[id];
     this.#ids = this.#ids.filter((x) => x !== id);
-    if (this.#ids.length !== n) this.#save();
+    if (this.#ids.length !== n || was) this.#save();
   }
   #save(): void {
     writeOwnJson(this.busHome, this.#file, {
       agyStart: this.agyStart,
       ids: this.#ids,
+      trying: this.#trying,
     });
   }
+}
+
+/** What agy's mailbox says of one message. */
+export type AgyMailboxState = "present" | "absent" | "unreadable";
+
+/**
+ * agy's own data folder, as agy tells the commands it runs
+ * (`ANTIGRAVITY_APP_DATA_DIR`; `agy --app_data_dir` moves it), else the
+ * CLI's default.
+ */
+export function agyAppDataDir(
+  env: Record<string, string | undefined>,
+  home: string = homedir(),
+): string {
+  const d = env.ANTIGRAVITY_APP_DATA_DIR;
+  return d && isAbsolute(d) ? d : join(home, ".gemini", "antigravity-cli");
+}
+
+/** A message file is at most this big; ours are far smaller. */
+const AGY_MAILBOX_FILE_MAX = 1_048_576;
+/** The most files read from one mailbox. */
+const AGY_MAILBOX_MAX = 20_000;
+
+/**
+ * Whether agy holds this exact message for `conversationId`, read from agy's
+ * own mailbox: `<app data>/brain/<conversation>/.system_generated/messages/
+ * <uuid>.json`, one JSON file per message agentapi took (recipient,
+ * renderDetails.messageTitle, content). agy writes the file before
+ * `agentapi send-message` returns, and keeps it after the message lands in
+ * the transcript, so it is agy's own receipt (seen live, agy CLI 1.5.17 and
+ * 1.5.18, idle and mid-turn). `present`: a file with exactly this content
+ * and our title. `absent`: the mailbox reads and has none. `unreadable`:
+ * the conversation's folder is missing, a message file cannot be read, or
+ * one that names this msg id cannot be parsed, so nothing can be said.
+ */
+export function agyMailboxHas(
+  appDataDir: string,
+  conversationId: string,
+  title: string,
+  text: string,
+  msgId: string,
+): AgyMailboxState {
+  if (!AgentRefSchema.safeParse(conversationId).success) return "unreadable";
+  const gen = join(appDataDir, "brain", conversationId, ".system_generated");
+  let names: string[];
+  try {
+    names = readdirSync(join(gen, "messages"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") return "unreadable";
+    // No mailbox yet: agy has taken no message for this conversation, as
+    // long as the conversation itself is there.
+    try {
+      readdirSync(gen);
+      return "absent";
+    } catch {
+      return "unreadable";
+    }
+  }
+  let seen = 0;
+  for (const name of names) {
+    if (!/^[0-9a-f-]{8,64}\.json$/i.test(name)) continue;
+    seen += 1;
+    if (seen > AGY_MAILBOX_MAX) return "unreadable";
+    let raw: string;
+    try {
+      const fd = openSync(
+        join(gen, "messages", name),
+        constants.O_RDONLY | constants.O_NOFOLLOW,
+      );
+      try {
+        const st = fstatSync(fd);
+        if (!st.isFile()) continue;
+        if (st.size > AGY_MAILBOX_FILE_MAX) continue;
+        raw = readFileSync(fd, "utf8");
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return "unreadable";
+    }
+    if (!raw.includes(msgId)) continue;
+    let m: unknown;
+    try {
+      m = JSON.parse(raw);
+    } catch {
+      // Ours, half written, or not agy's: no answer either way.
+      return "unreadable";
+    }
+    const d = (m ?? {}) as {
+      recipient?: unknown;
+      content?: unknown;
+      renderDetails?: { messageTitle?: unknown };
+    };
+    if (
+      d.recipient === conversationId &&
+      d.content === text &&
+      d.renderDetails?.messageTitle === title
+    )
+      return "present";
+  }
+  return "absent";
 }
 
 /** The name an agy session proposes when its conversation has no title yet. */

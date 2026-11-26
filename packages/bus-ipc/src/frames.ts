@@ -354,12 +354,16 @@ export type AdapterLinkProof = z.infer<typeof AdapterLinkProof>;
 /**
  * agy S3: the watcher could not hand `msg_id` to agy (`agentapi
  * send-message` failed). Nothing reached the session, so the daemon may try
- * again; a watcher answers each push with this or with `ack`.
+ * again; a watcher answers each push with this or with `ack` (an ack means
+ * agy said it took the message). `outcome: "unknown"`: an earlier hand-off
+ * may have reached agy and agy's mailbox cannot say, so the watcher neither
+ * sends it again nor calls it delivered; the receipt stays pending.
  */
 export const AgyFailed = z.object({
   ...base,
   type: z.literal("agy_failed"),
   msg_id: MsgIdSchema,
+  outcome: z.literal("unknown").optional(),
 });
 
 export const AdapterFrame = z.discriminatedUnion("type", [
