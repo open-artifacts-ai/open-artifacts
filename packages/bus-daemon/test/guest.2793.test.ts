@@ -30,8 +30,8 @@ const TOKEN_B = `oa_machine_${"b".repeat(28)}7f3a`;
 const TOKEN_C = `oa_machine_${"c".repeat(28)}9d1e`;
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
-/** The fixture session's id: long enough that a random ref cannot contain it. */
-const SID = "sess-7f3k9q2x";
+/** The fixture session's id: 8 characters, so a leak fits in a 22-character ref and a random ref cannot contain it. */
+const SID = "sx7Kq2Zp";
 const HASH_C = "c".repeat(64);
 const M = (c: string) => c.repeat(16);
 
