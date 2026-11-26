@@ -14,8 +14,9 @@
 # is written to an issue.
 # No clock (cloud #264): after every completed CI run (cancelled and skipped
 # ones aside), and on dispatch, the same job reconciles: it tracks every run
-# created in the last 30 days and 26 hours (GitHub allows a rerun for 30
-# days; the 26 hours keep a late rerun listed) that passed on a rerun and
+# created in the last 60 days and 26 hours (GitHub allows a rerun for 30
+# days, and the next CI completion may come up to 30 quiet days after it; the
+# 26 hours are slack) that passed on a rerun and
 # that the store has not marked handled, however long ago it passed, so a
 # dropped event is caught by the next CI completion whenever that comes. A
 # listing of 1,000 runs or more (GitHub's limit for one query) is split into

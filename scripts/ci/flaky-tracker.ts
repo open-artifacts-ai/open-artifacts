@@ -4,11 +4,11 @@
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
 // group, queued). A reconcile (--reconcile), right after every tracker run
 // and on dispatch, never on a clock, catches any run that event missed: it
-// lists every CI run created in the last RERUN_DAYS plus RECONCILE_HOURS that
-// passed on attempt 2 or later, however long ago it passed, and tracks each
-// one the store has no `passed` line for, through the same code. So a dropped
-// event is caught by the next completion whenever it comes, not only within a
-// day. That line means the run is fully handled: it is written with the run's
+// lists every CI run created in the last RERUN_DAYS plus QUIET_DAYS (plus
+// RECONCILE_HOURS of slack) that passed on attempt 2 or later, however long
+// ago it passed, and tracks each one the store has no `passed` line for,
+// through the same code. So a dropped event is caught by the next completion
+// even when it comes QUIET_DAYS after a rerun on the last allowed day. That line means the run is fully handled: it is written with the run's
 // sightings when nothing is filed, else in its own store comment after every
 // filing succeeded (so a failed filing is retried), and on its own when the
 // earlier attempts hold no failed test (so the run is not read again).
@@ -83,13 +83,17 @@ const STORE_CHAIN_MAX = 10;
  * workflow's name, so it is never read.
  */
 export const WATCHED = ["ci.yml"];
-/**
- * The reconcile lists runs created up to RERUN_DAYS plus this many hours ago,
- * so a rerun that passed near the end of GitHub's rerun period stays listed.
- */
+/** Slack on top of RERUN_DAYS plus QUIET_DAYS in the reconcile's range. */
 export const RECONCILE_HOURS = 26;
 /** GitHub lets a run be rerun for this many days after it was created. */
 export const RERUN_DAYS = 30;
+/**
+ * The longest stretch with no event (so no reconcile) the reconcile still
+ * covers: a run rerun on its last allowed day and then QUIET_DAYS with no
+ * completion is still listed when the next completion comes. Every handled
+ * run is marked, so listing further back costs only the listing.
+ */
+export const QUIET_DAYS = 30;
 /** list-workflow-runs returns at most this many runs for one query. */
 export const LIST_MAX = 1000;
 const PER_PAGE = 100;
@@ -1088,21 +1092,22 @@ export function listRuns(
 
 /**
  * The start of the reconcile's range, in whole seconds: RERUN_DAYS plus
- * RECONCILE_HOURS ago (a run can be rerun up to RERUN_DAYS after it was
- * created).
+ * QUIET_DAYS plus RECONCILE_HOURS ago. A run can be rerun up to RERUN_DAYS
+ * after it was created, and the next completion may come up to QUIET_DAYS
+ * after that rerun, so the range never depends on when the next event comes
+ * within that bound.
  */
 export const reconcileFrom = (nowMs: number) =>
   Math.floor(nowMs / 1000) * 1000 -
-  RERUN_DAYS * DAY_MS -
+  (RERUN_DAYS + QUIET_DAYS) * DAY_MS -
   RECONCILE_HOURS * 3600 * 1000;
 
 /**
  * The runs the reconcile looks at: every run of the watched workflows created
  * since reconcileFrom whose latest attempt (2 or later) passed, however long
  * ago it passed, fork PRs' runs too, oldest first. No update window: a run
- * whose event was dropped stays a candidate until the store marks it, so
- * catching it never depends on how soon the next event comes. Whether a
- * failure counts toward two in seven days is decided later, by the failed
+ * whose event was dropped stays a candidate until the store marks it, even
+ * after QUIET_DAYS with no event. Whether a failure counts toward two in seven days is decided later, by the failed
  * job's completion time, never by the run's creation.
  */
 export function recentRuns(
@@ -1251,7 +1256,7 @@ function report(lines: string[]) {
 function mainReconcile(repo: string) {
   const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
   const lines = [
-    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later`,
+    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS + QUIET_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later`,
   ];
   for (const r of all) {
     lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);

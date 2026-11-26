@@ -25,6 +25,7 @@ import {
   parsePlaywright,
   parseStore,
   parseVitest,
+  QUIET_DAYS,
   RERUN_DAYS,
   type Recorded,
   type RunInfo,
@@ -1020,7 +1021,7 @@ describe("reconcile", () => {
   const writes = (g: ReturnType<typeof fakeGh>) =>
     g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length;
 
-  it("lists passing reruns created in the last 30 days and 26 hours, forks' too, in small reads", () => {
+  it("lists passing reruns created in the last 60 days and 26 hours, forks' too, in small reads", () => {
     const g = fakeGh({ log: ONE_FAIL });
     expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
     const list = g.calls.filter((c) =>
@@ -1030,11 +1031,11 @@ describe("reconcile", () => {
     const path = list[0]?.find((a) => a.startsWith("repos/")) ?? "";
     expect(path).toContain("status=success");
     expect(path).toContain("per_page=100&page=1");
-    // Created in the last 30 days and 26 hours: a rerun up to 30 days after
-    // creation, and 26 hours to list it.
+    // Created in the last 60 days and 26 hours: a rerun up to 30 days after
+    // creation, up to 30 quiet days after it, and 26 hours of slack.
     expect(RERUN_DAYS).toBe(30);
     expect(decodeURIComponent(path)).toContain(
-      "created=2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "created=2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     const jq = list[0]?.[list[0].indexOf("--jq") + 1] ?? "";
     expect(jq).toContain("total_count");
@@ -1049,8 +1050,8 @@ describe("reconcile", () => {
       rerun(901, { attempt: 3, created: 4 * DAY, updated: 2 * HOUR }),
       // Created 25 days ago: still inside GitHub's 30-day rerun period.
       rerun(902, { created: 25 * DAY, updated: 3 * HOUR }),
-      // Created 31 days and 3 hours ago: past 30 days plus 26 hours.
-      rerun(903, { created: 31 * DAY + 3 * HOUR, updated: 3 * HOUR }),
+      // Created 61 days and 3 hours ago: past 60 days plus 26 hours.
+      rerun(903, { created: 61 * DAY + 3 * HOUR, updated: 3 * HOUR }),
       // Updated 27 hours ago: still listed, as no update window applies.
       rerun(904, { created: 2 * DAY, updated: 27 * HOUR }),
       // Passed on its first attempt: nothing to track.
@@ -1111,9 +1112,11 @@ describe("reconcile", () => {
     const g = fakeGh({ log: ONE_FAIL, runs });
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
     expect(ranges(g.calls)).toEqual([
-      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
-      "2026-10-26T10:00:00Z..2026-11-10T23:00:00Z",
-      "2026-11-10T23:00:01Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-10-26T23:00:00Z",
+      "2026-10-26T23:00:01Z..2026-11-26T12:00:00Z",
+      "2026-10-26T23:00:01Z..2026-11-11T05:30:00Z",
+      "2026-11-11T05:30:01Z..2026-11-26T12:00:00Z",
     ]);
   });
 
@@ -1130,7 +1133,7 @@ describe("reconcile", () => {
     expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 3 }]);
     // The whole range held 1,145, so it was split before paging.
     expect(ranges(g.calls)[0]).toBe(
-      "2026-10-26T10:00:00Z..2026-11-26T12:00:00Z",
+      "2026-09-26T10:00:00Z..2026-11-26T12:00:00Z",
     );
     expect(ranges(g.calls).length).toBeGreaterThan(1);
   });
@@ -1221,7 +1224,7 @@ describe("reconcile", () => {
     const since = g.calls
       .map((c) => c.find((a) => a.includes("/issues/1/comments?")))
       .find(Boolean);
-    expect(since).toContain("since=2026-10-26T10:00:00.000Z");
+    expect(since).toContain("since=2026-09-26T10:00:00.000Z");
     // The next reconcile, another 30 hours on, has nothing left to do.
     const before = g.comments.length;
     const again = reconcile({
@@ -1234,6 +1237,31 @@ describe("reconcile", () => {
       "recorded already",
     ]);
     expect(g.comments).toHaveLength(before);
+  });
+
+  it("a rerun on day 29 followed by 3 quiet days is still tracked", () => {
+    // Run 900 was created 32 days 23 hours ago. Attempt 1 failed, attempt 2
+    // passed 29 days 23 hours after creation (inside GitHub's rerun period),
+    // its event was dropped, and no CI run completed for 3 days.
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(900, { created: 32 * DAY + 23 * HOUR, updated: 3 * DAY })],
+    });
+    const [r] = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r?.runId).toBe(900);
+    expect(r?.result).toBe("tracked");
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
+  });
+
+  it(`a rerun on the last allowed day stays listed through ${QUIET_DAYS} days with no event`, () => {
+    // Created 30 days before its rerun passed, then QUIET_DAYS with no CI
+    // completion at all.
+    const quiet = rerun(901, {
+      created: (RERUN_DAYS + QUIET_DAYS) * DAY,
+      updated: QUIET_DAYS * DAY,
+    });
+    const g = fakeGh({ log: ONE_FAIL, runs: [quiet] });
+    expect(recentRuns(g.exec, REPO, NOW)).toEqual([{ runId: 901, attempt: 2 }]);
   });
 
   it("a run with no failed test is read once, then skipped by every later reconcile", () => {
