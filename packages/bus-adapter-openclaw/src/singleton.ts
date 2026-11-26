@@ -1,11 +1,9 @@
-import { existsSync, statSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Bus } from "./bus.ts";
 import { realConnect } from "./link.ts";
 import { resolveStateDir } from "./state-dir.ts";
-
-export const HABITS_MARKER = "habits.on";
 
 /**
  * The plugin's own installed folder: the one holding openclaw.plugin.json,
@@ -19,17 +17,6 @@ export function pluginDir(
   return existsSync(join(d, "openclaw.plugin.json")) ? d : dirname(d);
 }
 
-/** A cheap stat per prompt: is the marker there as a plain file. */
-export const markerOn =
-  (dir: string, name = HABITS_MARKER) =>
-  (): boolean => {
-    try {
-      return statSync(join(dir, name)).isFile();
-    } catch {
-      return false;
-    }
-  };
-
 const SLOT = Symbol.for("open-artifacts.bus-adapter-openclaw");
 
 /**
@@ -41,7 +28,6 @@ export function processBus(): Bus {
   g[SLOT] ??= new Bus({
     connect: realConnect(),
     stateDir: () => resolveStateDir(),
-    habitsOn: markerOn(pluginDir()),
   });
   return g[SLOT];
 }

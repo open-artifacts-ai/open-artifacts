@@ -14,6 +14,7 @@ import { logs } from "./commands/logs.ts";
 import { mcp } from "./commands/mcp.ts";
 import { mcpProof } from "./commands/mcp-proof.ts";
 import { namespace } from "./commands/namespace.ts";
+import { rules } from "./commands/rules.ts";
 import { skill } from "./commands/skill.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
@@ -65,7 +66,8 @@ export async function main(
   if (
     !TERMINAL.has(cmd.cmd) &&
     cmd.cmd !== "install" &&
-    cmd.cmd !== "uninstall"
+    cmd.cmd !== "uninstall" &&
+    cmd.cmd !== "rules"
   )
     markLive(fileURLToPath(import.meta.url), ctx.home);
   // A moved home no harness config points at gets `login --home` hints (#2425).
@@ -131,6 +133,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       // The adapter servers read OA_BUS_HOME themselves.
       if (cmd.home) process.env.OA_BUS_HOME = ctx.home;
       return mcp(cmd.harness, ctx);
+    case "rules":
+      return rules(cmd, ctx);
     case "mcp-proof":
       // The daemon socket is found from OA_BUS_HOME, as the adapter servers do.
       return mcpProof(

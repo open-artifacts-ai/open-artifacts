@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
-  HABITS,
   IDLE_MS,
   NOTICES_MAX,
   PENDING_MAX,
@@ -250,29 +248,30 @@ describe("delivery", () => {
   });
 });
 
-describe("habits", () => {
-  it("matches bus-cli's HABITS_LINES", () => {
-    const src = readFileSync(
-      new URL("../../bus-cli/src/steps/habits.ts", import.meta.url),
-      "utf8",
-    );
-    const m = /export const HABITS_LINES = \[\n([\s\S]*?)\n\];/.exec(src);
-    expect(m).not.toBeNull();
-    // The array body is plain string literals: evaluate it, any quote style.
-    const lines = new Function(`return [${m?.[1] ?? ""}]`)() as string[];
-    expect(lines.length).toBeGreaterThan(5);
-    expect(HABITS).toBe(lines.join("\n"));
-  });
-  it("come as appendSystemContext while a link is open, not before", async () => {
+describe("habits (#3043)", () => {
+  it("come from the daemon as appendSystemContext while a link is open, not before", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
     expect(bus.buildPrompt(caller({ runId: "r0" }))).toBeUndefined();
     await flush();
     expect(bus.buildPrompt(caller({ runId: "r1" }))).toEqual({
-      appendSystemContext: HABITS,
+      appendSystemContext: "RULES v1",
     });
-    expect(HABITS).toContain("never your user's yes");
-    expect(HABITS).toContain("140 characters");
+  });
+
+  it("picks up updated rules in a fresh Bus after a simulated update", async () => {
+    const hub = new Hub();
+    const bus1 = newBus(hub);
+    await online(bus1);
+    expect(bus1.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
+      "RULES v1",
+    );
+    hub.habitsAnswer = "RULES v2";
+    const bus2 = newBus(hub);
+    await online(bus2);
+    expect(bus2.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
+      "RULES v2",
+    );
   });
 
   it("are not sent when the daemon is down", async () => {
@@ -291,10 +290,10 @@ describe("habits", () => {
     hub.clients[0]?.close();
     hub.down = true; // and it cannot come back right now
     expect(bus.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
-      HABITS,
+      "RULES v1",
     );
     expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
-      HABITS,
+      "RULES v1",
     );
   });
 });
@@ -389,7 +388,7 @@ describe("the first prompt of a root", () => {
     );
     const r = await bus.promptBuild(caller({ runId: "r1" }));
     expect(r?.prependContext).toContain("held while down");
-    expect(r?.appendSystemContext).toBe(HABITS);
+    expect(r?.appendSystemContext).toBe("RULES v1");
     expect(hub.connects).toHaveLength(1);
     // A second prompt in the same run does not wait or connect again.
     expect(await bus.promptBuild(caller({ runId: "r1" }))).toEqual(r);
@@ -582,7 +581,7 @@ describe("a root is handed mail only after its runtime has reported a model call
     ]);
     // Habits are not part of delivery and carry on.
     expect(bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext).toBe(
-      HABITS,
+      "RULES v1",
     );
     // The runtime reports a model call again: mail flows once more.
     bus.modelCallStarted(key, { runId: "r3" });
@@ -845,10 +844,11 @@ describe("a provider failure that still reports a completed model call", () => {
   });
 });
 
-describe("habits behind the user's yes", () => {
-  it("are not sent without the marker, but mail still flows", async () => {
+describe("habits opt-out and errors (#3043)", () => {
+  it("are not sent when the daemon answers rules: null, and mail still flows", async () => {
     const hub = new Hub();
-    const bus = newBus(hub, { habitsOn: () => false });
+    hub.habitsAnswer = null;
+    const bus = newBus(hub);
     await online(bus);
     hub.push({ id: "m1" });
     await flush();
@@ -860,36 +860,18 @@ describe("habits behind the user's yes", () => {
     expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
   });
 
-  it("are sent with the marker once a link has been opened", async () => {
+  it("are not sent when the daemon answers an error frame, and mail still flows", async () => {
     const hub = new Hub();
-    let on = false;
-    const bus = newBus(hub, { habitsOn: () => on });
+    hub.habitsAnswer = "error";
+    const bus = newBus(hub);
     await online(bus);
-    expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
-    on = true; // the marker appears: the next prompt sees it
-    expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
-      HABITS,
-    );
-    hub.clients[0]?.close();
-    expect(bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext).toBe(
-      HABITS,
-    );
-    on = false; // the user took the marker away: off at once
-    expect(bus.buildPrompt(caller({ runId: "r4" }))).toBeUndefined();
-  });
-
-  it("are off when no check is given, or the check throws", async () => {
-    const hub = new Hub();
-    for (const habitsOn of [
-      undefined,
-      () => {
-        throw new Error("x");
-      },
-    ]) {
-      const bus = newBus(hub, { habitsOn });
-      await online(bus);
-      expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
-    }
+    hub.push({ id: "m1" });
+    await flush();
+    const r = bus.buildPrompt(caller({ runId: "r1" }));
+    expect(r?.prependContext).toContain("body of m1");
+    expect(r?.appendSystemContext).toBeUndefined();
+    ended(bus, "r1");
+    expect(hub.acks).toEqual(["m1"]);
   });
 
   it("model_call_* and before_message_write count as activity (N4)", async () => {

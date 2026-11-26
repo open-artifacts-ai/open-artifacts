@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { BUS_CMD } from "@oa/bus-protocol";
+import { BRIEF_RULES, BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
 import {
@@ -72,18 +72,28 @@ describe("the block", () => {
     expect(habitsBlock()[1]).toContain("`oa-bus install --no-habits`");
     expect(habitsBlock()[1]).toContain("open-artifacts.com/docs/bus-installs");
   });
-  it("matches the copy in the Hermes plugin", () => {
-    const py = readFileSync(
-      new URL("../../bus-adapter-hermes/assets/oa_bus/bus.py", import.meta.url),
-      "utf8",
-    );
-    const m = /^HABITS = \(\n([\s\S]*?)\n\)$/m.exec(py);
-    expect(m).not.toBeNull();
-    // Python's adjacent string literals, joined: the same text, no quotes.
-    const text = [...(m?.[1] ?? "").matchAll(/"((?:[^"\\]|\\.)*)"/g)]
-      .map((x) => (x[1] as string).replace(/\\n/g, "\n").replace(/\\"/g, '"'))
-      .join("");
-    expect(text).toBe(HABITS_LINES.join("\n"));
+  it("the Hermes and OpenClaw plugins carry no copy of the rules: they ask the daemon (#3043)", () => {
+    const briefSecondLine = BRIEF_RULES.split("\n")[1] as string;
+    expect(briefSecondLine.length).toBeGreaterThan(0);
+    const plugins = [
+      {
+        path: "../../bus-adapter-hermes/assets/oa_bus/bus.py",
+        request: '"type": "habits"',
+      },
+      {
+        path: "../../bus-adapter-openclaw/src/bus.ts",
+        request: 'type: "habits"',
+      },
+    ];
+    for (const { path, request } of plugins) {
+      const src = readFileSync(new URL(path, import.meta.url), "utf8");
+      for (const line of HABITS_LINES) {
+        const snippet = line.replace(/^- /, "").slice(0, 60);
+        expect(src).not.toContain(snippet);
+      }
+      expect(src).not.toContain(briefSecondLine);
+      expect(src).toContain(request);
+    }
   });
 });
 

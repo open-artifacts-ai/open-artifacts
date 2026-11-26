@@ -15,6 +15,8 @@ export class Hub {
   welcomeCaps: string[] | undefined = ["link"];
   /** How the daemon answers a link_proof: bound, not bound, or an error frame. */
   proofAnswer: "bound" | "unbound" | "error" | "hang" = "bound";
+  /** #3043: how the daemon answers `habits`: rules text, null (opted out), or an error frame. */
+  habitsAnswer: string | null | "error" = "RULES v1";
   /** Every link_proof the daemon got: which root's link, and the hash. */
   proofs: { ref: string; hash: string; client: FakeClient }[] = [];
   push(m: Msg): void {
@@ -83,6 +85,11 @@ export class FakeClient {
         return { type: "error", code: "bad_frame", message: "no" };
       return { type: "link_proofed", bound: this.hub.proofAnswer === "bound" };
     }
+    if (f.type === "habits") {
+      if (this.hub.habitsAnswer === "error")
+        return { type: "error", code: "bad_frame", message: "no" };
+      return { type: "habits", rules: this.hub.habitsAnswer };
+    }
     if (f.type === "self")
       return {
         type: "agent",
@@ -124,7 +131,6 @@ export function newBus(hub: Hub, over: Partial<BusDeps> = {}) {
     stateDir: () => "/state/.openclaw",
     settleMs: 0,
     sweepMs: 0,
-    habitsOn: () => true,
     ...over,
   });
 }

@@ -10,6 +10,7 @@ import {
   socketDirProblem,
 } from "@oa/bus-adapter-claude-code";
 import { connectDaemon } from "@oa/bus-ipc";
+import { serverOptions } from "./rules.ts";
 import { opencodeApi, rootSession } from "./session.ts";
 import { handleToolCall, TOOLS } from "./tools.ts";
 
@@ -18,7 +19,7 @@ const SOCKET = daemonSocketPath(HOME);
 
 const server = new Server(
   { name: "oa_bus", version: "0.1.0" },
-  { capabilities: { tools: {} } },
+  serverOptions(HOME),
 );
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [...TOOLS],

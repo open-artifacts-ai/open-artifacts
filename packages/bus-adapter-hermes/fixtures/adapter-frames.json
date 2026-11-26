@@ -146,6 +146,14 @@
       }
     },
     {
+      "name": "habits (#3043)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "habits"
+      }
+    },
+    {
       "name": "link_proof (#1856: a hash, no pid)",
       "frame": {
         "v": 1,

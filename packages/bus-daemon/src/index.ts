@@ -2847,6 +2847,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A codex hello proves one call id, so it buys one request: `hello.pid`
     // is a claim (no peer credentials), and a won race must not become a session.
     oneRequest: (h) => h.kind === "codex",
+    // #3043: un-helloed rules query for the Codex SessionStart hook CLI.
+    onHabits: () =>
+      (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
     // #1822: `oa-bus mcp-proof` names the Claude process it runs under. The pid
     // in the request is the caller's claim, not attested (no peer credentials):
     // any process of this OS user can bind. The owner accepted that. What the

@@ -354,3 +354,46 @@ export function daemonLinkProof(opts: {
     });
   });
 }
+
+/**
+ * #3043: asks the daemon for the current bus rules without a hello (for the
+ * Codex SessionStart hook CLI). Resolves to the rules string or null (opted
+ * out); rejects on timeout, error frame, or connection failure.
+ */
+export function daemonHabits(opts: {
+  path: string;
+  timeoutMs?: number;
+}): Promise<string | null> {
+  return new Promise((resolve, reject) => {
+    const sock = connect(opts.path);
+    const decoder = new LineDecoder();
+    const done = (f: () => void) => {
+      clearTimeout(timer);
+      sock.destroy();
+      f();
+    };
+    const timer = setTimeout(
+      () => done(() => reject(new Error("daemon did not answer habits"))),
+      opts.timeoutMs ?? 3_000,
+    );
+    sock.once("error", (e) => done(() => reject(e)));
+    sock.once("close", () =>
+      done(() => reject(new Error("daemon connection closed"))),
+    );
+    sock.once("connect", () =>
+      sock.write(`${JSON.stringify({ v: 1, id: "habits", type: "habits" })}\n`),
+    );
+    sock.on("data", (chunk) => {
+      try {
+        for (const raw of decoder.push(chunk)) {
+          const f = DaemonFrame.parse(raw);
+          if (f.type === "habits") return done(() => resolve(f.rules));
+          if (f.type === "error")
+            return done(() => reject(new Error(f.message)));
+        }
+      } catch (e) {
+        done(() => reject(e instanceof Error ? e : new Error(String(e))));
+      }
+    });
+  });
+}

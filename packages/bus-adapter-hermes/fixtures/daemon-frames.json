@@ -218,6 +218,24 @@
       }
     },
     {
+      "name": "habits (#3043)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "habits",
+        "rules": "Rules text."
+      }
+    },
+    {
+      "name": "habits opted out (#3043)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "habits",
+        "rules": null
+      }
+    },
+    {
       "name": "link_proofed",
       "frame": {
         "v": 1,
@@ -243,6 +261,15 @@
     }
   ],
   "invalid": [
+    {
+      "name": "habits with non-string rules (#3043)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "habits",
+        "rules": 123
+      }
+    },
     {
       "name": "link_proofed with no bound",
       "frame": {

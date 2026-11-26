@@ -53,14 +53,19 @@ import {
   uninstallProof,
 } from "./claude-proof.ts";
 import {
+  CODEX_HOOK_TRUST_LINE,
   codexConfig,
   codexEntry,
   codexEntryOf,
+  codexHookCommand,
+  codexHooks,
   entryIs,
   findCodexBin,
   hasCodex,
+  installCodexHook,
   readToml,
   removeCodexEntry,
+  uninstallCodexHook,
   upsertCodexEntry,
 } from "./codex.ts";
 import {
@@ -1025,6 +1030,13 @@ const install: Record<Harness, Step> = {
       notes.push(CODEX_NO_BIN);
     }
     await codexEntryStep(deps, notes);
+    const hook = installCodexHook(
+      codexHooks(deps.home, deps.env ?? {}),
+      codexHookCommand(deps.busBin, deps.home, p.busDir),
+    );
+    if (hook.note) notes.push(hook.note);
+    if (hook.status === "added" || hook.status === "updated")
+      notes.push(CODEX_HOOK_TRUST_LINE);
     return "done";
   },
 
@@ -1194,6 +1206,9 @@ const uninstall: Record<Harness, Step> = {
         saved = true;
       }
     }
+    const hook = uninstallCodexHook(codexHooks(deps.home, deps.env ?? {}));
+    if (hook.note) notes.push(hook.note);
+    if (hook.removed) saved = true;
     // The config first: the pin goes only once the entry is gone.
     const pinned = present(p.codexBin);
     rmSync(p.codexBin, { force: true });

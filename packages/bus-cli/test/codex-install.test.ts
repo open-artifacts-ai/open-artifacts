@@ -117,6 +117,7 @@ describe("Codex install (C26e)", () => {
     expect(readdirSync(s.codexHome).sort()).toEqual([
       "config.toml",
       "config.toml.oa-bus.bak",
+      "hooks.json",
     ]);
   });
 

@@ -2,6 +2,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { codexAppBin, resolveCodexBin } from "@oa/bus-daemon";
 import { parse } from "smol-toml";
+import { writeAtomic } from "./skill.ts";
 
 /**
  * Codex (C26e). Its MCP servers live in `${CODEX_HOME:-~/.codex}/config.toml`,
@@ -34,6 +35,10 @@ export function codexHomeEnv(
 
 export const codexConfig = (home: string, env: Env): string =>
   join(codexHome(home, env), "config.toml");
+
+/** `${CODEX_HOME:-~/.codex}/hooks.json` (#3043). */
+export const codexHooks = (home: string, env: Env): string =>
+  join(codexHome(home, env), "hooks.json");
 
 /** Codex is here: on PATH, its home exists, or the app is installed. */
 export function hasCodex(o: {
@@ -503,4 +508,198 @@ export async function readCodexVersion(o: {
   } catch {
     return undefined;
   }
+}
+
+// --- #3043: Codex SessionStart hook in $CODEX_HOME/hooks.json.
+
+const HOOK_SUFFIX = "rules codex-hook";
+const HOOK_MATCHER = "startup|resume";
+const HOOK_TIMEOUT = 10;
+
+export const CODEX_HOOK_TRUST_LINE =
+  "Codex: open /hooks once and trust the Open Artifacts bus hook, so each session gets the bus rules.";
+
+const shellQuote = (arg: string): string =>
+  /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)
+    ? arg
+    : `'${arg.replaceAll("'", "'\\''")}'`;
+
+/**
+ * Shell command for Codex's SessionStart hook (#3043): the same bus binary as
+ * the MCP entry, optional `--home` when OA_BUS_HOME is moved, then `rules codex-hook`.
+ */
+export function codexHookCommand(
+  busBin: string[],
+  home?: string,
+  busHome?: string,
+): string {
+  const moved =
+    home !== undefined &&
+    busHome !== undefined &&
+    resolve(busHome) !== join(home, ".oa-bus")
+      ? ["--home", resolve(busHome)]
+      : [];
+  return [...busBin, ...moved, "rules", "codex-hook"].map(shellQuote).join(" ");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+const isOurHook = (h: unknown): h is Record<string, unknown> =>
+  isRecord(h) &&
+  typeof h.command === "string" &&
+  h.command.trimEnd().endsWith(HOOK_SUFFIX);
+
+type HooksDoc = Record<string, unknown> & {
+  hooks?: Record<string, unknown> & {
+    SessionStart?: (Record<string, unknown> & { hooks?: unknown[] })[];
+  };
+};
+
+type ParsedHooks =
+  | { kind: "missing" }
+  | { kind: "ok"; doc: HooksDoc }
+  | { kind: "skip"; note: string };
+
+function readHooksFile(path: string): ParsedHooks {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT")
+      return { kind: "missing" };
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: could not inspect it (${e instanceof Error ? e.message : String(e)}).`,
+    };
+  }
+  if (st.isSymbolicLink())
+    return { kind: "skip", note: `Left ${path} alone: it is a symlink.` };
+  if (!st.isFile())
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: it is not a regular file.`,
+    };
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: it is not valid JSON.`,
+    };
+  }
+  if (!isRecord(raw))
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: expected a JSON object.`,
+    };
+  if (raw.hooks !== undefined) {
+    if (!isRecord(raw.hooks))
+      return {
+        kind: "skip",
+        note: `Left ${path} alone: hooks is not a JSON object.`,
+      };
+    if (raw.hooks.SessionStart !== undefined) {
+      if (
+        !Array.isArray(raw.hooks.SessionStart) ||
+        !raw.hooks.SessionStart.every(
+          (g) =>
+            isRecord(g) && (g.hooks === undefined || Array.isArray(g.hooks)),
+        )
+      )
+        return {
+          kind: "skip",
+          note: `Left ${path} alone: hooks.SessionStart has an unexpected shape.`,
+        };
+    }
+  }
+  return { kind: "ok", doc: raw as HooksDoc };
+}
+
+export type CodexHookResult = {
+  status: "added" | "updated" | "unchanged" | "skipped";
+  note?: string;
+};
+
+/**
+ * Installs or updates our single SessionStart entry in `$CODEX_HOME/hooks.json`
+ * (#3043). Keeps every other hook intact; refuses symlinks and malformed files.
+ */
+export function installCodexHook(
+  path: string,
+  command: string,
+): CodexHookResult {
+  const read = readHooksFile(path);
+  if (read.kind === "skip") return { status: "skipped", note: read.note };
+  const ourHook = { type: "command", command, timeout: HOOK_TIMEOUT };
+  const ourGroup = { matcher: HOOK_MATCHER, hooks: [ourHook] };
+  if (read.kind === "missing") {
+    const doc = { hooks: { SessionStart: [ourGroup] } };
+    writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+    return { status: "added" };
+  }
+  const doc = read.doc;
+  const hooks = isRecord(doc.hooks) ? doc.hooks : {};
+  const list = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
+  for (const group of list) {
+    if (!Array.isArray(group.hooks)) continue;
+    const idx = group.hooks.findIndex(isOurHook);
+    if (idx !== -1) {
+      const existing = group.hooks[idx] as Record<string, unknown>;
+      if (
+        existing.type === "command" &&
+        existing.command === command &&
+        existing.timeout === HOOK_TIMEOUT
+      )
+        return { status: "unchanged" };
+      group.hooks[idx] = { ...existing, ...ourHook };
+      writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+      return { status: "updated" };
+    }
+  }
+  doc.hooks = { ...hooks, SessionStart: [...list, ourGroup] };
+  writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+  return { status: "added" };
+}
+
+/**
+ * Removes only our SessionStart hook from `$CODEX_HOME/hooks.json` (#3043),
+ * plus any group/SessionStart/hooks container we emptied.
+ */
+export function uninstallCodexHook(path: string): {
+  removed: boolean;
+  note?: string;
+} {
+  const read = readHooksFile(path);
+  if (read.kind === "missing") return { removed: false };
+  if (read.kind === "skip") return { removed: false, note: read.note };
+  const doc = read.doc;
+  const hooks = doc.hooks;
+  const list = hooks?.SessionStart;
+  if (!hooks || !Array.isArray(list)) return { removed: false };
+  let removed = false;
+  const nextList: typeof list = [];
+  for (const group of list) {
+    if (!Array.isArray(group.hooks)) {
+      nextList.push(group);
+      continue;
+    }
+    const kept = group.hooks.filter((h) => !isOurHook(h));
+    if (kept.length !== group.hooks.length) {
+      removed = true;
+      if (kept.length > 0) nextList.push({ ...group, hooks: kept });
+    } else {
+      nextList.push(group);
+    }
+  }
+  if (!removed) return { removed: false };
+  if (nextList.length > 0) {
+    hooks.SessionStart = nextList;
+  } else {
+    delete hooks.SessionStart;
+    if (Object.keys(hooks).length === 0) delete doc.hooks;
+  }
+  writeAtomic(path, `${JSON.stringify(doc, null, 2)}\n`);
+  return { removed: true };
 }
