@@ -890,9 +890,14 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
   );
 });
 
-describe("scripts/authz-probe.ts against this world (the ping cell, alone)", () => {
-  it(PING_CELL, () => probeCell(PING_CELL), SLOW);
-});
+// A switched-off route (the hosted run, bus off) is the instance routes' deny
+// for everyone, as in the group above: no cell to probe there.
+describe.skipIf(switchedOff(PING_CELL))(
+  "scripts/authz-probe.ts against this world (the ping cell, alone)",
+  () => {
+    it(PING_CELL, () => probeCell(PING_CELL), SLOW);
+  },
+);
 
 describe("scripts/authz-probe.ts on an install whose tools/list hides edit_doc", () => {
   // tools/list without edit_doc. `calls` "unknown": a call to it answers
