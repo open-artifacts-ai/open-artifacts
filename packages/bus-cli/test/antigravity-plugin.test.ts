@@ -40,6 +40,8 @@ import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
 const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 const REF = "0b7e6a9c-1f2d-4c3b-9a8e-7d6c5b4a3f21";
+/** The default-home hook command an earlier build wrote: no pin, so it followed the agy process's OA_BUS_HOME. */
+const LEGACY_HOOK = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/opt/node/bin/node' '/h/.oa-bus/bin/oa-bus.js' 'agy-hello'; fi`;
 
 function setup(env: Record<string, string> = ON): {
   h: string;
@@ -68,7 +70,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
   });
 
   it("install writes plugin.json and a root hooks.json whose SessionStart runs agy-hello", async () => {
-    const { deps, dir } = setup();
+    const { h, deps, dir } = setup();
     await installAdapters(deps);
     expect(JSON.parse(read(join(dir, "plugin.json")))).toMatchObject({
       name: "oa-bus",
@@ -78,7 +80,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(existsSync(join(dir, AGY_PLUGIN_MARKER))).toBe(true);
     const handler = {
       type: "command",
-      command: agyHookCommand(BIN),
+      command: agyHookCommand(BIN, join(h, ".oa-bus")),
       timeout: 15,
     };
     expect(hooksOf(dir)).toEqual({
@@ -114,6 +116,51 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(checkAdapters(deps).antigravity).toBe("missing");
   });
 
+  it("the hook pins the home it was installed for, default too: an agy started with another OA_BUS_HOME still joins there (agy S2b)", async () => {
+    const { h, deps, dir } = setup();
+    const alt = join(h, ".oa-bus-alt");
+    const moved = join(h, ".oa-bus-moved");
+    const home = (cmd: string) =>
+      execFileSync(
+        "/bin/sh",
+        ["-c", cmd.replace(/exec '.*'; fi$/, "printenv OA_BUS_HOME; fi")],
+        {
+          encoding: "utf8",
+          // The agy process's own environment, which the hook inherits.
+          env: { PATH: "/usr/bin:/bin", HOME: h, OA_BUS_HOME: alt },
+        },
+      ).trim();
+    await installAdapters(deps);
+    expect(home(hooksOf(dir)["oa-bus"].SessionStart[0].command)).toBe(
+      join(h, ".oa-bus"),
+    );
+    await installAdapters({ ...deps, busHome: moved });
+    expect(home(hooksOf(dir)["oa-bus"].SessionStart[0].command)).toBe(moved);
+  });
+
+  it("an unpinned hook an earlier build wrote is stale: doctor says not wired, install pins it (agy S2b)", async () => {
+    const { h, deps, dir } = setup();
+    await installAdapters(deps);
+    const legacy = JSON.stringify({
+      "oa-bus": {
+        SessionStart: [{ type: "command", command: LEGACY_HOOK, timeout: 15 }],
+        PreInvocation: [{ type: "command", command: LEGACY_HOOK, timeout: 15 }],
+      },
+    });
+    writeFileSync(join(dir, "hooks.json"), legacy);
+    expect(parseAgyPluginHome(legacy)).toEqual({
+      home: busHome({}),
+      pinned: false,
+    });
+    expect(checkAdapters(deps).antigravity).toBe("missing");
+    await installAdapters(deps);
+    expect(parseAgyPluginHome(read(join(dir, "hooks.json")))).toEqual({
+      home: join(h, ".oa-bus"),
+      pinned: true,
+    });
+    expect(checkAdapters(deps).antigravity).toBe("configured");
+  });
+
   it("the hook's shell runs agy-hello only when the conversation is not the one recorded", () => {
     const h = mkdtempSync(join(tmpdir(), "ob-agyf-"));
     // A stand-in argv: prints its words instead of starting the bus.
@@ -145,11 +192,11 @@ describe("the oa-bus agy plugin (agy S2)", () => {
   });
 
   it("the daemon reads the home the hook sends sessions to: default, or the moved one (agy S2b)", () => {
-    const hooks = (moved?: string) =>
-      agyPluginFiles(BIN, moved)["hooks.json"] as string;
-    expect(parseAgyPluginHome(hooks())).toEqual({
+    const hooks = (home: string) =>
+      agyPluginFiles(BIN, home)["hooks.json"] as string;
+    expect(parseAgyPluginHome(hooks(busHome({})))).toEqual({
       home: busHome({}),
-      pinned: false,
+      pinned: true,
     });
     expect(parseAgyPluginHome(hooks("/tmp/it's here/.oa-bus-2"))).toEqual({
       home: "/tmp/it's here/.oa-bus-2",
@@ -158,13 +205,15 @@ describe("the oa-bus agy plugin (agy S2)", () => {
   });
 
   it("an older plugin of ours is rewritten; doctor sees it as not wired until then", async () => {
-    const { deps, dir } = setup();
+    const { h, deps, dir } = setup();
     await installAdapters(deps);
     writeFileSync(join(dir, "hooks.json"), "{}\n");
     expect(checkAdapters(deps).antigravity).toBe("missing");
     await installAdapters(deps);
     expect(hooksOf(dir)).toEqual(
-      JSON.parse(agyPluginFiles(BIN)["hooks.json"] as string),
+      JSON.parse(
+        agyPluginFiles(BIN, join(h, ".oa-bus"))["hooks.json"] as string,
+      ),
     );
   });
 

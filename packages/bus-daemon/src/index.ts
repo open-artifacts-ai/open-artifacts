@@ -4326,14 +4326,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           final: final || tries >= AGY_CWD_TRIES,
         });
       };
-      // #2806: a hook that pins no home follows the agy process's own
-      // OA_BUS_HOME, so an agy started for another home is that bus's, where
-      // it can be read (none set is the default home: ours). A pinned hook
-      // sends every agy here whatever its environment says.
-      const h = route.pinned ? undefined : agHomeOf(pid);
-      if (typeof h === "string" && h !== agHome) {
-        pass(true);
-        continue;
+      // A pinned hook (every install since agy S2b) sends every agy here
+      // whatever its environment says. A legacy unpinned hook follows the agy
+      // process's own OA_BUS_HOME (#2806), so its join lands here only when
+      // that is known to be this home: none set (the default home, ours) or
+      // this one. Another home's agy is passed over; one whose environment
+      // can't be read (macOS) is not listed, so no starting address is
+      // advertised that its join could miss. It is looked at again each tick:
+      // the next install pins the hook.
+      if (!route.pinned) {
+        const h = agHomeOf(pid);
+        if (h === null) continue;
+        if (typeof h === "string" && h !== agHome) {
+          pass(true);
+          continue;
+        }
       }
       const cwd = agCwd(pid);
       if (cwd === null || !isAbsolute(cwd)) {

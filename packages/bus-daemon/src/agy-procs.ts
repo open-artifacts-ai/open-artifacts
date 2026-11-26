@@ -96,9 +96,11 @@ export const agyHooksFile = (userHome: string = homedir()): string =>
 
 /**
  * Where the installed agy plugin's hook sends a session: the bus `home`, and
- * whether the hook pins it (`export OA_BUS_HOME=...`, written for a moved
- * home) or follows the agy process's own OA_BUS_HOME (unset: the default
- * home). A pinned hook ignores the process's environment.
+ * whether the hook pins it (`export OA_BUS_HOME=...`, which every install
+ * since agy S2b writes, default home too) or follows the agy process's own
+ * OA_BUS_HOME (a legacy hook from an earlier build: the default home unless
+ * the process says otherwise). A pinned hook ignores the process's
+ * environment.
  */
 export type AgyPluginRoute = { home: string; pinned: boolean };
 

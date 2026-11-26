@@ -262,6 +262,14 @@ const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
 };
 
 /**
+ * agy S2b: the bus home the agy plugin's hook pins, always (default home
+ * too), so the agy process's own OA_BUS_HOME never moves its join off the
+ * home that lists it at launch.
+ */
+const agyHookHome = (deps: Pick<AdapterDeps, "home" | "busHome">) =>
+  movedHome(deps) ?? join(deps.home, ".oa-bus");
+
+/**
  * Pi, oh-my-pi and OpenCode's TUI plugin run inside the harness, whose config
  * has no env to set: a moved home is set in the file's own first line, never
  * over an OA_BUS_HOME the user exported (#1443).
@@ -1062,7 +1070,7 @@ const install: Record<Harness, Step> = {
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
     // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
     return "done";
   },
 };
@@ -1464,7 +1472,7 @@ export function checkAdapters(
           deps.home,
           deps.busBin === undefined
             ? undefined
-            : agyPluginFiles(deps.busBin, movedHome(deps)),
+            : agyPluginFiles(deps.busBin, agyHookHome(deps)),
         ) === "current",
     ),
   };
