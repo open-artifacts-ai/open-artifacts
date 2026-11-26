@@ -246,11 +246,13 @@ const PRESSED =
 /** #2622: phone buttons trim their padding so the second row fits 360px. */
 const BARP = `${BAR} max-[600px]:px-2.5`;
 /** #2622: gold means "waiting for you": the Comments button with asks, as the bell's badge. */
+// #2622: the outline variant's own `dark:bg-input/30` wins over a plain bg in
+// dark, which left amber ink on #32363c. Name the fill for dark too.
 const GOLD =
-  "border-[var(--oa-warning)] bg-[var(--oa-warning)] font-semibold text-[var(--oa-surface)] hover:bg-[var(--oa-warning)] hover:text-[var(--oa-surface)]";
+  "border-[var(--oa-warning)] bg-[var(--oa-warning)] font-semibold text-[var(--oa-surface)] hover:bg-[var(--oa-warning)] hover:text-[var(--oa-surface)] dark:bg-[var(--oa-warning)] dark:hover:bg-[var(--oa-warning)]";
 /** #2622: the version pill on an older version turns amber (phone). */
 const OLD =
-  "border-[var(--oa-warning)] bg-[var(--oa-warning-soft)] text-[var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]";
+  "border-[var(--oa-warning)] bg-[var(--oa-warning-soft)] text-[var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)] dark:bg-[var(--oa-warning-soft)] dark:hover:bg-[var(--oa-warning-soft)]";
 
 export function TitleBar({
   artifact,
