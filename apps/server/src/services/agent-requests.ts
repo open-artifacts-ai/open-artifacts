@@ -255,8 +255,9 @@ export async function setAgentRequests(
   await env.DB.batch([
     stmt(
       env.DB,
-      `insert into notification_prefs (user_id, agent_requests_off, updated_at)
-       values (?1, ?2, ?3)
+      // A first row must keep the defaults of "no row" (#3024): Needs you on, every ask.
+      `insert into notification_prefs (user_id, needs_you_browser, browser_all_asks, agent_requests_off, updated_at)
+       values (?1, 1, 1, ?2, ?3)
        on conflict (user_id) do update set agent_requests_off = excluded.agent_requests_off, updated_at = excluded.updated_at`,
     ).bind(userId, on ? 0 : 1, now),
     audit(

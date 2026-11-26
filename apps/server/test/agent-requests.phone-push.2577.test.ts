@@ -111,24 +111,25 @@ const dropDevices = () =>
 
 describe("the held-requests switch (#3024: part of the account's Needs you)", () => {
   it("phonePush is projected from the account's Needs you; saving { on } never changes it and is audited once per change", async () => {
-    expect(await get()).toEqual({ on: true, phonePush: false });
+    // No prefs row: Needs you is on by default (#3024), so the projection is on.
+    expect(await get()).toEqual({ on: true, phonePush: true });
     const a0 = await audits();
     expect(await (await put({ on: false })).json()).toEqual({
       on: false,
-      phonePush: false,
+      phonePush: true,
     });
     await put({ on: false });
     expect(await audits()).toBe(a0 + 1);
-    expect((await prefsNow()).needsYou.browser).toBe(false);
+    expect((await prefsNow()).needsYou.browser).toBe(true);
     // The account's own save moves the projection.
-    expect((await savePrefs(true)).status).toBe(200);
+    expect((await savePrefs(false)).status).toBe(200);
     expect(await (await put({ on: true })).json()).toEqual({
       on: true,
-      phonePush: true,
+      phonePush: false,
     });
-    expect(await get()).toEqual({ on: true, phonePush: true });
-    expect((await savePrefs(false)).status).toBe(200);
-    expect((await get()).phonePush).toBe(false);
+    expect(await get()).toEqual({ on: true, phonePush: false });
+    expect((await savePrefs(true)).status).toBe(200);
+    expect((await get()).phonePush).toBe(true);
   });
 
   it("an older client's phone-only opt-in is refused and turns on nothing; a token cannot save but can read; bad bodies are 400", async () => {
@@ -149,7 +150,7 @@ describe("the held-requests switch (#3024: part of the account's Needs you)", ()
     expect((await put({ other: 1 })).status).toBe(400);
     // Nothing was turned on for any category.
     expect(await prefsNow()).toEqual(DEFAULT_PREFS);
-    expect((await get()).phonePush).toBe(false);
+    expect((await get()).phonePush).toBe(true);
   });
 });
 

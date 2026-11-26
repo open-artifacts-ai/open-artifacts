@@ -23,9 +23,8 @@ import { stmt } from "../db/stmt.js";
 import { orgName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError, logWarn } from "../log.js";
+import { logError, logInfo, logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
-import { agentsWaitingOn } from "./bus.js";
 import { itemExcerpt } from "./inbox-items.js";
 import { mutedSet } from "./inbox-mutes.js";
 import { getSettings } from "./members.js";
@@ -211,9 +210,9 @@ async function recipients(env: Env, ids: string[]): Promise<Recipient[]> {
     `select p.user_id as id,
        (select max(send_after) from push_pending q where q.user_id = p.user_id and q.kind <> 'update') as waiting,
        (select max(last_sent_at) from push_subscriptions s where s.user_id = p.user_id) as last
-     from notification_prefs p
-     where p.needs_you_browser = 1 and p.user_id in (${marks})
-       and exists (select 1 from push_subscriptions s where s.user_id = p.user_id)`,
+     from (select distinct user_id from push_subscriptions where user_id in (${marks})) p
+     left join notification_prefs n on n.user_id = p.user_id
+     where coalesce(n.needs_you_browser, 1) = 1`,
   )
     .bind(...ids)
     .all<Recipient>();
@@ -426,9 +425,10 @@ export function pushPayload(
  * Sends what is due (the cron tick; one read when nothing is). Per member:
  * account Needs you off drops their rows (and a queued Update is always
  * dropped); quiet hours hold them to when quiet ends; otherwise their rows are
- * claimed (deleted), filtered to what interrupts them (waiting asks, approvals,
- * held requests and mentions, plus every ask with browserAllAsks), and sent as
- * one notification to each enrolled device. A 404 or 410 removes the device;
+ * claimed (deleted) and sent as one notification to each enrolled device:
+ * under Needs you every ask, held request and mention interrupts (browserAllAsks
+ * no longer narrows push). A row dropped unsent logs one push_dropped line per
+ * member per tick with counts by reason. A 404 or 410 removes the device;
  * other failures are logged and dropped. Never throws. Resolves to the
  * notifications sent.
  */
@@ -449,12 +449,17 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
       .bind(now - STALE_MS)
       .run();
     const byUser = new Map<string, Pending[]>();
+    const stale = new Map<string, number>();
     for (const r of results) {
-      if (r.created_at < now - STALE_MS) continue;
+      if (r.created_at < now - STALE_MS) {
+        stale.set(r.user_id, (stale.get(r.user_id) ?? 0) + 1);
+        continue;
+      }
       const l = byUser.get(r.user_id) ?? [];
       l.push(r);
       byUser.set(r.user_id, l);
     }
+    for (const [userId, n] of stale) logDrops(userId, { stale: n });
     const settings = await getSettings(env).catch(() => null);
     const title = orgName(settings?.name, env.APP_HOST);
     for (const [userId, rows] of [...byUser].slice(0, TICK_MEMBERS)) {
@@ -468,6 +473,15 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
     logError("push_drain_failed", e);
   }
   return sent;
+}
+
+/** One structured line per member per tick for rows dropped unsent; nothing when none. */
+function logDrops(userId: string, counts: Record<string, number>): void {
+  const reasons = Object.fromEntries(
+    Object.entries(counts).filter(([, n]) => n > 0),
+  );
+  if (Object.keys(reasons).length === 0) return;
+  logInfo("push_dropped", { userId, ...reasons });
 }
 
 const dropRows = (env: Env, rows: Pending[]) =>
@@ -629,7 +643,14 @@ async function drainMember(
   );
   const off = rows.filter((r) => !live.includes(r));
   if (off.length > 0) await dropRows(env, off);
-  if (live.length === 0) return 0;
+  const drops: Record<string, number> = {
+    needs_you_off: off.filter((r) => r.kind !== "update").length,
+    update: off.filter((r) => r.kind === "update").length,
+  };
+  if (live.length === 0) {
+    logDrops(userId, drops);
+    return 0;
+  }
   const q = quietState(prefs, now);
   if (q.quiet) {
     // Nothing breaks through: held to when quiet hours end.
@@ -659,43 +680,24 @@ async function drainMember(
     .bind(userId, now, JSON.stringify(live.map((r) => r.id)))
     .all<{ id: string }>();
   const claimedIds = new Set(claimed.results.map((r) => r.id));
-  if (subs.length === 0 || claimedIds.size === 0) return 0;
+  if (subs.length === 0 || claimedIds.size === 0) {
+    drops.no_device = subs.length === 0 ? claimedIds.size : 0;
+    logDrops(userId, drops);
+    return 0;
+  }
   // A mute stops push: its agent's and its page's items are not sent.
   const muted = await mutedSet(env, userId);
-  let due = live.filter(
+  const claimedRows = live.filter((r) => claimedIds.has(r.id));
+  let due = claimedRows.filter(
     (r) =>
-      claimedIds.has(r.id) &&
       !muted.pages.has(r.artifact_id) &&
       !(r.agent_key && muted.agents.has(r.agent_key)),
   );
+  drops.muted = claimedRows.length - due.length;
+  const muteKept = due.length;
   due = await stillWanted(env, userId, due, now);
-  if (due.length === 0) return 0;
-  if (!prefs.browserAllAsks) {
-    // Under Needs you, held requests and mentions always interrupt, and so do
-    // an ask an agent of theirs waits on (the wait check) and an open approval.
-    // A plain ask needs "every ask put to me" (browserAllAsks).
-    const asks = due.filter(
-      (r) => r.kind === "ask" && !isMention(r) && !isHeldPush(r),
-    );
-    const keys = [
-      ...new Set(
-        asks
-          .filter((r) => r.asker_ref === userId && r.agent_key)
-          .map((r) => r.agent_key as string),
-      ),
-    ];
-    const waiting = keys.length
-      ? await agentsWaitingOn(env, userId, keys)
-      : new Map<string, number>();
-    due = due.filter(
-      (r) =>
-        r.kind !== "ask" ||
-        isMention(r) ||
-        isHeldPush(r) ||
-        r.approval === true ||
-        (r.asker_ref === userId && !!r.agent_key && waiting.has(r.agent_key)),
-    );
-  }
+  drops.no_longer_wanted = muteKept - due.length;
+  logDrops(userId, drops);
   if (due.length === 0) return 0;
   let ok = 0;
   for (const s of subs) {

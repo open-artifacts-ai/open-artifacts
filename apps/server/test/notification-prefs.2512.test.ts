@@ -39,9 +39,9 @@ describe("GET and PUT /me/notification-prefs", () => {
     expect(g.status).toBe(200);
     expect(await g.json()).toEqual(DEFAULT_PREFS);
     const next = prefs({
-      needsYou: { inApp: true, browser: true },
+      needsYou: { inApp: true, browser: false },
       updates: { inApp: true, browser: true },
-      browserAllAsks: true,
+      browserAllAsks: false,
       quietHours: { start: "22:00", end: "07:30" },
       timeZone: "America/Los_Angeles",
       lockScreenDetail: true,
@@ -175,7 +175,7 @@ describe("GET and PUT /me/notification-prefs", () => {
         ).toBe(200);
       const r = await put(
         a.cookie,
-        prefs({ lockScreenDetail: false, browserAllAsks: true }),
+        prefs({ lockScreenDetail: false, browserAllAsks: false }),
       );
       expect(r.status).toBe(429);
     } finally {
