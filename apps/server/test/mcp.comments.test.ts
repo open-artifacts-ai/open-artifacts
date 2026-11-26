@@ -202,9 +202,14 @@ describe("comment tools over MCP", () => {
     });
 
     // #3139: one thread by id, and one comment with the one before it and the first.
-    const other = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Another thread." }),
-    ).thread;
+    const other = {
+      id: sc<{ threadId: string }>(
+        await tool(owner.client, "add_comment", {
+          id,
+          body: "Another thread.",
+        }),
+      ).threadId,
+    };
     const one = sc<CommentList>(
       await tool(owner.client, "list_comments", { id, threadId: t.id }),
     );
