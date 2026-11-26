@@ -490,6 +490,41 @@ describe("the updater loop (enabled by a test only)", () => {
     expect(w.exit).toHaveBeenCalledWith(1);
   });
 
+  it("switches when the login flag clears between ticks with no other activity", async () => {
+    const { home } = world();
+    let switched!: (code: number) => void;
+    const exit = new Promise<number>((resolve) => {
+      switched = resolve;
+    });
+    const f = fake("1.1.0");
+    writeState(home, { armed: true, current: "1.0.0" });
+    const u = new Updater({
+      home,
+      running: "1.0.0",
+      busy: () => ({ pending: 0, outbox: 0, codexQueue: 0 }),
+      hubReady: () => true,
+      announceSwitch: async () => true,
+      serverVersion: () => "1.2.0",
+      log: () => {},
+      every: () => () => {},
+      loginActive: () => loginActive(home),
+      fetch: async () => f.rel,
+      verify: () => f.ver,
+      exit: switched,
+    });
+    u.start();
+    try {
+      const done = markLoginActive(home);
+      expect((await u.instructFromInstance("1.1.0")).kind).toBe("staged");
+      expect(currentVersion(home)).toBe("1.0.0");
+      done();
+      expect(await exit).toBe(1);
+      expect(currentVersion(home)).toBe("1.1.0");
+    } finally {
+      u.stop();
+    }
+  });
+
   it("onIdle installs immediately when idle and respects outbox busy count", async () => {
     const { home } = world();
     const exit = vi.fn();

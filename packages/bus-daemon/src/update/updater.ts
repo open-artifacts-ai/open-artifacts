@@ -2,10 +2,12 @@ import {
   chmodSync,
   copyFileSync,
   existsSync,
+  type FSWatcher,
   readFileSync,
   rmSync,
+  watch,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ReleaseError } from "./errors.ts";
 import { type FetchedRelease, fetchRelease } from "./fetch.ts";
 import {
@@ -17,6 +19,7 @@ import {
   treeMatches,
   versionDir,
 } from "./layout.ts";
+import { loginFlagFile } from "./login-flag.ts";
 import {
   accept,
   type Busy,
@@ -128,6 +131,8 @@ export class Updater {
   private stopTick: () => void = () => {};
   private working = false;
   private loginWas = false;
+  private loginWatch?: FSWatcher;
+  private loginCleared = false;
   /** One swap at a time: every switchTo caller goes through this. */
   private switching = false;
   private wanted: { i: Instruction; at: number } | undefined;
@@ -154,12 +159,30 @@ export class Updater {
 
   start(): void {
     if (!this.enabled) return;
+    const flag = basename(loginFlagFile(this.d.home));
+    // Login runs in another process. Watch its parent so unlink and recreation
+    // of the flag are both visible for the lifetime of the daemon.
+    this.loginWatch = watch(this.d.home, { persistent: false }, (_, name) => {
+      if (
+        (name === flag || name === null) &&
+        this.loginWas &&
+        !this.d.loginActive()
+      ) {
+        this.loginCleared = true;
+        if (!this.working) void this.onIdle();
+      }
+    });
+    this.loginWatch.on("error", (error) =>
+      this.d.log(`update: login watcher: ${error.message}`),
+    );
     this.stopTick = (this.d.every ?? realEvery)(
       () => void this.tick(),
       TICK_MS,
     );
   }
   stop(): void {
+    this.loginWatch?.close();
+    this.loginCleared = false;
     this.stopTick();
   }
 
@@ -423,16 +446,19 @@ export class Updater {
     if (!this.enabled || this.working) return;
     this.working = true;
     try {
+      this.loginCleared = false;
       await this.installIfIdle(this.now());
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.working = false;
+      if (this.loginCleared) void this.onIdle();
     }
   }
 
   private async installIfIdle(now: number): Promise<void> {
     const login = this.d.loginActive();
+    this.loginWas = login;
     if (isBusy(this.d.busy()) || login) return;
     const s = readPolicy(this.d.home);
     if (s.unreadable || !s.armed || s.off) return;
@@ -493,6 +519,7 @@ export class Updater {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.working = false;
+      if (this.loginCleared) void this.onIdle();
     }
   }
 
