@@ -2,10 +2,12 @@
 // Usage: node --experimental-strip-types scripts/ci/release-commit-changed.ts
 // Run in a checkout with HEAD and its first parent (fetch-depth >= 2). Exits 1
 // with an ::error:: line when the root package.json version at HEAD equals the
-// one at HEAD^1: that is not a release commit (the merge queue once built an
-// empty commit for an already-landed release PR). No network.
-import { spawnSync } from "node:child_process";
+// one at HEAD^1. With --before-tag, also validate the merged release PR title,
+// committed files and highest published stable tag via GitHub.
+import { execFileSync, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+
+import { realExec, versionProblems } from "./release-cadence.ts";
 
 export type Show = (rev: string) => string;
 
@@ -40,6 +42,26 @@ if (
     if (err) {
       console.log(`::error::${err}`);
       process.exit(1);
+    }
+    if (process.argv.includes("--before-tag")) {
+      const repo = process.env.GITHUB_REPOSITORY;
+      const pr = process.env.RELEASE_PR ?? "";
+      if (!repo || !/^[1-9]\d*$/.test(pr))
+        throw new Error("missing release repository or release PR");
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { encoding: "utf8" }).trim();
+      const title = execFileSync(
+        "gh",
+        ["api", `repos/${repo}/pulls/${pr}`, "--jq", ".title"],
+        { encoding: "utf8" },
+      ).trim();
+      const problems = await versionProblems(
+        realExec,
+        repo,
+        { title, sha: git("rev-parse", "HEAD") },
+        git("rev-parse", "HEAD^1"),
+      );
+      if (problems.length) throw new Error(problems.join(", "));
     }
     console.log("the version changed in this commit");
   } catch (e) {

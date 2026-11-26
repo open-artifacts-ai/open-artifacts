@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,5 +54,77 @@ describe("release-commit-changed: real git", () => {
     const r = run(d);
     expect(r.status).toBe(1);
     expect(r.stdout).toContain("::error::version did not change");
+  });
+  it("checks the merged PR and committed versions against the preceding tag before publication", () => {
+    const d = repo();
+    const manifest = (version: string) =>
+      writeFileSync(
+        join(d, ".release-please-manifest.json"),
+        JSON.stringify({ ".": version }),
+      );
+    manifest("1.0.0");
+    git(d, "add", ".");
+    git(d, "commit", "-qm", "record release manifest");
+    manifest("1.1.0");
+    writeFileSync(join(d, "package.json"), pkg("1.1.0"));
+    writeFileSync(join(d, "CHANGELOG.md"), "## [1.1.0]\n");
+    git(d, "add", ".");
+    git(d, "commit", "-qm", "release");
+    const bin = join(d, "bin");
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, "gh"),
+      `#!/bin/sh
+case "$*" in
+  *repos/o/r/pulls/12*) echo "chore(main): release $CANDIDATE" ;;
+  *git/matching-refs/tags/v*) echo "refs/tags/v$PREVIOUS" ;;
+  *repos/o/r/contents/*)
+    path="\${4#repos/o/r/contents/}"
+    git show "\${path##*ref=}:\${path%%[?]*}"
+    ;;
+  *) exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const runTag = (candidate: string, previous: string) =>
+      spawnSync(process.execPath, [script, "--before-tag"], {
+        cwd: d,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH}`,
+          GITHUB_REPOSITORY: "o/r",
+          RELEASE_PR: "12",
+          CANDIDATE: candidate,
+          PREVIOUS: previous,
+        },
+      });
+    const pass = runTag("1.1.0", "1.0.0");
+    expect(pass.status, pass.stdout + pass.stderr).toBe(0);
+    expect(runTag("1.2.0", "1.0.0").stdout).toContain("versions disagree");
+    expect(runTag("1.1.0", "1.10.0").stdout).toContain(
+      "not above the latest tag",
+    );
+    for (const heading of ["[1.2.0-rc.1](url)", "1.2.0-rc.1"]) {
+      manifest("1.2.0");
+      writeFileSync(join(d, "package.json"), pkg("1.2.0"));
+      writeFileSync(
+        join(d, "CHANGELOG.md"),
+        `## ${heading}\n## [1.2.0](older)\n`,
+      );
+      git(
+        d,
+        "add",
+        "package.json",
+        ".release-please-manifest.json",
+        "CHANGELOG.md",
+      );
+      git(d, "commit", "-qm", "release candidate heading");
+      const invalid = runTag("1.2.0", "1.1.0");
+      expect(invalid.status).toBe(1);
+      expect(invalid.stdout).toContain("no version readable from CHANGELOG.md");
+      git(d, "checkout", "-q", "--detach", "HEAD^");
+    }
   });
 });

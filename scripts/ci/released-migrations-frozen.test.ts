@@ -2,6 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -61,6 +62,79 @@ describe("released-migrations-frozen.sh", () => {
     r.write(`${M}/0003_c.sql`, "create table c (z, w);\n");
     r.commit("edit unreleased");
     expect(r.run().code).toBe(0);
+    r.done();
+  });
+  it("requires a marker and a verification plan for newly destructive SQL", () => {
+    const r = repo();
+    r.tag("v1.0.0");
+    const path = `${M}/0003_cleanup.sql`;
+    for (const sql of [
+      readFileSync(
+        new URL(
+          "../../apps/server/migrations/0053_account_push.sql",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+      "DeLeTe /* dead devices */ FROM a;",
+      "CREATE TRIGGER clean AFTER INSERT ON b BEGIN DELETE FROM a; END;",
+      "CREATE TABLE tmp(x); INSERT INTO tmp SELECT x FROM a; DROP TABLE a;",
+      "ALTER TABLE a DROP COLUMN x;",
+      "REPLACE INTO a VALUES (1);",
+      "UPDATE a SET x = NULL;",
+      "INSERT INTO a VALUES (1) ON CONFLICT(x) DO UPDATE SET x = 2;",
+      "CREATE TRIGGER clean AFTER UPDATE ON b BEGIN INSERT INTO a VALUES(1); UPDATE a SET x=2; END;",
+    ]) {
+      r.write(path, sql);
+      r.commit("unmarked");
+      expect(r.run().err).toContain("requires -- oa:non-additive");
+      r.write(
+        path,
+        `-- oa:additive-reviewed\n-- oa:verify Compare rows.\n${sql}`,
+      );
+      r.commit("incorrect additive marker");
+      expect(r.run().err).toContain("requires -- oa:non-additive");
+    }
+    r.write(path, "-- oa:non-additive\nDELETE FROM a;");
+    r.commit("marker only");
+    expect(r.run().err).toContain("-- oa:verify");
+    r.write(
+      path,
+      "-- oa:non-additive\n-- oa:verify Compare survivor IDs before and after.\nDELETE FROM a;",
+    );
+    r.commit("documented");
+    expect(r.run().code).toBe(0);
+    r.write(
+      path,
+      "CREATE TABLE c(x TEXT DEFAULT 'DROP TABLE a;', y REFERENCES a ON DELETE CASCADE); -- DELETE FROM a",
+    );
+    r.commit("additive");
+    expect(r.run().code).toBe(0);
+    r.done();
+  });
+
+  it("allows the 0054 backfill and insert-only triggers after additive review", () => {
+    const r = repo();
+    r.tag("v1.0.0");
+    const file = "0054_member_viewer_comments.sql";
+    const path = `${M}/${file}`;
+    const sql = readFileSync(
+      new URL(`./fixtures/${file}`, import.meta.url),
+      "utf8",
+    );
+    r.write(path, sql);
+    r.commit("unreviewed backfill");
+    expect(r.run().code).toBe(1);
+    r.write(path, `-- oa:additive-reviewed\n${sql}`);
+    r.commit("missing verification plan");
+    expect(r.run().err).toContain("-- oa:verify");
+    r.write(
+      path,
+      `-- oa:additive-reviewed\n-- oa:verify Compare existing shares and the expected compatibility rows.\n${sql}`,
+    );
+    r.commit("reviewed backfill");
+    const result = r.run();
+    expect(result.code, result.err).toBe(0);
     r.done();
   });
   it("compares with the highest stable tag, ignoring prereleases", () => {

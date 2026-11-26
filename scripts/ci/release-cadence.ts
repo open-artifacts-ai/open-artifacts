@@ -372,6 +372,7 @@ export async function versionProblems(
   exec: Exec,
   repo: string,
   pr: { title: string; sha: string },
+  baseRef = "main",
 ): Promise<string[]> {
   const [manifest, pkg, changelog, tag, mainManifest, mainPkg] =
     await Promise.all([
@@ -379,15 +380,15 @@ export async function versionProblems(
       packageVersion(exec, repo, pr.sha),
       rawFile(exec, repo, "CHANGELOG.md", pr.sha),
       latestTag(exec, repo),
-      rawFile(exec, repo, ".release-please-manifest.json", "main"),
-      packageVersion(exec, repo, "main"),
+      rawFile(exec, repo, ".release-please-manifest.json", baseRef),
+      packageVersion(exec, repo, baseRef),
     ]);
   const onMain: [string, string][] = [
     [
-      "main's .release-please-manifest.json",
+      `${baseRef}'s .release-please-manifest.json`,
       jsonField(mainManifest, (j) => (j as Record<string, unknown>)?.["."]),
     ],
-    ["main's package.json", mainPkg],
+    [`${baseRef}'s package.json`, mainPkg],
   ];
   const found: [string, string][] = [
     ["title", /\brelease (\d+\.\d+\.\d+)$/.exec(pr.title.trim())?.[1] ?? ""],
@@ -396,7 +397,13 @@ export async function versionProblems(
       jsonField(manifest, (j) => (j as Record<string, unknown>)?.["."]),
     ],
     ["package.json", pkg],
-    ["CHANGELOG.md", /^## \[?(\d+\.\d+\.\d+)\]?/m.exec(changelog)?.[1] ?? ""],
+    [
+      "CHANGELOG.md",
+      /^## (?:\[([^\]\r\n]+)\]|([^\s]+))/m
+        .exec(changelog)
+        ?.slice(1)
+        .find(Boolean) ?? "",
+    ],
   ];
   const out: string[] = [];
   for (const [where, v] of found)
@@ -752,7 +759,7 @@ const execWith =
     };
   };
 
-const realExec: Exec = (cmd, args) => {
+export const realExec: Exec = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: "utf8" });
   return {
     code: r.status ?? 1,
