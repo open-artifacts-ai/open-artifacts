@@ -137,6 +137,53 @@ describe("the Share panel", () => {
     },
   );
 
+  it.each(["Viewer", "Commenter"])(
+    "keeps %s for a retry and defaults the next invite to Editor",
+    async (role) => {
+      const { puts, handlers } = routes();
+      const failure = http.put(
+        "*/api/v1/artifacts/:id/shares",
+        () =>
+          HttpResponse.json(
+            {
+              error: { code: "conflict", message: "Share failed. Try again." },
+            },
+            { status: 409 },
+          ),
+        { once: true },
+      );
+      mountHosted(panel, true, undefined, [failure, ...handlers]);
+      const picker = await screen.findByRole("combobox", {
+        name: "Invite role",
+      });
+      const add = screen.getByRole("button", { name: "Add" });
+      invite("maya@example.com");
+      fireEvent.keyDown(picker, { key: "Enter" });
+      fireEvent.click(await screen.findByRole("option", { name: role }));
+      fireEvent.click(add);
+      await screen.findByText("Share failed. Try again.");
+      expect(picker).toHaveTextContent(role);
+      expect(screen.getByLabelText("Email")).toHaveValue("maya@example.com");
+
+      fireEvent.click(add);
+      expect(
+        await screen.findByRole("combobox", {
+          name: "Role for maya@example.com",
+        }),
+      ).toHaveTextContent(role);
+      invite("sam@gmail.com");
+      expect(picker).toHaveTextContent("Editor");
+      fireEvent.click(add);
+      expect(
+        await screen.findByRole("combobox", { name: "Role for sam@gmail.com" }),
+      ).toHaveTextContent("Editor");
+      expect(puts).toEqual([
+        { email: "maya@example.com", role: role.toLowerCase() },
+        { email: "sam@gmail.com", role: "editor" },
+      ]);
+    },
+  );
+
   it("members and outsiders get the same roles and default to Editor", async () => {
     const { puts, handlers } = routes();
     // The hosted mocks list example.com as the login domain; these routes

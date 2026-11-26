@@ -383,6 +383,7 @@ export function Share({
           onSettled: done,
           onSuccess: (r) => {
             setEmail("");
+            setRole("editor");
             setAskTick(false);
             if (listen) {
               if (r.memberId)
