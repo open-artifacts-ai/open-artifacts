@@ -7,6 +7,11 @@ import {
   BUS_CAPS,
   BusNameSchema,
   type ClientFrame,
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
   candidateName,
   decodeClientFrame,
   droppedRefusedChars,
@@ -63,10 +68,12 @@ import {
   type BusCloseKind,
   busCloseKind,
   MAX_ACTIVE_MACHINES,
+  PROOF_LOOKUP_MS,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { agentKey } from "../services/comment-agents.js";
 import {
+  artifactIdOf,
   follow,
   following,
   knownKey,
@@ -139,8 +146,10 @@ import {
   listRoles,
   type PutRoleResult,
   putRole,
+  type RoleMove,
   resolveRoleAnywhere,
   resolveRoleIn,
+  roleForward,
   roleTakenSql,
 } from "./roles.js";
 import {
@@ -377,12 +386,26 @@ const HUB_CAPS = [
   BUS_CAPS.noticeMeta,
   BUS_CAPS.ownerAway,
   BUS_CAPS.guest,
+  BUS_CAPS.codexCheck,
 ];
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
 const guestGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.guest);
+};
+
+/** #3108: Codex call checks one hub starts per window, the most links one code-mode item gets, how long a miss is remembered, and the bound on each in-memory map. */
+const CODEX_CHECKS_PER_WINDOW = 120;
+const CODEX_CHECK_WINDOW_MS = 60_000;
+const CODEX_ITEM_LINKS = 50;
+const CODEX_MISS_MS = 5_000;
+const CODEX_MAP_MAX = 2048;
+
+/** #3108: `codex_call_check` goes to, and `codex_call_checked` comes from, only a socket whose hello listed BUS_CAPS.codexCheck. */
+const codexCheckGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.codexCheck);
 };
 
 /** #2759: `owner_away` goes only to a socket whose hello listed BUS_CAPS.ownerAway. */
@@ -3917,6 +3940,7 @@ function wellFormedNotice(n: BusNotice): boolean {
     typeof n.to.name === "string" &&
     n.to.name.length > 0 &&
     (n.notBefore === undefined || Number.isFinite(n.notBefore)) &&
+    (n.originAt === undefined || Number.isFinite(n.originAt)) &&
     (n.toIdentity === undefined ||
       (typeof n.toIdentity === "string" &&
         n.toIdentity.length > 0 &&
@@ -3983,6 +4007,14 @@ export class BusHub extends DurableObject<Env> {
    */
   static setTestClock(hub: BusHub, ms: number | null): void {
     hub.#clock = ms;
+  }
+
+  /** #3132: a gate the queued follow work (re-keys, unfollows) waits on; null in production. */
+  #followGate: Promise<void> | null = null;
+
+  /** Tests only, like setTestClock: holds queued follow work until `gate` settles. */
+  static setTestFollowGate(hub: BusHub, gate: Promise<void> | null): void {
+    hub.#followGate = gate;
   }
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -4204,6 +4236,7 @@ export class BusHub extends DurableObject<Env> {
     );
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
   }
 
@@ -4731,6 +4764,215 @@ export class BusHub extends DurableObject<Env> {
     return n;
   }
 
+  // ------------------------------------------------- #3108 Codex call check
+
+  /**
+   * In-memory, per hub (one member), bounded; lost on eviction, which is safe:
+   * the daemon also admits each (thread, call_id) once, and a refused check
+   * only leaves the call unlinked.
+   */
+  #codexPending = new Map<
+    string,
+    { ws: WebSocket; done: (ok: boolean) => void }
+  >();
+  #codexStarts: number[] = [];
+  #codexMiss = new Map<string, number>();
+  #codexFlight = new Map<string, Promise<AgentIdentity | null>>();
+  #codexAdmitted = new Set<string>();
+  #codexItems = new Map<string, number>();
+
+  /**
+   * #3108: the Codex session a /mcp tools/call came from, or null. The Worker
+   * names a thread and a call; this hub asks its own daemons (only those whose
+   * hello listed the cap) whether that exact call is open in a live Codex
+   * thread, and the identity comes only from the agent row the ANSWERING socket
+   * registered for that thread, never from the request. Single-flight, rate
+   * limited, a short miss cache, one link per (thread, call_id), at most
+   * CODEX_ITEM_LINKS per item. Never logs a thread, call, item or hash.
+   * Worker only.
+   */
+  async codexCallCheck(check: unknown): Promise<AgentIdentity | null> {
+    const c = check as {
+      thread_id?: unknown;
+      tool?: unknown;
+      mode?: {
+        kind?: unknown;
+        call_id?: unknown;
+        item_id?: unknown;
+        args_sha256?: unknown;
+      };
+    } | null;
+    const thread = CodexThreadIdSchema.safeParse(c?.thread_id);
+    const tool = CodexToolNameSchema.safeParse(c?.tool);
+    if (!thread.success || !tool.success || !c?.mode) return null;
+    let mode:
+      | { kind: "direct"; call_id: string; args_sha256: string }
+      | { kind: "code"; call_id: string; item_id: string };
+    if (c.mode.kind === "code") {
+      const call = CodexExecCallIdSchema.safeParse(c.mode.call_id);
+      const item = CodexItemIdSchema.safeParse(c.mode.item_id);
+      if (!call.success || !item.success) return null;
+      mode = { kind: "code", call_id: call.data, item_id: item.data };
+    } else if (c.mode.kind === "direct") {
+      const call = CodexDirectCallIdSchema.safeParse(c.mode.call_id);
+      const hash = LinkProofHashSchema.safeParse(c.mode.args_sha256);
+      if (!call.success || !hash.success) return null;
+      mode = { kind: "direct", call_id: call.data, args_sha256: hash.data };
+    } else return null;
+    // `once` is the (thread, call) that links at most once; `key` also binds
+    // the tool and the args hash or item, so another tool or args never joins
+    // a running check nor shares its miss.
+    const once = `${thread.data}\n${mode.call_id}`;
+    const key = `${once}\n${tool.data}\n${mode.kind === "code" ? mode.item_id : mode.args_sha256}`;
+    const now = this.#now();
+    if (this.#codexAdmitted.has(once)) return null;
+    if (
+      mode.kind === "code" &&
+      (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
+    )
+      return null;
+    const missUntil = this.#codexMiss.get(key);
+    if (missUntil !== undefined && missUntil > now) return null;
+    // A duplicate in flight is unlinked: the identity goes to the first only.
+    if (this.#codexFlight.has(key)) return null;
+    this.#codexStarts = this.#codexStarts.filter(
+      (t) => t > now - CODEX_CHECK_WINDOW_MS,
+    );
+    if (this.#codexStarts.length >= CODEX_CHECKS_PER_WINDOW) {
+      logInfo("bus_codex_check_none", { reason: "rate" });
+      return null;
+    }
+    this.#codexStarts.push(now);
+    const p = this.#codexAsk(thread.data, tool.data, mode).then(
+      (id) => {
+        if (id) {
+          // Another check for this (thread, call) linked first.
+          if (this.#codexAdmitted.has(once)) return null;
+          this.#codexAdmitted.add(once);
+          if (this.#codexAdmitted.size > CODEX_MAP_MAX)
+            this.#codexAdmitted.delete(
+              this.#codexAdmitted.values().next().value as string,
+            );
+          if (mode.kind === "code") {
+            this.#codexItems.set(
+              mode.item_id,
+              (this.#codexItems.get(mode.item_id) ?? 0) + 1,
+            );
+            if (this.#codexItems.size > CODEX_MAP_MAX)
+              this.#codexItems.delete(
+                this.#codexItems.keys().next().value as string,
+              );
+          }
+        } else {
+          this.#codexMiss.set(key, this.#now() + CODEX_MISS_MS);
+          if (this.#codexMiss.size > CODEX_MAP_MAX)
+            this.#codexMiss.delete(
+              this.#codexMiss.keys().next().value as string,
+            );
+        }
+        return id;
+      },
+      (e) => {
+        logError("bus_codex_check_failed", e);
+        return null;
+      },
+    );
+    this.#codexFlight.set(key, p);
+    void p.finally(() => this.#codexFlight.delete(key));
+    return p;
+  }
+
+  async #codexAsk(
+    thread: string,
+    tool: string,
+    mode:
+      | { kind: "direct"; call_id: string; args_sha256: string }
+      | { kind: "code"; call_id: string; item_id: string },
+  ): Promise<AgentIdentity | null> {
+    const asked: WebSocket[] = [];
+    const waits: Promise<WebSocket | null>[] = [];
+    const frameIds: string[] = [];
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<null>((r) => {
+      timer = setTimeout(() => r(null), PROOF_LOOKUP_MS);
+    });
+    try {
+      for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
+        if (ws.readyState !== OPEN || isReplaced(ws) || !codexCheckGated(ws))
+          continue;
+        const id = frameId();
+        const answered = new Promise<WebSocket | null>((resolve) => {
+          this.#codexPending.set(id, {
+            ws,
+            done: (ok) => resolve(ok ? ws : null),
+          });
+        });
+        if (
+          !trySendFrame(ws, {
+            v: 1,
+            id,
+            type: "codex_call_check",
+            thread_id: thread,
+            tool,
+            mode,
+          } as ServerFrame)
+        ) {
+          this.#codexPending.delete(id);
+          continue;
+        }
+        asked.push(ws);
+        frameIds.push(id);
+        waits.push(answered);
+      }
+      if (waits.length === 0) {
+        logInfo("bus_codex_check_none", { reason: "no_daemon" });
+        return null;
+      }
+      // The first ok from an asked socket wins; every "no" must arrive to give up early.
+      const first = new Promise<WebSocket | null>((resolve) => {
+        let left = waits.length;
+        for (const w of waits)
+          void w.then((ws) => {
+            if (ws) resolve(ws);
+            else if (--left === 0) resolve(null);
+          });
+      });
+      const ws = await Promise.race([first, late]);
+      if (!ws) {
+        logInfo("bus_codex_check_none", { reason: "refused_or_timeout" });
+        return null;
+      }
+      const machineId = attachmentOf(ws)?.machineId;
+      if (!machineId || isReplaced(ws) || ws.readyState !== OPEN) return null;
+      // A Codex session that never bound a proof has no identity yet; mint it
+      // here, as bindProof does at a first bind (the hub's own row, one write).
+      this.ctx.storage.sql.exec(
+        `update agents set identity_id = ? where machine_id = ? and native_ref = ?
+            and kind = 'codex' and live = 1 and org_id = ? and identity_id is null`,
+        randomHex(32),
+        machineId,
+        thread,
+        OWNER_ORG_ID,
+      );
+      const id = one<AgentIdentity>(
+        this.ctx.storage.sql,
+        `select a.identity_id as identityId, a.namespace, a.name, a.kind
+           from agents a
+          where a.machine_id = ? and a.native_ref = ? and a.kind = 'codex'
+            and a.live = 1 and a.org_id = ? and a.identity_id is not null
+            and not exists (select 1 from machines m where m.id = a.machine_id and m.revoked_at is not null)`,
+        machineId,
+        thread,
+        OWNER_ORG_ID,
+      );
+      if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
+      return id;
+    } finally {
+      clearTimeout(timer);
+      for (const id of frameIds) this.#codexPending.delete(id);
+    }
+  }
+
   /**
    * Why `hash` resolves to no session (agentByProof gave null), for the log
    * only: "unbound" (no session holds it), "closed" (its session is closed or
@@ -4819,6 +5061,29 @@ export class BusHub extends DurableObject<Env> {
       out.push({ identityId: r.identityId, name: r.name });
     }
     return out;
+  }
+
+  /**
+   * #3132: the live holder of the role the session linked as `identityId`
+   * handed on, for something it began at `originAt` while it held it
+   * (roles.ts roleForward); null otherwise. Worker only (an ask's answer for
+   * a session that is gone).
+   */
+  async roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+    if (typeof identityId !== "string" || identityId === "") return null;
+    if (!Number.isFinite(originAt)) return null;
+    const sql = this.ctx.storage.sql;
+    const h = roleForward(sql, OWNER_ORG_ID, "", "", identityId, originAt);
+    if (h === null) return null;
+    const identity = identityOfAgent(sql, h.id);
+    return {
+      namespace: h.namespace,
+      name: h.name,
+      ...(identity ? { identityId: identity } : {}),
+    };
   }
 
   /**
@@ -5083,7 +5348,18 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
     // A confirmed set (not a clear) names the holder.
     if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
+  }
+
+  /**
+   * #3132: a role moved between sessions: the pages the old session began
+   * to follow while it held the role move to the new holder (its other
+   * follows stay its own); its later notices forward via roleForward.
+   */
+  #roleMoved(m: RoleMove): void {
+    logEvent("role_moved", {});
+    void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
   }
 
   /**
@@ -5714,6 +5990,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #3108: as unknown as it is to an older hub without the cap.
+    if (f.type === "codex_call_checked" && !codexCheckGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // #2552: as unknown as it is to an older hub without the cap.
     if (f.type === "update_report" && !runVersionGated(ws)) {
       reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
@@ -5785,14 +6067,17 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.runVersion) ||
           hasCap(f, BUS_CAPS.noticeMeta) ||
           hasCap(f, BUS_CAPS.ownerAway) ||
-          hasCap(f, BUS_CAPS.guest)
+          hasCap(f, BUS_CAPS.guest) ||
+          hasCap(f, BUS_CAPS.codexCheck)
             ? // Everything the hub always listed, plus owner_away only to a
               // daemon that listed it: an older daemon decodes at most 16
               // caps, and HUB_CAPS outgrew that (#2759).
               {
                 caps: HUB_CAPS.filter(
                   (c) =>
-                    (c !== BUS_CAPS.ownerAway && c !== BUS_CAPS.guest) ||
+                    (c !== BUS_CAPS.ownerAway &&
+                      c !== BUS_CAPS.guest &&
+                      c !== BUS_CAPS.codexCheck) ||
                     hasCap(f, c),
                 ),
               }
@@ -5825,22 +6110,30 @@ export class BusHub extends DurableObject<Env> {
         }
       }
       case "sessions": {
-        // Open sessions come back with their own agent_up; closed ones end.
+        // Open sessions come back with their own agent_up; closed ones and any
+        // live row the daemon no longer lists end (#3192). `open` is the
+        // complete live set for this link (the daemon builds it from its whole
+        // table per lane, packages/bus-daemon/src/index.ts `sessions(lane)`),
+        // so a row in neither list is one the daemon forgot.
         const change: RosterChange = { namespaces: [], global: false };
-        // One statement closes every listed live agent (refs passed as one
-        // JSON parameter, json_each; no per-ref query), then one bounded
-        // inline batch and one queue row (B11).
+        // One statement closes every closed or unlisted live agent (refs
+        // passed as JSON parameters via json_each; no per-ref query), then one
+        // bounded inline batch and one queue row (B11). The schema forbids
+        // overlap between `open` and `closed`, so the `closed` branch is
+        // redundant with `not in open` and kept for clarity.
         const downed = all<{ id: string; namespace: string; global: number }>(
           sql,
           `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
             where machine_id = ? and live = 1 and org_id = ?
-              and native_ref in (select value from json_each(?))
+              and (native_ref in (select value from json_each(?))
+                   or native_ref not in (select value from json_each(?)))
            returning id, namespace, global`,
           this.#now(),
           this.#now(),
           machineId,
           OWNER_ORG_ID,
           JSON.stringify(f.closed),
+          JSON.stringify(f.open),
         );
         for (const a of downed) {
           change.namespaces.push(a.namespace);
@@ -5993,6 +6286,16 @@ export class BusHub extends DurableObject<Env> {
           counts: waitingByRef(sql, machineId, f.agent_refs),
         });
         return;
+      case "codex_call_checked": {
+        // #3108: counts only for a check this very socket was asked; anything
+        // else is ignored without a reply.
+        const w = this.#codexPending.get(f.re);
+        if (w && w.ws === ws) {
+          this.#codexPending.delete(f.re);
+          w.done(f.ok);
+        }
+        return;
+      }
       case "guest_up": {
         // #2793 S3b: the name and the kind only. A row of its own, on no roster.
         const name = candidateName(f.proposed_name, { harness: true });
@@ -6567,24 +6870,66 @@ export class BusHub extends DurableObject<Env> {
     )
       return undefined;
     this.#retargetIdentityNotices(before, after);
+    return this.#moveFollowRows(before, after);
+  }
+
+  /**
+   * The member's follow rows at address `before` (`since`: created then or
+   * later) move to `after` (D1, in the background, one at a time). A
+   * rename's re-key, and #3132 a role move's.
+   */
+  #moveFollowRows(
+    before: { namespace: string; name: string },
+    after: { namespace: string; name: string },
+    /** Only rows created since then (ms); absent: all of them. */
+    since?: number,
+    /** A role move's time: the moved rows start then (follows.ts moveFollows). */
+    startAt?: number,
+    /** #3132: the moved role, whose overlapping pages role_follows keeps. */
+    roleId?: string,
+  ): Promise<void> | undefined {
     const userId = this.ctx.id.name?.startsWith("bus:")
       ? this.ctx.id.name.slice(4)
       : null;
     if (userId === null) return undefined;
     const from = { namespace: before.namespace, name: before.name };
     const to = { namespace: after.namespace, name: after.name };
+    const gate = this.#followGate;
     const run = async (): Promise<void> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       // Counted like the index calls, so a test's afterAll waits for the D1 work.
       this.indexInFlight++;
       try {
+        if (gate) await gate;
         const timeout = new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new Error("follow re-key timed out")),
             FOLLOW_TIMEOUT_MS,
           );
         });
-        await Promise.race([moveFollows(this.env, userId, from, to), timeout]);
+        const sql = this.ctx.storage.sql;
+        const carried =
+          roleId === undefined
+            ? []
+            : all<{ a: string }>(
+                sql,
+                "select artifact_id as a from role_follows where role_id = ?",
+                roleId,
+              ).map((r) => r.a);
+        const { overlaps } = await Promise.race([
+          moveFollows(this.env, userId, from, to, since, startAt, carried),
+          timeout,
+        ]);
+        // The role's part of a page the new holder follows for itself too.
+        if (roleId !== undefined) {
+          sql.exec("delete from role_follows where role_id = ?", roleId);
+          for (const a of overlaps)
+            sql.exec(
+              "insert or ignore into role_follows (role_id, artifact_id) values (?, ?)",
+              roleId,
+              a,
+            );
+        }
       } catch (e) {
         logError("bus_follow_rekey_failed", e);
       } finally {
@@ -6594,6 +6939,61 @@ export class BusHub extends DurableObject<Env> {
     };
     const p = this.#rekeyed.then(run);
     this.#rekeyed = p;
+    return p;
+  }
+
+  /** #3132: the roles `agent` holds now, by id. */
+  #rolesOf(agent: AgentRow): string[] {
+    return all<{ id: string }>(
+      this.ctx.storage.sql,
+      "select id from roles where org_id = ? and agent_id = ?",
+      OWNER_ORG_ID,
+      agent.id,
+    ).map((r) => r.id);
+  }
+
+  /** #3132: the role part of page `ref` that roles `roleIds` carry ends now. */
+  #endRolePart(roleIds: readonly string[], ref: string): void {
+    const id = artifactIdOf(this.env, ref);
+    if (id && roleIds.length > 0)
+      this.ctx.storage.sql.exec(
+        `delete from role_follows where artifact_id = ?
+           and role_id in (select value from json_each(?))`,
+        id,
+        JSON.stringify(roleIds),
+      );
+  }
+
+  /**
+   * #3132: an unfollow by `agent`, queued on receipt in the same queue as a
+   * role move's re-key, so a move that starts meanwhile runs after it. Once
+   * the D1 delete succeeds, the part of the page the roles it held on receipt
+   * carry ends too, so no later move hands the page on.
+   */
+  #unfollowNow(
+    userId: string,
+    to: { namespace: string; name: string },
+    agent: AgentRow,
+    ref: string,
+  ): Promise<{ removed: boolean } | { error: unknown }> {
+    // The roles it holds as the frame arrives: their part of the page ends
+    // once the delete is done, after any re-key queued before it (which may
+    // add that part), and before any later move. A failed delete keeps it.
+    const roleIds = this.#rolesOf(agent);
+    const gate = this.#followGate;
+    // Never rejects: a refusal (not_found) comes back as `error`, so a queue
+    // link waiting for its answer leaves nothing unhandled.
+    const p = this.#rekeyed.then(async () => {
+      try {
+        if (gate) await gate;
+        const r = await unfollow(this.env, userId, to, ref);
+        this.#endRolePart(roleIds, ref);
+        return r;
+      } catch (error) {
+        return { error };
+      }
+    });
+    this.#rekeyed = p.then(() => undefined);
     return p;
   }
 
@@ -6649,6 +7049,13 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     const to = { namespace: agent.namespace, name: agent.name };
+    // #3132: on receipt, before anything awaits: the role's part ends while
+    // the role is still where the agent held it, and the D1 delete takes its
+    // place in the follow queue ahead of any later move.
+    const unfollowed =
+      f.type === "unfollow"
+        ? this.#unfollowNow(userId, to, agent, f.artifact)
+        : null;
     const wire = (e: {
       artifactId: string;
       url: string;
@@ -6671,15 +7078,17 @@ export class BusHub extends DurableObject<Env> {
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
           : f.type === "unfollow"
-            ? unfollow(this.env, userId, to, f.artifact).then(
-                (r) =>
-                  ({
-                    v: 1,
-                    id: f.id,
-                    type: "unfollowed",
-                    removed: r.removed,
-                  }) as const,
-              )
+            ? (
+                unfollowed as Promise<{ removed: boolean } | { error: unknown }>
+              ).then((r) => {
+                if ("error" in r) throw r.error;
+                return {
+                  v: 1,
+                  id: f.id,
+                  type: "unfollowed",
+                  removed: r.removed,
+                } as const;
+              })
             : following(this.env, userId, to).then(
                 (l) =>
                   ({
@@ -8341,9 +8750,36 @@ export class BusHub extends DurableObject<Env> {
     return ack !== null && noticeAckGated(live) ? "held" : "delivered";
   }
 
-  #acceptNotice(n: BusNotice): DeliveryOutcome {
+  #acceptNotice(n: BusNotice, forwarded = false): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
+    // #3132: a notice for a session that handed its role on (an ask's answer,
+    // a mention, a follow) goes to the role's live holder, as if sent there.
+    // Once only: two sessions that swapped roles never bounce a notice.
+    if (!forwarded) {
+      const holder = roleForward(
+        sql,
+        OWNER_ORG_ID,
+        n.to.namespace,
+        n.to.name.toLowerCase(),
+        n.toIdentity ?? null,
+        n.originAt ?? null,
+      );
+      if (holder !== null) {
+        const identity = identityOfAgent(sql, holder.id);
+        const { toIdentity: _, ...rest } = n;
+        return this.#acceptNotice(
+          {
+            ...rest,
+            to: { namespace: holder.namespace, name: holder.name },
+            ...(n.toIdentity !== undefined && identity !== null
+              ? { toIdentity: identity }
+              : {}),
+          },
+          true,
+        );
+      }
+    }
     // #1752: as a send resolves (role > live > former): a role address in
     // the notice's own namespace reaches its current live holder (same org
     // and namespace scope; a vacant role falls through). A follow row still at

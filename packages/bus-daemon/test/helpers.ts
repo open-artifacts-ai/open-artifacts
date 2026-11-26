@@ -197,6 +197,14 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       ),
       ...over.codex,
     },
+    // agy S2: never the real ~/.oa-bus/antigravity-agents.json.
+    antigravity: {
+      agentsFile: join(
+        mkdtempSync(join(tmpdir(), "ob-ag-")),
+        "antigravity-agents.json",
+      ),
+      ...over.antigravity,
+    },
   });
   stops.push(daemon.stop);
   // The hello is the first thing the hub link writes once open: wake on it.

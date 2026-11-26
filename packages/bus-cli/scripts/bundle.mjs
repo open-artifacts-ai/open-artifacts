@@ -95,6 +95,11 @@ cpSync(
   at("output-style/artifacts-teammate.md"),
   at("assets/output-styles/artifacts-teammate.md"),
 );
+// agy S2: the oa-bus agy plugin's fixed files; install writes hooks.json beside them.
+cpSync(at("agy-plugin"), at("assets/agy-plugin"), {
+  recursive: true,
+  filter: (src) => !src.endsWith("README.md"),
+});
 cpSync(
   at("../bus-adapter-opencode/assets/opencode-tui/tui.js"),
   at("assets/opencode-tui/tui.js"),

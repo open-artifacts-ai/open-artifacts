@@ -225,4 +225,30 @@ describe("instance meta", () => {
       expect(metas(await r.text())).toEqual([]);
     }
   });
+
+  it("serves the web app manifest as application/manifest+json, not the SPA", async () => {
+    const manifest = {
+      display: "standalone",
+      icons: [{ src: "/icon-192.png", type: "image/png" }],
+    };
+    const files = fakeAssets({
+      "/index.html": { body: INDEX, type: "text/html" },
+      "/manifest.webmanifest": {
+        body: JSON.stringify(manifest),
+        type: "application/octet-stream",
+      },
+      "/icon-192.png": { body: "png", type: "image/png" },
+    }).fetcher;
+    const r = await get("/manifest.webmanifest", { ASSETS: files });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-type")).toBe("application/manifest+json");
+    expect(await r.json()).toEqual(manifest);
+    const icon = await get("/icon-192.png", { ASSETS: files });
+    expect(icon.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("never labels the SPA fallback as a manifest", async () => {
+    const r = await get("/manifest.webmanifest");
+    expect(r.headers.get("content-type")).toMatch(/^text\/html/);
+  });
 });
