@@ -37,12 +37,19 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
 import {
+  CODEX_OA_ENTRIES_FILE,
   CODEX_PROXY_ENTRY_FILE,
   codexBinFile,
   codexBinPin,
   listInstances,
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
+import {
+  agyPluginFiles,
+  agyPluginState,
+  installAgyPlugin,
+  uninstallAgyPlugin,
+} from "./antigravity.ts";
 import {
   busStopped,
   claudeConfigFile,
@@ -69,6 +76,7 @@ import {
   proxyProgramMissing as cxProxyProgramMissing,
   installEntry as installCxEntry,
   pendingEntry as pendingCxEntry,
+  recordEntries as recordCxEntries,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
 import {
@@ -217,7 +225,9 @@ const HARNESSES: Harness[] = [
 /**
  * Antigravity (agy) is wired only with OA_BUS_EXPERIMENTAL_AGY=1 until its
  * agent kind is live on the instances (agy S1a) and it can join and get
- * messages (S2, S3). Uninstall does not wait for it: it removes only our entry.
+ * messages (S2, S3). Install also writes the oa-bus agy plugin (S2,
+ * steps/antigravity.ts). Uninstall does not wait for it: it removes only our
+ * entry and our plugin folder.
  */
 export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
 export const agyOn = (env: Record<string, string | undefined> | undefined) =>
@@ -299,6 +309,8 @@ export const paths = (deps: AdapterDeps) => {
     codexBin: codexBinFile(busDir),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
+    // #3108: the Codex entries oa-bus leaves as they are, linked by the daemon's server check.
+    codexOaEntries: join(busDir, CODEX_OA_ENTRIES_FILE),
     // agy 1.5's user-level MCP config (`agy mcp add` writes it; the older
     // ~/.gemini/antigravity/mcp_config.json is the legacy path it migrated from).
     agyMcp: join(deps.home, ".gemini", "config", "mcp_config.json"),
@@ -656,6 +668,8 @@ const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
   moved: paths(deps).codexEntry,
   write: (text) => writeAtomic(paths(deps).codex, text),
   writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
+  entries: paths(deps).codexOaEntries,
+  writeEntries: (data) => writeAtomic(paths(deps).codexOaEntries, data, 0o600),
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
   // #2954: the PAT the connect guide tells people to save, so an entry that
@@ -1052,6 +1066,8 @@ const install: Record<Harness, Step> = {
     if (made.length > 0 && record[p.agyMcp] === undefined)
       writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
     saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+    // agy S2: the plugin whose SessionStart hook joins each conversation.
+    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, home));
     return "done";
   },
 };
@@ -1209,7 +1225,9 @@ const uninstall: Record<Harness, Step> = {
 
   async antigravity(deps) {
     const p = paths(deps);
-    if (!present(p.agyMcp)) return "none";
+    // Only our marked folder goes; a folder not ours stays as it is.
+    const plugin = uninstallAgyPlugin(deps.home);
+    if (!present(p.agyMcp)) return plugin ? "done" : "none";
     const before = readAgy(p.agyMcp);
     const record = readRecord(p.record);
     const next = (record[p.agyMcp] ?? []).reduce(
@@ -1226,7 +1244,7 @@ const uninstall: Record<Harness, Step> = {
       const { [p.agyMcp]: _, ...left } = record;
       writeRecord(p.record, record, left);
     }
-    return saved ? "done" : "none";
+    return saved || plugin ? "done" : "none";
   },
 };
 
@@ -1438,12 +1456,21 @@ export function checkAdapters(
           deps.openclawPlugin ?? OPENCLAW_PLUGIN,
         ) === "current",
     ),
-    antigravity: state("antigravity", () =>
-      agyEntryIs(
-        parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
-        deps.busBin === undefined ? undefined : agyServer(deps.busBin),
-        movedHome(deps),
-      ),
+    antigravity: state(
+      "antigravity",
+      () =>
+        agyEntryIs(
+          parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
+          deps.busBin === undefined ? undefined : agyServer(deps.busBin),
+          movedHome(deps),
+        ) &&
+        // agy S2: and the plugin whose hook joins each conversation.
+        agyPluginState(
+          deps.home,
+          deps.busBin === undefined
+            ? undefined
+            : agyPluginFiles(deps.busBin, movedHome(deps)),
+        ) === "current",
     ),
   };
 }
@@ -1517,6 +1544,22 @@ export function skippedProxyEntries(
       out.push({ harness: "OpenCode", note });
   } catch {}
   return out;
+}
+
+/**
+ * #3108: on daemon start, records the Codex entries that reach the instance
+ * (names and origin only), so an install from before this existed, brought
+ * forward by an update, links with no step from the user. Writes only the
+ * bus home's own file, never Codex's config. Never throws.
+ */
+export function reapplyCodexEntries(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env"> & { hub: string },
+): void {
+  try {
+    const d = { ...deps, busBin: [] as string[] } as AdapterDeps;
+    if (!present(paths(d).codex)) return;
+    recordCxEntries(cxEntryIo(d), deps.hub);
+  } catch {}
 }
 
 /**

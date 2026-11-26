@@ -634,6 +634,7 @@ describe("RPC surface", () => {
     expect(own).toEqual([
       "agentByProof",
       "closeAll",
+      "codexCallCheck",
       "decideLinkProposal",
       "decideReachProposal",
       "decideRoleProposal",

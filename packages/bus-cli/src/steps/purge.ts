@@ -12,6 +12,7 @@ const FILES = [
   "claude-held.injected.json",
   "opencode-uncertain.json",
   "codex-mcp-entry.json",
+  "codex-oa-entries.json",
   "revoked",
   "update.json",
   // The rescue shim the service runs (#2552): written only by an install.
