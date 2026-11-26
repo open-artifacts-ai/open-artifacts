@@ -3,6 +3,7 @@
 // run `pnpm --filter @oa/runtime build` first. Shots only when PINS_SHOTS_DIR is set.
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PROTOCOL_VERSION } from "@oa/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page, an image or a pdf under ?mock=pins
@@ -34,7 +35,7 @@ function frameHtml(kind: "image" | "pdf", schemas: string) {
   // The renderer says hello once the runtime's comments chunk is up; so does this
   // stand-in (the same module, already loaded by the runtime, so its handlers
   // are registered by the time this resolves).
-  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:6,kind:"${kind}",nonce:window.__nonce},"*"),0))`;
+  const hello = `import("/_oa/${schemas}").then(()=>setTimeout(()=>parent.postMessage({oa:1,type:"hello",protocol:${PROTOCOL_VERSION},kind:"${kind}",nonce:window.__nonce},"*"),0))`;
   return `<!doctype html><meta name="oa-format" content="${kind}"><body style="margin:0;background:#eceef1">${body}<div style="height:900px"></div><script>window.__nonce=new URLSearchParams(location.hash.slice(1)).get("oa")</script><script src="/_oa/runtime.js"></script><script>${hello}</script>`;
 }
 
@@ -110,6 +111,69 @@ for (const kind of ["image"] as const)
     ).toBeVisible({ timeout: 15_000 });
     await shot(page, `1280-${kind}-open`);
   });
+
+/** The ask pin's own look (#3128): its face's colour kept, an amber ring, and the chip. */
+async function expectAskPin(
+  frame: ReturnType<Page["frameLocator"]>,
+  theme: "light" | "dark",
+) {
+  const ask = frame.getByRole("button", { name: "Ask: answer here" });
+  await expect(ask).toBeVisible({ timeout: 15_000 });
+  // The face it carries, and the ask on top of it.
+  await expect(ask).toHaveClass(/\bask\b/);
+  await expect(ask).toHaveClass(/\bface\b/);
+  await expect(ask).toHaveClass(/\bdashed\b/);
+  const look = () =>
+    ask.evaluate((el) => {
+      const s = getComputedStyle(el);
+      const ink = el.querySelector("svg");
+      return {
+        background: s.backgroundColor,
+        ring: s.boxShadow,
+        ink: ink ? getComputedStyle(ink).stroke : null,
+        chip: null as string | null,
+      };
+    });
+  const pin = await look();
+  // The face's own bubble colour, never the amber.
+  expect(pin.background).toBe("rgb(255, 255, 255)");
+  // The amber, outside the white ring, in this theme's tone.
+  expect(pin.ring).toContain(
+    theme === "dark" ? "rgb(242, 181, 29)" : "rgb(224, 160, 0)",
+  );
+  // The dashed robot's grey ink, readable on its white bubble as it always was.
+  expect(pin.ink).toBe("rgb(95, 102, 112)");
+  // A colour alone is not the signal: the chip says Ask, by name.
+  const chip = frame.getByRole("button", { name: "Ask", exact: true });
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveText("Ask");
+  // Past the bubble: it never covers the initials or the number.
+  const [a, b] = await Promise.all([ask.boundingBox(), chip.boundingBox()]);
+  if (!a || !b) throw new Error("no box");
+  const overlaps =
+    a.x < b.x + b.width &&
+    b.x < a.x + a.width &&
+    a.y < b.y + b.height &&
+    b.y < a.y + a.height;
+  expect(overlaps).toBe(false);
+  return ask;
+}
+
+test("image: an ask pin keeps its face, is ringed amber and says Ask (#3128)", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280);
+  await expectAskPin(frame, "light");
+  await shot(page, "1280-image-ask-pin");
+});
+
+test("image: the ask pin's ring and chip in the dark theme (#3128)", async ({
+  page,
+}) => {
+  const frame = await open(page, "image", 1280, "dark");
+  await expectAskPin(frame, "dark");
+  await shot(page, "1280-image-ask-pin-dark");
+});
 
 test("image: click-to-comment opens the box beside the flag on a wide screen", async ({
   page,
