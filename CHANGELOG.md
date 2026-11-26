@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.250.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.249.1...v0.250.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** refresh installed skills when the instance version changes ([#3203](https://github.com/open-artifacts-ai/open-artifacts/issues/3203)) ([#3206](https://github.com/open-artifacts-ai/open-artifacts/issues/3206)) ([5510d4c](https://github.com/open-artifacts-ai/open-artifacts/commit/5510d4c82b70696cdaf276159e5c3fe376e0b4a9))
+
+## [0.249.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.249.0...v0.249.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** no habits in files; upgrade never asks about habits ([#3043](https://github.com/open-artifacts-ai/open-artifacts/issues/3043), slice 2) ([#3157](https://github.com/open-artifacts-ai/open-artifacts/issues/3157)) ([8326717](https://github.com/open-artifacts-ai/open-artifacts/commit/8326717517a0921a0dcbec718d752a03fb4a18ee))
+* **ci:** the e2e report is its own job, so only shard results decide e2e ([#3178](https://github.com/open-artifacts-ai/open-artifacts/issues/3178)) ([3a0f0ed](https://github.com/open-artifacts-ai/open-artifacts/commit/3a0f0ed254edbf5495280f5a503ea1d12131e83c))
+
 ## [0.249.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.2...v0.249.0) (2026-11-26)
 
 

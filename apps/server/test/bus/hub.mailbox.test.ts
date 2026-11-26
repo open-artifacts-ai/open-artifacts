@@ -146,7 +146,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     p.snd.close();
   });
 
-  it("2: another agent_ref proposing the reserved name takes it over, with the queued mail (#1742)", async () => {
+  it("2: another agent_ref proposing the reserved name takes it over and the old mail expires (#1742, #3208)", async () => {
     const t0 = base();
     const p = await pair(t0);
     await close(p.rcv, p.ref);
@@ -155,8 +155,13 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     const om = await machine("Other");
     const o = await connect(om.token);
     expect(await reg(o, uniq("other"), p.name, p.n)).toBe(p.name);
-    const d = await waitFor(o, "deliver");
-    expect(d.msg_id).toBe(r.msg_id);
+    const u = await waitFor(p.snd, "receipt_update");
+    expect(u).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+      reason: "recipient_closed",
+    });
+    expect(o.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     o.close();
     p.rcv.close();
     p.snd.close();
