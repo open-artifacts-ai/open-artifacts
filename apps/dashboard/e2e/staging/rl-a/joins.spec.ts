@@ -184,12 +184,16 @@ test("an invited member outside the domain signs in by code: a member session th
   await expect(
     page.getByRole("heading", { level: 1, name: "Welcome" }),
   ).toBeVisible();
-  await expect(
-    page
-      .getByRole("navigation", { name: "Breadcrumb" })
-      .getByRole("link", { name: "Library" }),
-  ).toBeVisible();
+  const toLibrary = page
+    .getByRole("navigation", { name: "Breadcrumb" })
+    .getByRole("link", { name: "Library" });
+  await expect(toLibrary).toBeVisible();
   await expect(page).not.toHaveURL(/\/shared$/);
+  // The redirect runs once: the Library link then stays on the Library.
+  await toLibrary.click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Library" }),
+  ).toBeVisible();
 
   // The API agrees on the code session: the invited row, a member, uncapped.
   const me = (await (
