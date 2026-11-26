@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -211,8 +212,10 @@ describe("daemon start re-applies the helper", () => {
     expect(log).not.toContain(PROJ_B);
     // A second start: no write at all.
     const bytes = s.text();
+    // Age the file, so a rewrite would show in its mtime without any wait.
+    const aged = new Date(Date.now() - 60_000);
+    utimesSync(s.file, aged, aged);
     const mtime = statSync(s.file).mtimeMs;
-    await new Promise((r) => setTimeout(r, 15));
     await start(ctx);
     expect(s.text()).toBe(bytes);
     expect(statSync(s.file).mtimeMs).toBe(mtime);

@@ -30,6 +30,7 @@ import {
 } from "../steps/adapters.ts";
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
+import { habitsOptedOut, removeHabitsBlocks } from "../steps/habits.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { noteMade, pruneMade } from "../steps/leftovers.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
@@ -37,11 +38,7 @@ import { installShim } from "../steps/path-shim.ts";
 import { isDefaultHome } from "../steps/service.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
-import {
-  type HabitsMode,
-  habitsAfterInstall,
-  habitsCommand,
-} from "./habits.ts";
+import { type HabitsMode, habitsCommand, removeOldHabits } from "./habits.ts";
 import { LoginFailed, login } from "./login.ts";
 
 /** Transcript state 6: four attempts, waiting 2, 4 and 8 s between them. */
@@ -618,6 +615,16 @@ async function installRun(
     }
     return results.every((r) => r.state === "done") ? 0 : 1;
   }
+  // #3043: habits now come with the bus; remove any old managed blocks left by
+  // earlier installs before runSteps restarts the daemon (which also removes
+  // them on startup for the auto-update path), so install sees the true count.
+  const preRemoved = !second
+    ? removeHabitsBlocks({
+        home: ctx.userHome,
+        env: ctx.env,
+        busHome: ctx.home,
+      })
+    : undefined;
   const ok = await runSteps(steps, ctx, {
     path: join(ctx.home, "install.json"),
     now: ctx.now,
@@ -629,21 +636,21 @@ async function installRun(
     useBusCmd(ctx);
   }
   const skillFailed = reportSkillFailure(ctx);
-  // The always-on habits come last, once everything else is done: a person is
-  // asked, an agent gets a question for its user. Nothing is written unasked.
-  const habits =
-    ok && !second ? await habitsAfterInstall(ctx, json) : undefined;
+  // Print the moved line even if runSteps failed: the files were already changed.
+  const removed = preRemoved ? removeOldHabits(ctx, preRemoved) : 0;
   const code = ok && !skillFailed ? 0 : 1;
   if (json)
     realCtx.stdout.write(
       `${JSON.stringify({
         ok: code === 0,
-        habits: habits && {
-          state: habits.state,
-          files: habits.files,
-          plugins: habits.plugins,
-        },
-        question: habits?.question ?? null,
+        habits:
+          ok && !second
+            ? {
+                state: habitsOptedOut(ctx.home) ? "off" : "on",
+                removed,
+              }
+            : undefined,
+        question: null,
       })}\n`,
     );
   return code;

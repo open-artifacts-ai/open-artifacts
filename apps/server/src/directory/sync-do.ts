@@ -4,6 +4,7 @@ import { withoutCred } from "../auth/cred.js";
 import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import type { AuditActor } from "../services/audit.js";
+import * as otpWaitImpl from "../test-hooks/otp-wait.js";
 import {
   type KickReason,
   type MintFault,
@@ -25,6 +26,12 @@ export type { KickReason, SyncJob } from "./sync.js";
  * gets it explicitly on the actor (confirmHeld's and the snoozes' `by`, via
  * withRequestCred); alarm work records `system`.
  */
+// `false` in release builds (build-flags.d.ts): no reference to test-hooks/.
+const otpWait =
+  typeof __OA_TEST_HOOKS_ALLOWED__ !== "undefined" &&
+  __OA_TEST_HOOKS_ALLOWED__ === true &&
+  otpWaitImpl;
+
 export class DirectorySync extends DurableObject<Env> {
   private engine: SyncEngine;
   private box = new TokenBox();
@@ -90,6 +97,24 @@ export class DirectorySync extends DurableObject<Env> {
 
   unsnoozeHeld(groupId: string, by: AuditActor): Promise<SyncStatus> {
     return withoutCred(() => this.engine.unsnoozeHeld(groupId, by));
+  }
+
+  /**
+   * Test builds only (the otp/latest hook's `wait`, test-hooks/otp-wait.ts):
+   * the row for `ek` changed. Release builds carry no reference to test-hooks/.
+   */
+  async testOtpChanged(ek: string): Promise<void> {
+    if (otpWait) otpWait.otpChanged(ek);
+  }
+
+  /** Test builds only: the change count to read the row after; 0 in release builds. */
+  async testOtpVersion(ek: string): Promise<number> {
+    return otpWait ? otpWait.otpVersion(ek) : 0;
+  }
+
+  /** Test builds only: resolves when the row changed after `since`, or at the bound. */
+  async testOtpWait(ek: string, since: number, ms: number): Promise<void> {
+    if (otpWait) await otpWait.otpWaitAfter(ek, since, ms);
   }
 
   /** Test builds only (the directory-held hook); null in release builds. */

@@ -185,7 +185,10 @@ describe("GET /llms.txt", () => {
     );
     expect(steps).not.toContain("npx @open-artifacts/bus install");
     expect(steps).toContain("They approve this machine once, in their browser");
-    expect(steps).toContain("QUESTION FOR YOUR USER");
+    expect(steps).not.toContain("QUESTION FOR YOUR USER");
+    expect(steps).toContain(
+      "4. **Habit lines.** The installer asks nothing about habits: the bus sends its rules to each session. It prints one line if it removed an old habit block.",
+    );
     expect(steps).toContain(
       "6. **Ask what to call you.** Ask your person what to call you. Suggest a short name from the project, such as \"Acme Web\". Tell them it's the name they'll type after @ in comments. Set it, then check that the bus `self` tool shows it.",
     );
