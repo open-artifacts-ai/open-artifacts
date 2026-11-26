@@ -1635,8 +1635,12 @@ function takeAwayName(
   }
   const have = one<{ n: number; b: number }>(
     sql,
-    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+    `select count(*) as n, coalesce(sum(size), 0) as b
+       from (select r.size from receipts r indexed by receipts_to
+              where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+              limit ?)`,
     toId,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP,
   );
   const moved = all<{ id: string; rid: number }>(
@@ -2488,11 +2492,13 @@ function waitingCounts(
   for (const r of all<{ id: string; n: number }>(
     sql,
     `select to_agent as id, count(*) as n from (
-       select to_agent, row_number() over (partition by to_agent order by rowid) as rn
-         from receipts indexed by receipts_to
-        where to_agent in (select value from json_each(?)) and state = 'pending'
+       select r.to_agent, row_number() over (partition by r.to_agent order by r.rowid) as rn
+         from receipts r indexed by receipts_to
+        where r.to_agent in (select value from json_each(?)) and r.state = 'pending'
+          and ${NOT_GONE_QUEUED_SQL}
      ) where rn <= ? group by to_agent`,
     JSON.stringify(ids),
+    ...GONE_DRAIN_BINDS,
     WAITING_CAP,
   ))
     out.set(r.id, r.n);
@@ -3182,8 +3188,12 @@ function resolveTarget(
 function inboxFull(sql: SqlStorage, agent: AgentRow, size: number): boolean {
   const row = one<{ n: number; b: number }>(
     sql,
-    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+    `select count(*) as n, coalesce(sum(size), 0) as b
+       from (select r.size from receipts r indexed by receipts_to
+              where r.to_agent = ? and r.state = 'pending' and ${NOT_GONE_QUEUED_SQL}
+              limit ?)`,
     agent.id,
+    ...GONE_DRAIN_BINDS,
     MAILBOX_PENDING_CAP,
   );
   return (
@@ -3501,11 +3511,13 @@ function settle(
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
      where r.id = ? and r.org_id = ? and a.machine_id = ?
        and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
-       and r.rowid > a.session_start_rowid`,
+       and r.rowid > a.session_start_rowid
+       and ${NOT_GONE_QUEUED_SQL}`,
     msgId,
     OWNER_ORG_ID,
     machineId,
     outcome,
+    ...GONE_DRAIN_BINDS,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
@@ -3548,10 +3560,12 @@ function canStillSettle(
       `select 1 as n from receipts r join agents a on a.id = r.to_agent
        where r.id = ? and r.org_id = ? and a.machine_id = ?
          and (r.state = 'pending' or (r.state = 'expired' and r.reason = 'lost_body'))
-         and r.rowid > a.session_start_rowid`,
+         and r.rowid > a.session_start_rowid
+         and ${NOT_GONE_QUEUED_SQL}`,
       msgId,
       OWNER_ORG_ID,
       machineId,
+      ...GONE_DRAIN_BINDS,
     ) !== null
   );
 }
@@ -3608,6 +3622,22 @@ const CLOSE_END = "close_drain;";
  */
 const GONE_PREFIX = "gone_drain:";
 const GONE_END = "gone_drain;";
+/**
+ * #3208: true when receipt `r` is not queued in any persisted gone drain
+ * (a GONE_PREFIX meta row whose `ids` contains `r.to_agent` and whose
+ * `through` covers `r.rowid`). Binds: GONE_DRAIN_BINDS.
+ */
+const NOT_GONE_QUEUED_SQL = `not exists (
+  select 1 from meta g, json_each(g.value, '$.ids') j
+   where g.org_id = ? and g.key >= ? and g.key < ?
+     and r.rowid <= json_extract(g.value, '$.through')
+     and j.value = r.to_agent
+)`;
+const GONE_DRAIN_BINDS: readonly [string, string, string] = [
+  OWNER_ORG_ID,
+  GONE_PREFIX,
+  GONE_END,
+];
 /**
  * open-bus #422: a machine with no daemon socket for this long has its live
  * agents closed by the alarm, as agent_down closes one. Safe: a reconnecting
@@ -7373,13 +7403,14 @@ export class BusHub extends DurableObject<Env> {
       `select r.state as state, m.body as body from receipts r join mail m on m.id = r.id
        where r.id = ? and r.org_id = ? and r.to_agent = ? and m.expires_at > ?
          and r.rowid > ?
-         and (r.state = 'delivered' or (r.state = 'pending' and r.expires_at > ?))`,
+         and (r.state = 'delivered' or (r.state = 'pending' and r.expires_at > ? and ${NOT_GONE_QUEUED_SQL}))`,
       f.msg_id,
       OWNER_ORG_ID,
       sender.id,
       now,
       sender.sessionStartRowid,
       now,
+      ...GONE_DRAIN_BINDS,
     );
     if (!r) {
       sendError(ws, f.id, "not_found", FETCH_NOT_FOUND);
@@ -8200,9 +8231,13 @@ export class BusHub extends DurableObject<Env> {
     for (let page = 0; page <= MAILBOX_PENDING_CAP / BATCH; page++) {
       const rows = all<ReceiptRow & { rid: number }>(
         sql,
-        `select ${RECEIPT_COLS}, rowid as rid from receipts where to_agent = ? and state = 'pending' and rowid > ? order by rowid limit ?`,
+        `select ${RECEIPT_COLS}, r.rowid as rid from receipts r
+          where r.to_agent = ? and r.state = 'pending' and r.rowid > ?
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.rowid limit ?`,
         agent.id,
         after,
+        ...GONE_DRAIN_BINDS,
         BATCH,
       );
       for (const r of rows) this.#flushOne(ws, agent, r, now);
@@ -8968,11 +9003,14 @@ export class BusHub extends DurableObject<Env> {
     // body died with an eviction. Expired, never delivered.
     const lost = all<{ id: string; fromAgent: string; expiresAt: number }>(
       sql,
-      `select id, from_agent as fromAgent, expires_at as expiresAt from receipts
-       where state = 'pending' and held_at is not null and held_at <= ?
-         and not exists (select 1 from mail where mail.id = receipts.id)
-       order by held_at limit ?`,
+      `select r.id, r.from_agent as fromAgent, r.expires_at as expiresAt
+        from receipts r indexed by receipts_held
+       where r.state = 'pending' and r.held_at is not null and r.held_at <= ?
+         and not exists (select 1 from mail where mail.id = r.id)
+         and ${NOT_GONE_QUEUED_SQL}
+       order by r.held_at limit ?`,
       now - LIMITS.ackTimeoutMs,
+      ...GONE_DRAIN_BINDS,
       BATCH,
     );
     if (lost.length >= BATCH) more = true;
@@ -9001,8 +9039,13 @@ export class BusHub extends DurableObject<Env> {
     // 3. TTL: pending past expires_at expires, bodies dropped, sender told.
     const due = all<{ id: string; fromAgent: string }>(
       sql,
-      "select id, from_agent as fromAgent from receipts where state = 'pending' and expires_at <= ? order by expires_at limit ?",
+      `select r.id, r.from_agent as fromAgent
+        from receipts r indexed by receipts_due
+       where r.state = 'pending' and r.expires_at <= ?
+         and ${NOT_GONE_QUEUED_SQL}
+       order by r.expires_at limit ?`,
       now,
+      ...GONE_DRAIN_BINDS,
       BATCH,
     );
     if (due.length >= BATCH) more = true;
@@ -9095,8 +9138,12 @@ export class BusHub extends DurableObject<Env> {
   /** The earliest remaining deadline, each one indexed lookup; null if none. */
   #nextDeadline(want: number | null): number | null {
     const sql = this.ctx.storage.sql;
-    const min = (q: string, add = 0): number | null => {
-      const t = one<{ t: number | null }>(sql, q)?.t ?? null;
+    const min = (
+      q: string,
+      add = 0,
+      ...b: SqlStorageValue[]
+    ): number | null => {
+      const t = one<{ t: number | null }>(sql, q, ...b)?.t ?? null;
       return t === null ? null : t + add;
     };
     let heldNext: number | null = null;
@@ -9107,11 +9154,29 @@ export class BusHub extends DurableObject<Env> {
       this.#ownerAwayDue(),
       this.#soakDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
+      one(
+        sql,
+        "select 1 as x from meta where org_id = ? and key >= ? and key < ? limit 1",
+        ...GONE_DRAIN_BINDS,
+      ) !== null
+        ? this.#now() + 1
+        : null,
       min(
-        "select min(held_at) as t from receipts where state = 'pending' and held_at is not null",
+        `select r.held_at as t from receipts r indexed by receipts_held
+          where r.state = 'pending' and r.held_at is not null
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.held_at limit 1`,
         LIMITS.ackTimeoutMs,
+        ...GONE_DRAIN_BINDS,
       ),
-      min("select min(expires_at) as t from receipts where state = 'pending'"),
+      min(
+        `select r.expires_at as t from receipts r indexed by receipts_due
+          where r.state = 'pending'
+            and ${NOT_GONE_QUEUED_SQL}
+          order by r.expires_at limit 1`,
+        0,
+        ...GONE_DRAIN_BINDS,
+      ),
       min("select min(expires_at) as t from mail"),
       min(
         "select min(notified_at) as t from receipts where notified_at is not null",
