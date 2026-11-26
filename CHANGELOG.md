@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.248.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.1...v0.248.2) (2026-11-26)
+
+
+### Bug Fixes
+
+* **comments:** an ask pin keeps its face, ringed amber, and says Ask ([#3128](https://github.com/open-artifacts-ai/open-artifacts/issues/3128)) ([#3126](https://github.com/open-artifacts-ai/open-artifacts/issues/3126)) ([8d35d5c](https://github.com/open-artifacts-ai/open-artifacts/commit/8d35d5c96af3abec3ad4c2fcb540d4f1509c2cd5))
+* **t19:** the invited member's verify checks only its status; /me checks the session ([#3096](https://github.com/open-artifacts-ai/open-artifacts/issues/3096)) ([#3122](https://github.com/open-artifacts-ai/open-artifacts/issues/3122)) ([97ff642](https://github.com/open-artifacts-ai/open-artifacts/commit/97ff64221844dd60073850a1752a81e9670b0e7f))
+
+## [0.248.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.248.0...v0.248.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** the ack test's wait must assert, not just read ([#3099](https://github.com/open-artifacts-ai/open-artifacts/issues/3099) regression) ([#3114](https://github.com/open-artifacts-ai/open-artifacts/issues/3114)) ([68eed5e](https://github.com/open-artifacts-ai/open-artifacts/commit/68eed5ed303d4d83c5ab10f8cb626505a793af9c))
+* **sign-in:** dead=1 beside a next is ignored; drop the placeholder note ([#3029](https://github.com/open-artifacts-ai/open-artifacts/issues/3029) review) ([#3112](https://github.com/open-artifacts-ai/open-artifacts/issues/3112)) ([000b534](https://github.com/open-artifacts-ai/open-artifacts/commit/000b534750da90c08f8ba4d8f99142d562b22697))
+* **viewer:** a reply that lands while the comments load still shows ([#3095](https://github.com/open-artifacts-ai/open-artifacts/issues/3095)) ([#3113](https://github.com/open-artifacts-ai/open-artifacts/issues/3113)) ([635b2e4](https://github.com/open-artifacts-ai/open-artifacts/commit/635b2e480223a542b61ef0cb48e4a44fd923b233))
+
 ## [0.248.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.247.0...v0.248.0) (2026-11-26)
 
 

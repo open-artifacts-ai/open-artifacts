@@ -1,5 +1,6 @@
 import {
   type ArtifactSummary,
+  type Capabilities,
   isExpiredMessage,
   type Me,
   viewerPath,
@@ -423,6 +424,14 @@ function Viewer({
   });
   const cbs = useRef({ onReady, onTouched, onAccessLost, onScroll });
   cbs.current = { onReady, onTouched, onAccessLost, onScroll };
+  // #3037: the live data boxes this page's code has called for. The layer
+  // remounts per version, so a new version starts the marks over.
+  const [usedCaps, setUsedCaps] = useState<ReadonlySet<keyof Capabilities>>(
+    new Set(),
+  );
+  const noteUse = useCallback((cap: keyof Capabilities) => {
+    setUsedCaps((prev) => (prev.has(cap) ? prev : new Set(prev).add(cap)));
+  }, []);
   // Fixed at mount: a swap shows this layer on load, before its hello.
   const restore = useRef(restoreScroll);
   // biome-ignore lint/correctness/useExhaustiveDependencies: once, on mount
@@ -709,6 +718,11 @@ function Viewer({
       url: src,
       ...latest.current,
       onboarding: () => gate.current,
+      // #3037: what this page's code reaches for, for the Share panel. In
+      // memory only: a full page reload clears the marks, a frame reload keeps
+      // them. It is a report of calls so far, never a promise of what the page
+      // needs.
+      onCapability: noteUse,
       version,
       formatOf: () => formatRef.current,
       onHello: () => {
@@ -749,7 +763,7 @@ function Viewer({
       // A new frame reports its own slots.
       setAskSlots([]);
     };
-  }, [el, src, version, onHello, onRenavigated, touch, gone]);
+  }, [el, src, version, onHello, onRenavigated, touch, gone, noteUse]);
 
   // Focus moved into the frame (a window blur with the frame active): touched.
   useEffect(() => {
@@ -1119,6 +1133,7 @@ function Viewer({
                 surface === "panel" && commentsTab ? cmt.listedOpen : undefined
               }
               tab={tab}
+              usedCaps={usedCaps}
               onTab={(t) => setPanel(true, t)}
               onClose={() => setPanel(false)}
             />
