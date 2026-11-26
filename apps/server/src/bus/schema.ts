@@ -219,7 +219,8 @@ create index if not exists roles_lname on roles(org_id, lname);
 -- (putRole). The from-session's address and identity are kept as they were,
 -- since its agents row may be gone, so a notice still sent there (an ask's
 -- answer, a mention, a follow) reaches the role's current holder
--- (roleForward). A name reclaim (#1816) is not a move: nothing follows a
+-- (roleForward), for what it began while it held the role: held_from (the
+-- role's held_since then) to at. A name reclaim (#1816) is not a move: nothing follows a
 -- name by itself. A new table: create-if-not-exists adds it; wipe() deletes it.
 create table if not exists role_moves (
   id text primary key,
@@ -230,6 +231,7 @@ create table if not exists role_moves (
   from_lname text not null,
   from_identity text,
   to_agent_id text not null,
+  held_from integer not null,
   at integer not null
 );
 create index if not exists role_moves_from on role_moves(org_id, from_ns, from_lname);
@@ -484,6 +486,18 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   ] as const)
     if (!agentCols.has(col))
       sql.exec(`alter table agents add column ${col} ${type}`);
+  // #3132: when the role's current holder started holding it (set_at also
+  // moves on a rename). Backfill: set_at.
+  const roleCols = new Set(
+    sql
+      .exec<{ name: string }>("select name from pragma_table_info('roles')")
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!roleCols.has("held_since")) {
+    sql.exec("alter table roles add column held_since integer");
+    sql.exec("update roles set held_since = set_at");
+  }
   // #1822: the session link. identity_id is opaque and random, minted at the
   // first accepted link_bind; proof_hash is the sha256 of the session's
   // current proof, null unless the session is live and bound.

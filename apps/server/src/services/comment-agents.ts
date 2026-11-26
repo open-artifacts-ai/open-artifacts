@@ -415,7 +415,11 @@ export function commentNoticeText(
 }
 
 /** #2238: an asking agent's bus address and the identity it was verified as. */
-export type AskerAddress = BusAddress & { identityId?: string };
+export type AskerAddress = BusAddress & {
+  identityId?: string;
+  /** #3132: when the ask was posted (ms), for a moved role (BusNotice.originAt). */
+  originAt?: number;
+};
 
 export type DeliveryState = "delivered" | "held" | "dropped";
 
@@ -542,6 +546,7 @@ export async function notifyAnswered(
       url,
       to: { namespace: to.namespace, name: to.name },
       ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
       text: commentNoticeText(
         "answered",
         version,
@@ -591,6 +596,7 @@ export async function notifyAskLater(
       url,
       to: { namespace: to.namespace, name: to.name },
       ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
       // Fixed words and the time only: no name, nothing a person typed.
       text: [
         `Open Artifacts: this ask was put off. It will be looked at ${later.when} (${new Date(later.until).toISOString()}).`,

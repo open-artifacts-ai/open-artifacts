@@ -282,6 +282,8 @@ export async function moveFollows(
   userId: string,
   from: BusAddress,
   to: BusAddress,
+  /** #3132: only rows created at or after this (ms); absent: every row. */
+  since = 0,
 ): Promise<void> {
   if (from.namespace === to.namespace && from.name === to.name) return;
   await env.DB.batch([
@@ -289,13 +291,13 @@ export async function moveFollows(
       env.DB,
       `insert into follows (user_id, artifact_id, namespace, agent_name, created_at, last_notice_at)
        select user_id, artifact_id, ?4, ?5, created_at, last_notice_at from follows
-       where user_id = ?1 and namespace = ?2 and agent_name = ?3
+       where user_id = ?1 and namespace = ?2 and agent_name = ?3 and created_at >= ?6
        on conflict do update set created_at = min(follows.created_at, excluded.created_at)`,
-    ).bind(userId, from.namespace, from.name, to.namespace, to.name),
+    ).bind(userId, from.namespace, from.name, to.namespace, to.name, since),
     stmt(
       env.DB,
-      "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3",
-    ).bind(userId, from.namespace, from.name),
+      "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3 and created_at >= ?4",
+    ).bind(userId, from.namespace, from.name, since),
   ]);
 }
 
@@ -607,22 +609,22 @@ async function fanOut(
     // this time come first next time. `commented` notices keep their own clock
     // (COMMENT_CLAIM's counters row), so they never move `changed`'s.
     kind === "commented"
-      ? `select f.user_id as userId, f.namespace, f.agent_name as name from follows f
+      ? `select f.user_id as userId, f.namespace, f.agent_name as name, f.created_at as since from follows f
          left join counters c on c.key = 'notice:comment:' || f.user_id || ':' || f.artifact_id || ':' || f.namespace || ':' || f.agent_name
          where f.artifact_id = ?
          order by c.n is not null, c.n, f.user_id limit ?`
-      : `select user_id as userId, namespace, agent_name as name from follows
+      : `select user_id as userId, namespace, agent_name as name, created_at as since from follows
          where artifact_id = ?
          order by last_notice_at is not null, last_notice_at, user_id limit ?`,
   )
     .bind(artifactId, FANOUT_MAX + 1)
-    .all<{ userId: string; namespace: string; name: string }>();
+    .all<{ userId: string; namespace: string; name: string; since: number }>();
   // One row past the limit tells us followers were left out this time.
   if (results.length > FANOUT_MAX) {
     results.length = FANOUT_MAX;
     logInfo("fanout_limit_hit", { kind, artifactId, limit: FANOUT_MAX });
   }
-  const byUser = new Map<string, BusAddress[]>();
+  const byUser = new Map<string, (BusAddress & { since: number })[]>();
   for (const r of results) {
     if (kind === "changed" && !shouldNotifyFollower(r.userId, actorId ?? ""))
       continue;
@@ -635,7 +637,7 @@ async function fanOut(
       continue;
     if (kind === "commented" && r.userId === actorId) continue;
     const list = byUser.get(r.userId) ?? [];
-    list.push({ namespace: r.namespace, name: r.name });
+    list.push({ namespace: r.namespace, name: r.name, since: r.since });
     byUser.set(r.userId, list);
   }
   const drops = new Map<string, number>();
@@ -688,7 +690,11 @@ async function fanOut(
         if (!claim) continue;
         if (allow && !(await allow(userId))) continue;
       }
-      const n = notice(env, kind, artifactId, version, to, at);
+      // #3132: a follow begun while its session held a role follows the role.
+      const n = {
+        ...notice(env, kind, artifactId, version, to, at),
+        originAt: to.since,
+      };
       if ((await deliverNotice(env, userId, n, scope)) === "dropped") {
         drops.set(userId, (drops.get(userId) ?? 0) + 1);
         logInfo("bus_notice_dropped", {
