@@ -5,8 +5,14 @@ import { AUTH, R, SIGN_IN_PAGE } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { codesKey, emailKey } from "../src/auth/codes.js";
+import { authConfig } from "../src/auth/config.js";
 import { readSession } from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
+import {
+  admit,
+  codeEligibility,
+  linkEligibility,
+} from "../src/services/identity.js";
 import { shareReach } from "../src/services/reach.js";
 import { b64urlDecode, b64urlEncode, hmacSign } from "../src/util/crypto.js";
 import { direct, mailer, seedShare, seedUser, uniq } from "./auth-helpers.js";
@@ -328,19 +334,104 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     ).toEqual({ p: "google", s: `sub-${email}` });
   });
 
-  it("a link cookie naming a provider sessions don't know is refused (#3087)", async () => {
+  it("a link cookie naming an unknown provider is refused (#3087)", async () => {
     const { e } = install();
-    const email = uniq("gh", "custom.example");
+    const email = uniq("uk", "custom.example");
     await seedUser(email, "member");
     const body = { s: `sub-${email}`, e: email, h: null, n: null };
-    // The same body with p: "google" is read, so only the provider differs.
-    const good = await sealLink(e, { ...body, p: "google" });
+    // The same body with p: "github" is read, so only the provider differs.
+    const good = await sealLink(e, { ...body, p: "github" });
     expect((await get(e, AUTH.codeLink, good)).status).toBe(200);
-    const bad = await sealLink(e, { ...body, p: "github" });
-    expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
-    expect((await post(e, AUTH.codeRequest, { link: true }, bad)).status).toBe(
-      400,
+    for (const p of ["access", "gitlab"]) {
+      const bad = await sealLink(e, { ...body, p });
+      expect((await get(e, AUTH.codeLink, bad)).status).toBe(404);
+      expect(
+        (await post(e, AUTH.codeRequest, { link: true }, bad)).status,
+      ).toBe(400);
+    }
+  });
+
+  it("a Google-linked member adds GitHub by a code; Google stays linked (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("two", "custom.example");
+    const uid = await seedUser(email, "member", { googleSub: `g-${email}` });
+    const gh = {
+      provider: "github" as const,
+      emailVerified: true,
+      subject: `gh-${email}`,
+      email,
+      name: null,
+      tenant: null,
+    };
+    expect(await admit(e, authConfig(e), gh)).toEqual({
+      ok: false,
+      reason: "needs_code",
+    });
+    const link = await sealLink(e, {
+      s: gh.subject,
+      e: email,
+      h: null,
+      n: null,
+      p: "github",
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    const code = m.codeFor(email);
+    expect(code).toBeTruthy();
+    const ok = await post(
+      e,
+      AUTH.codeVerify,
+      { code },
+      `${link}; ${cookieOf(req, /oa_code=/)}`,
     );
+    expect(ok.status).toBe(200);
+    const sess = await readSession(e, cookieOf(ok, SESSION)?.split("=")[1]);
+    expect(sess).toMatchObject({ uid, p: "github" });
+    const links = await env.DB.prepare(
+      "select provider p, subject s from identities where user_id = ? order by provider",
+    )
+      .bind(uid)
+      .all();
+    expect(links.results).toEqual([
+      { p: "github", s: gh.subject },
+      { p: "google", s: `g-${email}` },
+    ]);
+    // Now straight in by subject; a second GitHub account is a conflict.
+    expect(await admit(e, authConfig(e), gh)).toMatchObject({
+      ok: true,
+      user: { id: uid },
+    });
+    expect(
+      await admit(e, authConfig(e), { ...gh, subject: `gh2-${email}` }),
+    ).toEqual({ ok: false, reason: "identity_conflict" });
+    // A plain code sign-in for the linked member is still refused.
+    expect(await codeEligibility(e, authConfig(e), email)).toEqual({
+      kind: "none",
+      why: "linked",
+    });
+    expect(await linkEligibility(e, email, "github")).toEqual({
+      kind: "none",
+      why: "linked",
+    });
+  });
+
+  it("a GitHub link never creates a row, not even a share recipient's (#3087)", async () => {
+    const { e, m } = install();
+    const email = uniq("ghshare", "custom.example");
+    await seedShare(email);
+    expect((await linkEligibility(e, email, "github")).kind).toBe("none");
+    expect((await linkEligibility(e, email, "google")).kind).toBe("guest");
+    const link = await sealLink(e, {
+      s: `gh-${email}`,
+      e: email,
+      h: null,
+      n: null,
+      p: "github",
+    });
+    const req = await post(e, AUTH.codeRequest, { link: true }, link);
+    expect(req.status).toBe(202);
+    expect(() => m.codeFor(email)).toThrow();
+    expect(await countRows(email)).toBe(0);
   });
 
   it("a link cookie's p: only a missing one reads as Google; null is refused (#3087)", async () => {
