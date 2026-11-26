@@ -445,16 +445,19 @@ export async function drainPush(env: Env, now = Date.now()): Promise<number> {
       .bind(now, TICK_ROWS)
       .all<Pending>();
     if (results.length === 0) return 0;
-    await stmt(env.DB, "delete from push_pending where created_at < ?1")
+    // Every stale row goes, not just those in this tick's selection; each is counted per member.
+    const gone = await stmt(
+      env.DB,
+      "delete from push_pending where created_at < ?1 returning user_id",
+    )
       .bind(now - STALE_MS)
-      .run();
-    const byUser = new Map<string, Pending[]>();
+      .all<{ user_id: string }>();
     const stale = new Map<string, number>();
+    for (const g of gone.results)
+      stale.set(g.user_id, (stale.get(g.user_id) ?? 0) + 1);
+    const byUser = new Map<string, Pending[]>();
     for (const r of results) {
-      if (r.created_at < now - STALE_MS) {
-        stale.set(r.user_id, (stale.get(r.user_id) ?? 0) + 1);
-        continue;
-      }
+      if (r.created_at < now - STALE_MS) continue;
       const l = byUser.get(r.user_id) ?? [];
       l.push(r);
       byUser.set(r.user_id, l);
@@ -697,9 +700,12 @@ async function drainMember(
   const muteKept = due.length;
   due = await stillWanted(env, userId, due, now);
   drops.no_longer_wanted = muteKept - due.length;
-  logDrops(userId, drops);
-  if (due.length === 0) return 0;
+  if (due.length === 0) {
+    logDrops(userId, drops);
+    return 0;
+  }
   let ok = 0;
+  let removed = 0;
   for (const s of subs) {
     // Every enrolled device gets it; one device's failure never stops the others.
     let r: Awaited<ReturnType<typeof sendPush>>;
@@ -722,12 +728,19 @@ async function drainMember(
       )
         .bind(now, s.id)
         .run();
-    } else if (r === "gone" || r === "unusable")
+    } else if (r === "gone" || r === "unusable") {
       await stmt(env.DB, "delete from push_subscriptions where id = ?1")
         .bind(s.id)
         .run();
-    else logWarn("push_send_failed", undefined, { subscription: s.id });
+      removed++;
+    } else logWarn("push_send_failed", undefined, { subscription: s.id });
   }
+  // No device took it: the notification is gone, so say so in the same line.
+  if (ok === 0) {
+    drops.send_failed = due.length;
+    drops.devices_removed = removed;
+  }
+  logDrops(userId, drops);
   return ok > 0 ? 1 : 0;
 }
 

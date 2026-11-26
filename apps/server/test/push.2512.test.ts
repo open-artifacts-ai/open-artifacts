@@ -840,6 +840,50 @@ describe("sending", () => {
     ).toHaveLength(0);
   });
 
+  it("when no device takes the send, one push_dropped line counts send_failed and the devices removed", async () => {
+    const { E } = await world();
+    const gone = await enroll(E);
+    const flaky = await enroll(E);
+    fakePush((url) => (url === gone.b.body.endpoint ? 410 : 500));
+    await queuePush(E, [gone.u.userId, flaky.u.userId], item("ask:sf"), T0);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    const lineOf = (id: string) =>
+      log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("push_dropped") && l.includes(id))
+        .map((l) => JSON.parse(l));
+    expect(lineOf(gone.u.userId)).toEqual([
+      expect.objectContaining({ send_failed: 1, devices_removed: 1 }),
+    ]);
+    expect(lineOf(flaky.u.userId)).toEqual([
+      expect.objectContaining({ send_failed: 1 }),
+    ]);
+  });
+
+  it("a stale row outside this tick's selection is deleted and logged per member", async () => {
+    const { E } = await world();
+    const stale = await enroll(E);
+    const live = await enroll(E);
+    fakePush();
+    await env.DB.prepare(
+      `insert into push_pending (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, send_after, created_at)
+       values (?, ?, 'ask:old', 'ask', ?, 'th1', 'Scout', 'x', ?, ?)`,
+    )
+      .bind(newId(), stale.u.userId, PUB, T0 + 10 ** 9, T0 - 25 * 3600_000)
+      .run();
+    await queuePush(E, [live.u.userId], item("ask:fresh"), T0);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    expect(await pendingCount(stale.u.userId)).toBe(0);
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(stale.u.userId));
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      expect.objectContaining({ stale: 1 }),
+    ]);
+  });
+
   it("a 410 or 404 removes that browser; another failure keeps it and drops the item; a send never throws", async () => {
     const { E } = await world();
     const gone = await enroll(E);
