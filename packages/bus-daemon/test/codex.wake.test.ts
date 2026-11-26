@@ -667,10 +667,12 @@ describe("hostWakes", () => {
   });
 
   it("reads a live process's arguments; a gone one is undefined", async () => {
-    const child = spawn("sleep", ["30"]);
+    // A node child held open on its stdin pipe until killed.
+    const script = "process.stdin.resume()";
+    const child = spawn(process.execPath, ["-e", script]);
     try {
       await vi.waitFor(async () =>
-        expect(await processArgs(child.pid as number)).toEqual(["30"]),
+        expect(await processArgs(child.pid as number)).toEqual(["-e", script]),
       );
     } finally {
       child.kill();

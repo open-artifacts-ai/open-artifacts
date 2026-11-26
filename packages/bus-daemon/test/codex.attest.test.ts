@@ -660,7 +660,8 @@ describe("codex attestation (C26c)", () => {
 
 /**
  * A fake Codex: perl run as `codex` (so its comm is codex), flock-ing `lock`
- * when given, with a `sleep` child standing in for the adapter.
+ * when given, with a child standing in for the adapter: it blocks on a pipe it
+ * holds both ends of, so it never exits on its own.
  */
 async function fakeCodex(
   lock?: string,
@@ -671,7 +672,7 @@ async function fakeCodex(
   const script = `
     use Fcntl ":flock"; $| = 1;
     if (@ARGV) { open(my $f, "<", $ARGV[0]) or die; flock($f, LOCK_EX) or die; our $keep = $f; }
-    my $c = fork(); if ($c == 0) { exec("sleep", "60"); }
+    my $c = fork(); if ($c == 0) { exec($^X, "-e", q{pipe(my $r, my $w); <$r>}); }
     print "$c\\n"; waitpid($c, 0);`;
   const proc = spawn(bin, ["-e", script, ...(lock ? [lock] : [])], {
     stdio: ["ignore", "pipe", "inherit"],
@@ -681,7 +682,7 @@ async function fakeCodex(
     proc.stdout?.once("data", (d) => resolve(Number(String(d).trim())));
     proc.once("error", reject);
   });
-  // The sleep child outlives a SIGKILLed parent unless killed itself.
+  // The adapter child outlives a SIGKILLed parent unless killed itself.
   procs.push({ kill: () => process.kill(adapter, "SIGKILL") } as ChildProcess);
   return { p: proc.pid as number, adapter };
 }
