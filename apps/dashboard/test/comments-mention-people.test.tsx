@@ -22,6 +22,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -122,6 +123,9 @@ const box = async () => {
 };
 const type = (b: HTMLElement, value: string) =>
   fireEvent.change(b, { target: { value, selectionStart: value.length } });
+
+// A clock, not the wall (test/clock.ts).
+installClock();
 
 describe("@ lists people with the agents (#2770)", () => {
   it("searches by what is typed and lists agents and people together", async () => {
@@ -284,7 +288,7 @@ describe("@ lists people with the agents (#2770)", () => {
     const { c, b } = await box();
     type(b, "@s");
     // Past the debounce, so the slow request is on its way.
-    await act(() => new Promise((r) => setTimeout(r, 250)));
+    await settle(250);
     type(b, "@da");
     await waitFor(() =>
       expect(within(c).getAllByRole("option")[0]?.textContent).toContain(
@@ -293,7 +297,7 @@ describe("@ lists people with the agents (#2770)", () => {
     );
     await act(async () => {
       release();
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
     });
     const rows = within(c).getAllByRole("option");
     expect(rows).toHaveLength(1);
@@ -346,7 +350,7 @@ describe("@ lists people with the agents (#2770)", () => {
     mount(viewerPath(OWNED));
     const { c, b } = await box();
     type(b, "@da");
-    await act(() => new Promise((r) => setTimeout(r, 300)));
+    await settle(300);
     expect(within(c).queryByText("Dana Whitfield")).toBeNull();
   });
 });

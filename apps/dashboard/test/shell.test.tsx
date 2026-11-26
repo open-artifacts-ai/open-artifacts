@@ -3,6 +3,7 @@ import { fixtures } from "@oa/shared/mocks";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mount, server } from "./harness";
 
 const dispose = vi.fn();
@@ -18,6 +19,7 @@ vi.mock("../src/viewer/bridge", () => ({
 }));
 
 installHarness();
+installClock();
 beforeEach(() => {
   createBridge.mockClear();
   dispose.mockClear();
@@ -107,7 +109,7 @@ describe("viewer shell", () => {
     mount(viewerPath(PUBLIC));
     await frame();
     await screen.findByRole("link", { name: "Log in" });
-    await act(() => new Promise((r) => setTimeout(r, 500)));
+    await settle(500);
     expect(
       gets.filter((c) => c.path === "/auth/providers").length,
     ).toBeLessThanOrEqual(1);

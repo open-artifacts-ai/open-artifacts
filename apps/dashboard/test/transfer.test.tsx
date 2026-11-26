@@ -9,6 +9,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { qk } from "../src/api/queries";
 import { runAll } from "../src/settings/Transfer";
+import { installClock, settle } from "./clock";
 import {
   calls,
   findVisibleToast,
@@ -20,6 +21,7 @@ import {
 } from "./harness";
 
 installHarness();
+installClock();
 
 const CAROL = "Cr7tNpQrSt8uVwXy";
 const ENG = "SpEngNpQrSt2uVwX";
@@ -416,7 +418,7 @@ it("while Retry runs the card and error stay, and focus stays on the button", as
   // The detail stays too, so nothing jumps; a second press changes nothing.
   expect(within(card).getByText("Refused")).toBeVisible();
   fireEvent.click(retry);
-  await new Promise((r) => setTimeout(r, 20));
+  await settle(20);
   expect(within(card).getByText("Refused")).toBeVisible();
   release();
   await screen.findByText("Carol Departed");
@@ -454,7 +456,7 @@ it("a failed Retry never moves focus to a heading, even from no focus (a browser
   fireEvent.click(retry);
   await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
   await waitFor(() => expect(retry).not.toHaveAttribute("aria-busy"));
-  await new Promise((r) => setTimeout(r, 20));
+  await settle(20);
   expect(document.activeElement).toBe(document.body);
 });
 
@@ -472,7 +474,7 @@ it("a Retry that worked leaves focus alone if it has moved elsewhere", async () 
   add.focus();
   await screen.findByText("Carol Departed");
   await waitFor(() => expect(screen.queryByText(LOAD_ERROR)).toBeNull());
-  await new Promise((r) => setTimeout(r, 20));
+  await settle(20);
   expect(add).toHaveFocus();
 });
 
@@ -581,7 +583,7 @@ it("Transfer all to me opens the dialog with you chosen, and moves nothing yet",
   fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
   expect(within(d).getByRole("button", { name: "Transfer 2" })).toBeEnabled();
   expect(within(d).getByRole("button", { name: "Later" })).toBeVisible();
-  await new Promise((r) => setTimeout(r, 20));
+  await settle(20);
   expect(seen.some((c) => c.path === R.memberTransfer(CAROL))).toBe(false);
 });
 
@@ -958,7 +960,7 @@ describe("the dialog on what the install can do", () => {
     expect(within(d).queryByText(/stay where they are/)).toBeNull();
     expect(within(d).queryByText(/personal/)).toBeNull();
     expect(
-      screen.getByRole("dialog", {
+      await screen.findByRole("dialog", {
         name: "Transfer owner1@outside.example's 1 artifact",
       }),
     ).toBeTruthy();
@@ -972,7 +974,7 @@ describe("the dialog on what the install can do", () => {
     ).toBeTruthy();
     expect(within(d).getByRole("radio", { name: /To a person/ })).toBeChecked();
     expect(
-      screen.getByRole("dialog", {
+      await screen.findByRole("dialog", {
         name: "Transfer owner1@outside.example's 1 personal artifact",
       }),
     ).toBeTruthy();
@@ -1246,7 +1248,7 @@ it("an admin with only a departed admin left: no call, no card, no dot, no error
       lastClient.getQueryState(qk.memberList("suspended,removed"))?.status,
     ).toBe("success"),
   );
-  await new Promise((r) => setTimeout(r, 20));
+  await settle(20);
   expect(seen.some((c) => c.path === R.memberTransfer(CAROL))).toBe(false);
   expect(screen.queryByRole("region", { name: "Departed" })).toBeNull();
   expect(screen.queryByText(/load departed people|didn't load/)).toBeNull();

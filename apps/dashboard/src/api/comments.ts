@@ -30,6 +30,7 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ownWordsRefusal } from "../viewer/comments/ownWords";
+import { ASK_SLOTS_KEY } from "./askSlots";
 import { ApiClientError, api, type RequestExtra } from "./client";
 import {
   billingContext,
@@ -158,17 +159,18 @@ export function overlayPending(
     : { ...data, threads, open: data.open + opened };
 }
 
+/** A server without comments, or comments off: asked once, never again. */
+export const commentsUnavailable = (e: unknown): boolean =>
+  e instanceof ApiClientError &&
+  (e.status === 404 || e.code === "comments_off");
+
 /** Every thread, open and resolved: the shell filters and counts. Posts still in flight are laid over the list. */
 export const useThreads = (id: string, enabled: boolean, guest = false) => {
   const q = useQuery({
     enabled,
     queryKey: commentsKey(id),
     // A server without comments, or comments off: no retry, the shell hides them.
-    retry: (n, e) =>
-      !(
-        e instanceof ApiClientError &&
-        (e.status === 404 || e.code === "comments_off")
-      ) && n < 2,
+    retry: (n, e) => !commentsUnavailable(e) && n < 2,
     queryFn: ({ signal }) =>
       withAnon(guest, false, (x) =>
         api.get(`${R.comments(id)}?status=all`, CommentListSchema, signal, x),
@@ -236,7 +238,11 @@ const useRefetching = <V, T>(
         }
       : undefined,
     // Settled, not success: a 404 or 403 means the list is stale too.
-    onSettled: () => qc.invalidateQueries({ queryKey: commentsKey(id) }),
+    onSettled: () => {
+      // #2426 B: an answer may be to an ask shown in other pages' slots.
+      void qc.invalidateQueries({ queryKey: ASK_SLOTS_KEY });
+      return qc.invalidateQueries({ queryKey: commentsKey(id) });
+    },
   });
 };
 
@@ -451,7 +457,6 @@ export const useReply = (id: string, guest = false) =>
           ...(v.guestName ? { guestName: v.guestName } : {}),
           ...(v.mentions?.length ? { mentions: v.mentions } : {}),
           ...(v.people?.length ? { people: v.people } : {}),
-          ...(v.toAsker ? { toAsker: true } : {}),
           ...(v.pictures?.length ? { pictures: v.pictures } : {}),
         },
         CommentSchema,
@@ -783,8 +788,6 @@ export function commentError(
       return "That comment is gone.";
     case "conflict":
       return "This thread has too many replies. Start a new comment instead.";
-    case "not_an_ask":
-      return "That ask is no longer open to questions. Reply instead.";
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":

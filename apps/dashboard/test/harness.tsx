@@ -9,6 +9,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import {
   act,
+  cleanup,
   type Matcher,
   render,
   screen,
@@ -138,6 +139,9 @@ export const installHarness = () => {
     resetCpuLimit();
   });
   afterEach(() => {
+    // Unmount before the handlers go: a fetch the page still starts (a
+    // refetch waiting on a load, #3095) must not reach an empty network.
+    cleanup();
     server.resetHandlers();
     vi.unstubAllGlobals();
     shim();
@@ -210,6 +214,14 @@ export const findVisibleToast = (text: Matcher, options?: waitForOptions) =>
     expect(el).toBeVisible();
     return el;
   }, options);
-export const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Let `ms` of the file's clock pass, inside `act`. The file must be on the fake
+ * clock (`installClock()` in test/clock.ts): nothing here waits on wall time.
+ */
+export const wait = async (ms: number) => {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+};
 export const page = (items: unknown[], nextCursor: string | null) =>
   HttpResponse.json({ items, nextCursor });

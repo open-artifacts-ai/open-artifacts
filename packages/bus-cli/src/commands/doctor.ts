@@ -28,6 +28,7 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import {
+  agyProblem,
   checkAdapters,
   codexProxyProblem,
   type Harness,
@@ -281,8 +282,23 @@ export async function doctor(ctx: Ctx): Promise<number> {
     "codex",
     "hermes",
     "openclaw",
+    "antigravity",
   ] as Harness[]) {
     if (wiring[h] === "absent") continue;
+    if (h === "antigravity") {
+      const bad = agyProblem({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+      });
+      if (bad?.problem === "malformed")
+        fail(c.agyMalformed(tilde(ctx, bad.file)));
+      else if (wiring[h] === "configured") pass(c.wired(h));
+      else fail(c.notWired(h));
+      if (bad?.problem === "disabled" && wiring[h] === "configured")
+        warn(c.agyDisabled());
+      continue;
+    }
     let version: string | undefined;
     if (h === "opencode") {
       // Checked before wiring: an OpenCode install skipped is not wired.
@@ -422,8 +438,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
   if (others.length > 0) say(ctx, c.otherHomes(others));
 
   // Not a pass or a warning: the habits are the user's choice either way.
-  const habits = habitsLine(ctx);
-  if (habits) say(ctx, habits);
+  say(ctx, habitsLine(ctx));
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

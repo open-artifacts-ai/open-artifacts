@@ -79,6 +79,13 @@ describe("AppLayout", () => {
     );
   });
 
+  it("anonymous at an unknown path goes to /sign-in?dead=1 (#3029)", async () => {
+    const redirect = await mount("anonymous", "/invite/x");
+    await waitFor(() =>
+      expect(redirect).toHaveBeenCalledWith("/sign-in?dead=1"),
+    );
+  });
+
   it("anonymous at /a/x is not bounced by the layout", async () => {
     const redirect = await mount("anonymous", "/a/x");
     // The layout lets /a/* through; the viewer itself sends the anonymous visitor to login.

@@ -200,24 +200,32 @@ describe("Codex proxy: a proof per thread, bound on every call (#1856)", () => {
 
   it("caps the link step: a daemon that never answers leaves the call unlinked", async () => {
     const closed: string[] = [];
+    let answer: () => void = () => {};
     const t = setup({
       linkMs: 20,
       connect: (h) =>
         new Promise((res) => {
-          setTimeout(
-            () =>
-              res({
-                welcome: { caps: [ADAPTER_CAPS.link] },
-                request: async () => ({ type: "link_proofed", bound: true }),
-                close: () => closed.push(h.agent_ref),
-              } as unknown as DaemonClient),
-            60,
-          );
+          // The daemon answers only when the test lets it, after the cap.
+          answer = () =>
+            res({
+              welcome: { caps: [ADAPTER_CAPS.link] },
+              request: async () => ({ type: "link_proofed", bound: true }),
+              close: () => closed.push(h.agent_ref),
+            } as unknown as DaemonClient);
         }),
     });
-    await t.proxy.call(call(meta(TA, "call_a")));
-    expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    await vi.waitFor(() => expect(closed).toContain(TA));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const done = t.proxy.call(call(meta(TA, "call_a")));
+      // The cap is a timer: move the clock past it instead of waiting.
+      await vi.advanceTimersByTimeAsync(20);
+      await done;
+      expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(false);
+      answer();
+      await vi.waitFor(() => expect(closed).toContain(TA));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("goes unlinked for a subagent: no hello at all, the call still works", async () => {

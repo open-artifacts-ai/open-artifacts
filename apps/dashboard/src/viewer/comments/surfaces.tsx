@@ -5,7 +5,7 @@ import { TXT } from "../ui";
 import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
 import { CommentsTabs } from "./Decisions";
-import { useCommentsApi } from "./useComments";
+import { MODAL_OR_FIELD, useCommentsApi } from "./useComments";
 
 /** Where the comments list lives (Design's 1C + 3D). */
 export type Surface = "column" | "panel" | "dialog";
@@ -141,6 +141,24 @@ export function CommentsDialog({
   const onPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
   const floating = onPhone && height === "pin";
   const drag = useRef<number | null>(null);
+  // #3053: Esc closes the sheet from anywhere but a field or a modal above it,
+  // not only while focus is inside the sheet's own section. A reader whose
+  // focus sat on the page (or the frame had it last) pressed Esc and kept the
+  // sheet, and the dimmed backdrop behind it, up.
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing || e.defaultPrevented) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLElement &&
+        (t.isContentEditable || t.closest(MODAL_OR_FIELD) !== null)
+      )
+        return;
+      onClose();
+    };
+    document.addEventListener("keydown", key);
+    return () => document.removeEventListener("keydown", key);
+  }, [onClose]);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {

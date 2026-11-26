@@ -12,6 +12,7 @@ import { busOn } from "../../src/services/bus.js";
 import { H as HOSTED_H } from "../billing-helpers.js";
 import { fetchAndWait } from "../helpers.js";
 import { daemon, hello, machine, member, up, waitFor } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 /** A hosted install with the bus feature on. */
 const H = {
@@ -54,12 +55,12 @@ describe("suspend's close-sockets job closes a live daemon socket (#202)", () =>
         props: {},
       } as unknown as ExecutionContext,
     );
-    const c = await Promise.race([
+    const c = await withDeadline(
       d.closed,
-      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
-    ]);
-    expect(c, "socket still open 10 s after the job").not.toBeNull();
-    expect(c?.code).toBe(4403);
+      10_000,
+      "socket close after the job",
+    );
+    expect(c.code).toBe(4403);
     expect(Date.now() - t0).toBeLessThan(10_000);
   });
 });
@@ -203,11 +204,12 @@ describe("a suspended install refuses bus connects at once (cloud #228)", () => 
       }),
     };
     await expect(job(CLOSE_SOCKETS_CRON, failing)).rejects.toThrow("d1 down");
-    const c = await Promise.race([
+    const c = await withDeadline(
       d.closed,
-      new Promise<null>((r) => setTimeout(() => r(null), 10_000)),
-    ]);
-    expect(c?.code).toBe(4403);
+      10_000,
+      "socket close after the job",
+    );
+    expect(c.code).toBe(4403);
   });
 
   it("an unknown oa: job is still refused", async () => {

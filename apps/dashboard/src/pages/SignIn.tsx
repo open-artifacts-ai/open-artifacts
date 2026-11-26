@@ -120,12 +120,18 @@ export const needsCode = (email: string) =>
  * cookie, so no address): this line, and Try another account.
  */
 export const NEEDS_CODE_NO_CODES =
-  "Google couldn't confirm that address. Ask the person who shared this page to use your Gmail or Google Workspace address.";
+  "Google couldn't confirm that address. Ask whoever invited you or shared this page to use your Gmail or Google Workspace address.";
 export const WRONG_ACCOUNT =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with, or get a code at that address.";
 /** OA Product: (b) with codes off. */
 export const WRONG_ACCOUNT_NO_CODES =
   "That Google account doesn't have access. Log in with the account for the address this page was shared with.";
+/** #3029: under the Google button on the plain sign-in page. */
+export const INVITED_HELP =
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
+/** #3179 (OA Product): the same hint when login codes are on too. */
+export const INVITED_HELP_CODES =
+  "Invited? Use the Google account or email address your invite went to. Can't get in? Ask whoever invited you.";
 
 /**
  * #2590 G2 (b) is for share recipients: the server can't tell them apart,
@@ -138,6 +144,16 @@ const isPageLink = (next: string) => /^\/a\/[^/?#]+/.test(next);
  * (404): the usual sign-in, with this line above it.
  */
 export const NEEDS_CODE = "That took too long. Start again.";
+/** The invite's time ran out: the server redirects with error=invite_expired. */
+export const INVITE_EXPIRED =
+  "This invite has expired. Ask whoever invited you to send a new one.";
+
+/**
+ * #3029 item 2: the dashboard had no route for the address asked (a
+ * mistyped /invite/x, /connect, /docs). Copy checked by OA Product.
+ */
+export const DEAD_LINK =
+  "That link doesn't go to a page here. Log in to go to your Library.";
 
 /** Copy for a refused redirect sign-in. Unknown values never reach here. */
 const errorCopy = (
@@ -166,6 +182,8 @@ const errorCopy = (
       return "Login took too long. Try again.";
     case "needs_code":
       return NEEDS_CODE;
+    case "invite_expired":
+      return INVITE_EXPIRED;
     default:
       return "Login didn't work. Try again.";
   }
@@ -203,12 +221,25 @@ const startHref = (start: string, next: string) => {
  * Today's page: the self-hosted install and every Access-mode instance. An
  * older server (or one that cannot answer) lands here too.
  */
-function AccessSignIn({ failed }: { failed: boolean }) {
+function AccessSignIn({
+  failed,
+  deadLink,
+}: {
+  failed: boolean;
+  /** #3029: the dashboard had no route for the address asked. */
+  deadLink?: boolean;
+}) {
   const name = useInstanceName();
   return (
     <>
       <h1>Log in</h1>
       <p className="oa-split-sub">Use your work email to open {name}.</p>
+      {/* Same 12px as the direct-mode banner, and the same below it before the button. */}
+      {deadLink && !failed && (
+        <div className="my-3">
+          <Notice tone="info">{DEAD_LINK}</Notice>
+        </div>
+      )}
       {failed && (
         <Notice tone="danger" title="Login didn't finish.">
           The login link expired or was cancelled. Try again.
@@ -247,9 +278,12 @@ function HostedSignIn({
   method,
   via,
   link,
+  deadLink,
 }: {
   providers: AuthProviders;
   error: SignInError | null;
+  /** #3029: `next` named a path with no route; it is already "/". */
+  deadLink?: boolean;
   next: string;
   /** #2590 G2: needs_code came with link=1 (the server holds the address). */
   link?: boolean;
@@ -301,10 +335,16 @@ function HostedSignIn({
   const domain = google?.domains[0];
   const googleHref = google ? startHref(google.start, next) : undefined;
   // Design (#2590): 12px between the heading and a notice under it.
-  const banner = error && (
+  const banner = error ? (
     <div className="mt-3">
       <Notice tone="danger">{errorCopy(error, name, domain, via)}</Notice>
     </div>
+  ) : (
+    deadLink && (
+      <div className="mt-3">
+        <Notice tone="info">{DEAD_LINK}</Notice>
+      </div>
+    )
   );
   const secondary = Boolean(google || email);
   const accessButton = access && (
@@ -504,19 +544,42 @@ function HostedSignIn({
       </>
     );
 
-  // Google only: one button; guests get their own row.
+  // #3029: a refused Google account on the plain page gets the same
+  // "Try another account" action the share-link page has (same Google start).
+  const wrongGoogle = error === "no_access" && via === "google";
+
+  // Google, plus login codes when they're on (#3179): codes are a normal
+  // way in for members, never a guest-only path.
+  const googleAccount = domain
+    ? `your ${domain} Google account`
+    : "your Google account";
   return (
     <>
       <h1>Log in to {name}</h1>
       {banner}
       <p className="oa-split-sub">
-        {domain
-          ? `Use your ${domain} Google account.`
-          : "Use your Google account."}
+        {guests
+          ? `Use ${googleAccount} or a login code.`
+          : `Use ${googleAccount}.`}
       </p>
       <Button asChild className="oa-split-btn">
-        <a href={googleHref}>Continue with Google</a>
+        <a href={googleHref}>
+          {wrongGoogle ? "Try another account" : "Continue with Google"}
+        </a>
       </Button>
+      {/* #3029: only the plain page, not a share link or a refusal. */}
+      {!error && !isPageLink(next) && (
+        <p
+          data-invited-help=""
+          style={{
+            margin: "12px 0 0",
+            fontSize: 13,
+            color: "var(--oa-text-muted)",
+          }}
+        >
+          {guests ? INVITED_HELP_CODES : INVITED_HELP}
+        </p>
+      )}
       {accessButton}
       {guests && (
         <div
@@ -527,8 +590,7 @@ function HostedSignIn({
           }}
         >
           <p style={{ margin: "0 0 12px", fontSize: 13 }}>
-            <strong>Invited as a guest?</strong> If someone shared an artifact
-            with your email, use a code.
+            No Google account? We'll email you a login code.
           </p>
           <Button asChild variant="outline" className="oa-split-btn">
             <Link to={SIGN_IN_PAGE as string} search={{ method: "code", next }}>
@@ -552,7 +614,10 @@ export function SignIn({
   method,
   via,
   link,
+  dead,
 }: {
+  /** #3029: ?dead=1, the dashboard had no route for the address asked. */
+  dead?: boolean;
   error?: string;
   next?: string;
   method?: string;
@@ -565,13 +630,16 @@ export function SignIn({
   const parsed =
     error !== undefined ? SignInErrorSchema.safeParse(error) : null;
   const shownError = parsed ? (parsed.success ? parsed.data : "failed") : null;
-
+  // #3029: the dashboard itself sent an anonymous visitor here from a path it
+  // has no route for (?dead=1); server redirects never carry the flag. A
+  // `next` wins: dead=1 beside one is not ours, so it is ignored.
+  const deadLink = dead === true && !next;
   if (!providers.data)
     // An older server or a network failure: today's page. Still asking: an
     // empty panel, never a claim about the mode that may change in a moment.
     return providers.isError ? (
       <Shell hosted={false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     ) : (
       <Shell hosted={null} />
@@ -582,7 +650,7 @@ export function SignIn({
   if (data.mode === "access")
     return (
       <Shell hosted={data.hosted ?? false}>
-        <AccessSignIn failed={error !== undefined} />
+        <AccessSignIn failed={error !== undefined} deadLink={deadLink} />
       </Shell>
     );
   // Direct mode covers hosted and self-hosted installs alike; an older server
@@ -593,6 +661,7 @@ export function SignIn({
         providers={data}
         error={shownError}
         next={safeNext(next)}
+        deadLink={deadLink}
         method={method === "code" ? "code" : undefined}
         via={via}
         link={link}

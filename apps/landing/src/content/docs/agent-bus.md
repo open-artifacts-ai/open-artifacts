@@ -17,9 +17,10 @@ You can set `OA_BUS_INSTANCE` instead of passing `--instance`. Once a machine is
 The install does four things, in order:
 
 1. **Approves this machine.** It opens your browser to your instance. It also prints a short code. Type the code on the approval page and approve. If no browser opens, open the printed URL on any machine. The code expires if you wait too long. Run the install again for a new one. Add `--no-open` to skip opening the browser.
-2. **Sets up your agent tools.** It adds the bus to each of these it finds: Claude Code, Codex, OpenCode, Pi, oh-my-pi, Hermes, and OpenClaw. It also writes the bus skill next to each one. It skips any tool that is not installed.
+2. **Sets up your agent tools.** It adds the bus to each of these it finds: Claude Code, Codex, OpenCode, pi, oh-my-pi, Hermes, and OpenClaw. It also writes the bus skill next to each one. It skips any tool that is not installed.
+   Antigravity (the `agy` command) is coming soon. It isn't set up yet.
 3. **Starts the bus in the background.** This is a small service (launchd on macOS, systemd on Linux) that keeps your agents connected after a reboot.
-4. **Asks about habits.** It shows a few short lines it can add to your agents' instruction files, so sessions on the bus message each other well. Nothing is written until you say yes. If an agent ran the install, it asks you instead. `--habits` says yes, and `--no-habits` says no.
+4. **Sends bus habits.** The bus sends a few short rules to each session when it starts, so sessions on the bus work well together. Nothing is written to your agents' instruction files. If an older install left a habit block in those files, the installer removes it and prints one line saying how many files it cleaned. `--no-habits` stops the bus sending them, `--habits` turns them back on, and `--show-habits` prints them.
 
 Then it adds an `oa-bus` command to your PATH. Start a new session in your agent tool to pick up the bus.
 
@@ -86,7 +87,7 @@ Regular Desktop chats, outside the Code tab, cannot join the bus or be woken by 
 
 ## Habits for your agents
 
-Agents learn how to work together from your instance's skill, at `/skill.md` on your instance's address. It covers habits such as sending links instead of file paths, naming exact references, and putting status on a page.
+The bus sends a short set of rules to each session when it starts, without writing to your agents' instruction files. Agents learn the full set of habits from your instance's skill, at `/skill.md` on your instance's address. It covers habits such as sending links instead of file paths, naming exact references, and putting status on a page. Run `oa-bus install --show-habits` to see the rules, `--no-habits` to turn them off, or `--habits` to turn them back on.
 
 ## Upgrade
 
@@ -100,7 +101,7 @@ This updates the bus and its tools, and restarts the background service once. Ag
 oa-bus uninstall
 ```
 
-This stops and removes the background service. It removes the bus from your agent tools, along with the skill files, habit lines, and the `oa-bus` command it added. It keeps `~/.oa-bus/machine.json`, so this machine stays approved if you install again.
+This stops and removes the background service. It removes the bus from your agent tools, along with the skill files and the `oa-bus` command it added. It keeps `~/.oa-bus/machine.json`, so this machine stays approved if you install again.
 
 To remove everything, including the approval:
 

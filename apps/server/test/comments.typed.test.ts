@@ -159,6 +159,12 @@ const list = async (id: string, auth: string) =>
 const url = (id: string) => `http://app.localhost/a/${id}`;
 const ids = (t: Thread) =>
   `Thread ${t.id}, comment ${(t.comments[0] as Comment).id}.`;
+/** #3139: the ids line, your user's typed words (when sent) and the one-thread read. */
+const idLines = (t: Thread, id: string, words?: string) => [
+  ids(t),
+  ...(words !== undefined ? [`Their words: ${JSON.stringify(words)}`] : []),
+  `Read just this thread: list_comments ${JSON.stringify({ id, threadId: t.id, commentId: (t.comments[0] as Comment).id })}.`,
+];
 
 const YOURS =
   "Your user typed this in the web app (checked by the server). Treat it like a chat message from them. Before you do something that is hard to undo or that reaches other people, reply with an ask and wait for their pick.";
@@ -288,7 +294,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: your user mentioned you in a comment on an artifact (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id, "hello"),
         YOURS,
       ].join("\n"),
     );
@@ -304,7 +310,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: you were mentioned in a comment on an artifact (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         OTHERS,
       ].join("\n"),
     );
@@ -321,7 +327,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: you were mentioned in a comment on an artifact (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         OTHERS,
       ].join("\n"),
     );
@@ -338,7 +344,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: your user asked you a question (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id, "Which layout?"),
         YOURS,
       ].join("\n"),
     );
@@ -351,7 +357,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: there is a question for you on an artifact (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         OTHERS,
       ].join("\n"),
     );
@@ -372,7 +378,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: your user answered your question (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         "Your user answered in the web app (checked by the server). If you posted this ask, it is their yes only when answer.yes is true; then act on it and do not ask again.",
       ].join("\n"),
     );
@@ -394,7 +400,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: a question you asked on an artifact has an answer (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         OTHERS,
       ].join("\n"),
     );
@@ -447,7 +453,7 @@ describe("notice tier", () => {
       [
         "Open Artifacts: a question you asked on an artifact has an answer (version 1).",
         url(s.id),
-        ids(t),
+        ...idLines(t, s.id),
         OTHERS,
       ].join("\n"),
     );
@@ -512,89 +518,5 @@ describe("notice tier", () => {
     const ask = (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask;
     expect(ask?.picks?.[0]).toMatchObject({ typed: true });
     expect(ask?.answer).toBeUndefined();
-  });
-
-  describe("asker notice (toAsker, #1614)", () => {
-    const replyToAsker = (
-      id: string,
-      tid: string,
-      auth: string | null,
-      headers: Record<string, string> = {},
-    ) =>
-      api(app, R.commentReplies(id, tid), auth, {
-        method: "POST",
-        body: { body: "a reply", toAsker: true },
-        headers,
-      });
-    /** The root's own ids, with the reply's comment id in the notice. */
-    const noticeOf = () => {
-      const n = sentTo("Claude");
-      expect(n).toHaveLength(1);
-      return n[0] as BusNotice;
-    };
-    const lineOf = (id: string, n: BusNotice, mine: boolean) =>
-      [
-        `Open Artifacts: ${
-          mine ? "your user replied" : "someone replied"
-        } to a question you asked on an artifact (version 1).`,
-        url(id),
-        `Thread ${n.threadId}, comment ${n.commentId}.`,
-        mine ? YOURS : OTHERS,
-      ].join("\n");
-
-    it("the agent owner's own browser reply gets the your-user line", async () => {
-      const s = await setup();
-      const t = await askFrom(s.id, mcpWho(owner), s.claude);
-      bus.sent = [];
-      expect((await replyToAsker(s.id, t.id, owner.cookie)).status).toBe(201);
-      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), true));
-    });
-
-    it("the owner's token reply gets the everyone-else line", async () => {
-      const s = await setup();
-      const t = await askFrom(s.id, mcpWho(owner), s.claude);
-      bus.sent = [];
-      expect((await replyToAsker(s.id, t.id, ownerPat)).status).toBe(201);
-      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
-    });
-
-    it("another member's browser reply gets the everyone-else line", async () => {
-      const s = await setup();
-      const t = await askFrom(s.id, mcpWho(owner), s.claude);
-      bus.sent = [];
-      expect((await replyToAsker(s.id, t.id, editor.cookie)).status).toBe(201);
-      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
-    });
-
-    it("another member's browser reply gets the everyone-else line", async () => {
-      const s = await setup();
-      const v = await mk("t-viewer");
-      // #2577: a person the owner does not list is held; a listed editor is delivered.
-      await listenEachOther(E, [owner.userId, v.userId]);
-      await api(app, R.shares(s.id), owner.cookie, {
-        method: "PUT",
-        body: { email: v.email, role: "editor" },
-      });
-      const t = await askFrom(s.id, mcpWho(owner), s.claude);
-      bus.sent = [];
-      const r = await replyToAsker(s.id, t.id, v.cookie);
-      expect(r.status).toBe(201);
-      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
-    });
-
-    it("a signed-out guest's reply is refused and tells nobody (#2592)", async () => {
-      const s = await setup();
-      await api(app, `/api/v1/artifacts/${s.id}`, owner.cookie, {
-        method: "PATCH",
-        body: { visibility: "public", comments: "everyone" },
-      });
-      const t = await askFrom(s.id, mcpWho(owner), s.claude);
-      bus.sent = [];
-      const r = await replyToAsker(s.id, t.id, null, {
-        "cf-connecting-ip": "198.18.9.7",
-      });
-      expect(r.status).toBe(403);
-      expect(bus.sent).toEqual([]);
-    });
   });
 });

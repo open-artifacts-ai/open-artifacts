@@ -172,6 +172,7 @@ describe("installAdapters", () => {
       "codex",
       "hermes",
       "openclaw",
+      "antigravity",
     ]);
     expect(calls).toEqual([]);
     expect(existsSync(join(h, ".config"))).toBe(false);

@@ -166,6 +166,8 @@ async function identity(
         agent: interactiveSession(c) ? undefined : agentOf(c),
         // #2511: the request's own caller, for checks on another artifact.
         caller: callerOf(user),
+        // #2577: request facts are for an interactive browser session only.
+        interactive: interactiveSession(c),
       },
       issued: null,
     };
@@ -412,15 +414,6 @@ export function mountComments(app: AppType): void {
     const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
-    // toAsker stands alone (400), before the owner-and-editor check on mentions.
-    if (
-      raw.data.toAsker &&
-      (raw.data.mentions?.length ?? 0) + (raw.data.people?.length ?? 0) > 0
-    )
-      throw new ApiError(
-        "bad_request",
-        "toAsker cannot be combined with mentions",
-      );
     mayTarget(raw.data, moderator);
     peopleByPerson(c, raw.data);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
@@ -429,7 +422,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, people, toAsker } = raw.data;
+    const { mentions, people, requestCommentId } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -437,7 +430,12 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, people, toAsker, pictures: raw.data.pictures },
+      {
+        mentions,
+        people,
+        pictures: raw.data.pictures,
+        requestCommentId,
+      },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },

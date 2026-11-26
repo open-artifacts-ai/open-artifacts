@@ -336,12 +336,27 @@ describe("codeEligibility", () => {
     await seedUser(email, "member");
     expect(await kind(direct(), email)).toBe("none");
   });
-  it("outside-domain owner, admin and member rows are ineligible", async () => {
-    for (const role of ["owner", "admin", "member"] as const) {
+  it("outside-domain owner and admin rows are ineligible", async () => {
+    for (const role of ["owner", "admin"] as const) {
       const email = uniq(role, "x.com");
       await seedUser(email, role);
       expect(await kind(direct(), email)).toBe("none");
     }
+  });
+  it("an invited member outside the domains: a member on a Google install, none without Google", async () => {
+    const email = uniq("member", "x.com");
+    const uid = await seedUser(email, "member");
+    expect(await codeEligibility(env, authConfig(direct()), email)).toEqual({
+      kind: "member",
+      userId: uid,
+      role: "member",
+    });
+    expect(await kind(trial(), email)).toBe("none");
+  });
+  it("only the exact invited address: another address at that domain is not the member", async () => {
+    const email = uniq("exact", "x.com");
+    await seedUser(email, "member");
+    expect(await kind(direct(), `other.${email}`)).toBe("none");
   });
   it("an invited guest is a guest", async () => {
     const email = uniq("guest", "x.com");

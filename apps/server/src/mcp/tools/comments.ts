@@ -1,7 +1,12 @@
+import { Buffer } from "node:buffer";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
+import {
+  getPicture,
+  previewForAgent,
+} from "../../services/comment-pictures.js";
 import {
   addReply,
   addThread,
@@ -9,6 +14,7 @@ import {
   type CommentWho,
   editComment,
   listComments,
+  listThread,
   setStatus,
   withdrawAsk,
 } from "../../services/comments.js";
@@ -68,6 +74,61 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   server.registerTool("list_comments", toolConfig("list_comments"), (i) =>
     guard(async () => {
       const { viewer } = await open(i.id, "comments.read");
+      if (i.commentId !== undefined && i.threadId === undefined)
+        throw new ApiError("bad_request", "commentId needs threadId.");
+      if (i.threadId !== undefined) {
+        if (
+          i.answeredSince !== undefined ||
+          i.mentionedSince !== undefined ||
+          i.compact ||
+          i.since !== undefined
+        )
+          throw new ApiError(
+            "bad_request",
+            "threadId reads one thread; leave out since, answeredSince, mentionedSince and compact.",
+          );
+        const one = await listThread(
+          env,
+          i.id,
+          viewer,
+          i.threadId,
+          i.commentId,
+          { withCursor: true },
+        );
+        const n = one.threads[0]?.comments.length ?? 0;
+        return ok(
+          `Thread ${i.threadId} on ${i.id}: ${plural(n, "comment")}${
+            i.commentId !== undefined
+              ? " (that comment, the one before it and the first)"
+              : ""
+          }.`,
+          one,
+        );
+      }
+      // #3168: delta read from an earlier list_comments cursor.
+      if (i.since !== undefined) {
+        if (
+          i.answeredSince !== undefined ||
+          i.mentionedSince !== undefined ||
+          i.compact
+        )
+          throw new ApiError(
+            "bad_request",
+            "since combines with status only; leave out answeredSince, mentionedSince and compact.",
+          );
+        const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+          since: i.since,
+          withCursor: true,
+        });
+        if (out.threads.length === 0)
+          return ok(`No changes on ${i.id} since your cursor.`, out);
+        return ok(
+          `${plural(out.threads.length, "changed thread")} on ${i.id} since your cursor (${out.open} open)${
+            out.truncated ? ", more exist than are shown" : ""
+          }.`,
+          out,
+        );
+      }
       if (
         i.compact &&
         i.answeredSince === undefined &&
@@ -86,6 +147,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             ? { mentionedSince: i.mentionedSince }
             : {}),
           ...(i.compact ? { compact: true } : {}),
+          withCursor: true,
         });
         if ("threads" in found) {
           return ok(
@@ -100,7 +162,9 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           found,
         );
       }
-      const out = await listComments(env, i.id, i.status ?? "all", viewer);
+      const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+        withCursor: true,
+      });
       return ok(
         `${plural(out.threads.length, "thread")} on ${i.id} (${out.open} open)${
           out.truncated ? ", more exist than are shown" : ""
@@ -108,6 +172,34 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         out,
       );
     }),
+  );
+
+  server.registerTool(
+    "get_comment_picture",
+    toolConfig("get_comment_picture"),
+    (i) =>
+      guard(async () => {
+        // The same gate as list_comments; the id is checked after it, so a
+        // caller without access learns nothing from the id's shape.
+        await open(i.id, "comments.read");
+        const hit = await getPicture(
+          env,
+          i.id,
+          i.pictureId,
+          t.user.id,
+          "agent",
+        );
+        const preview = await previewForAgent(env, hit);
+        return {
+          content: [
+            {
+              type: "image" as const,
+              data: Buffer.from(preview.data).toString("base64"),
+              mimeType: preview.mimeType,
+            },
+          ],
+        };
+      }),
   );
 
   server.registerTool("add_comment", toolConfig("add_comment"), (i) =>
@@ -120,6 +212,11 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           ...(t.exec ? { ctx: t.exec } : {}),
         },
       };
+      if (i.threadId === undefined && i.requestCommentId !== undefined)
+        throw new ApiError(
+          "bad_request",
+          "`requestCommentId` is for a reply: add `threadId`, or drop it.",
+        );
       if (i.threadId !== undefined) {
         if (i.anchor !== undefined)
           throw new ApiError(
@@ -134,7 +231,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             who,
             viewer,
             i.body,
-            i.ask ? { ask: i.ask } : {},
+            {
+              ...(i.ask ? { ask: i.ask } : {}),
+              ...(i.requestCommentId
+                ? { requestCommentId: i.requestCommentId }
+                : {}),
+            },
             opts,
           ),
         );

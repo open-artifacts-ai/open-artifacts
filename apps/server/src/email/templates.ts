@@ -223,6 +223,7 @@ export function inviteEmail(
       signInLine: `There's no password to set up. ${signInSentence(p.signIn, values.recipientEmail, p)}`,
       signInPreheader: signInSentence(p.signIn, "this address", p),
       setupLine: line,
+      connectorUrl: linkOn(origin, "/mcp"),
     },
   );
   // The setup line may wrap only after a "/" (never inside "https").

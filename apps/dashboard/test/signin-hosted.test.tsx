@@ -157,6 +157,10 @@ it.each([
     "You don't have access here yet. Ask an admin to invite you, then try again.",
   ],
   ["expired", "Login took too long. Try again."],
+  [
+    "invite_expired",
+    "This invite has expired. Ask whoever invited you to send a new one.",
+  ],
   ["failed", "Login didn't work. Try again."],
 ])("error=%s", async (error, copy) => {
   mountHosted(`/sign-in?error=${error}`);
@@ -225,7 +229,7 @@ it("empty providers says login is not set up", async () => {
 });
 
 it("request shows the masked address, resend timer and expiry", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code");
   await requestThroughUi("bob@example.com");
   expect(
@@ -321,7 +325,7 @@ it("a hostile Google start is dropped: no Google link to it", async () => {
 });
 
 it("retryAfter is clamped to an hour: a huge value still re-enables", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -350,7 +354,7 @@ it("retryAfter is clamped to an hour: a huge value still re-enables", async () =
 });
 
 it("retryAfter of 0 or less still holds for a second", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -487,7 +491,7 @@ it("no_pending returns to the email step with the email kept", async () => {
 });
 
 it("rate_limited (scope email) says to wait and holds the button for Retry-After", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -531,7 +535,7 @@ it("rate_limited (scope email) says to wait and holds the button for Retry-After
 });
 
 it("rate_limited (scope ip) on request: the network copy, held for Retry-After", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   mountHosted("/sign-in?method=code", true, undefined, [
     http.post("*/auth/code/request", () =>
       HttpResponse.json(
@@ -641,7 +645,7 @@ it("Turnstile slot renders with a site key, sends the token once, then resets", 
 });
 
 it("Resend resets the widget and sends a fresh token", async () => {
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   const seen = calls("POST");
   mountHosted("/sign-in?method=code", { turnstile: true });
   await screen.findByTestId("turnstile");
@@ -723,7 +727,7 @@ it("a 429 verify (scope ip) says to wait and holds Verify for Retry-After", asyn
       ),
     ),
   ]);
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.useFakeTimers();
   await requestThroughUi("bob@example.com");
   await typeCode("24681357");
   expect(await screen.findByRole("status")).toHaveTextContent(
@@ -834,7 +838,7 @@ it("a numeric ?error= in Access mode still shows today's banner", async () => {
   expect(await screen.findByText("Login didn't finish.")).toBeVisible();
 });
 
-it("Google only: one Google button, a guest link carrying next, no code form", async () => {
+it("Google and codes: one Google button, a login code link carrying next, no code form", async () => {
   mountHosted("/sign-in?next=%2Fmine");
   expect(
     await screen.findByRole("link", { name: "Continue with Google" }),
@@ -843,8 +847,7 @@ it("Google only: one Google button, a guest link carrying next, no code form", a
     screen.getByText(
       (_, el) =>
         el?.tagName === "P" &&
-        el.textContent ===
-          "Invited as a guest? If someone shared an artifact with your email, use a code.",
+        el.textContent === "No Google account? We'll email you a login code.",
     ),
   ).toBeVisible();
   // A full-width outlined secondary button, not an inline link.
@@ -1014,4 +1017,65 @@ it("no copy contains an em dash", async () => {
   mountHosted("/sign-in?error=tenant");
   await screen.findByRole("alert");
   expect(document.body.textContent).not.toContain("\u2014");
+});
+
+// #3029: the plain Google page tells an invited member which account to use.
+// #3179: with codes on it names both ways in, and never says "guest".
+const INVITED_HELP =
+  "Invited? Use the Google account or email address your invite went to. Can't get in? Ask whoever invited you.";
+const INVITED_HELP_GOOGLE_ONLY =
+  "Invited? Use the Google account your invite went to. Can't get in? Ask the person who invited you.";
+
+it("plain sign-in shows the invited help line under Google", async () => {
+  mountHosted("/sign-in");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.getByText(INVITED_HELP)).toBeVisible();
+});
+
+it("codes on: Google and a login code are equal ways in, with no guest copy (#3179)", async () => {
+  mountHosted("/sign-in");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(document.body.textContent).toMatch(/or a login code\./);
+  expect(document.body.textContent?.toLowerCase()).not.toContain("guest");
+  expect(document.body.textContent).not.toMatch(
+    /Use your( \S+)? Google account\./,
+  );
+});
+
+it("codes off: the Google-only copy is unchanged (#3179)", async () => {
+  mountHosted("/sign-in", true, undefined, [
+    http.get("*/auth/providers", () =>
+      HttpResponse.json({
+        mode: "direct",
+        providers: [
+          { id: "google", start: "/auth/login/google", domains: [] },
+          { id: "email", domainCodes: false, guests: false },
+        ],
+      }),
+    ),
+  ]);
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.getByText("Use your Google account.")).toBeVisible();
+  expect(screen.getByText(INVITED_HELP_GOOGLE_ONLY)).toBeVisible();
+  expect(screen.queryByRole("link", { name: "Get a login code" })).toBeNull();
+});
+
+it("the invited help line is hidden on a share link and on an error", async () => {
+  mountHosted("/sign-in?next=%2Fa%2FDe6gHjKmNp7qRsTu");
+  await screen.findByRole("link", { name: "Continue with Google" });
+  expect(screen.queryByText(INVITED_HELP)).toBeNull();
+  cleanup();
+  mountHosted("/sign-in?error=expired");
+  await screen.findByRole("alert");
+  expect(screen.queryByText(INVITED_HELP)).toBeNull();
+});
+
+it("wrong Google account on the plain page offers Try another account", async () => {
+  mountHosted("/sign-in?error=no_access&via=google");
+  expect(
+    await screen.findByRole("link", { name: "Try another account" }),
+  ).toHaveAttribute("href", "/auth/login/google?next=%2F");
+  expect(
+    screen.queryByRole("link", { name: "Continue with Google" }),
+  ).toBeNull();
 });

@@ -192,10 +192,10 @@ describe("installViaDaemon", () => {
     c.sleep = async () => {
       markFailed(c.home, "1.6.0");
     };
-    const sleeps = vi.fn(c.sleep);
-    c.sleep = sleeps;
+    const waits = vi.fn(c.sleep);
+    c.sleep = waits;
     expect(await installViaDaemon(c, "1.6.0", 60_000)).toBe(false);
-    expect(sleeps.mock.calls.length).toBeLessThan(3);
+    expect(waits.mock.calls.length).toBeLessThan(3);
   });
   it("refuses while a login is in progress and leaves no request", async () => {
     const c = ctxFor();

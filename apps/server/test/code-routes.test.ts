@@ -11,7 +11,11 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app.js";
 import { emailKey } from "../src/auth/codes.js";
-import { readSession, sessionCookieName } from "../src/auth/session.js";
+import {
+  readSession,
+  sessionCookieName,
+  signSession,
+} from "../src/auth/session.js";
 import type { Env } from "../src/env.js";
 import {
   direct,
@@ -279,6 +283,13 @@ describe("POST AUTH.codeRequest", () => {
   });
 });
 
+const meWith = (e: Env, cookie: string | undefined) =>
+  fetchAndWait(
+    app,
+    new Request(`${APP}${R.me}`, { headers: { cookie: cookie ?? "" } }),
+    e,
+  );
+
 describe("POST AUTH.codeVerify", () => {
   async function start(e: Env, email: string, next = "/a/x", ip?: string) {
     const m = mailer();
@@ -342,6 +353,92 @@ describe("POST AUTH.codeVerify", () => {
       await readSession(s.e, cookieOf(r, SESSION)?.split("=")[1]),
     ).toMatchObject({ p: "code" });
     expect(setCookieLine(r, CODE_COOKIE)).toContain("Max-Age=0");
+  });
+
+  it("an invited member outside the domains on a Google install signs in by code: a member, not read-only", async () => {
+    const member = uniq("m", "x.com");
+    await seedUser(member, "member");
+    const s = await start(direct(), member);
+    const r = await verify(s.e, s.code(), s.cookie);
+    expect(r.status).toBe(200);
+    expect(CodeVerifiedSchema.parse(await r.json())).toMatchObject({
+      readOnly: false,
+      user: { email: member, role: "member" },
+    });
+    expect(setCookieLine(r, SESSION)).toContain("Max-Age=604800");
+    const cookie = cookieOf(r, SESSION);
+    const sess = await readSession(s.e, cookie?.split("=")[1]);
+    expect(sess).toMatchObject({ p: "code", m: 1 });
+    expect(sess?.t).toBeUndefined();
+    // The session works on the next request, as the member, not capped.
+    const me = await meWith(s.e, cookie);
+    expect(me.status).toBe(200);
+    const body = (await me.json()) as {
+      user: unknown;
+      auth: { readOnly: boolean; cap?: unknown };
+    };
+    expect(body.user).toMatchObject({ email: member, role: "member" });
+    expect(body.auth.readOnly).toBe(false);
+    expect(body.auth.cap ?? null).toBeNull();
+  });
+
+  // The m session holds only while codeRule would still admit the row.
+  for (const [what, change] of [
+    ["made a guest", "update users set role = 'guest' where email = ?1"],
+    ["made an admin", "update users set role = 'admin' where email = ?1"],
+  ] as const)
+    it(`an invited member's code session ends when the row is ${what}`, async () => {
+      const member = uniq("mx", "x.com");
+      await seedUser(member, "member");
+      const s = await start(direct(), member);
+      const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+      expect((await meWith(s.e, cookie)).status).toBe(200);
+      await env.DB.prepare(change).bind(member).run();
+      expect((await meWith(s.e, cookie)).status).toBe(401);
+    });
+
+  it("an invited member's code session ends once the address is in the login domains or Google is off", async () => {
+    const member = uniq("md", "x.com");
+    await seedUser(member, "member");
+    const s = await start(direct(), member);
+    const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+    expect((await meWith(s.e, cookie)).status).toBe(200);
+    const inDomain = { ...s.e, AUTH_DOMAINS: "a.com,x.com" } as Env;
+    expect((await meWith(inDomain, cookie)).status).toBe(401);
+    const noGoogle = { ...s.e, AUTH_PROVIDERS: "email" } as Env;
+    expect((await meWith(noGoogle, cookie)).status).toBe(401);
+  });
+
+  it("a guest code session is still capped (no m marker)", async () => {
+    const guest = uniq("gc", "x.com");
+    await seedUser(guest, "guest");
+    const s = await start(direct(), guest);
+    const cookie = cookieOf(await verify(s.e, s.code(), s.cookie), SESSION);
+    expect((await readSession(s.e, cookie?.split("=")[1]))?.m).toBeUndefined();
+    const me = await meWith(s.e, cookie);
+    expect(((await me.json()) as { auth: unknown }).auth).toMatchObject({
+      readOnly: true,
+      cap: "guest",
+    });
+  });
+
+  it("a forged m on a guest's code session is refused", async () => {
+    const guest = uniq("gf", "x.com");
+    const uid = await seedUser(guest, "guest");
+    const forged = await signSession(env, uid, Date.now(), {
+      provider: "code",
+      epoch: 0,
+      invitedMember: true,
+    });
+    expect((await meWith(direct(), `${SESSION}=${forged}`)).status).toBe(401);
+  });
+
+  it("a Google-linked member outside the domains gets no code", async () => {
+    const member = uniq("ml", "x.com");
+    await seedUser(member, "member", { googleSub: `L-${member}` });
+    const m = mailer();
+    await request(withMail(direct(), m), member);
+    expect(m.sent).toHaveLength(0);
   });
 
   it("#803: a login sent with another user's valid cookie records no credential", async () => {

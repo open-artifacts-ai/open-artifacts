@@ -3,6 +3,8 @@ import {
   AnonViewerSchema,
   type ArtifactSummary,
   type ArtifactToShell,
+  ASK_SLOTS_MAX,
+  type Capabilities,
   DataChangeSchema,
   DataDocSchema,
   type ErrorCode,
@@ -12,6 +14,7 @@ import {
   OnboardingSchema,
   PageSchema,
   PROTOCOL_ASK_MARK,
+  PROTOCOL_ASK_SLOTS,
   PROTOCOL_COMMENT_CLEAR,
   PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_BADGE,
@@ -48,6 +51,13 @@ import { clampRetryHint } from "./liveEvents";
 /** #2632: what the shell knows of a member, for their Welcome's greeting. */
 export type WelcomeGreet = { firstName: string | null; org: string };
 
+/** A slot's box in frame-viewport pixels (#2426 B). */
+export type AskSlotRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
 type Viewer = { email: string; name: string | null };
 type Theme = "light" | "dark";
 
@@ -107,16 +117,20 @@ export interface BridgeOptions {
     >["positions"],
     ghost?: { x: number; y: number },
   ) => void;
-  onCommentOpen?: (
-    id: string,
-    /** #2426: the clicked mark's box in frame-viewport pixels. */
-    rect?: { x: number; y: number; width: number; height: number },
-  ) => void;
+  onCommentOpen?: (id: string) => void;
+  /**
+   * #3037: a capability the page's own code reached for (a runtime call), so
+   * the Share panel can say which live data boxes it uses. Counted even when
+   * the call is refused for that capability: that is the page failing.
+   */
+  onCapability?: (cap: keyof Capabilities) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
   onCommentSelection?: (has: boolean, bottom: number) => void;
   /** A pointer went down in the frame (outside the runtime's own button). */
   onCommentAway?: () => void;
+  /** #2426 B: where the page's `[data-oa-ask]` slots are, in frame-viewport pixels (a frame that said protocol 8 or more). */
+  onAskSlots?: (slots: { key: string; rect: AskSlotRect }[]) => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
     /** #2019: where the click landed, in frame-viewport pixels. */
@@ -532,6 +546,11 @@ export function createBridge(opts: BridgeOptions) {
     const method = m.method;
     if (inFlight >= MAX_IN_FLIGHT)
       return fail(m.id, "rate_limited", "Too many concurrent calls");
+    // #3037: what the page asks for, taken before the capability gate below so
+    // a refused call still marks the box (the page is failing on it).
+    // onboarding.get isn't viewer identity: only the Welcome page may call it.
+    if (method !== "onboarding.get")
+      opts.onCapability?.(METHOD_CAPABILITY[method]);
     // onboarding.get has its own, stricter gate in run(): Welcome and its owner.
     if (
       method !== "onboarding.get" &&
@@ -638,8 +657,12 @@ export function createBridge(opts: BridgeOptions) {
         opts.onCommentPositions?.(m.positions, m.ghost);
         break;
       case "comment.open":
-        if (m.rect) opts.onCommentOpen?.(m.id, m.rect);
-        else opts.onCommentOpen?.(m.id);
+        opts.onCommentOpen?.(m.id);
+        break;
+      case "ask.slots":
+        // #2426 B: only from a frame that said it knows slots (an older one has none to report).
+        if (frameProtocol >= PROTOCOL_ASK_SLOTS)
+          opts.onAskSlots?.(m.slots.slice(0, ASK_SLOTS_MAX));
         break;
       case "comment.escape":
         opts.onCommentEscape?.();
@@ -763,6 +786,11 @@ export function createBridge(opts: BridgeOptions) {
     clearSelection() {
       if (frameProtocol >= PROTOCOL_COMMENT_CLEAR)
         reply({ oa: 1, type: "comments.clear" });
+    },
+    /** #2426 B: the height the card for slot `key` needs (0 closes the slot up); a frame older than protocol 8 has no slots. */
+    setAskSlotSize(key: string, h: number) {
+      if (frameProtocol >= PROTOCOL_ASK_SLOTS)
+        reply({ oa: 1, type: "ask.slotSize", key, h });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

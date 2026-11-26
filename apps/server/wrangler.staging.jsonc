@@ -57,6 +57,7 @@
       ],
       // Browser Run (server-side thumbnails). Workers edit suffices to deploy.
       "browser": { "binding": "BROWSER" },
+      "images": { "binding": "IMAGES" },
       // Email Sending (team invites) from the onboarded mail.open-artifacts.com;
       // EMAIL_FROM below must stay on that domain.
       "send_email": [{ "name": "EMAIL" }],
@@ -86,6 +87,11 @@
           "name": "RL_ANON_WRITES",
           "namespace_id": "1004",
           "simple": { "limit": 120, "period": 60 }
+        },
+        {
+          "name": "RL_HOOKS",
+          "namespace_id": "1005",
+          "simple": { "limit": 600, "period": 60 }
         }
       ],
       "triggers": { "crons": ["17 3 * * *"] },

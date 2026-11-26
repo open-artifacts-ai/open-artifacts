@@ -53,6 +53,7 @@ import {
   addParticipants,
   addPick,
   askAuthors,
+  askedByOf,
   askerNoticeDue,
   askRow,
   bodyOk,
@@ -65,13 +66,15 @@ import {
   getThread,
   type HeldAgent,
   type HeldScanCursor,
-  heldCanon,
+  heldContent,
   heldOf,
   heldScan,
   heldTargets,
   insertComment,
   insertExtras,
   insertThread,
+  type LatestActivity,
+  latestActivity,
   listThreads,
   type NewExtras,
   openCount,
@@ -80,7 +83,6 @@ import {
   participantsOf,
   pickCount,
   recordReplyTargets,
-  refundAsker,
   refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
@@ -2213,9 +2215,33 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
-  commentsList(status: CommentStatus | "all"): StoredList {
+  commentsList(
+    status: CommentStatus | "all",
+    since?: LatestActivity,
+  ): StoredList {
     this.ensureSchema();
-    return listThreads(this.sql, status);
+    return listThreads(this.sql, status, undefined, since);
+  }
+
+  /**
+   * #2953, internal (the first-comment scan): each person's earliest comment
+   * typed in the web app on this page, one grouped query. Only the author ref
+   * and the time leave: no body, no thread, no list truncation. An agent's,
+   * a guest's and an untyped comment never appear (#1797). `at` is ISO text.
+   */
+  commentsTypedFirsts(): { ref: string; at: string }[] {
+    this.ensureSchema();
+    return this.sql
+      .exec<{ ref: string; at: string }>(
+        `select json_extract(author, '$.ref') as ref, min(created_at) as at
+           from comments
+          where json_extract(author, '$.kind') = 'user'
+            and json_extract(author, '$.typed') = 1
+            and json_extract(author, '$.agent') is null
+            and json_extract(author, '$.ref') is not null
+          group by ref`,
+      )
+      .toArray();
   }
 
   /** One thread, or not_found. */
@@ -2224,6 +2250,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const t = getThread(this.sql, threadId);
     if (!t) fail("not_found", "Not found");
     return t;
+  }
+
+  /** #3168: one thread plus the artifact's latest activity instant (for list_comments cursor). */
+  commentsGetWithLatest(threadId: string): {
+    thread: StoredThread;
+    latest: LatestActivity;
+  } {
+    this.ensureSchema();
+    const thread = getThread(this.sql, threadId);
+    if (!thread) fail("not_found", "Not found");
+    return { thread, latest: latestActivity(this.sql) };
   }
 
   /**
@@ -2274,6 +2311,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
+    /** #2577: the comment this agent reply answers, and the agent's roster key (the service's verified author participant). */
+    request?: { commentId: string; key: string };
   }): StoredComment {
     this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
@@ -2303,6 +2342,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
       )
         extras = { ...extras, asker: undefined };
       else if (extras?.asker) spendAsker(this.sql, a.threadId, now);
+      // #2577: provenance, proved here so an edit or re-hold cannot slip in.
+      const askedBy = a.request
+        ? askedByOf(
+            this.sql,
+            a.threadId,
+            a.request.commentId,
+            a.actor,
+            a.request.key,
+          )
+        : undefined;
+      if (askedBy) extras = { ...extras, askedBy };
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
       if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
       if (a.participants) addParticipants(this.sql, a.threadId, a.participants);
@@ -2528,15 +2578,24 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     commentId: string;
     states: {
-      kind: "mention" | "asker" | "reply";
+      kind: "mention" | "asker" | "reply" | "asked";
       key: string;
       state: string;
+      /** #2577: the hub had the agent recorded as away when it accepted the notice. */
+      away?: boolean;
     }[];
   }): StoredComment {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() => {
       for (const s of a.states)
-        setTargetState(this.sql, a.commentId, s.kind, s.key, s.state);
+        setTargetState(
+          this.sql,
+          a.commentId,
+          s.kind,
+          s.key,
+          s.state,
+          s.away === true,
+        );
       const c = getComment(this.sql, a.threadId, a.commentId);
       if (!c) fail("not_found", "Not found");
       return c;
@@ -2571,14 +2630,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     });
     if (moved) this.broadcastComments();
     return moved;
-  }
-
-  /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
-  commentsAskerRefund(a: { threadId: string; at: string }): void {
-    this.ensureSchema();
-    this.ctx.storage.transactionSync(() =>
-      refundAsker(this.sql, a.threadId, a.at),
-    );
   }
 
   /** Comment emails (#1467): the people of `userIds` with no email for the thread since `sinceIso`; their slots are taken at `at`. */
@@ -2814,11 +2865,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }): {
     canon: string;
     held: ReturnType<typeof heldOf>;
+    /** The comment's current editedAt (null when never edited). */
+    editedAt: string | null;
   } | null {
     this.ensureSchema();
-    const canon = heldCanon(this.sql, a.threadId, a.commentId);
-    if (canon === null) return null;
-    return { canon, held: heldOf(this.sql, a.commentId, a.owner) };
+    const content = heldContent(this.sql, a.threadId, a.commentId);
+    if (!content) return null;
+    return {
+      ...content,
+      held: heldOf(this.sql, a.commentId, a.owner),
+    };
   }
 
   /**
@@ -3108,7 +3164,9 @@ type RpcMethods =
   | "storageDelete"
   | "storageList"
   | "commentsList"
+  | "commentsTypedFirsts"
   | "commentsGet"
+  | "commentsGetWithLatest"
   | "commentsTake"
   | "commentsAdd"
   | "commentsReply"
@@ -3117,7 +3175,6 @@ type RpcMethods =
   | "commentsWithdraw"
   | "commentsTargetStates"
   | "commentsTargetSettle"
-  | "commentsAskerRefund"
   | "commentsEmailClaim"
   | "commentsEmailRefund"
   | "commentsThreadReplyTake"

@@ -25,6 +25,7 @@ import {
   fitName,
   type Hello,
   type HelloResult,
+  habitsOff,
   isWellFormed,
   lateDeliveredText,
   receiptText,
@@ -35,6 +36,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   AgentRefSchema,
+  BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
@@ -56,6 +58,7 @@ import {
   LINK_HASHES_MAX,
   withLinkHash,
 } from "./agents.ts";
+import { readAnnounced, writeAnnounced } from "./announced.ts";
 import {
   type Attest,
   attest,
@@ -127,7 +130,12 @@ import {
   inspectGlobal,
   inspectRemotes,
 } from "./config-issues.ts";
-import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
+import {
+  createDeliver,
+  type DeliverFn,
+  type DeliverOutcome,
+  type NotifyFn,
+} from "./deliver.ts";
 import type { EventFields } from "./event-log.ts";
 import {
   changedSuggestionNote,
@@ -180,6 +188,7 @@ import {
   SentStore,
   type Timer,
 } from "./sent.ts";
+import type { LaneSkillRefresher } from "./skill-refresh.ts";
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
@@ -236,6 +245,7 @@ export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
 export * from "./sent.ts";
+export * from "./skill-refresh.ts";
 export * from "./status.ts";
 export * from "./transports/claude.ts";
 export * from "./transports/codex.ts";
@@ -294,11 +304,25 @@ const piLike = (kind: string) =>
 export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
+  /** #3203: refreshes each instance's installed skills when its version changes. */
+  skillRefresh?: LaneSkillRefresher;
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
   notifiers?: Partial<Record<AgentRecord["kind"], NotifyFn>>;
   /** Outgoing msg_ids awaiting a final receipt (0600); default ~/.oa-bus/sent.json. */
   sentFile?: string;
+  /**
+   * #3028: refs announced to a hub, kept across a restart (0600); default
+   * ~/.oa-bus/announced.json. A restarted daemon reports the saved ones it
+   * cannot see as live as closed, so a session that ended while it was down
+   * still leaves the hub.
+   */
+  announcedFile?: string;
+  /**
+   * #3043: whether this install opted out of the habits the bus pushes at
+   * session start; default: install.json's `habits.optedOut`. Tests only.
+   */
+  habitsOff?: () => boolean;
   version?: string;
   log?: (msg: string) => void;
   /**
@@ -389,6 +413,14 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** Test seam: called at the end of every sync tick, after the whole tick ran. */
+    onSync?: () => void;
+    /** Tests only: ms between the re-reads of a mid-rewrite target (production 100). */
+    unknownRetryMs?: number;
+    /** Test seam: called after each line a Claude return socket received was handled. */
+    onLineHandled?: () => void;
+    /** Test seam: called with the outcome of each Claude delivery attempt, as it settles. */
+    onDeliverSettled?: (outcome: DeliverOutcome) => void;
     /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
     unknownGraceMs?: number;
     /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
@@ -455,6 +487,8 @@ export type DaemonDeps = {
     wakeAgainMs?: number;
     /** #2029: the shortest gap between wake checks (lsof, ps, rollout reads); default 5 min. */
     wakeCheckMs?: number;
+    /** Test seam: called when a wake pass finished (it did its work or found none). */
+    onWakePass?: () => void;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -498,6 +532,7 @@ const agentFields = (a: AgentRecord, reason?: string): EventFields => ({
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const cfg = deps.config ?? readConfig();
   const log = deps.log ?? ((msg: string) => console.error(`oa-bus: ${msg}`));
+  const skillRefresh = deps.skillRefresh;
   const debug = deps.debug ?? process.env.OA_BUS_DEBUG === "1";
   // #2793: one link per instance, each built from its own credentials only.
   const lanes = new Lanes();
@@ -570,6 +605,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (instHome === undefined
       ? () => ({ instance: MAIN_INSTANCE })
       : folderHomeLookup(instHome));
+  /** The connected instance a folder maps to, or undefined. Quiet: no note. */
+  const connectedHome = (cwd: string): string | undefined => {
+    const r = lookup(cwd);
+    const name = "instance" in r ? r.instance : undefined;
+    return name !== undefined && lanes.get(name) ? name : undefined;
+  };
   const unmappedNoted = new Set<string>();
   /**
    * The instance a folder's sessions register on, or undefined: none is
@@ -671,7 +712,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       closed: agents.closedRefs().filter(mine),
     };
   };
+  /** #3028: the refs announced to a hub, kept across a restart (0600). */
+  const announcedFile = deps.announcedFile ?? join(home(), "announced.json");
+  let announcedWritten: string | undefined;
+  /**
+   * #3028: mirror the table's refs into announced.json. A ref stays until it is
+   * live again or dropped by the cap, because the link's `sessions` frame is
+   * what ends it at the hub, and a link that is down misses one.
+   */
+  const persistAnnounced = () => {
+    const rows = agents.all().map((a) => ({
+      ref: a.ref,
+      kind: a.kind,
+      ...(a.instance !== undefined && a.instance !== MAIN_INSTANCE
+        ? { instance: a.instance }
+        : {}),
+    }));
+    const text = JSON.stringify(rows);
+    if (text === announcedWritten) return;
+    try {
+      writeAnnounced(announcedFile, rows);
+      announcedWritten = text;
+    } catch (e) {
+      log(
+        `could not save ${announcedFile}: ${e instanceof Error ? e.message : e}`,
+      );
+    }
+  };
   const announceSessions = () => {
+    // #3028: the file follows the table, so a restart knows every ref the hub
+    // may still hold for this machine.
+    persistAnnounced();
     // Every close goes through here: a closed agent's rate limit mark goes with it.
     for (const ref of limited.keys())
       if (!agents.byRef(ref)?.live) clearLimited(ref);
@@ -686,10 +757,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       });
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
-  const limited = new Map<string, NodeJS.Timeout>();
-  /** The cap each refused agent hit. */
+  const limited = new Map<
+    string,
+    NodeJS.Timeout
+  >(); /** The cap each refused agent hit. */
   const caps = new Map<string, AgentCap>();
   const announceUp = (rec: AgentRecord) => {
+    // #3028: a ref the hub now holds is written down before the link can go
+    // quiet; a restart then reports it closed if the session ended meanwhile.
+    persistAnnounced();
     // A /clear handover waits for hello_ok: only then is it known whether the
     // hub takes `replaces`, and an agent_up sent without it is the
     // handover lost for good (#1582). hello_ok announces it.
@@ -1274,6 +1350,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         : join(home(), "claude-return.json")),
     statusWindowMs: cl.statusWindowMs,
     injectTimeoutMs: cl.injectTimeoutMs,
+    onLineHandled: cl.onLineHandled,
+    unknownRetryMs: cl.unknownRetryMs,
+    onDeliverSettled: cl.onDeliverSettled,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
     state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
@@ -2047,7 +2126,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           sendLink(prev);
         }
       }
-      if (prev?.live) {
+      // #3073: a live session on no instance (its folder was untied, say when
+      // an update restart applied the folder map) moves once its folder is
+      // tied to a connected instance: `oa-bus use` while it runs is enough,
+      // with no restart or /mcp reconnect. It re-registers below like a
+      // reopen, and a proof held for it binds on the new link.
+      const rehome =
+        prev?.live === true &&
+        prev.instance === undefined &&
+        prev.pid === s.pid &&
+        prev.procStart === s.procStart &&
+        isAbsolute(s.cwd) &&
+        connectedHome(s.cwd) !== undefined;
+      if (prev?.live && !rehome) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
         if (!livePid(s.ref, prev.pid)) {
@@ -2067,7 +2158,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // the /resume case, handled the same way. The same process reopens at
       // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
       // deliveries does not flap.
-      if (prev && prev.pid === s.pid && prev.procStart === s.procStart) {
+      if (
+        !rehome &&
+        prev &&
+        prev.pid === s.pid &&
+        prev.procStart === s.procStart
+      ) {
         // A delivery refusal stays closed until a hello or a new process.
         if (prev.closedBy !== "liveness") continue;
         const last = reopenedAt.get(s.ref);
@@ -2469,6 +2565,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               if (g.instance === lane.name) announceGuest(g);
             // The instance's owner hours and update instruction are main's alone.
             if (lane.main) ownerAwayUntil = frame.owner_away_until ?? undefined;
+            void skillRefresh?.onHello(
+              { name: lane.name, main: lane.main, hub: lane.cfg.hub },
+              frame.server_version,
+            );
             if (lane.main && lane.runCap) {
               if (takesInstance()) {
                 if (frame.run_version === null) updaterRef?.clearNamed();
@@ -3317,6 +3417,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
               ? "ok"
               : "old_hub";
         },
+        // #3043: the rules a session is told at start, or none when opted out.
+        habits: () =>
+          (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
         linked: (ref, hash) => {
           // The adapter then adds the argument to its calls: only for a hub
           // whose /mcp strips it (an older one fails a strict tool schema).
@@ -3829,6 +3932,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       log(`codex wake failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       waking = false;
+      cx.onWakePass?.();
     }
   };
 
@@ -3907,9 +4011,35 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         `codex taken check failed: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+    cl.onSync?.();
   };
+  // #3028: read before the first sync, which writes the file as it goes.
+  const savedAnnounced = readAnnounced(announcedFile, undefined, log);
   restoreCodex();
   sync();
+  // #3028: every ref the last run announced that this run cannot see (its
+  // session is gone) starts as closed, so the link's first `sessions` frame
+  // ends its row at the hub. Read after the sync, so a session that is still
+  // live is not closed and reopened on every restart, and its name is free
+  // again for a later rename; before, a daemon restart after a session ended
+  // left the row live for good.
+  for (const e of savedAnnounced) {
+    if (agents.byRef(e.ref) !== undefined) continue;
+    agents.up({
+      ref: e.ref,
+      kind: e.kind as AgentRecord["kind"],
+      proposedName: "",
+      busName: "",
+      namespace: "",
+      global: false,
+      instance: e.instance ?? MAIN_INSTANCE,
+      pid: 0,
+      cwd: "",
+      live: false,
+      closedBy: "liveness",
+    });
+  }
+  persistAnnounced();
   const watcher = setInterval(sync, cl.syncMs ?? 2000);
   watcher.unref();
   // A notice that failed for a live sender is retried; `tell` keeps one in flight per entry.

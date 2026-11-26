@@ -99,15 +99,17 @@ describe("printed commands (#1998)", () => {
     expect(ctx.copy.shimForeign("/x").join("\n")).toContain(ctx.busCmd);
   });
 
-  it("main: --habits names oa-bus when ours is on PATH; a usage error keeps npx", async () => {
+  it("main: --no-habits names oa-bus when ours is on PATH; a usage error keeps npx", async () => {
     const w = world();
     install(w);
     const bad = ctxFor(w);
     expect(await main(["leads", "nope"], () => bad)).toBe(2);
     expect(bad.all().join("\n")).toContain(`Usage: ${BUS_CMD} leads check`);
     const h = ctxFor(w);
-    expect(await main(["install", "--habits"], () => h)).toBe(1);
-    expect(h.all().join("\n")).toContain("Run oa-bus install first.");
+    expect(await main(["install", "--no-habits"], () => h)).toBe(0);
+    expect(h.all().join("\n")).toContain(
+      "oa-bus install --habits turns them back on.",
+    );
   });
 
   it("main: uninstall prints npx even when our shim is there beforehand", async () => {
@@ -122,7 +124,9 @@ describe("printed commands (#1998)", () => {
   it("main: without our shim the same commands print npx", async () => {
     const w = world();
     const h = ctxFor(w);
-    expect(await main(["install", "--habits"], () => h)).toBe(1);
-    expect(h.all().join("\n")).toContain(`Run ${BUS_CMD} install first.`);
+    expect(await main(["install", "--no-habits"], () => h)).toBe(0);
+    expect(h.all().join("\n")).toContain(
+      `${BUS_CMD} install --habits turns them back on.`,
+    );
   });
 });

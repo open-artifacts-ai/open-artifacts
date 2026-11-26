@@ -19,7 +19,8 @@ export type HarnessName =
   | "omp"
   | "codex"
   | "hermes"
-  | "openclaw";
+  | "openclaw"
+  | "antigravity";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
@@ -28,6 +29,7 @@ export const HARNESS_LABEL: Record<HarnessName, string> = {
   codex: "Codex",
   hermes: "Hermes",
   openclaw: "OpenClaw",
+  antigravity: "Antigravity",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -38,6 +40,7 @@ export const KIND_LABEL: Record<AgentKind, string> = {
   hermes: "Hermes",
   openclaw: "OpenClaw",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 /** A known kind's label; any other kind shows as its own token (C26h). */
 export const kindLabel = (kind: string): string =>
@@ -593,7 +596,7 @@ export function copy(
       "  install      --instance <url>   the instance to connect to",
       "               --check            only report what is set up; change nothing",
       "               --habits | --no-habits | --show-habits",
-      "                                  add, decline or show the always-on habit lines",
+      "                                  turn the rules the bus sends to sessions on or off, or show them",
       "               --no-service       skip the launchd or systemd step",
       "               --alongside        with --home <dir>: set up a separate bus next to your main one,",
       "                                  and leave every harness setting alone. To use a second",
@@ -803,6 +806,16 @@ export function copy(
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
       next(`Run ${bus} to wire it.`),
+    ],
+    // Doctor, when agy's MCP config can't be read: install skips it.
+    agyMalformed: (file: string) => [
+      fail(`Antigravity is not wired: ${clip(file, 33)} isn't valid JSON`),
+      next(`Fix that file, then run ${bus} again.`),
+    ],
+    // Doctor, when our entry is in agy's config but turned off there.
+    agyDisabled: () => [
+      warn("Antigravity has the bus turned off"),
+      next("Turn it on with: agy mcp enable oa_bus"),
     ],
     claudeAccepts: () =>
       done("Claude Code accepts messages from other machines"),

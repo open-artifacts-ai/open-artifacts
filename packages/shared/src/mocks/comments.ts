@@ -135,6 +135,8 @@ type Deps = {
   seedPins?: "image" | "pdf";
   /** #2512: seed For you's waiting ask (FOR_YOU_ASK) on "Landing page", from OA Manager to the caller. */
   seedForYou?: boolean;
+  /** #2426 B (?mock=askslots): GET ask-slots on "Landing page": one ask on this page, one placed from "Meeting notes" with a note. */
+  seedSlots?: boolean;
 };
 
 /** #2512: the ids of the ask For you's mock opens in its panel. */
@@ -162,6 +164,7 @@ export function createCommentMock({
   seedMarkdown,
   seedPins,
   seedForYou,
+  seedSlots,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -951,6 +954,26 @@ export function createCommentMock({
         ),
         pin(0.4, 0.8, mine(), "Axis label looks wrong.", "resolved"),
       );
+      // #3048: an ask pin as an agent posts it, unanswered and addressed to the
+      // viewer. Its face is the dashed robot's grey; the pin reads amber, not grey.
+      const asking = pin(
+        0.86,
+        0.24,
+        { kind: "agent", name: "Claude Code", linked: false, me: false },
+        "Steps: check the December bar.",
+      );
+      const askComment = asking.comments[0];
+      if (askComment)
+        askComment.ask = {
+          question: "Which bar is Q4?",
+          options: [
+            { id: "q4", label: "Q4" },
+            { id: "ytd", label: "Year to date" },
+          ],
+          to: [mine()],
+          closed: false,
+        };
+      faces.push(asking);
     }
     if (seedMarkdown) {
       const bot: CommentAuthor = {
@@ -1176,6 +1199,78 @@ export function createCommentMock({
       // #2864: no ask needs a passkey, so there is no pick challenge.
       return err("bad_request", "This ask does not need a passkey");
     }),
+    // #2426 B (PROVISIONAL contract jp3RtzkygV1sijvM section 2): the asks in this page's slots, as live views.
+    ...(seedSlots
+      ? [
+          http.get("*/api/v1/artifacts/:id/ask-slots", ({ params }) => {
+            const here = art(params.id);
+            if (!here) return err("not_found", "Not found");
+            const home = artifacts.find((x) => x.title === "Meeting notes");
+            const withAsk = (id: string) =>
+              list(id).find((t) => t.comments.some((c) => c.ask));
+            if (home && !withAsk(home.id)) {
+              const c = comment(
+                "The runbook changed. Can we use the new one?",
+                {
+                  kind: "agent",
+                  name: "Atlas",
+                  for: "Sam Rivera",
+                  me: false,
+                },
+              );
+              c.ask = {
+                question: "Use the new opening runbook?",
+                options: [
+                  { id: "yes", label: "Yes, switch" },
+                  { id: "no", label: "Keep the old one" },
+                ],
+                to: [mine()],
+                closed: false,
+              };
+              list(home.id).push({
+                id: newId(),
+                anchor: { kind: "note" },
+                version: 1,
+                status: "open",
+                resolvedBy: null,
+                resolvedAt: null,
+                createdAt: c.createdAt,
+                comments: [c],
+              });
+            }
+            const view = (
+              key: string,
+              page: { id: string; title: string },
+              extra: object = {},
+            ) => {
+              const t = withAsk(page.id);
+              const c = t?.comments.find((x) => x.ask);
+              return t && c?.ask
+                ? [
+                    {
+                      key,
+                      home: { artifactId: page.id, title: page.title },
+                      threadId: t.id,
+                      commentId: c.id,
+                      ask: c.ask,
+                      author: c.author,
+                      ...extra,
+                    },
+                  ]
+                : [];
+            };
+            return HttpResponse.json([
+              ...view("launch-day", here),
+              ...(home
+                ? view("runbook", home, {
+                    note: "I put this here so you see it before you sign off.",
+                    placer: { name: "Sam Rivera" },
+                  })
+                : []),
+            ]);
+          }),
+        ]
+      : []),
     http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
       if (!art(params.id)) return err("not_found", "Not found");
       return HttpResponse.json(MOCK_AGENTS);

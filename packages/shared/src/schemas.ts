@@ -1132,6 +1132,8 @@ export const BusAgentSchema = z.strictObject({
   namespace: z.string(),
   name: z.string(),
   kind: z.string(),
+  /** The app the kind runs ("Claude Code", "Antigravity"); absent when the server doesn't know the kind. */
+  product: z.string().max(80).optional(),
   machineId: z.string(),
   machineLabel: z.string(),
   global: z.boolean(),
@@ -1218,7 +1220,7 @@ export const OnboardingSchema = z.strictObject({
   mentionStalled: z.boolean().optional(),
   /** The caller typed an answer on an ask one of their own agents posted. */
   askAnswered: z.boolean().optional(),
-  /** #2953 (PROVISIONAL until OA Backend confirms): the caller's first typed comment, on any page; null if none. Absent on older servers: no comment step. */
+  /** The caller's first typed comment. Null until earned, absent on older servers. When the page is no longer readable, artifactId is empty and title is generic. */
   firstComment: z
     .strictObject({ artifactId: z.string(), title: z.string() })
     .nullable()
@@ -1249,9 +1251,9 @@ export const TeammatesSchema = z.strictObject({
 });
 export type Teammates = z.infer<typeof TeammatesSchema>;
 
-/** PUT R.onboarding: a flag only turns on (true), never off. */
+/** PUT R.onboarding: `completed` only turns on (true); `dismissed` also turns off (false: the hidden checklist comes back). */
 export const OnboardingPatchSchema = z.strictObject({
-  dismissed: z.literal(true).optional(),
+  dismissed: z.boolean().optional(),
   completed: z.literal(true).optional(),
   /** #2287: the first open of the Welcome happened; a no-op for anyone but its user. */
   welcomeOpened: z.literal(true).optional(),
@@ -1577,6 +1579,30 @@ export const GetArtifactInputSchema = z.strictObject({
   path: z.string().optional(),
   includeContent: z.boolean().default(true),
   activity: z.string().max(PRESENCE_ACTIVITY_MAX).optional(),
+  // #3165: text view, search, and diff options for get_artifact.
+  view: z
+    .enum(["text"])
+    .optional()
+    .describe(
+      'Set to "text" to read an HTML page as plain text without CSS or markup.',
+    ),
+  find: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      "Return only matching text blocks (case-insensitive) with context, capped at 4 KB.",
+    ),
+  sinceVersion: z
+    .number()
+    .int()
+    .min(1)
+    .optional()
+    .describe(
+      "Return a unified text diff from this earlier version to the requested version, capped at 8 KB.",
+    ),
 });
 export type GetArtifactInput = z.infer<typeof GetArtifactInputSchema>;
 export type GetArtifactInputInput = z.input<typeof GetArtifactInputSchema>;
@@ -1721,6 +1747,7 @@ export const GetArtifactResultSchema = z.object({
   version: VersionInfoSchema,
   content: z.string().optional(),
   downloadUrl: z.string().optional(),
+  matches: z.number().int().min(0).optional(),
 });
 export type GetArtifactResult = z.infer<typeof GetArtifactResultSchema>;
 

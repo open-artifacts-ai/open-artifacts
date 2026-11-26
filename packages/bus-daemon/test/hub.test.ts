@@ -1,14 +1,20 @@
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { createServer as httpServer } from "node:http";
+import { get as httpGet, createServer as httpServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import { tokenHash } from "../src/config.ts";
 import { HubConnection, type HubOptions } from "../src/hub.ts";
 import { runDaemon } from "../src/index.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import {
+  daemonHarness,
+  eventCounter,
+  PROBE,
+  probeWs,
+  stopAll,
+} from "./helpers.ts";
 
 const servers: WebSocketServer[] = [];
 afterEach(async () => {
@@ -25,6 +31,18 @@ async function listen(wss: WebSocketServer): Promise<string> {
   const addr = wss.address() as { port: number };
   return `ws://127.0.0.1:${addr.port}/hub`;
 }
+
+/** The http twin of `probeWs`: answered after any upgrade the daemon began before it. */
+async function probeHttp(base: string) {
+  await new Promise<void>((resolve, reject) => {
+    httpGet(`${base}${PROBE}`, (res) => {
+      res.resume();
+      res.once("end", () => resolve());
+    }).on("error", reject);
+  });
+}
+const fakeTimers = () =>
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
 
 const types = (seen: unknown[]) =>
   seen.map((f) => (f as { type: string }).type);
@@ -81,35 +99,61 @@ describe("hub connection", () => {
   it("stops and reports revocation on close 4403", async () => {
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     let connections = 0;
-    wss.on("connection", (ws) => {
+    wss.on("connection", (ws, req) => {
+      if (req.url === PROBE) return;
       connections++;
       ws.close(4403, "revoked");
     });
-    const onRevoked = vi.fn();
-    const hub = new HubConnection(opts(await listen(wss), { onRevoked }));
-    hub.start();
-    await vi.waitFor(() => expect(onRevoked).toHaveBeenCalled());
-    expect(hub.reconnecting).toBe(false);
-    await new Promise((r) => setTimeout(r, 80));
-    expect(connections).toBe(1);
-    hub.stop();
+    let revoked!: () => void;
+    const gotRevoked = new Promise<void>((r) => {
+      revoked = r;
+    });
+    const url = await listen(wss);
+    fakeTimers();
+    try {
+      const hub = new HubConnection(opts(url, { onRevoked: revoked }));
+      hub.start();
+      await gotRevoked;
+      expect(hub.reconnecting).toBe(false);
+      // A reconnect timer, if one were set, would fire in this minute.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await probeWs(url);
+      expect(connections).toBe(1);
+      hub.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not reconnect when stop() lands during a backoff timer", async () => {
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     let connections = 0;
-    wss.on("connection", (ws) => {
+    wss.on("connection", (ws, req) => {
+      if (req.url === PROBE) return;
       connections++;
       ws.close();
     });
-    const hub = new HubConnection(
-      opts(await listen(wss), { backoffMs: () => 60 }),
-    );
-    hub.start();
-    await vi.waitFor(() => expect(hub.reconnecting).toBe(true));
-    hub.stop();
-    await new Promise((r) => setTimeout(r, 150));
-    expect(connections).toBe(1);
+    let closed!: () => void;
+    const gotClose = new Promise<void>((r) => {
+      closed = r;
+    });
+    const url = await listen(wss);
+    fakeTimers();
+    try {
+      const hub = new HubConnection(
+        opts(url, { backoffMs: () => 60, onClose: closed }),
+      );
+      hub.start();
+      await gotClose;
+      await Promise.resolve(); // the close handler ran on: the backoff is set
+      expect(hub.reconnecting).toBe(true);
+      hub.stop();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await probeWs(url);
+      expect(connections).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("delivers decoded frames and survives a throwing onFrame", async () => {
@@ -241,33 +285,69 @@ describe("pacing and rate limits", () => {
   it("drops what is queued when the link closes", async () => {
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     let conns = 0;
-    const seen: string[] = [];
-    wss.on("connection", (ws) => {
+    const seen: { conn: number; id: string }[] = [];
+    wss.on("connection", (ws, req) => {
+      if (req.url === PROBE) return;
       conns++;
-      ws.on("message", (d) => seen.push(JSON.parse(String(d)).id));
+      const conn = conns;
+      ws.on("message", (d) =>
+        seen.push({ conn, id: JSON.parse(String(d)).id }),
+      );
     });
     let opened!: () => void;
     const open = new Promise<void>((r) => {
       opened = r;
     });
-    const hub = new HubConnection(
-      opts(await listen(wss), {
-        onOpen: () => {
-          if (conns > 1) return;
-          for (let i = 0; i < 50; i++)
-            hub.send({ v: 1, id: `q${i}`, type: "list", from_ref: "a1" });
-          opened();
-        },
-        backoffMs: () => 10,
-      }),
-    );
-    hub.start();
-    await open;
-    for (const c of wss.clients) c.terminate();
-    await vi.waitFor(() => expect(conns).toBe(2));
-    await new Promise((r) => setTimeout(r, 1500));
-    expect(seen.filter((id) => id.startsWith("q")).length).toBeLessThan(50);
-    hub.stop();
+    let reopened!: () => void;
+    const reopen = new Promise<void>((r) => {
+      reopened = r;
+    });
+    let dropped!: () => void;
+    const drop = new Promise<void>((r) => {
+      dropped = r;
+    });
+    const url = await listen(wss);
+    // The pacer refills on the clock: fake it, so "the queue never replays"
+    // is checked past every refill it could have, with no real wait.
+    fakeTimers();
+    try {
+      const hub = new HubConnection(
+        opts(url, {
+          onOpen: () => {
+            if (conns > 1) return reopened();
+            for (let i = 0; i < 50; i++)
+              hub.send({
+                v: 1,
+                id: `queued-${i}`,
+                type: "list",
+                from_ref: "a1",
+              });
+            opened();
+          },
+          onClose: () => dropped(),
+          backoffMs: () => 10,
+        }),
+      );
+      hub.start();
+      await open;
+      for (const c of wss.clients) c.terminate();
+      await drop;
+      await vi.advanceTimersByTimeAsync(10); // the backoff
+      await reopen;
+      await vi.advanceTimersByTimeAsync(5_000); // far past every refill
+      await probeWs(url);
+      // What the first link had not written is never replayed on the second.
+      // (Matched on a prefix frameId() never makes: a random hello id can start with "q".)
+      expect(
+        seen.filter((f) => f.conn === 1 && f.id.startsWith("queued-")).length,
+      ).toBeLessThan(50);
+      expect(
+        seen.filter((f) => f.conn === 2 && f.id.startsWith("queued-")),
+      ).toEqual([]);
+      hub.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("waits longer after a 'rate limited' close and logs it once", async () => {
@@ -417,14 +497,18 @@ describe("revoke paths: the daemon's marker and whether it reconnects", () => {
   const TOKEN = "oa_machine_SECRETSECRETSECRET";
 
   /** A daemon on an empty temp home: the harness's hub, or `hub` (never answered 101). */
-  async function daemon(hub?: string) {
+  async function daemon(hub?: string, backoffMs: () => number = () => 20) {
     const home = mkdtempSync(join(tmpdir(), "ob-rv-"));
     vi.stubEnv("OA_BUS_HOME", home);
     const marker = join(home, "revoked");
     const onRevoked = vi.fn();
+    /** Settles when the daemon reports the revoke: no polling. */
+    const revoked = new Promise<void>((r) => {
+      onRevoked.mockImplementation(() => r());
+    });
     if (!hub) {
       const h = await daemonHarness({ revokedFile: marker, onRevoked });
-      return { h, marker, onRevoked };
+      return { h, marker, onRevoked, revoked };
     }
     const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
     const d = await runDaemon({
@@ -432,8 +516,10 @@ describe("revoke paths: the daemon's marker and whether it reconnects", () => {
       socketPath: join(tmp("ob-d-"), "d.sock"),
       revokedFile: marker,
       onRevoked,
-      hub: { backoffMs: () => 20 },
+      hub: { backoffMs },
       sentFile: join(tmp("ob-sf-"), "sent.json"),
+      // #3028: never the real ~/.oa-bus/announced.json.
+      announcedFile: join(tmp("ob-an-"), "announced.json"),
       attest: () => ({ ok: true }),
       resolveNamespace: () => ({
         namespace: "ns",
@@ -455,14 +541,17 @@ describe("revoke paths: the daemon's marker and whether it reconnects", () => {
       },
     });
     stops.push(d.stop);
-    return { h: undefined, marker, onRevoked };
+    return { h: undefined, marker, onRevoked, revoked };
   }
 
   /** An HTTP server answering every upgrade with `status`; counts the attempts. */
   async function refusing(status: number, body = "") {
-    const hits = { n: 0 };
-    const http = httpServer((_req, res) => {
+    const hits = { n: 0, seen: eventCounter() };
+    const http = httpServer((req, res) => {
+      // The probe is not an attempt: see `probeHttp`.
+      if (req.url === PROBE) return void res.writeHead(204).end();
       hits.n++;
+      hits.seen.hook();
       res.writeHead(status).end(body);
     });
     await new Promise<void>((r) => http.listen(0, "127.0.0.1", r));
@@ -477,44 +566,67 @@ describe("revoke paths: the daemon's marker and whether it reconnects", () => {
         error: { code: "unauthorized", message: "Invalid machine token" },
       }),
     );
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const { marker, onRevoked } = await daemon(hub.url);
-      await vi.waitFor(() => expect(onRevoked).toHaveBeenCalledOnce());
+      const { marker, onRevoked, revoked } = await daemon(hub.url);
+      await revoked;
       process.exitCode = 0;
+      expect(onRevoked).toHaveBeenCalledOnce();
       expect(JSON.parse(readFileSync(marker, "utf8")).token_sha256).toBe(
         tokenHash(TOKEN),
       );
-      await new Promise((r) => setTimeout(r, 120));
+      // A reconnect timer, if one were set, would fire in this minute.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await probeHttp(hub.url);
       expect(hub.hits.n).toBe(1);
     } finally {
+      vi.useRealTimers();
       hub.http.close();
     }
   });
 
   it("an upgrade answered 403 is transient: no marker, it reconnects with backoff", async () => {
     const hub = await refusing(403, "<html>Error 1020: Access denied</html>");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const { marker, onRevoked } = await daemon(hub.url);
-      await vi.waitFor(() => expect(hub.hits.n).toBeGreaterThanOrEqual(3), {
-        timeout: 2000,
+      // Each backoff the daemon asks for is moved on at once.
+      const { marker, onRevoked } = await daemon(hub.url, () => {
+        queueMicrotask(() => vi.advanceTimersByTime(20));
+        return 20;
       });
+      await hub.hits.seen.reach(3);
       expect(onRevoked).not.toHaveBeenCalled();
       expect(existsSync(marker)).toBe(false);
     } finally {
+      vi.useRealTimers();
       hub.http.close();
     }
   });
 
   it(`a live socket closed with ${LIMITS.revokeCloseCode} is a revoke: marker written, no reconnect`, async () => {
-    const { h, marker, onRevoked } = await daemon();
+    const { h, marker, onRevoked, revoked } = await daemon();
     const first = h?.hubSock();
-    first?.close(LIMITS.revokeCloseCode, "revoked");
-    await vi.waitFor(() => expect(onRevoked).toHaveBeenCalledOnce());
-    process.exitCode = 0;
-    expect(JSON.parse(readFileSync(marker, "utf8")).token_sha256).toBe(
-      tokenHash(TOKEN),
-    );
-    await new Promise((r) => setTimeout(r, 120));
-    expect(h?.hubSock()).toBe(first);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      first?.close(LIMITS.revokeCloseCode, "revoked");
+      await revoked;
+      process.exitCode = 0;
+      expect(onRevoked).toHaveBeenCalledOnce();
+      expect(JSON.parse(readFileSync(marker, "utf8")).token_sha256).toBe(
+        tokenHash(TOKEN),
+      );
+      // A reconnect timer, if one were set, would fire in this minute; a probe
+      // upgrade queues behind any connect it began.
+      await vi.advanceTimersByTimeAsync(60_000);
+      if (!h) throw new Error("harness expected");
+      const probe = new WebSocket(
+        `ws://127.0.0.1:${(h.wss.address() as { port: number }).port}${h.upgrades[0]?.path}`,
+      );
+      await new Promise<void>((r) => probe.once("open", () => r()));
+      probe.close();
+      expect(h.upgrades).toHaveLength(2); // the first link and the probe: no redial
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

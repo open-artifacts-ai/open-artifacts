@@ -64,7 +64,8 @@ const send = (
   });
   win.dispatchEvent(ev);
 };
-const flush = () => new Promise((r) => setTimeout(r, 0));
+// Zero-delay turn on the fake clock: queued promise work and 0 ms timers run.
+const flush = () => vi.advanceTimersByTimeAsync(0);
 const call = (method: string, params: unknown, id = "c1") =>
   send({ oa: 1, type: "call", id, method, params });
 const mk = (art = ART) => {
@@ -87,6 +88,7 @@ const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status });
 
 beforeEach(() => {
+  vi.useFakeTimers();
   FakeWS.all = [];
   frame = new FakeFrame(contentWindow);
   iframe = asFrame(frame);
@@ -193,6 +195,29 @@ describe("hello / welcome", () => {
 });
 
 describe("calls", () => {
+  it("reports the live data box a call reaches for, denied or not (#3037)", async () => {
+    const used: string[] = [];
+    const b = createBridge({
+      iframe,
+      url: URL_,
+      artifact: ART,
+      version: 1,
+      viewer: VIEWER,
+      theme: "light",
+      onPdfText: vi.fn(),
+      onThumb: vi.fn(),
+      onCapability: (cap) => used.push(cap),
+    });
+    live.push(b);
+    call("db.get", { collection: "c", id: "d" }, "a");
+    // storage is off on this artifact: the refused call still marks the box.
+    call("storage.get", { key: "k" }, "b");
+    // The Welcome page's own call is not viewer identity.
+    call("onboarding.get", {}, "c");
+    await flush();
+    expect(used).toEqual(["db", "storage"]);
+  });
+
   it("capability_denied makes zero fetches", async () => {
     mk();
     call("storage.get", { key: "k" });
@@ -598,13 +623,85 @@ describe("comments (#682)", () => {
     );
   });
 
-  it("hands comment.open's rect to the shell when there is one (#2426)", () => {
+  it("hands a mark click to the shell, dropping the old rect key (#3048)", () => {
     const o = withCb();
+    // An older runtime still sends the mark's box (#2426 A): the shell no
+    // longer uses it, and the unknown key is dropped, not the message.
     const rect = { x: 1, y: 2, width: 30, height: 10 };
     send({ oa: 1, type: "comment.open", id: "t1", rect });
-    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t1", rect);
+    expect(o.onCommentOpen).toHaveBeenLastCalledWith("t1");
     send({ oa: 1, type: "comment.open", id: "t2" });
     expect(o.onCommentOpen).toHaveBeenLastCalledWith("t2");
+  });
+
+  describe("ask slots (#2426 B, protocol 8)", () => {
+    const rect = { x: 1, y: 2, width: 300, height: 40 };
+    const slots = [{ key: "launch-day", rect }];
+    const withSlots = () => {
+      const onAskSlots = vi.fn();
+      const b = createBridge({
+        iframe,
+        url: URL_,
+        artifact: ART,
+        version: 1,
+        viewer: null,
+        theme: "light",
+        onPdfText: vi.fn(),
+        onThumb: vi.fn(),
+        onAskSlots,
+      });
+      live.push(b);
+      return { b, onAskSlots };
+    };
+
+    it("takes ask.slots only from a frame that said protocol 8", () => {
+      const { onAskSlots } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots });
+      expect(onAskSlots).not.toHaveBeenCalled();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots });
+      expect(onAskSlots).toHaveBeenCalledWith(slots);
+    });
+
+    it("sends ask.slotSize only to a frame that said protocol 8", () => {
+      const { b } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 7, kind: "html" });
+      post.mockClear();
+      b.setAskSlotSize("launch-day", 120);
+      expect(post).not.toHaveBeenCalled();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      post.mockClear();
+      b.setAskSlotSize("launch-day", 120);
+      expect(post).toHaveBeenCalledWith(
+        { oa: 1, type: "ask.slotSize", key: "launch-day", h: 120 },
+        "*",
+      );
+    });
+
+    it("drops a malformed ask.slots whole: bad key, bad rect, too many, extra field", () => {
+      const { onAskSlots } = withSlots();
+      send({ oa: 1, type: "hello", protocol: 8, kind: "html" });
+      send({ oa: 1, type: "ask.slots", slots: [{ key: "Bad Key", rect }] });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: [{ key: "a", rect: { ...rect, width: -1 } }],
+      });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: [{ key: "a", rect: { ...rect, x: Number.NaN } }],
+      });
+      send({
+        oa: 1,
+        type: "ask.slots",
+        slots: Array.from({ length: 21 }, (_, i) => ({ key: `k${i}`, rect })),
+      });
+      send({ oa: 1, type: "ask.slots", slots: [{ key: "a", rect, id: "x" }] });
+      send({ oa: 1, type: "ask.slots", slots: "no" });
+      expect(onAskSlots).not.toHaveBeenCalled();
+    });
   });
 
   it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
@@ -1420,6 +1517,7 @@ describe("the frame can't change the bridge's artifact", () => {
         "focusComment",
         "requestThumbnail",
         "scrollTo",
+        "setAskSlotSize",
         "setArtifact",
         "setComments",
         "setCommentsMode",

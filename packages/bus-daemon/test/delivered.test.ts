@@ -107,13 +107,13 @@ describe("send_message waits for delivered (C17)", () => {
   });
 
   it("answers queued at the window's end; a later delivered is no notice", async () => {
-    const { clock, notify, waiting, update } = await harness();
+    const { h, clock, notify, waiting, update } = await harness();
     const { reply } = await waiting();
     expect(await settled(reply)).toBe(false);
     clock.elapse();
     await expect(reply).resolves.toMatchObject({ state: "pending" });
     update("delivered");
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -123,11 +123,11 @@ describe("send_message waits for delivered (C17)", () => {
   ])(
     "answers %s (%s) inside the window, with no notice after",
     async (state, reason) => {
-      const { notify, waiting, update } = await harness();
+      const { h, notify, waiting, update } = await harness();
       const { reply } = await waiting();
       update(state, ID, reason);
       await expect(reply).resolves.toMatchObject({ msg_id: ID, state, reason });
-      await new Promise((r) => setTimeout(r, 100));
+      await h.quiet();
       expect(notify).not.toHaveBeenCalled();
     },
   );
@@ -228,7 +228,7 @@ describe("replayed receipt_updates after a reconnect", () => {
     // Replayed again, and an expiry after it: still nothing.
     h.toDaemon(update("delivered", "u2"));
     h.toDaemon(update("expired", "u3"));
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).not.toHaveBeenCalled();
   });
 
@@ -248,7 +248,7 @@ describe("replayed receipt_updates after a reconnect", () => {
     // A second reconnect replays it again: already told, so no second notice.
     await reconnect(h);
     h.toDaemon(update("expired", "u2"));
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).toHaveBeenCalledTimes(1);
   });
 
@@ -263,7 +263,7 @@ describe("replayed receipt_updates after a reconnect", () => {
     await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
     await reconnect(h);
     h.toDaemon({ ...update("refused", "u2"), reason: "closed" });
-    await new Promise((r) => setTimeout(r, 100));
+    await h.quiet();
     expect(notify).toHaveBeenCalledTimes(1);
   });
 });

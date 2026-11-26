@@ -134,6 +134,25 @@ const arrive = async () => {
 beforeEach(() => viewport());
 afterEach(() => vi.restoreAllMocks());
 
+describe("#3042 Reply focuses the reply box", () => {
+  it("puts the caret in the reply box when Reply is clicked on a long thread", async () => {
+    serve(() => [
+      thread("t1", [
+        comment("c1", "First"),
+        comment("c2", "Second"),
+        comment("c3", "Third"),
+        comment("c4", "Fourth"),
+      ]),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("First");
+    fireEvent.click(within(c).getByRole("button", { name: "Reply" }));
+    const box = await within(c).findByRole("textbox", { name: "Reply" });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+  });
+});
+
 describe("a folded thread (#2179)", () => {
   it("shows the first comment and the latest reply, the rest behind Show N earlier replies", async () => {
     serve(() => [
@@ -231,10 +250,8 @@ describe("a live reply (#2179)", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Old");
-    // shouldAdvanceTime: findBy* polls on setTimeout too.
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout"],
-      shouldAdvanceTime: true,
     });
     try {
       list = [

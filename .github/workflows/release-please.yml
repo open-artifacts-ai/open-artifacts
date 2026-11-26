@@ -17,7 +17,8 @@ on:
         type: boolean
         default: false
 # No workflow-wide grant: every job sets its own permissions (T3b).
-# No job has actions: write.
+# No job has actions: write. cloud-pin-bump's App token can start workflows,
+# in the cloud repo only.
 permissions: {}
 jobs:
   release-please:
@@ -90,6 +91,38 @@ jobs:
         run: |
           echo "::error::This commit is the release commit (kind: is_release=true) but release-please created no release, so no tag exists. Re-run this run (gh run rerun $GITHUB_RUN_ID): the action's own PR lookup can lag a just-merged PR."
           exit 1
+  # ---------- cloud pin bump on publish (cloud #264, plan step 8) ----------
+  # A stable release starts the cloud repo's pin-bump workflow at once, instead
+  # of waiting for its 6-hour timer (v0.241.0 waited 7 h). The token is the
+  # release App's, narrowed to the cloud repo and actions: write, so all this
+  # job can do is start a workflow there. pin-bump plans again on its own (it
+  # does nothing while a bump PR is open or one took the tag), and the cloud
+  # mirror still refuses a release whose verify-release here is not green, so
+  # starting before verify-release ends is safe. A failed dispatch turns this
+  # job red; the cloud timer stays as the fallback.
+  cloud-pin-bump:
+    needs: [release-please]
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.release-please.outputs.release_created == 'true' && !contains(needs.release-please.outputs.tag_name, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: open-artifacts-ai
+          repositories: open-artifacts-cloud
+          permission-actions: write
+      - name: Start the cloud pin-bump workflow
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh workflow run pin-bump.yml --repo open-artifacts-ai/open-artifacts-cloud --ref main
+          echo "started open-artifacts-cloud pin-bump for $TAG"
   deploy-landing:
     needs: [release-please]
     # always(): on workflow_dispatch the release-please job is skipped.

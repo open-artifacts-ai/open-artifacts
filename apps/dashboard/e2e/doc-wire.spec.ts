@@ -4,7 +4,7 @@
 // test/doc-editor.test.tsx > "the wire spec" (what the editor shows).
 import type { ChildProcess } from "node:child_process";
 import { expect, type Page, test } from "@playwright/test";
-import { startRoom, stopRoom } from "./room";
+import { startRoom, stopRoom, tellRoom } from "./room";
 
 const LANDING = "Cd5fGhJkLm6nPqRs";
 test.use({ viewport: { width: 1280, height: 800 } });
@@ -53,6 +53,8 @@ test(
     await expect(
       page.getByRole("status").filter({ hasText: "Saved" }),
     ).toBeVisible();
+    // The page is loaded and in the room: the room says it saved v5.
+    tellRoom(room, "saved");
     const before = artifactGets;
     await expect(
       page.getByRole("status").filter({ hasText: "Saved as v5" }),

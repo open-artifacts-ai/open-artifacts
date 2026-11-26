@@ -28,7 +28,8 @@ import {
   OWNER_ORG_ID,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, hello, ns, trackSocket, up } from "./helpers.js";
+import { e, hello, idleOf, ns, trackSocket, up } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -41,7 +42,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 type D = {
   ws: WebSocket;
@@ -79,13 +79,11 @@ function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("timed out")), 15_000);
-      waiting.push((x) => {
-        clearTimeout(t);
-        resolve(x);
-      });
-    });
+    return withDeadline(
+      new Promise<ServerFrame>((resolve) => waiting.push(resolve)),
+      15_000,
+      "a frame from the hub",
+    );
   };
   return { ws, seen, next, closed, isClosed: () => done };
 }
@@ -217,7 +215,7 @@ async function drain(h: BusHubStub, done: () => Promise<boolean>) {
   for (let k = 0; k < 200; k++) {
     if (await done()) return;
     await runDurableObjectAlarm(stubOf(h));
-    await tick(5);
+    await idleOf(stubOf(h));
   }
 }
 
@@ -332,8 +330,9 @@ describe("per-socket frame budget (token bucket)", () => {
     const m = await machineOn(h);
     const d = await daemonOn(h, m.id);
     await emptyBucket(h, m.id, 1);
+    // The pings precede the hello on this socket: the hub reads the hello
+    // after them, so its reply is the end of what the pings could have done.
     for (let k = 0; k < 100; k++) d.ws.send("ping");
-    await tick(100);
     d.send(hello("last"));
     await until(d, "hello_ok");
     expect(d.isClosed()).toBe(false);

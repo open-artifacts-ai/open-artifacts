@@ -197,7 +197,7 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
     expect(await countRows(email)).toBe(0);
   });
 
-  it("another browser (no link cookie): no code is sent for an invited member; nothing links", async () => {
+  it("another browser (no link cookie): an invited member gets an ordinary sign-in code; nothing links", async () => {
     const { e, m } = install();
     const email = uniq("other", "custom.example");
     const uid = await seedUser(email, "member");
@@ -206,7 +206,14 @@ describe("a weak first Google login links after a code (#2590 G2)", () => {
       .run();
     const req = await post(e, AUTH.codeRequest, { email });
     expect(req.status).toBe(202);
-    expect(() => m.codeFor(email)).toThrow();
+    const pending = cookieOf(req, /oa_code=/);
+    const r = await post(
+      e,
+      AUTH.codeVerify,
+      { code: m.codeFor(email) },
+      pending,
+    );
+    expect(r.status).toBe(200);
     expect(await subjectOf(email)).toBeNull();
   });
 

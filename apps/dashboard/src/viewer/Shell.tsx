@@ -1,5 +1,6 @@
 import {
   type ArtifactSummary,
+  type Capabilities,
   isExpiredMessage,
   type Me,
   viewerPath,
@@ -34,11 +35,16 @@ import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { isMember } from "../library/MemberGetStarted";
 import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
-import { createBridge, type ScrollPos, type WelcomeGreet } from "./bridge";
+import {
+  type AskSlotRect,
+  createBridge,
+  type ScrollPos,
+  type WelcomeGreet,
+} from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { AskSlots } from "./comments/AskSlots";
 import { asksForMe, nextAskFor } from "./comments/asks";
 import {
-  AskBeside,
   CommentsBody,
   CompactComments,
   PinBar,
@@ -154,6 +160,12 @@ export const SLOW_MS = 8_000;
  * reload of itself. Real announces come one per expired frame document.
  */
 export const ANNOUNCE_HEAL_MS = 10_000;
+
+/**
+ * After a failed mint, one more try this soon (#2959): the frame is on the
+ * expiry page already, and the reader should not have to click.
+ */
+export const MINT_RETRY_MS = 3_000;
 
 function ErrorPanel({ onRetry }: { onRetry?: () => void }) {
   return (
@@ -274,6 +286,14 @@ function Viewer({
       })) as never,
     });
   const bridge = useRef<Bridge | null>(null);
+  // #2426 B: where the page's `[data-oa-ask]` slots are, as the frame last said.
+  const [askSlots, setAskSlots] = useState<
+    { key: string; rect: AskSlotRect }[]
+  >([]);
+  const setAskSlotSize = useCallback(
+    (key: string, h: number) => bridge.current?.setAskSlotSize(key, h),
+    [],
+  );
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
@@ -404,6 +424,14 @@ function Viewer({
   });
   const cbs = useRef({ onReady, onTouched, onAccessLost, onScroll });
   cbs.current = { onReady, onTouched, onAccessLost, onScroll };
+  // #3037: the live data boxes this page's code has called for. The layer
+  // remounts per version, so a new version starts the marks over.
+  const [usedCaps, setUsedCaps] = useState<ReadonlySet<keyof Capabilities>>(
+    new Set(),
+  );
+  const noteUse = useCallback((cap: keyof Capabilities) => {
+    setUsedCaps((prev) => (prev.has(cap) ? prev : new Set(prev).add(cap)));
+  }, []);
   // Fixed at mount: a swap shows this layer on load, before its hello.
   const restore = useRef(restoreScroll);
   // biome-ignore lint/correctness/useExhaustiveDependencies: once, on mount
@@ -427,6 +455,12 @@ function Viewer({
   const reloadRef = useRef<(force: boolean) => void>(() => {});
   const urlStaleRef = useRef(content.urlStale);
   urlStaleRef.current = content.urlStale;
+  /** One retry after a failed mint (see reloadWith); reset by a mint that works. */
+  const mintRetry = useRef(0);
+  /** At most one heal per ANNOUNCE_HEAL_MS: the announce and a wake share it. */
+  const lastHeal = useRef(0);
+  const retryTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(retryTimer.current), []);
   const [slow, setSlow] = useState(false);
   const [reloads, setReloads] = useState(0);
   const [frame, setFrame] = useState<{ key: number; src: string | null }>({
@@ -587,9 +621,25 @@ function Viewer({
       !force && content.fresh()
         ? Promise.resolve(content.current)
         : content.refresh();
-    void ready.then((u) =>
-      setFrame((f) => ({ key: f.key + 1, src: safeContentUrl(u) ?? f.src })),
-    );
+    void ready.then((u) => {
+      const next = safeContentUrl(u);
+      // #2959: no URL means the mint failed. Reloading the frame on the URL it
+      // already had would put the expiry page back (that URL is stale by
+      // definition here) and spend the announce that got us here, so keep the
+      // frame and try the mint once more; a wake (below) can always try again.
+      if (!next) {
+        reloading.current = false;
+        if (mintRetry.current++ > 0) return;
+        clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(
+          () => reloadRef.current(true),
+          MINT_RETRY_MS,
+        );
+        return;
+      }
+      mintRetry.current = 0;
+      setFrame((f) => ({ key: f.key + 1, src: next }));
+    });
   };
   const reload = () => reloadWith(false);
 
@@ -614,7 +664,6 @@ function Viewer({
   // #2686's load check misses. Bound it instead: an artifact can post the same
   // shape from its own frame, and all that may buy it is one reload of itself.
   useEffect(() => {
-    let lastHeal = 0;
     const onMessage = (e: MessageEvent) => {
       // Only our artifact frame (sandboxed, so an opaque origin), and only the
       // expiry page's own shape.
@@ -622,12 +671,45 @@ function Viewer({
       if (e.origin !== "null" || !isExpiredMessage(e.data)) return;
       if (goneRef.current || reloading.current) return;
       const now = Date.now();
-      if (now - lastHeal < ANNOUNCE_HEAL_MS) return;
-      lastHeal = now;
+      if (now - lastHeal.current < ANNOUNCE_HEAL_MS) return;
+      lastHeal.current = now;
       reloadRef.current(true);
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
+  }, []);
+  // #2959: a restored tab can show the expiry page with neither a load event
+  // the shell can tell apart nor an announce at all: a frame brought back from
+  // the back/forward cache runs no script again, and Chrome's page restore
+  // gives the parent no load. Nothing else re-checks, so the reader sat on
+  // "This view has expired" until they reloaded the whole tab. On every wake,
+  // a frame that never said hello (so it is not the artifact) while the URL we
+  // hold is past its lifetime gets a freshly minted one. A frame that said
+  // hello keeps its document: the URL only matters for its next navigation.
+  //
+  // The staleness test is ours (the URL we handed the frame), so a healthy
+  // frame is never reloaded for no reason: a URL that is merely old is fine
+  // while its document lives.
+  useEffect(() => {
+    const check = () => {
+      if (document.visibilityState === "hidden") return;
+      if (goneRef.current || reloading.current || helloSeen.current) return;
+      if (!urlStaleRef.current(srcRef.current)) return;
+      const now = Date.now();
+      if (now - lastHeal.current < ANNOUNCE_HEAL_MS) return;
+      lastHeal.current = now;
+      reloadRef.current(true);
+    };
+    // pageshow: a back/forward cache restore; the others: a tab that comes
+    // back or a window that gets focus again.
+    window.addEventListener("pageshow", check);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", check);
+    return () => {
+      window.removeEventListener("pageshow", check);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", check);
+    };
   }, []);
   useEffect(() => {
     if (!el || !src || gone) return;
@@ -636,6 +718,11 @@ function Viewer({
       url: src,
       ...latest.current,
       onboarding: () => gate.current,
+      // #3037: what this page's code reaches for, for the Share panel. In
+      // memory only: a full page reload clears the marks, a frame reload keeps
+      // them. It is a report of calls so far, never a promise of what the page
+      // needs.
+      onCapability: noteUse,
       version,
       formatOf: () => formatRef.current,
       onHello: () => {
@@ -654,11 +741,12 @@ function Viewer({
       },
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p, ghost) => cmtRef.current.onPositions(p, ghost),
-      onCommentOpen: (id, rect) => cmtRef.current.onOpen(id, rect),
+      onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onCommentPin: (p, at) => cmtRef.current.onPin(p, at),
       onCommentEscape: () => cmtRef.current.onEscape(),
       onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onCommentAway: () => cmtRef.current.onAway(),
+      onAskSlots: setAskSlots,
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -672,8 +760,10 @@ function Viewer({
     return () => {
       b.dispose();
       bridge.current = null;
+      // A new frame reports its own slots.
+      setAskSlots([]);
     };
-  }, [el, src, version, onHello, onRenavigated, touch, gone]);
+  }, [el, src, version, onHello, onRenavigated, touch, gone, noteUse]);
 
   // Focus moved into the frame (a window blur with the frame active): touched.
   useEffect(() => {
@@ -1010,7 +1100,13 @@ function Viewer({
                 allow="clipboard-write"
               />
               {commentsOn && <PinBeside frame={el} />}
-              {commentsOn && <AskBeside frame={el} />}
+              <AskSlots
+                frame={el}
+                artifactId={artifact.id}
+                reported={askSlots}
+                setSize={setAskSlotSize}
+                enabled={authed}
+              />
             </div>
           )}
           {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
@@ -1037,6 +1133,7 @@ function Viewer({
                 surface === "panel" && commentsTab ? cmt.listedOpen : undefined
               }
               tab={tab}
+              usedCaps={usedCaps}
               onTab={(t) => setPanel(true, t)}
               onClose={() => setPanel(false)}
             />

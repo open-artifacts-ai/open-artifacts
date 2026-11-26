@@ -1484,6 +1484,15 @@ export const SURFACES: readonly Surface[] = [
     tool("list_comments", (id) => ({ id })),
   ),
   mcp(
+    "get_comment_picture",
+    "comments.read",
+    tool(
+      "get_comment_picture",
+      (id) => ({ id, pictureId: "invalid.id" }),
+      (o) => o.isError && /^bad_request: Invalid pictureId/.test(o.text),
+    ),
+  ),
+  mcp(
     "add_comment",
     "comments.write",
     tool(
@@ -2795,11 +2804,13 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /healthz",
   "GET /robots.txt",
   "GET /skill.md",
+  "GET /skill/:part",
   "GET /upgrade.md",
   "GET /llms.txt",
   "ALL /healthz",
   "ALL /robots.txt",
   "ALL /skill.md",
+  "ALL /skill/:part",
   "ALL /upgrade.md",
   "ALL /llms.txt",
   "GET /auth/providers",

@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { BUS_CMD } from "@oa/bus-protocol";
 
-export type Harness = "claude" | "opencode" | "codex" | "pi";
+export type Harness = "claude" | "opencode" | "codex" | "pi" | "antigravity";
 export type Command = (
   | {
       cmd: "install";
@@ -11,13 +11,19 @@ export type Command = (
       noOpen: boolean;
       noService: boolean;
       alongside: boolean;
-      habits?: "yes" | "project" | "project-off" | "no" | "show";
+      habits?: "yes" | "no" | "show";
       json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "add"; address: string; name?: string; noOpen: boolean }
   | { cmd: "use"; name?: string; none: boolean }
-  | { cmd: "skill"; hub?: string; check: boolean; json?: boolean }
+  | {
+      cmd: "skill";
+      hub?: string;
+      check: boolean;
+      json?: boolean;
+      refresh?: boolean;
+    }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
@@ -77,7 +83,7 @@ const COMMANDS = new Set([
   "upgrade",
   "version",
 ]);
-const HARNESSES = ["claude", "opencode", "codex", "pi"];
+const HARNESSES = ["claude", "opencode", "codex", "pi", "antigravity"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
@@ -95,8 +101,6 @@ const FLAGS: Record<string, string[]> = {
     "no-service",
     "alongside",
     "habits",
-    "habits-project",
-    "no-habits-project",
     "no-habits",
     "show-habits",
     "json",
@@ -104,7 +108,7 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   add: ["name", "no-open"],
   use: ["none"],
-  skill: ["instance", "check", "json"],
+  skill: ["instance", "check", "json", "refresh"],
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
@@ -137,11 +141,10 @@ export function parse(argv: string[]): Command {
       none: { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
+      refresh: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
       alongside: { type: "boolean", default: false },
       habits: { type: "boolean", default: false },
-      "habits-project": { type: "boolean", default: false },
-      "no-habits-project": { type: "boolean", default: false },
       "no-habits": { type: "boolean", default: false },
       "show-habits": { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -275,11 +278,10 @@ type Values = {
   none: boolean;
   yes: boolean;
   check: boolean;
+  refresh: boolean;
   "no-service": boolean;
   alongside: boolean;
   habits: boolean;
-  "habits-project": boolean;
-  "no-habits-project": boolean;
   "no-habits": boolean;
   "show-habits": boolean;
   json: boolean;
@@ -310,6 +312,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
         hub: values.instance,
         check: values.check,
         ...(values.json ? { json: true } : {}),
+        ...(values.refresh ? { refresh: true } : {}),
       };
     case "daemon":
       return { cmd, hub: values.instance };
@@ -382,20 +385,16 @@ function route(cmd: string, values: Values, positionals: string[]) {
   }
 }
 
-/** At most one of --habits, --habits-project, --no-habits, --show-habits. */
+/** At most one of --habits, --no-habits, --show-habits. */
 function habitsMode(v: Values): {
-  habits?: "yes" | "project" | "project-off" | "no" | "show";
+  habits?: "yes" | "no" | "show";
 } {
   const asked = [
     v.habits && "yes",
-    v["habits-project"] && "project",
-    v["no-habits-project"] && "project-off",
     v["no-habits"] && "no",
     v["show-habits"] && "show",
-  ].filter(Boolean) as ("yes" | "project" | "project-off" | "no" | "show")[];
+  ].filter(Boolean) as ("yes" | "no" | "show")[];
   if (asked.length > 1)
-    throw new Error(
-      "use only one of --habits, --habits-project, --no-habits-project, --no-habits, --show-habits",
-    );
+    throw new Error("use only one of --habits, --no-habits, --show-habits");
   return asked[0] ? { habits: asked[0] } : {};
 }

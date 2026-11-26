@@ -88,6 +88,38 @@ describe("arrange", () => {
     expect(r.ordered.map((x) => x.id)).toEqual(["n", "high", "low", "none"]);
     expect(r.orphans.map((x) => x.id)).toEqual(["gone"]);
   });
+
+  it("puts the newest whole-page note first, by its latest activity (#3032)", () => {
+    const note = (id: string, at: string, reply?: string) => {
+      const t = thread(id, { kind: "note" }, { createdAt: at });
+      const first = t.comments[0];
+      if (!first) return t;
+      return {
+        ...t,
+        comments: [
+          { ...first, createdAt: at },
+          ...(reply
+            ? [{ ...first, id: `c-${id}-reply`, createdAt: reply }]
+            : []),
+        ],
+      };
+    };
+    const t = [
+      note("older", "2026-11-05T10:00:00Z"),
+      note("newest", "2026-11-05T12:00:00Z"),
+      // An older note someone just replied to is the newest activity.
+      note("replied", "2026-11-05T09:00:00Z", "2026-11-05T13:00:00Z"),
+      thread("high", text),
+    ];
+    const pos = new Map([["high", { state: "exact" as const, top: 10 }]]);
+    const r = arrange(t, pos);
+    expect(r.ordered.map((x) => x.id)).toEqual([
+      "replied",
+      "newest",
+      "older",
+      "high",
+    ]);
+  });
 });
 
 describe("createGate", () => {

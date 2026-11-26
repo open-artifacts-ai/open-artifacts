@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
-import { habitsQuestion, habitsQuestionLines } from "../src/steps/habits.ts";
 import {
   leftoverTargets,
   noteMade,
@@ -57,14 +56,6 @@ describe("--help", () => {
         expect(text).toContain(word);
       expect(ctx.err()).toEqual([]);
     }
-  });
-});
-
-describe("habits question", () => {
-  it("says omp is not supported yet", () => {
-    const q = habitsQuestion(["~/.claude/CLAUDE.md"]);
-    expect(q.note).toBe("omp: not supported yet");
-    expect(habitsQuestionLines(q)).toContain("  omp: not supported yet");
   });
 });
 

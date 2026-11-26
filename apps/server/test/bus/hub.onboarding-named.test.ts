@@ -2,7 +2,7 @@
 // (a chosen name or a role) for the checklist; a default re-mint does not.
 import { env } from "cloudflare:workers";
 import { decodeServerFrame, encodeFrame, newId } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AUTHZ_AT_HEADER,
   type BusHub,
@@ -14,6 +14,7 @@ import {
 import { namedKey } from "../../src/services/onboarding-firsts.js";
 import { login } from "../helpers.js";
 import { e, trackSocket } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const stored = (userId: string) =>
   env.DB.prepare("select value from settings where key = ?1")
@@ -54,10 +55,17 @@ async function connect(userId: string) {
     seen,
   };
 }
-const until = async (fn: () => boolean | Promise<boolean>) => {
-  for (let i = 0; i < 100 && !(await fn()); i++)
-    await new Promise((r) => setTimeout(r, 20));
+/** The end of the hub's named-agent write (D1) for this member: it runs after the frame, not before its reply. */
+const idle = async (userId: string) => {
+  const { runInDurableObject } = await import("cloudflare:test");
+  const ns = e.BUS_HUB as DurableObjectNamespace<BusHub>;
+  const { BusHub: Hub } = await import("../../src/bus/hub.js");
+  await runInDurableObject(ns.getByName(`bus:${userId}`), (i: BusHub) =>
+    Hub.whenIdle(i),
+  );
 };
+const until = (fn: () => boolean | Promise<boolean>) =>
+  eventually(async () => expect(await fn()).toBe(true));
 
 describe("the hub records a named agent (#2478)", () => {
   it("an agent_up with name_chosen records the owner's first time, once", async () => {
@@ -97,7 +105,7 @@ describe("the hub records a named agent (#2478)", () => {
       proposed_name: "Atlas",
     });
     await until(() => c.seen.includes("renamed"));
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect((await stored(o.userId))?.value).toBe(first?.value);
   });
 
@@ -124,7 +132,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_kind: "default",
     });
     await until(() => c.seen.includes("renamed"));
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
     c.send({
       v: 1,
@@ -160,7 +168,7 @@ describe("the hub records a named agent (#2478)", () => {
       name_chosen: false,
     });
     await until(() => c.seen.includes("renamed"));
-    await new Promise((r) => setTimeout(r, 50));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
   });
 
@@ -186,10 +194,9 @@ describe("the hub records a named agent (#2478)", () => {
     await env.DB.prepare("delete from settings where key = ?1")
       .bind(namedKey(o.userId))
       .run();
-    await new Promise((r) => setTimeout(r, 50));
     up("ref_b", "2");
     await until(() => c.seen.filter((t) => t === "agent_ok").length >= 2);
-    await new Promise((r) => setTimeout(r, 100));
+    await idle(o.userId); // the hub's write, if it made one, is done
     expect(await stored(o.userId)).toBeNull();
     expect(first).not.toBeNull();
   });

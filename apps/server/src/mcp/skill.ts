@@ -20,6 +20,10 @@ import { planText } from "./instructions.js";
 import {
   SKILL_HASH,
   SKILL_HASH_NO_SPACES,
+  SKILL_PART_HASHES,
+  SKILL_PART_HASHES_NO_SPACES,
+  SKILL_PART_TEMPLATES,
+  SKILL_PART_TEMPLATES_NO_SPACES,
   SKILL_TEMPLATE,
   SKILL_TEMPLATE_NO_SPACES,
 } from "./skill.generated.js";
@@ -27,10 +31,13 @@ import { hostSlug, skillName, skillOrigin } from "./skill-common.js";
 import {
   DOC_TOOL_CLOSE,
   DOC_TOOL_OPEN,
+  SKILL_PARTS,
+  type SkillPart,
   TOOL_COUNT_RE,
 } from "./skill-template.js";
 
 export const SKILL_PATH = "/skill.md";
+export const SKILL_PART_PATH = "/skill/:part";
 export const SKILL_DOC_URI = "openartifacts://docs/skill";
 
 type SkillEnv = Pick<
@@ -96,7 +103,7 @@ export const busSetupLine = (origin: string): string =>
 
 /** #2476, #2477: the naming and first-page habits, taught only with the bus on. */
 const FIRST_PAGE_HABIT =
-  '- Setup is unfinished only when the `list_artifacts` tool with `scope: "mine"` shows no pages of your person on this instance (colleagues\' pages don\'t count). Only then, even in a new session, finish it now: ask your person what to call you (suggest a short name from the project) and check the bus `self` tool shows it. If they already have pages, never re-run setup or ask for a name again. Then publish the first page: a short page about the project you\'re in, with `visibility: "private"`. Right after publishing it, post a comment ("I\'m {name}, your agent. Type @{name} in any comment and I\'ll answer in the thread. Try it here.") and an ask ("What should I publish next?", options fitted to the project, such as "A status page for this project", "A summary of the README", "Nothing for now"). When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply. Do this once, never on later pages. Then tell your person Open Artifacts is connected, with the address and the page\'s link. Use your session name if they skipped naming, and follow that page so the mention and the pick reach you.';
+  '- Setup is unfinished only when the `list_artifacts` tool with `scope: "mine"` shows no pages of your person on this instance (colleagues\' pages don\'t count). Only then, even in a new session, finish it now: ask your person what to call you (suggest a short name from the project) and check the bus `self` tool shows it. If they already have pages, never re-run setup or ask for a name again. Then publish the first page: a short page about the project you\'re in, with `visibility: "private"`. Right after publishing it, post a comment ("I\'m {name}, your agent. Type @{name} in any comment and I\'ll answer in the thread. Try it here.") and an ask to `me` ("What should I publish next?", options fitted to the project, such as "A status page for this project", "A summary of the README", "Nothing for now"). When they pick, do it and reply in the thread; "Nothing for now" gets a one-line reply. Do this once, never on later pages. Then tell your person Open Artifacts is connected, with the address and the page\'s link. Use your session name if they skipped naming, and follow that page so the mention and the pick reach you.';
 
 export const busLine = (on: boolean, origin: string): string =>
   on
@@ -157,24 +164,14 @@ export function renderSkill(
   const key = `${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}|${docs ? "d" : ""}|${harness ?? ""}`;
   let p = memo.get(key);
   if (!p) {
-    p = skillName(env.APP_HOST).then((name) => {
-      const v: Record<string, string> = {
-        ...planText(plan, docBytes),
-        origin: skillOrigin(env.APP_HOST),
-        host: env.APP_HOST,
-        name,
-        hostSlug: hostSlug(env.APP_HOST),
-        version: VERSION,
-        upgradeLine: upgradeLine(env),
-        busPeers: busLine(bus, skillOrigin(env.APP_HOST)),
-      };
-      const tpl = spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES;
-      // Before the values go in: an install value containing the marker text
-      // must not be cut.
-      const md = applyDocTools(tpl, docs).replace(
-        /\{\{(\w+)\}\}/g,
-        (m, k: string) => v[k] ?? m,
-      );
+    p = fillSkillTokens(
+      spaces ? SKILL_TEMPLATE : SKILL_TEMPLATE_NO_SPACES,
+      env,
+      plan,
+      docBytes,
+      bus,
+      docs,
+    ).then((md) => {
       // The harness note is inserted at render time, before "## Connect", so
       // the template (and every absent-harness byte) stays exactly as it was.
       const note = harnessNote(harness, bus);
@@ -200,6 +197,77 @@ export function renderSkill(
   return p;
 }
 
+const fillSkillTokens = (
+  tpl: string,
+  env: SkillEnv,
+  plan: ReturnType<typeof dataLimits>["plan"],
+  docBytes: number,
+  bus: boolean,
+  docs: boolean,
+): Promise<string> =>
+  skillName(env.APP_HOST).then((name) => {
+    const origin = skillOrigin(env.APP_HOST);
+    const v: Record<string, string> = {
+      ...planText(plan, docBytes),
+      origin,
+      host: env.APP_HOST,
+      name,
+      hostSlug: hostSlug(env.APP_HOST),
+      version: VERSION,
+      upgradeLine: upgradeLine(env),
+      busPeers: busLine(bus, origin),
+    };
+    // Before the values go in: an install value containing the marker text
+    // must not be cut.
+    return applyDocTools(tpl, docs).replace(
+      /\{\{(\w+)\}\}/g,
+      (m, k: string) => v[k] ?? m,
+    );
+  });
+
+/** Parses `<part>.md` from `/skill/:part` into a known SkillPart (#3169). */
+export const parseSkillPart = (
+  raw: string | undefined,
+): SkillPart | undefined => {
+  if (!raw?.endsWith(".md")) return undefined;
+  const stem = raw.slice(0, -3);
+  return (SKILL_PARTS as readonly string[]).includes(stem)
+    ? (stem as SkillPart)
+    : undefined;
+};
+
+/** One on-demand skill part for this instance, memoized per isolate (#3169). */
+export function renderSkillPart(
+  part: SkillPart,
+  env: SkillEnv,
+): Promise<string> {
+  const { plan, docBytes } = dataLimits(env);
+  const hosted = env.HOSTED === "1" ? "h" : "";
+  const spaces = spacesIn(env);
+  const bus = busOn(env);
+  const docs = docsAvailable(env);
+  const key = `part|${part}|${env.ENVIRONMENT}|${env.APP_HOST}|${plan}|${docBytes}|${hosted}|${spaces ? "s" : ""}|${bus ? "b" : ""}|${docs ? "d" : ""}`;
+  let p = memo.get(key);
+  if (!p) {
+    const tpl = spaces
+      ? SKILL_PART_TEMPLATES[part]
+      : SKILL_PART_TEMPLATES_NO_SPACES[part];
+    p = fillSkillTokens(tpl, env, plan, docBytes, bus, docs).catch(
+      (e: unknown) => {
+        memo.delete(key);
+        throw e;
+      },
+    );
+    memo.set(key, p);
+  }
+  return p;
+}
+
+type EtagEnv = Pick<
+  Env,
+  "PLAN" | "DATA_DOC_BYTES" | "HOSTED" | "FEATURES" | "BUS_HUB" | "DOCS_PREVIEW"
+>;
+
 /**
  * ETag: version, plan and the template's hash (a git-less build keeps one
  * VERSION across template changes), plus the data-doc limit when
@@ -209,15 +277,7 @@ export function renderSkill(
  * new ETag rather than a 304 under the same VERSION.
  */
 export const skillEtag = (
-  env: Pick<
-    Env,
-    | "PLAN"
-    | "DATA_DOC_BYTES"
-    | "HOSTED"
-    | "FEATURES"
-    | "BUS_HUB"
-    | "DOCS_PREVIEW"
-  >,
+  env: EtagEnv,
   harness?: Harness | undefined,
 ): string => {
   const { plan, docBytes } = dataLimits(env);
@@ -229,10 +289,23 @@ export const skillEtag = (
   return `"${VERSION}-${plan}${doc}${hosted}${docs}-${tpl}${note ? `-${fnv(note)}` : ""}"`;
 };
 
-export async function serveSkill(c: Context<AppEnv>) {
-  if (!skillEnabled(c.env)) return c.notFound();
-  const harness = parseHarness(c.req.query("harness"));
-  const etag = skillEtag(c.env, harness);
+/** ETag for GET /skill/<part>.md (#3169). */
+export const skillPartEtag = (part: SkillPart, env: EtagEnv): string => {
+  const { plan, docBytes } = dataLimits(env);
+  const doc = docBytes === dataDocLimit(plan) ? "" : `-${docBytes}`;
+  const hosted = env.HOSTED === "1" ? "-hosted" : "";
+  const tpl = spacesIn(env)
+    ? SKILL_PART_HASHES[part]
+    : `nospaces-${SKILL_PART_HASHES_NO_SPACES[part]}`;
+  const docs = docsAvailable(env) ? "-docs" : "";
+  return `"${VERSION}-${plan}${doc}${hosted}${docs}-${part}-${tpl}"`;
+};
+
+const serveMarkdown = async (
+  c: Context<AppEnv>,
+  etag: string,
+  body: () => Promise<string>,
+) => {
   const headers = {
     "Content-Type": "text/markdown; charset=utf-8",
     "Cache-Control": "public, max-age=300",
@@ -246,5 +319,23 @@ export async function serveSkill(c: Context<AppEnv>) {
       .some((t) => t === etag || t === `W/${etag}` || t === "*")
   )
     return c.body(null, 304, headers);
-  return c.body(await renderSkill(c.env, harness), 200, headers);
+  return c.body(await body(), 200, headers);
+};
+
+export async function serveSkill(c: Context<AppEnv>) {
+  if (!skillEnabled(c.env)) return c.notFound();
+  const harness = parseHarness(c.req.query("harness"));
+  return serveMarkdown(c, skillEtag(c.env, harness), () =>
+    renderSkill(c.env, harness),
+  );
+}
+
+/** GET /skill/<part>.md: on-demand skill parts (#3169). */
+export async function serveSkillPart(c: Context<AppEnv>) {
+  if (!skillEnabled(c.env)) return c.notFound();
+  const part = parseSkillPart(c.req.param("part"));
+  if (!part) return c.notFound();
+  return serveMarkdown(c, skillPartEtag(part, c.env), () =>
+    renderSkillPart(part, c.env),
+  );
 }

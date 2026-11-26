@@ -31,6 +31,7 @@ import {
 } from "../../src/bus/hub.js";
 import { logError, logInfo } from "../../src/log.js";
 import { e, hello, ns, trackSocket, up } from "./helpers.js";
+import { withDeadline } from "./with-deadline.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -43,7 +44,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 type D = {
   ws: WebSocket;
@@ -81,13 +81,11 @@ function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   const next = () => {
     const f = queue.shift();
     if (f) return Promise.resolve(f);
-    return new Promise<ServerFrame>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("timed out")), 15_000);
-      waiting.push((x) => {
-        clearTimeout(t);
-        resolve(x);
-      });
-    });
+    return withDeadline(
+      new Promise<ServerFrame>((resolve) => waiting.push(resolve)),
+      15_000,
+      "a frame from the hub",
+    );
   };
   return { ws, seen, next, closed, isClosed: () => done };
 }
@@ -383,9 +381,14 @@ describe("M2/M3 + manager pin: machine-keyed bucket, burst 512, 4429 and cooldow
       frames.push(up(`u${i}`, `seed_${i}`, `seed-${m.id.slice(0, 4)}-${i}`, n));
     // More than the burst in total: only pacing keeps it open.
     while (frames.length < FRAME_BUDGET.burst + 100) frames.push(junkAck());
+    // The bucket refills on the hub's clock: one frame every 25 ms of it, moved
+    // by hand, never waited for.
+    let t = Date.now() + HOUR;
+    await clock(h, t);
     for (const f of frames) {
       d.send(f);
-      await tick(25);
+      t += 25;
+      await clock(h, t);
       if (d.isClosed()) break;
     }
     await sync(d);

@@ -246,7 +246,10 @@ describe("status: transcript state 7", () => {
     });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(0);
-    expect(ctx.all()).toEqual(blocks[0]);
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[0],
+    );
+    expect(ctx.all()).toContain("Habits: on, sent by the bus");
     expect(ctx.all()[2]).toBe(
       "Hub      bus.example.com  [[success]]● connected[[/success]]",
     );
@@ -265,7 +268,9 @@ describe("status: transcript state 7", () => {
     });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all()).toEqual(blocks[1]);
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[1],
+    );
   });
 
   it("daemon not running; exit 1", async () => {
@@ -372,7 +377,11 @@ describe("status: transcript state 7", () => {
       });
       approve(ctx);
       const code = await statusCmd(ctx);
-      return { code, out: ctx.all(), base: blocks[0] as string[] };
+      return {
+        code,
+        out: ctx.all().filter((l) => !l.startsWith("Habits:")),
+        base: blocks[0] as string[],
+      };
     };
 
     it("follows the last table and its footnote, newest first; exit unaffected", async () => {
@@ -906,6 +915,7 @@ describe("doctor: transcript state 8", () => {
       "   Run npx @open-artifacts/bus to restart it.",
       "[[warning]]![[/warning]]  OpenCode version unknown",
       "   Run opencode --version to check it, then npx @open-artifacts/bus install again.",
+      "Habits: on, sent by the bus",
       "",
       "[[muted]]3 failed, 1 warning.[[/muted]]",
     ]);
@@ -1432,6 +1442,18 @@ describe("daemon command", () => {
     f.signals.emit("SIGTERM");
     expect(await done).toBe(0);
     expect(f.stop).toHaveBeenCalledOnce();
+  });
+
+  it("hands the daemon a skill refresher (#3203)", async () => {
+    const f = fake();
+    const done = daemon(fakeCtx(), f.run as never, f.signals);
+    await vi.waitFor(() => expect(f.run).toHaveBeenCalled());
+    const d = f.run.mock.calls[0]?.[0] as {
+      skillRefresh?: { onHello?: unknown };
+    };
+    expect(typeof d.skillRefresh?.onHello).toBe("function");
+    f.signals.emit("SIGTERM");
+    expect(await done).toBe(0);
   });
 
   it("exits 78, once, when the machine is revoked", async () => {

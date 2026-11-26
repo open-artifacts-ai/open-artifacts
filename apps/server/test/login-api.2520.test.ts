@@ -74,15 +74,16 @@ async function fresh(
 
 describe("GET members/reach", () => {
   it.each([
-    ["a gmail address", "gmail.com", ["google"]],
-    ["a googlemail address", "googlemail.com", ["google"]],
+    // Codes are on in the default test install: an invited member outside
+    // the domains may sign in by code (no Gmail or Workspace needed).
+    ["a gmail address", "gmail.com", ["google", "email_code"]],
+    ["a googlemail address", "googlemail.com", ["google", "email_code"]],
     ["an address in the login domains", "a.com", ["google"]],
-    // Codes are on in the default test install: a consumer account on a
-    // custom address is let in after a code (#2590 G2).
+    // A consumer account on a custom address is let in after a code (#2590 G2).
     [
       "any other domain, codes on",
       "other.com",
-      ["google_workspace", "google_after_code"],
+      ["google_workspace", "google_after_code", "email_code"],
     ],
   ])("%s", async (_, domain, ways) => {
     const r = await reachOf(OWN, await owner(), uniq("r", domain));

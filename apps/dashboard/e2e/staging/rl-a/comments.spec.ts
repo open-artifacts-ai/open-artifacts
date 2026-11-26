@@ -1,5 +1,6 @@
 import { type CommentList, R } from "@oa/shared";
 import type { Agent } from "../../real/mcp-client";
+import { withDeadline } from "../with-deadline";
 import {
   api,
   cleanup,
@@ -30,24 +31,11 @@ const STEP_MS = 15_000;
 const SETUP_MS = 55_000;
 
 /** Fails fast and by name: a hung network step says which one hung. */
-async function step<T>(
+const step = <T>(
   name: string,
   fn: () => Promise<T>,
   ms = STEP_MS,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${name} timed out after ${ms / 1000}s`)),
-      ms,
-    );
-  });
-  try {
-    return await Promise.race([fn(), late]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
+): Promise<T> => withDeadline(fn(), ms, name);
 
 // Two hook calls in all: one session, one OAuth grant (budget: 10 or fewer).
 let owner: Person;
@@ -88,8 +76,8 @@ const threads = async (agent: Agent, id: string) => {
   return (r.data as unknown as CommentList).threads;
 };
 
-test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies", async () => {
-  await needs("asks and toAsker (#1535, #1794)", MIN);
+test("asks: an agent's ask, a person's answer (not a yes)", async () => {
+  await needs("asks (#1535)", MIN);
   const id = await pageOf("T19 ask");
   {
     const question = "Ship the short version?";
@@ -127,48 +115,7 @@ test("asks: an agent's ask, a person's answer (not a yes), and toAsker replies",
       typed: false,
       yes: false,
     });
-
-    // toAsker: reaches the asking agent's address, if it has one (this one
-    // has none, so nobody is told) and is still a reply.
-    const reply = await step("POST commentReplies (toAsker)", () =>
-      api(owner, R.commentReplies(id, thread.id), {
-        method: "POST",
-        body: JSON.stringify({ body: "Yes, short.", toAsker: true }),
-      }),
-    );
-    expect(reply.status).toBe(201);
-    // Never with mentions.
-    const both = await step("POST commentReplies (toAsker + mentions)", () =>
-      api(owner, R.commentReplies(id, thread.id), {
-        method: "POST",
-        body: JSON.stringify({
-          body: "Also them",
-          toAsker: true,
-          mentions: [{ key: `agent:${"0".repeat(32)}` }],
-        }),
-      }),
-    );
-    expect(await refusal(both, 400)).toBe("bad_request");
   }
-  // A person's thread has no agent to reply to.
-  const t = await json<{ id: string }>(
-    await step("POST comments (person's thread)", () =>
-      api(owner, R.comments(id), {
-        method: "POST",
-        body: JSON.stringify({
-          anchor: { kind: "note" },
-          body: "A person asks",
-        }),
-      }),
-    ),
-  );
-  const res = await step("POST commentReplies (no asker)", () =>
-    api(owner, R.commentReplies(id, t.id), {
-      method: "POST",
-      body: JSON.stringify({ body: "To the asker", toAsker: true }),
-    }),
-  );
-  expect(await refusal(res, 400)).toBe("not_an_ask");
 });
 
 test("live reply: an agent's reply shows with the page open, no reload", {
