@@ -2107,8 +2107,11 @@ describe("a run with more job logs than one reconcile may read", () => {
     expect(first[0]?.notes).toEqual([
       `read ${RECONCILE_LOGS} job logs so far; the next reconcile reads the rest`,
     ]);
-    // Nothing is recorded until the run is read whole.
-    expect(g.comments.flatMap((c) => parseStore(c.body))).toEqual([]);
+    // The 25 read are recorded at once; the run is not marked yet.
+    expect(g.comments.flatMap((c) => parseStore(c.body))).toHaveLength(
+      RECONCILE_LOGS,
+    );
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([]);
     reset();
     g.clock.now = NOW + HOUR;
     const second = reconcile({ exec, repo: REPO, nowMs: NOW + HOUR });
@@ -2234,5 +2237,68 @@ describe("a run whose logs fail part way, or whose jobs span pages", () => {
     expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
       "900/2",
     ]);
+  });
+});
+
+describe("a big run with many failures per log", () => {
+  it("the Prover's case: 32 jobs with 10 failures each records every sighting across reconciles, and its progress stays tiny", () => {
+    const JOBS = 32;
+    const PER = 10;
+    const logOf = (n: number) =>
+      [
+        "2026-11-25T16:10:09.0000000Z  RUN  v4.1.12 /home/runner/work/open-artifacts/open-artifacts/apps/server",
+        ...Array.from(
+          { length: PER },
+          (_, i) =>
+            `2026-11-25T16:27:12.0000000Z  FAIL  test/big.test.ts > job ${n} > case ${i}`,
+        ),
+      ].join("\n");
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path))
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            total_count: JOBS,
+            jobs: Array.from({ length: JOBS }, (_, i) => ({
+              id: 100 + i,
+              name: `test-shard (${i})`,
+              conclusion: "failure",
+              completed_at: "2026-11-26T10:00:00Z",
+            })),
+          }),
+          stderr: "",
+        };
+      const m = /\/actions\/jobs\/(\d+)\/logs$/.exec(path);
+      if (m) {
+        logs++;
+        return { code: 0, stdout: logOf(Number(m[1]) - 100), stderr: "" };
+      }
+      return g.exec(cmd, args);
+    };
+    const results: string[] = [];
+    for (let e = 0; e < 3; e++) {
+      g.clock.now = NOW + e * HOUR;
+      logs = 0;
+      const [r] = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      results.push(r?.result ?? "");
+    }
+    expect(results).toEqual(["left", "tracked", "recorded already"]);
+    const seen = g.comments.flatMap((c) => parseStore(c.body));
+    expect(seen).toHaveLength(JOBS * PER);
+    expect(new Set(seen.map((x) => x.key)).size).toBe(JOBS * PER);
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
+      "900/2",
+    ]);
+    // The progress is job ids only: far under any limit.
+    const progress = g.comments.filter((c) => parseMarks(c.body).progress);
+    expect(progress.length).toBeGreaterThan(0);
+    for (const c of progress) expect(c.body.length).toBeLessThan(2000);
+    // And no comment passes GitHub's limit.
+    for (const c of [...g.comments, ...g.pendings])
+      expect(c.body.length).toBeLessThan(65536);
   });
 });
