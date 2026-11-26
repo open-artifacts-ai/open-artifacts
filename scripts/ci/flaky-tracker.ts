@@ -2,14 +2,16 @@
 // its CI and redline-staging, and both behave the same). Tracking only: it
 // reruns nothing and blocks nothing. flaky-tracker.yml runs it when a CI run
 // passes on attempt 2 or later; runs are serialized per repo (one concurrency
-// group, queued). An hourly reconcile (--reconcile) catches any run that
-// event missed: it lists the CI runs created in the last RERUN_DAYS plus
-// RECONCILE_HOURS that
-// passed on attempt 2 or later and were updated in the last RECONCILE_HOURS,
-// and tracks each one the store has no `passed` line for, through the same
-// code. That line means the run is fully handled: it is
-// written with the run's sightings when nothing is filed, else in its own
-// store comment after every filing succeeded, so a failed filing is retried.
+// group, queued). A reconcile (--reconcile), right after every tracker run
+// and on dispatch, never on a clock, catches any run that event missed: it
+// lists every CI run created in the last RERUN_DAYS plus QUIET_DAYS (plus
+// RECONCILE_HOURS of slack) that passed on attempt 2 or later, however long
+// ago it passed, and tracks each one the store has no `passed` line for,
+// through the same code. So a dropped event is caught by the next completion
+// even when it comes QUIET_DAYS after a rerun on the last allowed day. That line means the run is fully handled: it is written with the run's
+// sightings when nothing is filed, else in its own store comment after every
+// filing succeeded (so a failed filing is retried), and on its own when the
+// earlier attempts hold no failed test (so the run is not read again).
 // Every test that failed on an earlier attempt of that run, with the same
 // head commit, failed and then passed with nothing changed.
 //
@@ -30,8 +32,11 @@
 // first, in one open store issue labelled `flaky-sightings`, as comments by
 // github-actions[bot] holding machine-readable lines. A test is filed (its
 // `flaky` issue opened, or the open one bumped, with the run links) only when
-// it was seen in 2 or more different runs within the last 7 days, counting
-// this one; a first sighting never files anything. When more than
+// it was seen in 2 or more different runs within 7 days of this failure,
+// counting this one; a first sighting never files anything. The 7 days are
+// measured between the failures' own times (each failed job's completion),
+// never from when the tracker runs, so a run the reconcile tracks days late
+// files exactly what its event would have. When more than
 // MAX_FILED_PER_RUN tests would be filed from one run, one summary issue is
 // filed instead of those. A store with more than STORE_MAX_COMMENTS comments
 // is closed and continued in a new one that names it, and the read follows
@@ -81,10 +86,17 @@ const STORE_CHAIN_MAX = 10;
  * workflow's name, so it is never read.
  */
 export const WATCHED = ["ci.yml"];
-/** The hourly reconcile tracks the runs updated in the last this many hours. */
+/** Slack on top of RERUN_DAYS plus QUIET_DAYS in the reconcile's range. */
 export const RECONCILE_HOURS = 26;
 /** GitHub lets a run be rerun for this many days after it was created. */
 export const RERUN_DAYS = 30;
+/**
+ * The longest stretch with no event (so no reconcile) the reconcile still
+ * covers: a run rerun on its last allowed day and then QUIET_DAYS with no
+ * completion is still listed when the next completion comes. Every handled
+ * run is marked, so listing further back costs only the listing.
+ */
+export const QUIET_DAYS = 30;
 /** list-workflow-runs returns at most this many runs for one query. */
 export const LIST_MAX = 1000;
 const PER_PAGE = 100;
@@ -328,6 +340,18 @@ export const runDoneComment = (run: RunInfo) =>
   ].join("\n");
 
 /**
+ * The store comment that marks a run handled whose earlier attempts hold no
+ * failed test (only failures outside the tests), so the reconcile, which
+ * looks back over the whole rerun period, never reads it again.
+ */
+export const noTestComment = (run: RunInfo) =>
+  [
+    `Run ${run.url} passed on attempt ${run.attempt}: no failed test in its earlier attempts.`,
+    "",
+    markerBlock([passedMark(run)]),
+  ].join("\n");
+
+/**
  * The store comments for this run's sightings, split to stay under GitHub's
  * comment limit. Each ends with its own marker block. Only the last one names
  * the run's passing attempt (`passed run/attempt`), and only when marksRun:
@@ -370,12 +394,16 @@ export function storeComments(
   return out;
 }
 
-/** The sightings within the window ending now, one per run (the earliest). */
-export function inWindow(s: Sighting[], nowMs: number): Sighting[] {
-  const from = nowMs - WINDOW_DAYS * DAY_MS;
+/**
+ * The sightings within WINDOW_DAYS of `atMs` (a failure's own time), before
+ * or after it, one per run (the earliest). Never the tracker's clock: a run
+ * tracked late, or out of order, is judged as it would have been on time.
+ */
+export function inWindow(s: Sighting[], atMs: number): Sighting[] {
+  const span = WINDOW_DAYS * DAY_MS;
   const byRun = new Map<number, Sighting>();
   for (const x of s) {
-    if (Date.parse(x.at) < from) continue;
+    if (Math.abs(Date.parse(x.at) - atMs) > span) continue;
     const had = byRun.get(x.run);
     if (!had || x.attempt < had.attempt) byRun.set(x.run, x);
   }
@@ -485,15 +513,15 @@ export type Action =
  * What one test's sighting does, given the store's sightings of it (any run)
  * and the open `flaky` issues. Skip when its open issue notes this run
  * already (a tracker rerun). Otherwise file it only when it was seen in 2 or
- * more different runs within the window, counting this one: bump its open
- * issue, or open one. Else only record it.
+ * more different runs within WINDOW_DAYS of this sighting's own time,
+ * counting this one: bump its open issue, or open one. Else only record it.
+ * When the tracker runs never decides it, so a late replay files the same.
  */
 export function decide(o: {
   f: Failure;
   sighting: Sighting;
   recorded: Recorded[];
   open: Issue[];
-  nowMs: number;
 }): Action {
   const { f, sighting } = o;
   const key = keyOf(f.id);
@@ -503,7 +531,7 @@ export function decide(o: {
     return { kind: "skip", f, sighting, issue: issue.number };
   const window = inWindow(
     [...o.recorded.filter((r) => r.key === key), sighting],
-    o.nowMs,
+    Date.parse(sighting.at),
   );
   if (window.length < 2) return { kind: "record", f, sighting };
   if (issue)
@@ -697,15 +725,16 @@ const issueInfo = (exec: Exec, repo: string, n: number) =>
 
 /**
  * The store issues to read: the open ones, and each one's predecessor (its
- * bot-written `prev` mark) while the store began inside the window.
+ * bot-written `prev` mark) while the store began after `from` (by default the
+ * window's start).
  */
 export function storeChain(
   exec: Exec,
   repo: string,
   open: Issue[],
   nowMs: number,
+  from = nowMs - WINDOW_DAYS * DAY_MS,
 ): number[] {
-  const from = nowMs - WINDOW_DAYS * DAY_MS;
   const out: number[] = [];
   const queue = open.map((i) => i.number);
   while (queue.length && out.length < STORE_CHAIN_MAX) {
@@ -721,16 +750,17 @@ export function storeChain(
 }
 
 /**
- * The stores' sightings and passed runs since the window opened, from bot
- * comments only.
+ * The stores' sightings and passed runs since `fromMs` (by default when the
+ * window opened), from bot comments only.
  */
 function readStore(
   exec: Exec,
   repo: string,
   stores: number[],
   nowMs: number,
+  fromMs = nowMs - WINDOW_DAYS * DAY_MS,
 ): { sightings: Recorded[]; passed: Set<Passed> } {
-  const since = new Date(nowMs - WINDOW_DAYS * DAY_MS).toISOString();
+  const since = new Date(fromMs).toISOString();
   const sightings: Recorded[] = [];
   const passed = new Set<Passed>();
   for (const n of stores) {
@@ -803,6 +833,7 @@ function openStore(
   exec: Exec,
   repo: string,
   nowMs: number,
+  fromMs: number,
   notes: string[],
 ): { store: number; read: number[] } {
   ensureLabel(
@@ -851,7 +882,7 @@ function openStore(
   }
   return {
     store: newest.number,
-    read: storeChain(exec, repo, open, nowMs),
+    read: storeChain(exec, repo, open, nowMs, fromMs),
   };
 }
 
@@ -896,12 +927,23 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
 } {
   const { exec, run, nowMs } = o;
   const { found, notes } = collect(exec, run);
-  if (!found.length) return { done: [], notes };
 
-  const { store, read } = openStore(exec, run.repo, nowMs, notes);
-  const kept = readStore(exec, run.repo, read, nowMs);
+  // The store is read from WINDOW_DAYS before this run's earliest failure,
+  // not before now: a run tracked days late still sees the sightings it
+  // pairs with (decide() judges by the failures' own times).
+  const fromMs =
+    Math.min(nowMs, ...found.map(({ sighting }) => Date.parse(sighting.at))) -
+    WINDOW_DAYS * DAY_MS;
+  const { store, read } = openStore(exec, run.repo, nowMs, fromMs, notes);
+  const kept = readStore(exec, run.repo, read, nowMs, fromMs);
   const stored = kept.sightings;
   const marked = kept.passed.has(`${run.runId}/${run.attempt}`);
+  // No failed test, only failures outside the tests: nothing to record, but
+  // the run is marked handled, so the reconcile never reads it again.
+  if (!found.length) {
+    if (!marked) comment(exec, run.repo, store, noTestComment(run));
+    return { done: [], notes };
+  }
   const fresh = found.filter(
     ({ f, sighting }) =>
       !stored.some((r) => r.key === keyOf(f.id) && r.run === sighting.run),
@@ -920,7 +962,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   // Tracker runs are serialized (flaky-tracker.yml), so one list is current.
   const open = listOpen(exec, run.repo, LABEL);
   const actions = found.map(({ f, sighting }) =>
-    decide({ f, sighting, recorded, open, nowMs }),
+    decide({ f, sighting, recorded, open }),
   );
   const done: Done[] = [];
   const filed: (Action & { kind: "create" | "bump" })[] = [];
@@ -939,7 +981,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
   // adds none. The run marker (`passed run/attempt`) means "fully handled",
   // and the reconcile skips a marked run. With nothing to file it rides on
   // the last store part. With filings it is written last (finish), so a
-  // failed create or bump leaves the run unmarked and the hourly reconcile
+  // failed create or bump leaves the run unmarked and the next reconcile
   // tracks it again, where decide() sees the stored sightings.
   for (const body of storeComments(run, fresh, !filed.length))
     comment(exec, run.repo, store, body);
@@ -1018,7 +1060,6 @@ type RunRow = {
   id: number;
   run_attempt: number;
   conclusion: string | null;
-  updated_at: string;
 };
 
 /**
@@ -1042,7 +1083,7 @@ export function listRuns(
         "api",
         `${path}&created=${range}&per_page=${PER_PAGE}&page=${p}`,
         "--jq",
-        "{total_count, workflow_runs: [.workflow_runs[] | {id, run_attempt, conclusion, updated_at}]}",
+        "{total_count, workflow_runs: [.workflow_runs[] | {id, run_attempt, conclusion}]}",
       ]),
     ) as { total_count: number; workflow_runs: RunRow[] };
   const first = page(1);
@@ -1064,12 +1105,23 @@ export function listRuns(
 }
 
 /**
- * The runs the reconcile looks at: runs of the watched workflows created in
- * the last RERUN_DAYS days plus RECONCILE_HOURS (a run can be rerun up to
- * RERUN_DAYS after it was created, and its rerun must stay listed for the
- * whole update window) whose latest attempt (2 or later) passed and that were updated in
- * the last RECONCILE_HOURS, fork PRs' runs too, oldest first. Whether a
- * failure counts toward two in seven days is decided later, by the failed
+ * The start of the reconcile's range, in whole seconds: RERUN_DAYS plus
+ * QUIET_DAYS plus RECONCILE_HOURS ago. A run can be rerun up to RERUN_DAYS
+ * after it was created, and the next completion may come up to QUIET_DAYS
+ * after that rerun, so the range never depends on when the next event comes
+ * within that bound.
+ */
+export const reconcileFrom = (nowMs: number) =>
+  Math.floor(nowMs / 1000) * 1000 -
+  (RERUN_DAYS + QUIET_DAYS) * DAY_MS -
+  RECONCILE_HOURS * 3600 * 1000;
+
+/**
+ * The runs the reconcile looks at: every run of the watched workflows created
+ * since reconcileFrom whose latest attempt (2 or later) passed, however long
+ * ago it passed, fork PRs' runs too, oldest first. No update window: a run
+ * whose event was dropped stays a candidate until the store marks it, even
+ * after QUIET_DAYS with no event. Whether a failure counts toward two in seven days is decided later, by the failed
  * job's completion time, never by the run's creation.
  */
 export function recentRuns(
@@ -1078,10 +1130,7 @@ export function recentRuns(
   nowMs: number,
 ): { runId: number; attempt: number }[] {
   const to = Math.floor(nowMs / 1000) * 1000;
-  // A rerun can start up to RERUN_DAYS after creation, and a run updated
-  // any time in the last RECONCILE_HOURS must still be in the range.
-  const from = to - RERUN_DAYS * DAY_MS - RECONCILE_HOURS * 3600 * 1000;
-  const touched = nowMs - RECONCILE_HOURS * 3600 * 1000;
+  const from = reconcileFrom(nowMs);
   const out = new Map<number, number>();
   for (const wf of WATCHED)
     for (const r of listRuns(
@@ -1090,23 +1139,29 @@ export function recentRuns(
       from,
       to,
     ))
-      if (
-        r.conclusion === "success" &&
-        r.run_attempt > 1 &&
-        Date.parse(r.updated_at) >= touched
-      )
+      if (r.conclusion === "success" && r.run_attempt > 1)
         out.set(r.id, r.run_attempt);
   return [...out]
     .map(([runId, attempt]) => ({ runId, attempt }))
     .sort((a, b) => a.runId - b.runId);
 }
 
-/** The `passed run/attempt` lines of the stores, without creating one. */
+/**
+ * The `passed run/attempt` lines of the stores, without creating one, over
+ * the whole reconcile range: a run's mark is written after the run was
+ * created, so every listed run's mark is in a comment since reconcileFrom.
+ */
 function passedRuns(exec: Exec, repo: string, nowMs: number): Set<Passed> {
   const open = listOpen(exec, repo, STORE_LABEL);
   if (!open.length) return new Set();
-  return readStore(exec, repo, storeChain(exec, repo, open, nowMs), nowMs)
-    .passed;
+  const from = reconcileFrom(nowMs);
+  return readStore(
+    exec,
+    repo,
+    storeChain(exec, repo, open, nowMs, from),
+    nowMs,
+    from,
+  ).passed;
 }
 
 export type Reconciled = {
@@ -1215,7 +1270,7 @@ function report(lines: string[]) {
 function mainReconcile(repo: string) {
   const all = reconcile({ exec: realExec, repo, nowMs: Date.now() });
   const lines = [
-    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later and were updated in the last ${RECONCILE_HOURS} hours`,
+    `Flaky tracker reconcile: ${all.length} runs created in the last ${RERUN_DAYS + QUIET_DAYS} days and ${RECONCILE_HOURS} hours passed on attempt 2 or later`,
   ];
   for (const r of all) {
     lines.push(`- CI run ${r.runId} attempt ${r.attempt}: ${r.result}`);

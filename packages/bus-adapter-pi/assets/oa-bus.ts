@@ -573,11 +573,19 @@ function rosterLine(
 }
 
 /** @oa/bus-protocol isFallbackName: a name only the harness gave the session. */
+const KIND_DEFAULT_NAMES: Readonly<Record<string, string>> = {
+  antigravity: "agy",
+};
+
 const isFallbackName = (name: string, kind: string): boolean => {
   const lname = name.toLowerCase();
+  const d = Object.hasOwn(KIND_DEFAULT_NAMES, kind)
+    ? KIND_DEFAULT_NAMES[kind]
+    : undefined;
   return (
     lname === kind ||
     lname.startsWith(`${kind}-`) ||
+    (d !== undefined && (lname === d || lname.startsWith(`${d}-`))) ||
     lname === "agent" ||
     /^claude-\d+$/.test(lname)
   );

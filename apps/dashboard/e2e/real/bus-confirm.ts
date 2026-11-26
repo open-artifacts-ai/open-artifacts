@@ -3,13 +3,28 @@
 // approved through the device flow in the page, a daemon socket with one open
 // agent, and the proposals an agent or `oa-bus link` would make.
 import type { Page } from "@playwright/test";
-import { withDeadline } from "../staging/with-deadline";
 import { APP, createToken, expect } from "./fixtures";
+import { takeFrame } from "./frame-wait";
 import { mcpWithToken } from "./mcp-client";
+import { spendCodes } from "./spend-codes";
 
 /** A fresh interactive-looking session (dev only, auth.ts ?fresh=1) that lands on `next`. */
 export const freshSignInUrl = (email: string, next: string, role = "member") =>
   `${APP}/auth/dev-login?${new URLSearchParams({ email, role, fresh: "1", next })}`;
+
+/** Device codes made and not yet spent: a refusal leaves one behind (an IP holds five). */
+const outstanding = new Set<string>();
+
+/**
+ * Teardown for a test that approves machines: spends every code still
+ * outstanding (a redeem answers whatever the code's state), each under a short
+ * bound, errors ignored. Never blocks a failure: call it from afterEach.
+ */
+export async function spendDeviceCodes(): Promise<void> {
+  const codes = [...outstanding];
+  outstanding.clear();
+  await spendCodes(APP, codes);
+}
 
 /** Approves a new machine in the browser (the real device flow); returns its token. */
 export async function approveMachine(page: Page): Promise<string> {
@@ -23,6 +38,7 @@ export async function approveMachine(page: Page): Promise<string> {
     user_code: string;
   };
   expect(res.status, JSON.stringify(dev)).toBe(201);
+  outstanding.add(dev.device_code);
   await page.goto(`${APP}/bus/approve`);
   await page.locator("#code").fill(dev.user_code);
   await page.getByRole("button", { name: /continue|next|check/i }).click();
@@ -33,7 +49,15 @@ export async function approveMachine(page: Page): Promise<string> {
     ),
     page.getByRole("button", { name: "Approve", exact: true }).click(),
   ]);
-  expect(approved.status(), await approved.text()).toBeLessThan(300);
+  // The status is what counts, and it is known with the headers: neither a
+  // success nor a failure waits on the body (a held body would stall it, and
+  // WebKit drops a body once the page navigates). A failure names the status.
+  // A failure throws at once, with nothing awaited first: the code it leaves
+  // behind is spent by spendDeviceCodes in the test's teardown.
+  if (approved.status() >= 300)
+    throw new Error(
+      `POST /bus/approve: ${approved.status()} ${approved.statusText()}`,
+    );
   // Approval is committed once POST /bus/approve answers, and this is the
   // first token request for the code (so inside its rate limit): it returns
   // the token. No polling.
@@ -44,6 +68,7 @@ export async function approveMachine(page: Page): Promise<string> {
   });
   const j = (await t.json()) as { status?: string; machine_token?: string };
   expect(j.machine_token, JSON.stringify(j)).toBeTruthy();
+  outstanding.delete(dev.device_code);
   return String(j.machine_token);
 }
 
@@ -73,19 +98,7 @@ export async function openAgent(
     else frames.push(f);
   });
   const next = (type: string) =>
-    withDeadline(
-      new Promise<Frame>((resolve) => {
-        const take = (f: Frame) => {
-          if (f.type === type) resolve(f);
-          else waiters.push(take);
-        };
-        const q = frames.findIndex((f) => f.type === type);
-        if (q >= 0) resolve(frames.splice(q, 1)[0] as Frame);
-        else waiters.push(take);
-      }),
-      15_000,
-      `a ${type} frame`,
-    );
+    takeFrame(frames, waiters, (f) => f.type === type, `a ${type} frame`);
   await new Promise<void>((resolve, reject) => {
     ws.addEventListener("open", () => resolve());
     ws.addEventListener("error", () => reject(new Error("socket error")));

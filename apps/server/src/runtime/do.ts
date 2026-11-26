@@ -706,6 +706,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
         );
       if (!pcols.some((c) => c.name === "identity"))
         sql.exec("alter table comment_participants add column identity text");
+      // #3132: when the agent joined the thread (ISO); null for older rows.
+      if (!pcols.some((c) => c.name === "joined_at"))
+        sql.exec("alter table comment_participants add column joined_at text");
       if (legacy)
         sql.exec(`insert or ignore into totals (id, bytes, day, writes, cols)
           select 1, coalesce((select v from meta where k = 'bytes'), 0), 0, 0,

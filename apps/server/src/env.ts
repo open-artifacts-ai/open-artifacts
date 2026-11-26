@@ -63,10 +63,8 @@ export interface Env {
    */
   INSTALL_OPTOUT_KEY?: string;
   /**
-   * The instance's Web Push key pair (#2512 S5), base64url: the 65-byte
-   * uncompressed P-256 public point and the 32-byte private scalar. Secrets
-   * the platform sets on hosted and setup sets on self-host; the code never
-   * makes one. Either missing: push is off and every push route answers 404.
+   * Legacy (#2512 S5), ignored since #3024: the Web Push key pair now derives
+   * from SESSION_SECRET. Optional and unread; push is on iff SESSION_SECRET is set.
    */
   VAPID_PUBLIC_KEY?: string;
   VAPID_PRIVATE_KEY?: string;

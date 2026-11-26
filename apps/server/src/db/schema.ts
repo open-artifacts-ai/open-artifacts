@@ -801,6 +801,7 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
     .primaryKey()
     .references(() => users.id, { onDelete: "cascade" }),
   needsYouBrowser: integer("needs_you_browser").notNull().default(0),
+  // Legacy (#3024): Updates are list-only; never read or written. Dropped in step 8.
   updatesBrowser: integer("updates_browser").notNull().default(0),
   browserAllAsks: integer("browser_all_asks").notNull().default(0),
   quietStart: text("quiet_start"),
@@ -809,7 +810,7 @@ export const notificationPrefs = sqliteTable("notification_prefs", {
   lockDetail: integer("lock_detail").notNull().default(0),
   // #2577 S2: 1 = the member's agents hear nobody outside (no holds, mentions refused).
   agentRequestsOff: integer("agent_requests_off").notNull().default(0),
-  // #2577: 1 = a request held for the member also sends a browser push (default: inbox only).
+  // Legacy (#3024): a held request is part of Needs you now; never read or written. Dropped in step 8.
   phonePush: integer("phone_push").notNull().default(0),
   updatedAt: integer("updated_at").notNull(),
 });
@@ -850,7 +851,8 @@ export const pushSubscriptions = sqliteTable(
     p256dh: text("p256dh").notNull(),
     auth: text("auth").notNull(),
     label: text("label"),
-    // This browser's own switches (design v10): Needs-you and Updates on it.
+    // Legacy (#3024): a row is an enrolled device and has no switches of its own;
+    // never read or written. Dropped in step 8.
     needsYou: integer("needs_you").notNull().default(1),
     updates: integer("updates").notNull().default(0),
     createdAt: integer("created_at").notNull(),
