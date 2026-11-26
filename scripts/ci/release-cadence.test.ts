@@ -7,8 +7,6 @@ import {
   type Exec,
   planStep,
   RELEASE_BRANCH,
-  type Tested,
-  testedHead,
   willWrite,
 } from "./release-cadence.ts";
 
@@ -57,10 +55,36 @@ type Fixture = {
   tags?: string[];
   /** The PR head a fresh read returns (default: the planning read's). */
   headNow?: string;
+  /** main's manifest and package.json (default: 0.5.0; null: unreadable). */
+  main?: { manifest?: string | null; pkg?: string | null };
+  /** ci.yml's runs the runs API lists for the head (default: one green). */
+  ciRuns?: Partial<CiRunRow>[];
   release?: { tag_name: string; published_at: string } | null;
   /** What enqueuePullRequest answers (default: the front, jumped). */
   enqueue?: { position: number; jump: boolean } | null;
 };
+
+type CiRunRow = {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  event: string;
+  head_branch: string;
+  head_sha: string;
+  created_at: string;
+  repo: string;
+};
+/** A completed CI run of the release PR's head, green unless told. */
+const ciRow = (o: Partial<CiRunRow> = {}): Partial<CiRunRow> => ({
+  id: 9000,
+  status: "completed",
+  conclusion: "success",
+  event: "pull_request",
+  head_branch: RELEASE_BRANCH,
+  created_at: hoursAgo(0.5),
+  repo: REPO,
+  ...o,
+});
 
 /** A fake `gh`: answers graphql and the REST/issue commands from the fixture and logs every call. */
 function fake(f: Fixture) {
@@ -137,10 +161,27 @@ function fake(f: Fixture) {
         }),
       );
     }
+    const runs =
+      /\/actions\/workflows\/ci\.yml\/runs\?head_sha=([0-9a-f]+)/.exec(path);
+    if (args[0] === "api" && runs)
+      return ok(
+        JSON.stringify(
+          (f.ciRuns ?? [ciRow()]).map((r) => ({ head_sha: runs[1], ...r })),
+        ),
+      );
     const file = /\/contents\/([^?]+)\?ref=(.+)$/.exec(path);
     if (args[0] === "api" && file) {
       const [, name, ref] = file;
       const v = f.versions ?? { main: "0.5.0", head: "0.6.0" };
+      const missing = { code: 1, stdout: "", stderr: "HTTP 502" };
+      if (ref === "main" && name === "package.json" && f.main?.pkg === null)
+        return missing;
+      if (ref === "main" && name === "package.json" && f.main?.pkg)
+        return ok(JSON.stringify({ version: f.main.pkg }));
+      if (ref === "main" && name === ".release-please-manifest.json")
+        return f.main?.manifest === null
+          ? missing
+          : ok(JSON.stringify({ ".": f.main?.manifest ?? v.main }));
       if (name === "package.json")
         return ok(
           JSON.stringify({ version: ref === "main" ? v.main : v.head }),
@@ -179,16 +220,8 @@ const logs = () => {
   return { log: (s: string) => out.push(s), out };
 };
 
-/** The event of a green CI run on the release branch that tested `sha`. */
-const ciRun = (sha = SHA): Tested => ({
-  path: ".github/workflows/ci.yml",
-  branch: RELEASE_BRANCH,
-  repo: REPO,
-  conclusion: "success",
-  sha,
-});
-const go = (g: ReturnType<typeof fake>, tested: Tested = ciRun(), l = logs()) =>
-  arm({ exec: g.exec, repo: REPO, log: l.log, tested });
+const go = (g: ReturnType<typeof fake>, l = logs()) =>
+  arm({ exec: g.exec, repo: REPO, log: l.log });
 
 /** The enqueuePullRequest calls, as their -f fields. */
 const enqueues = (g: ReturnType<typeof fake>) =>
@@ -213,11 +246,11 @@ const codePrs = (n: number) =>
 describe("arm: the release PR jumps the queue as soon as its CI goes green", () => {
   it("queues a green release PR at the front at once, however many code PRs are queued", async () => {
     // Leo: "Code merge to release should be 10, maybe 20 mins MAX". No
-    // drain wait and no cap: the green CI event queues it.
+    // drain wait and no cap: the first event that sees its CI green queues it.
     for (const n of [0, 1, 5, 40]) {
       const g = fake({ pr: {}, queue: codePrs(n) });
       const l = logs();
-      expect(await go(g, ciRun(), l)).toEqual({ action: "enqueued", pr: 301 });
+      expect(await go(g, l)).toEqual({ action: "enqueued", pr: 301 });
       expect(enqueues(g)).toHaveLength(1);
       expect(l.out.join("\n")).toContain(
         `at the front of the merge queue (position 1, jump: true), ahead of ${n} code PRs`,
@@ -227,7 +260,7 @@ describe("arm: the release PR jumps the queue as soon as its CI goes green", () 
     }
   });
 
-  it("jumps, pinned to the head the green CI run tested and the PR's node id", async () => {
+  it("jumps, pinned to the head CI tested and the PR's node id", async () => {
     const g = fake({ pr: { id: "PR_kwDOabc" } });
     await go(g);
     const [m] = enqueues(g);
@@ -246,8 +279,18 @@ describe("arm: the release PR jumps the queue as soon as its CI goes green", () 
     expect(q.join(" ")).toContain("isDraft");
     expect(q.join(" ")).toContain("isCrossRepository");
     expect(q.join(" ")).toContain(`head=${RELEASE_BRANCH}`);
-    expect(q.join(" ")).toContain("mergeQueue(branch:");
-    expect(q.join(" ")).toContain("branch=main");
+  });
+
+  it("enqueues with a write runner when given one, and reads with the other", async () => {
+    const g = fake({ pr: {} });
+    const writes: string[][] = [];
+    const writeExec: Exec = (cmd, args) => {
+      writes.push(args);
+      return g.exec(cmd, args);
+    };
+    await arm({ exec: g.exec, writeExec, repo: REPO, log: logs().log });
+    expect(writes).toHaveLength(1);
+    expect(String(writes[0]?.[3])).toMatch(/^query=mutation/);
   });
 
   it("#3240: a head release-please pushed after CI tested the old one is never queued", async () => {
@@ -255,49 +298,84 @@ describe("arm: the release PR jumps the queue as soon as its CI goes green", () 
     // enqueue. The fresh read right before it sees the move.
     const g = fake({ pr: {}, headNow: NEW_SHA });
     const l = logs();
-    expect(await go(g, ciRun(SHA), l)).toEqual({ action: "untested", pr: 301 });
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 301 });
     expect(enqueues(g)).toEqual([]);
     expect(l.out.join("\n")).toContain(
       `head moved to ${NEW_SHA} after CI tested ${SHA}`,
     );
-    // The fresh read is the REST head, after the planning read.
     const reads = g.calls.map((c) => c.join(" "));
     const fresh = reads.findIndex((c) => c.includes(`repos/${REPO}/pulls/301`));
     const planned = reads.findIndex((c) => c.includes("query=query"));
     expect(fresh).toBeGreaterThan(planned);
   });
+});
 
-  it("a CI run that tested another head than the PR's queues nothing; the new head's CI will", async () => {
-    // The planning read already shows the new head.
-    const g = fake({ pr: { oid: NEW_SHA } });
+describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 replay)", () => {
+  // #3249: release 0.253.1, tag v0.253.0, its CI green. A later event in the
+  // one-slot concurrency queue (an unrelated CI completion, a dispatch) can
+  // replace its CI event; whatever event runs must still queue it.
+  const f3249: Fixture = {
+    pr: { number: 3249, title: "chore(main): release 0.253.1" },
+    versions: { main: "0.253.0", head: "0.253.1" },
+    files: {
+      manifest: JSON.stringify({ ".": "0.253.1" }),
+      changelog: "# Changelog\n\n## [0.253.1](https://x) (2026-11-26)\n",
+    },
+    tags: ["v0.252.0", "v0.253.0"],
+  };
+
+  it("any event queues a green head: the planner reads its CI runs, not the event", async () => {
+    const g = fake(f3249);
+    expect(await go(g)).toEqual({ action: "enqueued", pr: 3249 });
+    const list = g.calls
+      .map((c) => c.join(" "))
+      .find((c) => c.includes("/actions/workflows/ci.yml/runs?"));
+    expect(list).toContain(
+      `repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}`,
+    );
+  });
+
+  it("the newest completed run decides: a newer red run blocks an older green one", async () => {
+    const g = fake({
+      ...f3249,
+      ciRuns: [
+        ciRow({ id: 1, created_at: hoursAgo(2) }),
+        ciRow({ id: 2, conclusion: "failure", created_at: hoursAgo(1) }),
+        // Still running: not completed, so it does not count either way.
+        ciRow({
+          id: 3,
+          status: "in_progress",
+          conclusion: null,
+          created_at: hoursAgo(0.1),
+        }),
+      ],
+    });
     const l = logs();
-    expect(await go(g, ciRun(SHA), l)).toEqual({ action: "untested", pr: 301 });
-    expect(l.out.join("\n")).toContain(`but this CI run tested ${SHA}`);
-    expect(enqueues(g)).toEqual([]);
-    // Its own CI run then queues it.
-    const g2 = fake({ pr: { oid: NEW_SHA } });
-    expect((await go(g2, ciRun(NEW_SHA))).action).toBe("enqueued");
-    expect(enqueues(g2)[0]?.oid).toBe(NEW_SHA);
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("newest completed CI run 2 is failure");
+    // And a newer green rerun after a red one queues it.
+    const g2 = fake({
+      ...f3249,
+      ciRuns: [
+        ciRow({ id: 2, conclusion: "failure", created_at: hoursAgo(1) }),
+        ciRow({ id: 4, created_at: hoursAgo(0.2) }),
+      ],
+    });
+    expect((await go(g2)).action).toBe("enqueued");
   });
 
-  it("queues only on a green CI run of this repo's release branch, by workflow file", () => {
-    expect(testedHead(ciRun(), REPO)).toBe(SHA);
-    for (const t of [
-      {},
-      { ...ciRun(), conclusion: "failure" },
-      { ...ciRun(), path: ".github/workflows/release-please.yml" },
-      { ...ciRun(), branch: "feat/x" },
-      // A fork's PR whose branch merely has the release branch's name.
-      { ...ciRun(), repo: "mallory/open-artifacts" },
-      { ...ciRun(), sha: "abc123" },
-    ])
-      expect(testedHead(t, REPO), JSON.stringify(t)).toBeUndefined();
-  });
-
-  it("a release-please completion or a dispatch tested no head: it queues nothing", async () => {
-    for (const tested of [{}, { ...ciRun(), path: "" }]) {
-      const g = fake({ pr: {} });
-      expect((await go(g, tested)).action).toBe("untested");
+  it("no completed CI run of this repo's release-branch pull request counts as untested", async () => {
+    for (const ciRuns of [
+      [],
+      [ciRow({ status: "in_progress", conclusion: null })],
+      // A fork's PR on a branch with the same name.
+      [ciRow({ repo: "mallory/open-artifacts" })],
+      [ciRow({ head_branch: "feat/x" })],
+      [ciRow({ event: "merge_group" })],
+      [ciRow({ head_sha: NEW_SHA })],
+    ]) {
+      const g = fake({ ...f3249, ciRuns });
+      expect((await go(g)).action, JSON.stringify(ciRuns)).toBe("untested");
       expect(enqueues(g)).toEqual([]);
     }
   });
@@ -307,13 +385,9 @@ describe("arm: the release PR jumps the queue as soon as its CI goes green", () 
       const g = fake({ pr });
       expect((await go(g)).action).toBe("draft");
       expect(enqueues(g)).toEqual([]);
-      expect(
-        await willWrite({
-          exec: fake({ pr }).exec,
-          repo: REPO,
-          tested: ciRun(),
-        }),
-      ).toBe(false);
+      expect(await willWrite({ exec: fake({ pr }).exec, repo: REPO })).toBe(
+        false,
+      );
     }
   });
 });
@@ -334,15 +408,52 @@ describe("arm: only a consistent, increasing release version is queued", () => {
       "release PR #3243 not queued: version 0.246.1 is not above the latest tag v0.253.0",
     );
     expect(enqueues(g)).toEqual([]);
-    const p = await planStep({
-      exec: fake(f).exec,
-      repo: REPO,
-      tested: ciRun(),
-    });
+    const p = await planStep({ exec: fake(f).exec, repo: REPO });
     expect(p.write).toBe(false);
     expect(p.refused).toEqual([
       "version 0.246.1 is not above the latest tag v0.253.0",
+      "version 0.246.1 is not above main's .release-please-manifest.json (0.252.1)",
+      "version 0.246.1 is not above main's package.json (0.252.1)",
     ]);
+  });
+
+  it("the Prover's control: main unreadable, or main already at 0.253.2, refuses 0.253.1", async () => {
+    const base: Fixture = {
+      pr: { title: "chore(main): release 0.253.1" },
+      versions: { main: "0.253.0", head: "0.253.1" },
+      files: {
+        manifest: JSON.stringify({ ".": "0.253.1" }),
+        changelog: "## [0.253.1](x)\n",
+      },
+      tags: ["v0.253.0"],
+    };
+    for (const [main, want] of [
+      [{ pkg: null }, "no version readable from main's package.json"],
+      [
+        { manifest: null },
+        "no version readable from main's .release-please-manifest.json",
+      ],
+      [
+        { pkg: "0.253.2" },
+        "version 0.253.1 is not above main's package.json (0.253.2)",
+      ],
+      [
+        { manifest: "0.253.2" },
+        "version 0.253.1 is not above main's .release-please-manifest.json (0.253.2)",
+      ],
+      [
+        // Equal on main's package.json reads as landed (#2379); equal on
+        // its manifest alone refuses.
+        { manifest: "0.253.1" },
+        "version 0.253.1 is not above main's .release-please-manifest.json (0.253.1)",
+      ],
+    ] as const) {
+      const g = fake({ ...base, main });
+      await expect(go(g), JSON.stringify(main)).rejects.toThrow(want);
+      expect(enqueues(g)).toEqual([]);
+    }
+    // The same release with main readable and behind it is queued.
+    expect((await go(fake(base))).action).toBe("enqueued");
   });
 
   it("refuses a title that disagrees with the files (#3240's head: 0.253.0 title, 0.252.1 files)", async () => {
@@ -416,26 +527,35 @@ describe("arm: only a consistent, increasing release version is queued", () => {
   });
 });
 
-describe("arm: anything short of the front is a failure", () => {
-  it("a reply at position 3 without jump fails, and says so", async () => {
+describe("arm: only position 1 is success", () => {
+  it("the Prover's control: position 3 with jump: true fails, naming the position", async () => {
     const g = fake({
       pr: {},
       queue: codePrs(2),
-      enqueue: { position: 3, jump: false },
+      enqueue: { position: 3, jump: true },
     });
-    await expect(go(g)).rejects.toThrow(
-      "release PR #301 was queued at position 3 without jumping (jump: false): it is not at the front, so 2 code PRs may merge with it",
+    const l = logs();
+    await expect(go(g, l)).rejects.toThrow(
+      "release PR #301 was queued at position 3 (jump: true), not at the front",
     );
+    expect(l.out.join("\n")).not.toContain("at the front of the merge queue");
   });
 
-  it("position 1, or a granted jump, is success", async () => {
+  it("any position but 1 fails, jumped or not", async () => {
     for (const enqueue of [
-      { position: 1, jump: false },
       { position: 2, jump: true },
+      { position: 3, jump: false },
+      { position: 0, jump: true },
     ]) {
       const g = fake({ pr: {}, enqueue });
-      expect((await go(g)).action).toBe("enqueued");
+      await expect(go(g), JSON.stringify(enqueue)).rejects.toThrow(
+        `queued at position ${enqueue.position}`,
+      );
     }
+    expect(
+      (await go(fake({ pr: {}, enqueue: { position: 1, jump: false } })))
+        .action,
+    ).toBe("enqueued");
   });
 
   it("an enqueue that GitHub refuses, or that returns no entry, is an error, not a silent pass", async () => {
@@ -448,9 +568,9 @@ describe("arm: anything short of the front is a failure", () => {
             stderr: "Resource not accessible by integration",
           }
         : g.exec(cmd, args);
-    await expect(
-      arm({ exec, repo: REPO, log: logs().log, tested: ciRun() }),
-    ).rejects.toThrow(/not accessible/);
+    await expect(arm({ exec, repo: REPO, log: logs().log })).rejects.toThrow(
+      /not accessible/,
+    );
     const none = fake({ pr: {}, enqueue: null });
     await expect(go(none)).rejects.toThrow(/no queue entry/);
   });
@@ -469,19 +589,17 @@ describe("arm: what it leaves alone", () => {
       versions: { main: "0.168.0", head: "0.168.0" },
     });
     const l = logs();
-    expect(await go(g, ciRun(), l)).toEqual({ action: "landed", pr: 2376 });
+    expect(await go(g, l)).toEqual({ action: "landed", pr: 2376 });
     expect(enqueues(g)).toEqual([]);
     expect(l.out.join("\n")).toContain("already landed");
-    expect(await willWrite({ exec: g.exec, repo: REPO, tested: ciRun() })).toBe(
-      false,
-    );
+    expect(await willWrite({ exec: g.exec, repo: REPO })).toBe(false);
   });
 
   it("does not queue a PR whose rollup is not SUCCESS", async () => {
     for (const state of ["PENDING", "FAILURE", "ERROR", "EXPECTED"]) {
       const g = fake({ pr: { state }, queue: codePrs(1) });
       const l = logs();
-      expect((await go(g, ciRun(), l)).action).toBe("not-green");
+      expect((await go(g, l)).action).toBe("not-green");
       expect(l.out.join("\n")).toContain(state);
       expect(enqueues(g)).toEqual([]);
     }
@@ -499,21 +617,20 @@ describe("arm: what it leaves alone", () => {
   });
 
   it("willWrite says whether the run would queue the PR, whatever the queue holds", async () => {
-    const ww = (f: Fixture, tested: Tested = ciRun()) =>
-      willWrite({ exec: fake(f).exec, repo: REPO, tested });
+    const ww = (f: Fixture) => willWrite({ exec: fake(f).exec, repo: REPO });
     expect(await ww({})).toBe(false);
     expect(await ww({ pr: {} })).toBe(true);
     expect(await ww({ pr: {}, queue: codePrs(4) })).toBe(true);
-    expect(await ww({ pr: {} }, {})).toBe(false);
+    expect(await ww({ pr: {}, ciRuns: [] })).toBe(false);
     expect(await ww({ pr: { state: "PENDING" } })).toBe(false);
     expect(await ww({ pr: { queued: true } })).toBe(false);
   });
 
   it("the read is an error when graphql fails", async () => {
     const exec: Exec = () => ({ code: 1, stdout: "", stderr: "bad token" });
-    await expect(
-      arm({ exec, repo: REPO, log: logs().log, tested: ciRun() }),
-    ).rejects.toThrow(/bad token/);
+    await expect(arm({ exec, repo: REPO, log: logs().log })).rejects.toThrow(
+      /bad token/,
+    );
   });
 
   it("has no drain wait or cap left in the code", () => {

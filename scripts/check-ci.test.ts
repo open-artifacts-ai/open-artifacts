@@ -1943,12 +1943,15 @@ describe("release cadence", () => {
       ["issues", "write"],
     ]);
     expect(Object.keys(p).sort()).toEqual([
+      "actions",
       "checks",
       "contents",
       "issues",
       "pull-requests",
       "statuses",
     ]);
+    // The planner lists the release head's CI runs on every event.
+    expect(p.actions).toBe("read");
     expect(p.contents).toBe("read");
     expect(p["pull-requests"]).toBe("read");
   });

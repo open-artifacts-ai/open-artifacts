@@ -204,30 +204,51 @@ export type ArmResult =
   | { action: "refused"; pr: number; reasons: string[] }
   | { action: "enqueued"; pr: number };
 
-/**
- * The CI run this event reports: the head it tested, when it is a successful
- * CI run (by its workflow file, never its run-name) on the release branch of
- * this repo. Anything else (release-please finishing, a dispatch, another
- * PR's CI, a merge-group run) tested no release head.
- */
-export type Tested = {
-  path?: string;
-  branch?: string;
-  repo?: string;
-  conclusion?: string;
-  sha?: string;
+/** A run of this repo's CI workflow, as the runs API lists it. */
+type CiRun = {
+  id: number;
+  status: string;
+  conclusion: string | null;
+  event: string;
+  head_branch: string;
+  head_sha: string;
+  created_at: string;
+  repo: string;
 };
-export function testedHead(t: Tested, repo: string): string | undefined {
-  return t.path === ".github/workflows/ci.yml" &&
-    t.branch === RELEASE_BRANCH &&
-    t.repo === repo &&
-    t.conclusion === "success" &&
-    /^[0-9a-f]{40}$/.test(t.sha ?? "")
-    ? t.sha
-    : undefined;
+
+/**
+ * The newest completed run of this repo's CI workflow (ci.yml, by file, never
+ * by run-name) on the release branch's pull request for this exact head, read
+ * through the API on every event. So any later event (another PR's CI
+ * completing, release-please finishing, a dispatch) recovers a release PR
+ * whose own CI event was dropped or replaced in the concurrency queue, and
+ * still only a head CI tested is queued.
+ */
+export async function ciRunFor(
+  exec: Exec,
+  repo: string,
+  sha: string,
+): Promise<CiRun | undefined> {
+  const out = await gh(exec, [
+    "api",
+    `repos/${repo}/actions/workflows/ci.yml/runs?head_sha=${sha}&per_page=100`,
+    "--jq",
+    "[.workflow_runs[] | {id, status, conclusion, event, head_branch, head_sha, created_at, repo: .head_repository.full_name}]",
+  ]);
+  const runs = (JSON.parse(out) as CiRun[]).filter(
+    (r) =>
+      r.head_sha === sha &&
+      r.head_branch === RELEASE_BRANCH &&
+      r.repo === repo &&
+      r.event === "pull_request" &&
+      r.status === "completed",
+  );
+  return runs
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id - b.id)
+    .at(-1);
 }
 
-type Opts = { exec: Exec; repo: string; tested?: Tested };
+type Opts = { exec: Exec; repo: string };
 type Plan =
   | { do: "none"; result: ArmResult; msg: string }
   | { do: "enqueue"; pr: ReleasePr; sha: string; ahead: number };
@@ -260,7 +281,8 @@ async function latestTag(exec: Exec, repo: string): Promise<string> {
 /**
  * Why this head must not be queued, or [] when it may: the title's version,
  * the manifest, package.json and CHANGELOG.md's first heading all agree, and
- * that version is above the latest vX.Y.Z tag. Anything unreadable refuses.
+ * that version is above the latest vX.Y.Z tag and above main's own manifest
+ * and package.json versions. Anything unreadable refuses.
  * #3240 merged an old head (0.252.1 files under the 0.253.0 title), and the
  * next release PR (#3243) then proposed 0.246.1 below tag v0.253.0.
  */
@@ -269,12 +291,22 @@ export async function versionProblems(
   repo: string,
   pr: { title: string; sha: string },
 ): Promise<string[]> {
-  const [manifest, pkg, changelog, tag] = await Promise.all([
-    rawFile(exec, repo, ".release-please-manifest.json", pr.sha),
-    packageVersion(exec, repo, pr.sha),
-    rawFile(exec, repo, "CHANGELOG.md", pr.sha),
-    latestTag(exec, repo),
-  ]);
+  const [manifest, pkg, changelog, tag, mainManifest, mainPkg] =
+    await Promise.all([
+      rawFile(exec, repo, ".release-please-manifest.json", pr.sha),
+      packageVersion(exec, repo, pr.sha),
+      rawFile(exec, repo, "CHANGELOG.md", pr.sha),
+      latestTag(exec, repo),
+      rawFile(exec, repo, ".release-please-manifest.json", "main"),
+      packageVersion(exec, repo, "main"),
+    ]);
+  const onMain: [string, string][] = [
+    [
+      "main's .release-please-manifest.json",
+      jsonField(mainManifest, (j) => (j as Record<string, unknown>)?.["."]),
+    ],
+    ["main's package.json", mainPkg],
+  ];
   const found: [string, string][] = [
     ["title", /\brelease (\d+\.\d+\.\d+)$/.exec(pr.title.trim())?.[1] ?? ""],
     [
@@ -293,9 +325,15 @@ export async function versionProblems(
       `versions disagree: ${found.map(([w, v]) => `${w} ${v}`).join(", ")}`,
     );
   if (!tag) out.push("no vX.Y.Z tag readable");
+  for (const [where, m] of onMain)
+    if (!SEMVER.test(m)) out.push(`no version readable from ${where}`);
   const v = found[0]?.[1] ?? "";
-  if (!out.length && cmpSemver(v, tag) <= 0)
+  if (out.length) return out;
+  if (cmpSemver(v, tag) <= 0)
     out.push(`version ${v} is not above the latest tag v${tag}`);
+  for (const [where, m] of onMain)
+    if (cmpSemver(v, m) <= 0)
+      out.push(`version ${v} is not above ${where} (${m})`);
   return out;
 }
 
@@ -333,16 +371,19 @@ async function plan(o: Opts): Promise<Plan> {
       result: { action: "not-green", pr: pr.number, state: pr.rollup },
       msg: `release PR #${pr.number} checks are ${pr.rollup}, not queueing`,
     };
-  // Only the head a green CI run just tested is queued, and only by that run's
-  // event: a head release-please pushed since is queued by its own CI run.
-  const sha = testedHead(o.tested ?? {}, o.repo);
-  if (!sha || sha !== pr.oid)
+  // Only a head that CI tested green is queued: its newest completed CI run,
+  // looked up by head SHA on every event, not taken from this event.
+  const sha = pr.oid;
+  const run = /^[0-9a-f]{40}$/.test(sha)
+    ? await ciRunFor(o.exec, o.repo, sha)
+    : undefined;
+  if (run?.conclusion !== "success")
     return {
       do: "none",
       result: { action: "untested", pr: pr.number },
-      msg: sha
-        ? `release PR #${pr.number} head is ${pr.oid}, but this CI run tested ${sha}: the next CI completion handles the new head`
-        : `this event is no green CI run on release PR #${pr.number}'s head: its CI completion queues it`,
+      msg: run
+        ? `release PR #${pr.number} head ${sha}: its newest completed CI run ${run.id} is ${run.conclusion}, not queueing`
+        : `release PR #${pr.number} head ${sha} has no completed CI run yet: its CI completion queues it`,
     };
   const reasons = await versionProblems(o.exec, o.repo, {
     title: pr.title,
@@ -402,7 +443,11 @@ async function headNow(exec: Exec, repo: string, n: number): Promise<string> {
  * PRs. Anything short of the front is an error.
  */
 export async function arm(
-  o: Opts & { log: (line: string) => void },
+  o: Opts & {
+    log: (line: string) => void;
+    /** Runs the enqueue (the release App's token); reads use `exec`. */
+    writeExec?: Exec;
+  },
 ): Promise<ArmResult> {
   const p = await plan(o);
   if (p.do === "none") {
@@ -416,11 +461,11 @@ export async function arm(
   const now = await headNow(o.exec, o.repo, p.pr.number);
   if (now !== p.sha) {
     o.log(
-      `release PR #${p.pr.number} head moved to ${now} after CI tested ${p.sha}: not queueing; the next CI completion handles the new head`,
+      `release PR #${p.pr.number} head moved to ${now} after CI tested ${p.sha}: not queueing; the next event handles the new head`,
     );
     return { action: "untested", pr: p.pr.number };
   }
-  const out = await gh(o.exec, [
+  const out = await gh(o.writeExec ?? o.exec, [
     "api",
     "graphql",
     "-f",
@@ -435,9 +480,11 @@ export async function arm(
     throw new Error(
       `release PR #${p.pr.number}: enqueuePullRequest returned no queue entry`,
     );
-  if (entry.position !== 1 && entry.jump !== true)
+  // Only the front counts: a granted jump that still left it behind another
+  // entry is not the front.
+  if (entry.position !== 1)
     throw new Error(
-      `release PR #${p.pr.number} was queued at position ${entry.position} without jumping (jump: ${entry.jump}): it is not at the front, so ${p.ahead} code PRs may merge with it. The release App may need to be allowed to jump the queue.`,
+      `release PR #${p.pr.number} was queued at position ${entry.position} (jump: ${entry.jump}), not at the front: code PRs ahead of it may merge with it. The release App may need to be allowed to jump the queue.`,
     );
   o.log(
     `queued release PR #${p.pr.number} at the front of the merge queue (position ${entry.position}, jump: ${entry.jump}), ahead of ${p.ahead} code PRs`,
@@ -611,6 +658,20 @@ export async function blocker(o: {
     : { action: "none" };
 }
 
+const execWith =
+  (token?: string): Exec =>
+  (cmd, args) => {
+    const r = spawnSync(cmd, args, {
+      encoding: "utf8",
+      env: token ? { ...process.env, GH_TOKEN: token } : process.env,
+    });
+    return {
+      code: r.status ?? 1,
+      stdout: r.stdout ?? "",
+      stderr: r.stderr ?? "",
+    };
+  };
+
 const realExec: Exec = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: "utf8" });
   return {
@@ -632,15 +693,8 @@ async function main(argv: string[]) {
     );
     return 2;
   }
-  const tested: Tested = {
-    path: process.env.TESTED_PATH,
-    branch: process.env.TESTED_BRANCH,
-    repo: process.env.TESTED_REPO,
-    conclusion: process.env.TESTED_CONCLUSION,
-    sha: process.env.TESTED_SHA,
-  };
   if (mode === "plan") {
-    const p = await planStep({ exec: realExec, repo, tested });
+    const p = await planStep({ exec: realExec, repo });
     // stdout is appended to $GITHUB_OUTPUT: `write=true` when arm needs the App token
     console.log(`write=${p.write}`);
     console.error(p.msg);
@@ -653,7 +707,12 @@ async function main(argv: string[]) {
   const log = (s: string) => console.log(s);
   const r =
     mode === "arm"
-      ? await arm({ exec: realExec, repo, log, tested })
+      ? await arm({
+          exec: execWith(process.env.READ_GH_TOKEN),
+          writeExec: realExec,
+          repo,
+          log,
+        })
       : await blocker({ exec: realExec, repo, now: Date.now, log });
   console.log(JSON.stringify(r));
   return 0;

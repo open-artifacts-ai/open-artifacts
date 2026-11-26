@@ -8,7 +8,10 @@ on:
   # Events only, no timer (cloud #264). Every change that can make the release
   # PR ready is an event here:
   # - CI completing: the release PR's own checks (CI is the only workflow it
-  #   needs), so it is queued the moment it goes green.
+  #   needs), so it is queued the moment it goes green. Any event (another
+  #   PR's CI too) looks up the release head's newest completed CI run by SHA,
+  #   so a release CI event replaced in the one-slot concurrency queue is
+  #   recovered by the next event.
   # - release-please completing: the release PR was opened or got a new head,
   #   or a release shipped (closes a stale blocker).
   # (check_suite does not fire for Actions suites, so workflow_run stands in.)
@@ -26,6 +29,8 @@ jobs:
     if: ${{ github.repository == 'open-artifacts-ai/open-artifacts' }}
     runs-on: ubuntu-latest
     permissions:
+      # actions: read lists the release head's CI runs on every event.
+      actions: read
       contents: read
       issues: write
       pull-requests: read
@@ -45,13 +50,6 @@ jobs:
         name: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          # The CI run this event reports, so only the head it tested is
-          # queued (#3240 merged a head release-please had just replaced).
-          TESTED_PATH: ${{ github.event.workflow_run.path }}
-          TESTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          TESTED_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-          TESTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts plan --repo "$GITHUB_REPOSITORY" >> "$GITHUB_OUTPUT"
       # The App token exists only right before queueing, scoped to the PR merge:
       # a merge started with GITHUB_TOKEN would trigger no workflows on the
@@ -68,13 +66,9 @@ jobs:
         if: ${{ steps.plan.outputs.write == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
-          # The CI run this event reports, so only the head it tested is
-          # queued (#3240 merged a head release-please had just replaced).
-          TESTED_PATH: ${{ github.event.workflow_run.path }}
-          TESTED_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          TESTED_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
-          TESTED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          # Reads (the PR, its CI runs, versions, tags) use the job token; only
+          # the enqueue uses the App token.
+          READ_GH_TOKEN: ${{ github.token }}
         run: node --experimental-strip-types scripts/ci/release-cadence.ts arm --repo "$GITHUB_REPOSITORY"
       - name: blocker
         if: ${{ !cancelled() }}
