@@ -17,7 +17,7 @@ process.env.T19_RUN ??= randomBytes(3).toString("hex");
 export default defineConfig({
   testDir: "e2e/staging",
   timeout: 60_000,
-  globalTimeout: 15 * 60_000,
+  globalTimeout: 25 * 60_000,
   expect: { timeout: 15_000 },
   forbidOnly: Boolean(process.env.CI),
   // A gate: a flaky pass must not hide a real failure.
@@ -42,6 +42,15 @@ export default defineConfig({
     {
       name: "rl-a",
       testMatch: "rl-a/*.spec.ts",
+      // push.spec.ts runs in its own project: it waits on a cron tick.
+      testIgnore: "rl-a/push.spec.ts",
+      dependencies: ["rl-a guard"],
+    },
+    // #3024: a real push reaches official Chrome (waits for the 2-minute cron
+    // tick, so it has its own timeout). Needs Google Chrome on the runner.
+    {
+      name: "rl-a push",
+      testMatch: "rl-a/push.spec.ts",
       dependencies: ["rl-a guard"],
     },
     { name: "leo", testMatch: "leo/*.spec.ts" },
