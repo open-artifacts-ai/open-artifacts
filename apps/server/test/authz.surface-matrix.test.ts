@@ -755,6 +755,34 @@ describe("attack seeds: another member's personal space", () => {
   });
 });
 
+/** One cell of scripts/authz-probe.ts against this world. */
+async function probeCell(name: string) {
+  const lines: string[] = [];
+  const code = await main(
+    ["--base", BASE, "--creds", "world.json"],
+    {},
+    {
+      log: (l) => lines.push(l),
+      fetch: io.fetch,
+      only: (n) => n === name,
+      readFile: async () =>
+        JSON.stringify({
+          callers: w.creds,
+          artifacts: w.ids,
+          org: target,
+          space,
+          contentBase: io.contentBase,
+        }),
+    },
+  );
+  expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
+  expect(code).toBe(0);
+  expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, \d+ mismatches$/);
+}
+
+/** The one cell whose answer depends on latency (BUS_HUB_TIMEOUT_MS): see the describe below. */
+const PING_CELL = "GET /api/v1/bus/ping";
+
 describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
   const names = [
     ...SURFACES.filter((s) => !s.mutates).map((s) => s.name),
@@ -765,33 +793,19 @@ describe("scripts/authz-probe.ts against this world (read-only cells)", () => {
     ),
     ...SPACE_SURFACES.filter((s) => !s.mutates).map((s) => s.name),
   ];
-  it.concurrent.each(names.map((n) => [n]))(
+  // The ping cell is the one answer that depends on latency: the hub must
+  // answer inside BUS_HUB_TIMEOUT_MS (2 s), and 300 cells released together
+  // can stall the one isolate for longer than that, which turns the cell into
+  // a 503 that says nothing about who may ask. It runs alone, after them.
+  it.concurrent.each(names.filter((n) => n !== PING_CELL).map((n) => [n]))(
     "%s",
-    async (name) => {
-      const lines: string[] = [];
-      const code = await main(
-        ["--base", BASE, "--creds", "world.json"],
-        {},
-        {
-          log: (l) => lines.push(l),
-          fetch: io.fetch,
-          only: (n) => n === name,
-          readFile: async () =>
-            JSON.stringify({
-              callers: w.creds,
-              artifacts: w.ids,
-              org: target,
-              space,
-              contentBase: io.contentBase,
-            }),
-        },
-      );
-      expect(lines.filter((l) => l.startsWith("MISMATCH"))).toEqual([]);
-      expect(code).toBe(0);
-      expect(lines.at(-1)).toMatch(/^[1-9]\d* cells, \d+ mismatches$/);
-    },
+    probeCell,
     SLOW,
   );
+});
+
+describe("scripts/authz-probe.ts against this world (the ping cell, alone)", () => {
+  it(PING_CELL, () => probeCell(PING_CELL), SLOW);
 });
 
 describe("scripts/authz-probe.ts on an install whose tools/list hides edit_doc", () => {
