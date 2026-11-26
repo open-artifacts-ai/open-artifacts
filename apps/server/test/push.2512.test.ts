@@ -743,6 +743,34 @@ describe("sending", () => {
     expect(JSON.parse(await decrypt((sent[0] as Sent).body, b)).count).toBe(2);
   });
 
+  it("in quiet hours a legacy Update is dropped with one push_dropped line and the live ask is held, not dropped", async () => {
+    const { E } = await world();
+    const { u } = await enroll(E);
+    fakePush();
+    const night = Date.UTC(2026, 10, 18, 23, 0);
+    await queuePush(E, [u.userId], item("ask:q1"), night);
+    await legacyUpdateRow(u.userId, "update:q", night);
+    // Quiet hours begin after both were queued, so both are due at drain time.
+    await putPrefs(
+      E,
+      u.userId,
+      prefs({ quietHours: { start: "22:00", end: "07:30" } }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, night);
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(u.userId))
+      .map((l) => JSON.parse(l));
+    expect(lines).toEqual([expect.objectContaining({ update: 1 })]);
+    expect(lines[0]).not.toHaveProperty("needs_you_off");
+    expect(await pendingCount(u.userId)).toBe(1);
+    // Held rows would otherwise send in a later test's drain.
+    await env.DB.prepare("delete from push_pending where user_id = ?")
+      .bind(u.userId)
+      .run();
+  });
+
   it("quiet hours that start after an item was queued still hold it at drain time", async () => {
     const { E } = await world();
     const { u } = await enroll(E);

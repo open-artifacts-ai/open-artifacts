@@ -665,6 +665,7 @@ async function drainMember(
         ).bind(q.until, r.id),
       ),
     );
+    logDrops(userId, drops);
     return 0;
   }
   const { results: subs } = await stmt(
