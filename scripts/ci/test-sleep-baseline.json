@@ -78,6 +78,5 @@
   "packages/bus-daemon/test/status.test.ts": 4,
   "packages/bus-daemon/test/transport.test.ts": 6,
   "packages/bus-daemon/test/update-daemon.2552.test.ts": 1,
-  "packages/bus-daemon/test/update-wire.2552.test.ts": 8,
-  "scripts/setup/test/tokens.test.ts": 1
+  "packages/bus-daemon/test/update-wire.2552.test.ts": 8
 }

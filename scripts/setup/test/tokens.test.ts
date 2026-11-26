@@ -327,7 +327,7 @@ describe("--token-page", () => {
         return () => {};
       };
       const p = run(["--token-page", "--no-open", "--json"], c.deps, ROOT);
-      while (!c.lines.length) await new Promise((r) => setTimeout(r, 5));
+      await c.printed; // the first line is out
       const j = JSON.parse(c.lines[0] as string);
       expect(j).toMatchObject({ step: "token-page", status: "ok" });
       expect(j.data.tokenPage.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/$/);

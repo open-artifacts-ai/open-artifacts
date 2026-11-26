@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import {
   type Anchor,
   type AnchorInput,
@@ -41,6 +42,7 @@ import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
   type HeldAgent,
+  type LatestActivity,
   type NewExtras,
   type ParticipantRow,
   type StoredActor,
@@ -118,7 +120,11 @@ import {
   picturesOf,
   releasePictures,
 } from "./comment-pictures.js";
-import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import {
+  COMMENTS_MAX_REPLIES,
+  type CommentStatus,
+  cleanGuestName,
+} from "./comment-rules.js";
 import {
   addressKey,
   follow,
@@ -1311,7 +1317,54 @@ export type CommentsSince = {
   answeredSince?: string;
   mentionedSince?: string;
   compact?: boolean;
+  /** #3168: opaque cursor from an earlier list_comments; only threads changed after it. */
+  since?: string;
+  /** #3168: include the opaque cursor in the result (used by MCP list_comments). */
+  withCursor?: boolean;
 };
+
+const CURSOR_PREFIX = "c1.";
+const CURSOR_B64 = /^[A-Za-z0-9_-]{1,48}$/;
+const CURSOR_BODY = /^(0|[1-9][0-9]{0,14})\.(0|[1-9][0-9]{0,8})$/;
+const MAX_CURSOR_MS = 253_402_300_799_999; // 9999-12-31T23:59:59.999Z
+const BAD_CURSOR =
+  "That cursor is not one list_comments gave. Read without since to get a fresh one.";
+
+/**
+ * #3168: the opaque list_comments cursor: the artifact's newest change instant
+ * (epoch ms, 0 when there is none) and how many changes carry that instant.
+ * A `since` read returns threads changed after the instant, and the instant
+ * itself again only when more changes carry it than the cursor counted.
+ */
+export function encodeCommentCursor(latest: LatestActivity): string {
+  const parsed = latest.at ? Date.parse(latest.at) : 0;
+  const ms =
+    Number.isFinite(parsed) && parsed > 0
+      ? Math.min(Math.trunc(parsed), MAX_CURSOR_MS)
+      : 0;
+  const n = ms === 0 ? 0 : Math.max(0, Math.trunc(latest.n));
+  return (
+    CURSOR_PREFIX + Buffer.from(`${ms}.${n}`, "utf8").toString("base64url")
+  );
+}
+
+/** #3168: validates and decodes a list_comments cursor. */
+export function decodeCommentCursor(cursor: string): LatestActivity {
+  if (!cursor.startsWith(CURSOR_PREFIX))
+    throw new ApiError("bad_request", BAD_CURSOR);
+  const body = cursor.slice(CURSOR_PREFIX.length);
+  if (!CURSOR_B64.test(body)) throw new ApiError("bad_request", BAD_CURSOR);
+  const m = CURSOR_BODY.exec(Buffer.from(body, "base64url").toString("utf8"));
+  if (!m) throw new ApiError("bad_request", BAD_CURSOR);
+  const ms = Number(m[1]);
+  const n = Number(m[2]);
+  if (!Number.isSafeInteger(ms) || ms > MAX_CURSOR_MS)
+    throw new ApiError("bad_request", BAD_CURSOR);
+  const latest = { at: ms === 0 ? null : new Date(ms).toISOString(), n };
+  if (encodeCommentCursor(latest) !== cursor)
+    throw new ApiError("bad_request", BAD_CURSOR);
+  return latest;
+}
 
 const EXCERPT_MAX = 200;
 const after = (at: string, since: string): boolean =>
@@ -1361,12 +1414,81 @@ const mentionHit = (
   since: string,
 ): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
 
+/**
+ * #3139: one thread, the one a comment notice names, so an agent never reads
+ * every thread on a busy page to answer one comment. With `commentId`, only
+ * that comment, the comment just before it and the thread's first comment
+ * (which holds an ask, if any). Masked for the viewer exactly like the full
+ * read (threadViews). `not_found` for an unknown thread or comment.
+ */
+export async function listThread(
+  env: Env,
+  artifactId: string,
+  viewer: CommentViewer,
+  threadId: string,
+  commentId?: string,
+  opts?: { withCursor?: boolean },
+): Promise<CommentList> {
+  // The one thread straight from the store, not the page's capped list, so a
+  // thread past the list's 500-thread or size budget is still found. The store
+  // holds the root plus at most COMMENTS_MAX_REPLIES replies (commentsReply
+  // refuses more), so every stored comment is returned; truncated only if a
+  // row beyond that ever appears.
+  let full: StoredThread;
+  let latest: LatestActivity = { at: null, n: 0 };
+  try {
+    if (opts?.withCursor) {
+      const got = await call(() =>
+        stub(env, artifactId).commentsGetWithLatest(threadId),
+      );
+      full = got.thread;
+      latest = got.latest;
+    } else {
+      full = await call(() => stub(env, artifactId).commentsGet(threadId));
+    }
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "not_found")
+      throw new ApiError(
+        "not_found",
+        "No such thread on this artifact. Get threadId from list_comments.",
+      );
+    throw e;
+  }
+  const cap = COMMENTS_MAX_REPLIES + 1;
+  const truncated = full.comments.length > cap;
+  const t = truncated
+    ? { ...full, comments: full.comments.slice(0, cap) }
+    : full;
+  let kept = t;
+  if (commentId !== undefined) {
+    const at = t.comments.findIndex((c) => c.id === commentId);
+    if (at === -1)
+      throw new ApiError("not_found", "No such comment in this thread.");
+    const keep = new Set([0, Math.max(0, at - 1), at]);
+    kept = { ...t, comments: t.comments.filter((_, n) => keep.has(n)) };
+  }
+  const threads = await threadViews(env, artifactId, [kept], viewer);
+  return {
+    threads,
+    open: t.status === "open" ? 1 : 0,
+    truncated,
+    ...(opts?.withCursor ? { cursor: encodeCommentCursor(latest) } : {}),
+  };
+}
+
 /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
 export async function listComments(
   env: Env,
   artifactId: string,
   status: CommentStatus | "all",
   viewer: CommentViewer,
+  since?: {
+    since?: string;
+    withCursor?: boolean;
+    answeredSince?: never;
+    mentionedSince?: never;
+    compact?: never;
+  },
 ): Promise<CommentList>;
 /** #2688: with `compact`, a small list of the answers and mentions since. Without it, the threads that hold one. */
 export async function listComments(
@@ -1383,19 +1505,30 @@ export async function listComments(
   viewer: CommentViewer,
   since?: CommentsSince,
 ): Promise<CommentList | CompactCommentList> {
+  const sinceIso =
+    since?.since !== undefined ? decodeCommentCursor(since.since) : undefined;
+  const withCursor = since?.withCursor === true || sinceIso !== undefined;
   // A full read repairs the asks index (#1623); never fails the read. The rows
   // are read first, so the threads are never older than the rows they are
-  // compared with.
-  const rows = status === "all" ? await askRows(env, artifactId) : null;
-  const r = await call(() => stub(env, artifactId).commentsList(status));
+  // compared with. Skip on a `since` delta read: partial threads are not the full set.
+  const fullRead = status === "all" && sinceIso === undefined;
+  const rows = fullRead ? await askRows(env, artifactId) : null;
+  const r = await call(() =>
+    stub(env, artifactId).commentsList(status, sinceIso),
+  );
   if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
+  const cursor = withCursor ? { cursor: encodeCommentCursor(r.latest) } : {};
   const a = since?.answeredSince;
   const m = since?.mentionedSince;
   if (a === undefined && m === undefined)
     return {
-      threads: await threadViews(env, artifactId, r.threads, viewer),
+      threads:
+        r.threads.length === 0
+          ? []
+          : await threadViews(env, artifactId, r.threads, viewer),
       open: r.open,
       truncated: r.truncated,
+      ...cursor,
     };
   const hit = (c: StoredComment): boolean =>
     (a !== undefined && answeredHit(c, viewer, a)) ||
@@ -1403,7 +1536,7 @@ export async function listComments(
   const threads = r.threads.filter((t) => t.comments.some(hit));
   const views = await threadViews(env, artifactId, threads, viewer);
   if (!since?.compact)
-    return { threads: views, open: r.open, truncated: r.truncated };
+    return { threads: views, open: r.open, truncated: r.truncated, ...cursor };
   const answers: CompactAnswer[] = [];
   const mentions: CompactMention[] = [];
   // Every field comes from the view `v`, which is already masked for this
@@ -1449,6 +1582,7 @@ export async function listComments(
     ...(a !== undefined ? { answers: answers.sort(byAt) } : {}),
     ...(m !== undefined ? { mentions: mentions.sort(byAt) } : {}),
     truncated: r.truncated,
+    ...cursor,
   };
 }
 
@@ -2074,6 +2208,7 @@ async function deliver(
                 agent,
                 // Only a comment a person typed, to an agent of that same person.
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),
@@ -2583,6 +2718,7 @@ async function threadReply(
                 "thread_reply",
                 agent,
                 isTyped(c.author) && c.author.ref === agent.userId,
+                c.body,
               ),
               late,
             ]),

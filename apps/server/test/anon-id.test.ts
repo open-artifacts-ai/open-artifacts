@@ -11,6 +11,7 @@ import {
 } from "@oa/shared";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import {
   ANON_TOKEN_MAX_AGE_S,
   issueAnonToken,
@@ -256,6 +257,52 @@ describe("anonId issuance", () => {
     expect(r.headers.get(ANON_ID_HEADER)).toBeNull();
     expect(await byOf(r)).toBe(`u:${owner.member.id}`);
     expect((await api(app, R.anonId(id), owner.cookie)).status).toBe(401);
+  });
+
+  // Red-line port (live.test.ts "Another install's token on an anonymous
+  // write leaves the writer anonymous"): another install's token is unknown
+  // here, so an unknown or invalid bearer falls back to anonymous and stores
+  // no claimed identity. This install's own token is the control.
+  it("an unknown bearer on an allowAnonymousWrites PUT is stored as anon", async () => {
+    const id = await optIn();
+    const own = await createPat(env, owner.member.id, "anon-control");
+    const ctl = await api(app, R.dataDoc(id, "c", "own"), own.token, {
+      method: "PUT",
+      body: 1,
+    });
+    expect(ctl.status).toBe(200);
+    expect(await byOf(ctl)).toBe(`u:${owner.member.id}`);
+    // A real PAT this install no longer knows (as another install's would be).
+    const gone = await createPat(env, owner.member.id, "anon-gone");
+    await env.DB.prepare("delete from tokens where id = ?").bind(gone.id).run();
+    const bearers = [
+      gone.token,
+      `oa_pat_${"A".repeat(43)}`,
+      // OAuth-shaped: userId:grantId:secret, naming this install's user.
+      `${owner.member.id}:${newId()}:${"s".repeat(32)}`,
+      "garbage",
+    ];
+    for (const [i, bearer] of bearers.entries()) {
+      const doc = `b${i}`;
+      const token = await mintToken(id);
+      const { short } = await shortOn(id, token);
+      const w = await api(app, R.dataDoc(id, "c", doc), null, {
+        method: "PUT",
+        body: 1,
+        headers: {
+          authorization: `Bearer ${bearer}`,
+          "cf-connecting-ip": uniqueIp(),
+          [ANON_ID_HEADER]: token,
+        },
+      });
+      expect(w.status, bearer).toBe(200);
+      expect(await byOf(w), bearer).toBe(`anon:${short}`);
+      // Read back: the stored writer is the anonymous id, never the user.
+      const back = await anon(R.dataDoc(id, "c", doc), null);
+      const by = await byOf(back);
+      expect(by, bearer).toBe(`anon:${short}`);
+      expect(by, bearer).not.toContain(owner.member.id);
+    }
   });
 
   it("GET anon-id needs the viewer capability and is rate limited per IP", async () => {

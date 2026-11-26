@@ -94,7 +94,9 @@ describe("ci.yml", () => {
         expect(wr["branches-ignore"]).toBeUndefined();
       }
     }
-    expect(onCi).toEqual(["release-cadence.yml"]);
+    // flaky-tracker reads a finished run's own attempts and logs (cloud #447),
+    // never a check on main's commit.
+    expect(onCi).toEqual(["flaky-tracker.yml", "release-cadence.yml"]);
     // release-cadence reads the release PR's check rollup and the merge
     // queue, never a check on main's commit.
     const cadence = ci("release-cadence.ts");
