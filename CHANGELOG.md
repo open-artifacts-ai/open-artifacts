@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.259.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.0...v0.259.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* unify Viewer, Commenter and Editor across page shares ([#3272](https://github.com/open-artifacts-ai/open-artifacts/issues/3272)) ([5f3eb0c](https://github.com/open-artifacts-ai/open-artifacts/commit/5f3eb0c8a5e8aa11eaf740b9a0445b8a94dcc969))
+
+## [0.259.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.1...v0.259.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** Pi /name and a later Codex /rename count as a person's name ([#3143](https://github.com/open-artifacts-ai/open-artifacts/issues/3143) A3) ([#3267](https://github.com/open-artifacts-ai/open-artifacts/issues/3267)) ([e504ed5](https://github.com/open-artifacts-ai/open-artifacts/commit/e504ed528961893dd7b4bf71b8b96133e7ee9c68))
+
+## [0.258.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.258.0...v0.258.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **bus:** hide revoked machines from list after 24 hours ([#3123](https://github.com/open-artifacts-ai/open-artifacts/issues/3123)) ([#3281](https://github.com/open-artifacts-ai/open-artifacts/issues/3281)) ([50e587a](https://github.com/open-artifacts-ai/open-artifacts/commit/50e587aaed83ec7cb234a75cf8676d2baabdcb31))
+
+## [0.258.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.257.0...v0.258.0) (2026-11-26)
+
+
+### Features
+
+* **bus:** agy gets the bus rules at session start, and the skill; no habits in its files (agy S4) ([#3131](https://github.com/open-artifacts-ai/open-artifacts/issues/3131)) ([9bd4863](https://github.com/open-artifacts-ai/open-artifacts/commit/9bd4863e374d6f638d8aebc47cddef8bd8252760))
+
 ## [0.257.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.256.0...v0.257.0) (2026-11-26)
 
 

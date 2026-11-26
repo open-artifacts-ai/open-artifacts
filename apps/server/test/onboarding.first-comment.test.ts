@@ -131,7 +131,7 @@ const reply = async (id: string, t: Thread, by: string | null) => {
 const share = (id: string, to: U) =>
   api(app, R.shares(id), owner.cookie, {
     method: "PUT",
-    body: { email: to.email, role: "viewer" },
+    body: { email: to.email, role: "commenter" },
   });
 
 beforeEach(async () => {

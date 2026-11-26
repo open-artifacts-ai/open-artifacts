@@ -137,7 +137,7 @@ describe("comment tools over MCP", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     const added = (await reader.client.callTool({
       name: "add_comment",
@@ -491,7 +491,7 @@ describe("add_comment with an ask (#1535)", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     const t = sc<{ thread: Thread }>(
       await tool(owner.client, "add_comment", {
@@ -618,7 +618,7 @@ describe("add_comment with an ask (#1535)", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
     await putShare(E, owner.member, id, {
       email: stranger.email,

@@ -147,11 +147,10 @@ export type CanCtx = {
    * to editor level and up (fail closed).
    */
   dataWriters?: DataWriters;
-  /**
-   * The caller holds a "commenter" share on this artifact. A guest cap still
-   * refuses every write, except a comment or a reply for this caller.
-   */
-  commenterShare?: boolean;
+  /** Direct page grant, independent of any space role. */
+  shareRole?: DecisionInput["shareRole"];
+  /** A space, team or public grant independently lets this caller comment. */
+  inheritedCommentAccess?: boolean;
   /** Viewer-only first thumbnail: via a share or team access, and none stored yet. */
   firstThumbnail?: boolean;
   /**
@@ -418,7 +417,7 @@ export function can(
       if (capped)
         return (
           ctx.cap === "guest" &&
-          ctx.commenterShare === true &&
+          ctx.shareRole === "commenter" &&
           ctx.dataWriters === "viewers" &&
           !ctx.anonymous
         );
@@ -426,12 +425,13 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
-    // Anyone who can open it comments (a signed-out caller reaches a level
-    // only on a public artifact), except a capped caller (read-only on the
-    // whole API, readOnlyCap).
     case "comments.write":
-      // A guest cap refuses it, except for a guest holding a commenter share.
-      return !capped || (ctx.cap === "guest" && ctx.commenterShare === true);
+      // A Viewer grant limits members to reading unless they also have higher access.
+      return capped
+        ? ctx.cap === "guest" && ctx.shareRole === "commenter"
+        : level !== "viewer" ||
+            ctx.shareRole !== "viewer" ||
+            ctx.inheritedCommentAccess === true;
     case "comments.moderate":
       return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
