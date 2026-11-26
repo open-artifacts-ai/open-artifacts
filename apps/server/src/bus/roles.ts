@@ -440,10 +440,11 @@ export function roleOfIdentity(
 /**
  * #3132: where a notice for a session that handed its role on goes now: the
  * role's live holder. Approved design: what a session does "while it holds a
- * role belongs to the role", so only a notice whose subject began
- * (`originAt`: the ask posted, the follow started; else now) once the
- * session held that role moves; an ask it posted before holding any role
- * stays its own. `identity` set: the moves of the session with that
+ * role belongs to the role", so a notice whose subject began (`originAt`:
+ * the ask posted, the follow started, the thread joined) while the session
+ * held the role, from held_from up to the move, goes with it; one begun
+ * before or after stays the session's own. An undated notice (null: a new
+ * mention of the old name) goes with the role it handed on last. `identity` set: the moves of the session with that
  * identity. Otherwise the moves from address (ns, lname), only while no
  * other agent has taken that name since (a namesake inherits nothing,
  * #3208). None applies while the session holds any role (its mail is its
@@ -456,28 +457,36 @@ export function roleForward(
   ns: string,
   lname: string,
   identity: string | null,
-  originAt: number,
+  /** When the subject began; null: a new message to the session (a mention). */
+  originAt: number | null,
 ): AgentRow | null {
-  // The session's moves of roles it held when the notice's subject began,
-  // while it holds no role now (a holder gets its own mail): the latest role
-  // it took on by then wins.
-  const scope = `m.held_from <= ?
+  // Only while the session holds no role now (a holder's mail is its own).
+  // A dated subject goes with the role it held then: held_from <= originAt <
+  // the move. An undated one, a new message to the session's old name, goes
+  // with the role it handed on last.
+  const window = originAt === null ? "1 = 1" : "m.held_from <= ? and ? < m.at";
+  const scope = `${window}
     and not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)`;
+  const times = originAt === null ? [] : [originAt, originAt];
+  const order =
+    originAt === null
+      ? "order by m.at desc, m.rowid desc"
+      : "order by m.held_from desc, m.rowid desc";
   const move = one<{ roleId: string; fromId: string }>(
     sql,
     identity !== null
       ? `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_identity
            where m.org_id = ? and m.from_identity = ? and ${scope}
-           order by m.held_from desc, m.rowid desc limit 1`
+           ${order} limit 1`
       : `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_from
            where m.org_id = ? and m.from_ns = ? and m.from_lname = ? and ${scope}
              and not exists (select 1 from agents a where a.org_id = m.org_id
                and lower(a.name) = m.from_lname and a.namespace = m.from_ns
                and a.id <> m.from_agent_id)
-           order by m.held_from desc, m.rowid desc limit 1`,
+           ${order} limit 1`,
     ...(identity !== null
-      ? [orgId, identity, originAt]
-      : [orgId, ns, lname, originAt]),
+      ? [orgId, identity, ...times]
+      : [orgId, ns, lname, ...times]),
   );
   if (move === null) return null;
   return one<AgentRow>(
