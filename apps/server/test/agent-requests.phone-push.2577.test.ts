@@ -98,8 +98,8 @@ const savePrefs = (needsYouBrowser: boolean) =>
 /** One enrolled device: a subscription row, nothing else. */
 async function enrollDevice() {
   await E.DB.prepare(
-    `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, created_at)
-     values (?1, ?2, ?3, 'p', 'a', ?4)`,
+    `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, created_at, last_sent_at)
+     values (?1, ?2, ?3, 'p', 'a', ?4, ?4)`,
   )
     .bind(newId(), owner.userId, `https://e.example/${newId()}`, Date.now())
     .run();
