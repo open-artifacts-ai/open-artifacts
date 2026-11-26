@@ -122,19 +122,17 @@ async function fakeHub() {
     routeSends: true,
     toDaemon,
     /**
-     * The end of what the daemon was sent: the ping rides the same ordered
-     * stream, so earlier frames were read; a few turns of the event loop let
-     * what they set going finish. Check "nothing happened" after it.
+     * Fences the frames sent to the daemon so far: its websocket receiver
+     * answers a ping only after dispatching every message before it, so the
+     * daemon's synchronous (microtask-only) reaction to each has run and what
+     * it sent back has arrived. Not for a reaction that needs a timer.
      */
-    quiet: async () => {
-      await new Promise<void>((resolve) => {
+    quiet: () =>
+      new Promise<void>((resolve) => {
         const ws = sock as WebSocket;
         ws.once("pong", () => resolve());
         ws.ping();
-      });
-      for (let i = 0; i < 3; i++)
-        await new Promise<void>((r) => setImmediate(r));
-    },
+      }),
     of: <T extends ClientFrame["type"]>(type: T) =>
       frames.filter(
         (f): f is Extract<ClientFrame, { type: T }> => f.type === type,

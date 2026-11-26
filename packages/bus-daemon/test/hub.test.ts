@@ -285,11 +285,14 @@ describe("pacing and rate limits", () => {
   it("drops what is queued when the link closes", async () => {
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     let conns = 0;
-    const seen: string[] = [];
+    const seen: { conn: number; id: string }[] = [];
     wss.on("connection", (ws, req) => {
       if (req.url === PROBE) return;
       conns++;
-      ws.on("message", (d) => seen.push(JSON.parse(String(d)).id));
+      const conn = conns;
+      ws.on("message", (d) =>
+        seen.push({ conn, id: JSON.parse(String(d)).id }),
+      );
     });
     let opened!: () => void;
     const open = new Promise<void>((r) => {
@@ -328,7 +331,13 @@ describe("pacing and rate limits", () => {
       await reopen;
       await vi.advanceTimersByTimeAsync(5_000); // far past every refill
       await probeWs(url);
-      expect(seen.filter((id) => id.startsWith("q")).length).toBeLessThan(50);
+      // What the first link had not written is never replayed on the second.
+      expect(
+        seen.filter((f) => f.conn === 1 && f.id.startsWith("q")).length,
+      ).toBeLessThan(50);
+      expect(seen.filter((f) => f.conn === 2 && f.id.startsWith("q"))).toEqual(
+        [],
+      );
       hub.stop();
     } finally {
       vi.useRealTimers();

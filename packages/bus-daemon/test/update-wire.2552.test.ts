@@ -12,7 +12,16 @@ import {
 } from "../src/index.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
+/** Every timer the daemon's update paths arm. */
+const FAKE_TIMERS: (
+  | "setTimeout"
+  | "clearTimeout"
+  | "setInterval"
+  | "clearInterval"
+)[] = ["setTimeout", "clearTimeout", "setInterval", "clearInterval"];
+
 afterEach(async () => {
+  vi.useRealTimers();
   await stopAll();
   delete process.env.OA_BUS_HOME;
 });
@@ -137,14 +146,20 @@ describe("the update wire, daemon side (#2552)", () => {
       reason: "proof_failed",
       at: T + 2000,
     });
+    // The daemon also flushes reports on a timer (REPORT_FLUSH_MS): its timers
+    // are fake, moved past that window by hand.
+    vi.useFakeTimers({ toFake: FAKE_TIMERS });
     const h = await daemonHarness({
       update: { defaultHome: true, entryFile: w.entry, exit: vi.fn(), every },
     });
     // No cap (an older hub): nothing goes, nothing is lost.
     h.toDaemon(helloOk());
     await h.quiet();
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(3);
+    vi.useRealTimers();
     h.toDaemon(helloOk({ caps: ["run_version"] }));
     await h.next("update_report", 3);
     expect(
@@ -184,8 +199,11 @@ describe("the update wire, daemon side (#2552)", () => {
       reason: "ok",
       at: T,
     });
+    vi.useFakeTimers({ toFake: FAKE_TIMERS });
     const h = await daemonHarness({});
     h.toDaemon(helloOk({ caps: ["run_version"] }));
+    await h.quiet();
+    await vi.advanceTimersByTimeAsync(60_000); // past the report flush timer
     await h.quiet();
     expect(h.of("update_report")).toHaveLength(0);
     expect(readReports(w.h)).toHaveLength(1);
@@ -269,6 +287,7 @@ describe("the update wire, daemon side (#2552)", () => {
           exit,
           every,
           enabled: true,
+          ackMs: 1, // if it were asked, it fails fast, by assertion
         },
       });
       h.toDaemon(helloOk());
@@ -276,6 +295,7 @@ describe("the update wire, daemon side (#2552)", () => {
       expect(await h.daemon.updater?.instructFromInstance("0.9.0")).toEqual({
         kind: "retry_later",
       });
+      await h.quiet();
       expect(h.of("update_report")).toHaveLength(0);
       expect(exit).not.toHaveBeenCalled();
     });

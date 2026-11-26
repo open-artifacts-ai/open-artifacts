@@ -121,7 +121,6 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     socketPath: path,
     attest: () => ({ ok: true }),
     resolveNamespace: () => ({ namespace: "ns", global: false, source: "cwd" }),
-    hub: { backoffMs: () => 0 },
     sentFile: join(mkdtempSync(join(tmpdir(), "ob-sf-")), "sent.json"),
     // #3028: never the real ~/.oa-bus/announced.json: a temp one, unless a test
     // brings its own (a restart test shares one across two runs).
@@ -132,6 +131,14 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
     // A queued send answers at once unless a test waits for delivered (C17).
     deliveredWaitMs: 0,
     ...over,
+    // Reconnects at once, and no frame waits for a pacing token: a frame the
+    // daemon wrote is on the wire, so `quiet()` fences it. A test of pacing
+    // brings its own `pace`.
+    hub: {
+      backoffMs: () => 0,
+      pace: { burst: 10_000, rate: 10_000 },
+      ...over.hub,
+    },
     // Never the real ~/.claude/sessions or ~/.oa-bus: temp ones, unless a test brings its own.
     claude: {
       sessionsDir: mkdtempSync(join(tmpdir(), "ob-cs-")),
@@ -251,15 +258,15 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       ws.ping();
     });
   /**
-   * The end of what the daemon was sent: the ping rides the same ordered
-   * stream, so every frame sent before it has been read, and a few turns of the
-   * event loop let what those frames set going (promise chains, no timers)
-   * finish. The signal for "nothing happened": check after it, no clock.
+   * Fences the frames sent to the daemon so far: the daemon's websocket
+   * receiver answers a ping only after it dispatched every message before it,
+   * so once this resolves the daemon's synchronous (and microtask-only)
+   * reaction to each earlier frame has run, and what it sent the hub has
+   * arrived. Valid only for a reaction that needs no timer and no later I/O;
+   * anything that does waits on its own window (fake time, or the event that
+   * ends it), never on this.
    */
-  const quiet = async () => {
-    await barrier();
-    for (let i = 0; i < 3; i++) await new Promise<void>((r) => setImmediate(r));
-  };
+  const quiet = () => barrier();
   return {
     daemon,
     barrier,

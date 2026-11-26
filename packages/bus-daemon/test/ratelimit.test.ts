@@ -8,14 +8,20 @@ afterEach(stopAll);
 /** A harness whose log says when the daemon has marked an agent rate-limited. */
 async function limitHarness(over: Parameters<typeof daemonHarness>[0] = {}) {
   const logs: string[] = [];
-  const h = await daemonHarness({ log: (m) => logs.push(m), ...over });
+  const waiters: (() => void)[] = [];
+  const h = await daemonHarness({
+    log: (m) => {
+      logs.push(m);
+      for (const w of waiters.splice(0)) w();
+    },
+    ...over,
+  });
   /** The hub's refusal is on another socket: a request sent before it lands goes to the hub. */
-  const marked = (ref: string) =>
-    vi.waitFor(() =>
-      expect(logs).toContain(
-        `the hub refused to register ${ref}: too many agents (rate limited)`,
-      ),
-    );
+  const marked = async (ref: string) => {
+    const line = `the hub refused to register ${ref}: too many agents (rate limited)`;
+    while (!logs.includes(line))
+      await new Promise<void>((r) => waiters.push(r));
+  };
   return { ...h, marked };
 }
 
@@ -74,13 +80,14 @@ describe("a rate-limited agent_up", () => {
 
   it("is not retried in a loop", async () => {
     const syncs = eventCounter();
-    const h = await daemonHarness({
+    const h = await limitHarness({
       claude: { syncMs: 20, onSync: () => syncs.hook() },
       limitedRetryMs: 60_000,
     });
     await h.adapter("A");
     const up = await h.next("agent_up");
     h.toDaemon(limited(up.id));
+    await h.marked("A"); // the daemon took the limit; the retry timer is armed
     // Several syncs after the limit: each would have announced A again.
     await syncs.next(3);
     await h.quiet();

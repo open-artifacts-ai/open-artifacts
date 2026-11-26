@@ -202,6 +202,9 @@ describe("set_status", () => {
       type: "status_set",
       earlier: { code: "hub_unavailable" },
     });
+    // The window the dropped status was held in ends: it must not go now.
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.quiet();
     expect(h.of("status").every((f) => f.state !== "blocked")).toBe(true);
   });
 });
