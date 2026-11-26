@@ -237,6 +237,17 @@ create table if not exists role_moves (
 create index if not exists role_moves_from on role_moves(org_id, from_ns, from_lname);
 create index if not exists role_moves_identity on role_moves(org_id, from_identity);
 
+-- #3132 a role's pages that its holder also follows for itself: one follow
+-- row (D1 follows, one per address and page) serves both, so the role's part
+-- is kept here, and the role's next move gives the page to the new holder
+-- while the old one keeps its own follow. A new table: create-if-not-exists
+-- adds it; wipe() deletes it.
+create table if not exists role_follows (
+  role_id text not null,
+  artifact_id text not null,
+  primary key (role_id, artifact_id)
+);
+
 -- #1372 role proposals: a role change an AI agent proposed over MCP
 -- (bus_role_propose). Nothing changes until the member confirms it in a
 -- browser on its link; token_hash is the sha256 of that link's secret (the
