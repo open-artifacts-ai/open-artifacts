@@ -1006,7 +1006,7 @@ export function track(o: { exec: Exec; run: RunInfo; nowMs: number }): {
 
 /**
  * The runs the reconcile looks at: runs of the watched workflows created in
- * the last RECONCILE_HOURS whose latest attempt (2 or later) passed, with
+ * the last WINDOW_DAYS days and updated in the last RECONCILE_HOURS whose latest attempt (2 or later) passed, with
  * this repo as head repository (fork PRs skipped), oldest first.
  */
 export function recentRuns(
@@ -1014,7 +1014,12 @@ export function recentRuns(
   repo: string,
   nowMs: number,
 ): { runId: number; attempt: number }[] {
-  const since = new Date(nowMs - RECONCILE_HOURS * 3600 * 1000)
+  // Created in the sighting window (WINDOW_DAYS), updated in the last
+  // RECONCILE_HOURS: a run rerun to green days after it was created is found.
+  const since = new Date(nowMs - WINDOW_DAYS * DAY_MS)
+    .toISOString()
+    .replace(/\.\d+Z$/, "Z");
+  const touched = new Date(nowMs - RECONCILE_HOURS * 3600 * 1000)
     .toISOString()
     .replace(/\.\d+Z$/, "Z");
   const out = new Map<number, number>();
@@ -1024,7 +1029,7 @@ export function recentRuns(
       "--paginate",
       `repos/${repo}/actions/workflows/${wf}/runs?status=success&created=${encodeURIComponent(`>=${since}`)}&per_page=100`,
       "--jq",
-      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .head_repository.full_name == "${repo}") | "\\(.id) \\(.run_attempt)"`,
+      `.workflow_runs[] | select(.conclusion == "success" and .run_attempt > 1 and .updated_at >= "${touched}" and .head_repository.full_name == "${repo}") | "\\(.id) \\(.run_attempt)"`,
     ]);
     for (const l of lines.split("\n")) {
       const m = /^(\d+) (\d+)$/.exec(l.trim());

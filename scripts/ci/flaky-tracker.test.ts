@@ -902,7 +902,7 @@ describe("reconcile", () => {
   const writes = (g: ReturnType<typeof fakeGh>) =>
     g.calls.filter((c) => c[0] === "issue" && c[1] !== "list").length;
 
-  it(`lists the last ${RECONCILE_HOURS} hours of passing reruns from this repo, in small reads`, () => {
+  it(`lists passing reruns updated in the last ${RECONCILE_HOURS} hours from this repo, in small reads`, () => {
     const g = fakeGh({ log: ONE_FAIL });
     expect(reconcile({ exec: g.exec, repo: REPO, nowMs: NOW })).toEqual([]);
     const list = g.calls.find((c) =>
@@ -911,11 +911,14 @@ describe("reconcile", () => {
     const path = list?.find((a) => a.startsWith("repos/")) ?? "";
     expect(path).toContain("per_page=100");
     expect(path).toContain("status=success");
+    // Created in the 7-day window, updated in the last 26 hours: a run
+    // rerun to green days after it was created is still found.
     expect(decodeURIComponent(path)).toContain(
-      "created=>=2026-11-25T10:00:00Z",
+      "created=>=2026-11-19T12:00:00Z",
     );
     const jq = list?.[list.indexOf("--jq") + 1] ?? "";
     expect(jq).toContain(".run_attempt > 1");
+    expect(jq).toContain('.updated_at >= "2026-11-25T10:00:00Z"');
     expect(jq).toContain(`.head_repository.full_name == "${REPO}"`);
     // Nothing to do: no store read, no write.
     expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
