@@ -126,6 +126,23 @@ describe("ci.yml", () => {
     expect(sh).toContain('--filter "...[$BASE_SHA]"');
     expect(sh).toContain("pnpm --filter @oa/server test:cpu");
   });
+  it("e2e fails only when a shard did: the report merge never fails the check", () => {
+    const steps = w.jobs.e2e.steps as {
+      name?: string;
+      run?: string;
+      uses?: string;
+      "continue-on-error"?: boolean;
+    }[];
+    expect(steps[0].name).toBe("Every shard passed");
+    // Run 45756613297 attempt 1: every shard passed, but one shard's blob zip
+    // was truncated and the merge step failed the required check.
+    const merge = steps.find((s) => s.run === "bash scripts/ci/e2e.sh merge");
+    expect(merge?.["continue-on-error"]).toBe(true);
+    const download = steps.find((s) =>
+      (s.uses ?? "").startsWith("actions/download-artifact@"),
+    );
+    expect(download?.["continue-on-error"]).toBe(true);
+  });
   it("runs on merge_group so the merge queue gets its required checks", () => {
     expect(triggers(w)).toContain("merge_group");
   });

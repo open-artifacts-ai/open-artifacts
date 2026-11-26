@@ -655,8 +655,12 @@ jobs:
           cache: pnpm
       - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         run: pnpm install --frozen-lockfile --filter @oa/dashboard...
+      # Report only: "Every shard passed" above decides the check. A truncated
+      # shard blob ("End of central directory record signature not found", run
+      # 45756613297 attempt 1) must not fail a check whose shards all passed.
       - name: Merge the shards' reports
         if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
+        continue-on-error: true
         run: bash scripts/ci/e2e.sh merge
       - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
