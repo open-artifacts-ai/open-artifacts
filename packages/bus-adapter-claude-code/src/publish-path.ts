@@ -1,7 +1,7 @@
 import { constants, realpathSync } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
+import { lstat, open, readlink, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 /** Maximum file size (bytes) allowed when publishing from a local path. */
 export const PUBLISH_FILE_MAX = 25 * 1024 * 1024;
@@ -47,6 +47,8 @@ export const SECRET_NAMES: readonly string[] = [
   "service-account*.json",
   "*-pat-token",
   ".htpasswd",
+  ".terraformrc",
+  "terraform.rc",
 ];
 
 /** Directory segments (case-insensitive; slash-separated for adjacent pairs) treated as sensitive. */
@@ -61,6 +63,9 @@ export const SECRET_DIRS: readonly string[] = [
   ".oa-bus",
   ".config/gcloud",
   ".password-store",
+  ".config/gh",
+  ".config/op",
+  ".kaggle",
 ];
 
 /** Result of validating a candidate file path for publishing. */
@@ -70,12 +75,18 @@ export type PathCheck =
       real: string;
       inside: boolean;
       size: number;
-      dev: number;
-      ino: number;
+      dev: bigint;
+      ino: bigint;
     }
   | {
       ok: false;
-      code: "not_found" | "not_file" | "too_large" | "secret" | "bad_path";
+      code:
+        | "not_found"
+        | "not_file"
+        | "too_large"
+        | "secret"
+        | "linked"
+        | "bad_path";
       message: string;
     };
 
@@ -136,11 +147,10 @@ export function isSecretPath(realPath: string): boolean {
 
   if (segments.length === 0) return false;
 
-  const base = basename(normalized).toLowerCase();
-  if (!ENV_ALLOWED.has(base)) {
-    for (const pattern of SECRET_NAME_PATTERNS) {
-      if (pattern.test(base)) return true;
-    }
+  // Every segment, not only the last: a folder named .env or secrets.d counts too.
+  for (const seg of segments) {
+    if (ENV_ALLOWED.has(seg)) continue;
+    if (SECRET_NAME_PATTERNS.some((p) => p.test(seg))) return true;
   }
 
   for (const dirParts of SECRET_DIR_SEGMENTS) {
@@ -167,6 +177,38 @@ export function isSecretPath(realPath: string): boolean {
   }
 
   return false;
+}
+
+/** Symlinks followed per path: the kernel's own limit. */
+const MAX_HOPS = 40;
+
+/**
+ * Every place a symlink on the way to `p` points to (its folders' links and
+ * its own), so a harmless name routed through a secret-named link is caught.
+ * Never throws; a missing step ends the walk.
+ */
+async function symlinkHops(p: string): Promise<string[]> {
+  const hops: string[] = [];
+  const parts = p.split(sep).filter(Boolean);
+  let cur: string = sep;
+  for (const part of parts) {
+    let next = join(cur, part);
+    for (let i = 0; i < MAX_HOPS; i++) {
+      try {
+        if (!(await lstat(next)).isSymbolicLink()) break;
+        next = resolve(dirname(next), await readlink(next));
+        hops.push(next);
+      } catch {
+        return hops;
+      }
+    }
+    try {
+      cur = await realpath(next);
+    } catch {
+      return hops;
+    }
+  }
+  return hops;
 }
 
 function expandPath(inputPath: string, root: string): string {
@@ -236,11 +278,14 @@ export async function checkPublishPath(
   }
 
   const rootPrefix = realRoot.endsWith(sep) ? realRoot : `${realRoot}${sep}`;
-  const inside = real === realRoot || real.startsWith(rootPrefix);
+  // A session started at the filesystem root never counts anything as inside.
+  const inside =
+    dirname(realRoot) !== realRoot &&
+    (real === realRoot || real.startsWith(rootPrefix));
 
-  let st: Awaited<ReturnType<typeof stat>>;
+  let st: import("node:fs").BigIntStats;
   try {
-    st = await stat(real);
+    st = await stat(real, { bigint: true });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === "ENOENT" || code === "ENOTDIR") {
@@ -265,7 +310,7 @@ export async function checkPublishPath(
     };
   }
 
-  if (st.size > PUBLISH_FILE_MAX) {
+  if (st.size > BigInt(PUBLISH_FILE_MAX)) {
     return {
       ok: false,
       code: "too_large",
@@ -273,7 +318,20 @@ export async function checkPublishPath(
     };
   }
 
-  if (isSecretPath(real) || isSecretPath(candidate)) {
+  // A second name for the same file could be a secret's: refused.
+  if (st.nlink > 1n) {
+    return {
+      ok: false,
+      code: "linked",
+      message: `Refusing a file with other hard links: ${path}`,
+    };
+  }
+
+  if (
+    isSecretPath(real) ||
+    isSecretPath(candidate) ||
+    (await symlinkHops(candidate)).some(isSecretPath)
+  ) {
     return {
       ok: false,
       code: "secret",
@@ -285,7 +343,7 @@ export async function checkPublishPath(
     ok: true,
     real,
     inside,
-    size: st.size,
+    size: Number(st.size),
     dev: st.dev,
     ino: st.ino,
   };
@@ -322,7 +380,7 @@ export async function readPublishFile(
   }
 
   try {
-    const st = await fh.stat();
+    const st = await fh.stat({ bigint: true });
     if (!st.isFile() || st.dev !== check.dev || st.ino !== check.ino) {
       return {
         ok: false,
@@ -330,7 +388,14 @@ export async function readPublishFile(
         message: `File changed before reading: ${check.real}`,
       };
     }
-    if (st.size > PUBLISH_FILE_MAX) {
+    if (st.nlink > 1n) {
+      return {
+        ok: false,
+        code: "changed",
+        message: `File changed before reading: ${check.real}`,
+      };
+    }
+    if (st.size > BigInt(PUBLISH_FILE_MAX)) {
       return {
         ok: false,
         code: "too_large",
@@ -338,14 +403,15 @@ export async function readPublishFile(
       };
     }
     // Bounded: st.size is under the cap; one byte more is read only to see growth.
-    const buf = Buffer.alloc(st.size + 1);
+    const size = Number(st.size);
+    const buf = Buffer.alloc(size + 1);
     let n = 0;
     while (n < buf.length) {
       const { bytesRead } = await fh.read(buf, n, buf.length - n, n);
       if (bytesRead === 0) break;
       n += bytesRead;
     }
-    if (n !== st.size) {
+    if (n !== size) {
       return {
         ok: false,
         code: "changed",

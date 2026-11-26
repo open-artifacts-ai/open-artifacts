@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   appendFile,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -185,6 +186,41 @@ describe("checkPublishPath", () => {
     if (!res.ok) {
       expect(res.code).toBe("not_file");
     }
+  });
+
+  it("refuses a file with another hard link", async () => {
+    const root = await makeTempDir();
+    await writeFile(join(root, "a.html"), "x");
+    await link(join(root, "a.html"), join(root, "b.html"));
+    const r = await checkPublishPath("b.html", root);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("linked");
+  });
+
+  it("refuses a harmless name routed through a secret-named symlink", async () => {
+    const root = await makeTempDir();
+    await writeFile(join(root, "notes.txt"), "x");
+    await symlink(join(root, "notes.txt"), join(root, ".env"));
+    await symlink(join(root, ".env"), join(root, "page.html"));
+    const r = await checkPublishPath("page.html", root);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("secret");
+  });
+
+  it("refuses a file under a secret-named folder", async () => {
+    const root = await makeTempDir();
+    await mkdir(join(root, ".env"));
+    await writeFile(join(root, ".env", "page.html"), "x");
+    const r = await checkPublishPath(".env/page.html", root);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe("secret");
+  });
+
+  it("counts nothing as inside when the working folder is the filesystem root", async () => {
+    const root = await makeTempDir();
+    await writeFile(join(root, "a.html"), "x");
+    const r = await checkPublishPath(join(root, "a.html"), "/");
+    expect(r.ok && r.inside).toBe(false);
   });
 
   it("refuses when the working folder cannot be resolved", async () => {
