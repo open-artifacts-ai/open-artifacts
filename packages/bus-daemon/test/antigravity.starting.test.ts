@@ -79,6 +79,8 @@ async function setup(
     /** This daemon's bus home, and where it reads the plugin's route. */
     home?: string;
     pluginHome?: () => AgyPluginRoute | null;
+    /** Caps the fake hub lists in hello_ok. */
+    caps?: string[];
   } = {},
   fresh = true,
 ) {
@@ -95,7 +97,15 @@ async function setup(
     os.envUnreadable = false;
     agyRuns(AGY, "t0", "/w/app");
   }
-  const { discover = true, agentsFile, pids, home, pluginHome, ...rest } = over;
+  const {
+    discover = true,
+    agentsFile,
+    pids,
+    home,
+    pluginHome,
+    caps = [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    ...rest
+  } = over;
   const h = await daemonHarness({
     ...rest,
     homeLookup: byFolder,
@@ -140,7 +150,7 @@ async function setup(
     machine_id: "1".repeat(16),
     machine_label: "laptop",
     server_version: "1",
-    caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    caps,
   });
   const hook = async (c: Partial<AgyConversation> = {}) => {
     const hello = agyHello({
@@ -524,6 +534,78 @@ describe("an agy process is listed at launch (agy S2b)", () => {
     h.daemon.syncNow();
     await closedRef(h, S0);
     expect(h.daemon.agents.byRef(S0)?.live).toBe(false);
+  });
+
+  it("a starting agy whose process ends is sent as gone, so its hub ends its mail at once", async () => {
+    const { h } = await setup({
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone],
+    });
+    await settled(h);
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    os.alive.delete(AGY);
+    h.daemon.syncNow();
+    await closedRef(h, S0);
+    const closing = h
+      .of("sessions")
+      .filter((f) => f.closed.includes(S0))
+      .at(-1);
+    expect(closing?.gone).toEqual([S0]);
+  });
+
+  it("a starting agy closed because the plugin routes elsewhere is not gone (it may reopen)", async () => {
+    const { h } = await setup({
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone],
+    });
+    await settled(h);
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    os.plugin = { home: "/somewhere/else/.oa-bus", pinned: true };
+    h.daemon.syncNow();
+    await closedRef(h, S0);
+    const closing = h
+      .of("sessions")
+      .filter((f) => f.closed.includes(S0))
+      .at(-1);
+    expect(closing?.gone).toBeUndefined();
+  });
+
+  it("a joined agy whose process ends is not gone", async () => {
+    const { h, hook } = await setup({
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.sessionsGone],
+    });
+    await settled(h);
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    await hook();
+    await upFor(h, A);
+    await closedRef(h, S0);
+    os.alive.delete(AGY);
+    h.daemon.syncNow();
+    await closedRef(h, A);
+    const closing = h
+      .of("sessions")
+      .filter((f) => f.closed.includes(A))
+      .at(-1);
+    expect(closing?.gone).toBeUndefined();
+  });
+
+  it("a hub that did not list sessions_gone never sees gone", async () => {
+    const { h } = await setup({
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    });
+    await settled(h);
+    h.daemon.syncNow();
+    await upFor(h, S0);
+    os.alive.delete(AGY);
+    h.daemon.syncNow();
+    await closedRef(h, S0);
+    const closing = h
+      .of("sessions")
+      .filter((f) => f.closed.includes(S0))
+      .at(-1);
+    expect(closing).toBeDefined();
+    expect("gone" in (closing as object)).toBe(false);
   });
 
   it("a reused pid is a new process: the old record closes, the new one is listed under a new ref", async () => {

@@ -760,9 +760,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** The sessions registered on one link: an agent is on its folder's instance only. */
   const sessions = (lane: Lane) => {
     const mine = (r: string) => laneOfRef(r) === lane;
+    const closed = agents.closedRefs().filter(mine);
+    const gone = lane.sessionsGone
+      ? closed.filter((r) => agents.byRef(r)?.gone === true)
+      : [];
     return {
       open: agents.openRefs().filter((r) => mine(r) && !held(r)),
-      closed: agents.closedRefs().filter(mine),
+      closed,
+      ...(gone.length > 0 ? { gone } : {}),
     };
   };
   /** #3028: the refs announced to a hub, kept across a restart (0600). */
@@ -4443,6 +4448,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!gone && !moved) continue;
       a.live = false;
       a.closedBy = "liveness";
+      if (a.starting) a.gone = true;
       closed = true;
       ev("agent_leave", agentFields(a, "process_gone"));
     }
