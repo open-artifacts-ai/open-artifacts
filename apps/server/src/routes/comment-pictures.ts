@@ -1,12 +1,10 @@
-import { CommentPictureReserveSchema, isId } from "@oa/shared";
+import { CommentPictureReserveSchema } from "@oa/shared";
 import { interactiveSession } from "../auth/authz.js";
 import { isGuestRole } from "../auth/policy.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
-import { runtimeStub } from "../runtime/do.js";
 import {
   getPicture,
-  pictureComment,
   putPicture,
   reservePicture,
 } from "../services/comment-pictures.js";
@@ -57,25 +55,13 @@ export function mountCommentPictures(app: AppType): void {
   app.get(PICTURE, async (c) => {
     const { id } = await open(c, "comments.read");
     const pictureId = c.req.param("pictureId") ?? "";
-    // A malformed id is a 400 (so access shows in the answer); a well-formed
-    // one that is unknown, foreign or unusable is a 404.
-    if (!isId(pictureId))
-      throw new ApiError("bad_request", "Invalid pictureId");
-    // #2577: an agent of the person a request is held for (a token or grant,
-    // not their own browser session) reads no picture of that request.
-    const me = c.var.user?.id ?? null;
-    if (me && !interactiveSession(c)) {
-      const at = await pictureComment(c.env, id, pictureId);
-      if (at) {
-        const t = await runtimeStub(c.env, id).commentsGet(at.threadId);
-        const held = t.comments
-          .find((x) => x.id === at.commentId)
-          ?.held?.some((h) => h.state === "held" && h.owner === me);
-        if (held) throw new ApiError("not_found", "Not found");
-      }
-    }
-    const hit = await getPicture(c.env, id, pictureId, c.var.user?.id ?? null);
-    if (!hit) throw new ApiError("not_found", "Not found");
+    const hit = await getPicture(
+      c.env,
+      id,
+      pictureId,
+      c.var.user?.id ?? null,
+      interactiveSession(c) ? "browser" : "agent",
+    );
     return new Response(hit.body, {
       status: 200,
       headers: {

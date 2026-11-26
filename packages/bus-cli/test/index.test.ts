@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { opencodeVersion } from "@oa/bus-adapter-opencode";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeExec } from "../src/deps.ts";
 import { parse } from "../src/index.ts";
 
@@ -83,7 +84,7 @@ describe("cli", () => {
       home: "/x",
       noColor: false,
     });
-    for (const h of ["claude", "opencode", "codex", "pi"])
+    for (const h of ["claude", "opencode", "codex", "pi", "antigravity"])
       expect(parse(["mcp", h])).toEqual({
         cmd: "mcp",
         harness: h,
@@ -183,31 +184,222 @@ describe("the oa-bus bin", () => {
 });
 
 describe("exec", () => {
-  it("kills a hung command at its timeout, so a hung opencode reads as version unknown", async () => {
-    const bin = mkdtempSync(join(tmpdir(), "ob-bin-"));
-    const oc = join(bin, "opencode");
-    writeFileSync(oc, "#!/bin/sh\nexec sleep 60\n");
+  // The hung command is a child that holds a gate the test owns (a unix
+  // socket it connects to and then blocks on). The timeout runs on fake time,
+  // so nothing here waits it out; the gate is released in cleanup.
+  const cleanup: (() => void)[] = [];
+  afterEach(() => {
+    vi.useRealTimers();
+    for (const c of cleanup.splice(0).reverse()) c();
+  });
+
+  async function gate() {
+    const dir = mkdtempSync(join(tmpdir(), "ob-gate-"));
+    const sock = join(dir, "g.sock");
+    const held: Socket[] = [];
+    const waiting: (() => void)[] = [];
+    const server = createServer((s) => {
+      s.on("error", () => {});
+      held.push(s);
+      waiting.shift()?.();
+    });
+    await new Promise<void>((r) => server.listen(sock, () => r()));
+    cleanup.push(() => {
+      for (const s of held) s.destroy();
+      server.close();
+      rmSync(dir, { recursive: true, force: true });
+    });
+    // The child that blocks on the gate: connect, then wait for a close.
+    const blocker = join(dir, "block.mjs");
+    writeFileSync(
+      blocker,
+      `import { connect } from "node:net";
+console.log("ready");
+const s = connect(${JSON.stringify(sock)});
+s.on("error", () => process.exit(0));
+s.on("close", () => { console.log("bye"); process.exit(0); });
+s.on("data", () => {});
+`,
+    );
+    return {
+      dir,
+      blocker,
+      release: () => {
+        for (const s of held.splice(0)) s.destroy();
+      },
+      /** Resolves once one more child has connected to the gate. */
+      connected: () => new Promise<void>((r) => waiting.push(r)),
+    };
+  }
+
+  const settled = (p: Promise<unknown>) => {
+    const state = { done: false };
+    void p.then(() => {
+      state.done = true;
+    });
+    return state;
+  };
+
+  /** Resolves once this process has read a chunk of a pipe or socket containing `text`. */
+  function readSeen(text: string): Promise<void> {
+    const emit = Socket.prototype.emit;
+    return new Promise((resolve) => {
+      const spy = vi
+        .spyOn(Socket.prototype, "emit")
+        .mockImplementation(function (
+          this: Socket,
+          ev: string,
+          ...a: unknown[]
+        ) {
+          const ret = Reflect.apply(emit, this, [ev, ...a]) as boolean;
+          if (ev === "data" && String(a[0]).includes(text)) {
+            spy.mockRestore();
+            resolve();
+          }
+          return ret;
+        } as never);
+      cleanup.push(() => spy.mockRestore());
+    });
+  }
+
+  const script = (g: { dir: string; blocker: string }) => {
+    const oc = join(g.dir, "opencode");
+    writeFileSync(
+      oc,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(g.blocker)}\n`,
+    );
     chmodSync(oc, 0o755);
+    return oc;
+  };
+
+  it("a timeout of 0 means no timeout, like execFile", async () => {
+    const g = await gate();
+    const oc = script(g);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const connected = g.connected();
+    const run = makeExec(0)(oc, []);
+    const state = settled(run);
+    await connected;
+    await vi.advanceTimersByTimeAsync(2 ** 31);
+    expect(state.done).toBe(false);
+    g.release();
+    expect(await run).toMatchObject({ code: 0, stdout: "ready\nbye\n" });
+  });
+
+  it("an invalid timeout fails before spawning, like execFile", async () => {
+    const g = await gate();
+    const oc = script(g);
+    for (const bad of [
+      -1,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 53,
+    ]) {
+      const r = await makeExec(bad)(oc, []);
+      expect(r.code).toBe(1);
+      expect(r.stdout).toBe("");
+      expect(r.stderr).toMatch(/"timeout" is out of range/);
+    }
+    expect((await makeExec(300)(oc, [], { timeoutMs: -1 })).stderr).toMatch(
+      /out of range/,
+    );
+  });
+
+  it("an argument execFile rejects fails like any command, not by rejecting", async () => {
+    const g = await gate();
+    const oc = script(g);
+    const r = await makeExec(300)(oc, ["a\0b"]);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(/ERR_INVALID_ARG_VALUE/);
+  });
+
+  it("kills a command that overflows maxBuffer with SIGKILL, even one that traps SIGTERM", async () => {
+    const g = await gate();
+    // Writes 9 MiB, then holds the gate: only SIGKILL ends it.
+    const big = join(g.dir, "big.mjs");
+    writeFileSync(
+      big,
+      `import { connect } from "node:net";
+process.on("SIGTERM", () => {});
+process.stdout.on("error", () => {});
+process.stdout.write("a".repeat(9 * 1024 * 1024));
+connect(${JSON.stringify(join(g.dir, "g.sock"))}).on("error", () => process.exit(0)).on("data", () => {});
+`,
+    );
+    const r = await makeExec(0)(process.execPath, [big]);
+    // Not a timeout: the output so far, a plain failure.
+    expect(r.code).toBe(1);
+    expect(r.stdout).toHaveLength(8 * 1024 * 1024);
+    expect(r.stderr).not.toMatch(/timed out/);
+  });
+
+  it("returns the output collected before the timeout", async () => {
+    const g = await gate();
+    const oc = script(g);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const connected = g.connected();
+    const read = readSeen("ready");
+    const run = makeExec(300)(oc, []);
+    await connected;
+    await read;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await run).toMatchObject({
+      code: 1,
+      stdout: "ready\n",
+      stderr: "timed out after 300 ms",
+    });
+  });
+
+  it("kills a hung command at its timeout, so a hung opencode reads as version unknown", async () => {
+    const g = await gate();
+    const oc = join(g.dir, "opencode");
+    writeFileSync(
+      oc,
+      `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(g.blocker)}\n`,
+    );
+    chmodSync(oc, 0o755);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const exec = makeExec(300);
-    const started = Date.now();
-    const r = await exec(oc, ["--version"]);
+    const hung = g.connected();
+    const run = exec(oc, ["--version"]);
+    const state = settled(run);
+    await hung;
+    // Held at the gate: not killed before its timeout...
+    await vi.advanceTimersByTimeAsync(299);
+    expect(state.done).toBe(false);
+    // ...and killed at it.
+    await vi.advanceTimersByTimeAsync(1);
+    const r = await run;
     expect(r.code).not.toBe(0);
-    expect(Date.now() - started).toBeLessThan(5000);
-    expect(
-      await opencodeVersion((_cmd, args) => exec(oc, args)),
-    ).toBeUndefined();
-  }, 15_000);
+    expect(r.stderr).toMatch(/timed out after 300 ms/);
+
+    const hung2 = g.connected();
+    const version = opencodeVersion((_cmd, args) => exec(oc, args));
+    await hung2;
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await version).toBeUndefined();
+  });
 
   it("returns at its timeout even when a child of the command keeps stdout open", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ob-exec-"));
-    const sh = join(dir, "opencode");
-    // A wrapper script (npm and asdf shims are): sleep inherits the pipe.
-    writeFileSync(sh, "#!/bin/sh\nsleep 30\necho 9.9.9\n");
+    const g = await gate();
+    const sh = join(g.dir, "opencode");
+    // A wrapper script (npm and asdf shims are): the grandchild inherits the
+    // pipe and blocks on the gate, which stays held after the wrapper is killed.
+    writeFileSync(
+      sh,
+      `#!/bin/sh\n${JSON.stringify(process.execPath)} ${JSON.stringify(g.blocker)} &\nwait\necho 9.9.9\n`,
+    );
     chmodSync(sh, 0o755);
-    const t0 = Date.now();
-    const r = await makeExec(500)(sh, ["--version"]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const grandchild = g.connected();
+    const run = makeExec(500)(sh, ["--version"]);
+    await grandchild;
+    await vi.advanceTimersByTimeAsync(500);
+    // Resolves while the grandchild still holds the pipe (the gate is open).
+    const r = await run;
     expect(r.code).not.toBe(0);
     expect(r.stderr).toMatch(/timed out after 500 ms/);
-    expect(Date.now() - t0).toBeLessThan(5000);
-  }, 15_000);
+  });
 });

@@ -2,8 +2,9 @@ import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
-import { INSTRUCTIONS } from "../src/mcp/instructions.js";
+import { INSTRUCTIONS, RUNTIME_DOC } from "../src/mcp/instructions.js";
 import { BANG_RULE } from "../src/mcp/skill-common.js";
+import { SKILL_PARTS } from "../src/mcp/skill-template.js";
 import { TOOL_DEFS } from "../src/mcp/tool-defs.js";
 import { login } from "./helpers.js";
 import { APP, callWorker, connect, E } from "./mcp-helpers.js";
@@ -24,21 +25,29 @@ describe("MCP surface is vendor-neutral", () => {
       // fetched from; that is our parameter, not a vendor naming the text.
       const text = (await r.text())
         .replaceAll(`/skill.md?harness=${h}`, "/skill.md")
-        .replace(BANG_RULE, "")
-        .replace(/\n## Client setup\n[\s\S]*?(?=\n## )/, "");
+        .replace(BANG_RULE, "");
       expect(text, h).not.toMatch(VENDOR);
+    }
+    // #3169: every on-demand part except setup (which lists per-client configs)
+    // stays vendor-neutral.
+    for (const p of SKILL_PARTS) {
+      if (p === "setup") continue;
+      const r = await callWorker(new Request(`${APP}/skill/${p}.md`), E());
+      expect(r.status, p).toBe(200);
+      expect(await r.text(), p).not.toMatch(VENDOR);
     }
   });
 
-  it("tool defs and instructions", () => {
+  it("tool defs, instructions and runtime doc", () => {
     for (const t of TOOL_DEFS) {
       expect(t.name).not.toMatch(VENDOR);
       expect(t.description).not.toMatch(VENDOR);
     }
     for (const plan of ["free", "paid"] as const) {
       expect(INSTRUCTIONS(plan, "https://x/skill.md")).not.toMatch(VENDOR);
+      expect(RUNTIME_DOC(plan, "https://x/skill.md")).not.toMatch(VENDOR);
       // C4: subscribers are told to refetch after a reconnect.
-      expect(INSTRUCTIONS(plan)).toContain(
+      expect(RUNTIME_DOC(plan)).toContain(
         "refetch your data when resync is true",
       );
     }
@@ -46,8 +55,8 @@ describe("MCP surface is vendor-neutral", () => {
 
   it.each([
     // The bus's tool too: the test pool binds BUS_HUB (#1372).
-    ["spaces off", "", 24],
-    ["spaces on", "spaces", 25],
+    ["spaces off", "", 25],
+    ["spaces on", "spaces", 26],
   ] as const)(
     "everything the server sends (%s): tools, schemas, instructions, resources",
     async (_, features, n) => {
@@ -61,7 +70,10 @@ describe("MCP surface is vendor-neutral", () => {
       expect(tools).toHaveLength(n);
       for (const t of tools) expect(JSON.stringify(t)).not.toMatch(VENDOR);
       const instructions = c.getInstructions() ?? "";
-      expect(instructions.split("\n").length).toBeGreaterThanOrEqual(55);
+      expect(instructions.length).toBeGreaterThan(0);
+      expect(new TextEncoder().encode(instructions).byteLength).toBeLessThan(
+        2048,
+      );
       expect(instructions).not.toMatch(VENDOR);
       const { resources } = await c.listResources();
       expect(resources.length).toBeGreaterThan(0);

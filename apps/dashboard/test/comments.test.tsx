@@ -22,6 +22,7 @@ import {
 } from "vitest";
 import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
 import { fullPath } from "../src/viewer/paths";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -171,13 +172,18 @@ beforeEach(() => {
   commentOnSelection.mockClear();
   viewport(1280);
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 /** #2381 S2: the Comments tab's count (the open threads), where the header said "N open". */
 const commentsCount = (c: HTMLElement) =>
   within(c)
     .getByRole("tab", { name: "Comments" })
     .querySelector("[data-tabs-count]")?.textContent;
+
+installClock();
 
 describe("comments: layouts", () => {
   it("is a column beside the page at 960px and up, with the open count on the button", async () => {
@@ -403,7 +409,7 @@ describe("comments: layouts", () => {
         outletH = 0; // hidden at the first frame
         await open();
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
-        await new Promise((r) => setTimeout(r, 50));
+        await settle(50);
         expect(spy).not.toHaveBeenCalledWith(
           expect.objectContaining({ behavior: "smooth" }),
         );
@@ -474,7 +480,7 @@ describe("comments: layouts", () => {
       expect(overlay).toHaveAttribute("data-sheet-height", "half");
       await act(async () => opts.at(-1)?.onCommentOpen("p3"));
       expect(overlay).toHaveAttribute("data-sheet-height", "pin");
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
       expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
       expect(spy).not.toHaveBeenCalledWith(
         expect.objectContaining({ behavior: "smooth" }),
@@ -485,7 +491,7 @@ describe("comments: layouts", () => {
       Element.prototype.scrollTo = spy;
       await open();
       await act(async () => opts.at(-1)?.onCommentOpen("p1"));
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
       expect(spy).not.toHaveBeenCalledWith(
         expect.objectContaining({ behavior: "smooth" }),
       );
@@ -749,6 +755,38 @@ describe("comments: layouts", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("Esc closes the phone sheet from the page, not only from inside it (#3053)", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    await screen.findByRole("dialog", { name: "Comments" });
+    expect(document.querySelector("[data-sheet-backdrop]")).not.toBeNull();
+    // The reader's focus is on the page, not in the sheet: Esc must still close
+    // it, or the dimmed backdrop stays over everything.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(document.querySelector("[data-sheet-backdrop]")).toBeNull();
+  });
+
+  it("Esc with words in the composer keeps the sheet, as before (#3053)", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    await screen.findByRole("dialog", { name: "Comments" });
+    const box = screen.getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Half typed" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    // The field keeps the key: the draft stays and the sheet stays up.
+    expect(screen.queryByRole("dialog", { name: "Comments" })).not.toBeNull();
+    expect(box).toHaveValue("Half typed");
+  });
+
   it("shows no Comments button, column or frame highlights when the setting is off", async () => {
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
@@ -814,6 +852,10 @@ describe("comments: the frame", () => {
   });
 
   it("rate-limits comment.select: the sixth in a second is dropped", async () => {
+    // The gate counts a one-second window off `Date.now`: pin the clock so a
+    // loaded runner cannot spread six selects over two windows.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-05T10:00:00.000Z"));
     mount(viewerPath(OWNED));
     await col();
     for (let i = 1; i <= 6; i++)
@@ -1463,6 +1505,9 @@ describe("comments: errors", () => {
 
 describe("comments: live and logged out", () => {
   it("refetches the list when the events socket says comments changed", async () => {
+    // This one stays on real timers: with the file's fake clock frozen, the
+    // refetch the socket frame asks for is never made.
+    vi.useRealTimers();
     const gets = calls("GET");
     mount(viewerPath(OWNED));
     await col();
@@ -1764,9 +1809,12 @@ describe("comments: guests and Retry-After", () => {
     );
     mount(viewerPath(PUBLIC));
     const c = await col();
-    await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
-    // The read sent no token and minted none.
-    expect(seenTokens).toEqual([null]);
+    // The list's first read starts at mount, before the socket says hello;
+    // the hello reads it once more (#291, #3095). Both reads done:
+    await waitFor(() => expect(events.connections(PUBLIC)).toBe(1));
+    await waitFor(() => expect(lastClient.isFetching()).toBe(0));
+    // Exactly those two reads, and neither sent a token or minted one.
+    expect(seenTokens).toEqual([null, null]);
     expect(localStorage.getItem("oa.anonId")).toBeNull();
     const box = within(c).getByRole("textbox", {
       name: "Comment on the whole page",
@@ -2622,6 +2670,42 @@ describe("comments: unavailable is not forever", () => {
     // L-r6-3: the visible label keeps its space, inside the name.
     expect(btn.textContent).toBe("Comments 1");
     expect(await col()).toBeInTheDocument();
+  });
+
+  it("#3095: comments turned on while the first read is out (it answers comments_off): the list still comes back", async () => {
+    let off = true;
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let reads = 0;
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", async () => {
+        reads++;
+        const stale = off; // the answer as of when the read reached the server
+        if (reads === 1) await held;
+        return stale
+          ? HttpResponse.json(
+              { error: { code: "comments_off", message: "off" } },
+              { status: 403 },
+            )
+          : list([oneThread]);
+      }),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "More actions" });
+    await waitFor(() => expect(reads).toBe(1));
+    await waitFor(() => expect(events.connections(OWNED)).toBe(1));
+    // The owner turns comments on while that first read is still out.
+    off = false;
+    await act(async () => {
+      events.emitComments(OWNED, 1);
+    });
+    release();
+    expect(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    ).toBeInTheDocument();
+    expect(reads).toBe(2);
   });
 
   it("the summary refetching with comments: true (after false) re-enables the list", async () => {

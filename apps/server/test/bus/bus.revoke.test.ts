@@ -47,6 +47,7 @@ import {
   upgrade,
   waitFor,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 const app = createApp();
 let admin: Member;
@@ -402,13 +403,13 @@ describe("bus rows outlive the index window (#1299)", () => {
     expect(await rowOf(name)).not.toBeNull();
     const hub = await hubOf(u.userId);
     a.d.close();
-    await vi.waitFor(async () =>
+    await eventually(async () =>
       expect((await hub.snapshot()).connected).toEqual([b.id]),
     );
     // One machine still connected: the row stays.
     expect(await rowOf(name)).not.toBeNull();
     b.d.close();
-    await vi.waitFor(async () => expect(await rowOf(name)).toBeNull());
+    await eventually(async () => expect(await rowOf(name)).toBeNull());
     // A new connection reports again (the throttle was reset).
     const c = await connected(u, "three");
     expect(await rowOf(name)).not.toBeNull();
@@ -469,7 +470,7 @@ describe("bus rows outlive the index window (#1299)", () => {
       const b = await connected(u, "two");
       release();
       await finished;
-      await vi.waitFor(async () => expect(await rowOf(name)).not.toBeNull());
+      await eventually(async () => expect(await rowOf(name)).not.toBeNull());
       b.d.close();
     } finally {
       release();
@@ -518,8 +519,8 @@ describe("bus rows outlive the index window (#1299)", () => {
   });
 
   // #1749: a hung index stalls no hub-started close. The hub's bound is
-  // lowered to 50 ms for the test (a real timer: setTimeout cannot be pinned
-  // in the DO); the signal is the close call resolving while `gone` is still
+  // lowered to 0 for the test (the DO's own timer cannot be faked, so it is
+  // made immediate rather than waited out); the signal is the close call resolving while `gone` is still
   // gated, and indexInFlight (read inside the DO) staying 1 until it settles.
   async function hungIndex(userId: string) {
     const hub = await hubOf(userId);
@@ -550,7 +551,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     await runInDurableObject(hub, (inst: BusHub) => {
       const h = inst as unknown as { env: object };
       h.env = Object.assign(Object.create(h.env), { USER_PRESENCE: hungNs });
-      BusHub.setIndexGoneTimeoutForTests(inst, 50);
+      BusHub.setIndexGoneTimeoutForTests(inst, 0);
     });
     const inFlight = () =>
       runInDurableObject(hub, (inst: BusHub) => inst.indexInFlight);
@@ -571,7 +572,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     } finally {
       x.release();
     }
-    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+    await eventually(async () => expect(await x.inFlight()).toBe(0));
   });
 
   it("wipe does not wait on a hung index; the storage is erased and the hub usable", async () => {
@@ -587,7 +588,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     } finally {
       x.release();
     }
-    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+    await eventually(async () => expect(await x.inFlight()).toBe(0));
   });
 
   it("revoke does not see a 503 from a hung index: the machine is revoked and its socket closed", async () => {
@@ -603,7 +604,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     } finally {
       x.release();
     }
-    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+    await eventually(async () => expect(await x.inFlight()).toBe(0));
   });
 
   it("a gone that lands after the bound does not leave a live socket without its row", async () => {
@@ -616,7 +617,7 @@ describe("bus rows outlive the index window (#1299)", () => {
       // The client's close reaches the hub, whose last socket is gone: its
       // `gone` hangs until the bound logs the timeout.
       a.d.close();
-      await vi.waitFor(() =>
+      await eventually(() =>
         expect(
           err.mock.calls.some((c) =>
             String(c[0]).includes("socket_index_failed"),
@@ -629,7 +630,7 @@ describe("bus rows outlive the index window (#1299)", () => {
       const b = await connected(u, "two");
       expect(await rowOf(name)).not.toBeNull();
       x.release();
-      await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+      await eventually(async () => expect(await x.inFlight()).toBe(0));
       expect(await rowOf(name)).not.toBeNull();
       b.d.close();
     } finally {

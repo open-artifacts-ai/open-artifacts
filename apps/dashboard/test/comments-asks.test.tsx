@@ -31,6 +31,7 @@ import {
   nextAskFor,
   removeMention,
 } from "../src/viewer/comments/asks";
+import { installClock, settle } from "./clock";
 import {
   calls,
   events,
@@ -191,6 +192,8 @@ beforeEach(() => {
   viewport(1280);
 });
 afterEach(() => vi.restoreAllMocks());
+
+installClock();
 
 describe("withdrawn asks (#2511)", () => {
   const states: [string, object, RegExp][] = [
@@ -724,6 +727,38 @@ describe("asks on the comments column", () => {
     ).toBeInTheDocument();
   });
 
+  it("a second Reply on the open thread moves the caret back into the box (#3042 review)", async () => {
+    // A decided ask keeps its "Reply to ask for a change" link, which opens the
+    // reply box of a thread that is already open: the caret has to come back.
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          closed: true,
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    const box = await within(c).findByRole("textbox", { name: "Reply" });
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    // The reader clicked away and asks again.
+    box.blur();
+    expect(document.activeElement).not.toBe(box);
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply to ask for a change" }),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(box));
+  });
+
   it("Next ask goes to the following ask in page order, wrapping around", async () => {
     const mk = (id: string, anchor: object) => {
       const t = askThread({ id, anchor });
@@ -1176,7 +1211,7 @@ describe("#2381 S2 the Decisions tab", () => {
     const first = await within(c).findByRole("tab", { name: /Comments/ });
     fireEvent.keyDown(first, { key: "ArrowRight" });
     cleanup();
-    await new Promise((r) => setTimeout(r, 0));
+    await settle(0);
     window.removeEventListener("error", on);
     expect(errors).toEqual([]);
   });
@@ -1224,7 +1259,7 @@ describe("#2381 S2 the Decisions tab", () => {
     expect(
       await within(c).findByRole("button", { name: "Decisions" }),
     ).toBeInTheDocument();
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(c.querySelector("[data-decision-thread]")).not.toBeNull();
   });
 
@@ -1655,12 +1690,19 @@ describe("@mentions in the composer", () => {
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
-    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
-    expect(posts[0]?.body).toMatchObject({
-      anchor: { kind: "note" },
-      body: "@OA Design why B?",
-      mentions: [{ key: "agent:design" }],
-    });
+    // The mention picker's own people lookup is a POST too (`{ q }`), and it
+    // can land first on a loaded runner: wait on the comment's own path.
+    const comment = () =>
+      posts.find((p) => p.path === R.comments(OWNED))?.body as
+        | Record<string, unknown>
+        | undefined;
+    await waitFor(() =>
+      expect(comment()).toMatchObject({
+        anchor: { kind: "note" },
+        body: "@OA Design why B?",
+        mentions: [{ key: "agent:design" }],
+      }),
+    );
   });
 
   it("renders posted @names as chips, as text only", async () => {
@@ -2339,7 +2381,7 @@ describe("agent list loads on composer focus", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await wholePage(c);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(n.count).toBe(0);
   });
 
@@ -2423,7 +2465,7 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     const box = await wholePage(c);
     fireEvent.focus(box);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(n.count).toBe(0);
   });
 
@@ -2493,7 +2535,7 @@ describe("agent list loads on composer focus", () => {
     await waitFor(() => expect(hits).toBe(1));
     fireEvent.blur(box);
     fireEvent.focus(box);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(hits).toBe(1);
   });
 });
@@ -2644,7 +2686,7 @@ describe("asks for you in the toolbar and header (#1614)", () => {
     );
     const router = mount(`${viewerPath(OWNED)}?thread=b`);
     await toolbar().catch(() => undefined);
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(router.state.location.searchStr).toContain("thread=b");
     serveThreads(() => [mk("a"), mk("b")]);
     await act(() => lastClient.invalidateQueries());
@@ -2834,185 +2876,6 @@ describe("nextAskFor", () => {
     const api = mkApi([th("a", false)], [th("o")]);
     expect(nextAskFor(api, "a")).toBe("o");
     expect(nextAskFor(api, null)).toBe("o");
-  });
-});
-
-describe("Ask a question (#1794)", () => {
-  const agentAsk = (askOver: object = {}) => {
-    const t = askThread({}, askOver);
-    (t.comments[0] as { author: unknown }).author = {
-      kind: "agent",
-      id: "agent:p",
-      name: "OA Product",
-      for: "Leo",
-      me: false,
-    };
-    return t;
-  };
-
-  it("sends a reply to the agent that asked, with toAsker", async () => {
-    const t = agentAsk();
-    serveThreads(() => [t]);
-    let sent: unknown = null;
-    server.use(
-      http.post(
-        "*/api/v1/artifacts/:id/comments/:tid/replies",
-        async ({ request }) => {
-          sent = await request.json();
-          return HttpResponse.json({
-            id: "c-q",
-            body: "What breaks with A?",
-            author: { kind: "user", id: "me", name: "Me", me: true },
-            createdAt: "2026-11-05T11:00:00Z",
-            editedAt: null,
-            typed: true,
-            can: { edit: true, delete: true },
-            mentions: [
-              { key: "agent:p", name: "OA Product", delivery: "delivered" },
-            ],
-          });
-        },
-      ),
-    );
-    mount(viewerPath(OWNED));
-    const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: "Ask a question" }),
-    );
-    expect(
-      await within(c).findByText("To OA Product, the agent that asked"),
-    ).toBeInTheDocument();
-    const box = within(c).getByRole("textbox", { name: "Question" });
-    await waitFor(() => expect(box).toHaveFocus());
-    fireEvent.change(box, { target: { value: "What breaks with A?" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
-    await waitFor(() =>
-      expect(sent).toEqual({ body: "What breaks with A?", toAsker: true }),
-    );
-    await waitFor(() =>
-      expect(
-        within(c).queryByRole("textbox", { name: "Question" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(
-      within(c).getByRole("textbox", { name: "Reply" }),
-    ).toBeInTheDocument();
-  });
-
-  it("Cancel goes back to the plain reply box", async () => {
-    serveThreads(() => [agentAsk()]);
-    mount(viewerPath(OWNED));
-    const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: "Ask a question" }),
-    );
-    fireEvent.click(await within(c).findByRole("button", { name: "Cancel" }));
-    expect(
-      await within(c).findByRole("textbox", { name: "Reply" }),
-    ).toBeInTheDocument();
-    expect(
-      within(c).queryByText("To OA Product, the agent that asked"),
-    ).not.toBeInTheDocument();
-  });
-
-  it("keeps the draft when the ask is answered meanwhile, and says why it can't send", async () => {
-    let t = agentAsk();
-    serveThreads(() => [t]);
-    server.use(
-      http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
-        HttpResponse.json(
-          { error: { code: "not_an_ask", message: "x" } },
-          { status: 400 },
-        ),
-      ),
-    );
-    mount(viewerPath(OWNED));
-    const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: "Ask a question" }),
-    );
-    const box = await within(c).findByRole("textbox", { name: "Question" });
-    fireEvent.change(box, { target: { value: "Why B?" } });
-    t = agentAsk({ closed: true });
-    await act(async () => {
-      events.emitComments(OWNED, 2);
-    });
-    await waitFor(() =>
-      expect(
-        within(c).queryByRole("button", { name: "Ask a question" }),
-      ).not.toBeInTheDocument(),
-    );
-    expect(within(c).getByRole("textbox", { name: "Question" })).toHaveValue(
-      "Why B?",
-    );
-    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
-    expect(
-      await within(c).findByText(
-        "That ask is no longer open to questions. Reply instead.",
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("leaving the thread drops the question box", async () => {
-    const other = askThread({ id: "t-2" }, {});
-    (other.comments[0] as { id: string }).id = "c-2";
-    delete (other.comments[0] as { ask?: unknown }).ask;
-    (other.comments[0] as { body: string }).body = "Other thread";
-    serveThreads(() => [agentAsk(), other]);
-    mount(viewerPath(OWNED));
-    const c = await col();
-    fireEvent.click(
-      await within(c).findByRole("button", { name: "Ask a question" }),
-    );
-    await within(c).findByRole("textbox", { name: "Question" });
-    const second = document.querySelector("[data-thread='t-2']") as HTMLElement;
-    fireEvent.click(within(second).getAllByRole("button")[0]!);
-    await waitFor(() =>
-      expect(
-        document.querySelector("[data-thread='t-2'][data-active]"),
-      ).toBeTruthy(),
-    );
-    const first = document.querySelector(
-      "[data-thread='t-ask']",
-    ) as HTMLElement;
-    fireEvent.click(within(first).getAllByRole("button")[0]!);
-    await waitFor(() =>
-      expect(
-        document.querySelector("[data-thread='t-ask'][data-active]"),
-      ).toBeTruthy(),
-    );
-    expect(
-      within(c).queryByRole("textbox", { name: "Question" }),
-    ).not.toBeInTheDocument();
-    expect(
-      within(first).getByRole("textbox", { name: "Reply" }),
-    ).toBeInTheDocument();
-  });
-
-  it("is not offered once picked, when closed, or when a person asked", async () => {
-    const picked = agentAsk({
-      answer: {
-        optionId: "a",
-        by: { kind: "user", id: "me", name: "Me", me: true },
-        at: "2026-11-05T11:00:00Z",
-        typed: true,
-        yes: true,
-      },
-    });
-    picked.id = "t-1";
-    const closed = agentAsk({ closed: true });
-    closed.id = "t-2";
-    (closed.comments[0] as { id: string }).id = "c-2";
-    const person = askThread({ id: "t-3" });
-    (person.comments[0] as { id: string }).id = "c-3";
-    serveThreads(() => [picked, closed, person]);
-    mount(viewerPath(OWNED));
-    const c = await col();
-    await within(c).findAllByText("Which layout?");
-    await wait(50);
-    expect(
-      within(c).queryByRole("button", { name: "Ask a question" }),
-    ).not.toBeInTheDocument();
   });
 });
 

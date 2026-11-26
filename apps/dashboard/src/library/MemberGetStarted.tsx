@@ -3,9 +3,9 @@
 // them, with "Hide". Hidden isn't done. Words are the design's ("The words
 // on each screen", artifact wcL5Qbdtme52odvV), word for word.
 import { type SetupStep, setupSteps } from "@oa/shared";
-import { Button } from "@oa/ui/shadcn";
+import { Button, Textarea } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   BUS_LINE,
   COMMENT_STEP,
@@ -20,7 +20,9 @@ import {
   useOnboarding,
   useSetOnboarding,
 } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
+import { toast } from "../layout/toast";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
 import { Step, Waiting } from "./steps";
 
@@ -39,9 +41,80 @@ export const MEMBER_STEPS = {
     "Open your first page, type @ in a comment and pick your agent. It replies in the thread.",
   ask: "Answer your agent's ask",
   askHint: "Your first page has a question from your agent. Pick an option.",
+  connectorIntro:
+    "Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:",
+  connectorNote:
+    "Log in when it asks. Your chat sees new comments and answers only when you ask it to look.",
+  connectorHelp: "How to add a connector",
   stalled:
     'No reply yet. Your agent may not be listening. Ask it: "Check the bus."',
 } as const;
+
+export const CONNECTOR_DOCS =
+  "https://open-artifacts.com/docs/claude-and-chatgpt/";
+
+/** Step 1's second path, for a member in a Claude or ChatGPT chat: the
+    instance's MCP address to add as a custom connector. */
+export function ConnectorBlock({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  const frozen = useFrozen();
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copy = () => {
+    const failed = () =>
+      toast({
+        title: "Couldn't copy",
+        description: "Select it and copy it yourself.",
+        tone: "danger",
+      });
+    if (!navigator.clipboard) return failed();
+    navigator.clipboard.writeText(url).then(() => setCopied(true), failed);
+  };
+  return (
+    <div
+      data-connector=""
+      className="mt-[var(--oa-space-2)] grid min-w-0 gap-[var(--oa-space-2)] text-left"
+    >
+      <p className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
+        {MEMBER_STEPS.connectorIntro}
+      </p>
+      <Textarea
+        readOnly
+        aria-label="Connector address"
+        rows={1}
+        value={url}
+        onFocus={(e) => e.currentTarget.select()}
+        className="min-h-0 resize-none font-mono text-[length:var(--oa-text-xs)] md:text-[length:var(--oa-text-xs)]"
+      />
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-[30px] text-[length:var(--oa-text-sm)]"
+          aria-label={copied ? undefined : "Copy connector address"}
+          disabled={frozen}
+          onClick={copy}
+        >
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+      <p className="m-0 text-[length:var(--oa-text-xs)] text-muted-foreground">
+        {MEMBER_STEPS.connectorNote}
+      </p>
+      <a
+        href={CONNECTOR_DOCS}
+        target="_blank"
+        rel="noopener"
+        className="w-fit text-[length:var(--oa-text-xs)] text-primary underline"
+      >
+        {MEMBER_STEPS.connectorHelp}
+      </a>
+    </div>
+  );
+}
 
 const CARD = "rounded-lg border border-border bg-card p-[var(--oa-space-4)]";
 
@@ -52,7 +125,7 @@ const CARD = "rounded-lg border border-border bg-card p-[var(--oa-space-4)]";
  * slot without a jump; a connected member's card is shorter and only closes
  * the gap.
  */
-function CardSlot() {
+function CardSlot({ connectorUrl }: { connectorUrl: string }) {
   const rows: [string, string][] = [
     [MEMBER_STEPS.name, MEMBER_STEPS.nameHint],
     [MEMBER_STEPS.publish, MEMBER_STEPS.publishHint],
@@ -73,6 +146,7 @@ function CardSlot() {
         <ol className="m-0 list-none p-0">
           <Step n={1} state="cur" title={MEMBER_STEPS.connect}>
             <AgentSetupBody intro={MEMBER_STEPS.connectHint} />
+            <ConnectorBlock url={connectorUrl} />
             <Waiting>Waiting for your agent…</Waiting>
           </Step>
           {rows.map(([t, h], i) => (
@@ -98,7 +172,7 @@ export const noCardKnown = (userId: string | undefined) => {
     return false;
   }
 };
-const rememberNoCard = (userId: string, gone: boolean) => {
+export const rememberNoCard = (userId: string, gone: boolean) => {
   try {
     if (gone) localStorage.setItem(NO_CARD(userId), "1");
     else localStorage.removeItem(NO_CARD(userId));
@@ -164,7 +238,7 @@ export function MemberGetStarted() {
     onboarding.isPending &&
     !noCardKnown(userId)
   )
-    return <CardSlot />;
+    return <CardSlot connectorUrl={me.instance.mcpUrl} />;
   if (!live || all || !me?.instance.mcpUrl) return null;
 
   // Per person (#2632): hidden isn't done, so `completed` stays as it is.
@@ -204,6 +278,7 @@ export function MemberGetStarted() {
           ) : (
             <>
               <AgentSetupBody intro={MEMBER_STEPS.connectHint} />
+              <ConnectorBlock url={me.instance.mcpUrl} />
               <Waiting>Waiting for your agent…</Waiting>
             </>
           )}

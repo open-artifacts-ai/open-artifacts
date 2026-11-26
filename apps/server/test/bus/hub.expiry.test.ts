@@ -17,10 +17,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BusHub, HELD_BYTES_CAP, SWEEP_BATCH } from "../../src/bus/hub.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import {
+  closing,
   type Daemon,
   e,
   framesSeen,
   hello,
+  hubIdle,
   hubOf,
   inOwnerHub,
   machine,
@@ -197,9 +199,10 @@ async function setup() {
 
 /** Closes a daemon's socket and waits until the hub has seen it go. */
 async function offline(d: Daemon) {
-  d.close();
-  await d.closed;
-  await new Promise((r) => setTimeout(r, 50));
+  await closing(await hubOf(), async () => {
+    d.close();
+    await d.closed;
+  });
 }
 
 /** A new socket for the machine, registering `ref` again (the reconnect). */

@@ -294,8 +294,10 @@ describe("/clear handover in the daemon", () => {
       pid: 4242,
     });
     void a.request({ type: "send", to: "peer", body: "hi" }).catch(() => {});
-    // Let the daemon take the request in before the hub speaks.
-    await new Promise((r) => setTimeout(r, 100));
+    // The daemon answers requests of one connection in order: once it answers
+    // this, it has taken the send in, before the hub speaks.
+    await a.request({ type: "self" });
+    await h.barrier();
     expect(h.of("send")).toHaveLength(0);
     helloOk(h);
     await h.next("send");

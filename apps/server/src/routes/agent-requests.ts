@@ -41,6 +41,13 @@ function member(c: Context<AppEnv>) {
   return user;
 }
 
+/**
+ * `?details=1` opts in to the optional fields (`editedAt` on a held item,
+ * `entryId` on an allow). Without it the old strict response shapes hold; an
+ * older server ignores the query. Only the exact value `1` counts.
+ */
+const wantsDetails = (c: Context<AppEnv>) => c.req.query("details") === "1";
+
 const idOf = (c: Context<AppEnv>) => {
   const id = c.req.param("id") ?? "";
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(id))
@@ -51,14 +58,16 @@ const idOf = (c: Context<AppEnv>) => {
 export function mountAgentRequests(app: AppType): void {
   app.get(R.agentAskHeld, async (c) => {
     const user = member(c);
-    return c.json(await listHeld(c.env, user.id));
+    return c.json(await listHeld(c.env, user.id, Date.now(), wantsDetails(c)));
   });
 
   app.post(`${R.agentAskHeld}/:id/allow`, async (c) => {
     const user = member(c);
     const id = idOf(c);
     const body = await jsonBody(c, AllowBodySchema);
-    return c.json(await allow(c.env, user.id, id, body));
+    return c.json(
+      await allow(c.env, user.id, id, body, Date.now(), wantsDetails(c)),
+    );
   });
 
   app.post(`${R.agentAskHeld}/:id/allow/challenge`, async (c) => {

@@ -1,21 +1,30 @@
 import { AGENT_CAP_MESSAGES } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MACHINE_CAP_COPY, MEMBER_CAP_COPY } from "../src/routes.ts";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
-afterEach(stopAll);
+afterEach(async () => {
+  await stopAll();
+  vi.useRealTimers();
+});
 
 /** A harness whose log says when the daemon has marked an agent rate-limited. */
 async function limitHarness(over: Parameters<typeof daemonHarness>[0] = {}) {
   const logs: string[] = [];
-  const h = await daemonHarness({ log: (m) => logs.push(m), ...over });
+  const waiters: (() => void)[] = [];
+  const h = await daemonHarness({
+    log: (m) => {
+      logs.push(m);
+      for (const w of waiters.splice(0)) w();
+    },
+    ...over,
+  });
   /** The hub's refusal is on another socket: a request sent before it lands goes to the hub. */
-  const marked = (ref: string) =>
-    vi.waitFor(() =>
-      expect(logs).toContain(
-        `the hub refused to register ${ref}: too many agents (rate limited)`,
-      ),
-    );
+  const marked = async (ref: string) => {
+    const line = `the hub refused to register ${ref}: too many agents (rate limited)`;
+    while (!logs.includes(line))
+      await new Promise<void>((r) => waiters.push(r));
+  };
   return { ...h, marked };
 }
 
@@ -73,14 +82,24 @@ describe("a rate-limited agent_up", () => {
   });
 
   it("is not retried in a loop", async () => {
-    const h = await daemonHarness({
-      claude: { syncMs: 20 },
+    const syncs = eventCounter();
+    // The sync interval and the retry timer: both on a clock moved by hand.
+    vi.useFakeTimers({
+      toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"],
+    });
+    const h = await limitHarness({
+      claude: { syncMs: 20, onSync: () => syncs.hook() },
       limitedRetryMs: 60_000,
     });
     await h.adapter("A");
     const up = await h.next("agent_up");
     h.toDaemon(limited(up.id));
-    await new Promise((r) => setTimeout(r, 300));
+    await h.marked("A"); // the daemon took the limit; the retry timer is armed
+    // Several syncs after the limit: each would have announced A again.
+    const before = syncs.count;
+    await vi.advanceTimersByTimeAsync(300); // the original 300 ms window
+    expect(syncs.count - before).toBeGreaterThanOrEqual(14); // the window really ran
+    await h.quiet();
     expect(h.of("agent_up")).toHaveLength(1);
   });
 
@@ -133,18 +152,28 @@ describe("a rate-limited agent_up", () => {
 
 describe("fair, at-most-once user requests", () => {
   it("a request that times out while still queued never goes out", async () => {
-    const h = await daemonHarness({
-      hub: { backoffMs: () => 20, pace: { rate: 2, burst: 1 } },
-      pendingTimeoutMs: 200,
-    });
-    const a = await h.adapter("A");
-    expect(await a.request({ type: "list" })).toMatchObject({
-      type: "error",
-      code: "timeout",
-    });
-    await new Promise((r) => setTimeout(r, 2500));
-    expect(h.of("agent_up")).toHaveLength(1);
-    expect(h.of("list")).toEqual([]);
+    // The pending timer and the pacer's refill run on a clock moved by hand.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const h = await daemonHarness({
+        hub: { backoffMs: () => 20, pace: { rate: 2, burst: 1 } },
+        pendingTimeoutMs: 200,
+      });
+      const a = await h.adapter("A");
+      const reply = a.request({ type: "list" });
+      await a.request({ type: "self" }); // answered after the list was read and queued
+      await vi.advanceTimersByTimeAsync(200);
+      expect(await reply).toMatchObject({
+        type: "error",
+        code: "timeout",
+      });
+      await vi.advanceTimersByTimeAsync(5_000); // far past every refill
+      await h.quiet();
+      expect(h.of("agent_up")).toHaveLength(1);
+      expect(h.of("list")).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("a rate limit mark goes when its agent goes down", async () => {

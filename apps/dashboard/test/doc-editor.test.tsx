@@ -33,6 +33,7 @@ import {
   shortcutText,
   Toolbar,
 } from "../src/viewer/doc/Toolbar";
+import { installClock, settle } from "./clock";
 import { type FakeProvider, fakeProviders } from "./doc-fake-provider";
 
 type FakeLike = Pick<FakeProvider, "frame" | "close">;
@@ -49,6 +50,9 @@ const noRects = () => Object.assign([], { item: () => null });
 Range.prototype.getClientRects ??= noRects as never;
 Range.prototype.getBoundingClientRect ??= (() =>
   new DOMRect(0, 0, 0, 0)) as never;
+
+// A clock, not the wall: the editor's carets, notices and debounces run on it.
+installClock();
 
 const editors: Editor[] = [];
 afterEach(() => {
@@ -757,7 +761,7 @@ describe("DocEditor", () => {
     // A repeat error does not rebuild again.
     act(() => second.frame(frame));
     // The rebuild is queued with setTimeout(0); a timer queued now runs after it.
-    await new Promise((r) => setTimeout(r, 0));
+    await settle(0);
     expect(p.made.last).toBe(second);
   });
 
@@ -829,7 +833,7 @@ describe("DocEditor", () => {
     act(() => title.focus());
     fireEvent.change(title, { target: { value: "Plan B" } });
     act(() => p.made.last?.connect());
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(title).toHaveFocus();
     expect(title.value).toBe("Plan B");
     expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
@@ -849,7 +853,7 @@ describe("DocEditor", () => {
     fireEvent.change(title, { target: { value: "Mine" } });
     title.setSelectionRange(4, 4);
     act(() => p.made.last?.connect());
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(title).toHaveFocus();
     expect([title.selectionStart, title.selectionEnd]).toEqual([4, 4]);
   });
@@ -936,7 +940,7 @@ describe("DocEditor", () => {
       await open();
       const title = screen.getByRole("textbox", { name: "Title" });
       fireEvent.change(title, { target: { value: "Plan B" } });
-      await new Promise((r) => setTimeout(r, 50));
+      await settle(50);
       expect(
         screen.getByText("Type a title, then press Enter to start writing."),
       ).toBeVisible();
@@ -1035,14 +1039,14 @@ describe("DocEditor", () => {
         await waitFor(() => readOnly());
         // Let anything already queued go out (the editor may normalize the
         // seeded content, a send within the 75 ms batch) before counting.
-        await new Promise((r) => setTimeout(r, 200));
+        await settle(200);
         const sent = f.sentUpdates.length;
         for (const box of document.querySelectorAll<HTMLInputElement>(
           '.ProseMirror input[type="checkbox"]',
         ))
           fireEvent.click(box);
         // Past the 75 ms send batch.
-        await new Promise((r) => setTimeout(r, 200));
+        await settle(200);
         expect(checks()).toEqual([true, false]);
         expect(attrs(f)).toEqual([true, false]);
         expect(f.sentUpdates.length).toBe(sent);
@@ -1368,7 +1372,7 @@ describe("DocEditor", () => {
     it("1007 twice stops and reports; once is only a resync", async () => {
       const { f } = await open();
       act(() => f.close(1007));
-      await new Promise((r) => setTimeout(r, 20));
+      await settle(20);
       expect(screen.queryByRole("alert")).toBeNull();
       act(() => f.close(1007));
       expect((await screen.findByRole("alert")).textContent).toBe(
@@ -1412,7 +1416,7 @@ describe("DocEditor", () => {
       act(() =>
         f.frame(JSON.stringify({ type: "error", code: "rate_limited" })),
       );
-      await new Promise((r) => setTimeout(r, 20));
+      await settle(20);
       expect(screen.queryByRole("alert")).toBeNull();
       expect(screen.getByRole("toolbar")).toBeVisible();
     });
@@ -1677,7 +1681,7 @@ describe("cursor name flags", () => {
     );
     // The same position again (a heartbeat): no flag.
     send(3);
-    await new Promise((r) => setTimeout(r, 50));
+    await settle(50);
     expect(caret()?.hasAttribute("data-active")).toBe(false);
     // A move: open again.
     send(6);

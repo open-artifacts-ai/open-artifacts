@@ -28,7 +28,15 @@ import {
   SEND_KEY_RETAIN_MS,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, ns, trackSocket, up } from "./helpers.js";
+import {
+  e,
+  fence,
+  idleOf,
+  isFenceReply,
+  ns,
+  trackSocket,
+  up,
+} from "./helpers.js";
 
 type BusHubStub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -41,7 +49,6 @@ const inHub = <R>(h: BusHubStub, fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(stubOf(h), (i: BusHub, s) => fn(i, s));
 const clock = (h: BusHubStub, ms: number | null) =>
   inHub(h, (i) => BusHub.setTestClock(i, ms));
-const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const count = (h: BusHubStub, q: string, ...b: SqlStorageValue[]) =>
   inHub(h, (_, s) => s.storage.sql.exec<{ n: number }>(q, ...b).one().n);
 
@@ -115,6 +122,7 @@ async function daemonOn(h: BusHubStub, machineId: string): Promise<D> {
     if (t === PONG) return;
     const r = decodeServerFrame(t);
     if (!r.ok) return;
+    if (isFenceReply(r.frame)) return; // a fence's own reply is not a test's
     const k = w.shift();
     if (k) k(r.frame);
     else q.push(r.frame);
@@ -146,7 +154,7 @@ const exists = async (h: BusHubStub, id: string) =>
 async function alarms(h: BusHubStub, n = 5) {
   for (let k = 0; k < n; k++) {
     await runDurableObjectAlarm(stubOf(h));
-    await tick(2);
+    await idleOf(stubOf(h));
   }
 }
 
@@ -179,7 +187,7 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
       expect(f.type).not.toBe("error");
       if (f.type === "agent_ok") k++;
     }
-    await tick(50);
+    await fence(d); // every up/down pair was handled, in order
     expect(
       await count(h, "select count(*) as n from agents where live = 1"),
     ).toBe(0);
@@ -324,7 +332,7 @@ describe("M1: closed agents are purged once idle, and capped per machine", () =>
     d.send(up("u1", "ref_a", "Idle", n));
     await until(d, "agent_ok");
     d.send({ v: 1, id: "d1", type: "agent_down", agent_ref: "ref_a" });
-    await tick(30);
+    await fence(d);
     const id = (
       await inHub(h, (_, s) =>
         s.storage.sql

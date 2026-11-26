@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { type Hello, serveDaemon } from "@oa/bus-ipc";
 import { build } from "esbuild";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Bus } from "../src/bus.ts";
 import { realConnect } from "../src/link.ts";
-import { caller, flush } from "./support.ts";
+import { caller } from "./support.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -57,13 +57,17 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     },
   });
   cleanup.push(() => server.close());
+  let queuedMsg: (id: string) => void = () => {};
+  const queued = new Promise<string>((r) => {
+    queuedMsg = r;
+  });
   const bus = new Bus({
     connect: realConnect({ OA_BUS_HOME: home }),
     stateDir: () => "/state/.openclaw",
+    onQueued: (id) => queuedMsg(id),
   });
   bus.buildPrompt(caller({ runId: "w", workspaceDir: "/work/space" }));
-  await new Promise((r) => setTimeout(r, 300));
-  expect(push).toBeDefined();
+  await vi.waitFor(() => expect(push).toBeDefined());
   expect(hellos).toHaveLength(1);
   expect(hellos[0]).toMatchObject({
     kind: "openclaw",
@@ -78,15 +82,16 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "w" },
   );
+  // The deliver is queued only after the client's `self` round trip over the
+  // socket completes: wait for the client's own signal that it queued it.
+  await queued;
   const r = bus.buildPrompt(caller({ runId: "r1" }));
   expect(r?.prependContext).toContain("over the socket");
   bus.modelCallEnded(
     { agentId: "main", sessionKey: "agent:main:main" },
     { runId: "r1", outcome: "completed" },
   );
-  await flush();
-  await flush();
-  expect(acks).toEqual(["mmmmmmmmmmmmmmm1"]);
+  await vi.waitFor(() => expect(acks).toEqual(["mmmmmmmmmmmmmmm1"]));
   bus.closeAll();
 });
 
@@ -97,7 +102,10 @@ it("does not keep its host process alive once the turn is over", async () => {
   const server = await serveDaemon({
     path: daemonSocketPath(home),
     onHello: () => ({ bus_name: "openclaw-1", namespace: "ns", global: false }),
-    onFrame: () => undefined,
+    onFrame: (f) =>
+      f.type === "habits"
+        ? { type: "habits", rules: "test bus rules" }
+        : undefined,
   });
   cleanup.push(() => server.close());
   // The sources use TypeScript that strip-only mode cannot run: bundle the child.

@@ -1,8 +1,9 @@
 // Pictures on comments (#2508). A reservation (R.commentPictures) binds a
 // picture to one artifact and one person; the signed PUT stores the checked,
-// metadata-free bytes in R2 under a random private key; a comment claims it;
-// R.commentPicture serves it to whoever may read the page's comments, on every
-// request. No public or guessable URL, ever.
+// metadata-free bytes in R2 under a random private key, downscaled once if it
+// is past the store limits (#3007); a comment claims it; R.commentPicture
+// serves it to whoever may read the page's comments, on every request. No
+// public or guessable URL, ever.
 import {
   COMMENT_PICTURE_HEIC_MESSAGE,
   COMMENT_PICTURE_MAX_BYTES,
@@ -25,9 +26,12 @@ import { requireFreeStorage } from "../billing/caps.js";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
+import { readCappedRequest } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
+import { logError } from "../log.js";
+import { runtimeStub } from "../runtime/do.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
-import { readPicture } from "./picture-image.js";
+import { type PictureRead, readPicture } from "./picture-image.js";
 
 const digestHex = async (b: Uint8Array): Promise<string> =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource))]
@@ -38,6 +42,14 @@ const MAX_SIDE = 16_384;
 const MAX_PIXELS = 50_000_000;
 const notFound = () => new ApiError("not_found", "Not found");
 const MB = COMMENT_PICTURE_MAX_BYTES / 1024 / 1024;
+/**
+ * A comment picture is downscaled once, at upload, and only past these limits
+ * (#3007): a longest side over the 1568 px agents are served, or over the 3 MB
+ * the agent read path would send. At or under them the uploaded bytes are
+ * stored exactly as they came (metadata cleaning aside), never re-encoded.
+ */
+export const PICTURE_STORE_MAX_SIDE = 1568;
+export const PICTURE_STORE_MAX_BYTES = 3 * 1024 * 1024;
 /** The signed PUT's life: ten minutes. */
 const PUT_TTL_SEC = 600;
 /** Plain text, one line, at most 200 characters (the same cleaning the audit text gets). */
@@ -176,6 +188,86 @@ export async function reservePicture(
   };
 }
 
+/** Whether an uploaded picture is past the store limits, i.e. whether it is
+ * downscaled: the longest side over 1568 px, or over 3 MB of bytes. */
+export const beyondStoreLimits = (p: {
+  w: number;
+  h: number;
+  bytes: number;
+}): boolean =>
+  Math.max(p.w, p.h) > PICTURE_STORE_MAX_SIDE ||
+  p.bytes > PICTURE_STORE_MAX_BYTES;
+
+/** How a downscaled copy is written back: the picture's own type, so the
+ * declared type, the stored row and the served content-type still agree. */
+const RESIZE_OUTPUT = {
+  "image/png": { format: "image/png" },
+  "image/jpeg": { format: "image/jpeg", quality: 85 },
+  "image/webp": { format: "image/webp", quality: 85, anim: false },
+  "image/gif": { format: "image/gif", anim: true },
+} as const;
+
+/**
+ * The bytes that get stored (#3007). At or under the store limits this is the
+ * cleaned original itself, untouched and byte for byte. Past them, Workers
+ * Images makes a copy whose longest side fits 1568 px; the copy is read back
+ * like any upload (same type, real width and height) and kept only if it is
+ * smaller. A resize that fails or gains nothing leaves the original in place:
+ * the upload succeeds either way.
+ */
+export async function fitForStorage(
+  env: Env,
+  read: PictureRead,
+): Promise<PictureRead & { downscaled: boolean }> {
+  const images = env.IMAGES;
+  if (!beyondStoreLimits({ w: read.w, h: read.h, bytes: read.bytes.length }))
+    return { ...read, downscaled: false };
+  // No binding: the upload is kept as it came, as before #3007.
+  if (!images) return { ...read, downscaled: false };
+  const output = RESIZE_OUTPUT[read.type];
+  const keep = (why: string, e?: unknown, status?: number) => {
+    logError("comment_picture_resize_failed", e, {
+      why,
+      status,
+      type: read.type,
+      bytes: read.bytes.length,
+      w: read.w,
+      h: read.h,
+    });
+    return { ...read, downscaled: false };
+  };
+  try {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(read.bytes);
+        c.close();
+      },
+    });
+    const res = (
+      await images
+        .input(body)
+        .transform({
+          width: PICTURE_STORE_MAX_SIDE,
+          height: PICTURE_STORE_MAX_SIDE,
+          fit: "scale-down",
+        })
+        .output(output)
+    ).response();
+    if (!res.ok || res.headers.get("content-type") !== output.format)
+      return keep("images_status", undefined, res.status);
+    const bytes = await readCappedRequest(res, COMMENT_PICTURE_MAX_BYTES);
+    const again = readPicture(bytes);
+    if (typeof again === "string" || again.type !== read.type)
+      return keep("copy_unreadable");
+    // A copy no smaller than the original would only cost a re-encode.
+    if (again.bytes.length >= read.bytes.length)
+      return { ...read, downscaled: false };
+    return { ...again, downscaled: true };
+  } catch (e) {
+    return keep("images_threw", e);
+  }
+}
+
 /**
  * PUT of the raw bytes, authorized by its signature alone. Unknown, expired or
  * already-stored → 404/409. The body must be exactly the declared size; the
@@ -267,16 +359,26 @@ export async function putPicture(
         `A picture can be up to ${MAX_SIDE} pixels on a side and ${MAX_PIXELS / 1_000_000} megapixels.`,
         { reason: "dimensions" },
       );
-    // The cleaned size is what is stored, and what counts.
-    await requireFreeStorage(env, read.bytes.length);
-    await env.FILES.put(row.r2_key, read.bytes, {
-      httpMetadata: { contentType: read.type },
+    // The bytes are final here: over the store limits (#3007) an Images copy
+    // takes the place of the original; at or under them they are kept as sent.
+    const stored = await fitForStorage(env, read);
+    // The stored size is what counts.
+    await requireFreeStorage(env, stored.bytes.length);
+    await env.FILES.put(row.r2_key, stored.bytes, {
+      httpMetadata: { contentType: stored.type },
     });
     const done = await stmt(
       env.DB,
-      "update comment_pictures set bytes = ?2, w = ?3, h = ?4, received_at = ?5 where id = ?1 and received_at = -1",
+      "update comment_pictures set bytes = ?2, w = ?3, h = ?4, type = ?6, received_at = ?5 where id = ?1 and received_at = -1",
     )
-      .bind(pictureId, read.bytes.length, read.w, read.h, now)
+      .bind(
+        pictureId,
+        stored.bytes.length,
+        stored.w,
+        stored.h,
+        now,
+        stored.type,
+      )
       .run();
     if (!done.meta.changes) {
       await env.FILES.delete(row.r2_key).catch(() => {});
@@ -284,10 +386,10 @@ export async function putPicture(
     }
     return asPicture({
       ...row,
-      type: read.type,
-      bytes: read.bytes.length,
-      w: read.w,
-      h: read.h,
+      type: stored.type,
+      bytes: stored.bytes.length,
+      w: stored.w,
+      h: stored.h,
     });
   } catch (e) {
     await env.FILES.delete(row.r2_key).catch(() => {});
@@ -390,49 +492,124 @@ export async function picturesOf(
 }
 
 /**
- * The picture's bytes for GET: it must be on this artifact and either
- * attached to a comment or the caller's own pending one. Else 404.
+ * Who is reading a picture. `browser`: the person's own signed-in browser
+ * session (or a signed-out visitor the route let in). `agent`: a token, a
+ * grant or MCP: #2577, it reads no picture of a request held for the person it
+ * acts for.
+ */
+type PictureReadMode = "browser" | "agent";
+
+type PictureHit = {
+  body: ReadableStream;
+  type: string;
+  bytes: number;
+  w: number;
+  h: number;
+};
+
+/**
+ * The one path to a picture's bytes, for REST and MCP. It is on this artifact
+ * and either attached to a comment or the caller's own pending one. For an
+ * `agent` read of an attached picture, its comment must exist and not be held
+ * for the caller (#2577), read from the same picture row; a picture that has
+ * lost its comment fails closed. All checked before R2 is read.
  */
 export async function getPicture(
   env: Env,
   artifactId: string,
   pictureId: string,
   userId: string | null,
-): Promise<{ body: ReadableStream; type: string; bytes: number } | null> {
-  if (!isId(pictureId)) return null;
+  mode: PictureReadMode,
+): Promise<PictureHit> {
+  if (!isId(pictureId)) throw new ApiError("bad_request", "Invalid pictureId");
   const row = await stmt(
     env.DB,
     "select * from comment_pictures where id = ?1 and artifact_id = ?2 and received_at > 0",
   )
     .bind(pictureId, artifactId)
     .first<Row>();
-  if (!row) return null;
-  const attached =
-    row.comment_id !== null && !row.comment_id.startsWith("hold:");
-  if (!attached && row.user_id !== userId) return null;
+  if (!row) throw notFound();
+  if (row.comment_id && !row.comment_id.startsWith("hold:")) {
+    if (mode === "agent" && userId) {
+      if (!row.thread_id) throw notFound();
+      const thread = await runtimeStub(env, artifactId).commentsGet(
+        row.thread_id,
+      );
+      const comment = thread.comments.find((c) => c.id === row.comment_id);
+      if (
+        !comment ||
+        comment.held?.some((h) => h.state === "held" && h.owner === userId)
+      )
+        throw notFound();
+    }
+  } else if (row.user_id !== userId) {
+    throw notFound();
+  }
   const obj = await env.FILES.get(row.r2_key);
-  if (!obj) return null;
-  return { body: obj.body, type: row.type, bytes: row.bytes };
+  if (!obj) throw notFound();
+  return {
+    body: obj.body,
+    type: row.type,
+    bytes: row.bytes,
+    w: row.w,
+    h: row.h,
+  };
 }
 
+// The agent read path's budget: the same numbers a stored picture is kept
+// within at upload (#3007).
+const PREVIEW_MAX_BYTES = PICTURE_STORE_MAX_BYTES;
+const PREVIEW_SIDE = PICTURE_STORE_MAX_SIDE;
+
+type PictureForAgent = { data: Uint8Array; mimeType: string };
+
 /**
- * The picture's comment, for the GET's held-request check: null when it isn't
- * attached to one.
+ * Send the stored image within the byte budget. If Images is available,
+ * also fit its longest side to the preview limit. Images receives private bytes.
  */
-export async function pictureComment(
+export async function previewForAgent(
   env: Env,
-  artifactId: string,
-  pictureId: string,
-): Promise<{ threadId: string; commentId: string } | null> {
-  const row = await stmt(
-    env.DB,
-    "select thread_id, comment_id from comment_pictures where id = ?1 and artifact_id = ?2",
-  )
-    .bind(pictureId, artifactId)
-    .first<{ thread_id: string | null; comment_id: string | null }>();
-  if (!row?.thread_id || !row.comment_id || row.comment_id.startsWith("hold:"))
-    return null;
-  return { threadId: row.thread_id, commentId: row.comment_id };
+  hit: PictureHit,
+): Promise<PictureForAgent> {
+  const images = env.IMAGES;
+  const fitsFrame = hit.w <= PREVIEW_SIDE && hit.h <= PREVIEW_SIDE;
+  if (hit.bytes <= PREVIEW_MAX_BYTES && (!images || fitsFrame))
+    return {
+      data: new Uint8Array(await new Response(hit.body).arrayBuffer()),
+      mimeType: hit.type,
+    };
+  const unavailable = () =>
+    new ApiError(
+      "too_large",
+      "A smaller preview could not be made for this picture. You can open the original in the web app.",
+    );
+  if (!images) {
+    await hit.body.cancel().catch(() => {});
+    throw new ApiError(
+      "too_large",
+      "This picture is too large to show. Open the original in the web app.",
+    );
+  }
+  try {
+    const res = (
+      await images
+        .input(hit.body)
+        .transform({
+          width: PREVIEW_SIDE,
+          height: PREVIEW_SIDE,
+          fit: "scale-down",
+        })
+        .output({ format: "image/webp", quality: 85, anim: false })
+    ).response();
+    if (!res.ok || res.headers.get("content-type") !== "image/webp")
+      throw unavailable();
+    const data = await readCappedRequest(res, PREVIEW_MAX_BYTES);
+    if (!data.length) throw unavailable();
+    return { data, mimeType: "image/webp" };
+  } catch (e) {
+    if (!(e instanceof ApiError)) logError("comment_picture_preview_failed", e);
+    throw unavailable();
+  }
 }
 
 /** Deletes pictures by where they sit (a comment, or a whole thread) and their bytes. */

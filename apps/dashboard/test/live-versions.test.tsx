@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setEmbedForTests } from "../src/embed";
 import { FullGone } from "../src/viewer/LiveChip";
 import { fullPath } from "../src/viewer/paths";
+import { installClock, settle } from "./clock";
 import {
   arts,
   calls,
@@ -91,6 +92,9 @@ const api = (method: string, path: string, body?: unknown) =>
 const publish = (id = OWNED) =>
   api("POST", R.versions(id), { id, format: "html", content: "<p>next</p>" });
 const LONG = { timeout: 3_000 };
+
+// A clock, not the wall (test/clock.ts).
+installClock();
 
 describe("live versions: the safe swap", () => {
   it("untouched, following Current: preloads, swaps, says so quietly", async () => {
@@ -252,7 +256,7 @@ describe("live versions: the safe swap", () => {
     const other = await frame(next);
     fireEvent.load(other);
     const sent = post(other, "hello");
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle(50);
     expect(
       sent.mock.calls.filter(
         (c) => (c[0] as { type: string }).type === "scroll.to",
@@ -275,7 +279,7 @@ describe("live versions: the safe swap", () => {
     act(() => {
       window.dispatchEvent(new Event("blur"));
     });
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await settle(10);
     await publish();
     expect(
       await screen.findByRole("button", { name: "View version 3" }, LONG),
@@ -292,7 +296,7 @@ describe("live versions: the safe swap", () => {
     expect(
       screen.getByRole("button", { name: "Back to current" }),
     ).toBeTruthy();
-    await act(() => new Promise((r) => setTimeout(r, 1_200)));
+    await settle(1_200);
     expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();
     expect(frames()).toEqual([first]);
   });
@@ -447,7 +451,7 @@ describe("live versions: gone", () => {
       window.dispatchEvent(new Event("focus"));
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    await act(() => new Promise((r) => setTimeout(r, 200)));
+    await settle(200);
     expect(callsFor(OWNED, after)).toEqual([]);
     expect(frames()).toEqual([first]);
   });
@@ -470,6 +474,7 @@ describe("live versions: gone", () => {
     act(() => {
       events.emitGone(GUIDE, "deleted");
     });
+    await settle(50);
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
     expect(screen.queryByText(DELETED, BANNER)).toBeNull();
@@ -498,6 +503,7 @@ describe("live versions: gone", () => {
     act(() => {
       events.emitGone(GUIDE, "deleted");
     });
+    await settle(50);
     expect(await screen.findByText(DELETED, BANNER)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
   });
@@ -525,6 +531,7 @@ describe("live versions: gone", () => {
     act(() => {
       events.emitGone(OWNED, "deleted");
     });
+    await settle(50);
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
   });
@@ -544,7 +551,7 @@ describe("live versions: gone", () => {
     });
     expect(await screen.findByText(NEUTRAL, BANNER)).toBeTruthy();
     expect(frames()).toHaveLength(1);
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle(50);
     expect(events.connections(GUIDE)).toBe(0);
   });
 
@@ -553,7 +560,7 @@ describe("live versions: gone", () => {
     // A capability change: the mock emits gone "changed".
     await api("PATCH", R.artifact(OWNED), { capabilities: { db: true } });
     await waitFor(() => expect(events.connections(OWNED)).toBe(1));
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle(50);
     expect(screen.queryByText(NEUTRAL, BANNER)).toBeNull();
     expect(screen.queryByText(DELETED, BANNER)).toBeNull();
     // Still the same frame, and its bridge still answers.
@@ -620,7 +627,7 @@ describe("live versions: other event frames", () => {
     post(first, "interacted");
     await act(async () => {
       events.emitComments(OWNED, 4);
-      await new Promise((r) => setTimeout(r, 100));
+      await settle(100);
     });
     expect(frames()).toEqual([first]);
     expect(screen.queryByTestId("versions-dot")).toBeNull();

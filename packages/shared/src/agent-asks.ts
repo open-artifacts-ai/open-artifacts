@@ -36,6 +36,12 @@ export const HeldItemSchema = z.strictObject({
   /** What an allow must carry back: a hash of everything the placeholder hides. */
   wordsHash: z.string().regex(/^[0-9a-f]{64}$/),
   createdAt: z.number(),
+  /**
+   * The comment's current editedAt, same type as Comment.editedAt (ISO string). Absent when never edited.
+   * Applies to held replies too. Opt-in: only when the request has `?details=1` (an older client parses
+   * this object strictly, so it never gets it unasked; an older server ignores the query).
+   */
+  editedAt: z.string().optional(),
 });
 export type HeldItem = z.infer<typeof HeldItemSchema>;
 
@@ -94,6 +100,14 @@ export const AllowResultSchema = z.strictObject({
   changed: z.number().int(),
   /** Held back by the hourly limit: "N still waiting (hourly limit)". */
   waiting: z.number().int(),
+  /**
+   * The list entry this call created, for Undo (DELETE the receiver's listen entry).
+   * Only on "page", "space" and "all", and only when this call inserted a new entry:
+   * absent for "once", and when the person was already listed (an extension), a retry, or a lost race.
+   * An entry whose end has passed is not "already listed". Opt-in: only with `?details=1`
+   * (older clients parse this object strictly).
+   */
+  entryId: z.string().optional(),
 });
 export type AllowResult = z.infer<typeof AllowResultSchema>;
 

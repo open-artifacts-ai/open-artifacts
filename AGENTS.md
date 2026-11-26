@@ -39,12 +39,26 @@ set differs by adapter.
 Internal process for the people and agents who maintain this repository, not
 advice for contributors.
 
-- **The Manager arms PRs.** Send the PR and its full head SHA with CI green on
-  that exact SHA, and name a reviewer who is not the author. Never push to an
-  armed or queued PR.
-- **Rerun the whole workflow** after a failure, not just the failed job, so a
-  flake cannot hide behind a green rerun.
+- **Leads work in pairs.** One builds; the partner, on a different model
+  provider where possible, reviews the PR against the issue's acceptance lines, proves it
+  live, and merges once CI is green on that exact SHA
+  (`gh pr merge <n> --match-head-commit <sha>`). Merging needs no human pick;
+  tests and CI stop a bad merge. Never push to a queued PR.
+- **Quote the decision.** Before building or calling work done, read the
+  user's decisions on the plan page (answered asks, typed comments) and quote
+  the one the work meets.
+- **Rerun test and CI workflows whole** after a failure, not just the failed
+  job, so a flake cannot hide behind a green rerun. **Release workflows**
+  (hosted-release, hosted-publish, the staging and prod chains, deploys) rerun
+  only their failed jobs: their finished jobs have side effects, such as
+  attached files, tags and deploys.
 - **Platform releases.** A feature session does not deploy.
+- **Tests control time with fake timers or wait on a signal, never sleep.** A
+  `setTimeout` wait, a `sleep` helper and Playwright's `waitForTimeout` are what
+  makes a suite flaky on a loaded runner. `pnpm check-no-sleeps` fails a test
+  file that adds one; a wait that is genuinely the only way says why with
+  `// sleep-ok: <reason>` and takes its line out of
+  `scripts/ci/test-sleep-baseline.json`.
 - **Leads act on their own PRs without asking.** Mark your own reviewed PR
   ready, rerun its whole workflow, and merge main into it while it isn't armed
   or queued. Run each `gh` write as one plain command (`gh pr ready 2196`),

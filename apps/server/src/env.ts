@@ -106,6 +106,13 @@ export interface Env {
    * `ratelimits`; ANON_WRITES_PER_MIN does not change it.
    */
   RL_ANON_WRITES?: RateLimit;
+  /**
+   * The test hooks' own limiter (apps/server/src/test-hooks), keyed like
+   * RL_ANON, 600 a minute. Charged only for a call whose hook key verified; a
+   * wrong or absent key still spends RL_ANON. Unbound (a build or config from
+   * before it): a right key spends RL_ANON too, as it did.
+   */
+  RL_HOOKS?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
   RL_AUTH?: RateLimit;
   /** GET R.directoryGroups limiter, keyed per caller (P3 T13); unbound: unlimited. */
@@ -123,6 +130,13 @@ export interface Env {
   DIRECTORY_BROKER?: Fetcher;
   /** Browser Run, for server-side thumbnails (services/thumbs.ts); optional. */
   BROWSER?: Fetcher;
+  /**
+   * Workers Images: it downscales a comment picture over the store limits once,
+   * at upload (#3007), and a large one for an agent on the read path
+   * (services/comment-pictures.ts). Without this binding the upload is stored as
+   * it came and the tool serves the original up to its byte limit.
+   */
+  IMAGES?: ImagesBinding;
   /** Optional Email Service send binding; invite/share emails are off without it. */
   EMAIL?: SendEmail;
   /**

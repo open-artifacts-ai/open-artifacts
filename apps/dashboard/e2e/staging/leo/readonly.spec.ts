@@ -15,7 +15,7 @@ const get = (path: string) =>
         redirect: "manual",
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, origin: LEO },
   );
 
 test("leo runs a release build: healthz ok, a version, and no test hooks", async () => {

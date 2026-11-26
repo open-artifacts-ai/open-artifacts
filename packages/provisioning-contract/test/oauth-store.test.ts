@@ -87,6 +87,48 @@ describe("R29 and R30", () => {
       );
   });
 
+  it("R29 also takes AUTH_PROVIDERS: google, or google and email codes (cloud #435)", () => {
+    const requestId = "a".repeat(16);
+    for (const vars of [
+      { AUTH_PROVIDERS: "google" },
+      { AUTH_PROVIDERS: "google,email" },
+      { OAUTH_STORE: "dual", AUTH_PROVIDERS: "google,email" },
+    ])
+      expect(SetOAuthStoreSchema.safeParse({ requestId, vars }).success).toBe(
+        true,
+      );
+    // Never without Google, never another order or provider, never a list.
+    for (const vars of [
+      { AUTH_PROVIDERS: "email" },
+      { AUTH_PROVIDERS: "email,google" },
+      { AUTH_PROVIDERS: "google,access" },
+      { AUTH_PROVIDERS: "" },
+      { AUTH_PROVIDERS: ["google", "email"] },
+      { AUTH_PROVIDERS: "google,email", AUTH_DOMAINS: "x.example" },
+    ])
+      expect(SetOAuthStoreSchema.safeParse({ requestId, vars }).success).toBe(
+        false,
+      );
+  });
+
+  it("AUTH_PROVIDERS round-trips through the job args", () => {
+    expect(
+      oauthStoreJobArgs({ vars: { AUTH_PROVIDERS: "google,email" } }),
+    ).toEqual({ vars: { AUTH_PROVIDERS: "google,email" } });
+    expect(parseOAuthJob({ vars: { AUTH_PROVIDERS: "google,email" } })).toEqual(
+      { op: "set", authProviders: "google,email" },
+    );
+    expect(parseOAuthJob({ vars: { AUTH_PROVIDERS: "google" } })).toEqual({
+      op: "set",
+      authProviders: "google",
+    });
+    for (const bad of [
+      { vars: { AUTH_PROVIDERS: "email" } },
+      { vars: { AUTH_PROVIDERS: "google,email", TIER: "team" } },
+    ])
+      expect(parseOAuthJob(bad)).toBeNull();
+  });
+
   it("DOCS_PREVIEW round-trips through the job args", () => {
     expect(
       oauthStoreJobArgs({ vars: { OAUTH_STORE: "dual", DOCS_PREVIEW: "1" } }),

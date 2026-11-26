@@ -35,9 +35,9 @@ export const HERMES_MARKER = ".oa-bus-managed";
 export const HERMES_NO_CLI =
   "no hermes binary found; its config may still list oa-bus";
 /**
- * Present in the plugin folder only when the user said yes to the always-on
- * habits (#1602): the plugin adds them to a turn only while it exists. It is
- * not a package file, so it never counts toward the hash, and a reinstall keeps it.
+ * Legacy marker written by earlier installs (#1602); never written now, and
+ * deleted on install, upgrade and uninstall. Not a package file, so it never
+ * counts toward the hash.
  */
 export const HERMES_HABITS_MARKER = "habits.on";
 /** The plugin's own record of the gateway chats it linked: never shipped, hashed or deleted by an upgrade. */
@@ -46,10 +46,6 @@ export const HERMES_ROOTS_FILE = "gateway_roots.json";
 export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
-
-/** What the marker holds; only its presence matters. */
-export const HABITS_MARKER_TEXT =
-  "The Open Artifacts bus habits are on for this plugin. Remove: oa-bus install --no-habits\n";
 
 /**
  * Python's non-strict Path.resolve(): the deepest existing ancestor is
@@ -384,10 +380,12 @@ export async function installHermes(
     throw new Error(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
-  if (state !== "current") {
-    // The user's yes to the habits lives in the folder being replaced: carry it over.
-    const keepHabits =
-      state === "stale" && kind(join(dest, HERMES_HABITS_MARKER)) === "file";
+  if (state === "current") {
+    // #3043: habits now come from the bus; remove any leftover marker.
+    const marker = join(dest, HERMES_HABITS_MARKER);
+    const mk = kind(marker);
+    if (mk === "file" || mk === "link") rmSync(marker, { force: true });
+  } else {
     // The plugin's remembered chats: carried over only as a plain file, and rewritten owner-only.
     const keepRoots =
       state === "stale" && kind(join(dest, HERMES_ROOTS_FILE)) === "file"
@@ -420,8 +418,6 @@ export async function installHermes(
         join(tmp, HERMES_MARKER),
         `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
       );
-      if (keepHabits)
-        writeFileSync(join(tmp, HERMES_HABITS_MARKER), HABITS_MARKER_TEXT);
       if (keepRoots !== undefined)
         writeFileSync(join(tmp, HERMES_ROOTS_FILE), keepRoots, { mode: 0o600 });
       if (state === "stale") rmSync(dest, { recursive: true, force: true });

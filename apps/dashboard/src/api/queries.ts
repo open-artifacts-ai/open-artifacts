@@ -235,7 +235,7 @@ export const useOnboarding = (enabled = true) =>
     queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
   });
 /**
- * PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer.
+ * PUT R.onboarding: turn on `dismissed` or `completed` (`dismissed: false` shows a hidden checklist again); the cache shows the answer.
  * #2632: `member` saves a member's own; today's server refuses that with 403,
  * which is "not saved": no error, the change stays for this session.
  */

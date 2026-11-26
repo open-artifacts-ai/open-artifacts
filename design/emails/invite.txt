@@ -10,6 +10,8 @@ Go to {{instanceName}}:
 Then connect your agent. Paste this into Claude Code, Codex, Cursor or any other AI agent:
 
 {{setupLine}}
+
+Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address: {{connectorUrl}}. How to add a connector: https://open-artifacts.com/docs/claude-and-chatgpt/
 <!--/setup-->
 
 --

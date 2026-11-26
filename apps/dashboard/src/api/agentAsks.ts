@@ -26,7 +26,7 @@ export const useHeld = (enabled = true) =>
   useQuery({
     queryKey: heldKey,
     queryFn: ({ signal }): Promise<HeldList> =>
-      api.get(R.agentAskHeld, HeldListSchema, signal),
+      api.get(`${R.agentAskHeld}?details=1`, HeldListSchema, signal),
     enabled,
     staleTime: 0,
   });
@@ -52,7 +52,12 @@ export const useAllowHeld = (id: string) => {
   return useMutation({
     // #2864: no passkey step for now; "space" and "all" send an end date only.
     mutationFn: (v: AllowInput): Promise<AllowResult> =>
-      api.send("POST", R.agentAskHeldAllow(id), v, AllowResultSchema),
+      api.send(
+        "POST",
+        `${R.agentAskHeldAllow(id)}?details=1`,
+        v,
+        AllowResultSchema,
+      ),
     onSettled: refresh,
   });
 };

@@ -32,8 +32,10 @@ export const PICTURE_ROUTES = {
 export const PICTURE_TYPES = CommentPictureTypeSchema.options;
 export const PICTURES_MAX = COMMENT_PICTURES_MAX;
 export const PICTURE_BYTES_MAX = COMMENT_PICTURE_MAX_BYTES;
-/** The browser shrinks the longest side to this before upload. */
-export const PICTURE_SIDE_MAX = 2560;
+/** Over this longest side, the browser downscales a picture before upload. */
+export const PICTURE_SIDE_MAX = 1568;
+/** Over these bytes, likewise: the agent read path's own budget (#3007). */
+export const PICTURE_BYTES_FOR_AGENTS = 3 * 1024 * 1024;
 
 /** A comment's pictures (none when it has none). */
 export const picturesOf = (c: { pictures?: CommentPicture[] }) =>

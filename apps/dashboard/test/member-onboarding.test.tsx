@@ -6,6 +6,7 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { beforeEach, describe, expect, it } from "vitest";
 import { firstName, fiveOf, mySteps } from "../src/api/myOnboarding";
+import { installClock, settle } from "./clock";
 import { calls, installHarness, mountHosted, page } from "./harness";
 
 installHarness();
@@ -54,6 +55,9 @@ const refusedPut = () =>
   );
 const card = () => document.querySelector("section[data-member]");
 const empty = () => http.get("*/api/v1/artifacts", () => page([], null));
+
+// A clock, not the wall (test/clock.ts).
+installClock();
 
 describe("myOnboarding (the #2639 contract)", () => {
   it("reads the caller's own steps from R.onboarding", () => {
@@ -182,7 +186,7 @@ describe("a member's Library card", () => {
     );
     expect(document.querySelector("[data-member-slot]")).toBeNull();
     answer();
-    await new Promise((r) => setTimeout(r, 100));
+    await settle(100);
     expect(card()).toBeNull();
   };
 
@@ -236,6 +240,31 @@ describe("a member's Library card", () => {
       expect(c.textContent).toContain(t);
     // The sixth step is the Welcome's, never the card's.
     expect(c.textContent).not.toContain("Also try");
+  });
+
+  it("step 1 also shows the Claude and ChatGPT connector path, with the instance address", async () => {
+    mountHosted("/", true, as("member"), [
+      onboarding({ agentConnected: false }),
+      empty(),
+    ]);
+    await waitFor(() => expect(card()).not.toBeNull());
+    const c = card() as HTMLElement;
+    for (const t of [
+      "Using Claude or ChatGPT in a chat? Add Open Artifacts as a custom connector with this address:",
+      "Log in when it asks. Your chat sees new comments and answers only when you ask it to look.",
+    ])
+      expect(c.textContent).toContain(t);
+    const box = screen.getByRole("textbox", { name: "Connector address" });
+    expect((box as HTMLTextAreaElement).value).toMatch(/\/mcp$/);
+    expect(
+      screen.getByRole("button", { name: "Copy connector address" }),
+    ).toBeTruthy();
+    const link = screen.getByRole("link", { name: "How to add a connector" });
+    expect(link.getAttribute("href")).toBe(
+      "https://open-artifacts.com/docs/claude-and-chatgpt/",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
   });
 
   const LINE =
@@ -353,7 +382,7 @@ describe("a member's Library card", () => {
       empty(),
     ]);
     await waitFor(() => expect(card()).toBeNull());
-    await new Promise((r) => setTimeout(r, 300));
+    await settle(300);
     expect(puts.some((c) => JSON.stringify(c.body).includes("completed"))).toBe(
       false,
     );
@@ -398,7 +427,7 @@ describe("a member's Library card", () => {
     await waitFor(() => expect(card()).not.toBeNull());
     (await screen.findByRole("button", { name: "Hide" })).click();
     await waitFor(() => expect(card()).toBeNull());
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
     expect(puts.filter((c) => c.path === "/api/v1/onboarding")).toHaveLength(1);
     expect(document.body.textContent).not.toContain("Couldn't save that.");
@@ -406,7 +435,7 @@ describe("a member's Library card", () => {
     cleanup();
     mountHosted("/", true, as("member"), [onboarding(), empty()]);
     await screen.findByRole("heading", { name: "Library" });
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
   });
 
@@ -427,7 +456,7 @@ describe("a member's Library card", () => {
         puts.filter((c) => c.path === "/api/v1/onboarding").map((c) => c.body),
       ).toEqual([{ completed: true }]),
     );
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
     expect(document.body.textContent).not.toContain("Couldn't save that.");
   });
@@ -438,7 +467,7 @@ describe("a member's Library card", () => {
       empty(),
     ]);
     await screen.findByRole("heading", { name: "Library" });
-    await new Promise((r) => setTimeout(r, 200));
+    await settle(200);
     expect(card()).toBeNull();
   });
 

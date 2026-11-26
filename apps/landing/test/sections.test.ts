@@ -322,12 +322,16 @@ describe("landing sections", () => {
       "Hermes",
       "OpenClaw",
       "Gemini coming soon",
+      "Antigravity coming soon",
       "and any AI agent that speaks MCP",
     ]);
     expect(sec).toMatch(/<li class="soon">/);
     const marks = sec.match(/<svg [^>]*>/g) ?? [];
-    // six marks, plus Gemini's while GEMINI_MARK is on (name only when off)
-    expect(marks).toHaveLength(GEMINI_MARK ? 7 : 6);
+    // seven marks (Antigravity's is our own glyph), plus Gemini's while GEMINI_MARK is on
+    expect(marks).toHaveLength(GEMINI_MARK ? 8 : 7);
+    expect(sec).toMatch(
+      /<li class="soon"><svg [^>]*>(?:(?!<\/li>)[\s\S])*<\/svg>Antigravity <small>coming soon<\/small><\/li>/,
+    );
     expect(sec).toMatch(
       GEMINI_MARK
         ? /<li class="soon"><svg [^>]*>[\s\S]*<\/svg>Gemini <small>coming soon<\/small><\/li>/

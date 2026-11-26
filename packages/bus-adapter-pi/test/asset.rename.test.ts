@@ -15,8 +15,11 @@ const sockets: Socket[] = [];
 let home: string;
 const shutdowns: (() => Promise<void>)[] = [];
 
-async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
+async function daemon(caps: string[] | undefined, holdWelcome = false) {
   const frames: Frame[][] = [];
+  // With holdWelcome the welcome waits for releaseWelcome(), not for a clock.
+  const heldWelcomes: (() => void)[] = [];
+  let settledSeq = 0;
   const server = createServer((sock) => {
     const mine: Frame[] = [];
     frames.push(mine);
@@ -30,10 +33,13 @@ async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
         mine.push(f);
         if (f.type === "hello") {
           const welcome = `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, bind_token: "bind-token-0123456789abcdef", ...(caps ? { caps } : {}) })}\n`;
-          if (welcomeDelayMs)
-            setTimeout(() => sock.write(welcome), welcomeDelayMs);
+          if (holdWelcome) heldWelcomes.push(() => sock.write(welcome));
           else sock.write(welcome);
         }
+        if (f.type === "self")
+          sock.write(
+            `${JSON.stringify({ v: 1, id: f.id, type: "agent", agent: { name: "x", global: false } })}\n`,
+          );
       }
     });
   });
@@ -45,7 +51,42 @@ async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
     frames,
     renames: (n: number) => frames[n].filter((f) => f.type === "rename"),
     drop: () => sockets.at(-1)?.destroy(),
+    releaseWelcome: () => {
+      for (const w of heldWelcomes.splice(0)) w();
+    },
+    /**
+     * Ends an absence check on an event, not a wait: a delivery is pushed to
+     * the session and its ack comes back on the same link, after every frame
+     * the session wrote before it. Whatever it would have sent has arrived.
+     */
+    settled: async (n: number) => {
+      const msg_id = `settle-${++settledSeq}`;
+      sockets
+        .at(-1)
+        ?.write(
+          `${JSON.stringify({ v: 1, id: "0", type: "deliver", msg_id, from_name: "p", namespace: "ns", body: "settle" })}\n`,
+        );
+      await vi.waitFor(() =>
+        expect(
+          frames[n].some((f) => f.type === "ack" && f.msg_id === msg_id),
+        ).toBe(true),
+      );
+    },
   };
+}
+
+/** Advances the faked clock until the session has reconnected. */
+async function reconnected(d: { frames: Frame[][] }, n: number) {
+  const t0 = Date.now();
+  await vi.waitFor(
+    async () => {
+      await vi.advanceTimersByTimeAsync(500);
+      expect(d.frames[n]?.length).toBeGreaterThan(0);
+    },
+    { timeout: 5_000, interval: 5 },
+  );
+  // The 3 s reconnect timer, well inside the 10 s bound.
+  expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
 }
 
 let name: string | undefined;
@@ -129,7 +170,7 @@ describe("pi rename (#1635)", () => {
     await emit("session_info_changed");
     name = " \u0001\u007f ";
     await emit("session_info_changed");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
@@ -178,7 +219,7 @@ describe("pi rename (#1635)", () => {
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Renamed";
     await emit("session_info_changed");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
@@ -190,17 +231,8 @@ describe("pi rename (#1635)", () => {
     name = "After Rename";
     await emit("session_info_changed");
     d.drop();
-    // The 3 s reconnect timer, well inside the 10 s bound: faked time passes
-    // while the real socket close and reconnect settle.
-    const t0 = Date.now();
-    await vi.waitFor(
-      async () => {
-        await vi.advanceTimersByTimeAsync(500);
-        expect(d.frames[1]?.length).toBeGreaterThan(0);
-      },
-      { timeout: 5_000, interval: 5 },
-    );
-    expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
+    // Faked time passes while the real socket close and reconnect settle.
+    await reconnected(d, 1);
     expect(d.frames[1][0].proposed_name).toBe("After Rename");
   });
 
@@ -210,40 +242,34 @@ describe("pi rename (#1635)", () => {
     await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     d.drop();
-    await vi.waitFor(
-      async () => {
-        await vi.advanceTimersByTimeAsync(500);
-        expect(d.frames[1]?.length).toBeGreaterThan(0);
-      },
-      { timeout: 5_000, interval: 5 },
-    );
+    await reconnected(d, 1);
     expect(d.frames[1][0].bind_token).toBe("bind-token-0123456789abcdef");
   });
 
   it("a rename while the hello is in flight is sent once the link is welcomed", async () => {
-    const d = await daemon(["rename"], 300);
+    const d = await daemon(["rename"], true);
     // Not awaited: session_start resolves only once the welcome arrives.
     const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Typed During Hello";
     await emit("session_info_changed");
+    d.releaseWelcome();
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
     expect(d.renames(0)[0].name).toBe("Typed During Hello");
   });
 
   it("an event from another session neither renames nor changes what a reconnect proposes", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Other Session Name";
     await emit("session_info_changed", ctx("some-other-session"));
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
     name = "First Name";
     d.drop();
-    await vi.waitFor(() => expect(d.frames[1]?.[0]).toBeDefined(), {
-      timeout: 6_000,
-    });
+    await reconnected(d, 1);
     expect(d.frames[1][0].proposed_name).toBe("First Name");
   });
 
@@ -255,19 +281,20 @@ describe("pi rename (#1635)", () => {
     name = "Auto Title";
     await emit("session_info_changed");
     await emit("turn_start");
-    await new Promise((r) => setTimeout(r, 100));
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 
   it("omp: a title that changes while the hello is in flight is not sent", async () => {
     agent = { kind: "main" };
-    const d = await daemon(["rename"], 300);
+    const d = await daemon(["rename"], true);
     const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     // omp titles the session itself; a second session_start sees the new title.
     name = "Auto Title";
     void emit("session_start");
-    await new Promise((r) => setTimeout(r, 600));
+    d.releaseWelcome();
+    await d.settled(0);
     expect(d.renames(0)).toHaveLength(0);
   });
 });

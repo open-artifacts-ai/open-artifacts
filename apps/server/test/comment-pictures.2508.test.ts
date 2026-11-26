@@ -7,6 +7,7 @@ import {
   type Comment,
   type CommentPicture,
   type CommentPictureReserved,
+  imageSize,
   type Member,
   newId,
   R,
@@ -14,10 +15,12 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import { publish } from "../src/services/artifacts.js";
 import { sweepPictures } from "../src/services/comment-pictures.js";
 import { getUser } from "../src/services/users.js";
 import { api, errOf, fetchAndWait, login } from "./helpers.js";
+import { close, connect, textOf, tool } from "./mcp-helpers.js";
 import {
   contains,
   gif,
@@ -566,6 +569,159 @@ describe("attach", () => {
 });
 
 describe("fetch", () => {
+  it("returns one MCP image after attachment and checks access on each read", async () => {
+    const id = await pub({ visibility: "private" });
+    const other = await pub({ visibility: "team" });
+    await api(app, R.shares(id), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "viewer" },
+    });
+    const { pic } = await upload(owner, id, "image/jpeg");
+    const client = await connect(
+      (await createPat(env, viewer.userId, "picture viewer")).token,
+    );
+    const read = (page = id) =>
+      tool(client, "get_comment_picture", { id: page, pictureId: pic.id });
+    try {
+      expect(textOf(await read())).toMatch(/^not_found/);
+      await thread(owner, id, [{ pictureId: pic.id }]);
+      const bytes = await r2(pic.id);
+      expect(bytes).toBeTruthy();
+      expect((await read()).content).toEqual([
+        {
+          type: "image",
+          mimeType: "image/jpeg",
+          data: btoa(String.fromCharCode(...(bytes ?? []))),
+        },
+      ]);
+      expect(textOf(await read(other))).toMatch(/^not_found/);
+      await api(app, R.share(id, viewer.email), owner.cookie, {
+        method: "DELETE",
+      });
+      expect(textOf(await read())).toMatch(/^not_found/);
+    } finally {
+      await close(client);
+    }
+  });
+
+  it.each(["missing comment", "missing thread id"] as const)(
+    "an attached picture with a %s is hidden from MCP and token REST reads",
+    async (missing) => {
+      const id = await pub({ visibility: "private" });
+      const { pic } = await upload(owner, id);
+      const posted = await thread(owner, id, [{ pictureId: pic.id }]);
+      expect(posted.status).toBe(201);
+      const attached = await stored(pic.id);
+      if (!attached?.thread_id || !attached.comment_id)
+        throw new Error("Expected the fixture to have an attached picture");
+      // The R2 object remains intact. Only its attachment metadata is stale.
+      await env.DB.prepare(
+        "update comment_pictures set thread_id = ?, comment_id = ? where id = ?",
+      )
+        .bind(
+          missing === "missing thread id" ? null : attached.thread_id,
+          missing === "missing comment" ? newId() : attached.comment_id,
+          pic.id,
+        )
+        .run();
+      const { token } = await createPat(env, owner.userId, "picture reader");
+      const client = await connect(token);
+      try {
+        const result = await tool(client, "get_comment_picture", {
+          id,
+          pictureId: pic.id,
+        });
+        expect(result.isError).toBe(true);
+        expect(result.content).toEqual([
+          { type: "text", text: "not_found: Not found" },
+        ]);
+        const response = await api(app, R.commentPicture(id, pic.id), token);
+        expect(response.status).toBe(404);
+        expect(await errOf(response)).toMatchObject({ code: "not_found" });
+      } finally {
+        await close(client);
+      }
+    },
+  );
+
+  // A valid single-colour 32 by 3136 PNG, small on disk but tall in pixels.
+  const portrait = Uint8Array.from(
+    atob(
+      "iVBORw0KGgoAAAANSUhEUgAAACAAAAxAAQAAAACUVSJ3AAAAJklEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAwIcBPUAAARircRgAAAAASUVORK5CYII=",
+    ),
+    (c) => c.charCodeAt(0),
+  );
+
+  it("without Images, serves the original within the byte limit and rejects larger files", async () => {
+    const id = await pub();
+    const { pic: tall } = await upload(owner, id, "image/png", portrait);
+    const { pic: large } = await upload(
+      owner,
+      id,
+      "image/png",
+      png(64, 32, false, new Uint8Array(3 * 1024 * 1024)),
+    );
+    expect(large.bytes).toBeGreaterThan(3 * 1024 * 1024);
+    await thread(owner, id, [{ pictureId: tall.id }, { pictureId: large.id }]);
+    const { IMAGES: _images, ...withoutImages } = env;
+    const client = await connect(
+      (await createPat(env, owner.userId, "without Images")).token,
+      { env: withoutImages },
+    );
+    try {
+      const read = (pictureId: string) =>
+        tool(client, "get_comment_picture", { id, pictureId });
+      expect((await read(tall.id)).content).toEqual([
+        {
+          type: "image",
+          mimeType: "image/png",
+          data: btoa(String.fromCharCode(...portrait)),
+        },
+      ]);
+      const error = await read(large.id);
+      expect(error.isError).toBe(true);
+      expect(error.content).toEqual([
+        {
+          type: "text",
+          text: "too_large: This picture is too large to show. Open the original in the web app.",
+        },
+      ]);
+    } finally {
+      await close(client);
+    }
+  });
+
+  it("returns a scaled portrait over MCP and keeps the original for REST", async () => {
+    const id = await pub();
+    const raw = portrait;
+    const { pic } = await upload(owner, id, "image/png", raw);
+    await thread(owner, id, [{ pictureId: pic.id }]);
+    const client = await connect(
+      (await createPat(env, owner.userId, "portrait")).token,
+    );
+    try {
+      const result = await tool(client, "get_comment_picture", {
+        id,
+        pictureId: pic.id,
+      });
+      expect(result.isError, textOf(result)).toBeFalsy();
+      expect(result.content).toMatchObject([
+        { type: "image", mimeType: "image/webp" },
+      ]);
+      const image = result.content[0] as { type: string; data: string };
+      const preview = Uint8Array.from(atob(image.data), (c) => c.charCodeAt(0));
+      expect(imageSize(preview)).toEqual({ width: 16, height: 1568 });
+      const original = await api(
+        app,
+        R.commentPicture(id, pic.id),
+        owner.cookie,
+      );
+      expect(new Uint8Array(await original.arrayBuffer())).toEqual(raw);
+    } finally {
+      await close(client);
+    }
+  });
+
   it("serves the bytes with the server's type and the safe headers", async () => {
     const id = await pub();
     const { pic } = await upload(owner, id, "image/jpeg");

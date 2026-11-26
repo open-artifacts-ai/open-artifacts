@@ -17,11 +17,15 @@ import { HERMES_PLUGIN } from "@oa/bus-adapter-hermes";
 import {
   type Doc,
   jsoncValue,
+  parseAgyMcp,
   parseJsonc,
+  removeAgyIfEmpty,
+  removeAgyMcp,
   removeIfEmpty,
   removeMcpServer,
   removeOpencodeMcp,
   removePlugin,
+  upsertAgyMcp,
   upsertMcpServer,
   upsertOpencodeMcp,
   upsertPlugin,
@@ -40,9 +44,11 @@ import {
 } from "@oa/bus-daemon";
 import { hostSlug } from "@oa/shared/secrets";
 import {
+  busStopped,
   claudeConfigFile,
   installProof,
   type ProofIo,
+  type ProofResult,
   readRecord as readProofRecord,
   uninstallProof,
 } from "./claude-proof.ts";
@@ -65,7 +71,6 @@ import {
   pendingEntry as pendingCxEntry,
   restoreEntry as restoreCxEntry,
 } from "./codex-proof.ts";
-import { habitsOptedOut } from "./habits.ts";
 import {
   HERMES_NO_CLI,
   hermesPluginDir,
@@ -118,7 +123,8 @@ export type Harness =
   | "omp"
   | "codex"
   | "hermes"
-  | "openclaw";
+  | "openclaw"
+  | "antigravity";
 
 export type AdapterDeps = {
   /** The user's home: harness configs live under it. */
@@ -205,7 +211,29 @@ const HARNESSES: Harness[] = [
   "codex",
   "hermes",
   "openclaw",
+  "antigravity",
 ];
+
+/**
+ * Antigravity (agy) is wired only with OA_BUS_EXPERIMENTAL_AGY=1 until its
+ * agent kind is live on the instances (agy S1a) and it can join and get
+ * messages (S2, S3). Uninstall does not wait for it: it removes only our entry.
+ */
+export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
+export const agyOn = (env: Record<string, string | undefined> | undefined) =>
+  env?.[AGY_FLAG] === "1";
+
+/** agy is on PATH, or its folders are under ~/.gemini. */
+const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
+  deps.which("agy") ||
+  present(join(deps.home, ".gemini", "antigravity-cli")) ||
+  present(join(deps.home, ".gemini", "antigravity"));
+
+/** The stdio entry agy runs: oa-bus's own MCP server for Antigravity. */
+export const agyServer = (busBin: string[]) => ({
+  command: busBin[0] as string,
+  args: [...busBin.slice(1), "mcp", "antigravity"],
+});
 
 /** The shipped Pi (and oh-my-pi) extension and OpenCode TUI plugin. */
 export const readAssets = (): AdapterDeps["assets"] => ({
@@ -271,6 +299,9 @@ export const paths = (deps: AdapterDeps) => {
     codexBin: codexBinFile(busDir),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
+    // agy 1.5's user-level MCP config (`agy mcp add` writes it; the older
+    // ~/.gemini/antigravity/mcp_config.json is the legacy path it migrated from).
+    agyMcp: join(deps.home, ".gemini", "config", "mcp_config.json"),
     busDir,
   };
 };
@@ -468,6 +499,59 @@ const listed = (doc: Doc, plugin: string) =>
 
 const json = (v: unknown) => `${JSON.stringify(v, null, 2)}\n`;
 
+/** agy's mcp_config.json as text: missing is empty, unparsable throws. */
+function readAgy(path: string): string {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw e;
+  }
+  parseAgyMcp(text, path);
+  return text;
+}
+
+/** saveText for agy's file, whose text may start with a byte-order mark. */
+function saveAgy(
+  path: string,
+  before: string,
+  next: string,
+  ok: (doc: Doc) => boolean,
+): boolean {
+  if (next === before) return false;
+  if (!ok(parseAgyMcp(next, path)))
+    throw new Error(`editing ${path} went wrong; left it untouched`);
+  writeAtomic(path, next);
+  return true;
+}
+
+/** Our entry in agy's config runs this bus's server, for this bus home. */
+function agyEntryIs(
+  doc: Doc,
+  server: { command: string; args: string[] } | undefined,
+  home: string | undefined,
+): boolean {
+  const e = (doc.mcpServers as Doc | undefined)?.[NAME] as Doc | undefined;
+  if (e === undefined || typeof e !== "object" || e === null) return false;
+  const env = e.env as Doc | undefined;
+  if (env?.OA_BUS_HOME !== home) return false;
+  if (server !== undefined)
+    return (
+      e.command === server.command &&
+      isDeepStrictEqual(e.args, server.args) &&
+      e.url === undefined &&
+      e.serverUrl === undefined
+    );
+  // The bus's argv unknown: only that it runs `mcp antigravity`.
+  const args = e.args;
+  return (
+    typeof e.command === "string" &&
+    Array.isArray(args) &&
+    isDeepStrictEqual(args.slice(-2), ["mcp", "antigravity"])
+  );
+}
+
 /** Writes `next` only when it differs; true if it did. */
 function save(path: string, before: Doc, next: Doc): boolean {
   if (JSON.stringify(before) === JSON.stringify(next)) return false;
@@ -487,19 +571,46 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
   }
 }
 
-/** The `--instance` helper for the Claude entries of each added instance; notes only. */
-function instanceProofs(deps: AdapterDeps): string[] {
-  const notes: string[] = [];
+/**
+ * #3075: an added instance's entry may still carry the helper of the separate
+ * bus that served it before #2793. Once that bus has stopped, this one takes
+ * the entry. Main's entries keep today's rule: two buses may share one hub.
+ */
+const stoppedBus =
+  (deps: Pick<AdapterDeps, "home">, retired: boolean) =>
+  (owner: string | undefined) =>
+    busStopped(owner, deps.home, { retired });
+
+/**
+ * The `--instance` helper for the Claude entries of each added instance.
+ * `guard` is the unattended daemon's mode (see installProof).
+ */
+function instanceProofs(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "busBin">,
+  opts: { guard?: boolean; file?: string } = {},
+): ProofResult[] {
+  const out: ProofResult[] = [];
   const bus = deps.busHome ?? join(deps.home, ".oa-bus");
+  const io = proofIo(deps);
   for (const i of listInstances(bus)) {
     if (i.main || i.hub === "") continue;
-    notes.push(
-      ...installProof(proofIo(deps), i.hub, deps.busBin, movedHome(deps), {
-        instance: { name: i.name, hub: i.hub },
-      }).notes,
+    out.push(
+      installProof(
+        opts.file ? { ...io, file: opts.file } : io,
+        i.hub,
+        deps.busBin,
+        movedHome(deps),
+        {
+          instance: { name: i.name, hub: i.hub },
+          // The daemon takes only a retired bus's entry; a person running
+          // install also takes one whose daemon is not running.
+          stopped: stoppedBus(deps, opts.guard === true),
+          ...(opts.guard ? { guard: true } : {}),
+        },
+      ),
     );
   }
-  return notes;
+  return out;
 }
 
 /** The proof helper of the instance's Claude entry (#1822); never stops the install. */
@@ -512,7 +623,7 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
     );
     // #2793 S4: each added instance's entries get their own helper form. A
     // home with only main lists none, so nothing else is read or written.
-    notes.push(...instanceProofs(deps));
+    for (const r of instanceProofs(deps)) notes.push(...r.notes);
   } catch (e) {
     notes.push(
       `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
@@ -923,7 +1034,25 @@ const install: Record<Harness, Step> = {
 
   // OpenClaw loads a native plugin folder; its own CLI installs and enables it.
   async openclaw(deps, notes) {
-    return installOpenclaw(deps, notes, habitsOptedOut(paths(deps).busDir));
+    return installOpenclaw(deps, notes);
+  },
+
+  // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
+  // byte for byte. `agy mcp add` would rewrite the whole file.
+  async antigravity(deps) {
+    if (!agyOn(deps.env) || !hasAgy(deps)) return "absent";
+    const p = paths(deps);
+    const text = readAgy(p.agyMcp);
+    const server = agyServer(deps.busBin);
+    const home = movedHome(deps);
+    const next = upsertAgyMcp(text, NAME, server, home);
+    target(p.agyMcp);
+    const record = readRecord(p.record);
+    const made = missing(text.replace(/^\uFEFF/, ""), [["mcpServers"]]);
+    if (made.length > 0 && record[p.agyMcp] === undefined)
+      writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
+    saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+    return "done";
   },
 };
 
@@ -1077,6 +1206,28 @@ const uninstall: Record<Harness, Step> = {
   async openclaw(deps, notes) {
     return uninstallOpenclaw(deps, notes);
   },
+
+  async antigravity(deps) {
+    const p = paths(deps);
+    if (!present(p.agyMcp)) return "none";
+    const before = readAgy(p.agyMcp);
+    const record = readRecord(p.record);
+    const next = (record[p.agyMcp] ?? []).reduce(
+      removeAgyIfEmpty,
+      removeAgyMcp(before, NAME),
+    );
+    const saved = saveAgy(
+      p.agyMcp,
+      before,
+      next,
+      (d) => (d.mcpServers as Doc | undefined)?.[NAME] === undefined,
+    );
+    if (record[p.agyMcp] !== undefined) {
+      const { [p.agyMcp]: _, ...left } = record;
+      writeRecord(p.record, record, left);
+    }
+    return saved ? "done" : "none";
+  },
 };
 
 async function each(
@@ -1226,7 +1377,9 @@ export function checkAdapters(
         : h === "openclaw"
           ? // Plugin commands are off in Nix mode: nothing here to wire.
             deps.which(h) && !openclawNix(deps.env)
-          : deps.which(h))
+          : h === "antigravity"
+            ? agyOn(deps.env) && hasAgy(deps)
+            : deps.which(h))
       ? "absent"
       : safely(ok)
         ? "configured"
@@ -1285,7 +1438,43 @@ export function checkAdapters(
           deps.openclawPlugin ?? OPENCLAW_PLUGIN,
         ) === "current",
     ),
+    antigravity: state("antigravity", () =>
+      agyEntryIs(
+        parseAgyMcp(readFileSync(p.agyMcp, "utf8"), p.agyMcp),
+        deps.busBin === undefined ? undefined : agyServer(deps.busBin),
+        movedHome(deps),
+      ),
+    ),
   };
+}
+
+/**
+ * Read-only, for doctor: agy's config can't be read (not JSON, or mcpServers
+ * is not an object), so install skips it; or our entry is there but turned off.
+ */
+export function agyProblem(
+  deps: Pick<AdapterDeps, "home" | "busHome" | "env">,
+): { file: string; problem: "malformed" | "disabled" } | undefined {
+  const file = paths(deps as AdapterDeps).agyMcp;
+  if (!present(file)) return undefined;
+  try {
+    const doc = parseAgyMcp(readFileSync(file, "utf8"), file);
+    const servers = doc.mcpServers;
+    if (
+      servers !== undefined &&
+      (typeof servers !== "object" ||
+        servers === null ||
+        Array.isArray(servers))
+    )
+      return { file, problem: "malformed" };
+    const e = (servers as Doc | undefined)?.[NAME] as Doc | undefined;
+    if (e !== undefined && (typeof e !== "object" || e === null))
+      return { file, problem: "malformed" };
+    if (e?.disabled === true) return { file, problem: "disabled" };
+    return undefined;
+  } catch {
+    return { file, problem: "malformed" };
+  }
 }
 
 /** #1856: the Codex proxy entry's program is gone (oa-bus moved or removed). */
@@ -1355,6 +1544,10 @@ export function reapplyClaudeProof(
       { guard: true },
     );
     for (const c of r.changed) onWrite(c);
+    // #3075: each added instance's entries too, so an update restart links
+    // them with no step from the user. Same file, same guard.
+    for (const ri of instanceProofs(deps, { guard: true, file: deps.config }))
+      for (const c of ri.changed) onWrite(c);
   } catch {}
 }
 

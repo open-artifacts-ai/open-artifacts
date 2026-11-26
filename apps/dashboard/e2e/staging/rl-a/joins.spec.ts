@@ -30,11 +30,15 @@ import {
 
 // T19 step 2: how people join rl-a. rl-a signs its domain in with Google
 // (domainCodes off) and admits guests by emailed code. TEST_DOMAIN is outside
-// that domain, so a TEST_DOMAIN address can be an invited member (Google
-// only), a guest someone shared with (codes), or nobody (no code, no account).
+// that domain, so a TEST_DOMAIN address can be an invited member (Google or
+// a code, #3082), a guest someone shared with (codes), or nobody (no code, no
+// account).
 // Every code request goes through the real sign-in UI; the code comes from
 // the otp/latest hook. Each address asks once a run: a second request inside
 // the 60 s resend window would null the first code.
+
+/** How long one otp/latest call asks the host to hold it. */
+const OTP_HOLD_MS = 8_000;
 
 test.beforeAll(async () => {
   // Earlier runs from this IP count against the per-IP code caps.
@@ -43,8 +47,9 @@ test.beforeAll(async () => {
 test.afterAll(cleanup);
 
 /**
- * The otp/latest hook for `address`, read once a second while it says
- * "pending" (the send runs after the 202): the code, or the final no_code
+ * The otp/latest hook for `address`: each call is held by the host while the
+ * send is "pending" (it runs after the 202), up to OTP_HOLD_MS (the host caps a hold at 8 s), and a call
+ * that ends still pending is asked again. The code, or the final no_code
  * outcome (TestOtpOutcome). No budget of its own: the test's timeout bounds
  * it, and a refusal (readOtp throws with the status) fails at once.
  */
@@ -60,7 +65,10 @@ const otp = (
 async function readOtp(
   address: string,
 ): Promise<{ code: string } | { outcome: TestOtpOutcome }> {
-  const res = await hookRes(TEST_HOOKS.otpLatest, { email: address });
+  const res = await hookRes(TEST_HOOKS.otpLatest, {
+    email: address,
+    wait: OTP_HOLD_MS,
+  });
   const body = (await res.json().catch(() => ({}))) as {
     code?: string;
     error?: { details?: { reason?: string; outcome?: TestOtpOutcome } };
@@ -130,7 +138,7 @@ test("an uninvited TEST_DOMAIN address gets no code and no account", {
   expect(await rowsFor(admin, stranger)).toEqual([]);
 });
 
-test("an invited member: Google is their way in, never a code; their session lands in the library", {
+test("an invited member outside the domain signs in by code: a member session, named, on their Welcome", {
   tag: "@gate",
 }, async ({ browser }) => {
   const admin = await person(browser, "admin", "admin");
@@ -142,22 +150,60 @@ test("an invited member: Google is their way in, never a code; their session lan
     }),
   );
   expect(r).toMatchObject({ email: invited, role: "member" });
-  // TEST_DOMAIN is outside rl-a's Google domain: the invite stands, flagged.
-  expect(r.signIn).toEqual({ status: "uncertain", reason: "outside_domains" });
-  expect(r.signInMethods).toEqual(["google"]);
+  // TEST_DOMAIN is outside rl-a's Google domain, but codes are on: an invited
+  // member there may sign in by code (#3082), so the invite isn't flagged.
+  expect(r.signIn).toBeUndefined();
+  expect(r.signInMethods).toEqual(["google", "email"]);
 
-  await askForCode(browser, invited);
-  expect(await otp(invited)).toEqual({ outcome: "ineligible" });
+  const page = await askForCode(browser, invited);
+  const got = await otp(invited);
+  if (!("code" in got))
+    throw new Error(`no code for the invited member (${got.outcome})`);
+  // The code itself signs them in, in the browser (#3096): the session it
+  // makes must be a working member session, not a capped guest one.
+  const verified = page.waitForResponse(
+    (res) =>
+      res.url().endsWith("/auth/code/verify") &&
+      res.request().method() === "POST",
+  );
+  await page.getByRole("textbox", { name: "Code" }).fill(got.code);
+  await page.getByRole("button", { name: "Verify" }).click();
+  // Only the status: the page does a full load to `next` at once, so the
+  // response body is gone by the time it could be read. /me below checks
+  // the identity and that the session is not capped.
+  expect((await verified).status()).toBe(200);
+  // Verify answers, then the page does a full load to `next`: wait for it.
+  await page.waitForURL((u) => !u.pathname.startsWith("/sign-in"), {
+    waitUntil: "load",
+  });
 
-  // Signed in (the session hook stands in for Google): the invited row, a member.
-  const p = await person(browser, "invited", "member");
-  expect(p.id).toBe(r.id);
-  await p.page.goto("/");
+  // The API agrees on the code session: the invited row, a member, uncapped.
+  const meRes = await page.request.get(`${A.app}${R.me}`, {
+    headers: { "x-oa-request": "1" },
+  });
+  expect(meRes.status()).toBe(200);
+  const me = (await meRes.json()) as Me;
+  expect(me.user).toMatchObject({ id: r.id, email: invited, role: "member" });
+  expect(me.auth).toMatchObject({ method: "code", readOnly: false, cap: null });
+
+  // The name prompt shows only when the server says a name is needed (an
+  // invite may already carry one); /me decides, so the test never races it.
+  // It comes first on the Library: the Welcome redirect waits for it (#3130).
+  if (me.needsDisplayName) {
+    const ask = page.getByRole("dialog", {
+      name: "What do you like to be called?",
+    });
+    const name = ask.getByRole("textbox", { name: "Your name" });
+    await name.fill(`T19 ${RUN} invited`);
+    await expect(name).toHaveValue(`T19 ${RUN} invited`);
+    await ask.getByRole("button", { name: "Save" }).click();
+    await expect(ask).toHaveCount(0);
+  }
+  // A new member's first Library opens their own Welcome (#2632).
+  await page.waitForURL(/\/a\//);
   await expect(
-    p.page.getByRole("heading", { level: 1, name: "Library" }),
+    page.getByRole("heading", { level: 1, name: "Welcome" }),
   ).toBeVisible();
-  const me = await json<Me>(await api(p, R.me));
-  expect(me.user.role).toBe("member");
 });
 
 test("an outside guest logs in by code, sees only Shared with me, and is read-only", {

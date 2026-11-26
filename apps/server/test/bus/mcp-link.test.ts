@@ -29,6 +29,7 @@ import {
   waitFor,
   workerFetch,
 } from "./helpers.js";
+import { eventually } from "./helpers.ts";
 
 let seq = 0;
 const proofOf = () =>
@@ -97,7 +98,7 @@ describe("linkRequest (#1822)", () => {
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
   });
@@ -116,7 +117,7 @@ describe("linkRequest (#1822)", () => {
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${b.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${b.userId}`]), {
       timeout: 5000,
     });
     expect(asked).not.toContain(`bus:${a.userId}`);
@@ -137,7 +138,7 @@ describe("linkRequest (#1822)", () => {
     // Only the well-formed unknown one reached the hub.
     // The lookup follows a D1 read and is not cancelled by the bound, so the ask
     // can land after linkRequest returned: wait for it.
-    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+    await eventually(() => expect(asked).toEqual([`bus:${a.userId}`]), {
       timeout: 5000,
     });
   });
@@ -276,14 +277,32 @@ describe("linkRequest (#1822)", () => {
         .map((c) => String(c[0]))
         .filter((l) => l.includes("bus_link_lookup_ok"));
     try {
-      const slow = await linkRequest(
+      // A slow read of 400 ms: the lookup measures it with Date, which is set
+      // forward by hand while the read is pending, so no real time passes.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      let answer: (v: typeof who) => void = () => {};
+      const read = new Promise<typeof who>((res) => {
+        answer = res;
+      });
+      let called: () => void = () => {};
+      const asked_ = new Promise<void>((res) => {
+        called = res;
+      });
+      const asked = linkRequest(
         spyHubs({
-          agentByProof: () =>
-            new Promise((res) => setTimeout(() => res(who), 400)),
+          agentByProof: () => {
+            called();
+            return read;
+          },
         }).ev,
         a.userId,
         mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
       );
+      await asked_; // the read is pending: the lookup's timer has started
+      vi.setSystemTime(Date.now() + 400);
+      answer(who);
+      const slow = await asked;
+      vi.useRealTimers();
       expect(slow.identity).toEqual(who);
       expect(ok()).toHaveLength(1);
       const line = ok()[0] as string;
@@ -304,6 +323,7 @@ describe("linkRequest (#1822)", () => {
       for (const l of ok())
         expect(JSON.parse(l).ms).toBeGreaterThanOrEqual(150);
     } finally {
+      vi.useRealTimers();
       log.mockRestore();
     }
   });

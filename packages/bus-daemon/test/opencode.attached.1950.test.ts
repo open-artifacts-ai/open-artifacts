@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import {
   type AttachDeps,
@@ -12,6 +12,7 @@ import {
   defaultAttachDeps,
   lsofEstablished,
   lsofResult,
+  macExeOf,
   parseProcNetTcp,
 } from "../src/presence/attached.ts";
 import { openState } from "../src/presence/opencode.ts";
@@ -532,5 +533,98 @@ describe.skipIf(process.platform !== "linux")("real /proc (#1950)", () => {
       client.destroy();
       server.close();
     }
+  });
+});
+
+// #3020: a TUI started as plain `opencode` is `opencode` in `ps -o comm=`, so
+// the executable has to be read from the process's own text image.
+describe("the real executable on macOS (#3020)", () => {
+  const LSOF = [
+    "p4711",
+    "fcwd",
+    "n/Users/leo/project",
+    "f14",
+    "n/opt/homebrew/bin/opencode",
+    "f15",
+    "n/usr/lib/libSystem.B.dylib",
+    "f16",
+    "n/opt/homebrew/Cellar/opencode/1.0/lib/libfoo.dylib",
+  ].join("\n");
+
+  it("takes the first absolute text entry, which is the executable", async () => {
+    const { exeFromLsof } = await import("../src/presence/attached.ts");
+    expect(exeFromLsof(LSOF)).toBe("/opt/homebrew/bin/opencode");
+    expect(exeFromLsof("p1\nfcwd\nn/Users/leo\n")).toBe(null);
+    // Everything after f=cwd is a library: no executable in the text image.
+    expect(exeFromLsof("p1\nfcwd\nn/Users/leo\nf15\nnlib/x.dylib\n")).toBe(
+      null,
+    );
+  });
+
+  it("asks lsof for the text image of that pid, and nothing else", async () => {
+    const { macExeOf } = await import("../src/presence/attached.ts");
+    const calls: string[][] = [];
+    const run = ((_cmd: string, args: string[]) => {
+      calls.push(args);
+      return { stdout: LSOF, stderr: "", status: 0, signal: null };
+    }) as unknown as typeof import("node:child_process").spawnSync;
+    expect(macExeOf(4711, run)).toBe("/opt/homebrew/bin/opencode");
+    expect(calls).toEqual([["-a", "-d", "txt", "-Ffn", "-p", "4711"]]);
+  });
+
+  it("a failed read is unknown, never a name resolved through PATH", async () => {
+    const { macExeOf } = await import("../src/presence/attached.ts");
+    const run = (() => ({
+      stdout: "",
+      stderr: "lsof: no such process",
+      status: 1,
+      signal: null,
+    })) as unknown as typeof import("node:child_process").spawnSync;
+    expect(macExeOf(999999, run)).toBe(null);
+  });
+
+  it("attaches a TUI whose ps comm is the bare `opencode`, since the real path matches", () => {
+    // The reported situation: `ps -o comm=` says `opencode` for a TUI started
+    // from PATH, while the service says its absolute path. Both run the same
+    // binary, so the text image is what decides, and the bare name is never
+    // read, let alone resolved through PATH.
+    const seen: string[][] = [];
+    const lsof = ((_cmd: string, args: string[]) => {
+      seen.push(args);
+      return {
+        stdout:
+          "p1\nfcwd\nn/Users/leo/project\nf14\nn/opt/homebrew/bin/opencode\n",
+        stderr: "",
+        status: 0,
+        signal: null,
+      };
+    }) as unknown as typeof import("node:child_process").spawnSync;
+    const comm = vi.fn(() => "opencode");
+    const one = link("127.0.0.1:4001", "127.0.0.1:50001");
+    const deps: AttachDeps = {
+      exeOf: (pid) => macExeOf(pid, lsof),
+      ppidOf: () => 1,
+      established: (pid) => (pid === 10 ? [one.svc] : [one.tui]),
+    };
+    expect(attachedTo(10, deps)(11)).toBe(true);
+    expect(seen.every((a) => a.includes("-d") && a.includes("txt"))).toBe(true);
+    expect(comm).not.toHaveBeenCalled();
+  });
+
+  it("same real path attaches, a different one is refused", () => {
+    // The service was launched by absolute path; the TUI's comm is bare, but
+    // both resolve to the same text image here.
+    const one = link("127.0.0.1:4001", "127.0.0.1:50001");
+    const deps = world({
+      exe: { 10: OC, 11: OC },
+      sockets: { 10: [one.svc], 11: [one.tui] },
+    });
+    expect(attachedTo(10, deps)(11)).toBe(true);
+
+    const other = world({
+      exe: { 10: OC, 11: "/usr/local/bin/opencode" },
+      sockets: { 10: [one.svc], 11: [one.tui] },
+    });
+    expect(attachedTo(10, other)(11)).toBe(false);
   });
 });

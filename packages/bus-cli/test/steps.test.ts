@@ -90,6 +90,7 @@ describe("checkAdapters", () => {
       codex: "missing",
       hermes: "absent",
       openclaw: "absent",
+      antigravity: "absent",
     });
     expect(checkAdapters({ home: h, which: () => false })).toEqual({
       claude: "absent",
@@ -99,6 +100,7 @@ describe("checkAdapters", () => {
       codex: "absent",
       hermes: "absent",
       openclaw: "absent",
+      antigravity: "absent",
     });
     writeFileSync(join(h, ".claude.json"), "{ not json");
     expect(checkAdapters({ home: h, which: all }).claude).toBe("missing");
@@ -125,6 +127,7 @@ describe("checkAdapters", () => {
       codex: "configured",
       hermes: "absent",
       openclaw: "absent",
+      antigravity: "absent",
     });
   });
 });

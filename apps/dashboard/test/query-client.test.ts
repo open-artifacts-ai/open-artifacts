@@ -1,8 +1,12 @@
 import { fixtures } from "@oa/shared/mocks";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import { qk } from "../src/api/queries";
 import { makeQueryClient, reportApiError } from "../src/api/queryClient";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 it("a 401 reauth_required does not sign the owner out", async () => {
   const client = makeQueryClient();
@@ -11,9 +15,10 @@ it("a 401 reauth_required does not sign the owner out", async () => {
     new ApiClientError("reauth_required", "Log in again", 401),
     { method: "GET", path: "/api/v1/directory" },
   );
+  vi.useFakeTimers();
   reportApiError(client, e);
   // A plain 401 lands asynchronously (after cancelQueries); give it the chance.
-  await new Promise((r) => setTimeout(r, 20));
+  await vi.advanceTimersByTimeAsync(20);
   expect(client.getQueryState(qk.me)?.status).toBe("success");
 });
 

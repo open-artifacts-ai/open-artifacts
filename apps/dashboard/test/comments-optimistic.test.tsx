@@ -31,6 +31,7 @@ import {
   useThreadAgent,
 } from "../src/api/comments";
 import { lostKey, putLost } from "../src/viewer/comments/lostPosts";
+import { installClock, settle } from "./clock";
 import { events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -124,6 +125,9 @@ const send = async (c: HTMLElement, text: string) => {
   return box;
 };
 
+// A clock, not the wall (test/clock.ts).
+installClock();
+
 describe("posting shows at once (user request)", () => {
   it("shows the comment and clears the box before the server answers, then swaps in the server comment once", async () => {
     let threads: CommentThread[] = [];
@@ -180,7 +184,7 @@ describe("posting shows at once (user request)", () => {
     expect(within(c).getAllByText("Once only")).toHaveLength(1);
     expect(c.querySelector("[data-sending]")).toBeNull();
     // Let the post answer too: still one row, and nothing left pending.
-    await new Promise((r) => setTimeout(r, 650));
+    await settle(650);
     expect(within(c).getAllByText("Once only")).toHaveLength(1);
     await waitFor(() =>
       expect(c.querySelector("[data-comment='srv1c']")).not.toBeNull(),
@@ -465,7 +469,7 @@ describe("a failed post never loses its text", () => {
         screen.queryByRole("complementary", { name: "Comments" }),
       ).toBeNull(),
     );
-    await new Promise((r) => setTimeout(r, 700));
+    await settle(700);
     const c2 = await col();
     // The thread is still the active one, so its box mounts with the text and the error.
     const back = await within(c2).findByRole("textbox", { name: "Reply" });

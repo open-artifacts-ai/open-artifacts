@@ -76,6 +76,8 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       }
       return { ok: true };
     }
+    case "antigravity":
+      return attestAntigravity(hello, deps);
     case "codex":
       // Without the daemon's one wait for a late call line: runDaemon awaits `attest` itself.
       if (deps.codex) return deps.codex.attestNow(hello);
@@ -115,6 +117,23 @@ function attestClaude(hello: Hello, deps: AttestDeps): Attest {
     return { ok: true, cwd: raw.cwd, pid };
   }
   return { ok: false, reason: "no Claude session in the ancestry" };
+}
+
+/**
+ * The agy CLI is one native binary named `agy` (agy 1.5.13 runs as
+ * `~/.local/bin/agy`), so the pid must run it, and its start time must match.
+ */
+function attestAntigravity(hello: Hello, deps: AttestDeps): Attest {
+  if (!hello.attest.proc_start)
+    return { ok: false, reason: "antigravity hello has no proc_start" };
+  if (basename((deps.comm ?? commOf)(hello.pid) ?? "") !== "agy")
+    return { ok: false, reason: "antigravity pid does not run agy" };
+  const start = (deps.procStart ?? procStartOf)(hello.pid);
+  if (!start)
+    return { ok: false, reason: "antigravity process is not running" };
+  if (hello.attest.proc_start !== start)
+    return { ok: false, reason: "antigravity process start time moved" };
+  return { ok: true };
 }
 
 /**

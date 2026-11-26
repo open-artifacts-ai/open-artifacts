@@ -1,8 +1,13 @@
 import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
-import { useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ASK_SLOTS_KEY } from "../api/askSlots";
 import { ApiClientError, api } from "../api/client";
-import { commentsKey } from "../api/comments";
+import { commentsKey, commentsUnavailable } from "../api/comments";
 import { qk } from "../api/queries";
 import { connectArtifactEvents, type GoneReason, onWake } from "./liveEvents";
 
@@ -111,6 +116,40 @@ function useAnnouncer() {
   );
   return { text, announce };
 }
+
+/**
+ * Events that refetch the comments list: a `comments` frame, and every
+ * `hello`. A comment made after the list was fetched but before the socket
+ * joined sends its frame to no one; the hello catches it up (cloud #291).
+ */
+export const refetchesComments = (e: { type: string }): boolean =>
+  e.type === "comments" || e.type === "hello";
+
+/**
+ * Refetch every query under `queryKey` so it shows the server as of now. A
+ * plain invalidate that lands while a query's first fetch is in flight (no
+ * data yet) joins that fetch, whose answer may predate the change: a reply
+ * made while the comments list was still loading never showed (#3095). So
+ * such a fetch is let land first, then the query is fetched again. One that
+ * landed with an answer `skip` names is not asked twice (a hello after a
+ * read that found comments unavailable); a query that had already answered
+ * is refetched as before.
+ */
+export const refetchNow = async (
+  qc: QueryClient,
+  queryKey: QueryKey,
+  skip?: (error: unknown) => boolean,
+) => {
+  const first = qc
+    .getQueryCache()
+    .findAll({ queryKey, fetchStatus: "fetching" })
+    .filter((q) => q.state.data === undefined);
+  await Promise.all(first.map((q) => q.promise?.catch(() => undefined)));
+  const done = new Set(
+    first.filter((q) => q.state.status === "error" && skip?.(q.state.error)),
+  );
+  await qc.invalidateQueries({ queryKey, predicate: (q) => !done.has(q) });
+};
 
 /**
  * Live version updates for one viewer: one R.events socket, coalesced into
@@ -314,10 +353,21 @@ export function useLiveVersions(o: {
       id,
       embed,
       onEvent: (e) => {
-        if (e.type === "comments") {
-          // Someone commented, replied or resolved: refetch the list.
-          void qc.invalidateQueries({ queryKey: commentsKey(id) });
-        } else if (e.type === "hello") {
+        if (refetchesComments(e)) {
+          // A comment changed, or the socket (re)connected and may have
+          // missed some (cloud #291): refetch the list.
+          // A hello only re-checks: a first read that found comments
+          // unavailable is not asked again. A comments frame is a change
+          // (comments may have just been turned on), so it always reads.
+          void refetchNow(
+            qc,
+            commentsKey(id),
+            e.type === "hello" ? commentsUnavailable : undefined,
+          );
+          // #2426 B: an ask shown in this page's slots may have been decided.
+          void refetchNow(qc, ASK_SLOTS_KEY);
+        }
+        if (e.type === "hello") {
           down.current = false;
           enqueue({ version: e.version });
         } else if (e.type === "version") {

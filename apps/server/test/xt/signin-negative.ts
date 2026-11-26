@@ -12,6 +12,7 @@ import {
   TEST_OTP_OUTCOMES,
 } from "@oa/shared";
 import { EMAIL_TIMEOUT_MS } from "../../src/email/timeout.js";
+import { buffered, type SettleOtp, settleOtp } from "./settled-otp.js";
 
 export type Install = {
   /** App origin, e.g. https://stg-a.example.com. */
@@ -128,6 +129,7 @@ function send(
     body?: unknown;
     headers?: Record<string, string>;
     origin?: string;
+    signal?: AbortSignal;
   } = {},
 ): Promise<Response> {
   return to.fetch(
@@ -141,15 +143,22 @@ function send(
       },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       redirect: "manual",
+      signal: init.signal,
     }),
   );
 }
 
-const hook = (to: Install, path: string, body: unknown = {}) =>
+const hook = (
+  to: Install,
+  path: string,
+  body: unknown = {},
+  signal?: AbortSignal,
+) =>
   send(to, path, {
     method: "POST",
     body,
     headers: { authorization: `Bearer ${to.hookKey}` },
+    signal,
   });
 
 /**
@@ -201,8 +210,6 @@ async function requestCode(to: Install, email: string): Promise<string> {
   return set.split(";")[0] as string;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 /**
  * How long the OTP hook may answer "pending": the send runs after the 202 and
  * gives up after EMAIL_TIMEOUT_MS, so its outcome is final by then (+ slack).
@@ -221,27 +228,52 @@ async function otpOutcome(r: Response): Promise<string | null> {
   return TEST_OTP_OUTCOMES.find((x) => x === o) ?? null;
 }
 
+/** The most one hold of the hook asks for (the server holds up to its own cap). */
+const OTP_HOLD_MS = 8_000;
+/** Quick "pending" answers in a row before the hook is judged not to hold requests. */
+const OTP_QUICK_MAX = 20;
+
 /**
- * The OTP hook's code (it is mailed after the response): asked once a second
- * while the hook's 404 says the send is "pending", up to OTP_DEADLINE_MS. Any
- * other 404 outcome is final and fails with it.
+ * The OTP hook's answer once the send is final: each ask is held by the
+ * install while the hook's 404 says the send is "pending" and answers the
+ * moment its outcome is final (an event, not a timed re-ask), up to
+ * OTP_DEADLINE_MS in all (each ask is held for the time left at most, cut off
+ * at the deadline, and an answer after it is refused: settled-otp.ts). A code, or a 404 with a recognized final outcome, is
+ * returned as it is; a 404 with no recognized outcome is malformed and fails
+ * at once. An install whose hook answers "pending" at once, again and again,
+ * does not hold requests (an older build): that fails rather than spins.
  */
+export function settledOtp(
+  to: Install,
+  email: string,
+  /** The clock and deadline signal, for a test to drive. */
+  seams: Pick<SettleOtp<Response>, "now" | "signalFor"> = {},
+): Promise<Response> {
+  return settleOtp({
+    ...seams,
+    // The body is read inside the ask: the bound covers it, not only the headers.
+    ask: async (wait, signal) =>
+      buffered(
+        await hook(to, TEST_HOOKS.otpLatest, { email, wait }, signal),
+        signal,
+      ),
+    outcome: otpOutcome,
+    deadlineMs: OTP_DEADLINE_MS,
+    holdMs: OTP_HOLD_MS,
+    quickMax: OTP_QUICK_MAX,
+    fail: (m) => new Refusal(m),
+    where: to.origin,
+  });
+}
+
+/** The OTP hook's code (it is mailed after the response); a final 404 fails with its outcome. */
 async function latestOtp(to: Install, email: string): Promise<Response> {
-  const end = Date.now() + OTP_DEADLINE_MS;
-  for (;;) {
-    const r = await hook(to, TEST_HOOKS.otpLatest, { email });
-    if (r.status !== 404) return r;
-    const outcome = await otpOutcome(r);
-    if (outcome !== "pending")
-      throw new Refusal(
-        `otp hook on ${to.origin}: no code (outcome ${outcome ?? "unknown"})`,
-      );
-    if (Date.now() >= end)
-      throw new Refusal(
-        `otp hook on ${to.origin}: still pending after ${OTP_DEADLINE_MS} ms`,
-      );
-    await sleep(1000);
-  }
+  const r = await settledOtp(to, email);
+  if (r.status === 404)
+    throw new Refusal(
+      `otp hook on ${to.origin}: no code (outcome ${(await otpOutcome(r)) ?? "unknown"})`,
+    );
+  return r;
 }
 
 async function codeAt(to: Install, email: string): Promise<string> {
@@ -367,12 +399,20 @@ export const SIGNIN_NEGATIVE_CASES: NegativeCase[] = [
       const codeA = await codeAt(a, email);
       // Same answer as for a known address: 202 and a pending cookie.
       const pendingB = await requestCode(b, email);
-      await sleep(1500);
+      // Wait for B's send to be final, so a code that would still arrive
+      // cannot slip past the check. B never sends to a stranger: its code
+      // path records "ineligible" (src/auth/codes.ts, codeEligibility none).
+      const settled = await settledOtp(b, email);
       await expectStatus(
-        await hook(b, TEST_HOOKS.otpLatest, { email }),
+        settled,
         [404],
         "B otp hook for an address B doesn't know",
       );
+      const outcome = await otpOutcome(settled);
+      if (outcome !== "ineligible")
+        throw new Refusal(
+          `B otp outcome for a stranger: ${outcome ?? "none"}, expected ineligible`,
+        );
       const r = await verifyAt(b, codeA, pendingB);
       if (setsSession(r, b)) throw new Refusal("B issued a session");
       await expectStatus(r, [401], "B verify for an unknown user");

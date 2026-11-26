@@ -17,6 +17,10 @@ export class Hub {
   proofAnswer: "bound" | "unbound" | "error" | "hang" = "bound";
   /** Every link_proof the daemon got: which root's link, and the hash. */
   proofs: { ref: string; hash: string; client: FakeClient }[] = [];
+  /** How the daemon answers `habits`: a string, null (opted out), "error", or "hang". */
+  habitsAnswer: string | null | "error" | "hang" = "bus habits rules";
+  /** Count of `habits` requests received by the fake daemon. */
+  habitsRequests = 0;
   push(m: Msg): void {
     this.unacked.set(m.id, m);
     for (const c of this.clients) if (c.state === "open") c.deliver(m);
@@ -83,6 +87,13 @@ export class FakeClient {
         return { type: "error", code: "bad_frame", message: "no" };
       return { type: "link_proofed", bound: this.hub.proofAnswer === "bound" };
     }
+    if (f.type === "habits") {
+      this.hub.habitsRequests++;
+      if (this.hub.habitsAnswer === "hang") return new Promise<never>(() => {});
+      if (this.hub.habitsAnswer === "error")
+        return { type: "error", code: "bad_frame", message: "no" };
+      return { type: "habits", rules: this.hub.habitsAnswer };
+    }
     if (f.type === "self")
       return {
         type: "agent",
@@ -108,7 +119,8 @@ export class FakeClient {
   }
 }
 
-export const flush = () => new Promise<void>((r) => setTimeout(r, 5));
+/** Lets every pending promise settle: one turn of the event loop, no wall time. */
+export const flush = () => new Promise<void>((r) => setImmediate(r));
 
 export const caller = (over: Record<string, unknown> = {}) => ({
   agentId: "main",
@@ -124,7 +136,6 @@ export function newBus(hub: Hub, over: Partial<BusDeps> = {}) {
     stateDir: () => "/state/.openclaw",
     settleMs: 0,
     sweepMs: 0,
-    habitsOn: () => true,
     ...over,
   });
 }

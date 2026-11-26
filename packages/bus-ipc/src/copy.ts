@@ -580,21 +580,50 @@ export function rosterLine(
     away?: string | undefined;
   },
   now = Date.now(),
+  /** #3166: the short row: no namespace when it is `home`, the host to its first label. */
+  short?: { home: string },
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  const host =
+    typeof a.machine_label === "string" && a.machine_label
+      ? short
+        ? a.machine_label.split(".")[0] || a.machine_label
+        : a.machine_label
+      : "";
+  const where = [
+    displayKind(a.kind),
+    ...(short && a.namespace === short.home ? [] : [a.namespace]),
+    ...(host ? [host] : []),
+  ].join(", ");
+  return `- ${a.name} (${where})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
+
+/** #3166: away agents more recent than this stay listed in list_agents by default. */
+export const AWAY_RECENT_MS = 60 * 60_000;
+
+/** Whether an away row's `since` ISO time is within AWAY_RECENT_MS of `now`. */
+const isRecentAway = (since: unknown, now: number): boolean => {
+  const t = typeof since === "string" ? Date.parse(since) : Number.NaN;
+  return !Number.isNaN(t) && now - t < AWAY_RECENT_MS;
+};
 
 /** The count line for away rows with a harness fallback name (#1860). */
 export function collapsedAwayLine(n: number, listed: boolean): string {
   return `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
 }
 
+/** #3166: the count line for away rows left out of list_agents by default. */
+export function hiddenAwayLine(n: number): string {
+  return `${n} away ${n === 1 ? "agent" : "agents"} not listed (still reachable by name; all: true lists them)`;
+}
+
 /**
- * The `list_agents` text from the hub's roster rows. Live and queued agents,
- * and away agents with a chosen name, get a line each. Away rows whose name is
- * only a harness fallback (isFallbackName) become one count line, shown only
- * when there are any. Display only: the hub still holds and delivers to them.
+ * The `list_agents` text from the hub's roster rows. By default (`all` false),
+ * live and queued agents and chosen-name agents away for under an hour get a
+ * line each; other away rows (older or fallback-named) become one count line
+ * (#3166). With `all` true, all chosen-name away rows are listed and only
+ * fallback-name away rows collapse (#1860). Display only: the hub still holds
+ * and delivers to them.
  */
 export function rosterText(
   agents: readonly (StatusFields & {
@@ -607,16 +636,31 @@ export function rosterText(
     since?: string | undefined;
   })[],
   now = Date.now(),
+  all = false,
 ): string {
   if (!agents.length) return "No agents in your namespace and linked ones.";
   const lines: string[] = [];
-  let collapsed = 0;
-  for (const a of agents) {
+  let hidden = 0;
+  const shown = agents.filter((a) => {
     const away = a.state === "away";
-    if (away && isFallbackName(a.name, a.kind)) {
-      collapsed++;
-      continue;
-    }
+    const hide =
+      away &&
+      (isFallbackName(a.name, a.kind) || (!all && !isRecentAway(a.since, now)));
+    if (hide) hidden++;
+    return !hide;
+  });
+  // #3166: by default the most common namespace is named once, on top, and
+  // left out of its rows. `all` keeps the long rows as before.
+  const counts = new Map<string, number>();
+  for (const a of shown)
+    counts.set(a.namespace, (counts.get(a.namespace) ?? 0) + 1);
+  let home: string | undefined;
+  for (const [ns, n] of counts)
+    if (home === undefined || n > (counts.get(home) ?? 0)) home = ns;
+  const short = !all && home !== undefined ? { home } : undefined;
+  if (short) lines.push(`Namespace ${short.home}:`);
+  for (const a of shown) {
+    const away = a.state === "away";
     lines.push(
       rosterLine(
         {
@@ -625,10 +669,16 @@ export function rosterText(
           away: away ? (a.since ?? "") : undefined,
         },
         now,
+        short,
       ),
     );
   }
-  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  if (hidden > 0)
+    lines.push(
+      all
+        ? collapsedAwayLine(hidden, lines.length > 0)
+        : hiddenAwayLine(hidden),
+    );
   return lines.join("\n");
 }
 
