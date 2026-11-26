@@ -36,6 +36,27 @@ describe("spendCodes", () => {
     expect(done).toBe(true);
   });
 
+  it("aborts the call when the bound fires, not before", async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const hung = ((_u: unknown, init?: RequestInit) => {
+      signals.push(init?.signal as AbortSignal);
+      return new Promise<Response>(() => {});
+    }) as unknown as typeof fetch;
+    let returned = false;
+    const run = spendCodes("http://h.test", ["a", "b"], hung).then(() => {
+      returned = true;
+    });
+    await vi.advanceTimersByTimeAsync(SPEND_BOUND_MS - 1);
+    expect(signals).toHaveLength(2);
+    expect(signals.map((s) => s.aborted)).toEqual([false, false]);
+    expect(returned).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await run;
+    expect(signals.map((s) => s.aborted)).toEqual([true, true]);
+    expect(returned).toBe(true);
+  });
+
   it("ignores a failing call", async () => {
     const f = vi.fn(async () => {
       throw new Error("down");

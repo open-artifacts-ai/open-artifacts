@@ -14,16 +14,22 @@ export async function spendCodes(
   deadline: typeof withDeadline = withDeadline,
 ): Promise<void> {
   await Promise.all(
-    codes.map((device_code) =>
-      deadline(
+    codes.map((device_code) => {
+      // The bound abandons the call, so it is cancelled with it, and nothing
+      // is left running after the teardown returns.
+      const call = new AbortController();
+      return deadline(
         f(`${base}/bus/device/token`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ device_code }),
+          signal: call.signal,
         }).then((r) => r.body?.cancel()),
         SPEND_BOUND_MS,
         "spending a device code",
-      ).catch(() => undefined),
-    ),
+      )
+        .catch(() => undefined)
+        .finally(() => call.abort());
+    }),
   );
 }
