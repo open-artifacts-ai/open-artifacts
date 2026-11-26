@@ -107,6 +107,24 @@ const setClock = (id: string, ms: number) =>
     i.now = () => ms;
   });
 
+/**
+ * Starts a thread and reads it back whole, whatever add_comment returns
+ * (the full thread today; ids only after #3163).
+ */
+async function newThread(
+  client: Client,
+  args: Record<string, unknown>,
+): Promise<Thread> {
+  const made = sc<{ thread?: Thread; threadId?: string }>(
+    await tool(client, "add_comment", args),
+  );
+  const threadId = made.thread?.id ?? (made.threadId as string);
+  const one = sc<CommentList>(
+    await tool(client, "list_comments", { id: args.id, threadId }),
+  );
+  return one.threads[0] as Thread;
+}
+
 const T0 = Date.UTC(2030, 0, 1, 12, 0, 0);
 
 describe("list_comments cursor and since (#3168)", () => {
@@ -114,9 +132,7 @@ describe("list_comments cursor and since (#3168)", () => {
     const id = await pub();
     await setClock(id, T0);
     // Create one thread via MCP so schema is ready, then seed 29 more threads.
-    const first = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Thread 0" }),
-    ).thread;
+    const first = await newThread(owner.client, { id, body: "Thread 0" });
     expect(first.id).toBeTruthy();
 
     await inDo(id, (i) => {
@@ -190,41 +206,35 @@ describe("list_comments cursor and since (#3168)", () => {
     expect(empty.cursor).toBeTruthy();
 
     await setClock(id, T0 + 1_000);
-    const t1 = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "First thread" }),
-    ).thread;
+    const t1 = await newThread(owner.client, { id, body: "First thread" });
 
     await setClock(id, T0 + 2_000);
-    const t2 = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", {
-        id,
-        body: "Second thread",
-        ask: {
-          question: "Ship?",
-          options: [
-            { id: "yes", label: "Yes" },
-            { id: "no", label: "No" },
-          ],
-          to: [{ key: "me" }],
-        },
-      }),
-    ).thread;
+    const t2 = await newThread(owner.client, {
+      id,
+      body: "Second thread",
+      ask: {
+        question: "Ship?",
+        options: [
+          { id: "yes", label: "Yes" },
+          { id: "no", label: "No" },
+        ],
+        to: [{ key: "me" }],
+      },
+    });
 
     await setClock(id, T0 + 3_000);
-    const t3 = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", {
-        id,
-        body: "Third thread",
-        ask: {
-          question: "Withdraw me?",
-          options: [
-            { id: "a", label: "A" },
-            { id: "b", label: "B" },
-          ],
-          to: [{ key: "me" }],
-        },
-      }),
-    ).thread;
+    const t3 = await newThread(owner.client, {
+      id,
+      body: "Third thread",
+      ask: {
+        question: "Withdraw me?",
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+        to: [{ key: "me" }],
+      },
+    });
 
     const afterSeed = sc<CommentList>(
       await tool(owner.client, "list_comments", { id, since: empty.cursor }),
@@ -354,13 +364,12 @@ describe("list_comments cursor and since (#3168)", () => {
   it("every list_comments mode carries a cursor from ALL threads on the artifact", async () => {
     const id = await pub();
     await setClock(id, T0 + 1_000);
-    const oldOpen = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Older open" }),
-    ).thread;
+    const oldOpen = await newThread(owner.client, { id, body: "Older open" });
     await setClock(id, T0 + 5_000);
-    const newerResolved = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Newer resolved" }),
-    ).thread;
+    const newerResolved = await newThread(owner.client, {
+      id,
+      body: "Newer resolved",
+    });
     await setClock(id, T0 + 6_000);
     await tool(owner.client, "resolve_comment", {
       id,
@@ -401,9 +410,7 @@ describe("list_comments cursor and since (#3168)", () => {
   it("refuses malformed cursors and incompatible parameter combinations", async () => {
     const id = await pub();
     await setClock(id, T0);
-    const t = sc<{ thread: Thread }>(
-      await tool(owner.client, "add_comment", { id, body: "Hi" }),
-    ).thread;
+    const t = await newThread(owner.client, { id, body: "Hi" });
     const validCursor = sc<CommentList>(
       await tool(owner.client, "list_comments", { id }),
     ).cursor as string;
