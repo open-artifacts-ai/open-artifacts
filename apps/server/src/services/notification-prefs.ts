@@ -1,9 +1,8 @@
 // #2512 S4, #3024: a member's notification choices (R.meNotificationPrefs), the
 // one set for every device: browser notifications for what needs them (Updates
-// are list-only: their browser setting is always off), "every ask" or only the
-// waiting ones,
-// one quiet-hours window in their time zone, and whether the lock screen shows
-// details. No row is the defaults. Email stays exactly as before.
+// are list-only: their browser setting is always off), one quiet-hours window in their time zone, and whether the lock screen shows
+// details. No row is the defaults: Needs you is ON (every ask and mention
+// interrupts; browserAllAsks is kept for the API but no longer narrows push). Email stays exactly as before.
 import { type NotificationPrefs, NotificationPrefsSchema } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
@@ -16,9 +15,9 @@ import { instantAt, wall } from "./zone-time.js";
 export const PREFS_WRITES_PER_DAY = 100;
 
 export const DEFAULT_PREFS: NotificationPrefs = {
-  needsYou: { inApp: true, browser: false },
+  needsYou: { inApp: true, browser: true },
   updates: { inApp: true, browser: false },
-  browserAllAsks: false,
+  browserAllAsks: true,
   quietHours: null,
   timeZone: "UTC",
   lockScreenDetail: false,

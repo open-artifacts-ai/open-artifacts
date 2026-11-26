@@ -780,14 +780,64 @@ describe("sending", () => {
     expect(await pendingCount(on.u.userId)).toBe(0);
   });
 
-  it("with 'asks waiting for you' only, an ask from someone else is dropped unsent", async () => {
+  it("with browserAllAsks false, a plain ask (nobody waiting) is still sent: Needs you interrupts for every ask (#3024)", async () => {
     const { E } = await world();
-    const { u } = await enroll(E, { browserAllAsks: false });
+    const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
     await queuePush(E, [u.userId], item("ask:other"), T0);
     await drainPush(E, T0);
-    expect(sent).toHaveLength(0);
+    expect(sentTo(sent, b)).toHaveLength(1);
     expect(await pendingCount(u.userId)).toBe(0);
+  });
+
+  it("a member with a device and no prefs row gets a plain ask from another member's agent", async () => {
+    const { E } = await world();
+    const u = await mk(`norow-${newId().slice(0, 5)}`);
+    const b = await browser();
+    expect((await subscribe(E, u.cookie, b.body)).status).toBe(201);
+    const { sent } = fakePush();
+    await queuePush(
+      E,
+      [u.userId],
+      item("ask:norow", { askerRef: "someone-else", agentKey: "idn-theirs" }),
+      T0,
+    );
+    expect(await pendingCount(u.userId)).toBe(1);
+    await drainPush(E, T0);
+    expect(sentTo(sent, b)).toHaveLength(1);
+  });
+
+  it("Needs you explicitly off sends nothing and one push_dropped line counts the drop; no line when nothing drops", async () => {
+    const { E } = await world();
+    const off = await enroll(E);
+    const { sent } = fakePush();
+    await queuePush(E, [off.u.userId], item("ask:off1"), T0);
+    await queuePush(E, [off.u.userId], item("ask:off2"), T0);
+    await putPrefs(
+      E,
+      off.u.userId,
+      prefs({ needsYou: { inApp: true, browser: false } }),
+    );
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await drainPush(E, T0);
+    expect(sent).toHaveLength(0);
+    const drops = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes("push_dropped") && l.includes(off.u.userId));
+    expect(drops).toHaveLength(1);
+    expect(JSON.parse(drops[0] as string)).toMatchObject({
+      evt: "push_dropped",
+      userId: off.u.userId,
+      needs_you_off: 2,
+    });
+    // A member whose rows all send logs nothing.
+    const on = await enroll(E);
+    await queuePush(E, [on.u.userId], item("ask:on1"), T0);
+    log.mockClear();
+    await drainPush(E, T0);
+    expect(
+      log.mock.calls.filter((c) => String(c[0]).includes("push_dropped")),
+    ).toHaveLength(0);
   });
 
   it("a 410 or 404 removes that browser; another failure keeps it and drops the item; a send never throws", async () => {
@@ -1207,16 +1257,16 @@ describe("what interrupts under Needs you (#3024)", () => {
   }
   const waitingOnly = { browserAllAsks: false } as const;
 
-  it("a plain ask needs 'every ask put to me'; with it off it is dropped, with it on it goes", async () => {
+  it("a plain ask goes whether browserAllAsks is off or on", async () => {
     const plain = async (E: Env, userId: string) => {
       await queuePush(E, [userId], item(`ask:${newId()}`), T0);
       return T0;
     };
-    expect(await sends(waitingOnly, plain)).toBe(0);
+    expect(await sends(waitingOnly, plain)).toBe(1);
     expect(await sends({ browserAllAsks: true }, plain)).toBe(1);
   });
 
-  it("an ask a person's own agent is waiting on goes without 'every ask'; an agent that is not waiting does not", async () => {
+  it("an ask from the person's own agent goes whether or not the agent is waiting", async () => {
     expect(
       await sends(waitingOnly, async (E, userId) => {
         await waitingAgent(userId, `idn-w-${userId}`);
@@ -1242,7 +1292,7 @@ describe("what interrupts under Needs you (#3024)", () => {
         );
         return T0;
       }),
-    ).toBe(0);
+    ).toBe(1);
   });
 
   it("an open approval (artifact_asks.confirm) goes without 'every ask'; once answered, it does not", async () => {
