@@ -1,18 +1,21 @@
-// Release cadence: arm the release-please PR when it is green and the merge
-// queue has drained, and keep one `blocker` issue open while a release is stuck.
+// Release cadence: put the release-please PR at the front of the merge queue
+// as soon as it is green, and keep one `blocker` issue open while a release is
+// stuck. There is no wait for the queue to drain: the release PR jumps ahead of
+// any queued code PRs (GraphQL enqueuePullRequest with jump: true), so its merge
+// group holds only the release and keeps the release-only fast path. Code PRs
+// queued behind it go into the next release.
 // Usage: node --experimental-strip-types scripts/ci/release-cadence.ts <plan|arm|blocker> --repo owner/name
 // `plan` prints `write=true|false` (does arm need the App token?).
 // Needs GH_TOKEN in the environment. `arm` runs with the release App's token
 // (so the merge triggers workflows); `blocker` runs with GITHUB_TOKEN.
 import { spawnSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
 export const RELEASE_BRANCH =
   "release-please--branches--main--components--open-artifacts";
 const BLOCKED = "Release blocked:";
 const DAY_MS = 24 * 3600_000;
-/** Once the release PR has been green this long, arm it even if code PRs are still queued. */
-export const DRAIN_CAP_MS = 30 * 60_000;
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type Exec = (
@@ -24,12 +27,14 @@ const QUERY = `query($owner: String!, $name: String!, $head: String!, $branch: S
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, headRefName: $head, first: 1) {
       nodes {
+        id
         number
         url
         title
         createdAt
+        isDraft
+        isCrossRepository
         isInMergeQueue
-        autoMergeRequest { enabledAt enabledBy { login } }
         commits(last: 1) {
           nodes {
             commit {
@@ -70,20 +75,21 @@ type Context = {
   createdAt?: string | null;
 };
 export type ReleasePr = {
+  /** The GraphQL node id, for enqueuePullRequest. */
+  id: string;
   number: number;
   url: string;
   title: string;
   createdAt: string;
   queued: boolean;
-  armed: boolean;
-  armedBy?: string;
+  draft: boolean;
+  /** The head branch is in a fork (a PR that merely shares the branch name). */
+  fork: boolean;
   rollup: string;
   contexts: Context[];
   oid: string;
   /** Main already carries the version this PR's head sets (it landed; GitHub still reads it open). */
   landed?: boolean;
-  /** When the latest check on the current head finished (ms), if known. */
-  settledAt?: number;
 };
 type Snapshot = { pr?: ReleasePr; others: number };
 
@@ -96,23 +102,44 @@ async function gh(exec: Exec, args: string[]): Promise<string> {
   return r.stdout;
 }
 
+/** A file's raw text at a ref, or "" when it cannot be read. */
+async function rawFile(
+  exec: Exec,
+  repo: string,
+  file: string,
+  ref: string,
+): Promise<string> {
+  try {
+    return await gh(exec, [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw",
+      `repos/${repo}/contents/${file}?ref=${ref}`,
+    ]);
+  } catch {
+    return "";
+  }
+}
+
+const jsonField = (text: string, read: (j: unknown) => unknown): string => {
+  try {
+    const v = read(JSON.parse(text));
+    return typeof v === "string" ? v : "";
+  } catch {
+    return "";
+  }
+};
+
 /** The root package.json version at a ref, or "" when it cannot be read. */
 async function packageVersion(
   exec: Exec,
   repo: string,
   ref: string,
 ): Promise<string> {
-  try {
-    const out = await gh(exec, [
-      "api",
-      "-H",
-      "Accept: application/vnd.github.raw",
-      `repos/${repo}/contents/package.json?ref=${ref}`,
-    ]);
-    return String(JSON.parse(out)?.version ?? "");
-  } catch {
-    return "";
-  }
+  return jsonField(
+    await rawFile(exec, repo, "package.json", ref),
+    (j) => (j as { version?: unknown })?.version,
+  );
 }
 
 async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
@@ -148,24 +175,21 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
     packageVersion(exec, repo, "main"),
     oid ? packageVersion(exec, repo, oid) : "",
   ]);
-  const times = contexts
-    .map((c) => Date.parse(String(c.completedAt ?? c.createdAt ?? "")))
-    .filter((t) => !Number.isNaN(t));
   return {
     others,
     pr: {
+      id: String(n.id ?? ""),
       number: n.number,
       url: n.url,
       title: n.title,
       createdAt: n.createdAt,
       queued: Boolean(n.isInMergeQueue),
-      armed: Boolean(n.autoMergeRequest),
-      armedBy: n.autoMergeRequest?.enabledBy?.login,
+      draft: Boolean(n.isDraft),
+      fork: Boolean(n.isCrossRepository),
       rollup: rollup?.state ?? "NONE",
       contexts,
       oid,
       landed: Boolean(mainV) && mainV === headV,
-      settledAt: times.length ? Math.max(...times) : undefined,
     },
   };
 }
@@ -173,139 +197,379 @@ async function snapshot(exec: Exec, repo: string): Promise<Snapshot> {
 export type ArmResult =
   | { action: "none" }
   | { action: "already"; pr: number }
+  | { action: "draft"; pr: number }
   | { action: "not-green"; pr: number; state: string }
-  | { action: "waiting"; entries: number }
-  | { action: "disarmed"; pr: number }
+  | { action: "untested"; pr: number }
   | { action: "landed"; pr: number }
-  | { action: "armed"; pr: number };
+  | { action: "refused"; pr: number; reasons: string[] }
+  | { action: "enqueued"; pr: number };
 
-type Opts = {
-  exec: Exec;
-  repo: string;
-  now?: () => number;
-  capMs?: number;
-  /** The release App's bot login; only auto-merge it enabled is ever disabled. */
-  appLogin?: string;
+/**
+ * The checks main requires today, all ci.yml jobs from GitHub Actions: the
+ * ruleset's five plus the two branch protection adds (no-test-hooks,
+ * authz-matrix). A floor: what main's rules say at plan time is added to it,
+ * never taken from it.
+ */
+export const REQUIRED_CHECKS = [
+  "lint",
+  "typecheck",
+  "test",
+  "build",
+  "e2e",
+  "no-test-hooks",
+  "authz-matrix",
+];
+/** GitHub Actions' app id, as main's rules name it for those checks. */
+export const ACTIONS_APP_ID = 15368;
+
+export type Required = { name: string; app: number };
+
+/**
+ * Every check main requires: the floor, plus whatever the rules that apply
+ * to main (its rulesets) list right now. That endpoint is public for a public
+ * repo (it answers without a token), and ci.yml's cadence-rules-read job
+ * reads it with a contents-read job token on every run. Classic branch protection is
+ * not read: it needs admin, and the floor already holds the two checks only
+ * it lists. A failed read throws, so the plan fails closed.
+ */
+export async function requiredChecks(
+  exec: Exec,
+  repo: string,
+): Promise<Required[]> {
+  // Every page (a failed page fails the whole read), one rule per line.
+  const rules = (
+    await gh(exec, [
+      "api",
+      "--paginate",
+      `repos/${repo}/rules/branches/main?per_page=100`,
+      "--jq",
+      ".[] | @json",
+    ])
+  )
+    .split("\n")
+    .filter((l) => l.trim())
+    .map(
+      (l) =>
+        JSON.parse(l) as {
+          type?: string;
+          parameters?: {
+            required_status_checks?: {
+              context?: string;
+              integration_id?: number;
+            }[];
+          };
+        },
+    );
+  const out = new Map<string, Required>();
+  const add = (name: string | undefined, app: number | null | undefined) => {
+    if (!name) return;
+    const r = { name, app: app ?? ACTIONS_APP_ID };
+    out.set(`${r.app}/${r.name}`, r);
+  };
+  for (const n of REQUIRED_CHECKS) add(n, ACTIONS_APP_ID);
+  for (const r of rules)
+    if (r.type === "required_status_checks")
+      for (const c of r.parameters?.required_status_checks ?? [])
+        add(c.context, c.integration_id);
+  return [...out.values()];
+}
+
+type CheckRow = {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+  app: number;
+  head_sha: string;
 };
+
+/**
+ * Whether CI passed on this exact head: each check main requires
+ * (requiredChecks), reported by its app on this SHA, in its newest run,
+ * completed with success. Read through the check-runs API (checks: read) on every event, so
+ * any later event (another PR's CI completing, release-please finishing, a
+ * dispatch) recovers a release PR whose own CI event was dropped or replaced
+ * in the concurrency queue, and still only a head CI passed is queued.
+ * Returns the checks that are missing or not green ([] means passed).
+ */
+export async function ciProblems(
+  exec: Exec,
+  repo: string,
+  sha: string,
+): Promise<string[]> {
+  const out = await gh(exec, [
+    "api",
+    "--paginate",
+    `repos/${repo}/commits/${sha}/check-runs?filter=latest&per_page=100`,
+    "--jq",
+    ".check_runs[] | {id, name, status, conclusion, app: .app.id, head_sha} | @json",
+  ]);
+  const required = await requiredChecks(exec, repo);
+  const rows = out
+    .split("\n")
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as CheckRow)
+    .filter((r) => r.head_sha === sha);
+  const problems: string[] = [];
+  for (const { name, app } of required) {
+    const named = rows.filter((r) => r.name === name && r.app === app);
+    // Any run of this check still queued or running (a rerun) means CI has
+    // not finished on this head, whatever an older run said. A queued run has
+    // no start time, so order never decides this.
+    const open = named.find((r) => r.status !== "completed");
+    // Otherwise the newest completed run, by check-run id (ids only grow).
+    const newest = named
+      .filter((r) => r.status === "completed")
+      .sort((a, b) => a.id - b.id)
+      .at(-1);
+    if (open) problems.push(`${name} is ${open.status}`);
+    else if (!newest) problems.push(`${name} has not reported`);
+    else if (newest.conclusion !== "success")
+      problems.push(`${name} is ${newest.conclusion}`);
+  }
+  return problems;
+}
+
+type Opts = { exec: Exec; repo: string };
 type Plan =
   | { do: "none"; result: ArmResult; msg: string }
-  | { do: "disarm"; pr: ReleasePr }
-  | { do: "arm"; pr: ReleasePr; capHit: boolean };
+  | { do: "enqueue"; pr: ReleasePr; sha: string; ahead: number };
 
-const bare = (l?: string) => String(l ?? "").replace(/\[bot\]$/, "");
+const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+const cmpSemver = (a: string, b: string): number => {
+  const x = SEMVER.exec(a)?.slice(1).map(Number) ?? [];
+  const y = SEMVER.exec(b)?.slice(1).map(Number) ?? [];
+  for (let k = 0; k < 3; k++)
+    if ((x[k] ?? 0) !== (y[k] ?? 0)) return (x[k] ?? 0) - (y[k] ?? 0);
+  return 0;
+};
 
-function plan(
-  s: Snapshot,
-  now: number,
-  capMs: number,
-  appLogin?: string,
-): Plan {
-  const { pr, others } = s;
+/** The highest vX.Y.Z tag, or "" when none can be read. */
+async function latestTag(exec: Exec, repo: string): Promise<string> {
+  const out = await gh(exec, [
+    "api",
+    "--paginate",
+    `repos/${repo}/git/matching-refs/tags/v`,
+    "--jq",
+    ".[].ref",
+  ]);
+  const vs = out
+    .split("\n")
+    .map((r) => r.trim().replace(/^refs\/tags\/v/, ""))
+    .filter((v) => SEMVER.test(v));
+  return vs.sort(cmpSemver).at(-1) ?? "";
+}
+
+/**
+ * Why this head must not be queued, or [] when it may: the title's version,
+ * the manifest, package.json and CHANGELOG.md's first heading all agree, and
+ * that version is above the latest vX.Y.Z tag and above main's own manifest
+ * and package.json versions. Anything unreadable refuses.
+ * #3240 merged an old head (0.252.1 files under the 0.253.0 title), and the
+ * next release PR (#3243) then proposed 0.246.1 below tag v0.253.0.
+ */
+export async function versionProblems(
+  exec: Exec,
+  repo: string,
+  pr: { title: string; sha: string },
+): Promise<string[]> {
+  const [manifest, pkg, changelog, tag, mainManifest, mainPkg] =
+    await Promise.all([
+      rawFile(exec, repo, ".release-please-manifest.json", pr.sha),
+      packageVersion(exec, repo, pr.sha),
+      rawFile(exec, repo, "CHANGELOG.md", pr.sha),
+      latestTag(exec, repo),
+      rawFile(exec, repo, ".release-please-manifest.json", "main"),
+      packageVersion(exec, repo, "main"),
+    ]);
+  const onMain: [string, string][] = [
+    [
+      "main's .release-please-manifest.json",
+      jsonField(mainManifest, (j) => (j as Record<string, unknown>)?.["."]),
+    ],
+    ["main's package.json", mainPkg],
+  ];
+  const found: [string, string][] = [
+    ["title", /\brelease (\d+\.\d+\.\d+)$/.exec(pr.title.trim())?.[1] ?? ""],
+    [
+      ".release-please-manifest.json",
+      jsonField(manifest, (j) => (j as Record<string, unknown>)?.["."]),
+    ],
+    ["package.json", pkg],
+    ["CHANGELOG.md", /^## \[?(\d+\.\d+\.\d+)\]?/m.exec(changelog)?.[1] ?? ""],
+  ];
+  const out: string[] = [];
+  for (const [where, v] of found)
+    if (!SEMVER.test(v)) out.push(`no version readable from ${where}`);
+  const versions = new Set(found.map(([, v]) => v));
+  if (!out.length && versions.size > 1)
+    out.push(
+      `versions disagree: ${found.map(([w, v]) => `${w} ${v}`).join(", ")}`,
+    );
+  if (!tag) out.push("no vX.Y.Z tag readable");
+  for (const [where, m] of onMain)
+    if (!SEMVER.test(m)) out.push(`no version readable from ${where}`);
+  const v = found[0]?.[1] ?? "";
+  if (out.length) return out;
+  if (cmpSemver(v, tag) <= 0)
+    out.push(`version ${v} is not above the latest tag v${tag}`);
+  for (const [where, m] of onMain)
+    if (cmpSemver(v, m) <= 0)
+      out.push(`version ${v} is not above ${where} (${m})`);
+  return out;
+}
+
+async function plan(o: Opts): Promise<Plan> {
+  const { pr, others } = await snapshot(o.exec, o.repo);
   if (!pr)
     return {
       do: "none",
       result: { action: "none" },
       msg: "no open release PR",
     };
-  // GitHub can still read a landed release PR as open (#2379): arming it again
+  // GitHub can still read a landed release PR as open (#2379): queueing it again
   // made the queue build an empty commit that got tagged. Leave it alone.
   if (pr.landed)
     return {
       do: "none",
       result: { action: "landed", pr: pr.number },
-      msg: `release PR #${pr.number} already landed (main carries its version), not arming`,
+      msg: `release PR #${pr.number} already landed (main carries its version), not queueing`,
     };
-  const capHit =
-    pr.rollup === "SUCCESS" &&
-    pr.settledAt !== undefined &&
-    now - pr.settledAt >= capMs;
   if (pr.queued)
     return {
       do: "none",
       result: { action: "already", pr: pr.number },
       msg: `release PR #${pr.number} is already queued`,
     };
-  if (pr.armed) {
-    // A fresh head must re-qualify under the drain rule.
-    const ours = Boolean(appLogin) && bare(pr.armedBy) === bare(appLogin);
-    if (ours && others > 0 && !capHit) return { do: "disarm", pr };
+  if (pr.draft || pr.fork)
     return {
       do: "none",
-      result: { action: "already", pr: pr.number },
-      msg: `release PR #${pr.number} is already armed`,
+      result: { action: "draft", pr: pr.number },
+      msg: `release PR #${pr.number} is ${pr.draft ? "a draft" : "from a fork"}, not queueing`,
     };
-  }
   if (pr.rollup !== "SUCCESS")
     return {
       do: "none",
       result: { action: "not-green", pr: pr.number, state: pr.rollup },
-      msg: `release PR #${pr.number} checks are ${pr.rollup}, not arming`,
+      msg: `release PR #${pr.number} checks are ${pr.rollup}, not queueing`,
     };
-  if (others > 0 && !capHit)
+  // Only a head CI passed is queued: the required checks on that exact SHA,
+  // looked up on every event, not taken from this event.
+  const sha = pr.oid;
+  const ci = /^[0-9a-f]{40}$/.test(sha)
+    ? await ciProblems(o.exec, o.repo, sha)
+    : ["no head commit"];
+  if (ci.length)
     return {
       do: "none",
-      result: { action: "waiting", entries: others },
-      msg: `waiting for the queue to drain (${others} entries)`,
+      result: { action: "untested", pr: pr.number },
+      msg: `release PR #${pr.number} head ${sha}: CI has not passed (${ci.join(", ")}), not queueing`,
     };
-  return { do: "arm", pr, capHit: others > 0 };
+  const reasons = await versionProblems(o.exec, o.repo, {
+    title: pr.title,
+    sha,
+  });
+  if (reasons.length)
+    return {
+      do: "none",
+      result: { action: "refused", pr: pr.number, reasons },
+      msg: `release PR #${pr.number} not queued: ${reasons.join("; ")}`,
+    };
+  return { do: "enqueue", pr, sha, ahead: others };
 }
 
 /** True when `arm` would change the release PR (so it needs the App token). Read-only. */
 export async function willWrite(o: Opts): Promise<boolean> {
-  const p = plan(
-    await snapshot(o.exec, o.repo),
-    (o.now ?? Date.now)(),
-    o.capMs ?? DRAIN_CAP_MS,
-    o.appLogin,
-  );
-  return p.do !== "none";
+  return (await planStep(o)).write;
 }
 
-/** Arms auto-merge on the release PR once it is green and the queue holds nothing but release PRs (or the drain cap is hit). */
+/**
+ * The read-only plan step: whether arm needs the App token, and why the
+ * release PR was refused, if it was (the step fails and says so).
+ */
+export async function planStep(
+  o: Opts,
+): Promise<{ write: boolean; msg: string; refused: string[] }> {
+  const p = await plan(o);
+  if (p.do !== "none")
+    return {
+      write: true,
+      msg: `queueing release PR #${p.pr.number}`,
+      refused: [],
+    };
+  return {
+    write: false,
+    msg: p.msg,
+    refused: p.result.action === "refused" ? p.result.reasons : [],
+  };
+}
+
+const ENQUEUE = `mutation($id: ID!, $oid: GitObjectID!) {
+  enqueuePullRequest(input: {pullRequestId: $id, expectedHeadOid: $oid, jump: true}) {
+    mergeQueueEntry { position jump }
+  }
+}`;
+
+/** The PR's head commit right now, read fresh (not from the planning read). */
+async function headNow(exec: Exec, repo: string, n: number): Promise<string> {
+  return (
+    await gh(exec, ["api", `repos/${repo}/pulls/${n}`, "--jq", ".head.sha"])
+  ).trim();
+}
+
+/**
+ * Puts the green release PR at the front of the merge queue, pinned to the
+ * head the green CI run tested (expectedHeadOid), with no wait for queued code
+ * PRs. Anything short of the front is an error.
+ */
 export async function arm(
-  o: Opts & { log: (line: string) => void },
+  o: Opts & {
+    log: (line: string) => void;
+    /** Runs the enqueue (the release App's token); reads use `exec`. */
+    writeExec?: Exec;
+  },
 ): Promise<ArmResult> {
-  const p = plan(
-    await snapshot(o.exec, o.repo),
-    (o.now ?? Date.now)(),
-    o.capMs ?? DRAIN_CAP_MS,
-    o.appLogin,
-  );
+  const p = await plan(o);
   if (p.do === "none") {
+    if (p.result.action === "refused") throw new Error(p.msg);
     o.log(p.msg);
     return p.result;
   }
-  if (p.do === "disarm") {
-    await gh(o.exec, [
-      "pr",
-      "merge",
-      String(p.pr.number),
-      "--disable-auto",
-      "--repo",
-      o.repo,
-    ]);
+  if (!p.pr.id) throw new Error(`release PR #${p.pr.number}: no node id`);
+  // release-please may push a new head between the plan and now (#3240): read
+  // it fresh, and leave a moved head to its own CI run.
+  const now = await headNow(o.exec, o.repo, p.pr.number);
+  if (now !== p.sha) {
     o.log(
-      `disabled auto-merge on release PR #${p.pr.number} to re-check the drain on its current head`,
+      `release PR #${p.pr.number} head moved to ${now} after CI tested ${p.sha}: not queueing; the next event handles the new head`,
     );
-    return { action: "disarmed", pr: p.pr.number };
+    return { action: "untested", pr: p.pr.number };
   }
-  if (p.capHit)
-    o.log(
-      `cap hit: release PR #${p.pr.number} has been green for 30 minutes or more, arming despite queued PRs`,
-    );
-  await gh(o.exec, [
-    "pr",
-    "merge",
-    String(p.pr.number),
-    "--auto",
-    "--squash",
-    "--match-head-commit",
-    p.pr.oid,
-    "--repo",
-    o.repo,
+  const out = await gh(o.writeExec ?? o.exec, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${ENQUEUE}`,
+    "-f",
+    `id=${p.pr.id}`,
+    "-f",
+    `oid=${p.sha}`,
   ]);
-  o.log(`armed auto-merge on release PR #${p.pr.number}`);
-  return { action: "armed", pr: p.pr.number };
+  const entry = JSON.parse(out)?.data?.enqueuePullRequest?.mergeQueueEntry;
+  if (!entry)
+    throw new Error(
+      `release PR #${p.pr.number}: enqueuePullRequest returned no queue entry`,
+    );
+  // Only the front counts: a granted jump that still left it behind another
+  // entry is not the front.
+  if (entry.position !== 1)
+    throw new Error(
+      `release PR #${p.pr.number} was queued at position ${entry.position} (jump: ${entry.jump}), not at the front: code PRs ahead of it may merge with it. The release App may need to be allowed to jump the queue.`,
+    );
+  o.log(
+    `queued release PR #${p.pr.number} at the front of the merge queue (position ${entry.position}, jump: ${entry.jump}), ahead of ${p.ahead} code PRs`,
+  );
+  return { action: "enqueued", pr: p.pr.number };
 }
 
 const FAILED = new Set([
@@ -474,6 +738,20 @@ export async function blocker(o: {
     : { action: "none" };
 }
 
+const execWith =
+  (token?: string): Exec =>
+  (cmd, args) => {
+    const r = spawnSync(cmd, args, {
+      encoding: "utf8",
+      env: token ? { ...process.env, GH_TOKEN: token } : process.env,
+    });
+    return {
+      code: r.status ?? 1,
+      stdout: r.stdout ?? "",
+      stderr: r.stderr ?? "",
+    };
+  };
+
 const realExec: Exec = (cmd, args) => {
   const r = spawnSync(cmd, args, { encoding: "utf8" });
   return {
@@ -496,31 +774,48 @@ async function main(argv: string[]) {
     return 2;
   }
   if (mode === "plan") {
+    const p = await planStep({ exec: realExec, repo });
     // stdout is appended to $GITHUB_OUTPUT: `write=true` when arm needs the App token
-    console.log(
-      `write=${await willWrite({ exec: realExec, repo, appLogin: process.env.RELEASE_APP_LOGIN })}`,
-    );
+    console.log(`write=${p.write}`);
+    console.error(p.msg);
+    if (p.refused.length) {
+      summary([`Release not queued: ${p.msg}`]);
+      return 1;
+    }
     return 0;
   }
   const log = (s: string) => console.log(s);
   const r =
     mode === "arm"
       ? await arm({
-          exec: realExec,
+          exec: execWith(process.env.READ_GH_TOKEN),
+          writeExec: realExec,
           repo,
           log,
-          appLogin: process.env.RELEASE_APP_LOGIN,
         })
       : await blocker({ exec: realExec, repo, now: Date.now, log });
   console.log(JSON.stringify(r));
   return 0;
 }
 
+/** Appends lines to the run summary, as plain text (no markdown from titles). */
+function summary(lines: string[]) {
+  const file = process.env.GITHUB_STEP_SUMMARY;
+  if (!file) return;
+  const text = lines.join("\n");
+  const fence = "`".repeat(
+    Math.max(3, ...(text.match(/`+/g) ?? []).map((r) => r.length + 1)),
+  );
+  appendFileSync(file, `${fence}\n${text}\n${fence}\n`);
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   main(process.argv.slice(2)).then(
     (c) => process.exit(c),
     (e) => {
-      console.error(String(e instanceof Error ? e.message : e));
+      const m = String(e instanceof Error ? e.message : e);
+      console.error(m);
+      summary([`release-cadence ${process.argv[2] ?? ""} failed: ${m}`]);
       process.exit(1);
     },
   );
