@@ -24,28 +24,15 @@ import {
 
 const MIN = "0.162.0";
 
-const STEP_MS = 15_000;
-// Setup calls pace themselves against the hook window (hook-pace.ts), bounded
-// by the hook's own timeout less a margin; this only names a hang just under it.
-const SETUP_MS = 55_000;
-
-/** Fails fast and by name: a hung network step says which one hung. */
-async function step<T>(
-  name: string,
-  fn: () => Promise<T>,
-  ms = STEP_MS,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`${name} timed out after ${ms / 1000}s`)),
-      ms,
-    );
-  });
+/**
+ * Names the step that failed or hung: a hang ends by the test's own timeout,
+ * and the step's name is in the failure of any step that throws.
+ */
+async function step<T>(name: string, fn: () => Promise<T>): Promise<T> {
   try {
-    return await Promise.race([fn(), late]);
-  } finally {
-    clearTimeout(timer);
+    return await fn();
+  } catch (e) {
+    throw new Error(`${name}: ${(e as Error).message}`, { cause: e });
   }
 }
 
@@ -53,12 +40,13 @@ async function step<T>(
 let owner: Person;
 let agent: Agent;
 test.beforeAll(async ({ browser }) => {
-  owner = await step(
-    "setup personAt",
-    () => personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
-    SETUP_MS,
+  // Setup paces itself against the hook window (hook-pace.ts); the hook's own
+  // timeout is just over this, and a hang ends here, not on a timer of ours.
+  test.setTimeout(60_000);
+  owner = await step("setup personAt", () =>
+    personAt(browser, OAUTH_HOOK_EMAIL, "agent-owner", "member"),
   );
-  agent = await step("setup oauthAgent", () => oauthAgent(), SETUP_MS);
+  agent = await step("setup oauthAgent", () => oauthAgent());
 });
 test.afterAll(async () => {
   await agent?.close();

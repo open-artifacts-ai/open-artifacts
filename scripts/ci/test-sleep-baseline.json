@@ -98,6 +98,5 @@
   "packages/render/test/render.test.ts": 1,
   "packages/runtime/test/comments.test.ts": 2,
   "packages/runtime/test/engaged.test.ts": 1,
-  "packages/shared/test/comments.test.ts": 1,
-  "scripts/setup/test/tokens.test.ts": 1
+  "packages/shared/test/comments.test.ts": 1
 }

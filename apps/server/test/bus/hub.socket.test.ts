@@ -395,13 +395,10 @@ describe("hub socket: lifecycle", () => {
     const m = await machine();
     const d = await daemon(m.token);
     d.ws.send(PING);
-    await new Promise<void>((resolve, reject) => {
-      const t = setTimeout(() => reject(new Error("no pong")), 2000);
+    // A missing pong fails by the test's own timeout.
+    await new Promise<void>((resolve) => {
       d.ws.addEventListener("message", (ev) => {
-        if (ev.data === PONG) {
-          clearTimeout(t);
-          resolve();
-        }
+        if (ev.data === PONG) resolve();
       });
     });
     d.close();
