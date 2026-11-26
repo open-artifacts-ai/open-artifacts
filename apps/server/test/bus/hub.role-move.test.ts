@@ -284,6 +284,46 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect((await pageNotice(s)).to_ref).toBe(old.ref);
   });
 
+  it("over two hand-offs (A to B to C), A's follows and ask answer reach C; B's own older follow stays B's", async () => {
+    const s = await setup();
+    const inherited = await artifactOf(s.m.userId);
+    const bOwn = await artifactOf(s.m.userId);
+    const a = await s.reg(uniq("a"));
+    const b = await s.reg(uniq("b"));
+    const c = await s.reg(uniq("c"));
+    const role = uniq("platform");
+    const t0 = Date.now() - 600_000;
+    await follow(s, a.ref, inherited);
+    await follow(s, b.ref, bOwn);
+    await e.DB.batch([
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ?",
+      ).bind(t0 + 1, s.m.userId, inherited),
+      e.DB.prepare(
+        "update follows set created_at = ? where user_id = ? and artifact_id = ?",
+      ).bind(t0 - 1, s.m.userId, bOwn),
+    ]);
+    await s.clock(t0);
+    await s.setRole(role, a.id);
+    await s.clock(t0 + 60_000);
+    await s.setRole(role, b.id);
+    expect((await listed(s, b.ref)).sort()).toEqual([inherited, bOwn].sort());
+    await s.clock(t0 + 120_000);
+    await s.setRole(role, c.id);
+    expect(await listed(s, c.ref)).toEqual([inherited]);
+    expect(await listed(s, b.ref)).toEqual([bOwn]);
+    expect(await listed(s, a.ref)).toEqual([]);
+    await notifyChanged(e, inherited, 2, s.m.userId, Date.now());
+    expect((await pageNotice(s)).to_ref).toBe(c.ref);
+    // An ask A posted while it held the role: its answer reaches C now.
+    const n = note(
+      { namespace: s.namespace, name: a.name },
+      { toIdentity: a.identity, originAt: t0 + 30_000 },
+    );
+    expect(await s.hub.deliverNotice(n)).toBe("delivered");
+    expect((await pageNotice(s)).to_ref).toBe(c.ref);
+  });
+
   it("a session that still holds another role keeps its mail", async () => {
     const s = await setup();
     const a = await s.reg(uniq("a"));
