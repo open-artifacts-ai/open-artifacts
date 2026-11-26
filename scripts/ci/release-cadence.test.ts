@@ -61,6 +61,10 @@ type Fixture = {
   main?: { manifest?: string | null; pkg?: string | null };
   /** The check runs on the head (default: the five required, green). */
   checks?: Partial<CheckRow>[];
+  /** main's applied rules (default: the ruleset's five); null: unreadable. */
+  rules?: unknown[] | null;
+  /** main's branch-protection checks (default: all seven); null: unreadable. */
+  protection?: { context: string; app_id: number }[] | null;
   release?: { tag_name: string; published_at: string } | null;
   /** What enqueuePullRequest answers (default: the front, jumped). */
   enqueue?: { position: number; jump: boolean } | null;
@@ -162,6 +166,47 @@ function fake(f: Fixture) {
         }),
       );
     }
+    const unreadable = { code: 1, stdout: "", stderr: "HTTP 403" };
+    if (args[0] === "api" && path.endsWith("/rules/branches/main"))
+      return f.rules === null
+        ? unreadable
+        : ok(
+            JSON.stringify(
+              f.rules ?? [
+                {
+                  type: "required_status_checks",
+                  parameters: {
+                    required_status_checks: [
+                      "lint",
+                      "typecheck",
+                      "test",
+                      "build",
+                      "e2e",
+                    ].map((context) => ({ context, integration_id: 15368 })),
+                  },
+                },
+                { type: "merge_queue", parameters: {} },
+              ],
+            ),
+          );
+    if (args[0] === "api" && path.endsWith("/branches/main"))
+      return f.protection === null
+        ? unreadable
+        : ok(
+            JSON.stringify({
+              protection: {
+                enabled: true,
+                required_status_checks: {
+                  checks:
+                    f.protection ??
+                    REQUIRED_CHECKS.map((context) => ({
+                      context,
+                      app_id: 15368,
+                    })),
+                },
+              },
+            }),
+          );
     const checks = /\/commits\/([0-9a-f]+)\/check-runs\?/.exec(path);
     if (args[0] === "api" && checks)
       return ok(
@@ -337,13 +382,17 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
     expect(g.calls.some((c) => c.join(" ").includes("/actions/"))).toBe(false);
   });
 
-  it("the required checks are the ruleset's five, all jobs of ci.yml", () => {
+  it("the floor is main's seven required checks, all jobs of ci.yml", () => {
+    // The ruleset's five plus branch protection's no-test-hooks and
+    // authz-matrix, as main listed them on 2026-11-26.
     expect(REQUIRED_CHECKS).toEqual([
       "lint",
       "typecheck",
       "test",
       "build",
       "e2e",
+      "no-test-hooks",
+      "authz-matrix",
     ]);
     const ci = readFileSync(
       fileURLToPath(new URL("../../.github/workflows/ci.yml", import.meta.url)),
@@ -351,6 +400,98 @@ describe("arm: CI is looked up by head SHA on every event (the Prover's #3249 re
     );
     for (const j of REQUIRED_CHECKS)
       expect(ci, j).toMatch(new RegExp(`^  ${j}:$`, "m"));
+  });
+
+  it("each of the seven, when missing on the head, blocks the enqueue", async () => {
+    for (const name of REQUIRED_CHECKS) {
+      const g = fake({
+        ...f3249,
+        checks: REQUIRED_CHECKS.filter((n) => n !== name).map((n) => check(n)),
+      });
+      const l = logs();
+      expect(await go(g, l), name).toEqual({ action: "untested", pr: 3249 });
+      expect(l.out.join("\n"), name).toContain(`${name} has not reported`);
+      expect(enqueues(g), name).toEqual([]);
+    }
+  });
+
+  it("the floor holds when main's live rules list fewer checks", async () => {
+    // Rules and protection list only the ruleset's five: authz-matrix and
+    // no-test-hooks are still required.
+    const five = ["lint", "typecheck", "test", "build", "e2e"];
+    const g = fake({
+      ...f3249,
+      protection: five.map((context) => ({ context, app_id: 15368 })),
+      checks: five.map((n) => check(n)),
+    });
+    const l = logs();
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("no-test-hooks has not reported");
+    expect(l.out.join("\n")).toContain("authz-matrix has not reported");
+    const none = fake({
+      ...f3249,
+      rules: [],
+      protection: [],
+      checks: five.map((n) => check(n)),
+    });
+    expect((await go(none)).action).toBe("untested");
+  });
+
+  it("a check main's rules or protection add later is required too, from its own app", async () => {
+    const extra = [
+      ...REQUIRED_CHECKS.map((context) => ({ context, app_id: 15368 })),
+      { context: "public-only", app_id: 15368 },
+    ];
+    const g = fake({ ...f3249, protection: extra });
+    const l = logs();
+    expect(await go(g, l)).toEqual({ action: "untested", pr: 3249 });
+    expect(l.out.join("\n")).toContain("public-only has not reported");
+    const ok = fake({
+      ...f3249,
+      protection: extra,
+      checks: [...allGreen(), check("public-only")],
+    });
+    expect((await go(ok)).action).toBe("enqueued");
+    // A rule naming another app needs that app's check, not Actions'.
+    const other = fake({
+      ...f3249,
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [{ context: "scan", integration_id: 777 }],
+          },
+        },
+      ],
+      checks: [...allGreen(), check("scan")],
+    });
+    const lo = logs();
+    expect(await go(other, lo)).toEqual({ action: "untested", pr: 3249 });
+    expect(lo.out.join("\n")).toContain("scan has not reported");
+    const otherOk = fake({
+      ...f3249,
+      rules: [
+        {
+          type: "required_status_checks",
+          parameters: {
+            required_status_checks: [{ context: "scan", integration_id: 777 }],
+          },
+        },
+      ],
+      checks: [...allGreen(), check("scan", { app: 777 })],
+    });
+    expect((await go(otherOk)).action).toBe("enqueued");
+  });
+
+  it("fails closed when main's rules or protection can't be read", async () => {
+    for (const f of [{ rules: null }, { protection: null }] as Fixture[]) {
+      const g = fake({ ...f3249, ...f });
+      await expect(go(g), JSON.stringify(f)).rejects.toThrow(/HTTP 403/);
+      expect(enqueues(g)).toEqual([]);
+      await expect(
+        planStep({ exec: fake({ ...f3249, ...f }).exec, repo: REPO }),
+      ).rejects.toThrow(/HTTP 403/);
+    }
   });
 
   it("the newest run of each check decides: a newer red rerun blocks an older green one", async () => {

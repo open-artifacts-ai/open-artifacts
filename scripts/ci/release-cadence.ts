@@ -204,10 +204,68 @@ export type ArmResult =
   | { action: "refused"; pr: number; reasons: string[] }
   | { action: "enqueued"; pr: number };
 
-/** The checks the main ruleset requires: ci.yml's roll-up jobs. */
-export const REQUIRED_CHECKS = ["lint", "typecheck", "test", "build", "e2e"];
-/** GitHub Actions' app id, as the ruleset names it for those checks. */
+/**
+ * The checks main requires today, all ci.yml jobs from GitHub Actions: the
+ * ruleset's five plus the two branch protection adds (no-test-hooks,
+ * authz-matrix). A floor: what main's rules say at plan time is added to it,
+ * never taken from it.
+ */
+export const REQUIRED_CHECKS = [
+  "lint",
+  "typecheck",
+  "test",
+  "build",
+  "e2e",
+  "no-test-hooks",
+  "authz-matrix",
+];
+/** GitHub Actions' app id, as main's rules name it for those checks. */
 export const ACTIONS_APP_ID = 15368;
+
+export type Required = { name: string; app: number };
+
+/**
+ * Every check main requires: the floor, plus whatever the rules that apply
+ * to main (rulesets) and main's branch protection list right now. Both are
+ * read with the job token (metadata and contents read); a failed read throws,
+ * so the plan fails closed.
+ */
+export async function requiredChecks(
+  exec: Exec,
+  repo: string,
+): Promise<Required[]> {
+  const rules = JSON.parse(
+    await gh(exec, ["api", `repos/${repo}/rules/branches/main`]),
+  ) as {
+    type?: string;
+    parameters?: {
+      required_status_checks?: { context?: string; integration_id?: number }[];
+    };
+  }[];
+  const branch = JSON.parse(
+    await gh(exec, ["api", `repos/${repo}/branches/main`]),
+  ) as {
+    protection?: {
+      required_status_checks?: {
+        checks?: { context?: string; app_id?: number | null }[];
+      };
+    };
+  };
+  const out = new Map<string, Required>();
+  const add = (name: string | undefined, app: number | null | undefined) => {
+    if (!name) return;
+    const r = { name, app: app ?? ACTIONS_APP_ID };
+    out.set(`${r.app}/${r.name}`, r);
+  };
+  for (const n of REQUIRED_CHECKS) add(n, ACTIONS_APP_ID);
+  for (const r of Array.isArray(rules) ? rules : [])
+    if (r.type === "required_status_checks")
+      for (const c of r.parameters?.required_status_checks ?? [])
+        add(c.context, c.integration_id);
+  for (const c of branch.protection?.required_status_checks?.checks ?? [])
+    add(c.context, c.app_id);
+  return [...out.values()];
+}
 
 type CheckRow = {
   id: number;
@@ -219,9 +277,9 @@ type CheckRow = {
 };
 
 /**
- * Whether CI passed on this exact head: each check the ruleset requires,
- * reported by GitHub Actions on this SHA, in its newest run, completed with
- * success. Read through the check-runs API (checks: read) on every event, so
+ * Whether CI passed on this exact head: each check main requires
+ * (requiredChecks), reported by its app on this SHA, in its newest run,
+ * completed with success. Read through the check-runs API (checks: read) on every event, so
  * any later event (another PR's CI completing, release-please finishing, a
  * dispatch) recovers a release PR whose own CI event was dropped or replaced
  * in the concurrency queue, and still only a head CI passed is queued.
@@ -239,14 +297,15 @@ export async function ciProblems(
     "--jq",
     ".check_runs[] | {id, name, status, conclusion, app: .app.id, head_sha} | @json",
   ]);
+  const required = await requiredChecks(exec, repo);
   const rows = out
     .split("\n")
     .filter((l) => l.trim())
     .map((l) => JSON.parse(l) as CheckRow)
-    .filter((r) => r.head_sha === sha && r.app === ACTIONS_APP_ID);
+    .filter((r) => r.head_sha === sha);
   const problems: string[] = [];
-  for (const name of REQUIRED_CHECKS) {
-    const named = rows.filter((r) => r.name === name);
+  for (const { name, app } of required) {
+    const named = rows.filter((r) => r.name === name && r.app === app);
     // Any run of this check still queued or running (a rerun) means CI has
     // not finished on this head, whatever an older run said. A queued run has
     // no start time, so order never decides this.
