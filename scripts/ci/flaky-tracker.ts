@@ -11,7 +11,9 @@
 // even when it comes QUIET_DAYS after a rerun on the last allowed day. One
 // reconcile starts no run after RECONCILE_MS, RECONCILE_CALLS gh calls or
 // RECONCILE_LOGS job logs (it always does one), oldest first, and logs "backlog: N left":
-// each run is saved as it finishes, so the next completion carries on. That line means the run is fully handled: it is written with the run's
+// each run is saved as it finishes, and the runs left (or failed) are written
+// to the store as its pending list, which the next reconcile works whatever
+// its listing's range, so the next completion carries on. That line means the run is fully handled: it is written with the run's
 // sightings when nothing is filed, else in its own store comment after every
 // filing succeeded (so a failed filing is retried), and on its own when the
 // earlier attempts hold no failed test (so the run is not read again).
@@ -288,6 +290,9 @@ export type Marks = {
   seen: Sighting[];
   sightings: Recorded[];
   passed: Passed[];
+  /** A pending list's time (the reconcile that wrote it), and its runs. */
+  pendingAt?: string;
+  pending: Passed[];
 };
 
 const AT = String.raw`\d{4}-\d\d-\d\dT[\d:]+Z`;
@@ -295,6 +300,8 @@ const KEY_RE = /^key ([0-9a-f]{16})$/;
 const SUMMARY_RE = /^summary (\d+)$/;
 const PREV_RE = /^prev (\d+)$/;
 const PASSED_RE = /^passed (\d+\/\d+)$/;
+const PENDING_AT_RE = new RegExp(`^pending-at (${AT})$`);
+const PENDING_RE = /^pending (\d+\/\d+)$/;
 const SEEN_RE = new RegExp(`^seen (${AT}) (\\d+)/(\\d+)$`);
 const SIGHTING_RE = new RegExp(
   `^sighting ([0-9a-f]{16}) (\\d+)/(\\d+) (${AT})$`,
@@ -302,7 +309,7 @@ const SIGHTING_RE = new RegExp(
 
 /** The marks of a bot comment or body's trailing block (empty if none). */
 export function parseMarks(text: string): Marks {
-  const out: Marks = { seen: [], sightings: [], passed: [] };
+  const out: Marks = { seen: [], sightings: [], passed: [], pending: [] };
   const t = text.replace(/\r/g, "");
   const i = blockAt(t);
   if (i < 0) return out;
@@ -320,6 +327,10 @@ export function parseMarks(text: string): Marks {
     if (m) out.prev = Number(m[1]);
     m = PASSED_RE.exec(l);
     if (m) out.passed.push(m[1] as string);
+    m = PENDING_AT_RE.exec(l);
+    if (m) out.pendingAt = m[1];
+    m = PENDING_RE.exec(l);
+    if (m) out.pending.push(m[1] as string);
     m = SEEN_RE.exec(l);
     if (m)
       out.seen.push({
@@ -364,6 +375,26 @@ export const noTestComment = (run: RunInfo) =>
     `Run ${run.url} passed on attempt ${run.attempt}: no failed test in its earlier attempts.`,
     "",
     markerBlock([passedMark(run)]),
+  ].join("\n");
+
+/**
+ * The store comment that lists the runs a reconcile found but did not finish
+ * (its budget ran out, or the run failed): `pending run/attempt` each, under
+ * `pending-at` (when it was written; the newest list is the one read). Every
+ * reconcile works these first, whatever its listing's range, so a run that
+ * leaves the range while it waits is still tracked. A run leaves the list
+ * only once the store marks it.
+ */
+export const pendingComment = (runs: Passed[], nowMs: number) =>
+  [
+    runs.length
+      ? `The flaky tracker's reconcile has ${runs.length} runs left to track; the next one carries on.`
+      : "The flaky tracker's reconcile has no run left to track.",
+    "",
+    markerBlock([
+      `pending-at ${new Date(nowMs).toISOString().replace(/\.\d+Z$/, "Z")}`,
+      ...runs.map((r) => `pending ${r}`),
+    ]),
   ].join("\n");
 
 /**
@@ -775,10 +806,12 @@ function readStore(
   stores: number[],
   nowMs: number,
   fromMs = nowMs - WINDOW_DAYS * DAY_MS,
-): { sightings: Recorded[]; passed: Set<Passed> } {
+): { sightings: Recorded[]; passed: Set<Passed>; pending: Passed[] } {
   const since = new Date(fromMs).toISOString();
   const sightings: Recorded[] = [];
   const passed = new Set<Passed>();
+  let pending: Passed[] = [];
+  let pendingAt = "";
   for (const n of stores) {
     const lines = gh(exec, [
       "api",
@@ -792,9 +825,13 @@ function readStore(
       const m = parseMarks(JSON.parse(l) as string);
       sightings.push(...m.sightings);
       for (const p of m.passed) passed.add(p);
+      if (m.pendingAt && m.pendingAt >= pendingAt) {
+        pendingAt = m.pendingAt;
+        pending = m.pending;
+      }
     }
   }
-  return { sightings, passed };
+  return { sightings, passed, pending };
 }
 
 const STORE_TITLE = "Flaky test sightings (the flaky tracker's store)";
@@ -1167,17 +1204,22 @@ export function recentRuns(
  * the whole reconcile range: a run's mark is written after the run was
  * created, so every listed run's mark is in a comment since reconcileFrom.
  */
-function passedRuns(exec: Exec, repo: string, nowMs: number): Set<Passed> {
+function passedRuns(
+  exec: Exec,
+  repo: string,
+  nowMs: number,
+): { passed: Set<Passed>; pending: Passed[] } {
   const open = listOpen(exec, repo, STORE_LABEL);
-  if (!open.length) return new Set();
+  if (!open.length) return { passed: new Set(), pending: [] };
   const from = reconcileFrom(nowMs);
-  return readStore(
+  const { passed, pending } = readStore(
     exec,
     repo,
     storeChain(exec, repo, open, nowMs, from),
     nowMs,
     from,
-  ).passed;
+  );
+  return { passed, pending };
 }
 
 export type Reconciled = {
@@ -1196,8 +1238,12 @@ export type Reconciled = {
  * through loadRun and track like an event would, and is saved (marked) in the
  * store when it finishes, so a job cut off later loses none of it. One run's
  * error doesn't stop the rest. Once `ms` milliseconds, `calls` gh calls or
- * `logs` job logs are spent, no further run is started (one always is): those are "left", and the next
- * reconcile (the next CI completion) takes them, oldest first. Oldest first
+ * `logs` job logs are spent, no further run is started (one always is):
+ * those are "left", and the next reconcile (the next CI completion) takes
+ * them, oldest first. The runs left or failed are written to the store as
+ * its pending list (pendingComment), which every reconcile works along with
+ * its listing, so a run that leaves the listing's range while it waits is
+ * still tracked. Oldest first
  * because the oldest is nearest to leaving the range; a quiet stretch of up
  * to QUIET_DAYS only delays them. `onRun` sees each result as it is made.
  */
@@ -1221,9 +1267,20 @@ export function reconcile(o: {
     if (args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a))) spent.logs++;
     return o.exec(cmd, args);
   };
-  const runs = recentRuns(exec, repo, nowMs);
+  const listed = recentRuns(exec, repo, nowMs);
+  const { passed, pending } = passedRuns(exec, repo, nowMs);
+  // The pending list too, whatever the listing's range: a run found by an
+  // earlier reconcile and not finished stays a candidate until it is marked.
+  const byRun = new Map<number, number>();
+  for (const p of pending) {
+    const [id, at] = p.split("/").map(Number);
+    byRun.set(id as number, at as number);
+  }
+  for (const r of listed) byRun.set(r.runId, r.attempt);
+  const runs = [...byRun]
+    .map(([runId, attempt]) => ({ runId, attempt }))
+    .sort((a, b) => a.runId - b.runId);
   if (!runs.length) return [];
-  const passed = passedRuns(exec, repo, nowMs);
   const out: Reconciled[] = [];
   let started = 0;
   const push = (r: Reconciled) => {
@@ -1254,6 +1311,21 @@ export function reconcile(o: {
     } catch (e) {
       push({ ...base, result: "error", notes: [(e as Error).message] });
     }
+  }
+  // What is still not marked (left, or failed) is the new pending list,
+  // written when it changed. A run leaves it only once it is marked.
+  const unfinished = out
+    .filter((r) => r.result === "left" || r.result === "error")
+    .map((r) => `${r.runId}/${r.attempt}`);
+  if (unfinished.join(" ") !== pending.join(" ")) {
+    const { store } = openStore(
+      exec,
+      repo,
+      nowMs,
+      nowMs - WINDOW_DAYS * DAY_MS,
+      [],
+    );
+    comment(exec, repo, store, pendingComment(unfinished, nowMs));
   }
   return out;
 }
