@@ -46,6 +46,15 @@ export type AgentRecord = {
    * helper.
    */
   linkHashes?: string[];
+  /**
+   * agy S2b: an agy process listed from the process table before its first
+   * message, under `agyStartingRef`. It has no conversation yet: mail to it is
+   * held, and the conversation that joins in the same process takes over its
+   * address (`replaces`). Never persisted: the next scan lists it again.
+   */
+  starting?: true;
+  /** #3208: this closed session can never reopen (a starting agy whose process ended); its hub ends its mail at once. */
+  gone?: boolean;
 };
 
 /** #1984: most proof hashes a session keeps; the hub holds the same number. */
@@ -75,6 +84,7 @@ export class AgentTable {
   /** #2688: when each ref was first seen, ms since the epoch. */
   #firstSeen = new Map<string, number>();
   up(rec: AgentRecord): AgentRecord {
+    if (rec.live) delete rec.gone;
     this.#byRef.set(rec.ref, rec);
     if (!this.#firstSeen.has(rec.ref)) this.#firstSeen.set(rec.ref, Date.now());
     return rec;
