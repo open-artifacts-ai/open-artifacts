@@ -30,8 +30,12 @@ const agent = (name: string, canRemove: boolean): ThreadAgent => ({
   for: "Sam Rivera",
   canRemove,
 });
-const thread = (agents: ThreadAgent[]) =>
-  ({ id: "t1", agents }) as unknown as CommentThread;
+const thread = (agents: ThreadAgent[], replies = 1) =>
+  ({
+    id: "t1",
+    agents,
+    comments: Array.from({ length: replies }, (_, i) => ({ id: `c${i}` })),
+  }) as unknown as CommentThread;
 const api = { artifactId: "a1", guest: false, capped: false } as never;
 
 afterEach(() => {
@@ -171,5 +175,38 @@ describe("ThreadAgents", () => {
     ).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(mutate.mock.calls[1]?.[0]).toMatchObject({ removed: false });
+  });
+
+  describe("the removed-agent line (#3263)", () => {
+    const remove = (agents: ThreadAgent[]) => {
+      mutate.mockImplementation(() => {});
+      const view = render(<ThreadAgents t={thread(agents)} api={api} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Stop notifying OA Billing" }),
+      );
+      expect(screen.getByText(/won't get replies/)).toBeTruthy();
+      return view;
+    };
+
+    it("sending a reply clears it", () => {
+      const a = [agent("OA Billing", true)];
+      const { rerender } = remove(a);
+      rerender(<ThreadAgents t={thread(a, 2)} api={api} />);
+      expect(screen.queryByText(/won't get replies/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Undo" })).toBeNull();
+    });
+
+    it("closing the thread and reopening it never shows it", () => {
+      const a = [agent("OA Billing", true)];
+      const { unmount } = remove(a);
+      unmount();
+      render(
+        <ThreadAgents
+          t={thread([{ ...a[0], removed: true } as ThreadAgent])}
+          api={api}
+        />,
+      );
+      expect(screen.queryByText(/won't get replies/)).toBeNull();
+    });
   });
 });

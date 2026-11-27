@@ -75,7 +75,7 @@ async function mkArtifact(readers: U[] = [sam, pat]) {
   for (const u of readers)
     await api(app, R.shares(a.id), owner.cookie, {
       method: "PUT",
-      body: { email: u.email, role: "viewer" },
+      body: { email: u.email, role: "commenter" },
     });
   await E.DB.prepare("delete from inbox_items where artifact_id = ?")
     .bind(a.id)

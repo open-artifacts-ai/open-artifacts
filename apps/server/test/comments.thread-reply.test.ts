@@ -529,11 +529,16 @@ describe("thread_reply notices (#1900)", () => {
         `Open Artifacts: ${who} replied in a comment thread you're in (version 1).`,
         threadReplies()[0]?.notice.url,
         `Thread ${tid}, comment ${cid}.`,
-        // #3139: your user's typed words, then the one-thread read.
+        // #3139, #3225: your user's typed words + reply call, else the one-thread read.
         ...(words !== undefined
-          ? [`Their words: ${JSON.stringify(words)}`]
-          : []),
-        `Read just this thread: list_comments ${JSON.stringify({ id: threadReplies()[0]?.notice.artifactId, threadId: tid, commentId: cid })}.`,
+          ? [
+              `Their words: ${JSON.stringify(words)}`,
+              `Reply: add_comment ${JSON.stringify({ id: threadReplies()[0]?.notice.artifactId, threadId: tid, body: "..." })}`,
+              `Answer from this notice. Only if their words refer to earlier comments: list_comments ${JSON.stringify({ id: threadReplies()[0]?.notice.artifactId, threadId: tid, commentId: cid })}.`,
+            ]
+          : [
+              `Read just this thread: list_comments ${JSON.stringify({ id: threadReplies()[0]?.notice.artifactId, threadId: tid, commentId: cid })}.`,
+            ]),
         tail,
       ].join("\n");
 

@@ -193,13 +193,15 @@ export type OidcWorkflow = "redline" | "test-admin" | "test-member";
 /**
  * The staging test member's workflow (staging-test-member.yml): R26 on the
  * one install `rl-agents` (mint or revoke), R15 to read that job's sealed
- * result, and R2 to find the install's id by its slug. Every other route is
- * 403, and reach is that one slug (model.ts reachSql and inReach; the
+ * result, and R2 to find the install's id by its slug. R3 and R5 read
+ * rl-agents and upgrade it to a release, so it follows staging's release
+ * (the fleet skips installs with test hooks; cloud #264). Every other route
+ * is 403, and reach is that one slug (model.ts reachSql and inReach; the
  * provisioner's checkOidcScope holds its jobs to it too).
  */
 export const TEST_MEMBER = {
   slug: "rl-agents",
-  routes: ["R2", "R15", "R26"] as readonly RouteId[],
+  routes: ["R2", "R3", "R5", "R15", "R26"] as readonly RouteId[],
   /** Suffix of its actorKey and rateKey (`oidc:<repository_id>:test-member`). */
   actorSuffix: ":test-member",
 } as const;

@@ -42,7 +42,13 @@ export const CommentAuthorSchema = z.object({
    * Never shown to a guest or an outsider.
    */
   role: z
-    .object({ name: z.string(), holder: z.string().optional() })
+    .object({
+      name: z.string(),
+      holder: z.string().optional(),
+      machine: z.string().optional(),
+      holderMachine: z.string().optional(),
+      holderProduct: z.string().optional(),
+    })
     .optional(),
   /**
    * With `role` (#3132): `name` is the role, and this is the session's own

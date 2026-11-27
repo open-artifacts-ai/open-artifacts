@@ -1,5 +1,6 @@
 import type { ArtifactSummary } from "@oa/shared";
 import { FormatIcon } from "@oa/ui";
+import type { ReactNode } from "react";
 import { LibraryAsks } from "../foryou/waiting";
 import { SpaceMarker, VisibilityWithHint } from "../spaces/SpaceMarker";
 import { AppLink } from "./AppLink";
@@ -11,10 +12,12 @@ const ROW = `lib-row ${STRETCH} flex flex-wrap items-center gap-y-[var(--oa-spac
 
 export function ArtifactRow({
   artifact: a,
+  controls,
   snippet,
   showSpace,
 }: {
   artifact: ArtifactSummary;
+  controls?: ReactNode;
   snippet?: string;
   /** The cross-space Library: show which space each artifact is in. */
   showSpace?: boolean;
@@ -42,6 +45,7 @@ export function ArtifactRow({
         {a.lastAgent && <span>{a.lastAgent.name}</span>}
         <time dateTime={a.updatedAt}>{relativeTime(a.updatedAt)}</time>
       </div>
+      {controls}
     </article>
   );
 }

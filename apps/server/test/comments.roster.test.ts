@@ -930,6 +930,8 @@ describe("comment notice text", () => {
     const cid = newId();
     const ids = { threadId: tid, commentId: cid, artifactId: aid };
     const read = `Read just this thread: list_comments ${JSON.stringify({ id: aid, threadId: tid, commentId: cid })}.`;
+    const reply = `Reply: add_comment ${JSON.stringify({ id: aid, threadId: tid, body: "..." })}`;
+    const answerFromNotice = `Answer from this notice. Only if their words refer to earlier comments: list_comments ${JSON.stringify({ id: aid, threadId: tid, commentId: cid })}.`;
     const yours = commentNoticeText(
       "mention",
       1,
@@ -940,7 +942,9 @@ describe("comment notice text", () => {
       "please look",
     );
     expect(yours.split("\n")).toContain('Their words: "please look"');
-    expect(yours.split("\n")).toContain(read);
+    expect(yours.split("\n")).toContain(reply);
+    expect(yours.split("\n")).toContain(answerFromNotice);
+    expect(yours).not.toContain("Read just this thread:");
     // Anyone else's words never travel, even when passed.
     const others = commentNoticeText(
       "mention",

@@ -136,21 +136,37 @@ describe("#3132 an agent shown as its role", () => {
       ...linked,
       name: "OA Platform",
       session: "OA Platform L",
-      role: { name: "OA Platform" },
+      role: { name: "OA Platform", machine: "laptop" },
     });
     expect(c.querySelector("[data-role-session]")?.textContent).toBe(
-      "OA Platform L · ",
+      "on the laptop · ",
     );
     const moved = face({
       ...linked,
       name: "OA Platform",
       session: "OA Platform L",
-      role: { name: "OA Platform", holder: "OA Platform W" },
+      role: {
+        name: "OA Platform",
+        machine: "laptop",
+        holder: "OA Platform W",
+        holderMachine: "workstation",
+      },
     });
     expect(moved.querySelector("[data-role-session]")?.textContent).toBe(
-      "OA Platform L · now OA Platform W · ",
+      "was on the laptop, now on the workstation · ",
     );
     expect(moved.textContent).toContain("for Leo Urbina");
+  });
+
+  it("falls back to the app when no machine label is available", () => {
+    const c = face({
+      ...linked,
+      session: "OA Platform L",
+      role: { name: "OA Platform" },
+    });
+    expect(c.querySelector("[data-role-session]")?.textContent).toBe(
+      "on Claude Code · ",
+    );
   });
 
   it("an agent with no role shows no session line", () => {
