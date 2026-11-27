@@ -4,6 +4,7 @@
 // reports each entry; uninstall puts the user's entry back byte for byte.
 // A fake agy on PATH (deps.which) and a scratch HOME only: no real agy runs.
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -130,6 +131,34 @@ describe("Antigravity pages entry (agy S5)", () => {
     await uninstallAdapters(deps);
     expect(entry(read(file))).toBeUndefined();
   });
+  it("keeps a user comment inside a generated native entry", async () => {
+    const { deps, file } = setup();
+    await installAdapters(deps);
+    put(
+      file,
+      read(file).replace('"serverUrl"', '/* keep my note */ "serverUrl"'),
+    );
+    await installAdapters(deps);
+    await uninstallAdapters(deps);
+    expect(read(file)).toContain("/* keep my note */");
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+  });
+
+  it.each([true, false])(
+    "removes the shared native entry only on last uninstall (creator first: %s)",
+    async (creatorFirst) => {
+      const { deps, file, h } = setup();
+      const other = { ...deps, busHome: join(h, "second-bus") };
+      await installAdapters(deps);
+      await installAdapters(other);
+      await uninstallAdapters(creatorFirst ? deps : other);
+      expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+      await uninstallAdapters(creatorFirst ? other : deps);
+      // Last uninstall may remove the empty config file.
+      expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
+    },
+  );
+
   it("installs and removes the main pages proxy on a fresh machine", async () => {
     const { deps, file, h } = setup();
     put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);

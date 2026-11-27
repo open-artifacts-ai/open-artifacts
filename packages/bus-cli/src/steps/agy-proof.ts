@@ -1,6 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { mcpUrl } from "@oa/bus-adapter-claude-code";
 import {
@@ -69,6 +77,7 @@ type Moved = {
   original: string | null;
   /** Digest of an installer-created entry, to preserve later user edits. */
   createdDigest?: string;
+  native?: boolean;
 };
 
 const isRecord = (v: unknown): v is Doc =>
@@ -92,8 +101,58 @@ function readMoved(path: string): Moved[] {
   }
 }
 
-const digest = (entry: Doc) =>
-  createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+const digest = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+const entryDigest = (text: string, name: string) => {
+  const raw = agyEntryText(text, name);
+  return raw === undefined ? undefined : digest(raw);
+};
+
+// All bus homes share agy's config. Store one claim per home beside it;
+// the raw entry digest scopes claims to the exact installer-created value.
+function nativeClaim(io: AgyEntryIo, name: string, fingerprint: string) {
+  const dir = `${io.file}.oa-bus-claims`;
+  const prefix = `${digest(JSON.stringify([name, fingerprint]))}.`;
+  const mine = prefix + digest(io.moved);
+  const path = join(dir, mine);
+  const owners = () => {
+    try {
+      return readdirSync(dir).filter(
+        (f) =>
+          f.startsWith(prefix) && /^[a-f0-9]{64}$/.test(f.slice(prefix.length)),
+      );
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw e;
+    }
+  };
+  return {
+    mine,
+    owners,
+    add() {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      try {
+        writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+    },
+    release() {
+      rmSync(path, { force: true });
+      try {
+        rmdirSync(dir);
+      } catch (e) {
+        if (
+          !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(
+            (e as NodeJS.ErrnoException).code ?? "",
+          )
+        )
+          throw e;
+      }
+    },
+  };
+}
 
 const movedText = (list: Moved[]) =>
   `${JSON.stringify({ entries: list }, null, 2)}\n`;
@@ -420,18 +479,41 @@ export function installAgyEntries(
           ? proxyEntry(io, {}, t, { tokenFile: pat }, undefined)
           : { serverUrl: mcpUrl(t.origin).href };
       text = insertAgyEntry(text, name, want);
+      const body = agyEntryText(text, name) as string;
       keep = keep.filter((m) => m.name !== name);
       keep.push({
         name,
         origin: t.origin,
         ...(t.name ? { instance: t.name } : {}),
         original: null,
-        createdDigest: digest(want),
+        createdDigest: digest(body),
+        ...("serverUrl" in want ? { native: true } : {}),
       });
       out.changed.push(name);
     }
     for (const p of existing) {
       if (p.kind === "left") {
+        const cur = entries[p.name];
+        const fingerprint = entryDigest(text, p.name);
+        if (
+          fingerprint &&
+          isRecord(cur) &&
+          isAgyInstanceEntry(cur, t.origin) &&
+          nativeClaim(io, p.name, fingerprint).owners().length &&
+          !keep.some(
+            (m) =>
+              m.name === p.name && m.native && m.createdDigest === fingerprint,
+          )
+        ) {
+          keep = keep.filter((m) => m.name !== p.name);
+          keep.push({
+            name: p.name,
+            origin: t.origin,
+            original: null,
+            native: true,
+            createdDigest: fingerprint,
+          });
+        }
         out.notes.push(p.note);
         continue;
       }
@@ -441,7 +523,7 @@ export function installAgyEntries(
       if (
         p.kind === "ours" &&
         prior?.original === null &&
-        prior.createdDigest !== digest(p.entry)
+        prior.createdDigest !== entryDigest(text, p.name)
       )
         continue;
       const want = proxyEntry(io, p.entry, t, p.cred, p.token);
@@ -475,7 +557,7 @@ export function installAgyEntries(
               );
         if (
           theirs?.original === null &&
-          theirs.createdDigest !== digest(p.entry)
+          theirs.createdDigest !== entryDigest(text, p.name)
         )
           continue;
         original = theirs ? theirs.original : adoptedOriginal(t.origin, p.cred);
@@ -496,7 +578,7 @@ export function installAgyEntries(
         origin: t.origin,
         ...(t.name === undefined ? {} : { instance: t.name }),
         original: source,
-        ...(source === null ? { createdDigest: digest(want) } : {}),
+        ...(source === null ? { createdDigest: digest(raw) } : {}),
       });
       out.changed.push(p.name);
       if (p.kind === "swap")
@@ -509,9 +591,16 @@ export function installAgyEntries(
         );
     }
   }
-  if (text === before) return out;
   if (!isDeepStrictEqual(keep, moved)) io.writeMoved(movedText(keep));
-  io.write(text);
+  if (text !== before) io.write(text);
+  for (const m of keep) {
+    if (
+      m.native &&
+      m.createdDigest &&
+      entryDigest(text, m.name) === m.createdDigest
+    )
+      nativeClaim(io, m.name, m.createdDigest).add();
+  }
   return out;
 }
 
@@ -540,13 +629,18 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     const ours = isRecord(cur) ? ourAgyEntry(cur, m.origin) : undefined;
     if (!ours) {
       if (
-        m.original === null &&
+        m.native &&
+        m.createdDigest &&
         isRecord(cur) &&
         isAgyInstanceEntry(cur, m.origin) &&
-        digest(cur) === m.createdDigest
+        entryDigest(text, m.name) === m.createdDigest
       ) {
-        text = removeAgyMcp(text, m.name);
-        res.restored.push(m.name);
+        const claim = nativeClaim(io, m.name, m.createdDigest);
+        const owners = claim.owners();
+        if (owners.length === 1 && owners[0] === claim.mine) {
+          text = removeAgyMcp(text, m.name);
+          res.restored.push(m.name);
+        }
       }
       continue;
     }
@@ -557,7 +651,7 @@ export function restoreAgyEntries(io: AgyEntryIo): {
       continue;
     }
     if (m.original === null) {
-      if (isRecord(cur) && digest(cur) === m.createdDigest) {
+      if (isRecord(cur) && entryDigest(text, m.name) === m.createdDigest) {
         text = removeAgyMcp(text, m.name);
         res.restored.push(m.name);
       }
@@ -585,6 +679,10 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     res.restored.push(m.name);
   }
   if (text !== before) io.write(text);
+  for (const m of moved) {
+    if (m.native && m.createdDigest && !stay.includes(m))
+      nativeClaim(io, m.name, m.createdDigest).release();
+  }
   if (stay.length > 0) io.writeMoved(movedText(stay));
   else rmSync(io.moved, { force: true });
   return res;
