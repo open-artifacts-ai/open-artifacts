@@ -510,6 +510,16 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
   let busUpdatesPaused = false;
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
+  if (opts.forYou === "handover")
+    busAgents = busAgents.map((a) =>
+      a.id === f.busRoleProposals[0]?.priorAgentId
+        ? {
+            ...a,
+            state: "away",
+            since: new Date(Date.now() - 40 * 60_000).toISOString(),
+          }
+        : a,
+    );
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
   let busRoleProposals: BusRoleProposal[] = opts.bus
@@ -901,7 +911,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             a.namespace.localeCompare(b.namespace) ||
             a.name.localeCompare(b.name),
         ),
-        proposals: busRoleProposals,
+        proposals: busRoleProposals.filter(
+          (p) =>
+            p.status !== "pending" ||
+            p.action !== "repoint" ||
+            !busAgents.some(
+              (a) => a.id === p.priorAgentId && a.state === "live",
+            ),
+        ),
         live: opts.bus === true,
       }),
     ),

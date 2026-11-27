@@ -100,6 +100,19 @@ async function setup() {
   };
 }
 
+async function makeAway(s: Awaited<ReturnType<typeof setup>>) {
+  // Away holder: since the hub's own away_since.
+  const t = base();
+  await runInDurableObject(s.hub, (_: BusHub, st) =>
+    st.storage.sql.exec(
+      "update agents set live = 0, away_since = ? where name = ?",
+      t,
+      s.names[0] as string,
+    ),
+  );
+  return t;
+}
+
 const decide = (
   auth: string | null,
   id: string,
@@ -129,6 +142,17 @@ describe("the handover card (#3132)", () => {
     expect(proposal.action).toBe("repoint");
     // Live holder.
     let box = await inboxOf(s.who.cookie);
+    expect(box.counts.needsYou).toBe(0);
+    expect((await decide(s.who.cookie, proposal.id)).status).toBe(404);
+    const ordinary = await s.propose("unheld");
+    expect((await inboxOf(s.who.cookie)).needsYou.map((i) => i.id)).toEqual([
+      `role:${ordinary.proposal.id}`,
+    ]);
+    expect(
+      (await decide(s.who.cookie, ordinary.proposal.id, "reject")).status,
+    ).toBe(200);
+    const t = await makeAway(s);
+    box = await inboxOf(s.who.cookie);
     const item = box.needsYou.find((i) => i.id === `role:${proposal.id}`);
     expect(item).toMatchObject({
       kind: "role",
@@ -142,25 +166,16 @@ describe("the handover card (#3132)", () => {
         namespace: s.namespace,
         agentName: s.names[1],
         priorHolderName: s.names[0],
-        holder: { state: "live", since: null },
+        holder: { state: "away", since: new Date(t).toISOString() },
         expiresAt: proposal.expiresAt,
       },
-      text: `${s.names[1]} wants to take over platform from ${s.names[0]} (live).`,
+      text: expect.stringContaining("(away"),
     });
     expect(box.counts.needsYou).toBe(1);
     expect(
       ((await (await api(app, R.me, s.who.cookie)).json()) as Me).inbox
         ?.needsYou,
     ).toBe(1);
-    // Away holder: since the hub's own away_since.
-    const t = base();
-    await runInDurableObject(s.hub, (_: BusHub, st) =>
-      st.storage.sql.exec(
-        "update agents set live = 0, away_since = ? where name = ?",
-        t,
-        s.names[0] as string,
-      ),
-    );
     box = await inboxOf(s.who.cookie);
     expect(box.needsYou[0]?.role?.holder).toEqual({
       state: "away",
@@ -204,6 +219,7 @@ describe("the handover card (#3132)", () => {
   it("Yes moves the role to the asking session and audits confirmed and moved; it is single use", async () => {
     const s = await setup();
     const { proposal } = await s.propose();
+    await makeAway(s);
     const r = await decide(s.who.cookie, proposal.id, "confirm");
     expect(r.status).toBe(200);
     const body = (await r.json()) as {
@@ -230,6 +246,7 @@ describe("the handover card (#3132)", () => {
   it("No refuses it, changes nothing and audits refused", async () => {
     const s = await setup();
     const { proposal } = await s.propose();
+    await makeAway(s);
     const r = await decide(s.who.cookie, proposal.id, "reject");
     expect(r.status).toBe(200);
     expect(
@@ -271,6 +288,7 @@ describe("the handover card (#3132)", () => {
     const t0 = base();
     await setClock(s.who.userId, t0);
     const a = await s.propose();
+    await makeAway(s);
     expect(
       Date.parse(a.proposal.expiresAt) - Date.parse(a.proposal.createdAt),
     ).toBe(BUS_ROLE_PROPOSAL_CARD_TTL_MS);
@@ -297,7 +315,7 @@ describe("the handover card (#3132)", () => {
     expect((await rolesOf(s.who.cookie))[0]?.holderName).toBe(s.names[1]);
 
     // A second request, a day on: the card answers expired too, and leaves For you.
-    const b = await s.propose("platform", s.names[0] as string);
+    const b = await s.propose("unheld", s.names[1] as string);
     await setClock(
       s.who.userId,
       t0 + BUS_ROLE_PROPOSAL_TTL_MS + BUS_ROLE_PROPOSAL_CARD_TTL_MS,

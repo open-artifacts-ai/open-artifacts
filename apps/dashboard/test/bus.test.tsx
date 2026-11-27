@@ -1322,7 +1322,7 @@ describe("Agents › Namespaces › Links (#1567)", () => {
 
 describe("Agents › Roles and access", () => {
   it("a pending take-over shows as the handover card on the role's row, with Yes and No", async () => {
-    withBus();
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
     const sent = calls("POST");
     mount("/agents/roles");
     const t = await screen.findByRole("table", { name: "Roles" });
@@ -1331,7 +1331,7 @@ describe("Agents › Roles and access", () => {
       screen.queryByRole("region", { name: "Waiting for you" }),
     ).toBeNull();
     const card = await within(t).findByText(
-      "oa-design wants to take over manager from oa-manager (live).",
+      "oa-design wants to take over manager from oa-manager (away 40 min).",
     );
     expect(card.closest("[data-role-card]")).not.toBeNull();
     expect(within(t).getByRole("button", { name: "No" })).toBeInTheDocument();
@@ -1351,7 +1351,7 @@ describe("Agents › Roles and access", () => {
   });
 
   it("No refuses it: the role stays, the card goes", async () => {
-    withBus();
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
     const sent = calls("POST");
     mount("/agents/roles");
     const t = await screen.findByRole("table", { name: "Roles" });
@@ -1366,7 +1366,7 @@ describe("Agents › Roles and access", () => {
   });
 
   it("says how long the holder has been away, and why a Yes was refused", async () => {
-    withBus();
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
     const away = {
       ...agentNamed("oa-manager"),
       state: "away" as const,

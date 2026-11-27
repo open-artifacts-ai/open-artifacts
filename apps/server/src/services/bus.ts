@@ -1159,9 +1159,13 @@ export async function listBusRoles(
       BUS_HUB_TIMEOUT_MS,
     );
     if (r === null) return none;
-    const [roles, { proposals, expired }] = r;
+    const [roles, { proposals, expired, holders }] = r;
     await auditExpired(env, userId, expired);
-    return { roles, proposals, live: true };
+    return {
+      roles,
+      proposals: proposals.filter((p) => memberHandlesProposal(p, holders)),
+      live: true,
+    };
   } catch (e) {
     logError("bus_roles_failed", e);
     return none;
@@ -1982,6 +1986,18 @@ const DECIDE_REFUSALS: Record<ProposalRefusalReason, string> = {
   role_limit: ROLE_REFUSALS.role_limit,
 };
 
+function memberHandlesProposal(
+  p: BusRoleProposal,
+  holders: Record<string, { live: boolean }>,
+) {
+  return (
+    p.status !== "pending" ||
+    p.action !== "repoint" ||
+    !p.priorAgentId ||
+    !holders[p.priorAgentId]?.live
+  );
+}
+
 /**
  * #3132: the member's pending role proposals as handover cards, for For you
  * (services/inbox.ts): newest first. Reads their own hub once, within
@@ -2001,7 +2017,12 @@ export async function pendingRoleCards(
     if (r === null) return [];
     await auditExpired(env, userId, r.expired);
     return r.proposals
-      .filter((p) => p.status === "pending" && Date.parse(p.expiresAt) > now)
+      .filter(
+        (p) =>
+          p.status === "pending" &&
+          Date.parse(p.expiresAt) > now &&
+          memberHandlesProposal(p, r.holders),
+      )
       .map((p) => {
         const h = p.priorAgentId ? r.holders[p.priorAgentId] : undefined;
         return {

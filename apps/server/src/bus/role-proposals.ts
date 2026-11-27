@@ -537,10 +537,31 @@ export function decideProposalById(
   maxRoles: number = BUS_ROLE_MAX,
 ): DecideResult {
   const expired = expireProposals(sql, orgId, now);
+  const p = byId(sql, orgId, id);
+  // A card already open in a browser can outlive an away interval.
+  if (
+    p?.status === "pending" &&
+    p.action === "repoint" &&
+    one(
+      sql,
+      "select 1 from roles r join agents a on a.id = r.agent_id and a.org_id = r.org_id where r.org_id = ? and r.id = ? and a.id = ? and a.live = 1",
+      orgId,
+      p.roleId,
+      p.priorAgentId,
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "unknown",
+      proposal: null,
+      audit: null,
+      expired,
+    };
+  }
   return decideStored(
     sql,
     orgId,
-    byId(sql, orgId, id),
+    p,
     false,
     decision,
     now,
