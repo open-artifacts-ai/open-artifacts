@@ -201,9 +201,10 @@ export type Busy = {
   pending: number;
   outbox: number;
   codexQueue: number;
+  unknownTurn?: boolean;
 };
 export const isBusy = (b: Busy): boolean =>
-  b.pending > 0 || b.outbox > 0 || b.codexQueue > 0;
+  b.pending > 0 || b.outbox > 0 || b.codexQueue > 0 || b.unknownTurn === true;
 
 /**
  * True once per staged version when it has waited 24 h without an idle moment

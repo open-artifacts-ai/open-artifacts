@@ -488,6 +488,26 @@ describe("the updater loop (enabled by a test only)", () => {
       vi.useRealTimers();
     }
   });
+  it("rechecks activity after the hub acknowledges an automatic switch", async () => {
+    let busy = true;
+    let becameBusyDuringAck = true;
+    const w = make({
+      busy: () => busy,
+      announce: async () => {
+        busy = becameBusyDuringAck;
+        return true;
+      },
+    });
+    await w.u.instructFromInstance("1.1.0");
+    busy = false;
+    await w.u.onIdle();
+    expect(currentVersion(w.home)).toBe("1.0.0");
+    becameBusyDuringAck = false;
+    busy = false;
+    await w.u.onIdle();
+    expect(currentVersion(w.home)).toBe("1.1.0");
+  });
+
   it("switches a still-busy machine at its 30-minute deadline without a tick", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const w = make({ busy: () => true });

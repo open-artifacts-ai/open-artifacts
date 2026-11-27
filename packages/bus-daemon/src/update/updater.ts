@@ -529,7 +529,12 @@ export class Updater {
       this.deadline.unref();
       return;
     }
-    await this.switchTo(st.version, true);
+    await this.switchTo(
+      st.version,
+      true,
+      false,
+      st.readySince + IDLE_DEADLINE_MS,
+    );
   }
 
   /** One poll: held step-back, fetch retry, the "ready" notice, the install request, login-end edge. */
@@ -594,11 +599,12 @@ export class Updater {
     version: string,
     staged: boolean,
     person = false,
+    idleUntil?: number,
   ): Promise<UpdateOutcome> {
     if (this.switching) return { kind: "retry_later" };
     this.switching = true;
     try {
-      return await this.doSwitch(version, staged, person);
+      return await this.doSwitch(version, staged, person, idleUntil);
     } finally {
       this.switching = false;
     }
@@ -608,6 +614,7 @@ export class Updater {
     version: string,
     staged: boolean,
     person: boolean,
+    idleUntil?: number,
   ): Promise<UpdateOutcome> {
     const { home, running } = this.d;
     const now = this.now();
@@ -702,6 +709,15 @@ export class Updater {
     ) {
       backOut("not_forward");
       return { kind: "refused", reason: "not_forward" };
+    }
+    if (
+      idleUntil !== undefined &&
+      this.now() < idleUntil &&
+      isBusy(this.d.busy())
+    ) {
+      backOut("other");
+      this.idleCheckPending = true;
+      return { kind: "retry_later" };
     }
     try {
       setPending(home, { from: running, to: version, startedAt: now });

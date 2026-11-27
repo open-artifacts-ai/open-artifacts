@@ -858,6 +858,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const m of [renameFrames, renameHeldUntil])
       for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
     for (const lane of lanes.all()) sendSessions(lane);
+    busyChanged();
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
   const limited = new Map<
@@ -4619,10 +4620,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ev("codex_liveness", { thread, state: live ? "not_live" : "live" });
       log(`codex thread ${thread} ${live ? "not live" : "live again"}`);
     }
-    if (changed) {
-      announceSessions();
-      busyChanged();
-    }
+    if (changed) announceSessions();
     // persistCodex keeps only live threads: a restart during a drop still needs a hello.
     persistCodex();
   };
@@ -4947,6 +4945,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         home: home(),
         running: runVersion,
         busy: () => ({
+          // No adapter currently reports authoritative turn state over IPC.
+          unknownTurn: agents.all().some((agent) => agent.live),
           pending: pending.size,
           outbox: outbox.size,
           codexQueue: codexTaken.size((ref) => {

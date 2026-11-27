@@ -199,6 +199,25 @@ describe("the loop on, end to end (#2552)", () => {
   const switching = (h: Awaited<ReturnType<typeof rig>>["h"]) =>
     h.of("update_report").filter((f) => f.event === "switching");
 
+  it("holds an empty-queue update until the last session with unknown turn state exits", async () => {
+    const w = await rig();
+    w.h.toDaemon(hello(null));
+    await w.h.quiet();
+    const first = await w.h.adapter("unknown-one", { kind: "pi" });
+    const last = await w.h.adapter("unknown-two", { kind: "pi" });
+    expect((await w.u.instructFromInstance("2.0.0")).kind).toBe("staged");
+    await w.h.quiet();
+    expect(switching(w.h)).toHaveLength(0);
+    const before = w.h.of("sessions").length;
+    first.close();
+    await w.h.next("sessions", before + 1);
+    await w.h.quiet();
+    expect(switching(w.h)).toHaveLength(0);
+    last.close();
+    const report = await w.h.next("update_report");
+    expect(report).toMatchObject({ event: "switching", to: "2.0.0" });
+  });
+
   it("named 2.0.0: fetch, verify, switching, ack, swap, then `updated` from the new daemon", async () => {
     const w = await rig();
     await w.h.next("hello");
