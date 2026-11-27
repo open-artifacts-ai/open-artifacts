@@ -146,6 +146,7 @@ import {
 } from "./role-proposals.js";
 import {
   type AgentNameRow,
+  claimNameRole,
   deleteRole,
   formerReservedSql,
   type HandOverResult,
@@ -1179,7 +1180,7 @@ function nameTaken(
 ): boolean {
   const lname = name.toLowerCase();
   const scope = global ? "" : "and (a.namespace = ? or a.global = 1)";
-  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global);
+  const role = roleTakenSql(OWNER_ORG_ID, lname, namespace, global, selfId);
   const former = formerReservedSql(
     OWNER_ORG_ID,
     lname,
@@ -1411,7 +1412,51 @@ type Assigned = {
   mint: { lname: string; name: string; lbase: string } | null;
   /** #1742: the away agent whose reservation of `name` the newcomer takes over (takeAwayName). */
   reclaim?: string;
+  /**
+   * #3132: the session (live or away) that holds the chosen name asked for.
+   * The newcomer gets a session name it is not offered by and asks to take
+   * the name's role over, never taking it silently (Leo, 2026-11-26).
+   */
+  pending?: { holderId: string; asked: string };
 };
+
+/**
+ * #3132: another session in scope that holds `lname` as its name (live, or
+ * away under its kept reservation), or null.
+ */
+function nameHolder(
+  sql: SqlStorage,
+  namespace: string,
+  lname: string,
+  global: boolean,
+  selfId: string,
+): string | null {
+  if (!global) {
+    const role = one<{ holder: string | null }>(
+      sql,
+      "select agent_id as holder from roles where org_id = ? and namespace = ? and lname = ?",
+      OWNER_ORG_ID,
+      namespace,
+      lname,
+    );
+    if (role) return role.holder === selfId ? null : role.holder;
+  }
+
+  return (
+    one<{ id: string }>(
+      sql,
+      `select id from agents where org_id = ? and lower(name) = ? and id <> ?
+         ${global ? "" : "and namespace = ? and global = 0"}
+         and (live = 1 or exists (select 1 from former_names f where f.agent_id = agents.id
+           and f.kind = 'away' and f.lname = lower(agents.name)))
+       order by live desc limit 1`,
+      OWNER_ORG_ID,
+      lname,
+      selfId,
+      ...(global ? [] : [namespace]),
+    )?.id ?? null
+  );
+}
 
 /**
  * #1916: the name a harness proposal asks for. A harness-made title that reads
@@ -1463,6 +1508,8 @@ function assignName(
   kind: NameKind = "chosen",
   reclaim?: { kind: string },
   harness = false,
+  /** #3132: a chosen name held by another session asks for its role (pending). */
+  takeover = false,
 ): Assigned {
   if (kind === "default")
     return mintName(sql, namespace, proposed, global, selfId, now);
@@ -1471,6 +1518,28 @@ function assignName(
   const asked = harnessAsked(sql, namespace, proposed, global, selfId, harness);
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
+    // #3132: a chosen name another session holds is never reclaimed or
+    // suffixed into the address: the newcomer gets a session name and asks.
+    const holder =
+      takeover &&
+      !global &&
+      reclaim &&
+      base === asked &&
+      !droppedRefusedChars(proposed, { harness }) &&
+      !isFallbackName(asked, reclaim.kind) &&
+      !isDefaultAgentName(asked, reclaim.kind, false)
+        ? nameHolder(sql, namespace, asked.toLowerCase(), global, selfId)
+        : null;
+    if (holder !== null)
+      for (let n = 2; n <= MAX_NAME_SUFFIX; n++) {
+        const next = suffixName(base, n);
+        if (free(next))
+          return {
+            name: next,
+            mint: null,
+            pending: { holderId: holder, asked },
+          };
+      }
     // #1742: only the exact chosen name is ever taken back, never a suffix.
     // #1480: and never one reached by dropping refused characters: `OA Manager!`
     // is not `OA Manager`.
@@ -1571,6 +1640,17 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
+  // A project role stays with its holder until the member decides the move.
+  if (
+    !global &&
+    one(
+      sql,
+      "select 1 from roles where org_id = ? and agent_id = ? limit 1",
+      OWNER_ORG_ID,
+      r.agentId,
+    )
+  )
+    return null;
   // #1346: mail that crossed a namespace boundary (admitted by a reach grant,
   // which may be gone by now) waits for its holder: the newcomer may hold no
   // such grant. Pending in-session mail from another namespace blocks the
@@ -2023,6 +2103,7 @@ function agentUp(
   machineId: string,
   frame: AgentUpFrame,
   now: number,
+  replacement = false,
 ): {
   reply: ServerFrame;
   change: RosterChange;
@@ -2030,6 +2111,8 @@ function agentUp(
   arms: number[];
   /** #1742: msg_ids that moved to this agent from an away row it took the name from. */
   moved: string[];
+  /** #3132: the name it asked for is another session's: it asks for the role. */
+  pending?: { holderId: string; asked: string };
 } {
   const existing = one<{
     id: string;
@@ -2097,7 +2180,7 @@ function agentUp(
     id,
     now,
     f.name_kind,
-    { kind: f.kind },
+    replacement ? undefined : { kind: f.kind },
     // #1916: agent_up carries the harness's title (the daemon sends renames,
     // user-made, as `rename` frames). An agent keeping its own current name
     // is not a new title, so neither rule touches it. Claude Code only writes a
@@ -2110,6 +2193,10 @@ function agentUp(
         candidateName(f.proposed_name).toLowerCase() ===
           existing.name.toLowerCase()
       ),
+    // #3132/#3143 (Leo 2026-11-26 18:57Z): only a name a person gave is a
+    // role, so only it asks the holder to move; a self-picked collision is a
+    // hidden session name, never a card.
+    f.name_chosen === true,
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };
@@ -2253,6 +2340,7 @@ function agentUp(
     rowChanged,
     arms,
     moved,
+    ...(assigned.pending ? { pending: assigned.pending } : {}),
     reply: {
       v: 1,
       id: f.id,
@@ -2273,7 +2361,7 @@ function agentUp(
  * changes and the new ref registers as any other. An old session still open
  * is closed first into `away` (its address kept), so the agent_up always
  * takes the reopen path: the old session's delivered bodies go, its pending
- * mail stays.
+ * mail stays. A role holder keeps its row and returns its roles for an explicit move.
  */
 function takeOver(
   sql: SqlStorage,
@@ -2281,7 +2369,7 @@ function takeOver(
   oldRef: string,
   newRef: string,
   now: number,
-): void {
+): { holderId: string; namespace: string; asked: string }[] | undefined {
   if (oldRef === newRef) return;
   if (
     one(
@@ -2292,6 +2380,16 @@ function takeOver(
     ) !== null
   )
     return;
+  const roles = all<{ holderId: string; namespace: string; asked: string }>(
+    sql,
+    `select a.id as holderId, r.namespace, r.name as asked from agents a
+       join roles r on r.org_id = a.org_id and r.agent_id = a.id
+       where a.machine_id = ? and a.native_ref = ? and a.org_id = ?`,
+    machineId,
+    oldRef,
+    OWNER_ORG_ID,
+  );
+  if (roles.length) return roles;
   const taken = one<{ id: string; live: number }>(
     sql,
     "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ? returning id, live",
@@ -2671,7 +2769,7 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
-  a.name_chosen as nameChosen,
+  a.name_chosen as nameChosen, a.takeover_route = a.name as privateSessionName,
   exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
@@ -2679,7 +2777,11 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   (select ro.id from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
      and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleId,
   (exists (select 1 from role_moves rm where rm.org_id = a.org_id and rm.from_agent_id = a.id)
-     and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver`;
+     and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver,
+  (select p.name from role_proposals p where p.org_id = a.org_id and p.agent_id = a.id
+     and p.status = 'pending' and p.action = 'repoint'
+     and not exists (select 1 from roles ro where ro.id = p.role_id and ro.agent_id = a.id)
+     order by p.created_at desc limit 1) as pendingRole`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -4377,6 +4479,302 @@ export class BusHub extends DurableObject<Env> {
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     if (r.ok && !r.moved && agentId) this.#wakeRoleNotices(r.role.id);
     return r;
+  }
+
+  /** A person's rename keeps the ID and held interval of their same-name role. */
+  #syncChosenRole(
+    before: { namespace: string; name: string } | null,
+    agent: AgentRow,
+    frame: {
+      proposed_name: string;
+      name_chosen?: boolean;
+      name_kind?: NameKind;
+    },
+  ): void {
+    if (
+      agent.global ||
+      frame.name_chosen !== true ||
+      frame.name_kind === "default" ||
+      candidateName(frame.proposed_name) !== agent.name ||
+      droppedRefusedChars(frame.proposed_name, { harness: false }) ||
+      isFallbackName(agent.name, agent.kind) ||
+      isDefaultAgentName(agent.name, agent.kind, false)
+    )
+      return;
+    const sql = this.ctx.storage.sql;
+    const old =
+      before?.namespace === agent.namespace ? before.name.toLowerCase() : null;
+    const next = agent.name.toLowerCase();
+    const role = one<{ id: string; name: string; lname: string }>(
+      sql,
+      `select r.id, r.name, r.lname from roles r join agents a on a.id = r.agent_id
+       where r.org_id = ? and r.namespace = ? and r.agent_id = ?
+         and (r.lname = ? or (r.id = a.takeover_role_id and a.takeover_route = ?))
+       order by (r.lname = ?) desc limit 1`,
+      OWNER_ORG_ID,
+      agent.namespace,
+      agent.id,
+      old,
+      before?.name ?? null,
+      old,
+    );
+    if (!role) {
+      if (
+        !one(
+          sql,
+          "select 1 from agents where id = ? and takeover_route = name",
+          agent.id,
+        )
+      )
+        claimNameRole(
+          sql,
+          OWNER_ORG_ID,
+          agent,
+          this.#now(),
+          newId,
+          this.#maxRoles,
+        );
+      return;
+    }
+    if (
+      !before ||
+      old === null ||
+      before.name === agent.name ||
+      (role.lname !== next &&
+        one(
+          sql,
+          "select 1 from roles where org_id = ? and namespace = ? and lname = ?",
+          OWNER_ORG_ID,
+          agent.namespace,
+          next,
+        ))
+    )
+      return;
+    if (role.lname !== old) {
+      const now = this.#now();
+      sql.exec(
+        "update role_moves set retired_from_name = 1 where role_id = ? and from_ns = ? and from_lname = ?",
+        role.id,
+        agent.namespace,
+        role.lname,
+      );
+      // The old holder may still be online under the name it handed over.
+      // Give that session its own route before exposing the former role address.
+      const previous = all<{
+        id: string;
+        name: string;
+        kind: string;
+        ownsAddress: number;
+      }>(
+        sql,
+        `select a.id, a.name, a.kind, (a.live = 1 or exists (
+           select 1 from former_names f where f.agent_id = a.id and f.lname = lower(a.name)
+           and f.namespace = a.namespace and f.kind = 'away' and f.expires_at > ?)) as ownsAddress
+         from agents a where a.org_id = ? and a.namespace = ? and a.global = 0 and lower(a.name) = ?
+           and a.id in (select from_agent_id from role_moves where role_id = ?)`,
+        now,
+        OWNER_ORG_ID,
+        agent.namespace,
+        role.lname,
+        role.id,
+      );
+      for (const prior of previous) {
+        const route = mintName(
+          sql,
+          agent.namespace,
+          prior.kind,
+          false,
+          prior.id,
+          now,
+        );
+        sql.exec(
+          "update agents set name = ?, name_chosen = 0 where id = ?",
+          route.name,
+          prior.id,
+        );
+        commitName(
+          sql,
+          prior.id,
+          route,
+          { namespace: agent.namespace, global: false },
+          now,
+        );
+        if (prior.ownsAddress) {
+          sql.exec(
+            `update role_moves set personal_route = ?, route_retired_at = ? where id = (
+              select id from role_moves where role_id = ? and from_agent_id = ?
+                and from_ns = ? and from_lname = ? order by at desc, rowid desc limit 1
+            ) and route_retired_at is null`,
+            route.name,
+            now,
+            role.id,
+            prior.id,
+            agent.namespace,
+            role.lname,
+          );
+          void this.#rekeyFollows(
+            { namespace: agent.namespace, name: prior.name },
+            { namespace: agent.namespace, name: route.name },
+          );
+        }
+      }
+      sql.exec(
+        `delete from former_names where namespace = ? and lname = ? and global = 0
+        and agent_id in (select from_agent_id from role_moves where role_id = ? and from_ns = ? and from_lname = ?)`,
+        agent.namespace,
+        role.lname,
+        role.id,
+        agent.namespace,
+        role.lname,
+      );
+      // The private routing alias occupied this rename's former-name slot.
+      sql.exec(
+        "delete from former_names where agent_id = ? and namespace = ? and lname in (?, ?)",
+        agent.id,
+        agent.namespace,
+        old,
+        role.lname,
+      );
+      if (role.lname !== next) {
+        const until = now + LIMITS.formerNameGraceMs;
+        sql.exec(
+          "insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global) values (?, ?, ?, ?, 'chosen', ?, ?, 0)",
+          agent.id,
+          OWNER_ORG_ID,
+          role.name,
+          role.lname,
+          until,
+          agent.namespace,
+        );
+        this.#arm(until);
+      }
+    }
+    sql.exec(
+      "update agents set takeover_role_id = null, takeover_route = null where id = ?",
+      agent.id,
+    );
+    this.#withReachNotice(() => {
+      sql.exec(
+        "update roles set name = ?, lname = ? where id = ?",
+        agent.name,
+        next,
+        role.id,
+      );
+      sql.exec(
+        "update reach_grants set role_name = ?, lname = ? where org_id = ? and role_ns = ? and lname = ?",
+        agent.name,
+        next,
+        OWNER_ORG_ID,
+        agent.namespace,
+        role.lname,
+      );
+    });
+  }
+
+  /**
+   * #3132 (Leo, 2026-11-26: "The name is the role, automatically"; a second
+   * session "never makes a new role (no -2): it asks the holder, or you if
+   * the holder is gone"). The name `asked` is held by session `holderId`:
+   * the name becomes a role held by it (if no role has it yet), and `a`
+   * proposes to take the role over. The live holder is told how to hand it
+   * over (proposeRole); a gone one leaves the member's card. `a` is told it
+   * waits. Never moves anything itself. A pending ask is not repeated.
+   */
+  #askTakeover(
+    a: AgentRow,
+    p: { holderId: string; asked: string; namespace?: string },
+  ): void {
+    const sql = this.ctx.storage.sql;
+    const holder = one<{
+      id: string;
+      namespace: string;
+      name: string;
+      global: number;
+    }>(
+      sql,
+      "select id, namespace, name, global from agents where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      p.holderId,
+    );
+    if (!holder) return;
+    const namespace = p.namespace ?? a.namespace;
+    if (!a.global && a.namespace !== namespace) return;
+    if (!holder.global && holder.namespace !== namespace) return;
+    if (p.namespace === undefined && (holder.global || a.global)) return;
+    if (
+      p.namespace === undefined &&
+      holder.name.toLowerCase() === p.asked.toLowerCase()
+    )
+      this.#withReachNotice(() =>
+        claimNameRole(
+          sql,
+          OWNER_ORG_ID,
+          holder,
+          this.#now(),
+          newId,
+          this.#maxRoles,
+        ),
+      );
+    const role = one<{ id: string; name: string; agentId: string | null }>(
+      sql,
+      "select id, name, agent_id as agentId from roles where org_id = ? and namespace = ? and lname = ?",
+      OWNER_ORG_ID,
+      namespace,
+      p.asked.toLowerCase(),
+    );
+    if (
+      !role ||
+      role.agentId === a.id ||
+      (p.namespace !== undefined && role.agentId !== p.holderId)
+    )
+      return;
+    if (
+      p.namespace === undefined &&
+      a.name.toLowerCase() !== role.name.toLowerCase()
+    )
+      sql.exec(
+        "update agents set takeover_role_id = ?, takeover_route = ? where id = ?",
+        role.id,
+        a.name,
+        a.id,
+      );
+    const waiting = one(
+      sql,
+      `select 1 as x from role_proposals where org_id = ? and role_id = ? and agent_id = ?
+         and status = 'pending'`,
+      OWNER_ORG_ID,
+      role.id,
+      a.id,
+    );
+    if (waiting === null) {
+      const r = propose(
+        sql,
+        OWNER_ORG_ID,
+        {
+          action: "set",
+          namespace,
+          name: role.name,
+          agent: a.name,
+          credential: null,
+        },
+        newId() + newId(),
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      );
+      logEvent("role_takeover_asked", r.ok ? { ok: 1 } : { reason: r.reason });
+      if (!r.ok) return;
+      const q = r.proposal;
+      if (q.priorAgentId && q.agentName)
+        this.#say(
+          q.priorAgentId,
+          `${q.agentName} asks to take over your role "${q.name}" in ${q.namespace}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${q.namespace}", name "${q.name}" and agent "${q.agentName}". To keep it, tell ${q.agentName} on the bus.`,
+        );
+    }
+    this.#say(
+      a.id,
+      `"${role.name}" is another session's role. You asked to take it over: its holder hands it over, or the person approves if the holder is gone. Until then you are "${a.name}" on the bus, not offered in the @ list, and mail for "${role.name}" still goes to its holder.`,
+    );
   }
 
   /**
@@ -6569,10 +6967,26 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
-        // #1295: a /clear. The same process reports a new session; the new
-        // ref takes over the old one's agent row (address, former names, mail).
-        if (f.replaces !== undefined && mailboxGated(ws))
-          takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
+        // A changed native ref starts a new session. Keep a role holder's row
+        // and mail under its original ref until the member decides the move.
+        const replacedRef = f.replaces;
+        const replacedRoles =
+          replacedRef !== undefined && mailboxGated(ws)
+            ? takeOver(sql, machineId, replacedRef, f.agent_ref, this.#now())
+            : undefined;
+        if (replacedRoles && replacedRef !== undefined) {
+          const closed = this.#withReachNotice(() =>
+            agentDown(sql, machineId, replacedRef, this.#now()),
+          );
+          if (closed) {
+            this.#closeSessions([closed.id]);
+            notifyRoster(
+              this.ctx,
+              { namespaces: [closed.namespace], global: closed.global === 1 },
+              ws,
+            );
+          }
+        }
         // #1766: where this session's follows are, read before agentUp (a
         // reclaim deletes the away row). Only an address still this session's:
         // its row is live, or it holds an unexpired away reservation of its own
@@ -6590,8 +7004,15 @@ export class BusHub extends DurableObject<Env> {
           OWNER_ORG_ID,
           this.#now(),
         );
-        const { reply, change, arms, moved } = this.#withReachNotice(() =>
-          agentUp(sql, machineId, f, this.#now()),
+        const { reply, change, arms, moved, pending } = this.#withReachNotice(
+          () =>
+            agentUp(
+              sql,
+              machineId,
+              f,
+              this.#now(),
+              replacedRef !== undefined && mailboxGated(ws),
+            ),
         );
         for (const t of arms) this.#arm(t);
         this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
@@ -6600,6 +7021,17 @@ export class BusHub extends DurableObject<Env> {
         // #2478: the harness says a user or a peer named this session.
         if (f.name_chosen === true) this.#noteNamed();
         const a = registeredAgent(sql, machineId, f.agent_ref);
+        // #3132: it asked for a name another session holds.
+        if (a && pending) this.#askTakeover(a, pending);
+        else if (a) this.#syncChosenRole(before, a, f);
+        if (a && replacedRoles)
+          for (const role of replacedRoles) {
+            if (
+              role.namespace !== a.namespace ||
+              role.asked.toLowerCase() !== pending?.asked.toLowerCase()
+            )
+              this.#askTakeover(a, role);
+          }
         const rekeyed = a ? this.#rekeyFollows(before, a) : undefined;
         if (a) {
           // Its queued mail, then what it missed as a sender.
@@ -7648,6 +8080,9 @@ export class BusHub extends DurableObject<Env> {
       now,
       f.name_kind,
       { kind: agent.kind },
+      false,
+      // #3143: only a person's rename asks to take a held name over.
+      f.name_chosen === true,
     );
     const name = assigned.name;
     const reply = {
@@ -7660,6 +8095,7 @@ export class BusHub extends DurableObject<Env> {
     // The exact no-op check (assignName writes nothing), then the rate
     // limit, then the commit: a no-op never counts, a refusal changes nothing.
     if (name === agent.name) {
+      if (!assigned.pending) this.#syncChosenRole(agent, agent, f);
       sendFrame(ws, reply);
       return undefined;
     }
@@ -7711,6 +8147,10 @@ export class BusHub extends DurableObject<Env> {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);
     }
+    // #3132: it asked for a name another session holds.
+    if (assigned.pending)
+      this.#askTakeover({ ...agent, name }, assigned.pending);
+    else this.#syncChosenRole(agent, { ...agent, name }, f);
     return this.#rekeyFollows(agent, { namespace: agent.namespace, name });
   }
 
@@ -9466,6 +9906,39 @@ export class BusHub extends DurableObject<Env> {
       // waiting row: the agent at the name is not who it was meant for.
       const at = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
       if (!at) {
+        // After a forced rename, a dated ask outside the original session’s
+        // role-holding intervals still belongs to its verified identity.
+        if (
+          !forwarded &&
+          n.originAt !== undefined &&
+          (n.kind === "ask_answered" || n.kind === "ask_later")
+        ) {
+          const personal = one<{ name: string }>(
+            sql,
+            `select a.name from role_moves m join agents a on a.id = m.from_agent_id
+             where m.org_id = ? and m.from_ns = ? and m.from_lname = ?
+               and ? <= m.route_retired_at
+               and not exists (
+                 select 1 from role_moves held where held.org_id = m.org_id and held.from_ns = m.from_ns
+                   and held.from_lname = m.from_lname and held.from_agent_id = m.from_agent_id
+                   and held.held_from <= ? and ? < held.at)
+               and m.personal_route is not null
+               and a.live = 1 and a.identity_id = ? and a.namespace = m.from_ns
+             limit 1`,
+            OWNER_ORG_ID,
+            n.to.namespace,
+            sent,
+            n.originAt,
+            n.originAt,
+            n.originAt,
+            n.toIdentity,
+          );
+          if (personal)
+            return this.#acceptNotice(
+              { ...n, to: { ...n.to, name: personal.name } },
+              true,
+            );
+        }
         // #2793 S3b: no agent holds it, but a guest of this member may: only
         // the three structured kinds reach it, now or never (nothing is held).
         const viaGuest = this.#guestNotice(n);

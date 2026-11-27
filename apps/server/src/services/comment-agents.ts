@@ -95,7 +95,7 @@ async function rosterEntry(
       ? await roleKey(artifactId, userId, address.namespace, role.id)
       : await agentKey(artifactId, userId, address),
     name: `${role?.name ?? a?.role ?? session}${owner ? ` (${owner})` : ""}`,
-    ...(a?.role ? { session } : {}),
+    ...(a?.role && !a.privateSessionName ? { session } : {}),
     ...sessionFor(a, mine),
     owner,
     userId,
@@ -176,7 +176,10 @@ type OwnAgents = {
  * the role, held by another session now.
  */
 const hiddenUnnamed = (a: BusAgent): boolean =>
-  (!a.running && a.unnamed === true) || a.handedOver === true;
+  (!a.running && a.unnamed === true) ||
+  a.handedOver === true ||
+  a.pendingRole !== undefined ||
+  (a.privateSessionName === true && !a.role);
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
@@ -229,7 +232,10 @@ export async function viewerAgents(
       owner: null,
       address: { namespace: role.namespace, name: role.name },
       ...(holder
-        ? { ...sessionOf(holder, true), session: holder.name }
+        ? {
+            ...sessionOf(holder, true),
+            ...(holder.privateSessionName ? {} : { session: holder.name }),
+          }
         : { ...UNKNOWN, state: "away" as const }),
     });
   }

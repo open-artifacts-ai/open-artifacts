@@ -530,6 +530,9 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
       where a.id = role_moves.from_agent_id)`);
   }
   for (const [col, type] of [
+    ["personal_route", "text"],
+    ["route_retired_at", "integer"],
+    ["retired_from_name", "integer not null default 0"],
     ["moved_by", "text not null default 'member'"],
     ["audited", "integer not null default 1"],
     ["cred_kind", "text"],
@@ -673,6 +676,20 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   // agent uses its machine's disconnected_at), null while open or after a
   // revoke. Its pending mail expires at away_since + MAILBOX_RETAIN_MS at
   // the latest. Add-only.
+  if (!agentCols.has("takeover_role_id")) {
+    sql.exec("alter table agents add column takeover_role_id text");
+    sql.exec("alter table agents add column takeover_route text");
+    // Existing accepted proposals still identify both the role and its recipient.
+    sql.exec(`update agents set (takeover_role_id, takeover_route) = (
+      select p.role_id, p.agent_name from role_proposals p join roles r on r.id = p.role_id
+      where p.org_id = agents.org_id and p.agent_id = agents.id and r.agent_id = agents.id
+        and p.action = 'repoint' and p.status = 'applied' and p.agent_name = agents.name
+        and lower(p.prior_holder_name) = p.lname
+        and substr(lower(p.agent_name), 1, length(p.lname) + 1) = p.lname || '-'
+        and cast(substr(p.agent_name, length(p.lname) + 2) as integer) >= 2
+        and cast(cast(substr(p.agent_name, length(p.lname) + 2) as integer) as text) = substr(p.agent_name, length(p.lname) + 2)
+      order by p.decided_at desc limit 1)`);
+  }
   if (!agentCols.has("away_since"))
     sql.exec("alter table agents add column away_since integer");
   // #2311: 1 once the name was set by a `rename` of kind chosen (a user or a

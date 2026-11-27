@@ -1,4 +1,17 @@
-// #1293: dates on the bus pages, in the viewer's time zone.
+import type { BusAgent, BusRole } from "@oa/shared";
+import { appName } from "./AgentApp";
+
+/** Label the session by its app and machine when its routing name is private. */
+export function sessionLabel(agent: BusAgent, withMachine = false): string {
+  if (agent.privateSessionName || agent.pendingRole || agent.handedOver)
+    return `${appName(agent)} on ${agent.machineLabel}`;
+  return withMachine ? `${agent.name} on ${agent.machineLabel}` : agent.name;
+}
+
+export function roleHolderLabel(role: BusRole, agent?: BusAgent): string {
+  if (role.privateSessionName && !agent?.privateSessionName) return "Session";
+  return agent ? sessionLabel(agent) : (role.holderName ?? "Session");
+}
 
 const time = (d: Date) =>
   d.toLocaleTimeString("en", { hour: "numeric", minute: "2-digit" });

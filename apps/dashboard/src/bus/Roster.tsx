@@ -39,6 +39,11 @@ import { LIVE_DOWN, QUEUE_LEGEND, StatusBadge } from "./ui";
 
 type Filter = "all" | "live" | "queued";
 
+const agentLabel = (a: BusAgent) =>
+  a.pendingRole || a.handedOver || (a.privateSessionName && !a.role)
+    ? `Session on ${a.machineLabel}`
+    : (a.role ?? a.name);
+
 const ROW =
   "flex min-h-[30px] min-w-0 items-center gap-[6px] rounded-md px-[8px] text-[length:var(--oa-text-sm)] no-underline text-foreground hover:bg-accent aria-[current=true]:bg-accent aria-[current=true]:font-medium";
 const LABEL =
@@ -247,7 +252,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
             className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
           >
             <span className="min-w-0 truncate">
-              <span className="font-medium">{a.name}</span>{" "}
+              <span className="font-medium">{agentLabel(a)}</span>{" "}
               <span className="text-muted-foreground">
                 · {shortName(a.namespace, all)}
               </span>
@@ -289,7 +294,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
           {agents.map((a) => (
             <TableRow key={a.id}>
               <TableCell className="max-w-[220px] whitespace-normal @min-[840px]/roster:max-w-none @min-[840px]/roster:whitespace-nowrap">
-                <span className="font-medium">{a.name}</span>{" "}
+                <span className="font-medium">{agentLabel(a)}</span>{" "}
                 <span className="text-muted-foreground" title={a.namespace}>
                   · {shortName(a.namespace, all)}
                 </span>
