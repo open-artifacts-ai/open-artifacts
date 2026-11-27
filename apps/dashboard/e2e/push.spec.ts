@@ -174,10 +174,9 @@ test("off, then on from the click; the prompt waits for it", async ({
         (window as unknown as { __oaSwRegistered: unknown[] }).__oaSwRegistered,
     ),
   ).toEqual([["/sw.js", "/notifications/sw/"]]);
-  // Subscribed: Updates is this browser's own switch now.
   await expect(
     page.getByRole("switch", { name: "Updates in this browser" }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
   await shot(page, "p2-settings-on");
   await axe(page);
 });

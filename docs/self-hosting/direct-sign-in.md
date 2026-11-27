@@ -5,7 +5,7 @@ Open Artifacts logs people in through Cloudflare Access by default. Direct login
 ## What you get
 
 - **Google:** anyone whose Google account belongs to your verified Workspace domain can log in. The `hd` claim in the ID token decides, never the email address. With `AUTH_DOMAIN_JOIN=member` they join as members on their first login; with `invite` (the default) only people you invited can.
-- **Emailed codes:** only for people outside your domain who were invited or have a share. Guests are read-only: they can view what is shared with them, never edit, share or write live data, and their sessions last 24 hours. A member you invited at an address outside your domain can also log in with a code sent to that exact address, so people with no Gmail or Google Workspace can join as members. Admins and the owner outside your domain still log in with Google.
+- **Emailed codes:** anyone with an active account (the owner, admins, members and guests) can log in with a code sent to that account's exact address, with Google on or off, whether or not they also use Google. Members, admins and the owner keep their role. People outside your domain with a share and no account log in as guests. Guests are read-only: they can view what is shared with them, never edit, share or write live data, and their sessions last 24 hours. A new address in your domain with no account still needs domain codes (Google off) to join.
 - **A trial without Google** (optional): domain members can also use codes while Google is off. This needs Turnstile.
 
 ## Configuration

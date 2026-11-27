@@ -579,12 +579,13 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
     // The menu (online read) hands out the key.
     const key = (await agentRoster(h.env, s.id, s.owner.userId, true, true))[0]
       ?.key as string;
+    const body = "Please review this comment.";
     const t = (await addThread(
       h.env,
       art(s.id),
       who(s.owner),
       view(s.owner),
-      { anchor: { kind: "note" }, body: "hi", mentions: [{ key }] },
+      { anchor: { kind: "note" }, body, mentions: [{ key }] },
       { moderator: true },
     )) as Thread;
     expect(t.comments[0]?.mentions?.[0]).toEqual({
@@ -597,12 +598,14 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
       { namespace: "ns-o", name: "Runner" },
     ]);
     expect(await followRows(s.id)).toEqual([]);
-    // The notice names the thread and the comment, nothing authored.
+    // Only the verified quote carries the typed comment body.
     const n = bus.sent[0]?.notice as BusNotice;
     expect(n.threadId).toBe(t.id);
     expect(n.commentId).toBe(t.comments[0]?.id);
     expect(n.text).toContain(`Thread ${t.id}, comment ${t.comments[0]?.id}.`);
-    expect(n.text).not.toContain("hi\n");
+    expect(n.text.split("\n").filter((line) => line.includes(body))).toEqual([
+      `Their words: ${JSON.stringify(body)}`,
+    ]);
   });
 
   it("another member's running agent cannot be mentioned by key", async () => {

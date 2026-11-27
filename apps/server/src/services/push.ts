@@ -3,7 +3,7 @@
 // A subscription row is one enrolled device (an address, keys, a label); an
 // endpoint belongs to one member at a time. A new Needs-you item (or one back
 // from Later) is queued for a member whose account Needs you is on and who has a
-// device, and the cron tick sends what is due to every device: held for the
+// device, and its delivery event sends what is due to every device: held for the
 // 10-minute bundle and for quiet hours, one notification for everything due.
 // Updates never push. The text is written here and never taken from a client:
 // by default only "An agent is waiting for your answer"; the asker and the
@@ -23,7 +23,7 @@ import { stmt } from "../db/stmt.js";
 import { orgName } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logError, logInfo, logWarn } from "../log.js";
+import { logInfo, logWarn } from "../log.js";
 import type { StoredActor } from "../runtime/comments-store.js";
 import { itemExcerpt } from "./inbox-items.js";
 import { mutedSet } from "./inbox-mutes.js";
@@ -36,9 +36,8 @@ import { pushEndpointOk, pushKeysOk, pushOn, sendPush } from "./web-push.js";
 export const BUNDLE_MS = 10 * 60_000;
 /** Browsers one member may have; the oldest is dropped past it. */
 export const MAX_SUBSCRIPTIONS = 10;
-/** Members one tick sends to, and rows it reads. */
-const TICK_MEMBERS = 50;
-const TICK_ROWS = 500;
+/** Max rows per delivery event. Remaining due rows get an immediate continuation. */
+const DELIVERY_ROWS = 500;
 /** A pending row older than this is stale and dropped unsent. */
 const STALE_MS = 24 * 3600_000;
 
@@ -226,8 +225,11 @@ async function pendingInsert(
   now: number,
   later?: LaterRow,
 ): Promise<D1PreparedStatement> {
-  const next =
-    to.waiting ?? (to.last === null ? now : Math.max(now, to.last + BUNDLE_MS));
+  const next = Math.max(
+    now,
+    to.waiting ?? now,
+    to.last === null ? now : to.last + BUNDLE_MS,
+  );
   const quiet = quietState(await getPrefs(env, to.id), now);
   return stmt(
     env.DB,
@@ -282,6 +284,27 @@ export async function queuePush(
   }
 }
 
+/** Serialize creation and delivery for a member, so concurrent asks share a bundle. */
+export async function deliverPushEvent(
+  env: Env,
+  people: string[],
+  item: PushItem,
+) {
+  if (!pushOn(env)) return;
+  for (let i = 0; i < people.length; i += IN_CHUNK) {
+    for (const member of await recipients(env, people.slice(i, i + IN_CHUNK))) {
+      try {
+        await env.ARTIFACT_RUNTIME.getByName(`push:${member.id}`).pushEvent(
+          member.id,
+          item,
+        );
+      } catch (error) {
+        logWarn("push_queue_failed", error, { userId: member.id });
+      }
+    }
+  }
+}
+
 /**
  * A new ask: queue it for each person it waits on, except the person who just
  * wrote it (a human's own ask). Held asks (#2577) are not queued.
@@ -305,7 +328,7 @@ export async function queueAskPush(
   const to = people.filter(
     (u) => !held.has(u) && !(u === actor.ref && !actor.agent),
   );
-  await queuePush(env, to, {
+  await deliverPushEvent(env, to, {
     key: `ask:${commentId}`,
     kind: "ask",
     artifactId,
@@ -421,61 +444,44 @@ export function pushPayload(
   };
 }
 
-/**
- * Sends what is due (the cron tick; one read when nothing is). Per member:
- * account Needs you off drops their rows (and a queued Update is always
- * dropped); quiet hours hold them to when quiet ends; otherwise their rows are
- * claimed (deleted) and sent as one notification to each enrolled device:
- * under Needs you every ask, held request and mention interrupts (browserAllAsks
- * no longer narrows push). A row dropped unsent logs one push_dropped line per
- * member per tick with counts by reason. A 404 or 410 removes the device;
- * other failures are logged and dropped. Never throws. Resolves to the
- * notifications sent.
- */
-export async function drainPush(env: Env, now = Date.now()): Promise<number> {
-  if (!pushOn(env)) return 0;
+/** Drain this recipient only and return their next actual deadline, if any. */
+export async function deliverMemberPush(env: Env, userId: string, now: number) {
+  await queueLaterReturns(env, now, userId);
+  const stale = await stmt(
+    env.DB,
+    "delete from push_pending where user_id = ?1 and created_at < ?2",
+  )
+    .bind(userId, now - STALE_MS)
+    .run();
+  if (stale.meta.changes) logDrops(userId, { stale: stale.meta.changes });
+  const { results } = await stmt(
+    env.DB,
+    `select id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
+    from push_pending where user_id = ?1 and send_after <= ?2 order by created_at limit ?3`,
+  )
+    .bind(userId, now, DELIVERY_ROWS)
+    .all<Pending>();
   let sent = 0;
-  try {
-    await queueLaterReturns(env, now);
-    const { results } = await stmt(
-      env.DB,
-      `select id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, asker_ref, agent_key, created_at
-         from push_pending where send_after <= ?1 order by user_id, created_at limit ?2`,
-    )
-      .bind(now, TICK_ROWS)
-      .all<Pending>();
-    if (results.length === 0) return 0;
-    // Every stale row goes, not just those in this tick's selection; each is counted per member.
-    const gone = await stmt(
-      env.DB,
-      "delete from push_pending where created_at < ?1 returning user_id",
-    )
-      .bind(now - STALE_MS)
-      .all<{ user_id: string }>();
-    const stale = new Map<string, number>();
-    for (const g of gone.results)
-      stale.set(g.user_id, (stale.get(g.user_id) ?? 0) + 1);
-    const byUser = new Map<string, Pending[]>();
-    for (const r of results) {
-      if (r.created_at < now - STALE_MS) continue;
-      const l = byUser.get(r.user_id) ?? [];
-      l.push(r);
-      byUser.set(r.user_id, l);
-    }
-    for (const [userId, n] of stale) logDrops(userId, { stale: n });
+  if (results.length) {
     const settings = await getSettings(env).catch(() => null);
-    const title = orgName(settings?.name, env.APP_HOST);
-    for (const [userId, rows] of [...byUser].slice(0, TICK_MEMBERS)) {
-      try {
-        sent += await drainMember(env, userId, rows, title, now);
-      } catch (e) {
-        logError("push_member_failed", e);
-      }
-    }
-  } catch (e) {
-    logError("push_drain_failed", e);
+    sent = await drainMember(
+      env,
+      userId,
+      results,
+      orgName(settings?.name, env.APP_HOST),
+      now,
+    );
   }
-  return sent;
+  const next = await stmt(
+    env.DB,
+    `select min(due) as due from (
+    select min(send_after) as due from push_pending where user_id = ?1
+    union all select min(until) from inbox_later where user_id = ?1 and pushed_at is null and until > ?2
+  )`,
+  )
+    .bind(userId, now - LATER_WINDOW_MS)
+    .first<number>("due");
+  return { sent, next };
 }
 
 /** One structured line per member per tick for rows dropped unsent; nothing when none. */
@@ -795,15 +801,19 @@ async function returningItem(
   };
 }
 
-/** Mark each due return in the same transaction that queues it. A failed write can retry on the next tick. */
-export async function queueLaterReturns(env: Env, now: number): Promise<void> {
+/** Mark each due return in the same transaction that queues it. A failed write can retry on the next alarm. */
+export async function queueLaterReturns(
+  env: Env,
+  now: number,
+  member?: string,
+): Promise<void> {
   try {
     const { results } = await stmt(
       env.DB,
       `select user_id, item_id, until from inbox_later
-        where pushed_at is null and until <= ?1 and until > ?2 order by until limit 50`,
+        where pushed_at is null and until <= ?1 and until > ?2 ${member ? "and user_id = ?3" : ""} order by until limit 50`,
     )
-      .bind(now, now - LATER_WINDOW_MS)
+      .bind(now, now - LATER_WINDOW_MS, ...(member ? [member] : []))
       .all<LaterRow>();
     for (const row of results) {
       const finish = stmt(
@@ -822,6 +832,7 @@ export async function queueLaterReturns(env: Env, now: number): Promise<void> {
     }
   } catch (e) {
     logWarn("push_later_failed", e);
+    if (member) throw e;
   }
 }
 
@@ -835,11 +846,10 @@ export const queueMentionPush = (
   env: Env,
   userId: string,
   item: Omit<PushItem, "kind" | "askerRef" | "agentKey">,
-  now = Date.now(),
 ): Promise<void> =>
-  queuePush(
-    env,
-    [userId],
-    { ...item, kind: "ask", askerRef: null, agentKey: null },
-    now,
-  );
+  deliverPushEvent(env, [userId], {
+    ...item,
+    kind: "ask",
+    askerRef: null,
+    agentKey: null,
+  });

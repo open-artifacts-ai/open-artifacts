@@ -31,7 +31,13 @@ import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
 import { INSTRUCTIONS, RUNTIME_DOC, RUNTIME_DOC_URI } from "./instructions.js";
-import { renderSkill, SKILL_DOC_URI, skillUrl } from "./skill.js";
+import {
+  IMPORT_DOC_URI,
+  renderSkill,
+  renderSkillPart,
+  SKILL_DOC_URI,
+  skillUrl,
+} from "./skill.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerBusTools } from "./tools/bus.js";
 import { registerCommentTools } from "./tools/comments.js";
@@ -169,7 +175,7 @@ export function createServer(ctx: McpContext): McpServer {
       ],
     }),
   );
-  if (skillUrl(ctx.env))
+  if (skillUrl(ctx.env)) {
     server.registerResource(
       "skill",
       SKILL_DOC_URI,
@@ -189,6 +195,26 @@ export function createServer(ctx: McpContext): McpServer {
         ],
       }),
     );
+    server.registerResource(
+      "import-skill",
+      IMPORT_DOC_URI,
+      {
+        title: "Import artifacts from past chats",
+        description:
+          "Guide for importing artifacts from past chats (also at /skill/import.md): discovery, private publishing, version history and wrapping React artifacts as working HTML pages.",
+        mimeType: "text/markdown",
+      },
+      async (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "text/markdown",
+            text: await renderSkillPart("import", ctx.env),
+          },
+        ],
+      }),
+    );
+  }
   return server;
 }
 
