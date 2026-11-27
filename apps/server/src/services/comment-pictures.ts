@@ -1,8 +1,9 @@
 // Pictures on comments (#2508). A reservation (R.commentPictures) binds a
 // picture to one artifact and one person; the signed PUT stores the checked,
-// metadata-free bytes in R2 under a random private key; a comment claims it;
-// R.commentPicture serves it to whoever may read the page's comments, on every
-// request. No public or guessable URL, ever.
+// metadata-free bytes in R2 under a random private key, downscaled once if it
+// is past the store limits (#3007); a comment claims it; R.commentPicture
+// serves it to whoever may read the page's comments, on every request. No
+// public or guessable URL, ever.
 import {
   COMMENT_PICTURE_HEIC_MESSAGE,
   COMMENT_PICTURE_MAX_BYTES,
@@ -30,7 +31,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
 import { runtimeStub } from "../runtime/do.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
-import { readPicture } from "./picture-image.js";
+import { type PictureRead, readPicture } from "./picture-image.js";
 
 const digestHex = async (b: Uint8Array): Promise<string> =>
   [...new Uint8Array(await crypto.subtle.digest("SHA-256", b as BufferSource))]
@@ -41,6 +42,14 @@ const MAX_SIDE = 16_384;
 const MAX_PIXELS = 50_000_000;
 const notFound = () => new ApiError("not_found", "Not found");
 const MB = COMMENT_PICTURE_MAX_BYTES / 1024 / 1024;
+/**
+ * A comment picture is downscaled once, at upload, and only past these limits
+ * (#3007): a longest side over the 1568 px agents are served, or over the 3 MB
+ * the agent read path would send. At or under them the uploaded bytes are
+ * stored exactly as they came (metadata cleaning aside), never re-encoded.
+ */
+export const PICTURE_STORE_MAX_SIDE = 1568;
+export const PICTURE_STORE_MAX_BYTES = 3 * 1024 * 1024;
 /** The signed PUT's life: ten minutes. */
 const PUT_TTL_SEC = 600;
 /** Plain text, one line, at most 200 characters (the same cleaning the audit text gets). */
@@ -179,6 +188,86 @@ export async function reservePicture(
   };
 }
 
+/** Whether an uploaded picture is past the store limits, i.e. whether it is
+ * downscaled: the longest side over 1568 px, or over 3 MB of bytes. */
+export const beyondStoreLimits = (p: {
+  w: number;
+  h: number;
+  bytes: number;
+}): boolean =>
+  Math.max(p.w, p.h) > PICTURE_STORE_MAX_SIDE ||
+  p.bytes > PICTURE_STORE_MAX_BYTES;
+
+/** How a downscaled copy is written back: the picture's own type, so the
+ * declared type, the stored row and the served content-type still agree. */
+const RESIZE_OUTPUT = {
+  "image/png": { format: "image/png" },
+  "image/jpeg": { format: "image/jpeg", quality: 85 },
+  "image/webp": { format: "image/webp", quality: 85, anim: false },
+  "image/gif": { format: "image/gif", anim: true },
+} as const;
+
+/**
+ * The bytes that get stored (#3007). At or under the store limits this is the
+ * cleaned original itself, untouched and byte for byte. Past them, Workers
+ * Images makes a copy whose longest side fits 1568 px; the copy is read back
+ * like any upload (same type, real width and height) and kept only if it is
+ * smaller. A resize that fails or gains nothing leaves the original in place:
+ * the upload succeeds either way.
+ */
+export async function fitForStorage(
+  env: Env,
+  read: PictureRead,
+): Promise<PictureRead & { downscaled: boolean }> {
+  const images = env.IMAGES;
+  if (!beyondStoreLimits({ w: read.w, h: read.h, bytes: read.bytes.length }))
+    return { ...read, downscaled: false };
+  // No binding: the upload is kept as it came, as before #3007.
+  if (!images) return { ...read, downscaled: false };
+  const output = RESIZE_OUTPUT[read.type];
+  const keep = (why: string, e?: unknown, status?: number) => {
+    logError("comment_picture_resize_failed", e, {
+      why,
+      status,
+      type: read.type,
+      bytes: read.bytes.length,
+      w: read.w,
+      h: read.h,
+    });
+    return { ...read, downscaled: false };
+  };
+  try {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(read.bytes);
+        c.close();
+      },
+    });
+    const res = (
+      await images
+        .input(body)
+        .transform({
+          width: PICTURE_STORE_MAX_SIDE,
+          height: PICTURE_STORE_MAX_SIDE,
+          fit: "scale-down",
+        })
+        .output(output)
+    ).response();
+    if (!res.ok || res.headers.get("content-type") !== output.format)
+      return keep("images_status", undefined, res.status);
+    const bytes = await readCappedRequest(res, COMMENT_PICTURE_MAX_BYTES);
+    const again = readPicture(bytes);
+    if (typeof again === "string" || again.type !== read.type)
+      return keep("copy_unreadable");
+    // A copy no smaller than the original would only cost a re-encode.
+    if (again.bytes.length >= read.bytes.length)
+      return { ...read, downscaled: false };
+    return { ...again, downscaled: true };
+  } catch (e) {
+    return keep("images_threw", e);
+  }
+}
+
 /**
  * PUT of the raw bytes, authorized by its signature alone. Unknown, expired or
  * already-stored → 404/409. The body must be exactly the declared size; the
@@ -270,16 +359,26 @@ export async function putPicture(
         `A picture can be up to ${MAX_SIDE} pixels on a side and ${MAX_PIXELS / 1_000_000} megapixels.`,
         { reason: "dimensions" },
       );
-    // The cleaned size is what is stored, and what counts.
-    await requireFreeStorage(env, read.bytes.length);
-    await env.FILES.put(row.r2_key, read.bytes, {
-      httpMetadata: { contentType: read.type },
+    // The bytes are final here: over the store limits (#3007) an Images copy
+    // takes the place of the original; at or under them they are kept as sent.
+    const stored = await fitForStorage(env, read);
+    // The stored size is what counts.
+    await requireFreeStorage(env, stored.bytes.length);
+    await env.FILES.put(row.r2_key, stored.bytes, {
+      httpMetadata: { contentType: stored.type },
     });
     const done = await stmt(
       env.DB,
-      "update comment_pictures set bytes = ?2, w = ?3, h = ?4, received_at = ?5 where id = ?1 and received_at = -1",
+      "update comment_pictures set bytes = ?2, w = ?3, h = ?4, type = ?6, received_at = ?5 where id = ?1 and received_at = -1",
     )
-      .bind(pictureId, read.bytes.length, read.w, read.h, now)
+      .bind(
+        pictureId,
+        stored.bytes.length,
+        stored.w,
+        stored.h,
+        now,
+        stored.type,
+      )
       .run();
     if (!done.meta.changes) {
       await env.FILES.delete(row.r2_key).catch(() => {});
@@ -287,10 +386,10 @@ export async function putPicture(
     }
     return asPicture({
       ...row,
-      type: read.type,
-      bytes: read.bytes.length,
-      w: read.w,
-      h: read.h,
+      type: stored.type,
+      bytes: stored.bytes.length,
+      w: stored.w,
+      h: stored.h,
     });
   } catch (e) {
     await env.FILES.delete(row.r2_key).catch(() => {});
@@ -457,9 +556,10 @@ export async function getPicture(
   };
 }
 
-// Three MiB of image data yields at most four MiB of base64 in the MCP response.
-const PREVIEW_MAX_BYTES = 3 * 1024 * 1024;
-const PREVIEW_SIDE = 1568;
+// The agent read path's budget: the same numbers a stored picture is kept
+// within at upload (#3007).
+const PREVIEW_MAX_BYTES = PICTURE_STORE_MAX_BYTES;
+const PREVIEW_SIDE = PICTURE_STORE_MAX_SIDE;
 
 type PictureForAgent = { data: Uint8Array; mimeType: string };
 

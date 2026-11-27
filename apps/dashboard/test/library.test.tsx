@@ -5,6 +5,7 @@ import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import {
   arts,
+  calls,
   installHarness,
   intersect,
   mount,
@@ -25,6 +26,136 @@ describe("Library", () => {
         await screen.findByRole("link", { name: a.title }),
       ).toBeInTheDocument();
     expect(screen.getAllByRole("article")).toHaveLength(arts.length);
+  });
+
+  it.each(["list", "grid"])(
+    "selects manageable %s items without opening them",
+    async (view) => {
+      const router = mount(`/?view=${view}`);
+      const select = await screen.findByRole("button", { name: "Select" });
+      fireEvent.click(select);
+      expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
+      const checkboxes = (await screen.findAllByRole(
+        "checkbox",
+      )) as HTMLInputElement[];
+      const allowed = checkboxes.filter((box) => !box.disabled);
+      const first = allowed[0];
+      if (!first) throw new Error("Expected an owned artifact");
+      fireEvent.click(first);
+      expect(screen.getByText("1 selected")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Delete" })).toBeEnabled();
+      expect(router.state.location.pathname).toBe("/");
+      const last = allowed.at(-1);
+      if (last && last !== first) {
+        fireEvent.click(last, { shiftKey: true });
+        expect(screen.getByText(`${allowed.length} selected`)).toBeVisible();
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      expect(screen.queryByText("Move to folder…")).toBeNull();
+    },
+  );
+
+  it("opens the sharing panel from an owned row menu", async () => {
+    const router = mount("/?view=list");
+    const menu = await screen.findByRole("button", {
+      name: "Actions for Landing page",
+    });
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    await screen.findByRole("menuitem", { name: "Share…" });
+    expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
+    expect(
+      screen.queryByRole("menuitem", { name: "Move to folder…" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Share…" }));
+    await screen.findByRole("combobox", { name: "Invite role" });
+    expect(router.state.location.search).toMatchObject({
+      panel: "open",
+      tab: "share",
+    });
+  });
+
+  it("opens a confirmation before deleting from the menu", async () => {
+    mount("/");
+    const menu = await screen.findByRole("button", {
+      name: "Actions for Landing page",
+    });
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delete" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
+      "Landing page",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await link("Landing page")).toBeVisible();
+  });
+
+  it("counts distinct recipients, identifies public links and retries only failed deletes", async () => {
+    const titles = ["Landing page", "Q4 report"];
+    const attempts: string[] = [];
+    const report = arts.find((a) => a.title === "Q4 report");
+    if (!report) throw new Error("Missing report fixture");
+    server.use(
+      http.get("*/api/v1/artifacts/:id/shares", () =>
+        HttpResponse.json([
+          {
+            email: "sam@example.com",
+            role: "viewer",
+            createdAt: "2026-11-01T00:00:00Z",
+          },
+        ]),
+      ),
+      http.delete("*/api/v1/artifacts/:id", ({ params }) => {
+        const id = String(params.id);
+        attempts.push(id);
+        if (id === report.id && attempts.filter((x) => x === id).length === 1)
+          return new HttpResponse(null, { status: 503 });
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    for (const title of titles)
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: `Select ${title}` }),
+      );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(
+      await screen.findByRole("alertdialog", { name: "Delete 2 artifacts?" }),
+    ).toHaveTextContent("Trash for 30 days");
+    expect(
+      await screen.findByText(/1 directly shared recipient loses access/),
+    ).toHaveTextContent("1 public link stops working");
+    expect(screen.getByText(`/a/${report.id}`)).toBeVisible();
+    expect(attempts).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Delete 2" }));
+    expect(await screen.findByText(/Couldn’t delete Q4 report/)).toBeVisible();
+    const retry = screen.getByRole("button", { name: "Delete 1" });
+    await screen.findByText(/1 directly shared recipient loses access/);
+    fireEvent.click(retry);
+    await screen.findByRole("button", { name: "Select" });
+    expect(attempts.filter((x) => x === report.id)).toHaveLength(2);
+    expect(attempts).toHaveLength(3);
+  });
+
+  it("keeps deletion unavailable when sharing details cannot be checked", async () => {
+    const deletes = calls("DELETE");
+    server.use(
+      http.get(
+        "*/api/v1/artifacts/:id/shares",
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    mount("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Select" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Select Landing page" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    expect(
+      await screen.findByRole("button", { name: "Retry access check" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Delete 1" })).toBeDisabled();
+    expect(deletes).toHaveLength(0);
   });
 
   it("format filter updates the URL and the request", async () => {

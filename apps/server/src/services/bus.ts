@@ -1,10 +1,18 @@
 import {
+  CODEX_SPAWNED_SOURCES,
+  CodexDirectCallIdSchema,
+  CodexExecCallIdSchema,
+  CodexItemIdSchema,
+  CodexThreadIdSchema,
+  CodexToolNameSchema,
+  canonicalArgsSha256,
   LINK_PROOF_ARG,
   LINK_PROOF_HEADER,
   LinkProofSchema,
   semverGte,
 } from "@oa/bus-protocol";
 import {
+  AuditCredKindSchema,
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
@@ -18,6 +26,7 @@ import {
   type BusRoleProposeInput,
   parseFeatures,
 } from "@oa/shared";
+import type { Cred } from "../auth/cred.js";
 import type {
   LinkDecideResult,
   LinkProposalAction,
@@ -38,6 +47,12 @@ import type {
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
+import type {
+  HandOverResult,
+  MoveAudit,
+  PutRoleResult,
+  RoleMove,
+} from "../bus/roles.js";
 import {
   RUN_VERSION_KEY,
   readRunVersion,
@@ -57,7 +72,13 @@ import {
   type Via,
   viaKey,
 } from "./agent-usage.js";
-import { type AuditActor, audit, auditText, userActor } from "./audit.js";
+import {
+  type AuditActor,
+  audit,
+  auditText,
+  credOf,
+  userActor,
+} from "./audit.js";
 import type {
   DeliveryOutcome,
   DeliveryScope,
@@ -74,6 +95,8 @@ export const BUS_HUB_TIMEOUT_MS = 2000;
 /** Active (unrevoked) machines per member; equal to the list cap so every active one is listed. */
 export const MAX_ACTIVE_MACHINES = 100;
 const MAX_LISTED = 100;
+/** #3123: how long a revoked machine stays in the list (greyed) before leaving. */
+export const REVOKED_MACHINE_VISIBLE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * #1350: what a closeAll means for the member's machines. "access": a
@@ -114,6 +137,8 @@ export type BusHubRpc = {
   runVersionChanged(): Promise<void>;
   /** #2759: the member saved their prefs; tell their cap'd sockets when quiet hours end. */
   ownerAwayChanged(): Promise<void>;
+  /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
+  codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -146,6 +171,11 @@ export type BusHubRpc = {
   namesOf(
     identityIds: string[],
   ): Promise<{ identityId: string; name: string }[]>;
+  /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
+  roleHolderFor(
+    identityId: string,
+    originAt: number,
+  ): Promise<{ namespace: string; name: string; identityId?: string } | null>;
   /** #2512: which of this member's agent identities wait on their owner, and since when (ms). */
   waitingOf(
     identityIds: string[],
@@ -171,11 +201,21 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
     agentId: string | null,
-  ): Promise<
-    | { ok: true; role: BusRole }
-    | { ok: false; reason: "invalid"; field: "namespace" | "name" }
-    | { ok: false; reason: "name_taken" | "agent_not_open" | "role_limit" }
-  >;
+  ): Promise<PutRoleResult>;
+  /** #3132: the holder hands a role on at once; null when the caller isn't its holder. */
+  handOverRole(
+    identityId: string,
+    namespace: string,
+    name: string,
+    agent: string,
+  ): Promise<HandOverResult>;
+  /** #3132: role moves whose audit row D1 does not have yet, oldest first. */
+  pendingRoleMoveAudits(max?: number): Promise<MoveAudit[]>;
+  /** #3132: marks move audits written (done) or keeps a failed write's credential (held). */
+  settleRoleMoveAudits(
+    done: string[],
+    held: { id: string; cred: { kind: string; id: string | null } | null }[],
+  ): Promise<void>;
   /** #1296: removes a role; false when unknown. */
   deleteRole(id: string): Promise<boolean>;
   /** #1567: the member's links between namespaces. */
@@ -313,8 +353,9 @@ type MachineDbRow = {
 };
 
 const MACHINES_OF = `select id, label, created_at as createdAt, last_used_at as lastUsedAt,
-    revoked_at as revokedAt from bus_machines where user_id = ?1
-  order by (revoked_at is null) desc, created_at desc, rowid desc limit ?2`;
+    revoked_at as revokedAt from bus_machines
+  where user_id = ?1 and (revoked_at is null or revoked_at > ?2)
+  order by (revoked_at is null) desc, created_at desc, rowid desc limit ?3`;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -368,7 +409,7 @@ export async function busView(
   opts: { away?: boolean } = {},
 ): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
-    .bind(userId, MAX_LISTED)
+    .bind(userId, Date.now() - REVOKED_MACHINE_VISIBLE_MS, MAX_LISTED)
     .all<MachineDbRow>();
   const snap = await hubSnapshot(
     env,
@@ -585,6 +626,35 @@ export async function agentNamesOf(
     logError("bus_names_lookup_failed", e);
   }
   return out;
+}
+
+/**
+ * #3132: the live holder of the role the session `identityId` handed on, for
+ * something it began at `originAt` while it held it (bus/roles.ts
+ * roleForward), as an asker address, or null: no such move, no live holder,
+ * or the hub didn't answer (fail closed, #2224). Never throws.
+ */
+export async function roleHolderFor(
+  env: Env,
+  userId: string,
+  identityId: string,
+  originAt: number,
+): Promise<{ namespace: string; name: string; identityId?: string } | null> {
+  try {
+    if (!busOn(env)) return null;
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        return hub.roleHolderFor(identityId, originAt);
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_role_holder_lookup_failed", e);
+    return null;
+  }
 }
 
 /**
@@ -805,6 +875,92 @@ function bodyHasToolsCall(text: string | undefined): boolean {
 /** Not JSON: the handler answers it with its usual parse error. */
 const UNPARSEABLE = "{";
 
+const asRecord = (v: unknown): Record<string, unknown> | null =>
+  v !== null && typeof v === "object" && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : null;
+
+/**
+ * #3108: the check a proof-less /mcp body asks of the member's daemons, or
+ * null. Exactly one tools/call (never a batch) whose `_meta` carries Codex's
+ * thread, call and (code mode) item ids. Every field is validated with the
+ * protocol's schemas; nothing from `_meta` is ever logged.
+ */
+async function codexCheckOf(
+  bodyText: string | undefined,
+): Promise<Record<string, unknown> | null> {
+  if (bodyText === undefined) return null;
+  let msg: unknown;
+  try {
+    msg = JSON.parse(bodyText);
+  } catch {
+    return null;
+  }
+  const m = asRecord(msg);
+  if (!m || m.method !== "tools/call") return null;
+  const params = asRecord(m.params);
+  const meta = asRecord(params?._meta);
+  if (!params || !meta) return null;
+  const thread = CodexThreadIdSchema.safeParse(meta.threadId);
+  const tool = CodexToolNameSchema.safeParse(params.name);
+  if (!thread.success || !tool.success) return null;
+  let turn: unknown = meta["x-codex-turn-metadata"];
+  if (typeof turn === "string")
+    try {
+      turn = JSON.parse(turn);
+    } catch {
+      return null;
+    }
+  const t = asRecord(turn);
+  if (!t || t.thread_id !== thread.data) return null;
+  if (
+    typeof t.thread_source === "string" &&
+    CODEX_SPAWNED_SOURCES.has(t.thread_source)
+  )
+    return null;
+  const exec = CodexExecCallIdSchema.safeParse(meta.callId);
+  const item = CodexItemIdSchema.safeParse(meta.itemId);
+  if (exec.success && item.success)
+    return {
+      thread_id: thread.data,
+      tool: tool.data,
+      mode: { kind: "code", call_id: exec.data, item_id: item.data },
+    };
+  const direct = CodexDirectCallIdSchema.safeParse(meta.callId);
+  if (!direct.success) return null;
+  const args_sha256 = await canonicalArgsSha256(params.arguments ?? {});
+  if (!args_sha256) return null;
+  return {
+    thread_id: thread.data,
+    tool: tool.data,
+    mode: { kind: "direct", call_id: direct.data, args_sha256 },
+  };
+}
+
+/** #3108: the identity of the Codex session behind a proof-less tools/call, or undefined (unlinked, the call still works). Never throws, never logs a value. */
+async function codexLink(
+  env: Env,
+  userId: string,
+  bodyText: string | undefined,
+): Promise<AgentIdentity | undefined> {
+  try {
+    const check = await codexCheckOf(bodyText);
+    if (!check) return undefined;
+    const id = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub ? await hub.codexCallCheck(check) : null;
+      })(),
+      PROOF_LOOKUP_MS,
+    );
+    return id ?? undefined;
+  } catch (e) {
+    logError("bus_codex_link_failed", e);
+    return undefined;
+  }
+}
+
 /**
  * #1822: the /mcp auth step's one link function. Takes the proof header off
  * the request (always, so no tool or handler ever sees it); #1856: also takes
@@ -861,8 +1017,14 @@ export async function linkRequest(
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
   // No proof at all: nothing was looked up, so nothing is logged; the note says so.
-  if (proof === undefined)
+  if (proof === undefined) {
+    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
+    const identity = busOn(env)
+      ? await codexLink(env, userId, bodyText)
+      : undefined;
+    if (identity) return { req: out, identity };
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+  }
   const r = await lookupProof(
     env,
     userId,
@@ -979,6 +1141,8 @@ export async function listBusRoles(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return none;
   const hub = busHub(env, userId);
   if (!hub) return none;
+  // #3132: a Roles read retries move audits a failed write left behind.
+  await auditRoleMoves(env, userId, hub, null);
   try {
     const r = await within(
       Promise.all([hub.listRoles(), hub.listRoleProposals()]),
@@ -1014,12 +1178,52 @@ export async function putBusRole(
   const hub = busHub(env, userId);
   if (!hub) throw refuse("no_bus");
   const r = await roleCall(hub.putRole(namespace, name, agentId));
-  if (r.ok) return r.role;
+  if (r.ok) {
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
+    return r.role;
+  }
   if (r.reason === "invalid")
     throw new ApiError("bad_request", `Invalid ${r.field}`, {
       field: r.field,
     });
   throw refuse(r.reason);
+}
+
+/**
+ * #3132 MCP bus_role_propose by a linked session: when that session is the
+ * role's live holder, it hands the role to its open agent `agent` at once,
+ * audited as bus.role.moved. Null when it is not the holder (or the bus is
+ * off or has no machine): the caller then only proposes. Refusals as
+ * putBusRole, plus 409 ambiguous.
+ */
+export async function handOverBusRole(
+  env: Env,
+  userId: string,
+  identityId: string,
+  input: { namespace: string; name: string; agent: string },
+): Promise<BusRole | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  const r = await roleCall(
+    hub.handOverRole(identityId, input.namespace, input.name, input.agent),
+  );
+  if (r.ok) {
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
+    return r.role;
+  }
+  if (r.reason === "not_holder") return null;
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  if (r.reason === "ambiguous")
+    throw new ApiError("conflict", PROPOSAL_REFUSALS.ambiguous, {
+      reason: r.reason,
+    });
+  throw new ApiError("conflict", ROLE_REFUSALS[r.reason], {
+    reason: r.reason,
+  });
 }
 
 /** #1296: removes the member's role `id`. Idempotent: unknown is fine. */
@@ -1312,6 +1516,93 @@ const PROPOSAL_REFUSALS: Record<
 
 const auditTarget = (userId: string) => ({ type: "user" as const, id: userId });
 
+/**
+ * #3132: a role moved between sessions, by the member or its holder. Ids
+ * only. The move has happened by now: a failed write is logged, never
+ * reported as nothing changed.
+ */
+/**
+ * #3132 "Every move is in the audit log": writes bus.role.moved for `fresh`
+ * (the move this request just made) and for every earlier move whose row D1
+ * does not have yet. The hub records each move unaudited (role_moves); a row
+ * D1 accepted is settled there, so a failed write is retried on the next role
+ * write or Roles read. The audit row's id is the move's, so a retry after a
+ * write whose answer was lost adds nothing. The actor is the member, with the
+ * moving request's credential (a holder's hand-over: its MCP token or grant;
+ * kept in the hub when the first write fails), and detail.by says who moved
+ * it: member (a browser or API write) or holder (the holding session handed
+ * it over, with its link identity). A retry that lost the credential records
+ * a system one. Never throws: the move stands either way.
+ */
+async function auditRoleMoves(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+  fresh: RoleMove | null,
+): Promise<void> {
+  let pending: MoveAudit[] = [];
+  try {
+    pending =
+      (await within(hub.pendingRoleMoveAudits(), BUS_HUB_TIMEOUT_MS)) ?? [];
+  } catch (e) {
+    logError("bus_role_move_audit_read_failed", e);
+  }
+  if (fresh !== null && !pending.some((p) => p.id === fresh.id))
+    pending.unshift({ ...fresh, cred: null });
+  if (pending.length === 0) return;
+  const mine = fresh === null ? null : credOf(userActor(userId));
+  const stmts = pending.map((p) => {
+    const kept = AuditCredKindSchema.safeParse(p.cred?.kind);
+    const cred: Cred | null = kept.success
+      ? { kind: kept.data, id: p.cred?.id ?? null }
+      : p.id === fresh?.id
+        ? mine
+        : null;
+    return audit(
+      env,
+      "bus.role.moved",
+      auditTarget(userId),
+      { kind: "user", id: userId, cred: cred ?? { kind: "system", id: null } },
+      {
+        id: p.id,
+        detail: {
+          roleId: p.roleId,
+          fromAgentId: p.fromAgentId,
+          toAgentId: p.toAgentId,
+          by: p.by,
+          movedAt: p.at,
+          ...(p.by === "holder" && p.fromIdentity !== null
+            ? { identityId: p.fromIdentity }
+            : {}),
+        },
+      },
+    );
+  });
+  let written = false;
+  try {
+    await env.DB.batch(stmts);
+    written = true;
+  } catch (e) {
+    logError("bus_role_move_audit_failed", e);
+  }
+  try {
+    await within(
+      written
+        ? hub.settleRoleMoveAudits(
+            pending.map((p) => p.id),
+            [],
+          )
+        : hub.settleRoleMoveAudits(
+            [],
+            fresh === null ? [] : [{ id: fresh.id, cred: mine }],
+          ),
+      BUS_HUB_TIMEOUT_MS,
+    );
+  } catch (e) {
+    logError("bus_role_move_audit_settle_failed", e);
+  }
+}
+
 /** An audit row's detail: ids and enums, the absent ones left out. */
 const detailOf = (a: ProposalAudit, why?: string) => ({
   proposalId: a.proposalId,
@@ -1598,11 +1889,12 @@ export async function decideBusRoleProposal(
   );
   await auditExpired(env, userId, r.expired);
   const actor = userActor(userId);
-  if (r.ok)
+  if (r.ok) {
     await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
       detail: detailOf(r.audit),
     }).run();
-  else if (r.proposal !== null)
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
+  } else if (r.proposal !== null)
     // A link already used or expired is a refusal too; an unknown one has
     // nothing to name (the page answers the same).
     await audit(env, "bus.role.refused", auditTarget(userId), actor, {

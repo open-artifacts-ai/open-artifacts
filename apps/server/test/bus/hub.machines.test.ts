@@ -78,6 +78,7 @@ const mirror = (h: BusHubStub) =>
 const RPC_ALLOWLIST = [
   "agentByProof",
   "closeAll",
+  "codexCallCheck",
   "decideLinkProposal",
   "decideReachProposal",
   "decideRoleProposal",
@@ -87,6 +88,8 @@ const RPC_ALLOWLIST = [
   "deliverNotice",
   "expireLinkProposalsOf",
   "expireRoleProposalsOf",
+  // #3132: the holder hands its role on (only from MCP bus_role_propose by the linked holder).
+  "handOverRole",
   "identityOf",
   // #2552: a fieldless frame to one machine of the member; the named version changed.
   "installNow",
@@ -97,6 +100,7 @@ const RPC_ALLOWLIST = [
   "namesOf",
   "ownerAwayChanged",
   "pendingProposalSources",
+  "pendingRoleMoveAudits",
   "ping",
   "proofMissReason",
   "proofSeen",
@@ -107,7 +111,10 @@ const RPC_ALLOWLIST = [
   "putReach",
   "putRole",
   "revokeMachine",
+  // #3132: read-only; the live holder a moved role names, as an address.
+  "roleHolderFor",
   "runVersionChanged",
+  "settleRoleMoveAudits",
   "snapshot",
   "viewLinkProposal",
   "viewReachProposal",

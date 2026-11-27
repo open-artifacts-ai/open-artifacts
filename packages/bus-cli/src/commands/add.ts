@@ -7,7 +7,8 @@ import {
 } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
-import { proofIo } from "../steps/adapters.ts";
+import { agyEntryIo, agyOn, proofIo } from "../steps/adapters.ts";
+import { installAgyEntries } from "../steps/agy-proof.ts";
 import {
   addInstanceProof,
   busStopped,
@@ -136,7 +137,34 @@ export async function add(
     `Heads up: after that restart, which can be an automatic update, every folder that is not mapped stops going to your main instance and sits on none. To keep your current folders on main, run ${ctx.busCmd} use main in a parent folder such as ~ (it covers everything below it).`,
   );
   claudeEntries(name, parsed.hub, ctx);
+  agyEntries(name, parsed.hub, ctx);
   return 0;
+}
+
+/**
+ * agy S5 (behind OA_BUS_EXPERIMENTAL_AGY=1): Antigravity's entries at the new
+ * instance's address go through the proxy with `--name <instance>`, so its
+ * pages show as the session there. Never fails the add.
+ */
+function agyEntries(name: string, hub: string, ctx: Ctx): void {
+  if (!agyOn(ctx.env)) return;
+  try {
+    const r = installAgyEntries(
+      agyEntryIo({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        busBin: ctx.service.argv?.() ?? ctx.service.cli(),
+      }),
+      [{ origin: new URL(hub).origin, name }],
+    );
+    for (const n of r.notes) say(ctx, n);
+  } catch (e) {
+    say(
+      ctx,
+      `Antigravity: could not set up the entry for ${name}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 }
 
 /**

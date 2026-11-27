@@ -231,7 +231,7 @@ describe("the share email names the level the recipient will have", () => {
     const m = sent.find((x) => x.to === email);
     // The outside email (#2590) carries no role line; the level is the row's.
     expect(m?.text).not.toContain("Your role");
-    expect(m?.html).not.toContain("Editor");
+    expect(m?.html).not.toContain("Your role");
   });
 
   it("Access-only (self-host, no login domains): every address is outside, so no role line", async () => {
@@ -318,8 +318,7 @@ describe("guest on a share row, and the email, from one rule", () => {
     const email = uniq("r", domain);
     await share(email, "editor");
     const row = (await list()).find((r) => r.email === email);
-    // An outsider is stored as commenter, never editor (#2590).
-    expect(row?.role).toBe(guest ? "commenter" : "editor");
+    expect(row?.role).toBe("editor");
     expect(row?.guest === true).toBe(guest);
     // An outside address (outside the login domains, or on an install with
     // none) gets the outside email, which has no role line (#2590); an
@@ -333,7 +332,7 @@ describe("guest on a share row, and the email, from one rule", () => {
     // domains, Access-only, has every address outside.)
     expect(outsideMail).toBe(domain === OUT || name === "Access-only");
     if (outsideMail) expect(text).not.toContain("Your role");
-    else expect(text).toContain(`Your role: ${guest ? "Commenter" : "Editor"}`);
+    else expect(text).toContain("Your role: Editor");
   });
 
   it("once a shared address has a member row, the row's role decides", async () => {
@@ -342,7 +341,7 @@ describe("guest on a share row, and the email, from one rule", () => {
     const email = uniq("join", IN);
     await share(email, "editor");
     const row = async () => (await list()).find((r) => r.email === email);
-    expect(await row()).toMatchObject({ role: "commenter", guest: true });
+    expect(await row()).toMatchObject({ role: "editor", guest: true });
     const signedIn = await admit(e, authConfig(e), {
       provider: "google",
       subject: uniq("sub", IN),
@@ -351,8 +350,7 @@ describe("guest on a share row, and the email, from one rule", () => {
       tenant: IN,
     });
     expect(signedIn).toMatchObject({ ok: true, user: { role: "member" } });
-    // Stored as commenter at share time (an outsider is never stored as editor).
-    expect(await row()).toMatchObject({ role: "commenter" });
+    expect(await row()).toMatchObject({ role: "editor" });
     expect(await row()).not.toHaveProperty("guest");
   });
 

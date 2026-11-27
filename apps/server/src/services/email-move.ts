@@ -1,4 +1,5 @@
 import { normalizeEmail } from "@oa/auth-core";
+import { LEGACY_COMMENT } from "../db/share-role.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 
@@ -22,7 +23,7 @@ const MOVE = `update users set email = ?2
 const MOVED = `exists (select 1 from users where id = ?1 and email = ?2)
   and not exists (select 1 from users where email = ?3)`;
 const COPY_SHARES = `insert into shares (artifact_id, email, role, can_comment, created_by, created_at)
-  select artifact_id, ?2, role, can_comment, created_by, created_at from shares
+  select artifact_id, ?2, role, max(can_comment, ${LEGACY_COMMENT}), created_by, created_at from shares
   where email = ?3 and ${MOVED}
   on conflict (artifact_id, email) do update set
     role = case when excluded.role = 'editor' then 'editor' else shares.role end,
@@ -57,7 +58,21 @@ export async function moveUserEmail(
   if (to === from || to === normalizeEmail(env.OWNER_EMAIL ?? "")) return null;
   const out = await env.DB.batch([
     stmt(env.DB, MOVE).bind(uid, to, from),
+    // Preserve grants at either address before retiring their compatibility
+    // records. Only destination shares overlapped by this move are touched.
+    stmt(
+      env.DB,
+      `update shares set can_comment = 1 where email = ?2 and role = 'viewer'
+      and ${LEGACY_COMMENT} and artifact_id in (select artifact_id from shares where email = ?3)
+      and ${MOVED}`,
+    ).bind(uid, to, from),
     stmt(env.DB, COPY_SHARES).bind(uid, to, from),
+    stmt(
+      env.DB,
+      `delete from legacy_viewer_comments where email = ?2
+      and artifact_id in (select artifact_id from shares where email = ?3)
+      and ${MOVED}`,
+    ).bind(uid, to, from),
     stmt(env.DB, DROP_OLD_SHARES).bind(uid, to, from),
   ]);
   return (out[0]?.results[0] as MovedRow | undefined) ?? null;

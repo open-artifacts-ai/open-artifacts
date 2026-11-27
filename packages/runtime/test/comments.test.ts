@@ -1,5 +1,6 @@
 import { type ArtifactToShell, parseArtifactMessage } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { KEPT_MS, SELECTION_MS } from "../src/comments.js";
 import { createRuntime } from "../src/index.js";
 import * as schemas from "../src/schemas.js";
 
@@ -193,10 +194,20 @@ const pointer = (coarse: boolean) =>
     matches: coarse && q === "(pointer: coarse)",
     media: q,
   }));
-const wait100 = () => new Promise((r) => setTimeout(r, 130));
+/** The selection debounce, on the fake clock the describes below install. */
+const debounce = () => vi.advanceTimersByTimeAsync(SELECTION_MS);
+const fakeClock = () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+};
 const sels = () => msgs().filter((m) => m.type === "comment.selection");
 
 describe("clicking away (Google Docs)", () => {
+  fakeClock();
   const down = (el: Element) =>
     el.dispatchEvent(new Event("pointerdown", { bubbles: true }));
   it("tells the shell a pointer went down on the page, in any mode but off", async () => {
@@ -216,11 +227,11 @@ describe("clicking away (Google Docs)", () => {
   it("comments.clear collapses the live selection and reports it gone", async () => {
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     expect(last("comment.selection")).toMatchObject({ has: true });
     await send({ type: "comments.clear" });
     expect(getSelection()?.isCollapsed).toBe(true);
-    await wait100();
+    await debounce();
     expect(last("comment.selection")).toMatchObject({ has: false });
     // and the stale quote is gone: the shell command finds nothing to comment on
     await send({ type: "comments.comment" });
@@ -229,17 +240,18 @@ describe("clicking away (Google Docs)", () => {
 });
 
 describe("selection state for the shell (#1732)", () => {
+  fakeClock();
   it("posts has and the last rect bottom, debounced, once per change", async () => {
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
     select(textOf("a"), 4, textOf("a"), 10);
     expect(sels()).toHaveLength(0);
-    await wait100();
+    await debounce();
     expect(sels()).toHaveLength(1);
     expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
     getSelection()?.removeAllRanges();
     document.dispatchEvent(new Event("selectionchange"));
-    await wait100();
+    await debounce();
     expect(last("comment.selection")).toMatchObject({ has: false });
     expect(sels()).toHaveLength(2);
   });
@@ -247,7 +259,7 @@ describe("selection state for the shell (#1732)", () => {
   it("reports a selection made before the shell's mode, once select arrives", async () => {
     await start();
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     expect(sels()).toHaveLength(0);
     await send({ type: "comments.mode", mode: "select" });
     expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
@@ -257,7 +269,7 @@ describe("selection state for the shell (#1732)", () => {
   it("posts nothing in view or pin mode", async () => {
     await start("view");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     expect(sels()).toHaveLength(0);
   });
 
@@ -266,7 +278,7 @@ describe("selection state for the shell (#1732)", () => {
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()).toBeNull();
-    await wait100();
+    await debounce();
     expect(last("comment.selection")).toMatchObject({ has: true });
   });
 
@@ -274,13 +286,13 @@ describe("selection state for the shell (#1732)", () => {
     pointer(true);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     getSelection()?.removeAllRanges(); // iOS: a tap outside the frame
     await send({ type: "comments.comment" });
     expect(last("comment.select")).toMatchObject({
       anchor: { kind: "text", exact: "quick" },
     });
-    await wait100();
+    await debounce();
     expect(last("comment.selection")).toMatchObject({ has: false });
   });
 
@@ -298,7 +310,7 @@ describe("selection state for the shell (#1732)", () => {
     Object.assign(rect, { bottom: 570 });
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     // bar 48 + 12 gap: the line must end by 540; it ends at 570.
     expect(by).toHaveBeenCalledWith(0, 30);
   });
@@ -311,11 +323,11 @@ describe("selection state for the shell (#1732)", () => {
     Object.assign(rect, { bottom: 570 });
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     expect(by).toHaveBeenCalledTimes(1);
     Object.assign(rect, { bottom: 580 });
     select(textOf("a"), 4, textOf("a"), 10);
-    await wait100();
+    await debounce();
     expect(by).toHaveBeenCalledTimes(1);
   });
 
@@ -323,11 +335,11 @@ describe("selection state for the shell (#1732)", () => {
     pointer(true);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     getSelection()?.removeAllRanges();
     document.dispatchEvent(new Event("selectionchange"));
-    await wait100();
-    await new Promise((r) => setTimeout(r, 1600));
+    await debounce();
+    await vi.advanceTimersByTimeAsync(KEPT_MS);
     await send({ type: "comments.comment" });
     expect(last("comment.select")).toBeUndefined();
   });
@@ -339,7 +351,7 @@ describe("selection state for the shell (#1732)", () => {
     vi.stubGlobal("scrollBy", by);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    await wait100();
+    await debounce();
     expect(by).not.toHaveBeenCalled();
   });
 });

@@ -141,6 +141,7 @@ ADAPTER_TYPES = (
     "follow",
     "unfollow",
     "following",
+    "habits",
     "link_proof",
 )
 
@@ -221,7 +222,7 @@ def check_adapter_frame(frame):
     elif t == "self":
         if "row" in frame and frame["row"] is not True:
             _fail("row: expected true")
-    if t in ("send", "list", "self", "fetch", "set_status", "follow", "unfollow", "following"):
+    if t in ("send", "list", "self", "fetch", "set_status", "follow", "unfollow", "following", "habits"):
         _opt(frame, "late", lambda v: v is True, "true")
     return frame
 
@@ -241,6 +242,7 @@ DAEMON_TYPES = (
     "followed",
     "unfollowed",
     "follows",
+    "habits",
     "link_proofed",
 )
 
@@ -338,6 +340,8 @@ def parse_daemon_frame(frame):
             ),
             "a list of follows",
         )
+    elif t == "habits":
+        _need(frame, "rules", lambda v: v is None or _is_str(v), "a string or null")
     elif t == "link_proofed":
         _need(frame, "bound", lambda v: isinstance(v, bool), "a boolean")
     elif t == "status_set":

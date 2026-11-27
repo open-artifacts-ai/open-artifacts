@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { McpServer } from "@modelcontextprotocol/server";
+import type { Comment as CommentView } from "@oa/shared";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
@@ -43,6 +44,31 @@ async function threadOf<T>(p: Promise<T>): Promise<T> {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+/**
+ * #3163: what a write returns by default: ids and status, not the comment.
+ * Kept: `notice` (a non-fatal note, such as a cross-page replace that did not
+ * finish), `askedBy`, and the mentioned agents a notice could not reach.
+ * `status` only when it is known: a plain reply never says the thread's.
+ */
+function compact(
+  threadId: string,
+  c: CommentView | undefined,
+  status?: string,
+): Record<string, unknown> {
+  const gone = (c?.mentions ?? [])
+    .filter((m) => m.delivery === "gone")
+    .map((m) => m.name);
+  return {
+    threadId,
+    ...(c ? { commentId: c.id } : {}),
+    ...(status ? { status } : {}),
+    ...(c?.ask ? { askId: c.id } : {}),
+    ...(c?.askedBy ? { askedBy: c.askedBy } : {}),
+    ...(c?.notice ? { notice: c.notice } : {}),
+    ...(gone.length ? { notReached: gone } : {}),
+  };
+}
+
 export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   const { env, caller } = t;
 
@@ -80,11 +106,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         if (
           i.answeredSince !== undefined ||
           i.mentionedSince !== undefined ||
-          i.compact
+          i.compact ||
+          i.since !== undefined
         )
           throw new ApiError(
             "bad_request",
-            "threadId reads one thread; leave out answeredSince, mentionedSince and compact.",
+            "threadId reads one thread; leave out since, answeredSince, mentionedSince and compact.",
           );
         const one = await listThread(
           env,
@@ -92,6 +119,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           viewer,
           i.threadId,
           i.commentId,
+          { withCursor: true },
         );
         const n = one.threads[0]?.comments.length ?? 0;
         return ok(
@@ -101,6 +129,30 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
               : ""
           }.`,
           one,
+        );
+      }
+      // #3168: delta read from an earlier list_comments cursor.
+      if (i.since !== undefined) {
+        if (
+          i.answeredSince !== undefined ||
+          i.mentionedSince !== undefined ||
+          i.compact
+        )
+          throw new ApiError(
+            "bad_request",
+            "since combines with status only; leave out answeredSince, mentionedSince and compact.",
+          );
+        const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+          since: i.since,
+          withCursor: true,
+        });
+        if (out.threads.length === 0)
+          return ok(`No changes on ${i.id} since your cursor.`, out);
+        return ok(
+          `${plural(out.threads.length, "changed thread")} on ${i.id} since your cursor (${out.open} open)${
+            out.truncated ? ", more exist than are shown" : ""
+          }.`,
+          out,
         );
       }
       if (
@@ -121,6 +173,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             ? { mentionedSince: i.mentionedSince }
             : {}),
           ...(i.compact ? { compact: true } : {}),
+          withCursor: true,
         });
         if ("threads" in found) {
           return ok(
@@ -135,7 +188,9 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           found,
         );
       }
-      const out = await listComments(env, i.id, i.status ?? "all", viewer);
+      const out = await listComments(env, i.id, i.status ?? "all", viewer, {
+        withCursor: true,
+      });
       return ok(
         `${plural(out.threads.length, "thread")} on ${i.id} (${out.open} open)${
           out.truncated ? ", more exist than are shown" : ""
@@ -211,10 +266,21 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             opts,
           ),
         );
-        return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
-          threadId: i.threadId,
-          comment,
-        });
+        // #3163: ids and status by default; verbose: true keeps the full comment.
+        return ok(
+          `Replied in thread ${i.threadId} on ${i.id}.`,
+          i.verbose
+            ? { threadId: i.threadId, comment }
+            : compact(
+                i.threadId,
+                comment,
+                comment.ask
+                  ? comment.ask.closed
+                    ? "resolved"
+                    : "open"
+                  : undefined,
+              ),
+        );
       }
       const thread = await addThread(
         env,
@@ -228,7 +294,13 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         },
         opts,
       );
-      return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
+      // #3163: ids and status by default; verbose: true keeps the full thread.
+      return ok(
+        `Started thread ${thread.id} on ${i.id}.`,
+        i.verbose
+          ? { thread }
+          : compact(thread.id, thread.comments[0], thread.status),
+      );
     }),
   );
 
@@ -246,10 +318,17 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           i.replacedBy,
         ),
       );
-      return ok(`Withdrew the ask ${i.commentId} on ${i.id}.`, {
-        threadId: i.threadId,
-        comment,
-      });
+      // #3163: ids and status by default; verbose: true keeps the full comment.
+      return ok(
+        `Withdrew the ask ${i.commentId} on ${i.id}.`,
+        i.verbose
+          ? { threadId: i.threadId, comment }
+          : compact(
+              i.threadId,
+              comment,
+              comment.ask?.withdrawn ? "withdrawn" : "open",
+            ),
+      );
     }),
   );
 
@@ -289,9 +368,18 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           resolved ? "resolved" : "open",
         ),
       );
+      // #3163: ids and status by default; verbose: true keeps the full thread.
       return ok(
         `Thread ${i.threadId} on ${i.id} is ${resolved ? "resolved" : "open again"}.`,
-        { thread },
+        i.verbose
+          ? { thread }
+          : {
+              threadId: thread.id,
+              ...(thread.comments[0]
+                ? { commentId: thread.comments[0].id }
+                : {}),
+              status: thread.status,
+            },
       );
     }),
   );

@@ -392,6 +392,8 @@ export const CommentListSchema = z.object({
   threads: z.array(CommentThreadSchema),
   open: z.number().int().min(0),
   truncated: z.boolean(),
+  /** #3168: opaque cursor for the next list_comments `since` read. */
+  cursor: z.string().optional(),
 });
 export type CommentList = z.infer<typeof CommentListSchema>;
 
@@ -425,6 +427,8 @@ export const CompactCommentListSchema = z.object({
   answers: z.array(CompactAnswerSchema).optional(),
   mentions: z.array(CompactMentionSchema).optional(),
   truncated: z.boolean(),
+  /** #3168: opaque cursor for the next list_comments `since` read. */
+  cursor: z.string().optional(),
 });
 export type CompactCommentList = z.infer<typeof CompactCommentListSchema>;
 
@@ -599,6 +603,8 @@ export const ListCommentsInputSchema = z.strictObject({
   threadId: z.string().min(1).max(128).optional(),
   /** #3139: with threadId, only this comment, the comment before it and the thread's first comment. */
   commentId: z.string().min(1).max(128).optional(),
+  /** #3168: opaque cursor from an earlier list_comments; only threads changed after it. */
+  since: z.string().optional(),
 });
 export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
 
@@ -625,6 +631,11 @@ export const AddCommentInputSchema = z.strictObject({
    * to you in this thread. Otherwise it is ignored; nothing is refused.
    */
   requestCommentId: key.optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 
@@ -634,6 +645,11 @@ export const WithdrawAskInputSchema = z.strictObject({
   threadId: IdSchema,
   commentId: key,
   replacedBy: ReplacesRefSchema.optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type WithdrawAskInput = z.infer<typeof WithdrawAskInputSchema>;
 
@@ -657,5 +673,10 @@ export const ResolveCommentInputSchema = z.strictObject({
   id: IdSchema,
   threadId: IdSchema,
   resolved: z.boolean().optional(),
+  /** #3163: true returns the full comment or thread, as before. */
+  verbose: z
+    .boolean()
+    .optional()
+    .describe("true returns the full comment or thread, as before"),
 });
 export type ResolveCommentInput = z.infer<typeof ResolveCommentInputSchema>;

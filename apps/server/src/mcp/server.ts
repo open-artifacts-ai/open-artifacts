@@ -30,7 +30,7 @@ import { hasConnectedMachine } from "../services/bus.js";
 import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
 import { VERSION } from "../version.gen.js";
-import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
+import { INSTRUCTIONS, RUNTIME_DOC, RUNTIME_DOC_URI } from "./instructions.js";
 import { renderSkill, SKILL_DOC_URI, skillUrl } from "./skill.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerBusTools } from "./tools/bus.js";
@@ -121,6 +121,14 @@ export function createServer(ctx: McpContext): McpServer {
     docBytes,
     spacesOn(ctx.env),
   );
+  // #3169: RUNTIME_DOC_URI keeps the full runtime guide while session
+  // instructions stay short (< 2 KB).
+  const runtimeDoc = RUNTIME_DOC(
+    plan,
+    skillUrl(ctx.env),
+    docBytes,
+    spacesOn(ctx.env),
+  );
   const server = new McpServer(
     { name: "open-artifacts", version: VERSION },
     { instructions },
@@ -156,7 +164,7 @@ export function createServer(ctx: McpContext): McpServer {
         {
           uri: uri.href,
           mimeType: "text/markdown",
-          text: instructions,
+          text: runtimeDoc,
         },
       ],
     }),

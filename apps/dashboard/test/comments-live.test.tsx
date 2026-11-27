@@ -250,10 +250,8 @@ describe("a live reply (#2179)", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Old");
-    // shouldAdvanceTime: findBy* polls on setTimeout too.
     vi.useFakeTimers({
       toFake: ["setTimeout", "clearTimeout"],
-      shouldAdvanceTime: true,
     });
     try {
       list = [

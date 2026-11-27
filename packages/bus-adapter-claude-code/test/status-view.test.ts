@@ -52,13 +52,13 @@ describe("list_agents", () => {
         },
       ]),
     ).toBe(
-      '- code-96 (claude-code, default, mbp)  agent says: working · "writing tests"',
+      'Namespace default:\n- code-96 (claude-code, mbp)  agent says: working · "writing tests"',
     );
   });
 
   it("shows a status without a label", async () => {
     expect(await list([{ status: "idle", status_at: minsAgo(0) }])).toBe(
-      "- code-96 (claude-code, default, mbp)  agent says: idle",
+      "Namespace default:\n- code-96 (claude-code, mbp)  agent says: idle",
     );
   });
 
@@ -74,8 +74,9 @@ describe("list_agents", () => {
       ]),
     ).toBe(
       [
-        '- code-96 (claude-code, default, mbp)  agent says: working · "writing tests" · 2 h ago',
-        "- b (claude-code, default, mbp)  agent says: blocked · 12 min ago",
+        "Namespace default:",
+        '- code-96 (claude-code, mbp)  agent says: working · "writing tests" · 2 h ago',
+        "- b (claude-code, mbp)  agent says: blocked · 12 min ago",
       ].join("\n"),
     );
   });
@@ -88,15 +89,16 @@ describe("list_agents", () => {
       },
     ]);
     expect(out).toBe(
-      `- code-96 (claude-code, default, mbp)  agent says: working · "red 'x' ${"y".repeat(56)}"`,
+      `Namespace default:\n- code-96 (claude-code, mbp)  agent says: working · "red 'x' ${"y".repeat(56)}"`,
     );
   });
 
   it("rows without a status show none", async () => {
     expect(await list([{}, { name: "b", state: "queued" }])).toBe(
       [
-        "- code-96 (claude-code, default, mbp)",
-        "- b (claude-code, default, mbp) (queued)",
+        "Namespace default:",
+        "- code-96 (claude-code, mbp)",
+        "- b (claude-code, mbp) (queued)",
       ].join("\n"),
     );
   });

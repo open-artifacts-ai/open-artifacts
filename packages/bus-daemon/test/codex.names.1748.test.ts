@@ -31,11 +31,19 @@ describe("codexThreadNames", () => {
     const home = homeDir();
     writeFileSync(
       indexOf(home),
-      entry(THREAD, "first") + entry(OTHER, "other") + entry(THREAD, "second"),
+      entry(THREAD, "First") +
+        entry(OTHER, "other") +
+        entry(THREAD, "first") +
+        entry(OTHER, "other"),
     );
     const names = codexThreadNames(home);
-    expect(names.get(THREAD)).toBe("second");
-    expect(names.get(OTHER)).toBe("other");
+    expect(names.get(THREAD)).toEqual({ name: "first", chosen: true });
+    expect(names.get(OTHER)).toEqual({ name: "other", chosen: false });
+    appendFileSync(indexOf(home), entry(THREAD, "First"));
+    expect(codexThreadNames(home).get(THREAD)).toEqual({
+      name: "First",
+      chosen: false,
+    });
   });
 
   it("a missing file or a missing home is no names, not an error", () => {
@@ -58,7 +66,7 @@ describe("codexThreadNames", () => {
       `not json\n[1]\nnull\n${entry(THREAD, "kept")}${entry(OTHER, 7)}{"id":"x","thread_na`,
     );
     const names = codexThreadNames(home);
-    expect(names.get(THREAD)).toBe("kept");
+    expect(names.get(THREAD)?.name).toBe("kept");
     expect(names.has(OTHER)).toBe(false);
     expect(names.size).toBe(1);
   });
@@ -71,10 +79,10 @@ describe("codexThreadNames", () => {
     // Old entries sit before the window; the newest sit at the end.
     writeFileSync(
       indexOf(home),
-      entry(OTHER, "old") + pad + entry(THREAD, "new"),
+      entry(THREAD, "first") + entry(OTHER, "old") + pad + entry(THREAD, "new"),
     );
     const names = codexThreadNames(home);
-    expect(names.get(THREAD)).toBe("new");
+    expect(names.get(THREAD)).toEqual({ name: "new", chosen: false });
     expect(names.has(OTHER)).toBe(false);
   });
 
@@ -95,7 +103,7 @@ describe("codexThreadNames", () => {
     const home = homeDir();
     writeFileSync(indexOf(home), entry(THREAD, "x"));
     const me = process.getuid?.() ?? 0;
-    expect(codexThreadNames(home, { uid: me }).get(THREAD)).toBe("x");
+    expect(codexThreadNames(home, { uid: me }).get(THREAD)?.name).toBe("x");
     expect(codexThreadNames(home, { uid: me + 1 }).size).toBe(0);
   });
 
@@ -115,7 +123,7 @@ describe("codexThreadNames", () => {
     expect(
       codexThreadNames(home, { group: { gid, isPrivate: () => true } }).get(
         THREAD,
-      ),
+      )?.name,
     ).toBe("x");
     // A group others share, or a group that is not ours: refused.
     expect(
@@ -142,16 +150,18 @@ async function start(home: string, over: { named?: string } = {}) {
     codex: { home } as never,
     claude: { syncMs: 20 } as never,
   });
-  h.toDaemon({
-    id: "w",
-    type: "hello_ok",
-    machine_id: "1".repeat(16),
-    machine_label: "laptop",
-    server_version: "1",
-    caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
-  });
+  h.toDaemon(helloOk);
+  await h.quiet();
   return h;
 }
+const helloOk = {
+  id: "w",
+  type: "hello_ok",
+  machine_id: "1".repeat(16),
+  machine_label: "laptop",
+  server_version: "1",
+  caps: [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.nameChosen],
+};
 const hello = {
   kind: "codex" as const,
   cwd: "/repo",
@@ -159,7 +169,7 @@ const hello = {
 };
 
 describe("Codex thread names on the bus (#1748)", () => {
-  it("a thread named at start registers under its name", async () => {
+  it("registers under the first title without marking it chosen", async () => {
     const h = await start(homeDir(), { named: "Billing work" });
     await h.adapter(THREAD, hello);
     const up = await h.next("agent_up");
@@ -168,6 +178,7 @@ describe("Codex thread names on the bus (#1748)", () => {
       kind: "codex",
       proposed_name: "Billing work",
     });
+    expect(up).not.toHaveProperty("name_chosen");
     expect(h.of("rename")).toHaveLength(0);
   });
 
@@ -185,31 +196,86 @@ describe("Codex thread names on the bus (#1748)", () => {
     );
   });
 
-  it("a rename while connected sends one rename frame, chosen", async () => {
+  it("marks a title written after hello as automatic and a later title as chosen", async () => {
+    const home = homeDir();
+    writeFileSync(indexOf(home), entry(OTHER, "Another thread"));
+    const h = await start(home);
+    await h.adapter(THREAD, hello);
+    expect(await h.next("agent_up")).toMatchObject({
+      agent_ref: THREAD,
+      proposed_name: "codex",
+    });
+
+    appendFileSync(indexOf(home), entry(THREAD, "Fix billing tests"));
+    expect(await h.next("rename")).toMatchObject({
+      agent_ref: THREAD,
+      proposed_name: "Fix billing tests",
+      name_chosen: false,
+    });
+
+    appendFileSync(indexOf(home), entry(THREAD, "Billing regression"));
+    expect(await h.next("rename", 2)).toMatchObject({
+      agent_ref: THREAD,
+      proposed_name: "Billing regression",
+      name_chosen: true,
+    });
+  });
+
+  it("registers a later title as chosen from the index alone", async () => {
+    const home = homeDir();
+    writeFileSync(
+      indexOf(home),
+      entry(THREAD, "Auto") + entry(THREAD, "Named"),
+    );
+    const h = await start(home);
+    await h.adapter(THREAD, hello);
+    expect(await h.next("agent_up")).toMatchObject({
+      proposed_name: "Named",
+      name_chosen: true,
+    });
+    expect(h.of("rename")).toHaveLength(0);
+  });
+
+  it("marks a case-only change observed across ticks and keeps it on reconnect", async () => {
     const home = homeDir();
     const h = await start(home);
     await h.adapter(THREAD, hello);
     await h.next("agent_up");
-    writeFileSync(indexOf(home), entry(THREAD, "Release prep"));
+    writeFileSync(indexOf(home), entry(THREAD, "OA Bus Codex"));
     const r = await h.next("rename");
     expect(r).toMatchObject({
       agent_ref: THREAD,
-      proposed_name: "Release prep",
+      proposed_name: "OA Bus Codex",
       name_kind: "chosen",
+      name_chosen: false,
     });
-    // The latest entry wins: a second rename goes as a second frame.
-    appendFileSync(indexOf(home), entry(THREAD, "Release prep 2"));
-    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
-    expect(h.of("rename")[1]?.proposed_name).toBe("Release prep 2");
-    // No loop: the hub's answer is not a change.
+    // The file provides just one name after the old entry leaves the window.
+    writeFileSync(
+      indexOf(home),
+      entry(THREAD, "OA Bus Codex") +
+        `${"x".repeat(CODEX_INDEX_MAX_BYTES)}\n` +
+        entry(THREAD, "OA bus Codex"),
+    );
+    const renamed = await h.next("rename", 2);
+    expect(renamed).toMatchObject({
+      proposed_name: "OA bus Codex",
+      name_chosen: true,
+    });
     h.toDaemon({
       v: 1,
-      id: r.id,
+      id: renamed.id,
       type: "renamed",
       agent_ref: THREAD,
-      bus_name: "Release-prep-2",
+      bus_name: "OA bus Codex-2",
     });
-    await vi.waitFor(() => expect(h.daemon.agents.byRef(THREAD)).toBeTruthy());
+    h.hubSock()?.close();
+    await h.next("agent_up", 2);
+    h.toDaemon(helloOk);
+    expect(await h.next("agent_up", 3)).toMatchObject({
+      proposed_name: "OA bus Codex",
+      name_chosen: true,
+    });
+    await h.quiet();
     expect(h.of("rename")).toHaveLength(2);
   });
 

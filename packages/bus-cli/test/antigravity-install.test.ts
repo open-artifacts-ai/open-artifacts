@@ -53,10 +53,12 @@ const put = (path: string, text: string) => {
   writeFileSync(path, text);
 };
 const read = (path: string) => readFileSync(path, "utf8");
-const OURS = {
+/** Our entry, pinned to the bus home it was installed for, default too (agy S2b). */
+const ours = (busHome: string) => ({
   command: BIN[0],
   args: [BIN[1], "mcp", "antigravity"],
-};
+  env: { OA_BUS_HOME: busHome },
+});
 
 // The shape `agy mcp add` writes, with comments and a trailing comma agy accepts.
 const THEIRS = `{
@@ -83,10 +85,12 @@ describe("Antigravity wiring (agy S1b)", () => {
   });
 
   it("adds the oa_bus stdio entry when agy is on PATH", async () => {
-    const { deps, file } = setup();
+    const { h, deps, file } = setup();
     const r = await installAdapters(deps);
     expect(r.installed).toEqual(["antigravity"]);
-    expect(JSON.parse(read(file))).toEqual({ mcpServers: { oa_bus: OURS } });
+    expect(JSON.parse(read(file))).toEqual({
+      mcpServers: { oa_bus: ours(join(h, ".oa-bus")) },
+    });
     expect(checkAdapters(deps).antigravity).toBe("configured");
     expect(checkAdapters({ ...deps, busBin: undefined }).antigravity).toBe(
       "configured",
@@ -99,7 +103,9 @@ describe("Antigravity wiring (agy S1b)", () => {
     mkdirSync(join(h, ".gemini/antigravity"), { recursive: true });
     expect(checkAdapters(deps).antigravity).toBe("missing");
     await installAdapters(deps);
-    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(OURS);
+    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(
+      ours(join(h, ".oa-bus")),
+    );
   });
 
   it("keeps every other key and entry byte for byte, and uninstall gives the file back", async () => {
@@ -134,14 +140,16 @@ describe("Antigravity wiring (agy S1b)", () => {
     const { h, deps, file } = setup();
     put(file, "");
     await installAdapters(deps);
-    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(OURS);
+    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(
+      ours(join(h, ".oa-bus")),
+    );
     await uninstallAdapters(deps);
     expect(JSON.parse(read(file))).toEqual({});
     expect(leftoverTargets({ home: h, env: deps.env }).files).toContain(file);
   });
 
   it("keeps the user's own keys on our entry, like a server they turned off", async () => {
-    const { deps, file } = setup();
+    const { h, deps, file } = setup();
     put(
       file,
       JSON.stringify({
@@ -157,14 +165,14 @@ describe("Antigravity wiring (agy S1b)", () => {
     );
     await installAdapters(deps);
     expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual({
-      ...OURS,
+      ...ours(join(h, ".oa-bus")),
       disabled: true,
-      env: { DEBUG: "1" },
+      env: { DEBUG: "1", OA_BUS_HOME: join(h, ".oa-bus") },
     });
     expect(agyProblem(deps)).toEqual({ file, problem: "disabled" });
   });
 
-  it("a moved bus home goes in the entry's env, and back out", async () => {
+  it("a moved bus home goes in the entry's env, and back to the default pin", async () => {
     const { h, deps, file } = setup();
     const moved = { ...deps, busHome: join(h, "elsewhere") };
     await installAdapters(moved);
@@ -174,7 +182,9 @@ describe("Antigravity wiring (agy S1b)", () => {
     expect(checkAdapters(moved).antigravity).toBe("configured");
     expect(checkAdapters(deps).antigravity).toBe("missing");
     await installAdapters(deps);
-    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(OURS);
+    expect(JSON.parse(read(file)).mcpServers.oa_bus).toEqual(
+      ours(join(h, ".oa-bus")),
+    );
   });
 
   it("writes through a symlink: the link stays a link", async () => {
@@ -185,7 +195,9 @@ describe("Antigravity wiring (agy S1b)", () => {
     symlinkSync(real, file);
     await installAdapters(deps);
     expect(lstatSync(file).isSymbolicLink()).toBe(true);
-    expect(jsoncValue(read(real), ["mcpServers", "oa_bus"])).toEqual(OURS);
+    expect(jsoncValue(read(real), ["mcpServers", "oa_bus"])).toEqual(
+      ours(join(h, ".oa-bus")),
+    );
     expect(realpathSync(file)).toBe(realpathSync(real));
   });
 
@@ -257,7 +269,9 @@ describe("install, doctor and uninstall commands (agy S1b)", () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(ctx.out().join("\n")).toContain("Configured Antigravity");
-    expect(JSON.parse(read(agyFile(ctx))).mcpServers.oa_bus).toEqual(OURS);
+    expect(JSON.parse(read(agyFile(ctx))).mcpServers.oa_bus).toEqual(
+      ours(ctx.home),
+    );
     await doctor(ctx);
     expect(ctx.all()).toContain("[[success]]✓[[/success]]  Antigravity wired");
     expect(await uninstall({ purge: false }, ctx)).toBe(0);

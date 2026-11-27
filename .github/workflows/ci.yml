@@ -49,7 +49,11 @@ jobs:
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir "$RUNNER_TEMP/actionlint"
           tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/actionlint" actionlint
-          "$RUNNER_TEMP/actionlint/actionlint" -color .github/workflows/*.yml
+          # actionlint has no release that knows concurrency `queue` yet
+          # (rhysd/actionlint#654); flaky-tracker.yml uses `queue: max`.
+          "$RUNNER_TEMP/actionlint/actionlint" -color \
+            -ignore 'unexpected key "queue" for "concurrency" section' \
+            .github/workflows/*.yml
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-reads.ts check
       - run: node --experimental-strip-types --no-warnings scripts/ci/workspace-imports.ts cycles
   typecheck:
@@ -369,6 +373,12 @@ jobs:
         if: ${{ steps.ro.outputs.release_only != 'true' }}
       - run: pnpm --filter @oa/server test:authz
         if: ${{ steps.ro.outputs.release_only != 'true' }}
+      # Red-line split: the same matrix with hosted settings (ENVIRONMENT
+      # production, HOSTED 1, the business tier's FEATURES plus usage_off,
+      # bus off as on staging's rl-b install), so the live per-route red-line
+      # file's hosted proof runs here.
+      - run: pnpm --filter @oa/server test:authz:hosted
+        if: ${{ steps.ro.outputs.release_only != 'true' }}
   build:
     runs-on: ubuntu-latest
     steps:
@@ -627,7 +637,18 @@ jobs:
         run: |
           echo "e2e-shard: $SHARDS"
           [ "$SHARDS" = success ]
-      # The merged html report, also when a shard failed (that's when it's read).
+
+  # The merged html report, in its own job so nothing in it can fail the
+  # required e2e check: in merge queue run 45756613297 attempt 1 every shard
+  # passed, then a truncated shard blob failed the report merge and the check.
+  # Not a required check; it reports even when a shard failed (that's when
+  # the report is read).
+  e2e-report:
+    needs: [e2e-shard]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -781,3 +802,20 @@ jobs:
           # or container checkout never fails "dubious ownership".
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           bash scripts/ci/public-only-guard.sh
+  # release-cadence reads main's required checks from rules/branches/main with
+  # its job token and fails closed when it can't. This proves, on every run,
+  # that a job token with only contents: read can read it. Not a required
+  # check; nothing waits on it.
+  cadence-rules-read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: release-cadence can read main's rules with a read-only token
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Every page, as the planner reads it; a failed page fails the step.
+          out=$(gh api --paginate "repos/$GITHUB_REPOSITORY/rules/branches/main?per_page=100" --jq '.[] | select(.type == "required_status_checks") | .type')
+          [ -n "$out" ] || { echo "no required_status_checks rule readable on main" >&2; exit 1; }

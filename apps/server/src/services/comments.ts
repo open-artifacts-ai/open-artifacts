@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import {
   type Anchor,
   type AnchorInput,
@@ -41,6 +42,7 @@ import { logError, logInfo, logWarn } from "../log.js";
 import {
   bodyOk,
   type HeldAgent,
+  type LatestActivity,
   type NewExtras,
   type ParticipantRow,
   type StoredActor,
@@ -91,7 +93,7 @@ import {
   reconcileAsks,
 } from "./asks.js";
 import { askApproveAudit, audit, userActor } from "./audit.js";
-import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
+import { agentIdentityOf, agentNamesOf, busHub, roleHolderFor } from "./bus.js";
 import {
   type AskerAddress,
   agentKey,
@@ -123,12 +125,7 @@ import {
   type CommentStatus,
   cleanGuestName,
 } from "./comment-rules.js";
-import {
-  addressKey,
-  follow,
-  inBackground,
-  notifyCommented,
-} from "./follows.js";
+import { addressKey, inBackground, notifyCommented } from "./follows.js";
 import {
   forgetCommentItems,
   recordCommentItems,
@@ -1315,7 +1312,54 @@ export type CommentsSince = {
   answeredSince?: string;
   mentionedSince?: string;
   compact?: boolean;
+  /** #3168: opaque cursor from an earlier list_comments; only threads changed after it. */
+  since?: string;
+  /** #3168: include the opaque cursor in the result (used by MCP list_comments). */
+  withCursor?: boolean;
 };
+
+const CURSOR_PREFIX = "c1.";
+const CURSOR_B64 = /^[A-Za-z0-9_-]{1,48}$/;
+const CURSOR_BODY = /^(0|[1-9][0-9]{0,14})\.(0|[1-9][0-9]{0,8})$/;
+const MAX_CURSOR_MS = 253_402_300_799_999; // 9999-12-31T23:59:59.999Z
+const BAD_CURSOR =
+  "That cursor is not one list_comments gave. Read without since to get a fresh one.";
+
+/**
+ * #3168: the opaque list_comments cursor: the artifact's newest change instant
+ * (epoch ms, 0 when there is none) and how many changes carry that instant.
+ * A `since` read returns threads changed after the instant, and the instant
+ * itself again only when more changes carry it than the cursor counted.
+ */
+export function encodeCommentCursor(latest: LatestActivity): string {
+  const parsed = latest.at ? Date.parse(latest.at) : 0;
+  const ms =
+    Number.isFinite(parsed) && parsed > 0
+      ? Math.min(Math.trunc(parsed), MAX_CURSOR_MS)
+      : 0;
+  const n = ms === 0 ? 0 : Math.max(0, Math.trunc(latest.n));
+  return (
+    CURSOR_PREFIX + Buffer.from(`${ms}.${n}`, "utf8").toString("base64url")
+  );
+}
+
+/** #3168: validates and decodes a list_comments cursor. */
+export function decodeCommentCursor(cursor: string): LatestActivity {
+  if (!cursor.startsWith(CURSOR_PREFIX))
+    throw new ApiError("bad_request", BAD_CURSOR);
+  const body = cursor.slice(CURSOR_PREFIX.length);
+  if (!CURSOR_B64.test(body)) throw new ApiError("bad_request", BAD_CURSOR);
+  const m = CURSOR_BODY.exec(Buffer.from(body, "base64url").toString("utf8"));
+  if (!m) throw new ApiError("bad_request", BAD_CURSOR);
+  const ms = Number(m[1]);
+  const n = Number(m[2]);
+  if (!Number.isSafeInteger(ms) || ms > MAX_CURSOR_MS)
+    throw new ApiError("bad_request", BAD_CURSOR);
+  const latest = { at: ms === 0 ? null : new Date(ms).toISOString(), n };
+  if (encodeCommentCursor(latest) !== cursor)
+    throw new ApiError("bad_request", BAD_CURSOR);
+  return latest;
+}
 
 const EXCERPT_MAX = 200;
 const after = (at: string, since: string): boolean =>
@@ -1378,6 +1422,7 @@ export async function listThread(
   viewer: CommentViewer,
   threadId: string,
   commentId?: string,
+  opts?: { withCursor?: boolean },
 ): Promise<CommentList> {
   // The one thread straight from the store, not the page's capped list, so a
   // thread past the list's 500-thread or size budget is still found. The store
@@ -1385,8 +1430,17 @@ export async function listThread(
   // refuses more), so every stored comment is returned; truncated only if a
   // row beyond that ever appears.
   let full: StoredThread;
+  let latest: LatestActivity = { at: null, n: 0 };
   try {
-    full = await call(() => stub(env, artifactId).commentsGet(threadId));
+    if (opts?.withCursor) {
+      const got = await call(() =>
+        stub(env, artifactId).commentsGetWithLatest(threadId),
+      );
+      full = got.thread;
+      latest = got.latest;
+    } else {
+      full = await call(() => stub(env, artifactId).commentsGet(threadId));
+    }
   } catch (e) {
     if (e instanceof ApiError && e.code === "not_found")
       throw new ApiError(
@@ -1413,6 +1467,7 @@ export async function listThread(
     threads,
     open: t.status === "open" ? 1 : 0,
     truncated,
+    ...(opts?.withCursor ? { cursor: encodeCommentCursor(latest) } : {}),
   };
 }
 
@@ -1422,6 +1477,13 @@ export async function listComments(
   artifactId: string,
   status: CommentStatus | "all",
   viewer: CommentViewer,
+  since?: {
+    since?: string;
+    withCursor?: boolean;
+    answeredSince?: never;
+    mentionedSince?: never;
+    compact?: never;
+  },
 ): Promise<CommentList>;
 /** #2688: with `compact`, a small list of the answers and mentions since. Without it, the threads that hold one. */
 export async function listComments(
@@ -1438,19 +1500,30 @@ export async function listComments(
   viewer: CommentViewer,
   since?: CommentsSince,
 ): Promise<CommentList | CompactCommentList> {
+  const sinceIso =
+    since?.since !== undefined ? decodeCommentCursor(since.since) : undefined;
+  const withCursor = since?.withCursor === true || sinceIso !== undefined;
   // A full read repairs the asks index (#1623); never fails the read. The rows
   // are read first, so the threads are never older than the rows they are
-  // compared with.
-  const rows = status === "all" ? await askRows(env, artifactId) : null;
-  const r = await call(() => stub(env, artifactId).commentsList(status));
+  // compared with. Skip on a `since` delta read: partial threads are not the full set.
+  const fullRead = status === "all" && sinceIso === undefined;
+  const rows = fullRead ? await askRows(env, artifactId) : null;
+  const r = await call(() =>
+    stub(env, artifactId).commentsList(status, sinceIso),
+  );
   if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
+  const cursor = withCursor ? { cursor: encodeCommentCursor(r.latest) } : {};
   const a = since?.answeredSince;
   const m = since?.mentionedSince;
   if (a === undefined && m === undefined)
     return {
-      threads: await threadViews(env, artifactId, r.threads, viewer),
+      threads:
+        r.threads.length === 0
+          ? []
+          : await threadViews(env, artifactId, r.threads, viewer),
       open: r.open,
       truncated: r.truncated,
+      ...cursor,
     };
   const hit = (c: StoredComment): boolean =>
     (a !== undefined && answeredHit(c, viewer, a)) ||
@@ -1458,7 +1531,7 @@ export async function listComments(
   const threads = r.threads.filter((t) => t.comments.some(hit));
   const views = await threadViews(env, artifactId, threads, viewer);
   if (!since?.compact)
-    return { threads: views, open: r.open, truncated: r.truncated };
+    return { threads: views, open: r.open, truncated: r.truncated, ...cursor };
   const answers: CompactAnswer[] = [];
   const mentions: CompactMention[] = [];
   // Every field comes from the view `v`, which is already masked for this
@@ -1504,6 +1577,7 @@ export async function listComments(
     ...(a !== undefined ? { answers: answers.sort(byAt) } : {}),
     ...(m !== undefined ? { mentions: mentions.sort(byAt) } : {}),
     truncated: r.truncated,
+    ...cursor,
   };
 }
 
@@ -1642,8 +1716,6 @@ type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
-  /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
-  follow: RosterAgent[];
   mentions: string[];
   /** #2770: the people @mentioned, resolved (each can read the artifact). */
   people?: string[];
@@ -1789,7 +1861,6 @@ async function resolveExtras(
   const none: Resolved = {
     extras: undefined,
     agents: [],
-    follow: [],
     mentions: [],
     mentionKind: "mention",
     participants: [],
@@ -1829,15 +1900,11 @@ async function resolveExtras(
   // sits in the DO write, so moving it ahead of this read is not a small change.
   // Only the viewer's own agents, never another member's.
   let own: Promise<RosterAgent[]> | undefined;
-  /** Keys resolved from the viewer's own running agents: not in the follows. */
-  const viaOwn = new Set<string>();
   const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
     if (a || !viewerId || !AGENT_KEY.test(key)) return a;
     own ??= viewerRosterAgents(env, artifactId, viewerId);
-    const found = (await own).find((r) => r.key === key);
-    if (found) viaOwn.add(key);
-    return found;
+    return (await own).find((r) => r.key === key);
   };
   const agentOf = async (key: string): Promise<RosterAgent> => {
     const a = await find(key);
@@ -2014,11 +2081,9 @@ async function resolveExtras(
       if (!wake) agents.delete(e.agent.key);
     }
   }
-  // A mention makes an agent follow (#1535); an ask alone does
-  // not. Only one the follows did not hold: another member's unfollow is never undone.
-  const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
+  // #3164: a mention no longer creates a page follow; later replies reach the
+  // mentioned agent through thread_reply participants (#1900).
   return {
-    follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length
@@ -2061,22 +2126,6 @@ const stateOf = (out: DeliveryState): "delivered" | "queued" | "gone" =>
 /** The most a comment POST waits, in total, for its notices to reach their hubs. */
 export const NOTICE_BUDGET_MS = 2500;
 
-/** The mentioned agent follows the artifact; never throws (a follow_limit or a lapsed member is logged). */
-async function followMentioned(
-  env: Env,
-  artifactId: string,
-  agent: RosterAgent,
-): Promise<void> {
-  try {
-    await follow(env, agent.userId, agent.address, artifactId);
-  } catch (e) {
-    logInfo("comment_mention_follow_failed", {
-      artifactId,
-      code: e instanceof ApiError ? e.code : "error",
-    });
-  }
-}
-
 /** #2577: a person's typed comment going to another person's agent from their list is remembered for "Who asked what". Best effort. */
 const listedFrom = (
   env: Env,
@@ -2108,38 +2157,29 @@ async function deliver(
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
   });
   try {
-    // A mentioned agent of the viewer's that did not follow now
-    // follows (#1535), beside the notice and under the same budget. Best
-    // effort: a failure is logged and changes neither the notice nor the comment.
-    const follows = r.follow.map((agent) =>
-      Promise.race([followMentioned(env, a.id, agent), late]),
-    );
-    const [outs] = await Promise.all([
-      Promise.all(
-        r.agents.map(({ agent, kind }) =>
-          Promise.all([
-            Promise.race([
-              notifyAgent(
-                env,
-                a.id,
-                version,
-                threadId,
-                c.id,
-                kind,
-                agent,
-                // Only a comment a person typed, to an agent of that same person.
-                isTyped(c.author) && c.author.ref === agent.userId,
-                c.body,
-              ),
-              late,
-            ]),
-            // Never delays delivery: the record is raced against `late` (best effort).
-            Promise.race([listedFrom(env, a.id, c, agent), late]),
-          ]).then(([o]) => o),
-        ),
+    const outs = await Promise.all(
+      r.agents.map(({ agent, kind }) =>
+        Promise.all([
+          Promise.race([
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              kind,
+              agent,
+              // Only a comment a person typed, to an agent of that same person.
+              isTyped(c.author) && c.author.ref === agent.userId,
+              c.body,
+            ),
+            late,
+          ]),
+          // Never delays delivery: the record is raced against `late` (best effort).
+          Promise.race([listedFrom(env, a.id, c, agent), late]),
+        ]).then(([o]) => o),
       ),
-      Promise.all(follows),
-    ]);
+    );
     r.agents.forEach(({ agent }, i) => {
       outcome.set(agent.key, outs[i] ?? "dropped");
     });
@@ -2435,6 +2475,8 @@ export async function askingAddress(
   artifactId: string,
   threadId: string,
   author: StoredActor,
+  /** #3132: when the ask was posted (ISO): a moved role takes only asks posted while it was held. */
+  askedAt?: string,
 ): Promise<AskerAddress | null> {
   const id = author.kind === "user" ? author.agent?.identity : undefined;
   if (author.kind !== "user" || !id) return null;
@@ -2454,15 +2496,29 @@ export async function askingAddress(
     logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
     return null;
   };
+  const origin = askedAt ? Date.parse(askedAt) : Number.NaN;
+  const originAt = Number.isFinite(origin) ? { originAt: origin } : {};
   const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
     id.identityId,
   );
-  if (!current) return none("no_current_name");
+  if (!current) {
+    // #3132: the session is gone from its hub. If it handed its role on and
+    // posted this ask while it held it, the role's live holder is the asker
+    // now, as the hub answers it (roleForward); otherwise nothing is sent.
+    const holder = await roleHolderFor(
+      env,
+      row.owner,
+      id.identityId,
+      Number.isFinite(origin) ? origin : Date.now(),
+    );
+    if (!holder) return none("no_current_name");
+    return { ...holder, ...originAt };
+  }
   const address = { namespace: row.namespace, name: current };
   if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
   const at = await agentIdentityOf(env, row.owner, address);
   if (at?.identityId !== id.identityId) return none("name_not_theirs");
-  return { ...address, identityId: id.identityId };
+  return { ...address, identityId: id.identityId, ...originAt };
 }
 
 /** #2733: lets go of the holds a reply took up front; retried once. False when it failed (they stay held: masked, undelivered). Logs a fixed event, no content. Never throws. */
@@ -2584,6 +2640,10 @@ async function threadReply(
           online: false,
           userId: p.owner,
           address: { namespace: p.namespace, name: p.name },
+          // #3132: a moved role takes only threads joined while it was held.
+          ...(p.joinedAt && Number.isFinite(Date.parse(p.joinedAt))
+            ? { originAt: Date.parse(p.joinedAt) }
+            : {}),
         });
     }
     heldHere = heldNow;
@@ -3006,7 +3066,7 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
-        await askingAddress(env, artifactId, threadId, c.author),
+        await askingAddress(env, artifactId, threadId, c.author, c.createdAt),
         // Only an answer the asker picked themselves in the web app.
         decided &&
           c.ask?.answer !== undefined &&

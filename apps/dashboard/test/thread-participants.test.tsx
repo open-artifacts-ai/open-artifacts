@@ -293,4 +293,24 @@ describe("ThreadParticipants", () => {
     render(<ThreadParticipants t={thread(undefined)} api={api()} />);
     expect(count()).toBe("2");
   });
+
+  it("closing the list drops the removed-agent line (#3263)", () => {
+    mutate.mockImplementation(() => {});
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying OA Billing in this thread",
+      }),
+    );
+    expect(list()?.textContent).toContain("won't get replies");
+    fireEvent.keyDown(trigger(), { key: "Escape" });
+    fireEvent.focus(trigger());
+    expect(list()?.textContent ?? "").not.toContain("won't get replies");
+  });
 });

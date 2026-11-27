@@ -4,12 +4,15 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CAPS } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { daemonHarness, stopAll } from "./helpers.ts";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { daemonHarness, eventCounter, stopAll } from "./helpers.ts";
 
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+});
 afterEach(async () => {
-  vi.useRealTimers();
   await stopAll();
+  vi.useRealTimers();
 });
 
 const write = (d: string, pid: number, sessionId: string, name: string) =>
@@ -26,6 +29,7 @@ const write = (d: string, pid: number, sessionId: string, name: string) =>
   );
 
 async function start(fakeTick = false) {
+  syncs = eventCounter();
   const d = mkdtempSync(join(tmpdir(), "ob-rename-"));
   write(d, 4242, "s-a", "open-artifacts-9e");
   const h = await daemonHarness({
@@ -33,10 +37,12 @@ async function start(fakeTick = false) {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
+      onSync: () => syncs.hook(),
       procStart: () => "t0",
       isRunning: () => true,
     },
   });
+  cur = h;
   h.toDaemon({
     id: "w",
     type: "hello_ok",
@@ -52,7 +58,19 @@ async function start(fakeTick = false) {
   );
   return { h, d };
 }
-const settle = () => new Promise((r) => setTimeout(r, 150));
+/** Finished claude syncs, and the harness they ran in: "it looked again and did nothing". */
+let syncs = eventCounter();
+let cur: Awaited<ReturnType<typeof daemonHarness>>;
+/**
+ * Moves the fake sync interval over the window the test covers and checks the
+ * syncs really ran, then fences what they sent: "it looked again and did nothing".
+ */
+const settle = async (ms: number = 150) => {
+  const before = syncs.count;
+  await vi.advanceTimersByTimeAsync(ms);
+  expect(syncs.count - before).toBeGreaterThanOrEqual(Math.floor(ms / 20));
+  await cur.quiet();
+};
 
 describe("session rename after connect (#1635)", () => {
   it("sends one rename when the file name changes, and none when it does not", async () => {
@@ -79,7 +97,7 @@ describe("session rename after connect (#1635)", () => {
   });
 
   it("a refusal is logged, not retried, and a later change goes again", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const { h, d } = await start();
     write(d, 4242, "s-a", "OA Bus");
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
@@ -113,7 +131,7 @@ describe("session rename after connect (#1635)", () => {
 
   it("a hello that beats the tick after a /clear sets the name: no rename", async () => {
     // Only the sync interval is faked: a tick runs when the test says so.
-    vi.useFakeTimers({ toFake: ["setInterval"] });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const { h, d } = await start(true);
     // The hub gave s-a a suffixed name, so the file's name is not its bus name.
     h.toDaemon({
@@ -141,8 +159,10 @@ describe("session rename after connect (#1635)", () => {
       agent_ref: "s-b",
       bus_name: "open-artifacts-9e-2",
     });
-    await vi.advanceTimersByTimeAsync(100);
-    await vi.advanceTimersByTimeAsync(100);
+    const before = syncs.count;
+    await vi.advanceTimersByTimeAsync(200);
+    expect(syncs.count - before).toBeGreaterThanOrEqual(9); // the ticks really ran
+    await h.quiet();
     expect(h.of("rename")).toHaveLength(0);
   });
 

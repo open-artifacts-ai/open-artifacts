@@ -1041,6 +1041,43 @@ describe("dashboard REST", () => {
     trackSocket(lws);
   });
 
+  it("omits machines revoked more than 24 h ago from GET /bus/machines, keeps recent ones and audit log (#3123)", async () => {
+    const u = await member();
+    const active = await machine("live-box", u.userId);
+    const recent = await machine("recent-box", u.userId);
+    const old = await machine("old-box", u.userId);
+
+    expect(
+      (await api(app, R.busMachine(recent.id), u.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+    expect(
+      (await api(app, R.busMachine(old.id), u.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+
+    await env.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
+      .bind(Date.now() - 25 * 60 * 60 * 1000, old.id)
+      .run();
+
+    const r = await api(app, R.busMachines, u.cookie);
+    expect(r.status).toBe(200);
+    const j = (await r.json()) as {
+      machines: Array<{ id: string; revokedAt: string | null }>;
+    };
+    expect(j.machines.map((x) => x.id)).toEqual([active.id, recent.id]);
+    expect(j.machines[1]?.revokedAt).not.toBeNull();
+    // Revoked machine still cannot reconnect after leaving the list.
+    expect((await upgrade(old.token)).status).toBe(401);
+    // Revoke stays in the audit log.
+    const audit = await env.DB.prepare(
+      "select action, target_id as targetId from audit_events where action = 'machine.revoke' and target_id = ?",
+    )
+      .bind(old.id)
+      .first<{ action: string; targetId: string }>();
+    expect(audit).toEqual({ action: "machine.revoke", targetId: old.id });
+  });
+
   it("/me says canConnect, on GET and PATCH, from the server's rule", async () => {
     const me = async (cookie: string, method = "GET") =>
       (

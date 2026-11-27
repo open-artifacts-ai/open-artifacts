@@ -14,6 +14,10 @@ const LANDING = "Cd5fGhJkLm6nPqRs"; // owned, private, v2 current
 const ARTIFACT = `<!doctype html><style>body{font:16px system-ui;margin:24px}</style>
 <script>
   const nonce = new URLSearchParams(location.hash.slice(1)).get("oa");
+  addEventListener("message", (e) => {
+    if (e.data && e.data.type === "welcome")
+      document.documentElement.dataset.oaReady = "1";
+  });
   parent.postMessage({ oa: 1, type: "hello", protocol: 1, kind: "html", nonce }, "*");
   addEventListener("pointerdown", () =>
     parent.postMessage({ oa: 1, type: "interacted", nonce }, "*"), { once: true });
@@ -50,8 +54,10 @@ const loaded = async (page: Page) => {
       ),
     )
     .toBe(1);
-  // Let the frame's hello land.
-  await page.waitForTimeout(300);
+  // Wait for the shell's welcome reply, proving hello landed.
+  await expect(
+    page.frameLocator("iframe.oa-vframe").locator("html"),
+  ).toHaveAttribute("data-oa-ready", "1");
 };
 
 const touchFrame = (page: Page) =>
@@ -59,9 +65,7 @@ const touchFrame = (page: Page) =>
 
 /** Attached to the report; also saved to $SHOTS_DIR (the PR's shots). */
 const shot = async (page: Page, name: string) => {
-  // Past the 200 ms enter animation.
-  await page.waitForTimeout(250);
-  const body = await page.screenshot();
+  const body = await page.screenshot({ animations: "disabled" });
   await test.info().attach(name, { body, contentType: "image/png" });
   if (process.env.SHOTS_DIR)
     writeFileSync(`${process.env.SHOTS_DIR}/${name}.png`, body);
@@ -165,11 +169,13 @@ const shot = async (page: Page, name: string) => {
 test("an open menu means the chip, which stays until View", async ({
   page,
 }) => {
+  await page.clock.install();
   await page.goto(`/a/${LANDING}`);
   await loaded(page);
   await page.getByRole("button", { name: "More actions" }).click();
   await expect(page.getByRole("menu")).toBeVisible();
   const v = await publish(page);
+  await page.clock.runFor(DEBOUNCE_MS + 100);
   // The menu is modal (the rest is aria-hidden): the chip shows under it.
   await expect(page.locator(".oa-lchip")).toContainText(`v${v} available`, {
     timeout: LIVE_MS,
@@ -178,7 +184,7 @@ test("an open menu means the chip, which stays until View", async ({
   const view = page.getByRole("button", { name: `View version ${v}` });
   await expect(view).toBeVisible();
   // Design: a version shown as a chip never auto-swaps later.
-  await page.waitForTimeout(1_500);
+  await page.clock.runFor(DEBOUNCE_MS + 500);
   await expect(view).toBeVisible();
   await expect(page.locator("iframe.oa-vframe")).toHaveCount(1);
 });

@@ -69,17 +69,17 @@ const replyTo = (id: string, tid: string, u: U) =>
   });
 
 describe("a commenter share", () => {
-  it("is a valid role and is stored; a guest's default is commenter, anyone else's viewer", async () => {
+  it("is a valid role and is stored; new shares default to Editor for everyone", async () => {
     const id = await page();
     const a = (await (
       await share(id, guest.email, "commenter")
     ).json()) as Share;
     expect(a.role).toBe("commenter");
     const b = (await (await share(id, member.email)).json()) as Share;
-    expect(b.role).toBe("viewer");
+    expect(b.role).toBe("editor");
     const g2 = await mk("sc-guest2", "guest");
     const c = (await (await share(id, g2.email)).json()) as Share;
-    expect(c.role).toBe("commenter");
+    expect(c.role).toBe("editor");
   });
 
   it("a guest with a commenter share comments and replies", async () => {
@@ -110,6 +110,45 @@ describe("a commenter share", () => {
       body: { email: `x-${tag}@x.com`, role: "viewer" },
     });
     expect(put.status).toBeGreaterThanOrEqual(400);
+  });
+
+  it("reads a legacy Viewer as Commenter until the owner explicitly narrows or revokes it", async () => {
+    const id = await page();
+    await E.DB.prepare(
+      "INSERT INTO shares (artifact_id,email,role,created_by,created_at) VALUES (?,?,'viewer',?,1)",
+    )
+      .bind(id, member.email, owner.userId)
+      .run();
+    const role = async () =>
+      (
+        (await (await api(app, R.shares(id), owner.cookie)).json()) as Share[]
+      ).find((row) => row.email === member.email)?.role;
+    expect(await role()).toBe("commenter");
+    expect((await comment(id, member)).status).toBe(201);
+    expect((await share(id, member.email, "viewer")).status).toBe(200);
+    expect(await role()).toBe("viewer");
+    expect((await comment(id, member)).status).toBe(404);
+    await api(app, R.share(id, member.email), owner.cookie, {
+      method: "DELETE",
+    });
+    expect((await share(id, member.email, "viewer")).status).toBe(200);
+    expect(await role()).toBe("viewer");
+  });
+
+  it("refuses comments and replies after a member is set to Viewer", async () => {
+    const id = await page();
+    await share(id, member.email, "commenter");
+    const thread = (await (await comment(id, member)).json()) as { id: string };
+    await share(id, member.email, "viewer");
+    expect((await comment(id, member)).status).toBe(404);
+    expect((await replyTo(id, thread.id, member)).status).toBe(404);
+    const summary = await (
+      await api(app, R.artifact(id), member.cookie)
+    ).json();
+    expect(summary).toMatchObject({
+      shareRole: "viewer",
+      can: { comment: false },
+    });
   });
 
   it("a guest with a viewer share cannot comment or reply", async () => {
@@ -144,11 +183,11 @@ describe("a commenter share", () => {
   });
 });
 
-describe("an outsider is never stored as editor", () => {
-  it("an editor share to a guest is clamped to commenter and the response says so; a member's stays editor", async () => {
+describe("an outside Editor share", () => {
+  it("stores Editor for both members and guests", async () => {
     const id = await page();
     const g = (await (await share(id, guest.email, "editor")).json()) as Share;
-    expect(g.role).toBe("commenter");
+    expect(g.role).toBe("editor");
     const m = (await (await share(id, member.email, "editor")).json()) as Share;
     expect(m.role).toBe("editor");
     const row = await E.DB.prepare(
@@ -156,8 +195,8 @@ describe("an outsider is never stored as editor", () => {
     )
       .bind(id, guest.email)
       .first<{ role: string; c: number }>();
-    // Stored as viewer with can_comment; the API says commenter (checked above).
-    expect(row).toEqual({ role: "viewer", c: 1 });
+    expect(row).toEqual({ role: "editor", c: 0 });
+    expect((await comment(id, guest)).status).toBe(404);
   });
 });
 
@@ -372,11 +411,60 @@ describe("can.comment on the artifact summary (#2590)", () => {
     ];
   };
 
-  it("a guest with a commenter share can comment; with a viewer share, not", async () => {
+  it.each(["team", "public"] as const)(
+    "keeps %s comment access when a member also has a Viewer share",
+    async (visibility) => {
+      const id = await page({ visibility });
+      expect(await can(id, member)).toEqual([true, true]);
+      await share(id, member.email, "viewer");
+      expect(await can(id, member)).toEqual([true, true]);
+      expect((await comment(id, member)).status).toBe(201);
+      await share(id, guest.email, "viewer");
+      expect((await comment(id, guest)).status).toBe(404);
+    },
+  );
+
+  it("keeps a space viewer’s comment access on a private page with a direct Viewer share", async () => {
     const id = await page();
-    await share(id, guest.email, "commenter");
-    expect(await can(id, guest)).toEqual([true, true]);
-    await share(id, guest.email, "viewer");
-    expect(await can(id, guest)).toEqual([false, false]);
+    await share(id, member.email, "viewer");
+    const space = newId();
+    await E.DB.batch([
+      E.DB.prepare(
+        "INSERT INTO spaces (id, kind, name, created_at) VALUES (?, 'shared', 'Design', 1)",
+      ).bind(space),
+      E.DB.prepare(
+        "INSERT INTO space_members (space_id, user_id, role, source, created_at) VALUES (?, ?, 'viewer', 'manual', 1)",
+      ).bind(space, member.userId),
+      E.DB.prepare("UPDATE artifacts SET space_id = ? WHERE id = ?").bind(
+        space,
+        id,
+      ),
+    ]);
+    expect(await can(id, member)).toEqual([true, true]);
+    expect((await comment(id, member)).status).toBe(201);
   });
+
+  it.each([
+    ["member", "viewer", false, false],
+    ["member", "commenter", true, false],
+    ["member", "editor", true, true],
+    ["guest", "viewer", false, false],
+    ["guest", "commenter", true, false],
+    ["guest", "editor", false, false],
+  ] as const)(
+    "enforces %s %s for comments and publishing",
+    async (kind, role, mayComment, mayPublish) => {
+      const id = await page();
+      const user = kind === "guest" ? guest : member;
+      const saved = await share(id, user.email, role);
+      expect(await saved.json()).toMatchObject({ role });
+      expect(await can(id, user)).toEqual([mayComment, mayComment]);
+      expect((await comment(id, user)).status).toBe(mayComment ? 201 : 404);
+      const version = await api(app, R.versions(id), user.cookie, {
+        method: "POST",
+        body: { title: "Updated", format: "html", content: "<p>Revision</p>" },
+      });
+      expect(version.status).toBe(mayPublish ? 201 : 404);
+    },
+  );
 });

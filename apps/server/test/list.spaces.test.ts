@@ -980,3 +980,64 @@ describe("space and can on list and search rows", () => {
     }
   });
 });
+
+// Red-line port (later.spec.ts "'Mine' inside a shared space lists only your
+// own artifacts (#765)"): the dashboard's Mine tab in a shared space asks for
+// scope=space&spaceId=<id>&owner=me (apps/dashboard/test/spaces-sidebar.test.tsx).
+// Two editors publish there; each one's Mine lists only their own page.
+describe("Mine in a shared space (#765)", () => {
+  // Spaces on, as on every hosted install.
+  const ON = { ...(env as object), FEATURES: "spaces" } as unknown as Env;
+  it("scope=space&owner=me lists only the caller's artifacts in that space", async () => {
+    const db = getDb(env);
+    const sid = newId();
+    await db.insert(spaces).values({
+      id: sid,
+      kind: "shared",
+      name: `mine-${tag}`,
+      allMembersRole: null,
+      publicLinks: 1,
+      createdAt: Date.now(),
+    });
+    const ed = async (n: string) => {
+      const l = await login(`mine-${n}-${tag}@x.com`, "member");
+      await db.insert(spaceMembers).values({
+        spaceId: sid,
+        userId: l.userId,
+        role: "editor",
+        source: "manual",
+        createdAt: Date.now(),
+      });
+      const r = await api(
+        app,
+        R.artifacts,
+        l.cookie,
+        {
+          method: "POST",
+          body: {
+            title: `mine ${n}`,
+            format: "markdown",
+            content: "# x",
+            spaceId: sid,
+          },
+        },
+        ON,
+      );
+      expect(r.status).toBe(201);
+      return { ...l, id: ((await r.json()) as { id: string }).id };
+    };
+    const me = await ed("me");
+    const them = await ed("them");
+    const ids = async (u: { cookie: string }, qs: string) => {
+      const r = await api(app, `${R.artifacts}?${qs}`, u.cookie, {}, ON);
+      expect(r.status).toBe(200);
+      return ((await r.json()) as Page<ArtifactSummary>).items
+        .map((a) => a.id)
+        .sort();
+    };
+    const space = `scope=space&spaceId=${sid}`;
+    expect(await ids(me, space)).toEqual([me.id, them.id].sort());
+    expect(await ids(me, `${space}&owner=me`)).toEqual([me.id]);
+    expect(await ids(them, `${space}&owner=me`)).toEqual([them.id]);
+  });
+});

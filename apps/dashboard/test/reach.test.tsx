@@ -314,8 +314,12 @@ describe("share box when the recipient can't log in", () => {
   it("removing the person clears the warning box", async () => {
     mountHosted(PANEL);
     await share("pat@example.com");
+    fireEvent.keyDown(
+      await screen.findByRole("combobox", { name: "Role for pat@example.com" }),
+      { key: "Enter" },
+    );
     fireEvent.click(
-      screen.getByRole("button", { name: "Remove pat@example.com" }),
+      await screen.findByRole("option", { name: "Remove access" }),
     );
     await waitFor(() =>
       expect(screen.queryByText(/can't log in until/)).toBeNull(),

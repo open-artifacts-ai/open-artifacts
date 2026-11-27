@@ -1630,6 +1630,8 @@ export type OrgReal = {
   grantId: string;
   /** #1291: the caller's own bus machine (a D1 row). */
   busMachineId: string;
+  /** An enrolled device owned by the caller in the local matrix. */
+  subscriptionId: string;
   /** An address nobody holds (an invite). */
   email: string;
   /** An active member who may take a departed member's artifacts. */
@@ -1846,26 +1848,30 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
   "POST /api/v1/me/push/subscriptions": {
     refuse: {
       req: async () => ({ path: "", body: {} }),
-      allow: code("push_unavailable"),
+      allow: (r) => badRequest(r) || code("push_unavailable")(r),
     },
     real: {
       req: () => ({ path: "", body: {} }),
-      allow: code("push_unavailable"),
+      allow: badRequest,
     },
   },
   "PATCH /api/v1/me/push/subscriptions/:id": {
     real: {
-      req: () => ({
-        path: "/api/v1/me/push/subscriptions/x",
+      needs: ["subscriptionId"],
+      req: (r) => ({
+        path: `/api/v1/me/push/subscriptions/${r.subscriptionId}`,
         body: { needsYou: true },
       }),
-      allow: code("push_unavailable"),
+      allow: ok(200),
     },
   },
   "DELETE /api/v1/me/push/subscriptions/:id": {
     real: {
-      req: () => ({ path: "/api/v1/me/push/subscriptions/x" }),
-      allow: code("push_unavailable"),
+      needs: ["subscriptionId"],
+      req: (r) => ({
+        path: `/api/v1/me/push/subscriptions/${r.subscriptionId}`,
+      }),
+      allow: ok(204),
     },
   },
   // #1292: the caller's own picks; a real write sets none (the default).
@@ -2607,13 +2613,12 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/me/inbox/mutes/:kind/:id", U],
   ["GET /api/v1/me/notification-prefs", U, [200]],
   ["PUT /api/v1/me/notification-prefs", U],
-  // #2512 S5: no VAPID key pair in the matrix's env, so push is off: 404 push_unavailable for everyone signed in.
-  // A live install with keys (cloud mints them since #390) answers the two reads 200, so both count as allowed.
+  // Push reads succeed with a session secret. Older installs can report push_unavailable.
   ["GET /api/v1/me/push/key", U, [200, 404]],
   ["GET /api/v1/me/push/subscriptions", U, [200, 404]],
-  ["POST /api/v1/me/push/subscriptions", U, [404]],
-  ["PATCH /api/v1/me/push/subscriptions/:id", U, [404]],
-  ["DELETE /api/v1/me/push/subscriptions/:id", U, [404]],
+  ["POST /api/v1/me/push/subscriptions", U],
+  ["PATCH /api/v1/me/push/subscriptions/:id", U],
+  ["DELETE /api/v1/me/push/subscriptions/:id", U],
   ["GET /api/v1/bus/share-notices", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/share-notices", org("mcp.connect")],
   ["GET /api/v1/members", org("members.manage"), [200]],
@@ -2799,11 +2804,13 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /healthz",
   "GET /robots.txt",
   "GET /skill.md",
+  "GET /skill/:part",
   "GET /upgrade.md",
   "GET /llms.txt",
   "ALL /healthz",
   "ALL /robots.txt",
   "ALL /skill.md",
+  "ALL /skill/:part",
   "ALL /upgrade.md",
   "ALL /llms.txt",
   "GET /auth/providers",

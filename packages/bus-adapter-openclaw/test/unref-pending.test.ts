@@ -21,12 +21,12 @@ it("holds the process only while a request is pending", async () => {
   const server = await serveDaemon({
     path: daemonSocketPath(home),
     onHello: () => ({ bus_name: "openclaw-1", namespace: "ns", global: false }),
-    // Answers a request late: 500 ms after it is asked.
+    // The child reports whether the socket holds its loop while the request
+    // is pending, so the answer can come at once: no wall time to wait out.
     onFrame: (f, _h, reply) => {
       if (f.type === "list")
-        setTimeout(
-          () => reply({ v: 1, id: f.id, type: "roster", agents: [] }),
-          500,
+        setImmediate(() =>
+          reply({ v: 1, id: f.id, type: "roster", agents: [] }),
         );
       return undefined;
     },
@@ -49,9 +49,7 @@ it("holds the process only while a request is pending", async () => {
   const out = await new Promise<{
     status: number | null;
     out: string;
-    ms: number;
   }>((resolve) => {
-    const t0 = Date.now();
     const p = spawn(process.execPath, [script, daemonSocketPath(home)], {
       stdio: ["ignore", "pipe", "inherit"],
     });
@@ -59,13 +57,19 @@ it("holds the process only while a request is pending", async () => {
     p.stdout.on("data", (d) => {
       o += d;
     });
+    // A safety net only: the assertion below is the child's own report that
+    // the socket let go of its loop (held:false), not how long it took.
     const kill = setTimeout(() => p.kill("SIGKILL"), 8000);
     p.on("close", (status) => {
       clearTimeout(kill);
-      resolve({ status, out: o, ms: Date.now() - t0 });
+      resolve({ status, out: o });
     });
   });
-  expect(out.out.trim()).toBe("reply:roster"); // not gone before the answer
-  expect(out.status).toBe(0); // and gone once idle
-  expect(out.ms).toBeLessThan(6000);
+  // Held while the request was pending, answered, and gone once idle.
+  expect(out.out.trim().split("\n")).toEqual([
+    "held:true",
+    "reply:roster",
+    "held:false",
+  ]);
+  expect(out.status).toBe(0);
 }, 15000);
