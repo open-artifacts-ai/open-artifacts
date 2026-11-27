@@ -199,6 +199,7 @@ describe("frames", () => {
       "owner_away",
       "proof_seen",
       "codex_call_check",
+      "codex_call_verdict",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

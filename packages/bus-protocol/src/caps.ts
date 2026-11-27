@@ -173,6 +173,7 @@ export const BUS_CAPS = {
    * listed it, and listed in `hello_ok.caps`.
    */
   codexCheck: "codex_check",
+  codexVerdict: "codex_verdict",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

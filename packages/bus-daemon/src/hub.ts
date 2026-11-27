@@ -63,6 +63,7 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.mailExpiry,
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
+  BUS_CAPS.codexVerdict,
 ] as const;
 
 export class HubConnection {
