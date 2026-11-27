@@ -30,7 +30,7 @@ import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
 import { AGY_FLAG, agyOn } from "./adapters.ts";
 import { codexHomeEnv } from "./codex.ts";
-import { rescueOf, writeRescue } from "./rescue.ts";
+import { rescueOf, retireLegacyRescue, writeRescue } from "./rescue.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const LAUNCHD_LABEL = "com.open-artifacts.bus";
@@ -492,12 +492,17 @@ export function systemService(d: ServiceDeps): Service {
     return r && present(r) ? r : fresh();
   };
   const installed = () => manager !== undefined && present(file());
-  /** The installed unit starts the bus through the rescue shim (an older one does not). */
-  const unitRunsRescue = () => {
+  /** Doctor checks the launcher named by the installed unit, including pre-rename units. */
+  const installedRescue = (): string | undefined => {
     try {
-      return readFileSync(file(), "utf8").includes(rescueOf(home()));
+      const unit = readFileSync(file(), "utf8");
+      return [rescueOf(home()), join(home(), "rescue")].find((path) =>
+        manager === "launchd"
+          ? unit.includes(`<array><string>${xml(path)}</string>`)
+          : unit.includes(`ExecStart=${execWord(path)} `),
+      );
     } catch {
-      return false;
+      return undefined;
     }
   };
   /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
@@ -668,6 +673,7 @@ export function systemService(d: ServiceDeps): Service {
             ? await startSystemd(f, unit)
             : "failed";
       if (started === "started") {
+        retireLegacyRescue(h);
         updateInstallFile(installFile(), {
           service: {
             kind: manager,
@@ -842,8 +848,8 @@ export function systemService(d: ServiceDeps): Service {
       )
         out.push({ kind: "linger-off" });
       // A unit that runs the rescue shim needs it there and owner-only (#2552).
-      if (d.platform !== "win32" && unitRunsRescue()) {
-        const r = rescueOf(home());
+      const r = installedRescue();
+      if (r) {
         // Owned by whoever runs this check, which is the service's account: the
         // deps' `uid` is only the launchd domain and can be anything in a test.
         const me = (d.ownerUid ?? (() => process.getuid?.()))();

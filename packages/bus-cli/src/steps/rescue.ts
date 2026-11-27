@@ -1,6 +1,8 @@
 import {
   chmodSync,
+  lstatSync,
   mkdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -8,7 +10,7 @@ import {
 import { join } from "node:path";
 
 /**
- * The rescue shim (#2552). The service runs `<home>/rescue`, which sits
+ * The rescue shim (#2552). The service runs `<home>/Open Artifacts Bus`, which sits
  * outside `versions/`: a hand-run install writes it and an update never does,
  * so a release that cannot start cannot break the way back.
  *
@@ -42,7 +44,8 @@ export const RESCUE_VERSION = 1;
 /** The new version gets this many starts before it is undone. */
 export const RESCUE_MAX_STARTS = 2;
 
-export const rescueOf = (home: string) => join(home, "rescue");
+export const RESCUE_NAME = "Open Artifacts Bus";
+export const rescueOf = (home: string) => join(home, RESCUE_NAME);
 
 export function rescueShell(): string {
   return `#!/bin/sh
@@ -163,5 +166,15 @@ export function writeRescue(home: string, launcher: string): void {
   };
   put("rescue.mjs", rescueScript());
   put("rescue-node", launcher);
-  put("rescue", rescueShell());
+  put(RESCUE_NAME, rescueShell());
+}
+
+/** Called after the service manager starts the replacement, including on a retry. */
+export function retireLegacyRescue(home: string): void {
+  const path = join(home, "rescue");
+  if (
+    lstatSync(path, { throwIfNoEntry: false })?.isFile() &&
+    readFileSync(path, "utf8") === rescueShell()
+  )
+    rmSync(path, { force: true });
 }

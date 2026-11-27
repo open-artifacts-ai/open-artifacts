@@ -2,6 +2,8 @@ import { lstatSync, readdirSync, rmdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shortSocketDir, unsafeSocketDir } from "@oa/bus-adapter-claude-code";
 
+import { RESCUE_NAME } from "./rescue.ts";
+
 /** Files Open Artifacts bus writes at the top of its home. */
 const FILES = [
   "machine.json",
@@ -16,6 +18,7 @@ const FILES = [
   "revoked",
   "update.json",
   // The rescue shim the service runs (#2552): written only by an install.
+  RESCUE_NAME,
   "rescue",
   "rescue-node",
   "rescue.mjs",
@@ -39,6 +42,7 @@ const TEMP = [
   /^update-reports\.json\.\d+\.tmp$/,
   /^update-request\.json\.(\d+\.tmp|taken\.\d+)$/,
   /^bin\.\d+\.rescue$/,
+  /^Open Artifacts Bus\.\d+\.tmp$/,
   /^rescue(-node|\.mjs)?\.\d+\.tmp$/,
 ];
 /**

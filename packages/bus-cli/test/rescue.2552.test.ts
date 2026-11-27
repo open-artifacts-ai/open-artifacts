@@ -45,7 +45,7 @@ import {
 } from "../src/steps/service.ts";
 
 /**
- * A fake service manager: starts `<home>/rescue <bin>/dist/index.js daemon`
+ * A fake service manager: starts `<home>/Open Artifacts Bus <bin>/dist/index.js daemon`
  * the way launchd or systemd would and restarts it on a non-zero exit. Every
  * version here is a shell script: no real daemon, no network, no real service.
  */
@@ -272,22 +272,19 @@ describe("the rescue shim", () => {
     expect(RESCUE_VERSION).toBe(1);
     expect(rescueScript()).toContain(`Rescue shim ${RESCUE_VERSION}`);
     const home = world({ "1.0.0": { exit: 0 } });
-    for (const f of ["rescue", "rescue-node", "rescue.mjs"])
+    const launchers = ["Open Artifacts Bus", "rescue-node", "rescue.mjs"];
+    for (const f of launchers)
       expect(statSync(join(home, f)).mode & 0o777).toBe(0o700);
-    const before = ["rescue", "rescue-node", "rescue.mjs"].map((f) =>
-      readFileSync(join(home, f), "utf8"),
-    );
+    const before = launchers.map((f) => readFileSync(join(home, f), "utf8"));
     // A switch, a step back and a prune leave the three files as they were.
     installVersion(home, "1.2.0", (dir) => {
       mkdirSync(join(dir, "dist"));
       writeFileSync(join(dir, "dist/index.js"), "exit 0\n");
     });
     completeUpdate(home, { from: "1.0.0", to: "1.2.0" }, 1);
-    expect(
-      ["rescue", "rescue-node", "rescue.mjs"].map((f) =>
-        readFileSync(join(home, f), "utf8"),
-      ),
-    ).toEqual(before);
+    expect(launchers.map((f) => readFileSync(join(home, f), "utf8"))).toEqual(
+      before,
+    );
   });
 
   it("an install with no shim (no launcher, or win32) never arms auto-update", () => {
@@ -304,7 +301,7 @@ describe("the rescue shim", () => {
     };
     const a = mk();
     installCli(a.bus, a.src);
-    expect(existsSync(join(a.bus, "rescue"))).toBe(false);
+    expect(existsSync(join(a.bus, "Open Artifacts Bus"))).toBe(false);
     expect(readState(a.bus).armed).toBe(false);
     const b = mk();
     installCli(b.bus, b.src, process.execPath);
@@ -319,9 +316,11 @@ describe("the rescue shim", () => {
     writeFileSync(join(pkg, "dist/index.js"), "");
     const src: CliSource = { kind: "bundle", file: join(pkg, "dist/index.js") };
     installCli(join(home, ".oa-bus"), src, process.execPath);
-    expect(existsSync(join(home, ".oa-bus/rescue"))).toBe(true);
+    expect(existsSync(join(home, ".oa-bus/Open Artifacts Bus"))).toBe(true);
     expect(readlinkSync(join(home, ".oa-bus/bin"))).toBe("versions/2.0.0");
-    expect(existsSync(join(home, ".oa-bus/versions/2.0.0/rescue"))).toBe(false);
+    expect(
+      existsSync(join(home, ".oa-bus/versions/2.0.0/Open Artifacts Bus")),
+    ).toBe(false);
   });
 });
 
@@ -332,6 +331,8 @@ describe("uninstall --purge", () => {
       "update-reports.json",
       "update-request.json",
       "login.active",
+      "rescue",
+      "Open Artifacts Bus.123.tmp",
       "update-request.json.taken.123",
       "bin.123.rescue",
       "update.json.123.rescue.tmp",

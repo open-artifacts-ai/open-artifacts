@@ -286,7 +286,9 @@ describe("a Node upgrade or move does not break the bus (#1729)", () => {
       files(ctx.userHome).filter(
         (f) =>
           f.endsWith("oa-bus.service") &&
-          readFileSync(f, "utf8").includes(join(ctx.home, "rescue")),
+          readFileSync(f, "utf8").includes(
+            join(ctx.home, "Open Artifacts Bus"),
+          ),
       ),
     ).toHaveLength(1);
     expect(naming("opencode.json")).toHaveLength(1);
