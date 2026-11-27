@@ -300,7 +300,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/ci/prod-setup.sh preflight
       - id: record
-        name: Record the Worker version and a D1 Time Travel bookmark; capture the database
+        name: Record the Worker version and a D1 Time Travel bookmark
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
@@ -319,16 +319,30 @@ jobs:
           OA_CHECK_NO_TEST_HOOKS: "1"
         run: bash scripts/ci/prod-setup.sh upgrade
       - id: verify
-        name: Verify the migrated database against the capture
+        name: Check the applied migration list against the release tag
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/ci/prod-migration-guard.sh verify
-      # The upgrade or its verification failed after the bookmark: roll the
-      # Worker back (new code can't run on the old schema), then restore D1,
-      # then compare it with the capture. Only when this run allows it (the
-      # user's yes for that release); otherwise page with what to restore.
+      # #2257: the deploy is only done when the instance says so.
+      - name: Check prod serves the released version
+        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
+        timeout-minutes: 5
+        env:
+          HOST: ${{ env.PROD_APP_HOST }}
+        run: |
+          want="${TAG#v}"
+          got=""
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -er 'select(.ok == true) | .version')" || got=""
+            [ "$got" = "$want" ] && { echo "$HOST serves $got"; exit 0; }
+            sleep 10
+          done
+          echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
+          exit 1
+      # Restore only when explicitly authorized for this run. Otherwise report
+      # the recorded Worker version and bookmark for a recovery decision.
       - name: Roll the Worker back and restore D1 to the bookmark
         if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true
         env:
@@ -345,22 +359,6 @@ jobs:
         run: |
           echo "::error title=Prod migration failed::not restored (not authorized for this run). Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
           echo "**Not restored.** Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
-      # #2257: the deploy is only done when the instance says so.
-      - name: Check prod serves the released version
-        if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
-        timeout-minutes: 5
-        env:
-          HOST: ${{ env.PROD_APP_HOST }}
-        run: |
-          want="${TAG#v}"
-          got=""
-          for _ in 1 2 3 4 5 6 7 8 9 10; do
-            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -r '.version // empty')" || got=""
-            [ "$got" = "$want" ] && { echo "$HOST serves $got"; exit 0; }
-            sleep 10
-          done
-          echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
-          exit 1
       - name: Revoke leaked setup-ci tokens
         if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3

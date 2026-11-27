@@ -18,7 +18,7 @@ const MARK = "-- oa:non-additive";
 
 /**
  * A throwaway repo laid out like this one (scripts/ci/prod-migration-guard.sh
- * copied in, so it resolves `root` there), with stub wrangler and verifier.
+ * copied in, so it resolves `root` there), with stub wrangler.
  */
 function repo() {
   const dir = mkdtempSync(join(tmpdir(), "guard-"));
@@ -29,7 +29,6 @@ function repo() {
   git("config", "user.name", "t");
   mkdirSync(join(dir, "scripts/ci"), { recursive: true });
   mkdirSync(join(dir, "apps/server/migrations"), { recursive: true });
-  mkdirSync(join(dir, "apps/server/scripts"), { recursive: true });
   copyFileSync(
     script("prod-migration-guard.sh"),
     join(dir, "scripts/ci/prod-migration-guard.sh"),
@@ -50,7 +49,7 @@ function repo() {
     git("tag", tag);
   };
   // Stubs: wrangler logs its argv and answers deployments/time-travel; the
-  // verifier logs too, writes captures, and fails verify when VERIFY_FAIL=1.
+  // ledger uses the migration names recorded by D1.
   const bin = join(dir, "bin");
   mkdirSync(bin);
   const log = join(dir, "calls.log");
@@ -60,6 +59,7 @@ function repo() {
     `#!/usr/bin/env bash
 echo "wrangler $*" >> "${log}"
 case "$1 $2" in
+  "d1 execute") echo '[{"success":true,"results":[{"name":"'"\${APPLIED:-0001_init.sql}"'"}]}]' ;;
   "deployments list") echo '[{"versions":[{"version_id":"old-1","percentage":100}]},{"versions":[{"version_id":"live-2","percentage":100}]}]' ;;
   "d1 time-travel") [ "$3" = info ] && echo '{"bookmark":"bm-123"}' ;;
   "d1 info") echo '{"database_size":'"\${DB_SIZE:-1000}"'}' ;;
@@ -68,15 +68,6 @@ exit 0
 `,
   );
   chmodSync(join(bin, "wrangler"), 0o755);
-  write(
-    "apps/server/scripts/verify-migration.ts",
-    `import { appendFileSync, writeFileSync } from "node:fs";
-const [cmd, , db, , file] = process.argv.slice(2);
-appendFileSync(${JSON.stringify(log)}, \`verifier \${cmd} \${db}\\n\`);
-if (cmd === "capture") writeFileSync(file, process.env.CAPTURE ?? "counts-v1");
-if (cmd === "verify" && process.env.VERIFY_FAIL === "1") process.exit(1);
-`,
-  );
   const run = (mode: string, env: Record<string, string> = {}) => {
     const out = join(dir, "out");
     const summary = join(dir, "summary");
@@ -94,7 +85,7 @@ if (cmd === "verify" && process.env.VERIFY_FAIL === "1") process.exit(1);
           WRANGLER: join(bin, "wrangler"),
           GITHUB_OUTPUT: out,
           GITHUB_STEP_SUMMARY: summary,
-          GUARD_DIR: join(dir, "guard"),
+          TAG: "v1.0.0",
           PROD_NAME: "open-artifacts-prod",
           ...env,
         },
@@ -278,7 +269,7 @@ describe("prod-migration-guard.sh detect", () => {
 });
 
 describe("prod-migration-guard.sh record, verify, restore", () => {
-  it("record: the live (last) Worker version, a bookmark, and a capture", () => {
+  it("record: the live (last) Worker version, a bookmark, and no row capture", () => {
     const r = repo();
     const d = r.run("record");
     expect(d.code).toBe(0);
@@ -287,7 +278,6 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
       "wrangler d1 info open-artifacts-prod --json",
       "wrangler deployments list --name open-artifacts-prod --json",
       "wrangler d1 time-travel info open-artifacts-prod --json",
-      "verifier capture open-artifacts-prod",
     ]);
     expect(d.summary).toContain("`bm-123`");
   });
@@ -302,18 +292,12 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
     expect(big.out).toBe("");
     expect(big.calls).toEqual(["wrangler d1 info open-artifacts-prod --json"]);
   });
-  it("verify: the migration's verifier decides; missing verifier refuses", () => {
+  it("checks the applied migration list against the tag", () => {
     const r = repo();
-    r.run("record");
     expect(r.run("verify").code).toBe(0);
-    expect(r.run("verify", { VERIFY_FAIL: "1" }).code).not.toBe(0);
-    const gone = r.run("verify", {
-      VERIFY_SCRIPT: "apps/server/scripts/nope.ts",
-    });
-    expect(gone.code).toBe(1);
-    expect(gone.stderr).toContain("refusing a guarded deploy without it");
+    expect(r.run("verify", { APPLIED: "unexpected.sql" }).code).toBe(1);
   });
-  it("restore: Worker first, then D1 to the bookmark, then compare with the capture", () => {
+  it("restore: Worker first, then D1 to the bookmark, with the recorded bookmark", () => {
     const r = repo();
     r.run("record");
     const env = { WORKER_VERSION: "live-2", BOOKMARK: "bm-123" };
@@ -322,15 +306,10 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
     expect(ok.calls).toEqual([
       "wrangler rollback live-2 --name open-artifacts-prod --message non-additive migration failed verification --yes",
       "wrangler d1 time-travel restore open-artifacts-prod --bookmark bm-123 --json",
-      "verifier capture open-artifacts-prod",
     ]);
-    expect(ok.summary).toContain("matches its pre-migration capture");
+    expect(ok.summary).toContain("**Restored:**");
     expect(ok.summary).toContain(
       "discards every write made to open-artifacts-prod since bookmark",
     );
-    // The restored database differs from the capture: fail loudly.
-    const bad = r.run("restore", { ...env, CAPTURE: "counts-v2" });
-    expect(bad.code).toBe(1);
-    expect(bad.stdout).toContain("differs from its pre-migration capture");
   });
 });

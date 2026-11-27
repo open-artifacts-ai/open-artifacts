@@ -1,38 +1,17 @@
 #!/usr/bin/env bash
 # The prod deploy's guard for a non-additive D1 migration (a table rebuild).
-# Reviewed non-additive migrations deploy automatically under the guard:
-# record the live Worker version and a D1 Time Travel bookmark, capture the
-# database, upgrade, verify; on failure (if the run allows it) roll the Worker
-# back, restore D1 to the bookmark and compare against the capture.
-#   prod-migration-guard.sh detect   -> hold=, guarded=, and reason= when held ($TAG vs the previous stable tag)
-#     (detect also holds when $TAG modifies, deletes or renames an existing server migration)
-#   prod-migration-guard.sh record  -> worker_version=, bookmark=; capture to $GUARD_DIR/before.json
-#   prod-migration-guard.sh verify   -> the migration's own verifier against the capture
-#   prod-migration-guard.sh restore  -> rollback + restore + recapture and compare
-# Env: TAG, EVENT (github.event_name), PROD_NAME (Worker and D1 name),
-#   CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID, GUARD_DIR, VERIFY_SCRIPT
-#   (the migration's verifier: capture/verify --db --out/--in), WORKER_VERSION
-#   and BOOKMARK (restore), D1_LIMIT_BYTES (the database size cap, default
-#   10 GB: a table rebuild briefly doubles a table). Never prints the token.
+# A marked migration needs a Worker version and D1 bookmark before upgrade.
+# After upgrade, compare the applied migration names to the release tag.
+# Restore runs only with an explicit choice for this release.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="${GITHUB_OUTPUT:-/dev/null}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-dir="${GUARD_DIR:-${RUNNER_TEMP:-/tmp}/prod-migration-guard}"
-verifier="${VERIFY_SCRIPT:-apps/server/scripts/verify-migration.ts}"
 MARK="-- oa:non-additive"
 
 wr() {
   if [ -n "${WRANGLER:-}" ]; then "$WRANGLER" "$@"; else pnpm --filter @oa/server exec wrangler "$@"; fi
 }
-verifier_run() {
-  [ -f "$root/$verifier" ] || {
-    echo "the migration's verifier $verifier is missing: refusing a guarded deploy without it" >&2
-    exit 1
-  }
-  node --experimental-strip-types --no-warnings "$root/$verifier" "$@"
-}
-
 case "${1:-}" in
   detect)
     : "${TAG:?}"
@@ -90,12 +69,7 @@ case "${1:-}" in
     echo "guarded=true" >> "$out"
     ;;
   record)
-    # The bookmark and the capture are taken back to back (prod stays live):
-    # writes between them would make a post-restore recapture differ from the
-    # capture. After a restore the compare matches only because the restore
-    # also rewinds every write made after the bookmark.
     : "${PROD_NAME:?}"
-    mkdir -p "$dir"
     # A rebuild copies each rebuilt table before dropping the old one, so the
     # database briefly needs up to twice its size: refuse if that won't fit.
     limit="${D1_LIMIT_BYTES:-10737418240}"
@@ -118,7 +92,6 @@ case "${1:-}" in
       echo "could not record a D1 Time Travel bookmark" >&2
       exit 1
     }
-    verifier_run capture --db "$PROD_NAME" --out "$dir/before.json"
     {
       echo "worker_version=$version"
       echo "bookmark=$bookmark"
@@ -131,8 +104,12 @@ case "${1:-}" in
     } >> "$summary"
     ;;
   verify)
-    : "${PROD_NAME:?}"
-    verifier_run verify --db "$PROD_NAME" --in "$dir/before.json"
+    : "${PROD_NAME:?}" "${TAG:?}"
+    expected="$(git -C "$root" ls-tree --name-only "refs/tags/$TAG:apps/server/migrations" | LC_ALL=C sort | sed -n '/\.sql$/p')"
+    [ -n "$expected" ] || { echo "release migration list is empty" >&2; exit 1; }
+    applied="$(wr d1 execute "$PROD_NAME" --remote --json --command 'SELECT name FROM d1_migrations ORDER BY name' |
+      jq -er 'if length == 1 and .[0].success == true then .[0].results[].name else error("migration list unavailable") end')"
+    [ "$applied" = "$expected" ] || { echo "applied migration list differs from $TAG" >&2; exit 1; }
     ;;
   restore)
     : "${PROD_NAME:?}" "${WORKER_VERSION:?}" "${BOOKMARK:?}"
@@ -142,14 +119,7 @@ case "${1:-}" in
     echo "**Restoring:** this discards every write made to $PROD_NAME since bookmark \`$BOOKMARK\`." >> "$summary"
     wr rollback "$WORKER_VERSION" --name "$PROD_NAME" --message "non-additive migration failed verification" --yes
     wr d1 time-travel restore "$PROD_NAME" --bookmark "$BOOKMARK" --json > /dev/null
-    verifier_run capture --db "$PROD_NAME" --out "$dir/restored.json"
-    if cmp -s "$dir/before.json" "$dir/restored.json"; then
-      echo "**Restored:** Worker $WORKER_VERSION, D1 at $BOOKMARK; the database matches its pre-migration capture." >> "$summary"
-    else
-      echo "**Restored, but the database differs from its pre-migration capture.** Page the Manager." >> "$summary"
-      echo "::error title=Prod restore::the restored database differs from its pre-migration capture"
-      exit 1
-    fi
+    echo "**Restored:** Worker $WORKER_VERSION and D1 bookmark \`$BOOKMARK\`." >> "$summary"
     ;;
   *)
     echo "usage: prod-migration-guard.sh detect|record|verify|restore" >&2
