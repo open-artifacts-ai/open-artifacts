@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync, rmdirSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as retryAfter } from "node:timers/promises";
-import { procStartOf } from "@oa/bus-adapter-claude-code";
+import { procStartOf } from "@oa/bus-ipc/process-start";
 
 const prefix = ".oa-bus-agy-ticket.";
 const ticketName =

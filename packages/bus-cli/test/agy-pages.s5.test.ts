@@ -207,7 +207,14 @@ describe("Antigravity pages entry (agy S5)", () => {
 
   it("recovers a ticket left by a process that exits inside the config lock", async () => {
     const { deps, h, file } = setup();
-    const child = ownershipProcess("exit", h);
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./fixtures/agy-lock-exit.ts", import.meta.url)),
+        h,
+      ],
+      { stdio: "inherit" },
+    );
     expect((await once(child, "exit"))[0]).toBe(42);
     await installAdapters(deps);
     expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
@@ -239,7 +246,7 @@ describe("Antigravity pages entry (agy S5)", () => {
             });
           });
           for (const bus of [join(h, ".oa-bus"), second]) {
-            const child = ownershipProcess("uninstall", h, bus);
+            const child = ownershipProcess(h, bus);
             children.push(child);
             done.push(
               once(child, "exit").then(([code]) => {
