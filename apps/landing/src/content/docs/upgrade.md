@@ -51,7 +51,7 @@ A release may contain a reviewed migration that removes data. Before upgrading, 
    ```sh
    PROD_NAME="$NAME" TAG="$TAG" bash scripts/ci/prod-migration-guard.sh verify &&
      health="$(curl -fsS "$ORIGIN/healthz")" &&
-     printf '%s' "$health" | jq -es --arg version "${TAG#v}" 'length == 1 and (.[0] | .ok == true and .version == $version)'
+     printf '%s' "$health" | node -e 'const h = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(h?.ok === true && h.version === process.argv[1] ? 0 : 1)' "${TAG#v}"
    ```
 
    On either mismatch or command failure, stop and retain the recorded Worker version and bookmark. Restoring D1 discards writes made since the bookmark and requires a separate decision. Report success only when both checks pass.

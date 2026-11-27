@@ -108,7 +108,15 @@ case "${1:-}" in
     expected="$(git -C "$root" ls-tree --name-only "refs/tags/$TAG:apps/server/migrations" | LC_ALL=C sort | sed -n '/\.sql$/p')"
     [ -n "$expected" ] || { echo "release migration list is empty" >&2; exit 1; }
     applied="$(wr d1 execute "$PROD_NAME" --remote --json --command 'SELECT name FROM d1_migrations ORDER BY name' |
-      jq -er 'if length == 1 and .[0].success == true then .[0].results[].name else error("migration list unavailable") end')"
+      node -e '
+        const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        if (!Array.isArray(result) || result.length !== 1 || result[0]?.success !== true ||
+            !Array.isArray(result[0].results)) throw new Error("migration list unavailable");
+        for (const row of result[0].results) {
+          if (typeof row?.name !== "string" || /[\r\n]/.test(row.name)) throw new Error("invalid migration name");
+          console.log(row.name);
+        }
+      ')"
     [ "$applied" = "$expected" ] || { echo "applied migration list differs from $TAG" >&2; exit 1; }
     ;;
   *)

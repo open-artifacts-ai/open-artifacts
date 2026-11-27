@@ -69,7 +69,7 @@ export function renderUpgradeTemplate(): string {
   return `---
 name: ${T("name")}
 description: "Open Artifacts (${T("host")}) upgrade: check whether ${T("host")}, the user's own Open Artifacts instance, runs the latest stable release, show what changed, and upgrade it with the user's Cloudflare deploy token. Use when the user asks to upgrade, update or check the version of their Open Artifacts instance, or asks what is new in it."
-compatibility: "Requires a shell with git, pnpm, curl, jq and Node.js, and the user's Cloudflare deploy token"
+compatibility: "Requires a shell with git, pnpm, curl and Node.js, and the user's Cloudflare deploy token"
 metadata:
   version: "${T("version")}"
   instance: "${T("host")}"
@@ -235,7 +235,7 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 \`\`\`sh
 ${CF_ENV} PROD_NAME=${NAME} TAG="$TAG" bash scripts/ci/prod-migration-guard.sh verify &&
   health="$(curl -fsS "${T("origin")}/healthz")" &&
-  printf '%s' "$health" | jq -es --arg version "\${TAG#v}" 'length == 1 and (.[0] | .ok == true and .version == $version)'
+  printf '%s' "$health" | node -e 'const h = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(h?.ok === true && h.version === process.argv[1] ? 0 : 1)' "\${TAG#v}"
 \`\`\`
 
 If either check fails, stop and keep the recorded Worker version and bookmark for the operator. Report success only after both checks pass.
