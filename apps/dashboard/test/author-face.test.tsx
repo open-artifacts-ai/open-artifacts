@@ -129,3 +129,47 @@ describe("#1822 author face", () => {
     expect(c.querySelector("[data-for] [role=img], [data-for] img")).toBeNull();
   });
 });
+
+describe("#3132 an agent shown as its role", () => {
+  it("names the role; the session and who holds the role now are small print", () => {
+    const c = face({
+      ...linked,
+      name: "OA Platform",
+      session: "OA Platform L",
+      role: { name: "OA Platform", machine: "laptop" },
+    });
+    expect(c.querySelector("[data-role-session]")?.textContent).toBe(
+      "on the laptop · ",
+    );
+    const moved = face({
+      ...linked,
+      name: "OA Platform",
+      session: "OA Platform L",
+      role: {
+        name: "OA Platform",
+        machine: "laptop",
+        holder: "OA Platform W",
+        holderMachine: "workstation",
+      },
+    });
+    expect(moved.querySelector("[data-role-session]")?.textContent).toBe(
+      "was on the laptop, now on the workstation · ",
+    );
+    expect(moved.textContent).toContain("for Leo Urbina");
+  });
+
+  it("falls back to the app when no machine label is available", () => {
+    const c = face({
+      ...linked,
+      session: "OA Platform L",
+      role: { name: "OA Platform" },
+    });
+    expect(c.querySelector("[data-role-session]")?.textContent).toBe(
+      "on Claude Code · ",
+    );
+  });
+
+  it("an agent with no role shows no session line", () => {
+    expect(face(linked).querySelector("[data-role-session]")).toBeNull();
+  });
+});

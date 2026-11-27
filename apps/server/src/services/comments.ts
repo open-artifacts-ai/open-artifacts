@@ -66,6 +66,7 @@ import {
   nameClashes,
   partyIdentityFace,
   plainAgentName,
+  productOf,
   shownName,
 } from "./agent-display.js";
 import {
@@ -93,7 +94,14 @@ import {
   reconcileAsks,
 } from "./asks.js";
 import { askApproveAudit, audit, userActor } from "./audit.js";
-import { agentIdentityOf, agentNamesOf, busHub, roleHolderFor } from "./bus.js";
+import {
+  type AgentFaceRow,
+  agentFacesOf,
+  agentIdentityOf,
+  agentNamesOf,
+  busHub,
+  roleHolderFor,
+} from "./bus.js";
 import {
   type AskerAddress,
   agentKey,
@@ -104,6 +112,7 @@ import {
   notifyAnswered,
   observedAway,
   type RosterAgent,
+  shortMachine,
   storedAgent,
   viewerRosterAgents,
 } from "./comment-agents.js";
@@ -415,6 +424,47 @@ type Ctx = {
   clash: NameClashes;
   /** #1889: identity id to the agent's current bus name, from its owner's hub; a miss keeps the stored name. */
   names: Map<string, string>;
+  /** #3132: holding intervals by identity, with the current holder of each moved role. */
+  roles: Map<string, NonNullable<AgentFaceRow["intervals"]>>;
+};
+
+/**
+ * #3132: an agent shown as its role on a page: `name` is the role, and
+ * `session` the session's own name for the small print. Only for a viewer
+ * who may see who the agent is (never a guest other than its owner, never
+ * an outsider); otherwise the author as it was.
+ */
+const withRole = (
+  author: CommentAuthor,
+  identityId: string | undefined,
+  owner: string | undefined,
+  viewer: CommentViewer,
+  ctx: Ctx,
+  at?: string | null,
+): CommentAuthor => {
+  if (!identityId || outsider(viewer) || viewer.userId === null) return author;
+  if (faceViewer(viewer).guest && viewer.userId !== owner) return author;
+  const time = at ? Date.parse(at) : Date.now();
+  const interval = ctx.roles
+    .get(identityId)
+    ?.find((r) => r.since <= time && (r.until === null || time < r.until));
+  if (!interval) return author;
+  const role = {
+    name: interval.role,
+    ...(viewer.userId === owner &&
+      interval.machine && {
+        machine: shortMachine(interval.machine) ?? undefined,
+      }),
+    ...(viewer.userId === owner &&
+      interval.holder &&
+      interval.holderMachine && {
+        holderMachine: shortMachine(interval.holderMachine) ?? undefined,
+      }),
+    ...(interval.holder &&
+      interval.holderKind && { holderProduct: productOf(interval.holderKind) }),
+    ...(interval.holder && { holder: interval.holder }),
+  };
+  return { ...author, name: role.name, session: author.name, role };
 };
 
 /** A party's name today: its linked agent's current bus name, else the one stored with it. */
@@ -428,6 +478,7 @@ const authorView = (
   a: StoredActor,
   viewer: CommentViewer,
   ctx: Ctx,
+  at?: string | null,
 ): CommentAuthor => {
   const { users, clash } = ctx;
   if (a.kind === "guest")
@@ -441,24 +492,31 @@ const authorView = (
   // before #1789) reads as the agent at read time; no row is migrated. A
   // linked one shows its current name (#1889), renamed before any masking.
   if (a.agent)
-    return agentFace(
-      {
-        ref: a.ref,
-        agent: a.agent.identity
-          ? {
-              ...a.agent,
-              identity: {
-                ...a.agent.identity,
-                name:
-                  ctx.names.get(a.agent.identity.identityId) ??
-                  a.agent.identity.name,
-              },
-            }
-          : a.agent,
-      },
-      faceViewer(viewer),
-      u,
-      clash,
+    return withRole(
+      agentFace(
+        {
+          ref: a.ref,
+          agent: a.agent.identity
+            ? {
+                ...a.agent,
+                identity: {
+                  ...a.agent.identity,
+                  name:
+                    ctx.names.get(a.agent.identity.identityId) ??
+                    a.agent.identity.name,
+                },
+              }
+            : a.agent,
+        },
+        faceViewer(viewer),
+        u,
+        clash,
+      ),
+      a.agent.identity?.identityId,
+      a.ref,
+      viewer,
+      ctx,
+      at,
     );
   const me = viewer.userId !== null && viewer.userId === a.ref;
   return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
@@ -487,7 +545,7 @@ export const NAMES_OWNERS_MAX = 25;
 /** #1889: current names are kept per isolate for this long (keyed by owner and identity), at most NAMES_CACHE_MAX of them. */
 export const NAMES_TTL_MS = 30_000;
 const NAMES_CACHE_MAX = 2000;
-const namesCache = new Map<string, { name: string; at: number }>();
+const namesCache = new Map<string, { face: AgentFaceRow; at: number }>();
 
 /** Every member's name, removed ones too (their names stay reserved), cached. */
 export async function allClashes(env: Env): Promise<NameClashes> {
@@ -532,14 +590,20 @@ async function ctxFor(
     comments: [],
   },
 ): Promise<Ctx> {
-  const [users, clash, names] = await Promise.all([
+  const [users, clash, faces] = await Promise.all([
     usersById(env, ids),
     agents ? allClashes(env) : Promise.resolve(new Map() as NameClashes),
     agents
       ? currentNames(env, shown)
-      : Promise.resolve(new Map<string, string>()),
+      : Promise.resolve(new Map<string, AgentFaceRow>()),
   ]);
-  return { users, clash, names };
+  const names = new Map<string, string>();
+  const roles: Ctx["roles"] = new Map();
+  for (const [id, f] of faces) {
+    if (f.name) names.set(id, f.name);
+    if (f.intervals) roles.set(id, f.intervals);
+  }
+  return { users, clash, names, roles };
 }
 
 /**
@@ -555,7 +619,7 @@ export async function currentNames(
     actors?: (StoredActor | null)[];
     agents?: { owner: string; identity?: StoredIdentity }[];
   },
-): Promise<Map<string, string>> {
+): Promise<Map<string, AgentFaceRow>> {
   const byOwner = new Map<string, Set<string>>();
   const add = (owner: string | undefined, id: string | undefined) => {
     if (!owner || !id) return;
@@ -576,22 +640,22 @@ export async function currentNames(
     for (const p of c.ask?.to ?? [])
       if (p.kind === "agent") add(p.owner, p.identity?.identityId);
   }
-  const out = new Map<string, string>();
+  const out = new Map<string, AgentFaceRow>();
   const now = Date.now();
   const need = new Map<string, string[]>();
   for (const [owner, ids] of byOwner)
     for (const id of ids) {
       const hit = namesCache.get(`${owner}\n${id}`);
-      if (hit && now - hit.at < NAMES_TTL_MS) out.set(id, hit.name);
+      if (hit && now - hit.at < NAMES_TTL_MS) out.set(id, hit.face);
       else need.set(owner, [...(need.get(owner) ?? []), id]);
     }
   // Owners beyond the cap keep their stored names.
   await Promise.all(
     [...need].slice(0, NAMES_OWNERS_MAX).map(async ([owner, ids]) => {
-      for (const [id, name] of await agentNamesOf(env, owner, ids)) {
-        out.set(id, name);
+      for (const [id, face] of await agentFacesOf(env, owner, ids)) {
+        out.set(id, face);
         if (namesCache.size >= NAMES_CACHE_MAX) namesCache.clear();
-        namesCache.set(`${owner}\n${id}`, { name, at: now });
+        namesCache.set(`${owner}\n${id}`, { face, at: now });
       }
     }),
   );
@@ -661,7 +725,9 @@ async function threadViews(
     anchor: t.anchor,
     version: t.version,
     status: t.status,
-    resolvedBy: t.resolvedBy ? authorView(t.resolvedBy, viewer, users) : null,
+    resolvedBy: t.resolvedBy
+      ? authorView(t.resolvedBy, viewer, users, t.resolvedAt)
+      : null,
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
@@ -918,24 +984,36 @@ const partyView = (
   p: StoredParty,
   viewer: CommentViewer,
   users: Ctx,
+  at: string,
 ): CommentAuthor =>
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
-    : {
-        // A stored identity adds linked, product and animal (#1890); a party
-        // without one keeps this shape, with no `linked`.
-        ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
-        kind: "agent",
-        id: p.key,
-        name: agentName(
-          currentName(p, users),
-          users.users.get(p.owner),
-          viewer,
-          users.clash,
-        ),
-        for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
-        me: viewer.userId !== null && viewer.userId === p.owner,
-      };
+    : withRole(
+        {
+          // A stored identity adds linked, product and animal (#1890); a party
+          // without one keeps this shape, with no `linked`.
+          ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
+          kind: "agent",
+          id: p.key,
+          name: agentName(
+            currentName(p, users),
+            users.users.get(p.owner),
+            viewer,
+            users.clash,
+          ),
+          for: forLine(
+            users.users.get(p.owner),
+            faceViewer(viewer),
+            users.clash,
+          ),
+          me: viewer.userId !== null && viewer.userId === p.owner,
+        },
+        p.identity?.identityId,
+        p.owner,
+        viewer,
+        users,
+        at,
+      );
 
 /** The identity fields of a named agent, from its stored identity; none without one. */
 const identityFace = (
@@ -1036,7 +1114,9 @@ const deciderFields = (
   const named = ask.decider !== undefined && ask.decider !== c.author.ref;
   return {
     decider: authorView({ kind: "user", ref: who }, viewer, users),
-    ...(named ? { chosenBy: authorView(c.author, viewer, users) } : {}),
+    ...(named
+      ? { chosenBy: authorView(c.author, viewer, users, c.createdAt) }
+      : {}),
     ...(role ? { role } : {}),
     ...(named &&
     !ask.answer &&
@@ -1046,7 +1126,7 @@ const deciderFields = (
       ? { canTakeBack: true }
       : {}),
     picks: latestPicks(ask.history ?? []).map((p) => ({
-      by: authorView(p.by, viewer, users),
+      by: authorView(p.by, viewer, users, p.at),
       ...(p.ownWords !== undefined
         ? { ownWords: { text: maskBody(p.ownWords, pairs) } }
         : { optionId: p.optionId }),
@@ -1107,7 +1187,7 @@ const commentOfRaw = (
   viewer: CommentViewer,
   users: Ctx,
 ): Comment => {
-  const author = authorView(c.author, viewer, users);
+  const author = authorView(c.author, viewer, users, c.createdAt);
   const shown = (c.mentions ?? []).map((m) =>
     agentName(
       currentName(m, users),
@@ -1167,7 +1247,7 @@ const commentOfRaw = (
                   },
                 }
               : {}),
-            to: c.ask.to.map((p) => partyView(p, viewer, users)),
+            to: c.ask.to.map((p) => partyView(p, viewer, users, c.createdAt)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
             ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
@@ -1192,7 +1272,12 @@ const commentOfRaw = (
                           },
                         }
                       : { optionId: c.ask.answer.optionId }),
-                    by: authorView(c.ask.answer.by, viewer, users),
+                    by: authorView(
+                      c.ask.answer.by,
+                      viewer,
+                      users,
+                      c.ask.answer.at,
+                    ),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
                     ...wasOf(c.ask),

@@ -35,6 +35,26 @@ export const CommentAuthorSchema = z.object({
   animal: z
     .object({ id: z.string(), color: z.number().int().min(0) })
     .optional(),
+  /**
+   * A linked agent only (#3132): the role its session holds, or held before
+   * the role moved on. The role is the address to @-mention; `holder` is the
+   * session that holds it now, when that is another one ("now <holder>").
+   * Never shown to a guest or an outsider.
+   */
+  role: z
+    .object({
+      name: z.string(),
+      holder: z.string().optional(),
+      machine: z.string().optional(),
+      holderMachine: z.string().optional(),
+      holderProduct: z.string().optional(),
+    })
+    .optional(),
+  /**
+   * With `role` (#3132): `name` is the role, and this is the session's own
+   * bus name, for the small print.
+   */
+  session: z.string().optional(),
   /** @deprecated Old "via <label>"; the server no longer sets it (`kind: "agent"` carries the name). */
   agent: z.string().optional(),
   me: z.boolean(),

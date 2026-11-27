@@ -1240,6 +1240,29 @@ describe("purge safety", () => {
     ]);
   });
 
+  it("purges adapter digests and empty hook folders, preserving foreign entries", () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
+    const assets = join(home, "adapter-assets");
+    const hooks = join(home, "codex-hooks");
+    mkdirSync(assets);
+    mkdirSync(hooks);
+    const hash = "a".repeat(64);
+    writeFileSync(join(assets, hash), "b".repeat(64));
+    writeFileSync(join(assets, "b".repeat(64)), "my notes");
+    mkdirSync(join(assets, "c".repeat(64)));
+    writeFileSync(join(assets, "notes.txt"), hash);
+    symlinkSync(join(assets, "notes.txt"), join(assets, "d".repeat(64)));
+    writeFileSync(join(hooks, "keep"), "mine");
+    expect(purge(home, own)).toMatchObject({ leftDir: true });
+    expect(readdirSync(assets).sort()).toEqual([
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64),
+      "notes.txt",
+    ]);
+    expect(readFileSync(join(hooks, "keep"), "utf8")).toBe("mine");
+  });
+
   it("keeps the user's own logs/ and config.json in a shared folder", () => {
     const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
     mkdirSync(join(home, "logs"));

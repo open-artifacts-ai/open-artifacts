@@ -1568,8 +1568,10 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         );
       const inDomain = email.endsWith(`@${MOCK_DOMAIN}`);
       const google = providerIds.includes("google");
-      if (inDomain && (google || providerIds.includes("email")))
-        return undefined;
+      const codes = providerIds.includes("email");
+      if (inDomain && (google || codes)) return undefined;
+      // #3184: with codes on, any invited row signs in by code.
+      if (!google && codes) return undefined;
       if (!google) {
         const reason = inDomain ? "no_sign_in_method" : "outside_domains";
         return err("invite_unreachable", INVITE_UNREACHABLE_MESSAGE[reason], {
@@ -1593,7 +1595,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           ...m,
           emailed: false,
           signIn: { status: "uncertain", reason: "outside_domains" },
-          signInMethods: ["google"],
+          signInMethods: codes ? ["google", "email"] : ["google"],
         },
         { status: 201 },
       );
@@ -2855,13 +2857,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     const member =
       kind === "invite" ||
       members.some((m) => m.email === email && m.role !== "guest");
-    const guest = !member;
     const out: SignInProviderId[] = [];
     if (google && (inDomain ? member : kind === "invite")) out.push("google");
-    // Codes: domain codes (Google off) in the domain; outside it, guests,
-    // and invited members on a Google install.
-    if (codes && (inDomain ? !google && member : guest || google))
-      out.push("email");
+    // Codes (#3184): any member row or invite, at its exact address, Google
+    // on or off; guests outside the domain.
+    if (codes && (member || !inDomain)) out.push("email");
     return orderSignInMethods(out);
   };
 

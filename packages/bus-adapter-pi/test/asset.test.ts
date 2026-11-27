@@ -67,6 +67,7 @@ async function fakeDaemon(
     conns.push(conn);
     sockets.push(sock);
     let buf = "";
+    sock.on("error", () => {});
     sock.on("close", () => {
       conn.closed = true;
     });
@@ -99,7 +100,9 @@ async function fakeDaemon(
                       global: false,
                     },
                   }
-                : undefined));
+                : f.type === "habits"
+                  ? { type: "habits", rules: null }
+                  : undefined));
         if (out) sock.write(`${JSON.stringify({ v: 1, id: f.id, ...out })}\n`);
       }
     });
@@ -257,7 +260,11 @@ describe("pi extension asset", () => {
 
   it("says hello at session start as the Pi session, with its UTC process start", async () => {
     const { d } = await started();
-    await vi.waitFor(() => expect(d.conns[0].frames).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(d.conns[0].frames.filter((f) => f.type === "hello")).toHaveLength(
+        1,
+      ),
+    );
     const hello = d.conns[0].frames[0];
     expect(hello).toMatchObject({
       v: 1,
@@ -891,7 +898,11 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     const d = await fakeDaemon(home);
     const o = ompHost();
     await o.emit("session_start", ompCtx("omp-root", "main", ""));
-    await vi.waitFor(() => expect(d.conns[0]?.frames).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(d.conns[0]?.frames.filter((f) => f.type === "hello")).toHaveLength(
+        1,
+      ),
+    );
     expect(d.conns[0]?.frames[0]).toMatchObject({
       type: "hello",
       kind: "omp",
@@ -906,7 +917,11 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
     await p.emit("session_start", ctx("pi-sess-1", ""));
-    await vi.waitFor(() => expect(d.conns[0]?.frames).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(d.conns[0]?.frames.filter((f) => f.type === "hello")).toHaveLength(
+        1,
+      ),
+    );
     expect(d.conns[0]?.frames[0]).toMatchObject({
       kind: "pi",
       proposed_name: "pi",
@@ -948,7 +963,9 @@ describe("set_status", () => {
     }),
   ) => started((f) => (f.type === "set_status" ? answer(f) : undefined));
   const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
-    d.conns[0].frames.filter((f) => f.type !== "hello").map((f) => f.type);
+    d.conns[0].frames
+      .filter((f) => f.type !== "hello" && f.type !== "habits")
+      .map((f) => f.type);
 
   it("Pi registers set_status before any session, and no card tool", async () => {
     const p = fakePi();
@@ -1065,7 +1082,7 @@ describe("follow tools (#1317)", () => {
         : undefined,
     );
   const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
-    d.conns[0].frames.filter((f) => f.type !== "hello");
+    d.conns[0].frames.filter((f) => f.type !== "hello" && f.type !== "habits");
 
   it("registers the three tools with the shared descriptions", () => {
     const p = fakePi();
@@ -1154,7 +1171,7 @@ describe("propose_reach tool (#1346)", () => {
   const at = (answer: (f: Frame) => Record<string, unknown>) =>
     started((f) => (f.type === "propose_reach" ? answer(f) : undefined));
   const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
-    d.conns[0].frames.filter((f) => f.type !== "hello");
+    d.conns[0].frames.filter((f) => f.type !== "hello" && f.type !== "habits");
   const url = `https://x.test/bus/reach/confirm#${"A".repeat(43)}`;
 
   it("sends the namespaces only, whatever else the caller names", async () => {

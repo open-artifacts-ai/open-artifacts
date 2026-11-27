@@ -5,13 +5,16 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import {
   ADAPTER_CAPS,
+  BRIEF_RULES,
   BUS_CMD,
   CLIENT_VERSION,
   type DaemonClient,
   Hello,
   HelloRefused,
+  habitsOff,
   SPAWNED_SOURCES,
 } from "@oa/bus-ipc";
+import { busHome } from "./session.ts";
 import { callTool, TOOLS, type ToolResult } from "./tools.ts";
 
 /** Codex sets this on every tools/call, next to `threadId` and `callId`; the model does not control it. */
@@ -153,6 +156,7 @@ export type CodexDeps = {
   connect: (hello: Hello) => Promise<DaemonClient>;
   pid?: number;
   ppid?: number;
+  busHome?: string;
 };
 
 /**
@@ -165,9 +169,15 @@ export function codexServer(deps: CodexDeps): Server {
   const pid = deps.pid ?? process.pid;
   const ppid = deps.ppid ?? process.ppid;
   let thread: string | undefined;
+  // #3043: pass BRIEF_RULES as initialize instructions unless opted out,
+  // matching Claude Code's main.ts (harmless on Codex versions that ignore it).
+  const rules = habitsOff(deps.busHome ?? busHome()) ? null : BRIEF_RULES;
   const server = new Server(
     { name: "oa_bus", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      ...(rules === null ? {} : { instructions: rules }),
+    },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [...TOOLS],

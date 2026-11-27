@@ -127,12 +127,34 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
     : "";
   const lead = isLinked ? app : "not linked";
   const rest = a.for ? `for ${a.for}` : "";
-  if (!lead && !rest) return null;
+  // Machine labels are visible to the owner; other viewers get the app.
+  const location = (machine?: string, product?: string) => {
+    if (machine)
+      return /^(laptop|workstation)$/i.test(machine)
+        ? `the ${machine.toLowerCase()}`
+        : machine;
+    return product || "an agent";
+  };
+  const role = a.role;
+  let session = "";
+  if (role) {
+    const origin = location(role.machine, app);
+    session = role.holder
+      ? `was on ${origin}, now on ${location(role.holderMachine, role.holderProduct)}`
+      : `on ${origin}`;
+  }
+  if (!lead && !rest && !session) return null;
   return (
     <span
       data-for=""
-      className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
+      className={`min-w-0 ${role ? "break-words" : "truncate"} text-[length:var(--oa-text-xs)] text-muted-foreground`}
     >
+      {session && (
+        <span data-role-session="">
+          {session}
+          {lead || rest ? " · " : ""}
+        </span>
+      )}
       {isLinked && <span className="sr-only">linked, </span>}
       {app ? (
         <>

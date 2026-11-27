@@ -19,6 +19,7 @@ import {
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
 import {
+  CODEX_HOOK_TRUST_LINE,
   findCodexBin,
   removeCodexEntry,
   sandboxRisk,
@@ -117,6 +118,7 @@ describe("Codex install (C26e)", () => {
     expect(readdirSync(s.codexHome).sort()).toEqual([
       "config.toml",
       "config.toml.oa-bus.bak",
+      "hooks.json",
     ]);
   });
 
@@ -228,6 +230,64 @@ describe("Codex install (C26e)", () => {
     expect(checkAdapters(s.deps).codex).toBe("missing");
     writeFileSync(s.config, '[mcp_servers.oa_bus]\ncommand = "x"\nargs = []\n');
     expect(checkAdapters(s.deps).codex).toBe("missing");
+  });
+
+  it("honours habits opt-out: creates no hooks.json and prints no trust or rules line (#3043)", async () => {
+    const s = setup({}, FIXTURE);
+    const busDir = join(s.h, ".oa-bus");
+    mkdirSync(busDir, { recursive: true });
+    writeFileSync(
+      join(busDir, "install.json"),
+      JSON.stringify({ habits: { optedOut: true } }),
+      { mode: 0o600 },
+    );
+
+    const out = await installAdapters(s.deps);
+    expect(out.installed).toEqual(["codex"]);
+    expect(existsSync(join(s.codexHome, "hooks.json"))).toBe(false);
+    expect(out.notes).not.toContain(CODEX_HOOK_TRUST_LINE);
+    expect(out.notes.some((n) => /\b(rules|habits)\b/i.test(n))).toBe(false);
+  });
+
+  it("honours habits opt-out: removes our hook while keeping a user hook byte-identical (#3043)", async () => {
+    const s = setup({}, FIXTURE);
+    const hooksPath = join(s.codexHome, "hooks.json");
+    const userContent = `${JSON.stringify(
+      {
+        hooks: {
+          SessionStart: [
+            {
+              matcher: "startup",
+              hooks: [
+                { type: "command", command: "/bin/user-hook", timeout: 5 },
+              ],
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    )}\n`;
+    writeFileSync(hooksPath, userContent);
+
+    // First install adds our hook alongside the user hook.
+    const first = await installAdapters(s.deps);
+    expect(first.notes).toContain(CODEX_HOOK_TRUST_LINE);
+    expect(readFileSync(hooksPath, "utf8")).toContain("rules codex-hook");
+
+    // Opt out and re-install: our hook is removed and the user hook is byte-identical.
+    const busDir = join(s.h, ".oa-bus");
+    mkdirSync(busDir, { recursive: true });
+    writeFileSync(
+      join(busDir, "install.json"),
+      JSON.stringify({ habits: { optedOut: true } }),
+      { mode: 0o600 },
+    );
+    const second = await installAdapters(s.deps);
+    expect(second.installed).toEqual(["codex"]);
+    expect(second.notes).not.toContain(CODEX_HOOK_TRUST_LINE);
+    expect(second.notes.some((n) => /\b(rules|habits)\b/i.test(n))).toBe(false);
+    expect(readFileSync(hooksPath, "utf8")).toBe(userContent);
   });
 });
 

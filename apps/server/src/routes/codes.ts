@@ -616,15 +616,21 @@ export function mountCodes(app: AppType): void {
     }
 
     const row = elig.userId ? await getUserWithEpoch(c.env, elig.userId) : null;
-    if (!row) return unauthorized({ reason: "expired" }, [clearPending(c)]);
+    // #3184 exact address: the row the session is signed for must still be
+    // at the mailbox just verified (its address may change between reads).
+    if (!row || row.user.email.toLowerCase() !== email)
+      return unauthorized({ reason: "expired" }, [clearPending(c)]);
     const user: Member = row.user;
     const guest = elig.kind === "guest";
     const domain = email.slice(email.lastIndexOf("@") + 1);
-    // An invited member outside the domains (codeRule, Google install): no
-    // tenant (it isn't a verified domain), the m marker instead; the
-    // middleware rechecks the row on every request.
-    const invited = !guest && !inDomains(cfg.domains, domain);
-    const tenant = guest || invited ? undefined : domain;
+    // A domain-code sign-in (domain codes on: trial, Google off) keeps its
+    // tenant, as before. Any other owner, admin or member row (#3184: outside
+    // the domains, or on an install without domain codes): no tenant, the m
+    // marker instead; the middleware rechecks the row on every request.
+    const domainCode =
+      !guest && cfg.domainCodes && inDomains(cfg.domains, domain);
+    const rowCode = !guest && !domainCode;
+    const tenant = domainCode ? domain : undefined;
     const maxAgeS = guest ? GUEST_MAX_AGE_S : undefined;
     const signedAt = Date.now();
     const sess = await signSession(c.env, user.id, signedAt, {
@@ -635,7 +641,7 @@ export function mountCodes(app: AppType): void {
       // The forced re-auth marker (#1372): a code sign-in is itself one, since
       // every code is new, emailed and typed by the person; no silent path.
       authAt: signedAt,
-      invitedMember: invited,
+      rowCode,
     });
     // The sign-in and its auth.signin audit row commit together; the last
     // statement reads the member's hosted fields (restriction included).

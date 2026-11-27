@@ -9,6 +9,7 @@ import {
   readFileSync,
   readlinkSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -265,6 +266,57 @@ describe("systemService: launchd", () => {
     await ensure();
     expect(plist()).not.toContain("OA_BUS_EXPERIMENTAL_AGY");
   });
+
+  it.each(["file", "link"])(
+    "leaves the working legacy unit running on a %s collision",
+    async (kind) => {
+      const { d, userHome, home, calls } = deps("darwin");
+      const service = systemService(d);
+      await service.ensure();
+      const current = join(home, "Open Artifacts Bus");
+      const legacy = join(home, "rescue");
+      renameSync(current, legacy);
+      const plist = plistOf(userHome);
+      const before = readFileSync(plist, "utf8").replace(current, legacy);
+      writeFileSync(plist, before);
+      if (kind === "link") symlinkSync(legacy, current);
+      else writeFileSync(current, "user file");
+      calls.length = 0;
+      await expect(service.ensure()).rejects.toThrow(/Open Artifacts Bus/);
+      expect(calls).toEqual([]);
+      expect(readFileSync(plist, "utf8")).toBe(before);
+      if (kind === "link") expect(readlinkSync(current)).toBe(legacy);
+      else expect(readFileSync(current, "utf8")).toBe("user file");
+    },
+  );
+  it("moves a legacy launchd install to Open Artifacts Bus", async () => {
+    const { d, userHome, home } = deps("darwin");
+    const service = systemService(d);
+    await service.ensure();
+    const current = join(home, "Open Artifacts Bus");
+    const legacy = join(home, "rescue");
+    const plist = plistOf(userHome);
+    renameSync(current, legacy);
+    writeFileSync(
+      plist,
+      readFileSync(plist, "utf8")
+        .replace(current, legacy)
+        .replaceAll("><", ">\n  <"),
+    );
+    chmodSync(legacy, 0o755);
+    expect(service.problems?.()).toContainEqual({
+      kind: "rescue-open",
+      path: legacy,
+    });
+    await service.ensure();
+    expect(readFileSync(plist, "utf8")).toContain(
+      `<string>${current}</string>`,
+    );
+    expect(statSync(current).mode & 0o777).toBe(0o700);
+    expect(existsSync(legacy)).toBe(false);
+    expect(service.problems?.()).toEqual([]);
+  });
+
   it("copies the cli, writes the plist and bootstraps it", async () => {
     const { d, calls, userHome, home } = deps("darwin");
     const s = systemService(d);
@@ -272,7 +324,7 @@ describe("systemService: launchd", () => {
     await s.ensure();
     const plist = readFileSync(plistOf(userHome), "utf8");
     expect(plist).toContain(
-      `<string>${home}/rescue</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
+      `<string>${home}/Open Artifacts Bus</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
       "<key>PATH</key><string>/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin</string>",
@@ -442,14 +494,14 @@ describe("systemService: systemd", () => {
       (s.problems?.() ?? []).filter((p) => p.kind === k);
     expect(rescue("rescue-missing")).toEqual([]);
     expect(rescue("rescue-open")).toEqual([]);
-    chmodSync(join(home, "rescue"), 0o755);
+    chmodSync(join(home, "Open Artifacts Bus"), 0o755);
     expect(rescue("rescue-open")).toEqual([
-      { kind: "rescue-open", path: join(home, "rescue") },
+      { kind: "rescue-open", path: join(home, "Open Artifacts Bus") },
     ]);
-    chmodSync(join(home, "rescue"), 0o700);
-    rmSync(join(home, "rescue"));
+    chmodSync(join(home, "Open Artifacts Bus"), 0o700);
+    rmSync(join(home, "Open Artifacts Bus"));
     expect(rescue("rescue-missing")).toEqual([
-      { kind: "rescue-missing", path: join(home, "rescue") },
+      { kind: "rescue-missing", path: join(home, "Open Artifacts Bus") },
     ]);
   });
 
@@ -465,7 +517,9 @@ describe("systemService: systemd", () => {
     const other = systemService({ ...d, ownerUid: () => mine + 1 });
     expect(
       (other.problems?.() ?? []).filter((p) => p.kind === "rescue-open"),
-    ).toEqual([{ kind: "rescue-open", path: join(home, "rescue") }]);
+    ).toEqual([
+      { kind: "rescue-open", path: join(home, "Open Artifacts Bus") },
+    ]);
     // No uid to compare (win32): only the mode counts.
     const none = systemService({ ...d, ownerUid: () => undefined });
     expect(
@@ -479,7 +533,7 @@ describe("systemService: systemd", () => {
     await s.ensure();
     const u = readFileSync(unitOf(userHome), "utf8");
     expect(u).toContain(
-      `ExecStart="${home}/rescue" "${home}/bin/dist/index.js" daemon`,
+      `ExecStart="${home}/Open Artifacts Bus" "${home}/bin/dist/index.js" daemon`,
     );
     expect(u).toContain(
       'Environment="PATH=/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin"',
