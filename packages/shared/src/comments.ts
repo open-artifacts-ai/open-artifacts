@@ -575,7 +575,10 @@ export type AnswerChallenge = z.infer<typeof AnswerChallengeSchema>;
 /** GET R.artifactAgents: the agents that follow or publish to the artifact. */
 export const ArtifactAgentSchema = z.object({
   key,
+  /** #3132: the role it holds, when it holds one (then `session` is its own name). */
   name: z.string(),
+  /** #3132: with a role as `name`, the session's own bus name, for the small print. */
+  session: z.string().optional(),
   /** `state === "online"`; kept for readers that predate `state`. */
   online: z.boolean(),
   /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */

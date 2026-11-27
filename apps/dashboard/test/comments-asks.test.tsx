@@ -1982,6 +1982,31 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
     expect(dots[2]).not.toMatch(/bg-\[var/);
   });
 
+  it.each(["online", "away"] as const)(
+    "shows the %s role holder’s machine in the @ menu",
+    (state) => {
+      const role: ArtifactAgent = {
+        key: "a:plat",
+        name: "OA Platform",
+        session: "OA Platform-2",
+        online: state === "online",
+        state,
+        lastActiveAt: hoursAgo(0),
+        machine: "workstation",
+      };
+      open([role]);
+      expect(
+        screen.getByRole("option", {
+          name: new RegExp(`OA Platform.*${state}.* · workstation`),
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("option")).not.toHaveTextContent("OA Platform-2");
+      expect(matchAgents([role], "oa plat")?.map((a) => a.key)).toEqual([
+        "a:plat",
+      ]);
+    },
+  );
+
   it("adds the machine only on rows whose name stem repeats", () => {
     open(matchAgents(MENU, "oa") ?? []);
     expect(

@@ -35,6 +35,8 @@ export type NoticeKind =
  * Nothing in it is authored by a person or an agent.
  */
 export type BusNotice = {
+  /** A roster-verified role target survives changes of holder. */
+  toRoleId?: string;
   /** Random id, for receipts and logs. */
   id: string;
   kind: NoticeKind;

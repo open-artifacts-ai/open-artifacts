@@ -112,6 +112,7 @@ import {
   notifyAnswered,
   observedAway,
   type RosterAgent,
+  roleIdFromKey,
   shortMachine,
   storedAgent,
   viewerRosterAgents,
@@ -1985,9 +1986,15 @@ async function resolveExtras(
   // sits in the DO write, so moving it ahead of this read is not a small change.
   // Only the viewer's own agents, never another member's.
   let own: Promise<RosterAgent[]> | undefined;
+  let roles: Promise<RosterAgent[]> | undefined;
   const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
-    if (a || !viewerId || !AGENT_KEY.test(key)) return a;
+    if (a || !viewerId) return a;
+    if (roleIdFromKey(key)) {
+      roles ??= agentRoster(env, artifactId, viewerId, true, true);
+      return (await roles).find((r) => r.key === key);
+    }
+    if (!AGENT_KEY.test(key)) return;
     own ??= viewerRosterAgents(env, artifactId, viewerId);
     return (await own).find((r) => r.key === key);
   };
@@ -2348,7 +2355,9 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
   const found = await Promise.all(
     keys.map((k) => {
       const a = byKey.get(k) as { userId: string; address: BusAddress };
-      return agentIdentityOf(env, a.userId, a.address);
+      return roleIdFromKey(k)
+        ? null
+        : agentIdentityOf(env, a.userId, a.address);
     }),
   );
   const ids = new Map(keys.map((k, i) => [k, found[i]]));
@@ -3249,6 +3258,7 @@ export async function artifactAgents(
     out.push({
       key: a.key,
       name: a.name,
+      ...(a.session && !masked ? { session: a.session } : {}),
       online: a.online,
       state: a.state,
       lastActiveAt: masked ? null : a.lastActiveAt,
@@ -3574,6 +3584,7 @@ async function withdrawHeldFor(
     const req = {
       namespace: p.namespace,
       name: p.name,
+      ...(roleIdFromKey(p.key) && { roleId: roleIdFromKey(p.key) }),
       ...(p.identity ? { identityId: p.identity.identityId } : {}),
       artifactId,
       threadId,
