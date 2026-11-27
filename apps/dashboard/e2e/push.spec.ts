@@ -42,7 +42,20 @@ async function stub(page: Page, s: Stub = {}) {
     });
     w.PushManager = function PushManager() {};
     let sub: object | null = null;
+    // Like a real PushSubscription: it keeps the key it was made with (#3024).
+    const asBuffer = (k: unknown): ArrayBuffer | null => {
+      if (k instanceof ArrayBuffer) return k.slice(0);
+      if (ArrayBuffer.isView(k))
+        return new Uint8Array(k.buffer, k.byteOffset, k.byteLength).slice()
+          .buffer;
+      if (typeof k === "string") {
+        const b = atob(k.replace(/-/g, "+").replace(/_/g, "/"));
+        return Uint8Array.from(b, (ch) => ch.charCodeAt(0)).buffer;
+      }
+      return null;
+    };
     const subscription = {
+      options: { applicationServerKey: null as ArrayBuffer | null },
       endpoint: "https://push.example.com/abc",
       toJSON: () => ({
         endpoint: "https://push.example.com/abc",
@@ -60,7 +73,10 @@ async function stub(page: Page, s: Stub = {}) {
       waiting: null,
       pushManager: {
         getSubscription: async () => sub,
-        subscribe: async () => {
+        subscribe: async (o?: PushSubscriptionOptionsInit) => {
+          subscription.options.applicationServerKey = asBuffer(
+            o?.applicationServerKey,
+          );
           sub = subscription;
           return subscription;
         },
@@ -158,10 +174,9 @@ test("off, then on from the click; the prompt waits for it", async ({
         (window as unknown as { __oaSwRegistered: unknown[] }).__oaSwRegistered,
     ),
   ).toEqual([["/sw.js", "/notifications/sw/"]]);
-  // Subscribed: Updates is this browser's own switch now.
   await expect(
     page.getByRole("switch", { name: "Updates in this browser" }),
-  ).toBeEnabled();
+  ).toHaveCount(0);
   await shot(page, "p2-settings-on");
   await axe(page);
 });

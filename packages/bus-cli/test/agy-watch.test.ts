@@ -785,7 +785,7 @@ describe("oa-bus agy-watch (agy S3)", () => {
       proc: (p) => table[p] ?? null,
       procStart: (p) => starts.get(p) ?? null,
       title: async () => undefined,
-      hello: async () => "agy",
+      hello: async () => ({ name: "agy" }),
       ppid: SHELL,
       watcherLive: (agy, s) =>
         agyWatchLive(ctx.home, agy, s, (p) => starts.get(p) ?? null),

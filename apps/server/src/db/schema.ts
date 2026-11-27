@@ -8,6 +8,7 @@ import {
 import { sql } from "drizzle-orm";
 import {
   check,
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -38,6 +39,7 @@ export const users = sqliteTable(
     name: text("name").notNull(),
     /** The name the user chose (PATCH /me); never touched by sign-in. */
     displayName: text("display_name"),
+    handle: text("handle"),
     role: text("role").notNull(),
     createdAt: integer("created_at").notNull(),
     lastSeenAt: integer("last_seen_at"),
@@ -100,7 +102,12 @@ export const users = sqliteTable(
      */
     commentEmail: integer("comment_email").notNull().default(1),
   },
-  () => [check("users_role_check", inList("role", RoleSchema.options))],
+  (t) => [
+    check("users_role_check", inList("role", RoleSchema.options)),
+    uniqueIndex("users_handle_unique")
+      .on(t.handle)
+      .where(sql`${t.handle} is not null`),
+  ],
 );
 
 // P3: every artifact lives in a space. A personal space's id is its owner's
@@ -514,6 +521,24 @@ export const shares = sqliteTable(
     primaryKey({ columns: [t.artifactId, t.email] }),
     index("shares_email_idx").on(t.email),
     check("shares_role_check", inList("role", ["viewer", "editor"])),
+  ],
+);
+
+/** Compatibility grants for pre-3269 shares. See migration 0054 for the legacy writer triggers. */
+export const legacyViewerComments = sqliteTable(
+  "legacy_viewer_comments",
+  {
+    id: integer("id").primaryKey(),
+    artifactId: text("artifact_id").notNull(),
+    email: text("email").notNull(),
+    canComment: integer("can_comment").notNull(),
+  },
+  (t) => [
+    index("legacy_viewer_by_share").on(t.artifactId, t.email, t.id),
+    foreignKey({
+      columns: [t.artifactId, t.email],
+      foreignColumns: [shares.artifactId, shares.email],
+    }).onDelete("cascade"),
   ],
 );
 

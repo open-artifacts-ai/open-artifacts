@@ -20,6 +20,10 @@ type Ctx = {
     getSessionId(): string;
     getSessionName?(): string | undefined;
   };
+  ui?: {
+    getEditorText?(): string;
+    onTerminalInput?(handler: (data: string) => void): () => void;
+  };
   /**
    * omp only (Pi has none): the agent this session runs, set on every omp
    * session (types.ts ExtensionAgentIdentity); `sub` for a subagent (task
@@ -1017,14 +1021,24 @@ function nameOf(title: string | undefined, kind: string): string {
   return cut || kind;
 }
 
-type Identity = { ref: string; cwd: string; name: string; kind: "pi" | "omp" };
+// Pi's session manager flattens multiline names before storing them.
+const piTitle = (name: string | undefined) =>
+  name?.replace(/[\r\n]+/g, " ").trim();
+
+type Identity = {
+  ref: string;
+  cwd: string;
+  name: string;
+  kind: "pi" | "omp";
+  nameChosen: boolean;
+};
 type Link = {
   ref: string;
   welcome: Frame;
   request: (frame: Json, timeoutMs?: number) => Promise<Frame>;
   ack: (msgId: string) => void;
   /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
-  rename: (name: string) => boolean;
+  rename: (name: string, chosen: boolean) => boolean;
   /** #1856: this link's proof hash, to a daemon whose welcome listed `link`; true only when it bound it. */
   prove: (hash: string) => Promise<boolean>;
   closed: () => boolean;
@@ -1098,11 +1112,16 @@ function open(
       // Fire-and-forget: the daemon answers an ack with nothing.
       ack: (msgId) => write({ type: "ack", id: `ack-${++seq}`, msg_id: msgId }),
       // Only to a daemon whose welcome listed `rename`: an older one has no such frame.
-      rename: (name) => {
+      rename: (name, chosen) => {
         const caps = link.welcome.caps;
         if (ended || !Array.isArray(caps) || !caps.includes("rename"))
           return false;
-        write({ type: "rename", id: `rename-${++seq}`, name });
+        write({
+          type: "rename",
+          id: `rename-${++seq}`,
+          name,
+          ...(chosen ? { name_chosen: true } : {}),
+        });
         return true;
       },
       prove: async (hash) => {
@@ -1195,6 +1214,7 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        ...(id.nameChosen ? { name_chosen: true } : {}),
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
@@ -1320,6 +1340,10 @@ export default function oaBus(pi: Pi): void {
   let proof: Proof | undefined;
   /** Whether the registered entry carries a proof header now. */
   let headed = false;
+  /** #3043: the bus rules the daemon gave this session; undefined when opted out or unavailable. */
+  let rules: string | undefined;
+  /** #3043: in-flight rules fetch for the current session, awaited by before_agent_start. */
+  let rulesFetch: Promise<void> | undefined;
 
   const isRecord = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1536,13 +1560,36 @@ export default function oaBus(pi: Pi): void {
     void offerProof(p);
   };
 
+  /** #3043: ask the daemon for the current bus rules once a link is open; never throws. */
+  const fetchRules = (link: Link): Promise<void> => {
+    const runFetch = async (): Promise<void> => {
+      try {
+        const r = await link.request({ type: "habits" }, SELF_TIMEOUT_MS);
+        if (stopped || current !== link) return;
+        rules =
+          r.type === "habits" &&
+          typeof r.rules === "string" &&
+          r.rules.length > 0
+            ? r.rules
+            : undefined;
+      } catch {
+        if (current === link) rules = undefined;
+      } finally {
+        if (rulesFetch === p) rulesFetch = undefined;
+      }
+    };
+    const p = runFetch();
+    rulesFetch = p;
+    return p;
+  };
+
   const reconnect = (e?: unknown) => {
     if (stopped || retry || !identity) return;
     const refused = (e as { refused?: boolean } | undefined)?.refused === true;
     refusals = refused ? refusals + 1 : 0;
     retry = setTimeout(() => {
       retry = undefined;
-      if (identity) void ensure(identity).catch(reconnect);
+      if (identity) void ensure(identity).then(fetchRules, reconnect);
     }, retryDelayMs(refusals));
     retry.unref?.();
   };
@@ -1566,7 +1613,11 @@ export default function oaBus(pi: Pi): void {
           );
         } catch {}
       },
-      lost: () => reconnect(),
+      lost: () => {
+        rules = undefined;
+        rulesFetch = undefined;
+        reconnect();
+      },
     }).then(
       (l) => {
         if (connecting?.link === link) connecting = undefined;
@@ -1580,10 +1631,11 @@ export default function oaBus(pi: Pi): void {
         // Renamed while this hello was in flight (#1635).
         if (
           identity.kind !== "omp" &&
-          identity.name !== id.name &&
-          identity.name !== identity.kind
+          (identity.name !== id.name ||
+            identity.nameChosen !== id.nameChosen) &&
+          (identity.name !== identity.kind || identity.nameChosen)
         )
-          l.rename(identity.name);
+          l.rename(identity.name, identity.nameChosen);
         return l;
       },
       (e: unknown) => {
@@ -1597,11 +1649,19 @@ export default function oaBus(pi: Pi): void {
 
   const identityOf = (ctx: Ctx): Identity => {
     const kind = ctx.agent !== undefined ? "omp" : "pi";
+    const ref = ctx.sessionManager.getSessionId();
+    const name = nameOf(ctx.sessionManager.getSessionName?.(), "");
     return {
-      ref: ctx.sessionManager.getSessionId(),
+      ref,
       cwd: ctx.cwd,
-      name: nameOf(ctx.sessionManager.getSessionName?.(), kind),
+      name: name || kind,
       kind,
+      nameChosen:
+        name !== "" &&
+        kind === "pi" &&
+        identity?.ref === ref &&
+        identity.name === name &&
+        identity.nameChosen,
     };
   };
 
@@ -1612,11 +1672,8 @@ export default function oaBus(pi: Pi): void {
    */
   const subagent = (ctx: Ctx | undefined) => ctx?.agent?.kind === "sub";
 
-  /**
-   * #1635: the session was renamed (/name, --name, setSessionName). One frame
-   * per change; nothing for the fallback name. The identity carries the name,
-   * so a reconnect's hello proposes the new one.
-   */
+  let stopWatchingName: (() => void) | undefined;
+  let submittedName: { ref: string; name: string } | undefined;
   const renamed = (ctx: Ctx) => {
     if (stopped || !identity) return;
     // omp titles a session itself ("auto") after its first message, and its
@@ -1624,13 +1681,53 @@ export default function oaBus(pi: Pi): void {
     // so omp never renames on the hub. (pi has no auto titles.)
     if (identity.kind === "omp") return;
     const id = identityOf(ctx);
-    if (id.ref !== identity.ref || id.name === identity.name) return;
-    identity = { ...identity, name: id.name };
-    if (id.name === id.kind) return;
+    if (id.ref !== identity.ref) return;
+    if (
+      submittedName?.ref === id.ref &&
+      submittedName.name === ctx.sessionManager.getSessionName?.()
+    )
+      id.nameChosen = true;
+    if (id.name === identity.name && id.nameChosen === identity.nameChosen)
+      return;
+    identity = id;
+    if (id.name === id.kind && !id.nameChosen) return;
     // An open link tells the daemon now; a daemon without the cap, or no
     // link, learns it from the next hello.
     if (current && !current.closed() && current.ref === id.ref)
-      current.rename(id.name);
+      current.rename(id.name, id.nameChosen);
+  };
+
+  // Pi handles the built-in /name in the editor before emitting extension
+  // input events. Its metadata event is also emitted by setSessionName.
+  const watchNameCommand = (ctx: Ctx) => {
+    const ui = ctx.ui;
+    return ui?.onTerminalInput?.((data) => {
+      // Enter and keypad Enter in Pi's legacy and Kitty keyboard modes.
+      if (
+        data !== "\r" &&
+        data !== "\n" &&
+        data !== "\x1bOM" &&
+        !(
+          data.startsWith("\x1b") &&
+          /^\[(?:13|57414)(?:;1(?::[12])?)?u$/.test(data.slice(1))
+        )
+      )
+        return;
+      const text = ui.getEditorText?.()?.trim();
+      if (!text?.startsWith("/name ")) return;
+      const name = piTitle(text.slice(6));
+      if (!name || !nameOf(name, "")) return;
+      const before = ctx.sessionManager.getSessionName?.();
+      const submission = { ref: ctx.sessionManager.getSessionId(), name };
+      submittedName = submission;
+      queueMicrotask(() => {
+        if (submittedName !== submission) return;
+        // The editor applies /name synchronously. Other extensions can delay
+        // delivery of session_info_changed.
+        if (ctx.sessionManager.getSessionName?.() !== before) renamed(ctx);
+        submittedName = undefined;
+      });
+    });
   };
   pi.on("session_info_changed", (_event, ctx) => {
     if (!subagent(ctx)) renamed(ctx);
@@ -1648,15 +1745,60 @@ export default function oaBus(pi: Pi): void {
     retryProof();
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
+    rules = undefined;
+    rulesFetch = undefined;
     // The entry works unlinked: no header until this session's link is bound.
     identity = identityOf(ctx);
+    stopWatchingName?.();
+    stopWatchingName = undefined;
+    if (identity.kind === "pi") {
+      if ((event as { reason?: string }).reason === "startup") {
+        let startName: string | undefined;
+        const argv = process.argv.slice(2);
+        for (let i = 0; i < argv.length && argv[i] !== "--"; i++) {
+          if (argv[i] === "--name" || argv[i] === "-n") startName = argv[++i];
+        }
+        const name = piTitle(startName);
+        if (nameOf(name, "") && name === ctx.sessionManager.getSessionName?.())
+          identity.nameChosen = true;
+      }
+      stopWatchingName = watchNameCommand(ctx);
+    }
     register();
     if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
-    await ensure(identityOf(ctx)).catch(reconnect);
+    const link = await ensure(identity).catch((e: unknown) => {
+      reconnect(e);
+      return undefined;
+    });
+    if (link) void fetchRules(link);
+  });
+  // #3043: append the daemon's bus rules to the system prompt for root sessions.
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (subagent(ctx)) return undefined;
+    if (rulesFetch) await rulesFetch;
+    const body = rules;
+    if (stopped || !body) return undefined;
+    const prompt =
+      event && typeof event === "object"
+        ? (event as { systemPrompt?: unknown }).systemPrompt
+        : undefined;
+    // Pi passes systemPrompt as a string; omp passes it as string[].
+    if (typeof prompt === "string")
+      return prompt.includes(body)
+        ? undefined
+        : { systemPrompt: `${prompt}\n\n${body}` };
+    if (
+      Array.isArray(prompt) &&
+      prompt.every((s): s is string => typeof s === "string")
+    )
+      return prompt.some((s) => s.includes(body))
+        ? undefined
+        : { systemPrompt: [...prompt, body] };
+    return undefined;
   });
   // omp's /new, /resume and fork keep the process and emit only these two, no
   // shutdown or start: a new session id gets a fresh link and a fresh proof.
@@ -1667,8 +1809,10 @@ export default function oaBus(pi: Pi): void {
       held = false;
       return;
     }
+    rules = undefined;
+    rulesFetch = undefined;
     dropHeader();
-    void ensure(id).catch(reconnect);
+    void ensure(id).then(fetchRules, reconnect);
   };
   // The switch emits before_switch first, and can be cancelled there: hold the
   // header back so a /mcp call inside newSession carries no old proof; a turn
@@ -1681,6 +1825,11 @@ export default function oaBus(pi: Pi): void {
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
+    rules = undefined;
+    rulesFetch = undefined;
+    stopWatchingName?.();
+    stopWatchingName = undefined;
+    submittedName = undefined;
     identity = identity ?? identityOf(ctx);
     dropHeader();
     ompWrap?.restore();

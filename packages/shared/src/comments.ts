@@ -23,6 +23,8 @@ export const CommentAuthorSchema = z.object({
   id: z.string().optional(),
   /** An agent's own name (never the person's), a guest's name, or a user's name. */
   name: z.string(),
+  handle: z.string().optional(),
+  mentionedAs: z.string().optional(),
   /** An agent only: the person it acts for, by public name (never an email). */
   for: z.string().optional(),
   /** An agent only: a bus-linked agent (#1822). False for a connection the server cannot tell apart. */
@@ -42,7 +44,13 @@ export const CommentAuthorSchema = z.object({
    * Never shown to a guest or an outsider.
    */
   role: z
-    .object({ name: z.string(), holder: z.string().optional() })
+    .object({
+      name: z.string(),
+      holder: z.string().optional(),
+      machine: z.string().optional(),
+      holderMachine: z.string().optional(),
+      holderProduct: z.string().optional(),
+    })
     .optional(),
   /**
    * With `role` (#3132): `name` is the role, and this is the session's own

@@ -16,8 +16,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterDeps } from "./adapters.ts";
-import { pluginHash } from "./hermes.ts";
-import { writeAtomic } from "./skill.ts";
+import { pluginHash, pluginOwnership, stampPlugin } from "./hermes.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 /** The plugin's id in openclaw.plugin.json, and its folder under extensions/. */
@@ -189,6 +188,13 @@ const recordedStateDir = (deps: AdapterDeps): string | undefined => {
 };
 const thisStateDir = (deps: AdapterDeps): string =>
   openclawStateDir(deps.home, deps.env ?? {});
+export function ownsOpenclawPlugin(deps: AdapterDeps, dest: string): boolean {
+  const owner = pluginOwnership(deps, join(dest, OPENCLAW_MARKER));
+  return (
+    owner === "owned" ||
+    (owner === "legacy" && recordedStateDir(deps) === thisStateDir(deps))
+  );
+}
 /** Clears the record only when it is for this state dir: another one's stays. */
 const forgetInstall = (deps: AdapterDeps) => {
   if (recordedStateDir(deps) === thisStateDir(deps))
@@ -312,6 +318,7 @@ export async function installOpenclaw(
     if (mk === "file" || mk === "link") rmSync(habitsFile, { force: true });
   };
   if (state === "current") {
+    stampPlugin(deps, join(dest, OPENCLAW_MARKER), shipped);
     rememberInstall(deps);
     dropLegacyHabitsMarker();
     // Nothing to install; nothing to enable if it already loads.
@@ -333,10 +340,7 @@ export async function installOpenclaw(
       throw new Error(
         `\`openclaw plugins install\` finished, but ${dest} is not there`,
       );
-    writeAtomic(
-      join(dest, OPENCLAW_MARKER),
-      `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
-    );
+    stampPlugin(deps, join(dest, OPENCLAW_MARKER), shipped);
     rememberInstall(deps);
     // #3043: habits now come from the bus; never leave a habits.on marker behind.
     dropLegacyHabitsMarker();

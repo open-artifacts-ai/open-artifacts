@@ -19,6 +19,7 @@ import worker from "../../src/index.js";
 import { oauthApi } from "../../src/mcp/oauth-api.js";
 import { runtimeStub } from "../../src/runtime/do.js";
 import { publish } from "../../src/services/artifacts.js";
+import { busHub, busOn } from "../../src/services/bus.js";
 import { getUser } from "../../src/services/users.js";
 import { mailer, seedUser, uniq } from "../auth-helpers.js";
 import { cachePlan, fakeBilling } from "../billing-helpers.js";
@@ -700,6 +701,27 @@ export async function buildWorld(): Promise<World> {
         Date.now(),
       );
       return id;
+    },
+    busRoleProposalId: async (who) => {
+      if (!TRAITS[who].session || !busOn(E)) return "probe-proposal";
+      const hub = busHub(E, u(who));
+      if (!hub) throw new Error("Missing bus hub");
+      const machineId = await makers.busMachineId(who);
+      await run(
+        "update bus_machines set last_used_at = ? where id = ?",
+        Date.now(),
+        machineId,
+      );
+      const namespace = "probe/ns";
+      const name = `probe-${newId()}`;
+      const role = await hub.putRole(namespace, name, null);
+      if (!role.ok) throw new Error(role.reason);
+      const proposal = await hub.proposeRole(
+        { action: "clear", namespace, name, agent: null },
+        newId(),
+      );
+      if (!proposal.ok) throw new Error(proposal.reason);
+      return proposal.proposal.id;
     },
     subscriptionId: async (who) => {
       const id = newId();

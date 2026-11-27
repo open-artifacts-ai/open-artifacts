@@ -6,6 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import {
   BUS_CAPS,
   type ClientFrame,
+  CODEX_VERDICT_HEADER,
   canonicalArgsSha256,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -47,10 +48,14 @@ type Check = {
 };
 
 /** A member, a machine, a daemon that listed codex_check and a live codex session `thread`. */
-async function scene(caps: string[] = CAPS, thread = uuid()) {
+async function scene(
+  caps: string[] = CAPS,
+  thread = uuid(),
+  headers: Record<string, string> = {},
+) {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
-  const d = await daemon(mach.token);
+  const d = await daemon(mach.token, headers);
   d.send({ ...hello(id("h")), caps } as ClientFrame);
   const ok = await waitFor(d, "hello_ok");
   d.send({
@@ -140,6 +145,38 @@ describe("hello (#3108)", () => {
 });
 
 describe("a Codex call with no proof (#3108)", () => {
+  it.each([
+    [true, "attested"],
+    [false, "daemon_refused"],
+  ] as const)(
+    "reports the final link decision for daemon answer %s",
+    async (ok, reason) => {
+      const { m, d, thread } = await scene(CAPS, uuid(), {
+        [CODEX_VERDICT_HEADER]: "1",
+      });
+      const result = await run(m.userId, d, body("ping", codeMeta(thread)), ok);
+      expect(Boolean(result.identity)).toBe(ok);
+      const verdict = await waitFor(d, "codex_call_verdict");
+      expect(verdict).toEqual({
+        v: 1,
+        id: expect.any(String),
+        type: "codex_call_verdict",
+        name: expect.stringMatching(/^Cx/),
+        reason,
+      });
+    },
+  );
+  it("does not send verdicts to a released codex_check daemon", async () => {
+    const { m, d, thread } = await scene();
+    const hub = await hubOf(m.userId);
+    await hub.codexCallVerdict(thread, "daemon_refused");
+    // A later check and its answer confirm the old connection remains usable.
+    const result = await run(m.userId, d, body("ping", codeMeta(thread)), true);
+    expect(result.identity).toBeDefined();
+    expect(
+      framesSeen(d).some((frame) => frame.type === "codex_call_verdict"),
+    ).toBe(false);
+  });
   it("code mode: links to the codex session of the thread when the daemon says yes", async () => {
     const { m, d, thread } = await scene();
     const meta = codeMeta(thread);
@@ -260,7 +297,7 @@ describe("a Codex call with no proof (#3108)", () => {
     const out = await runInDurableObject(hub, async (inst: BusHub) => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
-        const p = inst.codexCallCheck({
+        const p = inst.codexCallDecision({
           thread_id: thread,
           tool: "ping",
           mode: { kind: "code", call_id: meta.callId, item_id: meta.itemId },
@@ -271,7 +308,7 @@ describe("a Codex call with no proof (#3108)", () => {
         vi.useRealTimers();
       }
     });
-    expect(out).toBeNull();
+    expect(out).toEqual({ identity: null, reason: "lookup_timeout" });
     expect(checksOf(d)).toHaveLength(1);
   });
 
@@ -472,16 +509,19 @@ describe("limits (#3108)", () => {
     const stop = autoYes(d);
     await setClock(m.userId, Date.now() + 1_000_000);
     const hub = await hubOf(m.userId);
-    const results: unknown[] = [];
+    const results = [];
     for (let i = 0; i < 130; i++)
       results.push(
-        await hub.codexCallCheck({
+        await hub.codexCallDecision({
           thread_id: thread,
           tool: "ping",
           mode: { kind: "code", call_id: execCall(), item_id: itemId() },
         }),
       );
-    expect(results.filter((r) => r !== null)).toHaveLength(120);
+    expect(results.filter((r) => r.identity !== null)).toHaveLength(120);
+    expect(results.slice(120)).toEqual(
+      Array(10).fill({ identity: null, reason: "hub_rate_limit" }),
+    );
     expect(checksOf(d)).toHaveLength(120);
     await setClock(m.userId, null);
     await stop();

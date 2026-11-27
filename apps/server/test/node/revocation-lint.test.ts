@@ -153,8 +153,8 @@ const WIDENS: Readonly<Record<string, string>> = {
   // expired) in the BusHub, never a member's status.
   "bus/role-proposals.ts:expireProposals":
     "a role proposal's status, not access",
-  "bus/role-proposals.ts:decideProposal":
-    "a role proposal's status, not access",
+  "bus/role-proposals.ts:decideStored": "a role proposal's status, not access",
+  "bus/roles.ts:putRole": "marks a completed handover proposal applied",
   // #682: a comment thread's own status column (open, resolved) in the
   // artifact's DO, never a member's status.
   "runtime/do.ts:ArtifactRuntime.commentsStatus":

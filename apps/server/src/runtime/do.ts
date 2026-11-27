@@ -41,6 +41,11 @@ import {
   type CommentStatus,
   THREAD_REPLY_NOTICES_MAX,
 } from "../services/comment-rules.js";
+import {
+  deliverMemberPush,
+  type PushItem,
+  queuePush,
+} from "../services/push.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
   captureThumbnail,
@@ -1655,6 +1660,47 @@ export class ArtifactRuntime extends DurableObject<Env> {
     if (cur === null || cur > t) await this.ctx.storage.setAlarm(t);
   }
 
+  /** Requests held by whenIndexed, each waiting for its version's index job to settle. */
+  private indexWaiters = new Set<{ version: number; done: () => void }>();
+
+  private indexPending(version: number): boolean {
+    return this.pendingIndex()?.version === version;
+  }
+
+  /** The index job a waiter holds on is gone or was replaced: they answer. */
+  private notifyIndexWaiters(): void {
+    for (const w of [...this.indexWaiters])
+      if (!this.indexPending(w.version)) w.done();
+  }
+
+  /**
+   * GET versions `wait`: resolves true once `version`'s index job is no longer
+   * pending (indexed, given up, or replaced by a newer version), false when
+   * `ms` (at most LIMITS.indexWaitMaxMs) pass first. Woken by the job's own end,
+   * never by a timer poll; the timer is only the bound. No side effects.
+   */
+  async whenIndexed(version: number, ms: number): Promise<boolean> {
+    if (!Number.isSafeInteger(version) || version < 1)
+      fail("bad_request", "invalid version");
+    if (!this.indexPending(version)) return true;
+    const bound = Math.min(Math.max(0, Math.floor(ms)), LIMITS.indexWaitMaxMs);
+    return await new Promise<boolean>((resolve) => {
+      const waiter = {
+        version,
+        done: () => {
+          clearTimeout(timer);
+          this.indexWaiters.delete(waiter);
+          resolve(true);
+        },
+      };
+      const timer = setTimeout(() => {
+        this.indexWaiters.delete(waiter);
+        resolve(false);
+      }, bound);
+      this.indexWaiters.add(waiter);
+    });
+  }
+
   /**
    * Queues search indexing of `version` (C3): one pending job per artifact.
    * A newer version replaces the job (attempts reset, due INDEX_DELAY_MS from
@@ -1692,6 +1738,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       version,
       due,
     );
+    // A newer version replaced the job: a request held on the older one answers.
+    if (this.indexWaiters.size > 0) this.notifyIndexWaiters();
     if (thumb && serverThumbnails(this.env))
       this.sql.exec(
         `insert into thumb_job (id, artifact_id, version, attempts, due, state)
@@ -1845,6 +1893,40 @@ export class ArtifactRuntime extends DurableObject<Env> {
       : null;
   }
 
+  /** A reserved name in the existing binding gives each member one delivery queue and one alarm. */
+  private delivery: Promise<void> = Promise.resolve();
+
+  async pushEvent(
+    userId: string,
+    item?: PushItem,
+    wakeAt?: number,
+  ): Promise<void> {
+    if (this.ctx.id.name !== `push:${userId}`)
+      throw new Error("Wrong push recipient");
+    return this.runPush(userId, item, wakeAt);
+  }
+
+  private runPush(userId: string, item?: PushItem, wakeAt?: number) {
+    const work = this.delivery.then(async () => {
+      // The name can be absent when an alarm wakes a hibernated object.
+      await this.ctx.storage.put("pushRecipient", userId);
+      if (wakeAt !== undefined) return this.armAt(wakeAt);
+      const now = this.now();
+      if (item) await queuePush(this.env, [userId], item, now);
+      try {
+        const { next } = await deliverMemberPush(this.env, userId, now);
+        if (next === null) await this.ctx.storage.deleteAlarm();
+        else await this.ctx.storage.setAlarm(next);
+      } catch (error) {
+        // On an event there is no firing alarm to retry an interrupted database operation.
+        if (item) await this.armAt(now + 1000);
+        throw error;
+      }
+    });
+    this.delivery = work.catch(() => {});
+    return work;
+  }
+
   /**
    * One alarm, multiplexed by the next due time of both kinds of work:
    * - Socket lifetime: closes sockets older than LIMITS.signedUrlTtlSec (minus
@@ -1862,6 +1944,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * Re-arms for the oldest remaining socket or the pending job.
    */
   override async alarm(): Promise<void> {
+    const name = this.ctx.id.name;
+    const recipient = name
+      ? name.startsWith("push:")
+        ? name.slice(5)
+        : null
+      : await this.ctx.storage.get<string>("pushRecipient");
+    if (recipient) return this.runPush(recipient);
     const sockets = this.ctx.getWebSockets();
     const job = this.pendingIndex();
     // Gate off: no thumbnail bookkeeping at all (a job queued while it was
@@ -1908,6 +1997,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
           );
       }
     }
+    // The job ended (indexed, or dropped after its attempts): held requests answer.
+    if (indexDue && this.indexWaiters.size > 0) this.notifyIndexWaiters();
     if (!indexDue && thumb && (thumb.attempts === 0 || thumb.due <= now))
       await this.runThumbnail(thumb);
     // #2851: the hold retry shares this alarm; it never waits on or delays the other work.

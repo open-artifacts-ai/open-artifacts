@@ -624,16 +624,21 @@ async function namesOf(userId: string, ids: string[]) {
 }
 
 describe("namesOf (#1889)", () => {
-  it("returns only identityId and the current name, live or away", async () => {
+  it("returns the identity, chosen name and holding interval, live or away", async () => {
     const s = await scene();
     const name = await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("a"));
     const id = (await identityOf(s.m.userId, s.ns, name))?.identityId as string;
     const got = await namesOf(s.m.userId, [id, "nope"]);
-    expect(got).toEqual([{ identityId: id, name }]);
-    expect(Object.keys(got[0] ?? {}).sort()).toEqual(["identityId", "name"]);
+    expect(got).toMatchObject([
+      {
+        identityId: id,
+        name,
+        intervals: [{ role: name, since: expect.any(Number), until: null }],
+      },
+    ]);
     await close(s.d, s.m.userId, "r1");
-    expect(await namesOf(s.m.userId, [id])).toEqual([{ identityId: id, name }]);
+    expect(await namesOf(s.m.userId, [id])).toEqual(got);
   });
   it("never resolves another member's identity, and ignores junk input", async () => {
     const a = await scene();

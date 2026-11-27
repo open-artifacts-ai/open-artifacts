@@ -40,6 +40,7 @@ import {
   usePatchSubscription,
   usePushKey,
   usePushSubscriptions,
+  useThisBrowserOn,
 } from "../foryou/push";
 import { toast } from "../layout/toast";
 import { useInstanceName } from "../layout/useDocumentTitle";
@@ -140,7 +141,15 @@ function Levels({
   // This browser's own row, from the list (S5, #2774).
   const subs = usePushSubscriptions(pushKey !== null && supported);
   const userId = useMeId();
-  const mine = thisSubscription(subs.data, userId);
+  // #3024: On needs the key check verified (unknown shows off, never On); a device
+  // listed but made with another key can't be reached.
+  const [on] = useThisBrowserOn(
+    pushKey,
+    subs.isError ? [] : subs.data?.items,
+    userId,
+  );
+  const listed = thisSubscription(subs.data, userId);
+  const mine = on === true ? listed : undefined;
   const note =
     pushKey === null
       ? noKeyLine
@@ -230,13 +239,7 @@ function Levels({
               </small>
             </th>
             <td className={td}>Always</td>
-            <td className={td}>
-              <UpdatesBrowser
-                pushKey={pushKey}
-                sub={sub}
-                mine={cantHere ? undefined : mine}
-              />
-            </td>
+            <td className={td}>Inbox only</td>
           </tr>
         </tbody>
       </table>
@@ -271,8 +274,9 @@ function NeedsYouBrowser({
   const qc = useQueryClient();
   const patch = usePatchSubscription();
   const [busy, setBusy] = useState(false);
+  const [enrollmentFailed, setEnrollmentFailed] = useState(false);
   const change = async (next: boolean) => {
-    if (mine) {
+    if (mine && !enrollmentFailed) {
       patch.mutate(
         { id: mine.id, body: { needsYou: next } },
         { onError: (e) => patchFailed(e, qc) },
@@ -290,73 +294,37 @@ function NeedsYouBrowser({
           needsYou: { ...prefs.needsYou, browser: true },
           timeZone: browserTimeZone(),
         });
+      setEnrollmentFailed(false);
     } catch (e) {
+      setEnrollmentFailed(true);
       if (e instanceof PermissionRefused) onRefused(e.state);
-      else toast({ title: PUSH_WORDS.failed, tone: "danger" });
     } finally {
       setBusy(false);
     }
   };
-  const on = mine ? mine.needsYou || mine.updates : false;
+  const on = !enrollmentFailed && mine?.needsYou === true;
   return (
     <>
       <Switch
         label="Needs you in this browser"
         describedBy="oa-needs-browser"
-        checked={mine?.needsYou === true}
+        checked={on}
         disabled={pushKey === null || busy || loading}
         onChange={(next) => void change(next)}
       />
       <small
         id="oa-needs-browser"
+        aria-live="polite"
         className={sub}
         data-push={on ? "on" : "off"}
       >
         {pushKey === null
           ? NOTIF_WORDS.noKeyCell
-          : mine && on
-            ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
-            : ""}
-      </small>
-    </>
-  );
-}
-
-/** Updates in this browser: its own switch once the browser is subscribed. */
-function UpdatesBrowser({
-  pushKey,
-  sub,
-  mine,
-}: {
-  pushKey: string | null;
-  sub: string;
-  mine: PushSubscriptionItem | undefined;
-}) {
-  const qc = useQueryClient();
-  const patch = usePatchSubscription();
-  return (
-    <>
-      <Switch
-        label="Updates in this browser"
-        describedBy="oa-updates-browser"
-        checked={mine?.updates === true}
-        disabled={!mine}
-        onChange={(next) =>
-          mine &&
-          patch.mutate(
-            { id: mine.id, body: { updates: next } },
-            { onError: (e) => patchFailed(e, qc) },
-          )
-        }
-      />
-      <small id="oa-updates-browser" className={sub}>
-        {pushKey === null
-          ? NOTIF_WORDS.noKeyCell
-          : mine
-            ? ""
-            : !pushSupported() && iosNeedsHomeScreen()
-              ? NOTIF_WORDS.iosCell
-              : PUSH_WORDS.turnOnFirst}
+          : enrollmentFailed
+            ? "Couldn't turn on notifications in this browser. Try again, or sign in again."
+            : mine && on
+              ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
+              : ""}
       </small>
     </>
   );

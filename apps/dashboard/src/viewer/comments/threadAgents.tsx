@@ -159,6 +159,13 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
     if (!listed) dropped.current = true;
     else if (dropped.current) setGone(null);
   }, [listed, gone]);
+  // #3263: a reply makes the removal final; the line goes with it.
+  const replies = t.comments.length;
+  const seen = useRef(replies);
+  useEffect(() => {
+    if (replies > seen.current) setGone(null);
+    seen.current = replies;
+  }, [replies]);
   // Optimistic: the chip goes (and Undo shows) at once; a refusal puts it back
   // and shows the error line.
   const run = (a: ThreadAgent, removed: boolean) => {
@@ -182,6 +189,8 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
     err,
     agents,
     run,
+    /** Drop the line: the view it sits in is closing (#3263). */
+    clear: () => setGone(null),
   };
 }
 

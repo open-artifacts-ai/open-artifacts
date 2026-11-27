@@ -34,7 +34,9 @@ import {
   agyPluginFiles,
   agyPluginProblem,
 } from "../src/steps/antigravity.ts";
+import { setHabitsOptOut } from "../src/steps/habits.ts";
 import { leftoverTargets } from "../src/steps/leftovers.ts";
+import { updateInstallFile } from "../src/steps/step.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
@@ -344,6 +346,47 @@ function make(over: Partial<Ctx> = {}): Fake {
 }
 
 describe("install, doctor and uninstall --purge with the plugin (agy S2)", () => {
+  it("remembers --no-service opt-in on reinstall and an explicit opt-out", async () => {
+    const ctx = make();
+    const opts = { label: LABEL, hub: HUB, noService: true };
+    const doctorOutput = async () => {
+      const start = ctx.all().length;
+      await doctor(ctx);
+      return ctx.all().slice(start).join("\n");
+    };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    expect(await install(opts, ctx)).toBe(0);
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    updateInstallFile(join(ctx.home, "install.json"), { service: { env: ON } });
+    ctx.env = { OA_BUS_EXPERIMENTAL_AGY: "0" };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).not.toContain("Antigravity wired");
+    expect(ctx.service.ensure).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    "doctor shows Antigravity habits without a shell flag (opt-out %s)",
+    async (optedOut) => {
+      const ctx = make();
+      await install({ label: LABEL, hub: HUB }, ctx);
+      updateInstallFile(join(ctx.home, "install.json"), {
+        service: { env: ON },
+      });
+      setHabitsOptOut(ctx.home, optedOut, new Date().toISOString());
+      ctx.env = {};
+      await doctor(ctx);
+      expect(ctx.all()).toContain(
+        "[[success]]✓[[/success]]  Antigravity wired",
+      );
+      expect(ctx.all()).toContain(
+        optedOut
+          ? "Antigravity — Habits: off (you opted out)"
+          : "Antigravity — Habits: on, sent by the bus",
+      );
+    },
+  );
   it("doctor reports the plugin; purge leaves no agy folder install made", async () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
@@ -416,7 +459,8 @@ const payload = JSON.stringify({
   cwd: "/w/app",
   workspacePaths: ["/w"],
   transcriptPath: "/t",
-  hookEventName: "SessionStart",
+  // agy S4: SessionStart also prints the rules (antigravity-rules.test.ts).
+  hookEventName: "PreInvocation",
 });
 const events = (ctx: Ctx) =>
   read(join(ctx.home, "logs", "events.log"))
@@ -449,7 +493,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
         title: async () => undefined,
         hello: async (h) => {
           hellos.push(h);
-          return "agy";
+          return { name: "agy" };
         },
         ppid: 300,
       }),
@@ -490,7 +534,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
       title: async () => "Bus Check",
       hello: async (h) => {
         name = h.proposed_name;
-        return "bus-check";
+        return { name: "bus-check" };
       },
       ppid: 300,
     });
@@ -499,7 +543,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
 
   it("never says hello without an agy above it; still prints {} and exits 0", async () => {
     const ctx = fakeCtx();
-    const hello = vi.fn(async () => "x");
+    const hello = vi.fn(async () => ({ name: "x" }));
     expect(
       await agyHello(ctx, {
         stdin: async () => payload,
@@ -522,7 +566,7 @@ describe("oa-bus agy-hello (agy S2)", () => {
       proc: (pid) => TABLE[pid] ?? null,
       procStart: () => "t0",
       title: async () => undefined,
-      hello: async () => "x",
+      hello: async () => ({ name: "x" }),
       ppid: 300,
     });
     expect(events(bad).at(-1)).toMatchObject({ reason: "bad_payload" });

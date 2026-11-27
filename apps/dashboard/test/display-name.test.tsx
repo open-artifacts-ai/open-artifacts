@@ -90,7 +90,9 @@ describe("display-name dialog", () => {
     mount("/");
     fireEvent.change(await nameField(), { target: { value: "  Grace H  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(sent).toEqual([{ displayName: "Grace H" }]));
+    await waitFor(() =>
+      expect(sent).toEqual([{ displayName: "Grace H", handle: "grace-h" }]),
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     const me = lastClient.getQueryData<Me>(qk.me);
     expect(me?.displayName).toBe("Grace H");
@@ -301,10 +303,12 @@ describe("Settings → Profile", () => {
     fireEvent.change(input, { target: { value: "  Ada Lovelace " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
-      expect(sent).toEqual([{ displayName: "Ada Lovelace" }]),
+      expect(sent).toEqual([
+        { displayName: "Ada Lovelace", handle: "ada-lovelace" },
+      ]),
     );
     expect(await screen.findByText("Saved")).toBeInTheDocument();
-    expect(await screen.findByText("Display name saved")).toBeInTheDocument();
+    expect(await screen.findByText("Handle saved")).toBeInTheDocument();
     expect(lastClient.getQueryData<Me>(qk.me)?.displayName).toBe(
       "Ada Lovelace",
     );
@@ -349,7 +353,9 @@ describe("Settings → Profile", () => {
   });
 
   it("disables Save until the name changes", async () => {
-    serveMe(needsName({ needsDisplayName: false, displayName: "Ada" }));
+    serveMe(
+      needsName({ needsDisplayName: false, displayName: "Ada", handle: "ada" }),
+    );
     mount("/settings/profile");
     const input = await field();
     expect(input.value).toBe("Ada");
@@ -358,6 +364,33 @@ describe("Settings → Profile", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
     fireEvent.change(input, { target: { value: "Ada B" } });
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
+  });
+
+  it("offers a free handle when the typed handle is taken", async () => {
+    serveMe(
+      needsName({
+        needsDisplayName: false,
+        displayName: "Ana Ruiz",
+        handle: "ana-ruiz",
+      }),
+    );
+    server.use(
+      http.get(`*${R.meHandle}`, ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams.get("handle") === "ana"
+            ? { available: false, suggestion: "ana-2" }
+            : { available: true, suggestion: null },
+        ),
+      ),
+    );
+    mount("/settings/profile");
+    const input = await screen.findByLabelText("Handle");
+    fireEvent.change(input, { target: { value: "ANA" } });
+    fireEvent.click(await screen.findByRole("button", { name: "@ana-2" }));
+    expect(input).toHaveValue("ana-2");
+    expect(await screen.findByText("@ana-2 is available")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Handle saved")).toBeInTheDocument();
   });
 
   it("shows the server's 400 inline", async () => {

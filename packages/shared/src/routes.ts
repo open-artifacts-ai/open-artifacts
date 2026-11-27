@@ -13,6 +13,7 @@ export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
   /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
+  meHandle: "/api/v1/me/handle",
   meInbox: "/api/v1/me/inbox",
   /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */
   meInboxRead: "/api/v1/me/inbox/read",
@@ -61,12 +62,24 @@ export const R = {
    * A page holds at most VERSIONS_PAGE_SIZE (20) and stops early once its manifests pass
    * ~1 MiB (always at least one), so pages may be shorter than 20: page on with
    * `before` = the last version; only an empty array means the end.
+   * `wait` (ms, a safe integer >= 0, at most 16 digits; the server clamps it to LIMITS.indexWaitMaxMs):
+   * on the first page (no `before`), while the newest version's search index
+   * is still pending (`textIndexed` false), the request is held and answers the
+   * moment that index job settles, or at the cap with the then-current list; it
+   * never blocks anything else and changes nothing. Absent or 0: answers at
+   * once. Same access as the plain read.
    * POST PublishInput (new version) -> PublishResult
    */
-  versions: (id: string, before?: number) => {
+  versions: (id: string, before?: number, wait?: number) => {
     if (before !== undefined && !(Number.isInteger(before) && before >= 1))
       throw new RangeError(`before must be an integer >= 1: ${before}`);
-    return `${A}/${seg(id)}/versions${before === undefined ? "" : `?before=${before}`}`;
+    if (wait !== undefined && !(Number.isSafeInteger(wait) && wait >= 0))
+      throw new RangeError(`wait must be an integer >= 0: ${wait}`);
+    const q = [
+      before === undefined ? "" : `before=${before}`,
+      wait === undefined ? "" : `wait=${wait}`,
+    ].filter(Boolean);
+    return `${A}/${seg(id)}/versions${q.length === 0 ? "" : `?${q.join("&")}`}`;
   },
   /** GET raw file bytes (auth), for diff */
   versionFile: (id: string, v: number, path: string) =>
@@ -225,6 +238,18 @@ export const R = {
   busRoles: "/api/v1/bus/roles",
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
   busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
+  /**
+   * POST BusRoleProposalDecide { decision: "confirm" | "reject" } ->
+   * BusRoleProposalDecided (#3132): the member answers the handover card for
+   * role proposal `id` (For you, Agents > Roles). Confirm moves the role (the
+   * hub checks again that it is still as proposed); reject refuses it. 404
+   * unknown proposal; 409 conflict with details `{ reason }` when it can't
+   * apply: `used` (decided already), `expired` (a day after it was made),
+   * `changed` (the role moved since), or a PUT R.busRoles refusal. Takes an
+   * interactive cookie session only (a PAT, OAuth grant or machine token gets
+   * 404), so no AI agent can answer for the member.
+   */
+  busRoleProposal: (id: string) => `/api/v1/bus/roles/proposals/${seg(id)}`,
   /**
    * GET -> BusLinks: the member's links between namespaces (#1567). PUT
    * BusLinkPut -> { link: BusLink }: links two namespaces (idempotent: an

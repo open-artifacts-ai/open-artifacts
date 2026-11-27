@@ -495,7 +495,8 @@ export const fixtures: {
       status: "pending",
       reason: null,
       createdAt: "2026-01-03T09:56:00.000Z",
-      expiresAt: "2026-01-03T10:11:00.000Z",
+      // #3132: the card stays open a day (BUS_ROLE_PROPOSAL_CARD_TTL_MS); the link, 15 minutes.
+      expiresAt: "2026-01-04T09:56:00.000Z",
       decidedAt: null,
     },
   ],

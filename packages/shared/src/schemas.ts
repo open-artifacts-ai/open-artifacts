@@ -19,6 +19,7 @@ import {
 import { isId } from "./ids.js";
 import { INLINE_TOO_LARGE_MESSAGE, LIMITS } from "./limits.js";
 import { findCaseCollision, normalizePath } from "./paths.js";
+import { PersonHandleSchema } from "./person-handle.js";
 import { utf8Exceeds } from "./utf8.js";
 import {
   PRESENCE_ACTIVITY_MAX,
@@ -75,13 +76,14 @@ export function resolveDataWriters(
 }
 export const RoleSchema = z.enum(["owner", "admin", "member", "guest"]);
 export type Role = z.infer<typeof RoleSchema>;
-/**
- * A share's role. "commenter" opens the page like a viewer and adds comments
- * and replies for a guest (a guest with "viewer" cannot comment); for a
- * member it reads as "viewer".
- */
+/** Viewer reads, Commenter may also comment, and Editor may publish versions. */
 export const ShareRoleSchema = z.enum(["viewer", "commenter", "editor"]);
 export type ShareRole = z.infer<typeof ShareRoleSchema>;
+
+/** Names used in the sharing menu, title bar and email. */
+export function shareRoleLabel(role: ShareRole): string {
+  return { viewer: "Viewer", commenter: "Commenter", editor: "Editor" }[role];
+}
 /**
  * The caller's level on one artifact. "owner": the personal owner only;
  * "manager": a space manager on a shared-space artifact (same actions as owner
@@ -390,6 +392,8 @@ export const ArtifactSummarySchema = z.object({
   space: SpaceRefSchema.optional(),
   /** Hosted M1: what the caller may do (artifactCan). Optional: absent unless spaces are on. */
   can: ArtifactCanSchema.optional(),
+  /** The signed-in recipient’s directly assigned page role. */
+  shareRole: ShareRoleSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
   /** #2080: who may post when comments are on. Absent: older server, read as "everyone". */
@@ -763,7 +767,7 @@ export type MemberPatch = z.infer<typeof MemberPatchSchema>;
 
 export const ShareInputSchema = z.strictObject({
   email: z.string().email(),
-  /** Absent: "commenter" for a guest, "viewer" for anyone else. */
+  /** Absent: Editor. A guest assigned Editor can only view until joining as a member. */
   role: ShareRoleSchema.optional(),
 });
 export type ShareInput = z.infer<typeof ShareInputSchema>;
@@ -910,6 +914,7 @@ export const MeSchema = z.object({
     .optional(),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),
+  handle: z.string().nullable().optional(),
   /** The IdP's name for the user when it is a real name (not the email's local part), else null. */
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
@@ -988,11 +993,12 @@ export const DisplayNameSchema = z
 export const MePatchSchema = z
   .strictObject({
     displayName: DisplayNameSchema.optional(),
+    handle: PersonHandleSchema.optional(),
     commentEmail: z.boolean().optional(),
   })
   .refine(
-    (p) => p.displayName !== undefined || p.commentEmail !== undefined,
-    "Send displayName or commentEmail",
+    (p) => Object.keys(p).length > 0,
+    "Send displayName, handle or commentEmail",
   );
 export type MePatch = z.infer<typeof MePatchSchema>;
 
@@ -1148,9 +1154,11 @@ export const BusAgentSchema = z.strictObject({
   unnamed: z.boolean().optional(),
   /** #3132: the role it holds in its own namespace: the address to @-mention it by. */
   role: z.string().optional(),
+  roleId: z.string().optional(),
   /** #3132: it handed its role on and holds none: the @ list leaves it out (its mail follows the role). */
   handedOver: z.boolean().optional(),
   /** #3132: the role it asked to take over, while that waits: the @ list leaves it out (no "-2"). */
+  privateSessionName: z.boolean().optional(),
   pendingRole: z.string().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;

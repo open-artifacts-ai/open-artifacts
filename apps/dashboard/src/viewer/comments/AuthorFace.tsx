@@ -104,6 +104,7 @@ export function AuthorFace({
     return (
       <span
         aria-hidden="true"
+        title={a.handle ? `${a.name} @${a.handle}` : undefined}
         data-avatar=""
         className={`flex ${small ? "size-4 text-[8px]" : "size-6 text-[length:var(--oa-text-xs)]"} shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-medium text-foreground`}
       >
@@ -127,17 +128,27 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
     : "";
   const lead = isLinked ? app : "not linked";
   const rest = a.for ? `for ${a.for}` : "";
-  // #3132: shown as its role, the session (and who holds the role now) is small print.
-  const session = a.session
-    ? [a.session, a.role?.holder ? `now ${a.role.holder}` : ""]
-        .filter(Boolean)
-        .join(" · ")
-    : "";
+  // Machine labels are visible to the owner; other viewers get the app.
+  const location = (machine?: string, product?: string) => {
+    if (machine)
+      return /^(laptop|workstation)$/i.test(machine)
+        ? `the ${machine.toLowerCase()}`
+        : machine;
+    return product || "an agent";
+  };
+  const role = a.role;
+  let session = "";
+  if (role) {
+    const origin = location(role.machine, app);
+    session = role.holder
+      ? `was on ${origin}, now on ${location(role.holderMachine, role.holderProduct)}`
+      : `on ${origin}`;
+  }
   if (!lead && !rest && !session) return null;
   return (
     <span
       data-for=""
-      className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
+      className={`min-w-0 ${role ? "break-words" : "truncate"} text-[length:var(--oa-text-xs)] text-muted-foreground`}
     >
       {session && (
         <span data-role-session="">

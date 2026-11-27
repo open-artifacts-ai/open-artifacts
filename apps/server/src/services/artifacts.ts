@@ -21,6 +21,7 @@ import {
   type PublishResult,
   R,
   resolveDataWriters,
+  type ShareRole,
   type UserRef,
   VERSIONS_PAGE_SIZE,
   type VersionInfo,
@@ -38,6 +39,7 @@ import {
   capOfCaller,
   checkListSpace,
   firstThumbnailEligible,
+  inheritedCommentAccess,
   levelSql,
   listFilterSql,
   planOfMember,
@@ -59,6 +61,7 @@ import {
 } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo, logWarn } from "../log.js";
@@ -1022,14 +1025,23 @@ export async function getSummary(
   const out = toSummary(env, r.artifact, owner, r.level);
   out.lastAgent = shownLastAgent(pub, caller);
   if (!decorates(env, caller))
-    return decorate(env, caller, out, r.level, null, null, r.commenter);
+    return decorate(
+      env,
+      caller,
+      out,
+      r.level,
+      null,
+      null,
+      r.shareRole,
+      r.spaceRank,
+    );
   // One PK read for the space (lists and search read it from their join).
   const [sp] = await getDb(env)
-    .select(spaceCols(caller, true, sql`${spaces.id}`))
+    .select(spaceCols(caller, sql`${spaces.id}`))
     .from(spaces)
     .where(eq(spaces.id, r.artifact.spaceId ?? ""))
     .limit(1);
-  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.commenter);
+  return withSpace(caller, out, r.level, r.artifact.spaceId, sp, r.shareRole);
 }
 
 /** The artifact's space row as withSpace reads it (null: no row). */
@@ -1043,19 +1055,16 @@ export type SpaceCols = {
 
 /**
  * The joined space's columns for a list, search or get SELECT (no extra
- * statement). `rank` is computed only when the row is decorated (`on`).
+ * statement). Its rank also supplies comment access independently of a share.
  */
 export const spaceCols = (
   c: Caller,
-  on: boolean,
   spaceId: SQL = sql`${artifacts.spaceId}`,
 ) => ({
   kind: spaces.kind,
   name: spaces.name,
   publicLinks: spaces.publicLinks,
-  rank: on
-    ? sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c, spaceId)} else 0 end`
-    : sql<number>`0`,
+  rank: sql<number>`case when ${spaces.kind} = 'shared' then ${roleRankSql(c, spaceId)} else 0 end`,
 });
 
 /**
@@ -1065,11 +1074,25 @@ export const spaceCols = (
  */
 function canComment(
   caller: Caller,
-  out: Pick<ArtifactSummary, "comments" | "commenters">,
-  commenter = false,
+  level: AccessLevel,
+  out: Pick<ArtifactSummary, "visibility" | "comments" | "commenters">,
+  shareRole: ShareRole | null,
+  spaceRank: number,
 ): boolean {
   const cap = capOfCaller(caller);
-  if ((cap && !(cap === "guest" && commenter)) || out.comments === false)
+  if (
+    !can(level, "comments.write", {
+      personal: false,
+      cap,
+      shareRole,
+      inheritedCommentAccess: inheritedCommentAccess(
+        caller,
+        out.visibility,
+        spaceRank,
+      ),
+    }) ||
+    out.comments === false
+  )
     return false;
   return !(out.commenters === "signed-in" && caller.kind === "anonymous");
 }
@@ -1113,8 +1136,7 @@ export function withSpace<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
-  /** The caller's own share is a commenter one (#2590). */
-  commenter = false,
+  shareRole: ShareRole | null = null,
 ): T {
   const shared = sp?.kind === "shared";
   if (sp?.kind && (!shared || (sp.rank ?? 0) > 0))
@@ -1129,7 +1151,8 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = canComment(caller, out, commenter);
+  out.can.comment = canComment(caller, level, out, shareRole, sp?.rank ?? 0);
+  if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1169,7 +1192,8 @@ export function withCan<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   level: AccessLevel,
-  commenter = false,
+  shareRole: ShareRole | null = null,
+  spaceRank = 0,
 ): T {
   out.can = {
     ...artifactCan(level, {
@@ -1179,8 +1203,9 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: canComment(caller, out, commenter),
+    comment: canComment(caller, level, out, shareRole, spaceRank),
   };
+  if (shareRole) out.shareRole = shareRole;
   return commentsLast(sharingFree(caller, out, true));
 }
 
@@ -1195,7 +1220,8 @@ export function decorate<T extends ArtifactSummary>(
   level: AccessLevel,
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
-  commenter = false,
+  shareRole: ShareRole | null = null,
+  spaceRank = sp?.rank ?? 0,
 ): T {
   if (caller.kind !== "user") {
     // #2080: a signed-out viewer of a signed-in-only artifact learns it
@@ -1205,8 +1231,8 @@ export function decorate<T extends ArtifactSummary>(
     return out;
   }
   return decorates(env, caller)
-    ? withSpace(caller, out, level, spaceId, sp, commenter)
-    : withCan(caller, out, level, commenter);
+    ? withSpace(caller, out, level, spaceId, sp, shareRole)
+    : withCan(caller, out, level, shareRole, spaceRank);
 }
 
 // --------------------------------------------------------------------- list
@@ -1305,11 +1331,11 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
-      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
+      shareRole: shareRoleSql(),
       lastPub: lastPublisherSql,
       asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
-      space: spaceCols(caller, decorates(env, caller)),
+      space: spaceCols(caller),
     })
     .from(artifacts)
     .innerJoin(users, eq(users.id, artifacts.ownerId))
@@ -1368,15 +1394,7 @@ export async function list(
     out.lastAgent = shownLastAgent(r.lastPub, caller);
     if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
     items.push(
-      decorate(
-        env,
-        caller,
-        out,
-        level,
-        r.a.spaceId,
-        r.space,
-        r.commenter === 1,
-      ),
+      decorate(env, caller, out, level, r.a.spaceId, r.space, r.shareRole),
     );
   }
   // #2512: the "waiting" mark: one read of my open asks on this page and one
@@ -1544,6 +1562,38 @@ function docSaveField(
  * summed in SQL so oversized manifests are never read. A version's format
  * falls back to the artifact's for rows written before migration 0002.
  */
+/**
+ * listVersions with GET versions' `wait`: the plain read first (so access is
+ * the plain read's, refused before any hold), then, on the first page while
+ * the newest version is not text-indexed, a hold on that version's index job
+ * in the artifact's DO (answers when it settles, or at `waitMs`, capped), and
+ * the list read again, access included, whether the hold ended or failed.
+ * Nothing is written.
+ */
+export async function listVersionsWaiting(
+  env: Env,
+  caller: Caller,
+  id: string,
+  before: number | undefined,
+  waitMs: number,
+): Promise<VersionInfo[]> {
+  const first = await listVersions(env, caller, id, before);
+  const newest = first[0];
+  if (waitMs <= 0 || before !== undefined || !newest || newest.textIndexed)
+    return first;
+  const ns = env.ARTIFACT_RUNTIME;
+  try {
+    await ns
+      .get(ns.idFromName(id))
+      .whenIndexed(newest.version, Math.min(waitMs, LIMITS.indexWaitMaxMs));
+  } catch {
+    // The hold failed, not the read: whatever it did, answer from a fresh read.
+  }
+  // Released, timed out or failed: the answer is current and the access
+  // check is run again (it may have changed while the request waited).
+  return listVersions(env, caller, id, before);
+}
+
 export async function listVersions(
   env: Env,
   caller: Caller,
@@ -2341,6 +2391,10 @@ async function purgeOne(
     env.DB.prepare("delete from comment_pictures where artifact_id = ?").bind(
       id,
     ),
+    // #2536: drop slots on this page or pointing at asks homed on this page.
+    env.DB.prepare(
+      "delete from artifact_ask_slots where artifact_id = ? or home_artifact_id = ?",
+    ).bind(id, id),
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),

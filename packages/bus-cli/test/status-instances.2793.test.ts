@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { saveInstance, writeFolders } from "@oa/bus-daemon";
 import { describe, expect, it, vi } from "vitest";
-import { status as statusCmd } from "../src/commands/status.ts";
+import { instanceBlocks, status as statusCmd } from "../src/commands/status.ts";
 import { fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const OTHER = `oa_machine_${"b".repeat(28)}7f3a`;
@@ -45,74 +45,62 @@ function ctxWith(
   return ctx;
 }
 
-describe("status: instances (#2793 S6)", () => {
-  it("one instance: the output is unchanged, no Instances or Folders block", async () => {
+describe("status: instances (#2793 S6, #3328 S1)", () => {
+  it("one instance: compact default screen with ✓ host", async () => {
     const ctx = ctxWith();
     expect(await statusCmd(ctx)).toBe(0);
     const text = ctx.all().join("\n");
     expect(text).not.toContain("Instances");
     expect(text).not.toContain("Folders");
-    // The whole output, as it was before this slice.
-    expect(ctx.all()).toMatchInlineSnapshot(`
-      [
-        "oa-bus 0.1.0",
-        "",
-        "Hub      bus.example.com  ● connected",
-        "Machine  leo-macbook-pro",
-        "!  Daemon running, but no service will restart it after a reboot.",
-        "   Run npx @open-artifacts/bus install.",
-        "Habits: on, sent by the bus",
-        "",
-        "No agents in namespace github.com/open-artifacts-ai/oa-bus yet.",
-        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
-        "in this folder. It joins.",
-      ]
-    `);
+    expect(ctx.all()).toEqual([
+      "oa-bus 0.1.0 · ● working · this MacBook",
+      "  ✓ bus.example.com",
+      "",
+      "Agents  0 named · this project",
+      "",
+      "More: --agents · --messages · --instances · --json",
+      "      https://bus.example.com/settings/agents",
+    ]);
   });
 
-  it("two instances: each with its address, state and agent count, then the folders", async () => {
-    const ctx = ctxWith(
-      {
-        instances: [
-          { name: "main", link: "connected", revoked: false, agents: 2 },
-          { name: "work", link: "connected", revoked: true, agents: 0 },
-        ],
-      },
-      true,
-    );
-    await statusCmd(ctx);
-    const out = ctx.all();
-    const at = out.indexOf("Instances");
-    expect(out.slice(at, at + 3)).toEqual([
+  it("two instances: default screen shows ✓/✗ per host; instanceBlocks keeps full table", async () => {
+    const rows = [
+      { name: "main", link: "connected" as const, revoked: false, agents: 2 },
+      { name: "work", link: "connected" as const, revoked: true, agents: 0 },
+    ];
+    const ctx = ctxWith({ instances: rows }, true);
+    expect(await statusCmd(ctx)).toBe(1);
+    expect(ctx.out().slice(0, 3)).toEqual([
+      "oa-bus 0.1.0 · ▲ degraded · this MacBook",
+      "  ✓ bus.example.com",
+      "  ✗ work.example.com (revoked)",
+    ]);
+    const blocks = instanceBlocks(ctx, rows);
+    expect(blocks[0]).toEqual([
       "Instances",
       "  main (main)  https://bus.example.com  connected  2 agents",
       "  work  https://work.example.com  revoked  0 agents",
     ]);
-    expect(out).toContain("Folders");
-    expect(out).toContain("  /code/main -> main");
-    expect(out).toContain("  /code/work -> work");
+    expect(blocks[1]).toEqual([
+      "Folders",
+      "  /code/main -> main",
+      "  /code/work -> work",
+    ]);
   });
 
-  it("lists the guest sessions under their instance (#2793 S3b), with terminal controls removed", async () => {
-    const ctx = ctxWith(
+  it("lists the guest sessions under their instance in instanceBlocks (#2793 S3b), with terminal controls removed", () => {
+    const rows = [
+      { name: "main", link: "connected" as const, revoked: false, agents: 2 },
       {
-        instances: [
-          { name: "main", link: "connected", revoked: false, agents: 2 },
-          {
-            name: "work",
-            link: "connected",
-            revoked: false,
-            agents: 0,
-            guests: [{ name: "Visitor" }, { name: "Ev\u001b[31mil" }],
-          },
-        ],
+        name: "work",
+        link: "connected" as const,
+        revoked: false,
+        agents: 0,
+        guests: [{ name: "Visitor" }, { name: "Ev\u001b[31mil" }],
       },
-      true,
-    );
-    await statusCmd(ctx);
-    const out = ctx.all();
-    const at = out.indexOf("Instances");
-    expect(out.slice(at, at + 5)).toEqual([
+    ];
+    const ctx = ctxWith({ instances: rows }, true);
+    expect(instanceBlocks(ctx, rows)[0]).toEqual([
       "Instances",
       "  main (main)  https://bus.example.com  connected  2 agents",
       "  work  https://work.example.com  connected  0 agents",
@@ -121,10 +109,11 @@ describe("status: instances (#2793 S6)", () => {
     ]);
   });
 
-  it("an instance the daemon does not list reads not connected", async () => {
+  it("an instance the daemon does not list reads can't reach on status and not connected in instanceBlocks", async () => {
     const ctx = ctxWith({}, true);
-    await statusCmd(ctx);
-    expect(ctx.all()).toContain(
+    expect(await statusCmd(ctx)).toBe(1);
+    expect(ctx.out()).toContain("  ✗ work.example.com (can't reach)");
+    expect(instanceBlocks(ctx, [])[0]).toContain(
       "  work  https://work.example.com  not connected  0 agents",
     );
   });

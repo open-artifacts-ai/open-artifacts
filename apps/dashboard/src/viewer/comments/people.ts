@@ -18,11 +18,13 @@ export const mentionsWithPeople = (c: {
   people?: readonly CommentAuthor[];
 }): (CommentMention & { person?: CommentAuthor })[] => [
   ...(c.mentions ?? []),
-  ...(c.people ?? []).map((p) => ({
-    key: personAsAgent(p).key,
-    name: p.name,
-    person: p,
-  })),
+  ...(c.people ?? []).flatMap((p) =>
+    [...new Set([p.mentionedAs ?? p.name, p.name])].map((name) => ({
+      key: personAsAgent(p).key,
+      name,
+      person: p,
+    })),
+  ),
 ];
 
 /** A person in the composer's mention list: keyed apart from agents. */
@@ -31,9 +33,12 @@ export const isPersonKey = (k: string) => k.startsWith(PERSON_KEY);
 export const personId = (k: string) => k.slice(PERSON_KEY.length);
 
 /** A picked person as the entry the @-text matching works on (by name). */
-export const personAsAgent = (p: CommentAuthor): ArtifactAgent => ({
+export const personAsAgent = (
+  p: CommentAuthor,
+): ArtifactAgent & { personName?: string } => ({
   key: `${PERSON_KEY}${p.id ?? p.name}`,
-  name: p.name,
+  name: p.handle ?? p.name,
+  ...(p.handle ? { personName: p.name } : {}),
   online: false,
 });
 

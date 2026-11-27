@@ -66,6 +66,7 @@ import {
   nameClashes,
   partyIdentityFace,
   plainAgentName,
+  productOf,
   shownName,
 } from "./agent-display.js";
 import {
@@ -111,6 +112,8 @@ import {
   notifyAnswered,
   observedAway,
   type RosterAgent,
+  roleIdFromKey,
+  shortMachine,
   storedAgent,
   viewerRosterAgents,
 } from "./comment-agents.js";
@@ -385,7 +388,12 @@ export async function checkAnchor(
 
 // ------------------------------------------------------------------- views
 
-type UserLite = { id: string; name: string | null; email: string };
+type UserLite = {
+  handle?: string;
+  id: string;
+  name: string | null;
+  email: string;
+};
 
 export async function usersById(
   env: Env,
@@ -397,7 +405,7 @@ export async function usersById(
   for (let i = 0; i < list.length; i += 50) {
     const part = list.slice(i, i + 50);
     const { results } = await env.DB.prepare(
-      `select id, email, name, display_name as displayName from users where id in (${part.map(() => "?").join(",")})`,
+      `select id, email, name, handle, display_name as displayName from users where id in (${part.map(() => "?").join(",")})`,
     )
       .bind(...part)
       .all<{
@@ -405,12 +413,14 @@ export async function usersById(
         email: string;
         name: string;
         displayName: string | null;
+        handle: string | null;
       }>();
     for (const r of results)
       out.set(r.id, {
         id: r.id,
         email: r.email,
         name: shownEffectiveName(r),
+        ...(r.handle ? { handle: r.handle } : {}),
       });
   }
   return out;
@@ -422,8 +432,8 @@ type Ctx = {
   clash: NameClashes;
   /** #1889: identity id to the agent's current bus name, from its owner's hub; a miss keeps the stored name. */
   names: Map<string, string>;
-  /** #3132: identity id to the role its session holds or handed on (and who holds it now). */
-  roles: Map<string, NonNullable<CommentAuthor["role"]>>;
+  /** #3132: holding intervals by identity, with the current holder of each moved role. */
+  roles: Map<string, NonNullable<AgentFaceRow["intervals"]>>;
 };
 
 /**
@@ -438,11 +448,31 @@ const withRole = (
   owner: string | undefined,
   viewer: CommentViewer,
   ctx: Ctx,
+  at?: string | null,
 ): CommentAuthor => {
-  const r = identityId ? ctx.roles.get(identityId) : undefined;
-  if (!r || outsider(viewer) || viewer.userId === null) return author;
+  if (!identityId || outsider(viewer) || viewer.userId === null) return author;
   if (faceViewer(viewer).guest && viewer.userId !== owner) return author;
-  return { ...author, name: r.name, session: author.name, role: r };
+  const time = at ? Date.parse(at) : Date.now();
+  const interval = ctx.roles
+    .get(identityId)
+    ?.find((r) => r.since <= time && (r.until === null || time < r.until));
+  if (!interval) return author;
+  const role = {
+    name: interval.role,
+    ...(viewer.userId === owner &&
+      interval.machine && {
+        machine: shortMachine(interval.machine) ?? undefined,
+      }),
+    ...(viewer.userId === owner &&
+      interval.holder &&
+      interval.holderMachine && {
+        holderMachine: shortMachine(interval.holderMachine) ?? undefined,
+      }),
+    ...(interval.holder &&
+      interval.holderKind && { holderProduct: productOf(interval.holderKind) }),
+    ...(interval.holder && { holder: interval.holder }),
+  };
+  return { ...author, name: role.name, session: author.name, role };
 };
 
 /** A party's name today: its linked agent's current bus name, else the one stored with it. */
@@ -456,6 +486,7 @@ const authorView = (
   a: StoredActor,
   viewer: CommentViewer,
   ctx: Ctx,
+  at?: string | null,
 ): CommentAuthor => {
   const { users, clash } = ctx;
   if (a.kind === "guest")
@@ -493,9 +524,16 @@ const authorView = (
       a.ref,
       viewer,
       ctx,
+      at,
     );
   const me = viewer.userId !== null && viewer.userId === a.ref;
-  return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
+  return {
+    kind: "user",
+    id: a.ref,
+    ...(u?.handle ? { handle: u.handle } : {}),
+    name: u ? shownName(u) : "Member",
+    me,
+  };
 };
 
 /** #2577: the asker's public name (the one an author shows: never an email); nothing when the member is gone. */
@@ -576,12 +614,8 @@ async function ctxFor(
   const names = new Map<string, string>();
   const roles: Ctx["roles"] = new Map();
   for (const [id, f] of faces) {
-    names.set(id, f.name);
-    if (f.role)
-      roles.set(
-        id,
-        f.holder ? { name: f.role, holder: f.holder } : { name: f.role },
-      );
+    if (f.name) names.set(id, f.name);
+    if (f.intervals) roles.set(id, f.intervals);
   }
   return { users, clash, names, roles };
 }
@@ -705,7 +739,9 @@ async function threadViews(
     anchor: t.anchor,
     version: t.version,
     status: t.status,
-    resolvedBy: t.resolvedBy ? authorView(t.resolvedBy, viewer, users) : null,
+    resolvedBy: t.resolvedBy
+      ? authorView(t.resolvedBy, viewer, users, t.resolvedAt)
+      : null,
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
@@ -962,6 +998,7 @@ const partyView = (
   p: StoredParty,
   viewer: CommentViewer,
   users: Ctx,
+  at: string,
 ): CommentAuthor =>
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
@@ -989,6 +1026,7 @@ const partyView = (
         p.owner,
         viewer,
         users,
+        at,
       );
 
 /** The identity fields of a named agent, from its stored identity; none without one. */
@@ -1090,7 +1128,9 @@ const deciderFields = (
   const named = ask.decider !== undefined && ask.decider !== c.author.ref;
   return {
     decider: authorView({ kind: "user", ref: who }, viewer, users),
-    ...(named ? { chosenBy: authorView(c.author, viewer, users) } : {}),
+    ...(named
+      ? { chosenBy: authorView(c.author, viewer, users, c.createdAt) }
+      : {}),
     ...(role ? { role } : {}),
     ...(named &&
     !ask.answer &&
@@ -1100,7 +1140,7 @@ const deciderFields = (
       ? { canTakeBack: true }
       : {}),
     picks: latestPicks(ask.history ?? []).map((p) => ({
-      by: authorView(p.by, viewer, users),
+      by: authorView(p.by, viewer, users, p.at),
       ...(p.ownWords !== undefined
         ? { ownWords: { text: maskBody(p.ownWords, pairs) } }
         : { optionId: p.optionId }),
@@ -1161,7 +1201,7 @@ const commentOfRaw = (
   viewer: CommentViewer,
   users: Ctx,
 ): Comment => {
-  const author = authorView(c.author, viewer, users);
+  const author = authorView(c.author, viewer, users, c.createdAt);
   const shown = (c.mentions ?? []).map((m) =>
     agentName(
       currentName(m, users),
@@ -1221,7 +1261,7 @@ const commentOfRaw = (
                   },
                 }
               : {}),
-            to: c.ask.to.map((p) => partyView(p, viewer, users)),
+            to: c.ask.to.map((p) => partyView(p, viewer, users, c.createdAt)),
             ...(c.ask.confirm ? { confirm: c.ask.confirm } : {}),
             ...(c.ask.replaces ? { replaces: c.ask.replaces } : {}),
             ...(c.ask.replacedBy ? { replacedBy: c.ask.replacedBy } : {}),
@@ -1246,7 +1286,12 @@ const commentOfRaw = (
                           },
                         }
                       : { optionId: c.ask.answer.optionId }),
-                    by: authorView(c.ask.answer.by, viewer, users),
+                    by: authorView(
+                      c.ask.answer.by,
+                      viewer,
+                      users,
+                      c.ask.answer.at,
+                    ),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
                     ...wasOf(c.ask),
@@ -1302,9 +1347,12 @@ const commentOfRaw = (
       : {}),
     ...(c.people?.length
       ? {
-          people: c.people.map((id) =>
-            authorView({ kind: "user", ref: id }, viewer, users),
-          ),
+          people: c.people.map((id) => ({
+            ...authorView({ kind: "user", ref: id }, viewer, users),
+            ...(c.personLabels?.[id]
+              ? { mentionedAs: c.personLabels[id] }
+              : {}),
+          })),
         }
       : {}),
     // #2577: members only, by the same public name an author shows (never an email).
@@ -1748,6 +1796,7 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   /** #2770: people to @mention, by user id. */
   people?: string[];
+  personLabels?: Record<string, string>;
   ask?: AskInput;
   /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
   pictures?: CommentPictureRef[];
@@ -1954,9 +2003,15 @@ async function resolveExtras(
   // sits in the DO write, so moving it ahead of this read is not a small change.
   // Only the viewer's own agents, never another member's.
   let own: Promise<RosterAgent[]> | undefined;
+  let roles: Promise<RosterAgent[]> | undefined;
   const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
-    if (a || !viewerId || !AGENT_KEY.test(key)) return a;
+    if (a || !viewerId) return a;
+    if (roleIdFromKey(key)) {
+      roles ??= agentRoster(env, artifactId, viewerId, true, true);
+      return (await roles).find((r) => r.key === key);
+    }
+    if (!AGENT_KEY.test(key)) return;
     own ??= viewerRosterAgents(env, artifactId, viewerId);
     return (await own).find((r) => r.key === key);
   };
@@ -1973,6 +2028,7 @@ async function resolveExtras(
   // anyone else (unknown, removed, no access) is the same refusal, so the
   // answer never says whether they exist.
   const people: string[] = [];
+  let personLabels = x.personLabels;
   if (wantsPeople) {
     if (
       viewerId &&
@@ -1992,6 +2048,17 @@ async function resolveExtras(
       )
         throw unknownKey(id);
       people.push(user.id);
+    }
+    if (!personLabels) {
+      const { results } = await stmt(
+        env.DB,
+        "select id, handle from users where id in (select value from json_each(?)) and handle is not null",
+      )
+        .bind(JSON.stringify(people))
+        .all<{ id: string; handle: string }>();
+      personLabels = Object.fromEntries(
+        results.map((row) => [row.id, row.handle]),
+      );
     }
   }
   let ask: NewExtras["ask"];
@@ -2151,7 +2218,7 @@ async function resolveExtras(
               .map((a) => storedAgent(a)),
           }
         : {}),
-      ...(people.length ? { people } : {}),
+      ...(people.length ? { people, personLabels } : {}),
       ...(held.length ? { held } : {}),
     },
     held,
@@ -2317,7 +2384,9 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
   const found = await Promise.all(
     keys.map((k) => {
       const a = byKey.get(k) as { userId: string; address: BusAddress };
-      return agentIdentityOf(env, a.userId, a.address);
+      return roleIdFromKey(k)
+        ? null
+        : agentIdentityOf(env, a.userId, a.address);
     }),
   );
   const ids = new Map(keys.map((k, i) => [k, found[i]]));
@@ -3544,6 +3613,7 @@ async function withdrawHeldFor(
     const req = {
       namespace: p.namespace,
       name: p.name,
+      ...(roleIdFromKey(p.key) && { roleId: roleIdFromKey(p.key) }),
       ...(p.identity ? { identityId: p.identity.identityId } : {}),
       artifactId,
       threadId,

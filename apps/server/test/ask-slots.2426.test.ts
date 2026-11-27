@@ -12,8 +12,9 @@ import {
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
-import { publish } from "../src/services/artifacts.js";
+import { publish, purgeNow } from "../src/services/artifacts.js";
 import { addThread } from "../src/services/comments.js";
+import { eraseMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 
@@ -134,18 +135,6 @@ describe("ask slots: the read route", () => {
         agent: "OA Manager",
       },
     );
-    const listR = await api(app, R.comments(home), owner.cookie, {}, E);
-    const homeList = (await listR.json()) as {
-      threads: { comments: { id: string; ask?: unknown }[] }[];
-    };
-    console.log(
-      "DBG home comments",
-      JSON.stringify(
-        homeList.threads.map((t) => t.comments.map((x) => [x.id, !!x.ask])),
-      ),
-      "want",
-      a.commentId,
-    );
     const r = await slots(shown, owner);
     expect(r.status).toBe(200);
     const list = (await r.json()) as AskSlot[];
@@ -161,8 +150,8 @@ describe("ask slots: the read route", () => {
     // Who asked, for "{agent} asks you".
     expect(s.author.kind).toBe("user");
     expect(s.note).toBe("Gates the landing. Do this one first.");
-    expect(s.placer?.agent).toBe("OA Manager");
-    expect(s.placer?.id).toBe(owner.userId);
+    expect(s.placer).toEqual({ name: "OA Manager", agent: "OA Manager" });
+    expect("id" in (s.placer ?? {})).toBe(false);
   });
 
   it("leaves out a slot whose home the caller cannot open, never a mask (rule 1)", async () => {
@@ -294,5 +283,143 @@ describe("ask slots: the read route", () => {
     const r = await slots(shown, outsider);
     expect(r.status).toBe(404);
     expect(viewerPath(shown)).toContain(shown);
+  });
+
+  it("resolves a replaced ask (same-page and cross-page) when readable, drops when unreadable (#2536)", async () => {
+    const home1 = await page(owner, "Original home");
+    const home2 = await page(owner, "Replacement home");
+    const shown = await page(owner, "Board replace", "public");
+    const a1 = await ask(owner, home1);
+    // Same-page replacement on home1.
+    const tSame = await addThread(
+      E,
+      { id: home1, format: "html", currentVersion: 1 } as never,
+      { kind: "user", id: owner.userId, typed: true },
+      { userId: owner.userId, short: "v1", owner: true, moderator: true },
+      {
+        anchor: NOTE,
+        body: "Updated question",
+        ask: {
+          question: "Deploy v2 now?",
+          options: OPTS,
+          to: [{ key: owner.userId }],
+          replaces: a1.commentId,
+        },
+      },
+      { moderator: true },
+    );
+    const cSameId = tSame.comments[tSame.comments.length - 1]?.id as string;
+    await slot(shown, "same", { id: home1, ...a1 }, { placedBy: owner.userId });
+    const sameList = (await (await slots(shown, owner)).json()) as AskSlot[];
+    expect(sameList).toHaveLength(1);
+    expect(sameList[0]?.commentId).toBe(cSameId);
+    expect(sameList[0]?.ask.question).toBe("Deploy v2 now?");
+    // User-only placer never exposes raw user id, email, or email local part.
+    const localPart = owner.email.split("@")[0] as string;
+    await E.DB.prepare(
+      "update users set name = ?, display_name = null where id = ?",
+    )
+      .bind(owner.email, owner.userId)
+      .run();
+    const emailPlacerList = (await (
+      await slots(shown, owner)
+    ).json()) as AskSlot[];
+    expect(emailPlacerList[0]?.placer?.name).toBe("Someone");
+    expect(emailPlacerList[0]?.placer?.name).not.toContain("@");
+    expect(emailPlacerList[0]?.placer?.name).not.toContain(localPart);
+
+    // Cross-page replacement: withdraw cSameId pointing at a new ask on home2.
+    const a2 = await ask(owner, home2);
+    const w = await api(
+      app,
+      R.commentWithdraw(home1, tSame.id, cSameId),
+      owner.cookie,
+      {
+        method: "POST",
+        body: {
+          replacedBy: {
+            artifactId: home2,
+            threadId: a2.threadId,
+            commentId: a2.commentId,
+          },
+        },
+      },
+    );
+    expect(w.status, await w.text()).toBeLessThan(300);
+    // Owner can read home2 -> slot resolves to home2's ask.
+    const crossOwner = (await (await slots(shown, owner)).json()) as AskSlot[];
+    expect(crossOwner).toHaveLength(1);
+    expect(crossOwner[0]?.home).toEqual({
+      artifactId: home2,
+      title: "Replacement home",
+    });
+    expect(crossOwner[0]?.commentId).toBe(a2.commentId);
+
+    // Viewer can read home1, NOT home2 -> replacement is unreadable, slot is omitted.
+    await api(app, R.shares(home1), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "viewer" },
+    });
+    const crossViewer = (await (
+      await slots(shown, viewer)
+    ).json()) as AskSlot[];
+    expect(crossViewer).toEqual([]);
+  });
+
+  it("rate limits GET /ask-slots per viewer (#2536)", async () => {
+    const home = await page(owner, "RL Home");
+    const shown = await page(owner, "RL Board");
+    const a = await ask(owner, home);
+    await slot(shown, "rl", { id: home, ...a });
+    const denied = {
+      ...E,
+      RL_ANON: { limit: async () => ({ success: false }) },
+    } as unknown as Env;
+    const r = await api(app, R.askSlots(shown), owner.cookie, {}, denied);
+    expect(r.status).toBe(429);
+  });
+
+  it("cleans up slot rows when showing page, home page, or placing user is removed (#2536)", async () => {
+    const home = await page(owner, "Purge Home");
+    const shown = await page(owner, "Purge Board");
+    const other = await page(owner, "Keep Board");
+    const a = await ask(owner, home);
+    await slot(shown, "s1", { id: home, ...a });
+    await slot(other, "s2", { id: home, ...a });
+
+    const count = async (where: string, ...args: unknown[]) =>
+      (
+        await E.DB.prepare(
+          `select count(*) as n from artifact_ask_slots where ${where}`,
+        )
+          .bind(...args)
+          .first<{ n: number }>()
+      )?.n ?? 0;
+
+    // Purging the showing page removes its slot rows.
+    expect(await purgeNow(E, shown)).toBe(true);
+    expect(await count("artifact_id = ?", shown)).toBe(0);
+    expect(await count("artifact_id = ?", other)).toBe(1);
+
+    // Purging the home page removes slot rows pointing at it from other pages.
+    expect(await purgeNow(E, home)).toBe(true);
+    expect(await count("home_artifact_id = ?", home)).toBe(0);
+
+    // Erasing a placing user removes rows pointing at their user id.
+    const doomed = await mk("sl-erased");
+    const keepHome = await page(owner, "Keep Home");
+    const keepAsk = await ask(owner, keepHome);
+    await slot(
+      other,
+      "by-doomed",
+      { id: keepHome, ...keepAsk },
+      { placedBy: doomed.userId },
+    );
+    expect(await count("placed_by = ?", doomed.userId)).toBe(1);
+    await E.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(doomed.userId)
+      .run();
+    await eraseMember(E, doomed.userId, SYSTEM_ACTOR);
+    expect(await count("placed_by = ?", doomed.userId)).toBe(0);
   });
 });

@@ -128,7 +128,7 @@ import {
   trimAway,
   writeCodexAway,
 } from "./codex-away.ts";
-import { codexThreadNames } from "./codex-names.ts";
+import { type CodexThreadName, codexThreadNames } from "./codex-names.ts";
 import { AckTracker, replayAcks, TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
@@ -666,6 +666,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const l of lanes.all()) any = l.hub.cancel(id) || any;
     return any;
   };
+  /**
+   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
+   * Bounded; a repo moved under a live daemon is picked up at its next start.
+   */
+  const keyCache = new BoundedMap<string, string>(1000);
+  const keyOf = (cwd: string): string => {
+    let k = keyCache.get(cwd);
+    if (k === undefined) {
+      k = folderKey(cwd);
+      keyCache.set(cwd, k);
+    }
+    return k;
+  };
   // Without a bus home (tests that bring a config) main serves every folder.
   // Otherwise the folder map decides, read fresh at each session start: an
   // `oa-bus add` while sessions are live moves none of them (live records keep
@@ -674,7 +687,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.homeLookup ??
     (instHome === undefined
       ? () => ({ instance: MAIN_INSTANCE })
-      : folderHomeLookup(instHome));
+      : folderHomeLookup(instHome, keyOf));
   /** The connected instance a folder maps to, or undefined. Quiet: no note. */
   const connectedHome = (cwd: string): string | undefined => {
     const r = lookup(cwd);
@@ -936,25 +949,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configIssues = new ConfigIssues();
   /** #2793: notes for a session's folder (unmapped, changed suggestion), by folder key. Bounded. */
   const folderNotes = new Map<string, ConfigFile>();
-  /**
-   * A folder's key runs `git rev-parse`: once per folder, not once per hello.
-   * Bounded; a repo moved under a live daemon is picked up at its next start.
-   */
-  const keyCache = new BoundedMap<string, string>(1000);
-  const keyOf = (cwd: string): string => {
-    let k = keyCache.get(cwd);
-    if (k === undefined) {
-      k = folderKey(cwd);
-      keyCache.set(cwd, k);
-    }
-    return k;
-  };
   const noteFolder = (cwd: string) => {
     if (instHome === undefined || deps.homeLookup) return;
     // One instance: no folder note, so no git call per request.
     if (listInstances(instHome).length < 2) return;
     const key = keyOf(cwd);
-    const unmapped = unmappedFolderNote(cwd, instHome, key);
+    const unmapped = unmappedFolderNote(cwd, instHome, key, lookup);
     const changed = unmapped
       ? undefined
       : changedSuggestionNote(cwd, instHome, key);
@@ -1640,14 +1640,34 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     flushRename(rec);
   };
   /**
-   * A Pi or omp session renamed (#1635), told by its extension on `rename` or
-   * by a reconnecting hello. The same rules as Claude: one frame per change,
-   * never an empty name or the kind the extension falls back to.
+   * A name from an adapter or the Codex index. The kind is a fallback for
+   * Pi-like adapters, while an index title is an actual observed name.
    */
-  const renameFromAdapter = (rec: AgentRecord, name: string) => {
+  const renameFromAdapter = (
+    rec: AgentRecord,
+    name: string,
+    chosen: boolean,
+  ) => {
     const was = rec.sessionName ?? rec.proposedName;
+    if (name === "" || (rec.kind !== "codex" && name === rec.kind && !chosen))
+      return;
     rec.sessionName = name;
-    if (name === was || name === "" || name === rec.kind) return;
+    if (name === was) {
+      // A person can choose the existing title. Report the new provenance
+      // once, without sending a duplicate rename.
+      if (chosen && !rec.nameChosen) {
+        rec.nameChosen = true;
+        if (
+          rec.sentName === rec.proposedName &&
+          laneOfRef(rec.ref)?.nameChosen &&
+          rec.replaces === undefined &&
+          !limited.has(rec.ref)
+        )
+          announceUp(rec);
+      }
+      return;
+    }
+    rec.nameChosen = chosen;
     rec.proposedName = name;
     flushRename(rec);
   };
@@ -1694,10 +1714,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         agent_ref: rec.ref,
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
-        // #2311: a re-derived Claude title is a rename, not a user's choice.
-        ...(lane.nameChosen && rec.kind === "claude-code"
-          ? { name_chosen: rec.nameChosen === true }
-          : {}),
+        // #2311: the hub treats an omitted flag as chosen on a rename.
+        ...(lane.nameChosen ? { name_chosen: rec.nameChosen === true } : {}),
       })
     ) {
       rec.sentName = rec.proposedName;
@@ -2243,6 +2261,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Frames about guests, before any routing: true when handled here. */
   const guestFrame = (lane: Lane, frame: ServerFrame): boolean => {
     switch (frame.type) {
+      case "codex_call_verdict": {
+        const { reason } = frame;
+        const verdict =
+          reason === "attested"
+            ? "linked"
+            : reason === "lookup_timeout"
+              ? "timeout"
+              : reason === "hub_rate_limit" || reason === "item_limit"
+                ? "rate-limited"
+                : "refused";
+        ev("codex_call_verdict", {
+          instance: lane.name,
+          name: frame.name,
+          verdict,
+          reason,
+        });
+        return true;
+      }
       case "codex_call_check":
         // Only a hub that listed the cap; anything else is ignored.
         if (lane.codexCheck)
@@ -2296,18 +2332,23 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const g of guestSet.values())
       if (g.instance === lane.name) g.sent = undefined;
   };
-  /**
-   * A Codex `/rename` (#1748): the thread's name in Codex's session index
-   * changed. The same rules as Pi: one frame per change, a thread with no name
-   * stays as it was. Reads the index only while a Codex thread is live.
-   */
+  // A bounded read may have lost the first title. Keep any evidence of a
+  // rename from earlier ticks, and compare only actual index names.
+  const codexNameChosen = (rec?: AgentRecord, title?: CodexThreadName) =>
+    rec?.nameChosen === true ||
+    title?.chosen === true ||
+    (rec?.sessionName !== undefined &&
+      title !== undefined &&
+      rec.sessionName !== title.name);
+
   const renameCodexThreads = () => {
     const live = agents.all().filter((a) => a.kind === "codex" && a.live);
     if (!live.length) return;
     const names = codexThreadNames(codexIndexHome);
     for (const rec of live) {
-      const name = names.get(rec.ref);
-      if (name !== undefined) renameFromAdapter(rec, name);
+      const title = names.get(rec.ref);
+      if (title === undefined) continue;
+      renameFromAdapter(rec, title.name, codexNameChosen(rec, title));
     }
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
@@ -3133,17 +3174,99 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       );
     throw e;
   };
+  /**
+   * agy S5: `oa-bus mcp-proxy --for antigravity` names the agy process it
+   * runs under and the conversation agy put in the call's `_meta`. As for
+   * Claude, the pid is the caller's claim: what binds is a live antigravity
+   * record (the session S2 registers: agent_ref = conversation id, pid = the
+   * agy process it attested) with that pid, conversation and process start.
+   * No record yet binds nothing: the proxy asks again on its next call, so
+   * nothing is held. A proof for another instance than the session's home
+   * is dropped, as for Claude. Any process of this OS user can claim an agy
+   * pid (a shell command agy runs too): that residual is accepted, as for
+   * #1822. The proxy asks on every tools/call, so each miss is noted and
+   * logged once per conversation, hash and cause; proofIssues stays keyed by
+   * the agy pid, which all of its conversations share.
+   */
+  const agyMissed = new Set<string>();
+  /** True the first time this conversation's hash misses for this cause. */
+  const agyFirstMiss = (conversation: string, hash: string, cause: string) => {
+    const key = `${conversation}\0${hash}\0${cause}`;
+    if (agyMissed.has(key)) return false;
+    agyMissed.add(key);
+    while (agyMissed.size > PENDING_PROOF_MAX) {
+      const oldest = agyMissed.values().next().value;
+      if (oldest === undefined) break;
+      agyMissed.delete(oldest);
+    }
+    return true;
+  };
+  const agyLinkProof = (
+    pid: number,
+    conversation: string,
+    hash: string,
+    instance: string | undefined,
+  ): { bound: boolean } => {
+    const want = instance ?? MAIN_INSTANCE;
+    const start = (ag.procStart ?? procStartOf)(pid);
+    if (!start) {
+      if (agyFirstMiss(conversation, hash, "no_process_start"))
+        noteUnbound("no_process_start");
+      return { bound: false };
+    }
+    if (basename((ag.comm ?? commOf)(pid) ?? "") !== "agy") {
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const rec = agents.byRef(conversation);
+    if (!rec || rec.kind !== "antigravity" || !rec.live) {
+      if (agyFirstMiss(conversation, hash, "no_live_record"))
+        noteUnbound("no_live_record", pid);
+      return { bound: false };
+    }
+    if (rec.pid !== pid || (rec.procStart ?? start) !== start) {
+      if (agyFirstMiss(conversation, hash, "process_mismatch"))
+        noteUnbound("process_mismatch", pid);
+      return { bound: false };
+    }
+    const home = homedOf(rec);
+    if (home === undefined) {
+      if (agyFirstMiss(conversation, hash, "unmapped_folder"))
+        noteUnbound("unmapped_folder", pid);
+      return { bound: false };
+    }
+    if (want !== home) {
+      if (agyFirstMiss(conversation, hash, `wrong_instance:${want}`))
+        dropProof(want, rec, hash);
+      return { bound: false };
+    }
+    // A hub that takes no proofs: the proxy sends none.
+    if (!laneOfRef(rec.ref)?.link) return { bound: false };
+    proofIssues.delete(pid);
+    // Asked on every call: the hub is told only once per hash.
+    if (!rec.linkHashes?.includes(hash)) {
+      rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+      sendLink(rec, hash);
+    }
+    return { bound: true };
+  };
   const server = await serveDaemon({
     path: listenPath,
     // A codex hello proves one call id, so it buys one request: `hello.pid`
     // is a claim (no peer credentials), and a won race must not become a session.
     oneRequest: (h) => h.kind === "codex",
+    // #3043: un-helloed rules query for the Codex SessionStart hook CLI.
+    onHabits: () =>
+      (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
     // #1822: `oa-bus mcp-proof` names the Claude process it runs under. The pid
     // in the request is the caller's claim, not attested (no peer credentials):
     // any process of this OS user can bind. The owner accepted that. What the
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      if (req.conversation !== undefined)
+        return agyLinkProof(req.pid, req.conversation, req.hash, req.instance);
       const want = req.instance ?? MAIN_INSTANCE;
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
       if (start === null || start === undefined) {
@@ -3544,7 +3667,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           if (!piLike(hello.kind)) tellOwed(prev.ref);
           // A rename made while the link was down (#1635).
           if (hello.proposed_name !== undefined && prev.kind === "pi")
-            renameFromAdapter(prev, hello.proposed_name);
+            renameFromAdapter(
+              prev,
+              hello.proposed_name,
+              hello.name_chosen === true,
+            );
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
@@ -3571,13 +3698,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           };
         attested(pid);
         noteFolder(cwd);
-        // A Codex thread the user named registers under that name (#1748).
-        const codexName =
+        // A Codex thread registers under its index title (#1748).
+        const codexTitle =
           hello.kind === "codex"
             ? codexThreadNames(codexIndexHome).get(hello.agent_ref)
             : undefined;
+        const codexName =
+          hello.kind === "codex"
+            ? (codexTitle?.name ?? prev?.sessionName)
+            : undefined;
         const proposedName =
           codexName ?? hello.proposed_name ?? hello.agent_ref;
+        const adapterChoseName =
+          hello.kind === "codex"
+            ? codexNameChosen(prev, codexTitle)
+            : hello.kind === "pi" &&
+              (hello.name_chosen === true ||
+                (prev?.nameChosen === true &&
+                  prev.proposedName === proposedName));
         // /clear (#1295): this new session runs in the process of a live
         // one whose session file is gone; it takes over that address.
         const files =
@@ -3627,7 +3765,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 ? { procStart: prev.procStart }
                 : {}),
           ...(mine ? { sessionName: mine.name } : {}),
-          ...(mine?.nameChosen ? { nameChosen: true } : {}),
+          ...(mine?.nameChosen || adapterChoseName ? { nameChosen: true } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
           ...(carryLinks(instance, prev, old) !== undefined
             ? { linkHashes: carryLinks(instance, prev, old) as string[] }
@@ -3742,6 +3880,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        unmapped: (cwd) => "unmapped" in lookup(cwd),
         proposeReach: (ref, namespaces) => {
           // The agent's own instance: a key goes only to its own address.
           const lane = laneOfRef(ref);
@@ -3784,9 +3923,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           sendLink(rec, hash);
           return true;
         },
-        renamed: (ref, name) => {
+        renamed: (ref, name, chosen) => {
           const rec = agents.byRef(ref);
-          if (rec) renameFromAdapter(rec, name);
+          if (rec) renameFromAdapter(rec, name, chosen);
         },
         ownerAwayUntil: awayUntil,
         codexPendingLocal: (ref) => codexTaken.size(ref),

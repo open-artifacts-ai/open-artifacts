@@ -26,6 +26,7 @@ export type Command = (
     }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
+  | { cmd: "rules"; sub: "codex-hook" }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | { cmd: "agy-hello" }
   | { cmd: "agy-watch" }
@@ -36,7 +37,9 @@ export type Command = (
       /** The environment variable that holds the token (Codex passes it by name). */
       tokenEnv?: string;
       /** Which harness runs the proxy; OpenCode when absent. */
-      for?: "opencode" | "codex";
+      for?: "opencode" | "codex" | "antigravity";
+      /** agy S5: an added instance's local name (#2793 S4); absent is main. */
+      name?: string;
     }
   | { cmd: "status" }
   | { cmd: "logs" }
@@ -69,6 +72,7 @@ const COMMANDS = new Set([
   "skill",
   "daemon",
   "mcp",
+  "rules",
   "mcp-proof",
   "agy-hello",
   "agy-watch",
@@ -91,6 +95,7 @@ const HARNESSES = ["claude", "opencode", "codex", "pi", "antigravity"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
+const RULES_USAGE = `usage: ${BUS_CMD} rules codex-hook`;
 const AUTO_UPDATE_USAGE = `usage: ${BUS_CMD} auto-update <off|on|status>`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
@@ -116,7 +121,7 @@ const FLAGS: Record<string, string[]> = {
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
-  "mcp-proxy": ["instance", "token-file", "token-env", "for"],
+  "mcp-proxy": ["instance", "token-file", "token-env", "for", "name"],
   namespace: ["yes"],
   upgrade: ["allow-failed"],
 };
@@ -197,6 +202,11 @@ export function parse(argv: string[]): Command {
     if (rest[2] !== undefined)
       throw new Error(`unexpected argument: ${rest[2]}`);
   }
+  if (cmd === "rules") {
+    if (rest[0] !== "codex-hook") throw new Error(RULES_USAGE);
+    if (rest[1] !== undefined)
+      throw new Error(`unexpected argument: ${rest[1]}`);
+  }
   if (cmd === "auto-update") {
     if (!["off", "on", "status"].includes(rest[0] ?? ""))
       throw new Error(AUTO_UPDATE_USAGE);
@@ -223,6 +233,7 @@ export function parse(argv: string[]): Command {
     cmd === "link" ||
     cmd === "unlink" ||
     cmd === "leads" ||
+    cmd === "rules" ||
     cmd === "upgrade" ||
     cmd === "auto-update"
       ? undefined
@@ -243,14 +254,25 @@ export function parse(argv: string[]): Command {
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
   if (cmd === "mcp-proxy" && !values.instance)
     throw new Error(
-      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex|antigravity] [--name <instance name>] [--token-file <path> | --token-env <name>]`,
     );
   if (cmd === "mcp-proxy") {
     const f = values.for;
-    if (f !== undefined && f !== "opencode" && f !== "codex")
-      throw new Error("--for takes opencode or codex");
-    if (values["token-env"] !== undefined && f !== "codex")
-      throw new Error("--token-env needs --for codex");
+    if (
+      f !== undefined &&
+      f !== "opencode" &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--for takes opencode, codex or antigravity");
+    if (
+      values["token-env"] !== undefined &&
+      f !== "codex" &&
+      f !== "antigravity"
+    )
+      throw new Error("--token-env needs --for codex or --for antigravity");
+    if (values.name !== undefined && f !== "antigravity")
+      throw new Error("--name needs --for antigravity");
     if (values["token-env"] !== undefined && tokenFile)
       throw new Error("give --token-file or --token-env, not both");
   }
@@ -269,7 +291,10 @@ export function parse(argv: string[]): Command {
             hub: values.instance as string,
             ...(tokenFile ? { tokenFile } : {}),
             ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
-            ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
+            ...(values.for
+              ? { for: values.for as "opencode" | "codex" | "antigravity" }
+              : {}),
+            ...(values.name !== undefined ? { name: values.name } : {}),
           }
         : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
@@ -353,6 +378,8 @@ function route(cmd: string, values: Values, positionals: string[]) {
       const name = positionals[1];
       return { cmd, sub: "check" as const, ...(name ? { name } : {}) };
     }
+    case "rules":
+      return { cmd, sub: "codex-hook" as const };
     case "auto-update":
       return { cmd, sub: positionals[0] as "off" | "on" | "status" };
     case "upgrade":

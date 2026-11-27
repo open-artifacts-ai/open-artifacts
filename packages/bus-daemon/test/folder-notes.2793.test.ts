@@ -56,13 +56,13 @@ describe("folder map wired into the daemon (#2793 S6)", () => {
     const home = twoInstanceHome();
     const h = await daemonHarness({ instancesHome: home });
     const dir = scratch("ob-s6-u-");
-    const files = await filesOf(h, "u1", dir);
-    expect(files).toEqual([
-      expect.objectContaining({
-        state: "noted",
-        reason: expect.stringContaining("use in this folder"),
-      }),
-    ]);
+    const client = await h.adapter("u1", { cwd: dir });
+    expect(await client.request({ type: "self", row: true })).toMatchObject({
+      type: "error",
+      code: "hub_unavailable",
+      message:
+        "This folder is not connected to a bus instance. Run npx @open-artifacts/bus use in this folder.",
+    });
     expect(h.daemon.agents.byRef("u1")?.instance).toBeUndefined();
   });
 
@@ -137,11 +137,14 @@ describe("folder map wired into the daemon (#2793 S6)", () => {
       }),
       { mode: 0o600 },
     );
-    const files = await filesOf(h, "late", dir);
+    const late = await h.adapter("late", { cwd: dir });
     expect(h.daemon.agents.byRef("early")?.instance).toBe("main");
     expect(h.daemon.agents.byRef("early")?.live).toBe(true);
     expect(h.daemon.agents.byRef("late")?.instance).toBeUndefined();
-    expect(files[0]?.reason).toContain("use in this folder");
+    expect(await late.request({ type: "self", row: true })).toMatchObject({
+      type: "error",
+      code: "hub_unavailable",
+    });
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
   });
 

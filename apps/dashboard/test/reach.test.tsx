@@ -113,8 +113,22 @@ const invite = async (email: string) => {
 
 describe("invite reachability", () => {
   it("outside_domains: the field error, no toast", async () => {
-    // Codes only: outside the domain, nothing admits the address.
-    mountHosted("/settings/members", { providers: ["email"] });
+    // #3184: with codes on every invite is reachable, so the server's
+    // refusal is stubbed to check the copy.
+    mountHosted("/settings/members", { providers: ["email"] }, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "invite_unreachable",
+              message: "server text",
+              details: { field: "email", reason: "outside_domains" },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    ]);
     const dialog = await invite("pat@elsewhere.org");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "pat@elsewhere.org can't log in here. Only addresses at your login domains can. Use one of those addresses.",
@@ -300,8 +314,12 @@ describe("share box when the recipient can't log in", () => {
   it("removing the person clears the warning box", async () => {
     mountHosted(PANEL);
     await share("pat@example.com");
+    fireEvent.keyDown(
+      await screen.findByRole("combobox", { name: "Role for pat@example.com" }),
+      { key: "Enter" },
+    );
     fireEvent.click(
-      screen.getByRole("button", { name: "Remove pat@example.com" }),
+      await screen.findByRole("option", { name: "Remove access" }),
     );
     await waitFor(() =>
       expect(screen.queryByText(/can't log in until/)).toBeNull(),

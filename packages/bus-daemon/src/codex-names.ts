@@ -5,10 +5,12 @@ import { type GroupCheck, ownGroup } from "./own-file.ts";
 /** Most of `session_index.jsonl` read per call: the latest entries are at the end. */
 export const CODEX_INDEX_MAX_BYTES = 1024 * 1024;
 
+export type CodexThreadName = { name: string; chosen: boolean };
+
 /**
- * The names a user gave Codex threads (`/rename`), by thread id. Codex records
- * them in `<codex home>/session_index.jsonl`, one JSON object per line with
- * `id`, `thread_name` and `updated_at`; the latest entry for an id wins. Only
+ * Codex records thread names, including automatic titles, in
+ * `<codex home>/session_index.jsonl`. The latest entry for an id wins.
+ * A name is chosen when it differs from the first name visible in the read. Only
  * that file is read, never a rollout or a session. The read is bounded (the
  * last 1 MB), a partial first line, a bad line or a nameless entry is skipped,
  * and a missing file (an older Codex) is no names, never an error.
@@ -21,9 +23,9 @@ export const CODEX_INDEX_MAX_BYTES = 1024 * 1024;
 export const codexThreadNames = (
   home: string,
   opts: { uid?: number | undefined; group?: GroupCheck } = {},
-): Map<string, string> => {
+): Map<string, CodexThreadName> => {
   const uid = "uid" in opts ? opts.uid : process.getuid?.();
-  const names = new Map<string, string>();
+  const names = new Map<string, CodexThreadName>();
   let fd: number;
   try {
     fd = openSync(
@@ -63,6 +65,7 @@ export const codexThreadNames = (
       closeSync(fd);
     } catch {}
   }
+  const firstNames = new Map<string, string>();
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
     let o: unknown;
@@ -75,9 +78,14 @@ export const codexThreadNames = (
     const { id, thread_name } = o as { id?: unknown; thread_name?: unknown };
     if (typeof id !== "string" || id === "") continue;
     // The latest entry wins, so a cleared name clears it.
-    if (typeof thread_name === "string" && thread_name.trim() !== "")
-      names.set(id, thread_name.trim());
-    else names.delete(id);
+    const name = typeof thread_name === "string" ? thread_name.trim() : "";
+    if (name === "") {
+      names.delete(id);
+      continue;
+    }
+    const first = firstNames.get(id) ?? name;
+    firstNames.set(id, first);
+    names.set(id, { name, chosen: name !== first });
   }
   return names;
 };

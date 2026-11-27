@@ -129,7 +129,9 @@ async function pair(t0: number): Promise<Pair & { ref: string }> {
   const rcv = await connect(rm.token);
   const snd = await connect(sm.token);
   const ref = uniq("r");
-  const name = await reg(rcv, ref, uniq("Rcv"), n);
+  const name = uniq("Rcv");
+  rcv.send(plainUp(id("u"), ref, name, n));
+  expect((await waitFor(rcv, "agent_ok")).bus_name).toBe(name);
   await reg(snd, "snd", uniq("Snd"), n);
   return { rcv, snd, n, name, ref };
 }

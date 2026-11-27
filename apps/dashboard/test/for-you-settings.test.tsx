@@ -34,10 +34,21 @@ installClock();
 const ME_ID = fixtures.me.user.id;
 
 /** A browser that can do web push, with our worker and its subscription faked. */
+// The mock API's push key as bytes: a subscription made with it counts as on (#3024).
+const MOCK_KEY = Uint8Array.from(
+  atob(
+    "BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U"
+      .replace(/-/g, "+")
+      .replace(/_/g, "/") + "=",
+  ),
+  (c) => c.charCodeAt(0),
+).buffer;
+
 function fakePush(start: NotificationPermission, answer = start) {
   let sub: object | null = null;
   const subscription = {
     endpoint: "https://push.example.com/abc",
+    options: { applicationServerKey: MOCK_KEY },
     toJSON: () => ({
       endpoint: "https://push.example.com/abc",
       keys: { p256dh: "BNcRdreALRFX", auth: "tBHItJI5svbpez" },
@@ -47,6 +58,8 @@ function fakePush(start: NotificationPermission, answer = start) {
       return true;
     },
   };
+  // A browser that kept an id (subscribed()) has its subscription too.
+  if (localStorage.getItem("oa.push.subscription.v2")) sub = subscription;
   const pushManager = {
     getSubscription: async () => sub,
     subscribe: vi.fn(async () => {
@@ -129,8 +142,8 @@ describe("For you settings", () => {
     const needs = await page();
     expect(needs).toHaveAttribute("aria-checked", "false");
     expect(
-      screen.getByRole("switch", { name: "Updates in this browser" }),
-    ).toBeDisabled();
+      screen.queryByRole("switch", { name: "Updates in this browser" }),
+    ).toBeNull();
     expect(screen.getByRole("switch", { name: "Quiet hours" })).toHaveAttribute(
       "aria-checked",
       "true",
@@ -240,11 +253,9 @@ describe("For you settings", () => {
     );
     const needs = await page();
     expect(needs).toHaveAttribute("aria-checked", "false");
-    const updates = screen.getByRole("switch", {
-      name: "Updates in this browser",
-    });
-    expect(updates).toHaveAttribute("aria-checked", "false");
-    expect(updates).toBeDisabled();
+    expect(
+      screen.queryByRole("switch", { name: "Updates in this browser" }),
+    ).toBeNull();
     expect(
       screen.getByRole("combobox", { name: "Interrupt me for" }),
     ).toHaveTextContent("Every ask put to me");
@@ -336,11 +347,9 @@ describe("this browser's notifications (slice 3, S5)", () => {
     await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
     expect(sw).toBeEnabled();
     expect(sw).toHaveAccessibleDescription("On for Chrome on this Mac");
-    const updates = screen.getByRole("switch", {
-      name: "Updates in this browser",
-    });
-    expect(updates).toHaveAttribute("aria-checked", "false");
-    expect(updates).toBeEnabled();
+    expect(
+      screen.queryByRole("switch", { name: "Updates in this browser" }),
+    ).toBeNull();
   });
 
   it("removes the enrolled device from the cache after the server turns it off", async () => {
@@ -351,32 +360,20 @@ describe("this browser's notifications (slice 3, S5)", () => {
     fireEvent.click(device);
     await waitFor(() => expect(sub.patches).toEqual([{ needsYou: false }]));
     await waitFor(() =>
-      expect(
-        screen.getByRole("switch", { name: "Updates in this browser" }),
-      ).toBeDisabled(),
+      expect(device).toHaveAttribute("aria-checked", "false"),
     );
   });
 
-  it("a toggle PATCHes the switch at once and keeps it", async () => {
+  it("while the browser's key check is unknown, the switch is never On (#3024)", async () => {
     const sub = subscribed();
     server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
-    const sw = await page();
-    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
-    const updates = screen.getByRole("switch", {
-      name: "Updates in this browser",
-    });
-    fireEvent.click(updates);
-    await waitFor(() =>
-      expect(updates).toHaveAttribute("aria-checked", "true"),
-    );
-    await waitFor(() => expect(sub.patches).toEqual([{ updates: true }]));
-    fireEvent.click(sw);
-    await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "false"));
-    await waitFor(() =>
-      expect(sub.patches).toEqual([{ updates: true }, { needsYou: false }]),
-    );
-    // Off keeps the subscription (Updates is still on): no unsubscribe, no DELETE.
-    expect(updates).toHaveAttribute("aria-checked", "true");
+    const f = fakePush("default");
+    f.pushManager.getSubscription = () => new Promise(() => {});
+    mount("/settings/notifications");
+    const sw = await needs();
+    // Everything else has loaded (the list lists this browser); the check hasn't.
+    await waitFor(() => expect(sw).toBeEnabled());
+    expect(sw).toHaveAttribute("aria-checked", "false");
   });
 
   it("a failed PATCH puts the switch back and says so", async () => {
@@ -384,16 +381,40 @@ describe("this browser's notifications (slice 3, S5)", () => {
     server.use(...sub.handlers, ...createHandlers({ events, forYou: "mixed" }));
     const sw = await page();
     await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
-    const updates = screen.getByRole("switch", {
-      name: "Updates in this browser",
-    });
-    fireEvent.click(updates);
+    fireEvent.click(sw);
     await findVisibleToast("Couldn't save. Try again.");
-    await waitFor(() =>
-      expect(updates).toHaveAttribute("aria-checked", "false"),
-    );
-    expect(sub.patches).toEqual([{ updates: true }]);
+    expect(sw).toHaveAttribute("aria-checked", "true");
+    expect(sub.patches).toEqual([{ needsYou: false }]);
   });
+
+  it.each([404, 500])(
+    "a subscribe %i leaves the switch off with retry guidance until enrollment succeeds",
+    async (status) => {
+      const base = createHandlers({ events, forYou: "mixed" });
+      server.use(
+        http.post(
+          `*${R.mePushSubscriptions}`,
+          () => new HttpResponse(null, { status }),
+          { once: true },
+        ),
+        ...pushSwitchHandlers(() => base),
+        ...base,
+      );
+      fakePush("granted");
+      mount("/settings/notifications");
+      const sw = await needs();
+      await waitFor(() => expect(sw).toBeEnabled());
+      fireEvent.click(sw);
+      const message =
+        "Couldn't turn on notifications in this browser. Try again, or sign in again.";
+      await waitFor(() => expect(sw).toHaveAccessibleDescription(message));
+      expect(screen.getByText(message)).toBeVisible();
+      expect(sw).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(sw);
+      await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+      expect(screen.queryByText(message)).toBeNull();
+    },
+  );
 
   it("no subscription: Needs you is off and asks only on the click, Updates waits", async () => {
     const base = createHandlers({ events, forYou: "mixed" });
@@ -405,11 +426,9 @@ describe("this browser's notifications (slice 3, S5)", () => {
     const sw = await needs();
     expect(sw).toHaveAttribute("aria-checked", "false");
     await waitFor(() => expect(sw).toBeEnabled());
-    const updates = screen.getByRole("switch", {
-      name: "Updates in this browser",
-    });
-    expect(updates).toBeDisabled();
-    expect(updates).toHaveAccessibleDescription("Turn on Needs you here first");
+    expect(
+      screen.queryByRole("switch", { name: "Updates in this browser" }),
+    ).toBeNull();
     // Nothing is asked before the click.
     expect(f.n.requestPermission).not.toHaveBeenCalled();
     expect(f.register).not.toHaveBeenCalled();
@@ -436,7 +455,6 @@ describe("this browser's notifications (slice 3, S5)", () => {
       ).toBe(true),
     );
     expect(sw).toHaveAccessibleDescription(/^On for /);
-    expect(updates).toBeEnabled();
   });
 
   it("a refusal: Blocked in the cell, how to unblock under the row", async () => {
@@ -459,8 +477,8 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(note).toHaveAttribute("colspan", "3");
     expect(f.register).not.toHaveBeenCalled();
     expect(
-      screen.getByRole("switch", { name: "Updates in this browser" }),
-    ).toBeDisabled();
+      screen.queryByRole("switch", { name: "Updates in this browser" }),
+    ).toBeNull();
   });
 
   it("a browser that can't, key present: Not available, the line under the row, account controls stay on", async () => {
@@ -500,14 +518,9 @@ describe("this browser's notifications (slice 3, S5)", () => {
       ...createHandlers({ events, forYou: "mixed" }),
     );
     const sw = await page();
-    for (const el of [
-      sw,
-      screen.getByRole("switch", { name: "Updates in this browser" }),
-    ]) {
-      expect(el).toHaveAttribute("aria-checked", "false");
-      expect(el).toBeDisabled();
-      expect(el).toHaveAccessibleDescription("Off for this site");
-    }
+    expect(sw).toHaveAttribute("aria-checked", "false");
+    expect(sw).toBeDisabled();
+    expect(sw).toHaveAccessibleDescription("Off for this site");
     // An owner step, in plain words, once, under the table.
     expect(
       screen.getByText(
@@ -631,7 +644,7 @@ describe("iPhone and iPad (#2943)", () => {
       screen.queryByText("This browser can't show notifications."),
     ).toBeNull();
     // OA Product-2: the Updates cell says the same, not "Turn on Needs you here first".
-    expect(screen.getAllByText("Add to Home Screen first")).toHaveLength(2);
+    expect(screen.getByText("Add to Home Screen first")).toBeInTheDocument();
     expect(screen.queryByText("Turn on Needs you here first")).toBeNull();
     expect(
       screen.getByRole("combobox", { name: "On lock screens" }),

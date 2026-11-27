@@ -93,7 +93,10 @@ export const noService: Service = {
   cli: () => ["oa-bus"],
 };
 
-export type Out = Stream & { write: (s: string) => unknown };
+export type Out = Stream & {
+  write: (s: string) => unknown;
+  columns?: number;
+};
 
 /** Everything a command touches outside its own logic. */
 export type Ctx = Deps & {

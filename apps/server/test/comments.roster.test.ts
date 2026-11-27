@@ -231,10 +231,19 @@ describe("roster: the viewer's own running agents", () => {
       [s.owner.userId]: [
         { ...agentRow("ns-o", "OA Platform W"), role: "OA Platform" },
         agentRow("ns-o", "Plain"),
+        {
+          ...agentRow("ns-o", "Lead-2"),
+          role: "Lead",
+          roleId: "abcdef1234567890",
+          privateSessionName: true,
+        },
       ],
       [s.editor.userId]: [{ ...agentRow("ns-e", "Codex W"), role: "Codex" }],
     });
     const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const inherited = r.find((x) => x.name === "Lead");
+    expect(inherited).toBeDefined();
+    expect(inherited).not.toHaveProperty("session");
     const own = r.find((x) => x.address.name === "OA Platform W");
     expect(own).toMatchObject({
       name: "OA Platform",
@@ -281,7 +290,7 @@ describe("roster: the viewer's own running agents", () => {
     const own = await viewerRosterAgents(h.env, s.id, s.owner.userId);
     expect(Object.fromEntries(own.map((x) => [x.name, x.online]))).toEqual({
       Up: true,
-      "Held W": false,
+      Held: false,
     });
   });
 
@@ -587,7 +596,7 @@ describe("@ menu: per-session state, last active and machine", () => {
       true,
       true,
     );
-    expect(asked).toEqual({ away: true });
+    expect(asked).toEqual({ away: true, roles: true });
   });
 });
 
@@ -599,12 +608,13 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
     // The menu (online read) hands out the key.
     const key = (await agentRoster(h.env, s.id, s.owner.userId, true, true))[0]
       ?.key as string;
+    const body = "Please review this comment.";
     const t = (await addThread(
       h.env,
       art(s.id),
       who(s.owner),
       view(s.owner),
-      { anchor: { kind: "note" }, body: "hi", mentions: [{ key }] },
+      { anchor: { kind: "note" }, body, mentions: [{ key }] },
       { moderator: true },
     )) as Thread;
     expect(t.comments[0]?.mentions?.[0]).toEqual({
@@ -617,12 +627,14 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
       { namespace: "ns-o", name: "Runner" },
     ]);
     expect(await followRows(s.id)).toEqual([]);
-    // The notice names the thread and the comment, nothing authored.
+    // Only the verified quote carries the typed comment body.
     const n = bus.sent[0]?.notice as BusNotice;
     expect(n.threadId).toBe(t.id);
     expect(n.commentId).toBe(t.comments[0]?.id);
     expect(n.text).toContain(`Thread ${t.id}, comment ${t.comments[0]?.id}.`);
-    expect(n.text).not.toContain("hi\n");
+    expect(n.text.split("\n").filter((line) => line.includes(body))).toEqual([
+      `Their words: ${JSON.stringify(body)}`,
+    ]);
   });
 
   it("another member's running agent cannot be mentioned by key", async () => {
@@ -950,6 +962,8 @@ describe("comment notice text", () => {
     const cid = newId();
     const ids = { threadId: tid, commentId: cid, artifactId: aid };
     const read = `Read just this thread: list_comments ${JSON.stringify({ id: aid, threadId: tid, commentId: cid })}.`;
+    const reply = `Reply: add_comment ${JSON.stringify({ id: aid, threadId: tid, body: "..." })}`;
+    const answerFromNotice = `Answer from this notice. Only if their words refer to earlier comments: list_comments ${JSON.stringify({ id: aid, threadId: tid, commentId: cid })}.`;
     const yours = commentNoticeText(
       "mention",
       1,
@@ -960,7 +974,9 @@ describe("comment notice text", () => {
       "please look",
     );
     expect(yours.split("\n")).toContain('Their words: "please look"');
-    expect(yours.split("\n")).toContain(read);
+    expect(yours.split("\n")).toContain(reply);
+    expect(yours.split("\n")).toContain(answerFromNotice);
+    expect(yours).not.toContain("Read just this thread:");
     // Anyone else's words never travel, even when passed.
     const others = commentNoticeText(
       "mention",
@@ -1052,11 +1068,6 @@ describe("roster: unnamed agents (#2311, #2309)", () => {
       ],
     });
     const own = await viewerRosterAgents(h.env, s.id, s.owner.userId);
-    // The POST-time lookup names the session, not its role.
-    expect(own.map((x) => x.name)).toEqual([
-      "claude-2",
-      "NewNamed",
-      "OldNamed",
-    ]);
+    expect(own.map((x) => x.name)).toEqual(["claude-2", "New", "Old"]);
   });
 });

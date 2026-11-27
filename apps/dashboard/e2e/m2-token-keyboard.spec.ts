@@ -14,11 +14,8 @@ test("keyboard: create and revoke a token without a mouse", async ({
   await page.keyboard.press("Enter");
   const made = page.getByRole("dialog", { name: "Token created" });
   await expect(made).toBeVisible();
-  // Escape must not close it while the token is on screen.
+  // Escape closes it like Done, even with the token on screen (#3260).
   await page.keyboard.press("Escape");
-  await expect(made).toBeVisible();
-  await made.getByRole("button", { name: "Done" }).focus();
-  await page.keyboard.press("Enter");
   await expect(made).toBeHidden();
   // Focus returns to the trigger.
   await expect(
