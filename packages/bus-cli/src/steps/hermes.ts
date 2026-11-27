@@ -30,6 +30,7 @@ import {
   resolve,
 } from "node:path";
 import type { AdapterDeps } from "./adapters.ts";
+import { writeAtomic } from "./skill.ts";
 
 /** The plugin's name in plugin.yaml, and its folder under plugins/. */
 export const HERMES_PLUGIN_NAME = "oa-bus";
@@ -322,6 +323,40 @@ export function pluginHash(dir: string): string {
   return h.digest("hex").slice(0, 16);
 }
 
+const managedPrefix =
+  "managed by the Open Artifacts bus installer: edits are replaced on reinstall.";
+const ownerPrefix = (deps: AdapterDeps) => {
+  const home = real(resolve(deps.busHome ?? join(deps.home, ".oa-bus")));
+  return `${managedPrefix} owner=${createHash("sha256").update(home).digest("hex")} `;
+};
+const markerText = (deps: AdapterDeps, shipped: string) =>
+  `${ownerPrefix(deps)}${pluginHash(shipped)}\n`;
+
+export function ownsPlugin(
+  deps: AdapterDeps,
+  marker: string,
+  recordedLegacyInstall = false,
+): boolean {
+  if (kind(marker) !== "file") return false;
+  const value = readFileSync(marker, "utf8");
+  return (
+    value.startsWith(ownerPrefix(deps)) ||
+    (recordedLegacyInstall &&
+      value.startsWith(`${managedPrefix} `) &&
+      /^[a-f0-9]{16}\n$/.test(value.slice(managedPrefix.length + 1)))
+  );
+}
+
+export function stampPlugin(
+  deps: AdapterDeps,
+  marker: string,
+  shipped: string,
+) {
+  const text = markerText(deps, shipped);
+  if (kind(marker) !== "file" || readFileSync(marker, "utf8") !== text)
+    writeAtomic(marker, text);
+}
+
 /** Whether `dir` is our folder, and whether it matches the shipped plugin. */
 export function pluginState(
   dir: string,
@@ -416,7 +451,7 @@ export function writeManagedPlugin(
   shipped: string,
   marker: string,
   replace: boolean,
-  stagingOptions: AdapterDeps["staging"],
+  deps: AdapterDeps,
   preserveRoots = false,
 ) {
   const plugins = join(dest, "..");
@@ -433,7 +468,7 @@ export function writeManagedPlugin(
       `${staging} is not a plain folder; remove it and run the install again`,
     );
   mkdirSync(staging, { recursive: true });
-  sweepStaging(staging, own, stagingOptions);
+  sweepStaging(staging, own, deps.staging);
   const tmp = join(staging, own);
   try {
     // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
@@ -442,10 +477,7 @@ export function writeManagedPlugin(
       mkdirSync(join(tmp, f, ".."), { recursive: true });
       cpSync(join(shipped, f), join(tmp, f));
     }
-    writeFileSync(
-      join(tmp, marker),
-      `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
-    );
+    writeFileSync(join(tmp, marker), markerText(deps, shipped));
     if (replace) {
       publishPluginFiles(tmp, dest, marker, preserveRoots);
       rmSync(tmp, { recursive: true, force: true });
@@ -475,12 +507,17 @@ export async function installHermes(
     throw new Error("the Hermes plugin is missing from this install");
   const dest = hermesPluginDir(deps.home, deps.env ?? {});
   const state = pluginState(dest, shipped);
-  if (mode === "refresh" && state !== "stale") return "absent";
+  if (
+    mode === "refresh" &&
+    (state !== "stale" || !ownsPlugin(deps, join(dest, HERMES_MARKER)))
+  )
+    return "absent";
   if (state === "foreign")
     throw new Error(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
   if (state === "current") {
+    stampPlugin(deps, join(dest, HERMES_MARKER), shipped);
     // #3043: habits now come from the bus; remove any leftover marker.
     const marker = join(dest, HERMES_HABITS_MARKER);
     const mk = kind(marker);
@@ -491,7 +528,7 @@ export async function installHermes(
       shipped,
       HERMES_MARKER,
       state === "stale",
-      deps.staging,
+      deps,
       true,
     );
   }

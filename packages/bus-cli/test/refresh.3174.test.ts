@@ -179,6 +179,68 @@ function makeFakeExec(home: string, env: Record<string, string>) {
 
 describe("refreshAdapters (#3174)", () => {
   it.each([false, true])(
+    "refreshes shared plugins only from their owning bus home (legacy: %s)",
+    async (legacy) => {
+      const home = tmp("oa-refresh-two-homes-");
+      const env = makeHarnessEnv(home);
+      mkdirSync(env.CODEX_HOME, { recursive: true });
+      const fake = makeFakeExec(home, env);
+      const assets = readAssets();
+      const oc = makeOpenclawPair(assets.openclaw);
+      const owner: AdapterDeps = {
+        home,
+        env,
+        busHome: join(home, "first"),
+        busBin: BIN,
+        isolated: true,
+        assets: { ...assets, hermes: makeOldHermes(), openclaw: oc.oldDir },
+        which: (c) => ["hermes", "openclaw"].includes(c),
+        exec: fake.exec,
+      };
+      expect((await installAdapters(owner)).installed).toEqual(
+        expect.arrayContaining(["hermes", "openclaw"]),
+      );
+      if (legacy) {
+        for (const dir of [
+          hermesPluginDir(home, env),
+          openclawPluginDir(home, env),
+        ]) {
+          const marker = join(dir, ".oa-bus-managed");
+          writeFileSync(
+            marker,
+            readFileSync(marker, "utf8").replace(/ owner=[a-f0-9]{64}/, ""),
+          );
+        }
+      }
+      const newer = { ...assets, openclaw: oc.newDir };
+      const other = { ...owner, busHome: join(home, ".oa-bus"), assets: newer };
+      expect(
+        (await installAdapters({ ...other, which: (c) => c === "codex" }))
+          .installed,
+      ).toContain("codex");
+      const refreshed = await refreshAdapters(other);
+      expect(refreshed.refreshed).not.toContain("hermes");
+      expect(refreshed.refreshed).not.toContain("openclaw");
+      expect(pluginState(hermesPluginDir(home, env), owner.assets.hermes)).toBe(
+        "current",
+      );
+      expect(openclawPluginState(openclawPluginDir(home, env), oc.oldDir)).toBe(
+        "current",
+      );
+      if (legacy) {
+        // Only OpenClaw stored the destination under the installing home.
+        expect(
+          (await refreshAdapters({ ...owner, assets: newer })).refreshed,
+        ).toEqual(["openclaw"]);
+        expect((await installAdapters(owner)).skipped).toEqual([]);
+      }
+      expect(
+        (await refreshAdapters({ ...owner, assets: newer })).refreshed,
+      ).toEqual(expect.arrayContaining(["hermes", "openclaw"]));
+    },
+  );
+
+  it.each([false, true])(
     "refreshes disabled plugins and preserves remembered chats (failed rename: %s)",
     async (interrupt) => {
       const home = tmp("oa-refresh-disabled-");

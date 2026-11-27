@@ -113,6 +113,7 @@ import {
   openclawNix,
   openclawPluginDir,
   openclawPluginState,
+  ownsOpenclawPlugin,
   uninstallOpenclaw,
 } from "./openclaw.ts";
 import {
@@ -1805,9 +1806,13 @@ export async function refreshAdapters(
     if (!deps.which("openclaw") || openclawNix(deps.env)) return false;
     const dest = openclawPluginDir(deps.home, deps.env ?? {});
     const shipped = deps.assets.openclaw;
-    if (!shipped || openclawPluginState(dest, shipped) !== "stale")
+    if (
+      !shipped ||
+      !ownsOpenclawPlugin(deps, dest) ||
+      openclawPluginState(dest, shipped) !== "stale"
+    )
       return false;
-    writeManagedPlugin(dest, shipped, OPENCLAW_MARKER, true, deps.staging);
+    writeManagedPlugin(dest, shipped, OPENCLAW_MARKER, true, deps);
     return true;
   });
   return { refreshed, skipped };
