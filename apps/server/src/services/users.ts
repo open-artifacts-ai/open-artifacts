@@ -267,12 +267,11 @@ export async function upsertOnLogin(
       (await outsiderLoginOff(env, existing.id, e))
     )
       return null;
-    const set: Partial<UserRow> = { lastSeenAt: Date.now() };
-    if (name !== null) set.name = name;
     const update = db
       .update(users)
       .set({
-        ...set,
+        lastSeenAt: Date.now(),
+        name: name ?? undefined,
         ...(inviteLoginName(name, e)
           ? {
               displayName: sql`case when ${users.invitedAt} is not null and ${users.lastSeenAt} is null then null else ${users.displayName} end`,
