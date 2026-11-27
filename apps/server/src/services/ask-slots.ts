@@ -1,6 +1,15 @@
-import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "@oa/shared";
+import {
+  ASK_SLOT_KEY,
+  ASK_SLOTS_MAX,
+  type CommentThread,
+  type PlaceAskInput,
+} from "@oa/shared";
+import { authorize, type Caller, canCtx, capOfCaller } from "../auth/authz.js";
+import { can, capsReads, isGuestRole } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
+import { type CommentViewer, listThread } from "./comments.js";
 import { personName } from "./users.js";
 
 /**
@@ -110,4 +119,139 @@ export async function userDisplayNames(
     );
   }
   return out;
+}
+
+/**
+ * #2536: places an existing ask (same page or another page the caller can read)
+ * into a `[data-oa-ask="<key>"]` slot on `input.id`. Never copies the ask and
+ * never widens access to the ask's home page.
+ */
+export async function placeAskSlot(
+  env: Env,
+  caller: Caller,
+  input: PlaceAskInput,
+  placer: { userId: string; agent?: string | null },
+): Promise<{
+  id: string;
+  key: string;
+  homeArtifactId: string;
+  threadId: string;
+  commentId: string;
+}> {
+  // Target page: editor or owner only.
+  await authorize(env, caller, input.id, "publish");
+  if (!ASK_SLOT_KEY.test(input.key))
+    throw new ApiError("bad_request", "Slot key must match [a-z0-9-]{1,64}.");
+  // Rule 5: caller may show an ask only if they can already read its home page.
+  const home = await authorize(
+    env,
+    caller,
+    input.homeArtifactId,
+    "comments.read",
+  );
+  if (home.artifact.comments !== 1)
+    throw new ApiError(
+      "comments_off",
+      "Comments are off for the ask's home artifact.",
+    );
+  const viewer: CommentViewer = {
+    userId: placer.userId,
+    short: null,
+    guest: caller.kind === "user" && isGuestRole(caller.user.role),
+    capped: capsReads(capOfCaller(caller)),
+    moderator: can(
+      home.level,
+      "comments.moderate",
+      canCtx(caller, home.artifact),
+    ),
+    caller,
+  };
+  let thread: CommentThread | undefined;
+  try {
+    thread = (
+      await listThread(env, input.homeArtifactId, viewer, input.threadId)
+    ).threads[0];
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "not_found")
+      throw new ApiError("not_found", "No such thread on the home artifact.");
+    throw e;
+  }
+  const comment = thread?.comments.find((c) => c.id === input.commentId);
+  if (!comment?.ask)
+    throw new ApiError(
+      "not_found",
+      "No ask found at that threadId and commentId on the home artifact.",
+    );
+  if (comment.ask.withdrawn)
+    throw new ApiError("withdrawn", "Cannot place a withdrawn ask.");
+  if (comment.ask.replacedBy)
+    throw new ApiError("already_replaced", "Cannot place a replaced ask.");
+
+  const existing = await stmt(
+    env.DB,
+    "select slot_key from artifact_ask_slots where artifact_id = ?",
+  )
+    .bind(input.id)
+    .all<{ slot_key: string }>();
+  const keys = new Set(existing.results.map((r) => r.slot_key));
+  if (!keys.has(input.key) && keys.size >= ASK_SLOTS_MAX)
+    throw new ApiError(
+      "conflict",
+      `At most ${ASK_SLOTS_MAX} ask slots per page.`,
+    );
+
+  const note = input.note?.trim() || null;
+  await stmt(
+    env.DB,
+    `insert into artifact_ask_slots
+       (artifact_id, slot_key, home_artifact_id, thread_id, comment_id, note, placed_by, placed_agent, created_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     on conflict(artifact_id, slot_key) do update set
+       home_artifact_id = excluded.home_artifact_id,
+       thread_id = excluded.thread_id,
+       comment_id = excluded.comment_id,
+       note = excluded.note,
+       placed_by = excluded.placed_by,
+       placed_agent = excluded.placed_agent,
+       created_at = excluded.created_at`,
+  )
+    .bind(
+      input.id,
+      input.key,
+      input.homeArtifactId,
+      input.threadId,
+      input.commentId,
+      note,
+      placer.userId,
+      placer.agent ?? null,
+      new Date().toISOString(),
+    )
+    .run();
+
+  return {
+    id: input.id,
+    key: input.key,
+    homeArtifactId: input.homeArtifactId,
+    threadId: input.threadId,
+    commentId: input.commentId,
+  };
+}
+
+/** #2536: removes a placed ask slot from `artifactId` (editor or owner only). */
+export async function removeAskSlot(
+  env: Env,
+  caller: Caller,
+  artifactId: string,
+  key: string,
+): Promise<{ id: string; key: string; removed: boolean }> {
+  await authorize(env, caller, artifactId, "publish");
+  if (!ASK_SLOT_KEY.test(key))
+    throw new ApiError("bad_request", "Slot key must match [a-z0-9-]{1,64}.");
+  const r = await stmt(
+    env.DB,
+    "delete from artifact_ask_slots where artifact_id = ? and slot_key = ?",
+  )
+    .bind(artifactId, key)
+    .run();
+  return { id: artifactId, key, removed: (r.meta?.changes ?? 0) > 0 };
 }

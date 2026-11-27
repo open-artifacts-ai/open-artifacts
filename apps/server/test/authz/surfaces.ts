@@ -1073,6 +1073,30 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/ask-slots`],
     read((id) => `${A(id)}/ask-slots`, 200),
   ),
+  // #2536: place or remove an ask in a page's slot (editor or owner only).
+  // A malformed slot key stops at 400 bad_request after the access check.
+  rest(
+    "ask slot place",
+    "publish",
+    [`PUT ${ARTS}/ask-slots/:key`],
+    exact(
+      "PUT",
+      (id) => `${A(id)}/ask-slots/${BAD}`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "ask slot remove",
+    "publish",
+    [`DELETE ${ARTS}/ask-slots/:key`],
+    exact(
+      "DELETE",
+      (id) => `${A(id)}/ask-slots/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "comments post",
     "comments.write",
@@ -1529,6 +1553,28 @@ export const SURFACES: readonly Surface[] = [
       (id) => ({ id, threadId: SOME_ID, commentId: SOME_ID, body: "x" }),
       (o) => o.isError && /^not_found: No such thread/.test(o.text),
     ),
+  ),
+  // #2536: place or remove an ask slot over MCP (editor or owner only).
+  mcp(
+    "place_ask",
+    "publish",
+    tool(
+      "place_ask",
+      (id) => ({
+        id,
+        key: "probe",
+        homeArtifactId: id,
+        threadId: SOME_ID,
+        commentId: SOME_ID,
+      }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
+  mcp(
+    "remove_ask_slot",
+    "publish",
+    tool("remove_ask_slot", (id) => ({ id, key: "probe-none" })),
+    "data",
   ),
   // Not artifact-scoped (the caller's publishable spaces).
   mcp(

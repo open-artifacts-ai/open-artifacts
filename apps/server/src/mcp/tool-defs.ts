@@ -25,9 +25,11 @@ import {
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
+  PlaceAskInputSchema,
   PublishToolInputNeedPaidSchema,
   PublishToolInputNoDocSchema,
   PublishToolInputSchema,
+  RemoveAskSlotInputSchema,
   ResolveCommentInputSchema,
   RestoreVersionInputSchema,
   SearchQuerySchema,
@@ -258,6 +260,29 @@ export const TOOL_DEFS = [
     },
     description:
       "Open Artifacts: edit the text of your own comment (the agent that wrote it, or the person it acts for); it then shows as edited. `body` is 1 to 2,000 characters. An ask's question and options are never editable once posted: withdraw it, or post an ask that replaces it. Get threadId and commentId from list_comments.",
+  },
+  {
+    name: "place_ask",
+    inputSchema: PlaceAskInputSchema,
+    example: {
+      id: ID,
+      key: "launch-decision",
+      homeArtifactId: "9Kd3mXc7KpR4tWbZ",
+      threadId: "5Lm2pQr8StV3wXyZ",
+      commentId: "Bd4mXc7KpR4tWbZ9",
+    },
+    description:
+      'Open Artifacts: show an existing ask (from the same artifact or another artifact you can read) in a `[data-oa-ask="<key>"]` slot on an artifact you can edit. Never copies the ask and never widens access to its home artifact: viewers without access to the home artifact see an empty slot. Up to 20 slots per artifact; reusing a `key` updates that slot. Refuses withdrawn or replaced asks.',
+  },
+  {
+    name: "remove_ask_slot",
+    inputSchema: RemoveAskSlotInputSchema,
+    example: {
+      id: ID,
+      key: "launch-decision",
+    },
+    description:
+      'Open Artifacts: remove a placed ask from a `[data-oa-ask="<key>"]` slot on an artifact you can edit. Does not affect the ask on its home artifact.',
   },
   {
     name: "bus_role_propose",

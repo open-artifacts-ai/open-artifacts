@@ -109,6 +109,8 @@ export const R = {
     `${A}/${seg(id)}/content-url${v !== undefined ? `?v=${v}` : ""}`,
   /** GET -> AskSlot[]; the asks this viewer may see in the page's slots (#2426 B, #2536). */
   askSlots: (id: string) => `${A}/${seg(id)}/ask-slots`,
+  /** PUT PlaceAskBody / DELETE (#2536): place or remove an ask in a page's [data-oa-ask] slot. */
+  askSlot: (id: string, key: string) => `${A}/${seg(id)}/ask-slots/${seg(key)}`,
   /** GET -> Share[]; PUT ShareInput -> Share */
   shares: (id: string) => `${A}/${seg(id)}/shares`,
   /** DELETE -> 204 */
