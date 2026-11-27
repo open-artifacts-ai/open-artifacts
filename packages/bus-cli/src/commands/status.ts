@@ -798,7 +798,9 @@ export async function status(ctx: Ctx, opts: StatusOpts = {}): Promise<number> {
   if (anyDetail) {
     const sections: string[][] = [];
     if (opts.agents) {
-      sections.push(renderAgentsDetail(ctx.style, nsData.blocks, ctx.now()));
+      sections.push(
+        renderAgentsDetail(ctx.style, nsData.blocks, ctx.now(), width),
+      );
     }
     if (opts.messages) {
       sections.push(renderMessagesDetail(ctx.style, messages, ctx.now()));

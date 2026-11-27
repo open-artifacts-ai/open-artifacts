@@ -445,19 +445,35 @@ export type StatusNamespaceBlock = {
   agents: StatusAgent[];
 };
 
-/** `--agents`: all agents across projects, with full untruncated status text (#3328 S3). */
+/** `--agents`: all agents across projects, aligned like S1 with full untruncated status text (#3328 S3). */
 export function renderAgentsDetail(
   style: Style,
   blocks: StatusNamespaceBlock[],
   now: number,
+  width = 120,
 ): string[] {
   const p = (tone: Parameters<typeof paint>[1], s: string) =>
     paint(style, tone, s);
   const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
   const sep = g("sep");
+  const more = g("more");
   if (blocks.length === 0 || blocks.every((b) => b.agents.length === 0)) {
     return [p("muted", "No agents on the bus.")];
   }
+  const allAgents = blocks.flatMap((b) => b.agents);
+  const maxName = Math.max(0, ...allAgents.map((a) => cols(cleanText(a.name))));
+  const nameW = Math.min(28, Math.max(20, maxName));
+  const appW = 8;
+  const machineW = 12;
+  const ageW = Math.max(
+    3,
+    ...allAgents.map((a) => cols(shortAge(a.status_at, now))),
+  );
+  const minStatusW = Math.max(
+    40,
+    width - 2 - (nameW + 1) - appW - machineW - (ageW + 1),
+  );
+
   const lines: string[] = [];
   for (const block of blocks) {
     if (block.agents.length === 0) continue;
@@ -489,20 +505,37 @@ export function renderAgentsDetail(
       if (list.length === 0) return;
       lines.push(p(tone, title));
       for (const a of list) {
-        const name = bold(style, cleanText(a.name));
-        const app = shortApp(a.kind);
-        const machine = shortMachine(a.machine);
-        const age = shortAge(a.status_at, now);
-        const meta = [app, machine, age].filter(Boolean).join(` ${sep} `);
+        const nameStr = padRight(
+          cutCols(cleanText(a.name), nameW, more),
+          nameW,
+        );
+        const appStr = padRight(
+          cutCols(shortApp(a.kind), appW - 1, more),
+          appW,
+        );
+        const machStr = padRight(
+          cutCols(shortMachine(a.machine), machineW - 1, more),
+          machineW,
+        );
         const label = a.status_label ? cleanText(a.status_label) : "";
-        const statusText = label
+        const statusStr = label
           ? `"${label}"`
           : a.status
             ? a.status.replace(/_/g, " ")
             : "";
-        lines.push(
-          `  ${name}  ${p("muted", meta)}${statusText ? `  ${statusText}` : ""}`,
-        );
+        const age = shortAge(a.status_at, now);
+        const left = `  ${bold(style, nameStr)} ${p("muted", appStr)}${p("muted", machStr)}`;
+        if (!age) {
+          lines.push(`${left}${statusStr}`.trimEnd());
+        } else {
+          const statusPadded =
+            cols(statusStr) < minStatusW
+              ? padRight(statusStr, minStatusW)
+              : statusStr;
+          lines.push(
+            `${left}${statusPadded} ${p("muted", age.padStart(ageW))}`,
+          );
+        }
       }
     };
     emitGroup("NEEDS YOU", "warning", needsYou);

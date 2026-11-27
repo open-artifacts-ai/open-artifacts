@@ -134,11 +134,19 @@ describe("oa-bus status detail views (#3328 S3)", () => {
     });
     ctx.clock.t = now;
     expect(await statusCmd(ctx, { agents: true })).toBe(0);
-    const out = ctx.out().join("\n");
+    const lines = ctx.out();
+    const out = lines.join("\n");
     expect(out).toContain(longLabel);
     expect(out).toContain("Worker-12");
     expect(out).toContain("pi-2");
     expect(out).toContain("Other-Agent");
+    // Columns align vertically like S1 (app and machine start at the same column on every row).
+    const w1 = lines.find((l) => l.includes("Worker-01")) ?? "";
+    const w2 = lines.find((l) => l.includes("Worker-02")) ?? "";
+    expect(w1.indexOf("Codex")).toBe(w2.indexOf("Codex"));
+    expect(w1.indexOf("MacBook")).toBe(w2.indexOf("MacBook"));
+    expect(w1.indexOf('"')).toBe(w2.indexOf('"'));
+    expect(w1).not.toContain("·");
   });
 
   it("--messages lists late deliveries newest first, or says none", async () => {
@@ -300,5 +308,114 @@ describe("oa-bus status detail views (#3328 S3)", () => {
     expect(parsedDown.verdict).toBe("down");
     expect(parsedDown.daemon).toBe("down");
     expect(parsedDown.attention).toHaveLength(1);
+  });
+
+  it("--json v:1 pins the documented top-level and nested key shape (bump v on breaking changes)", async () => {
+    const now = 1_700_000_000_000;
+    const ctx = setup({
+      st: {
+        namespaces: [
+          {
+            namespace: NS,
+            agents: [
+              {
+                name: "Worker-1",
+                kind: "codex",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "working",
+                status_label: "testing",
+                status_at: new Date(now - 60_000).toISOString(),
+              },
+            ],
+          },
+          {
+            namespace: "github.com/org/other",
+            agents: [
+              {
+                name: "Other-1",
+                kind: "pi",
+                machine: "Leo-Workstation",
+                state: "live",
+              },
+            ],
+          },
+        ],
+        late: [
+          {
+            from: "Worker-1",
+            to: "Other-1",
+            excerpt: "hi",
+            at: now - 30_000,
+            delay_ms: 10_000,
+          },
+        ],
+        claude_sessions: [{ name: "s1", cwd: "/work/a", state: "linked" }],
+      },
+    });
+    ctx.clock.t = now;
+    expect(await statusCmd(ctx, { json: true })).toBe(0);
+    const parsed = JSON.parse(ctx.out().join("\n")) as StatusJson;
+    expect(parsed.v).toBe(1);
+    expect(Object.keys(parsed).sort()).toEqual([
+      "agents_page_url",
+      "attention",
+      "daemon",
+      "folders",
+      "instances",
+      "links",
+      "machine",
+      "messages",
+      "other_projects",
+      "project",
+      "v",
+      "verdict",
+      "version",
+    ]);
+    expect(Object.keys(parsed.instances[0] ?? {}).sort()).toEqual([
+      "agents",
+      "connected",
+      "guests",
+      "host",
+      "main",
+      "name",
+      "revoked",
+      "url",
+    ]);
+    expect(Object.keys(parsed.project).sort()).toEqual([
+      "agents",
+      "named",
+      "namespace",
+      "unnamed_hidden",
+    ]);
+    expect(Object.keys(parsed.project.agents[0] ?? {}).sort()).toEqual([
+      "group",
+      "kind",
+      "machine",
+      "name",
+      "state",
+      "status",
+      "status_at",
+      "status_label",
+      "unnamed",
+    ]);
+    expect(Object.keys(parsed.other_projects[0] ?? {}).sort()).toEqual([
+      "count",
+      "name",
+      "namespace",
+    ]);
+    expect(Object.keys(parsed.messages[0] ?? {}).sort()).toEqual([
+      "at",
+      "delay_ms",
+      "excerpt",
+      "from",
+      "to",
+    ]);
+    expect(Object.keys(parsed.links[0] ?? {}).sort()).toEqual([
+      "cause",
+      "cwd",
+      "name",
+      "state",
+    ]);
   });
 });
