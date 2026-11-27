@@ -2261,6 +2261,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Frames about guests, before any routing: true when handled here. */
   const guestFrame = (lane: Lane, frame: ServerFrame): boolean => {
     switch (frame.type) {
+      case "codex_call_verdict": {
+        const { reason } = frame;
+        const verdict =
+          reason === "attested"
+            ? "linked"
+            : reason === "lookup_timeout"
+              ? "timeout"
+              : reason === "hub_rate_limit" || reason === "item_limit"
+                ? "rate-limited"
+                : "refused";
+        ev("codex_call_verdict", {
+          instance: lane.name,
+          name: frame.name,
+          verdict,
+          reason,
+        });
+        return true;
+      }
       case "codex_call_check":
         // Only a hub that listed the cap; anything else is ignored.
         if (lane.codexCheck)

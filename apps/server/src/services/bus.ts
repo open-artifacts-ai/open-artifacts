@@ -3,6 +3,7 @@ import {
   CodexDirectCallIdSchema,
   CodexExecCallIdSchema,
   CodexItemIdSchema,
+  type CodexLinkReason,
   CodexThreadIdSchema,
   CodexToolNameSchema,
   canonicalArgsSha256,
@@ -143,6 +144,10 @@ export type BusHubRpc = {
   ownerAwayChanged(): Promise<void>;
   /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
   codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
+  codexCallDecision(
+    check: unknown,
+  ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }>;
+  codexCallVerdict(thread: string, reason: CodexLinkReason): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -925,7 +930,7 @@ const asRecord = (v: unknown): Record<string, unknown> | null =>
  */
 async function codexCheckOf(
   bodyText: string | undefined,
-): Promise<Record<string, unknown> | null> {
+): Promise<{ thread_id: string; tool: string; mode: object } | null> {
   if (bodyText === undefined) return null;
   let msg: unknown;
   try {
@@ -979,19 +984,36 @@ async function codexLink(
   env: Env,
   userId: string,
   bodyText: string | undefined,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<AgentIdentity | undefined> {
   try {
     const check = await codexCheckOf(bodyText);
     if (!check) return undefined;
-    const id = await within(
+    const hub = busHub(env, userId);
+    if (!hub) return undefined;
+    const decision = await within(
       (async () => {
-        if (!(await hasConnectedMachine(env, userId))) return null;
-        const hub = busHub(env, userId);
-        return hub ? await hub.codexCallCheck(check) : null;
-      })(),
+        if (!(await hasConnectedMachine(env, userId)))
+          return { identity: null, reason: "no_daemon" as const };
+        return hub.codexCallDecision(check);
+      })().catch((e) => {
+        logError("bus_codex_link_failed", e);
+        return { identity: null, reason: "lookup_error" as const };
+      }),
       PROOF_LOOKUP_MS,
     );
-    return id ?? undefined;
+    if (decision?.reason !== "no_daemon") {
+      const report = Promise.resolve()
+        .then(() =>
+          hub.codexCallVerdict(
+            check.thread_id,
+            decision?.reason ?? "lookup_timeout",
+          ),
+        )
+        .catch((e) => logError("bus_codex_verdict_failed", e));
+      ctx?.waitUntil(report);
+    }
+    return decision?.identity ?? undefined;
   } catch (e) {
     logError("bus_codex_link_failed", e);
     return undefined;
@@ -1057,7 +1079,7 @@ export async function linkRequest(
   if (proof === undefined) {
     // #3108: Codex's OAuth entry sends no proof, only its own call ids.
     const identity = busOn(env)
-      ? await codexLink(env, userId, bodyText)
+      ? await codexLink(env, userId, bodyText, ctx)
       : undefined;
     if (identity) return { req: out, identity };
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };

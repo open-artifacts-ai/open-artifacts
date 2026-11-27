@@ -635,6 +635,8 @@ describe("RPC surface", () => {
       "agentByProof",
       "closeAll",
       "codexCallCheck",
+      "codexCallDecision",
+      "codexCallVerdict",
       "decideLinkProposal",
       "decideReachProposal",
       "decideRoleProposal",

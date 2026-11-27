@@ -79,6 +79,8 @@ const RPC_ALLOWLIST = [
   "agentByProof",
   "closeAll",
   "codexCallCheck",
+  "codexCallDecision",
+  "codexCallVerdict",
   "decideLinkProposal",
   "decideReachProposal",
   "decideRoleProposal",
