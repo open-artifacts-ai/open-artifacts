@@ -141,6 +141,8 @@ describe("a moved role on the real paths (#3132)", () => {
     for (;;) {
       const f = await d.next();
       if (f.type !== "deliver") continue;
+      // The old session heard of the move while still open (#3132).
+      if (f.body?.startsWith("Your role ")) continue;
       expect(f.to_ref).toBe("ref1");
       expect(f.body).toContain(asked.commentId);
       break;

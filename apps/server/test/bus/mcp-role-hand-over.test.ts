@@ -169,12 +169,20 @@ describe("the holder hands its role over (#3132)", () => {
       { method: "POST", body: { optionId: "roll" } },
     );
     expect(res.status).toBe(200);
+    let moved = "";
     for (;;) {
       const f = await s.d.next();
       if (f.type !== "deliver") continue;
+      // The old session heard of the move first (#3132), while still open.
+      if (f.body?.startsWith("Your role ")) {
+        expect(f.to_ref).toBe(old!.ref);
+        moved = f.body;
+        continue;
+      }
       expect(f.to_ref).toBe(next!.ref);
       break;
     }
+    expect(moved).toContain(`moved to ${next!.name}`);
   });
 
   it("a session that doesn't hold the role only proposes, linked or not", async () => {

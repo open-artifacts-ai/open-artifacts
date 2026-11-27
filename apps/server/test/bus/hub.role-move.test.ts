@@ -110,6 +110,26 @@ const listed = async (s: S, ref: string) =>
     (f) => f.artifact_id,
   );
 
+/** The hub's own role texts (#3132): a move, a takeover ask. */
+const isRoleText = (f: ServerFrame) =>
+  f.type === "deliver" &&
+  /^(Your role "|A proposal would move your role ")/.test(f.body ?? "");
+/** The next deliver frame that is a page notice, past the hub's role texts. */
+async function pageNotice(s: S): Promise<Reply<"deliver">> {
+  for (;;) {
+    const f = await s.d.next();
+    if (f.type === "deliver" && !isRoleText(f)) return f;
+  }
+}
+/** The next hub role text for agent `ref`. */
+async function roleText(s: S, ref: string): Promise<string> {
+  for (;;) {
+    const f = await s.d.next();
+    if (isRoleText(f) && f.type === "deliver" && f.to_ref === ref)
+      return f.body ?? "";
+  }
+}
+
 const note = (
   to: { namespace: string; name: string },
   over: Partial<BusNotice> = {},
@@ -170,7 +190,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: old.identity, originAt: t0 + 10_000 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    const dl = await waitFor(s.d, "deliver");
+    const dl = await pageNotice(s);
     expect(dl.to_ref).toBe(next.ref);
     expect(dl.body).toBe(n.text);
     // The Worker's lookup for a session gone from the hub answers the same.
@@ -195,7 +215,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: old.identity, originAt: t0 - 1 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(old.ref);
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
     expect(await s.hub.roleHolderFor(old.identity, t0 - 1)).toBeNull();
   });
 
@@ -214,7 +234,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: old.identity, originAt: t0 + 30_001 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(old.ref);
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
     expect(await s.hub.roleHolderFor(old.identity, t0 + 30_001)).toBeNull();
   });
 
@@ -229,7 +249,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     await ask(s, { type: "list", from_ref: next.ref }, "roster");
     const n = note({ namespace: s.namespace, name: old.name });
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(next.ref);
+    expect((await pageNotice(s)).to_ref).toBe(next.ref);
   });
 
   it("only the pages it began to follow while it held the role move; the rest stay, and notices go where the follow is", async () => {
@@ -259,9 +279,9 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(await listed(s, next.ref)).toEqual([during]);
     expect(await listed(s, old.ref)).toEqual([before]);
     await notifyChanged(e, during, 2, s.m.userId, Date.now());
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(next.ref);
+    expect((await pageNotice(s)).to_ref).toBe(next.ref);
     await notifyChanged(e, before, 2, s.m.userId, Date.now());
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(old.ref);
+    expect((await pageNotice(s)).to_ref).toBe(old.ref);
   });
 
   it("over two hand-offs (A to B to C), A's follows and ask answer reach C; B's own older follow stays B's", async () => {
@@ -294,14 +314,14 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(await listed(s, b.ref)).toEqual([bOwn]);
     expect(await listed(s, a.ref)).toEqual([]);
     await notifyChanged(e, inherited, 2, s.m.userId, Date.now());
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(c.ref);
+    expect((await pageNotice(s)).to_ref).toBe(c.ref);
     // An ask A posted while it held the role: its answer reaches C now.
     const n = note(
       { namespace: s.namespace, name: a.name },
       { toIdentity: a.identity, originAt: t0 + 30_000 },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(c.ref);
+    expect((await pageNotice(s)).to_ref).toBe(c.ref);
   });
 
   it("a page both the role and its next holder follow keeps both: on the next move the role's part goes on, the holder's own stays", async () => {
@@ -335,8 +355,8 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     // One notice each: B for its own follow, C for the role's.
     await notifyChanged(e, x, 2, s.m.userId, Date.now());
     const got = [
-      (await waitFor(s.d, "deliver")).to_ref,
-      (await waitFor(s.d, "deliver")).to_ref,
+      (await pageNotice(s)).to_ref,
+      (await pageNotice(s)).to_ref,
     ].sort();
     expect(got).toEqual([b.ref, c.ref].sort());
   });
@@ -571,7 +591,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: a.identity },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(a.ref);
+    expect((await pageNotice(s)).to_ref).toBe(a.ref);
   });
 
   it("a holder's earlier move never takes the mail of the role it holds now", async () => {
@@ -588,12 +608,14 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     // A follow notice now addressed to b (its rows moved there) stays with b.
     const n = note({ namespace: s.namespace, name: b.name });
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(b.ref);
+    expect((await pageNotice(s)).to_ref).toBe(b.ref);
     // And a's mail goes to b, the holder of a's role, not on to c.
     const m = note({ namespace: s.namespace, name: a.name });
     expect(await s.hub.deliverNotice(m)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(b.ref);
-    expect(framesSeen(s.d).filter((f) => f.type === "deliver")).toHaveLength(2);
+    expect((await pageNotice(s)).to_ref).toBe(b.ref);
+    expect(
+      framesSeen(s.d).filter((f) => f.type === "deliver" && !isRoleText(f)),
+    ).toHaveLength(2);
   });
 
   it("a namesake of the old session gets its own mail, not the role's", async () => {
@@ -612,7 +634,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(namesake.name).toBe(old.name);
     const n = note({ namespace: s.namespace, name: old.name });
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(namesake.ref);
+    expect((await pageNotice(s)).to_ref).toBe(namesake.ref);
   });
 
   it("a session that holds the role again gets its mail again", async () => {
@@ -628,7 +650,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
       { toIdentity: a.identity },
     );
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(a.ref);
+    expect((await pageNotice(s)).to_ref).toBe(a.ref);
   });
 
   it("without a move, delivery is as addressed; a vacated role forwards nothing", async () => {
@@ -643,6 +665,44 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     expect(vacated.ok && vacated.moved).toBeNull();
     const n = note({ namespace: s.namespace, name: a.name });
     expect(await s.hub.deliverNotice(n)).toBe("delivered");
-    expect((await waitFor(s.d, "deliver")).to_ref).toBe(a.ref);
+    expect((await pageNotice(s)).to_ref).toBe(a.ref);
+  });
+
+  it("the old session, still open, is told its role moved", async () => {
+    const s = await setup();
+    const old = await s.reg(uniq("plat-l"));
+    const next = await s.reg(uniq("plat-w"));
+    const role = uniq("platform");
+    await s.setRole(role, old.id);
+    await s.setRole(role, next.id);
+    expect(await roleText(s, old.ref)).toBe(
+      `Your role "${role}" moved to ${next.name}. What you began while you held it (open asks, followed pages) and new mentions of you go there now.`,
+    );
+  });
+
+  it("an unlinked proposal names the intended holder without attributing the request to it", async () => {
+    const s = await setup();
+    const old = await s.reg(uniq("plat-l"));
+    const next = await s.reg(uniq("plat-w"));
+    const role = uniq("platform");
+    await s.setRole(role, old.id);
+    const p = await s.hub.proposeRole(
+      {
+        action: "set",
+        namespace: s.namespace,
+        name: role,
+        agent: next.name,
+        credential: null,
+      },
+      uniq("hash"),
+    );
+    expect(p.ok).toBe(true);
+    const text = await roleText(s, old.ref);
+    expect(text).toBe(
+      `A proposal would move your role "${role}" in ${s.namespace} to ${next.name}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${s.namespace}", name "${role}" and agent "${next.name}".`,
+    );
+    // Nothing moved: only the person's confirm, or the holder, moves it.
+    const [r] = (await s.hub.listRoles()).filter((x) => x.name === role);
+    expect(r?.holderName).toBe(old.name);
   });
 });

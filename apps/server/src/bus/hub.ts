@@ -5444,7 +5444,30 @@ export class BusHub extends DurableObject<Env> {
       this.#maxRoles,
     );
     logEvent("role_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    // The proposal identifies the intended holder. Its caller may be unlinked.
+    const p = r.ok ? r.proposal : null;
+    if (p?.action === "repoint" && p.priorAgentId && p.agentName)
+      this.#say(
+        p.priorAgentId,
+        `A proposal would move your role "${p.name}" in ${p.namespace} to ${p.agentName}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}".`,
+      );
     return r;
+  }
+
+  /**
+   * #3132: a short text from the hub to agent `agentId` while it is live,
+   * from the reserved sender. Best effort: never held for a closed agent.
+   */
+  #say(agentId: string, text: string): void {
+    const agent = one<AgentRow>(
+      this.ctx.storage.sql,
+      `select ${AGENT_COLS} from agents where org_id = ? and id = ? and live = 1`,
+      OWNER_ORG_ID,
+      agentId,
+    );
+    if (!agent) return;
+    const ws = liveSocket(this.ctx, agent.machineId);
+    if (ws && noticeGated(ws)) trySendFrame(ws, noticeFrame(agent, text));
   }
 
   /** #1372: the proposal behind `tokenHash`, for the confirm page; decides nothing but expiry. Worker only. */
@@ -5494,6 +5517,18 @@ export class BusHub extends DurableObject<Env> {
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
     void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
+    // The old session, if still open, is told it no longer holds the role.
+    const role = one<{ name: string }>(
+      this.ctx.storage.sql,
+      "select name from roles where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      m.roleId,
+    );
+    if (role)
+      this.#say(
+        m.fromAgentId,
+        `Your role "${role.name}" moved to ${m.to.name}. What you began while you held it (open asks, followed pages) and new mentions of you go there now.`,
+      );
   }
 
   /**
