@@ -274,8 +274,9 @@ function NeedsYouBrowser({
   const qc = useQueryClient();
   const patch = usePatchSubscription();
   const [busy, setBusy] = useState(false);
+  const [enrollmentFailed, setEnrollmentFailed] = useState(false);
   const change = async (next: boolean) => {
-    if (mine) {
+    if (mine && !enrollmentFailed) {
       patch.mutate(
         { id: mine.id, body: { needsYou: next } },
         { onError: (e) => patchFailed(e, qc) },
@@ -293,33 +294,37 @@ function NeedsYouBrowser({
           needsYou: { ...prefs.needsYou, browser: true },
           timeZone: browserTimeZone(),
         });
+      setEnrollmentFailed(false);
     } catch (e) {
+      setEnrollmentFailed(true);
       if (e instanceof PermissionRefused) onRefused(e.state);
-      else toast({ title: PUSH_WORDS.failed, tone: "danger" });
     } finally {
       setBusy(false);
     }
   };
-  const on = mine ? mine.needsYou || mine.updates : false;
+  const on = !enrollmentFailed && mine?.needsYou === true;
   return (
     <>
       <Switch
         label="Needs you in this browser"
         describedBy="oa-needs-browser"
-        checked={mine?.needsYou === true}
+        checked={on}
         disabled={pushKey === null || busy || loading}
         onChange={(next) => void change(next)}
       />
       <small
         id="oa-needs-browser"
+        aria-live="polite"
         className={sub}
         data-push={on ? "on" : "off"}
       >
         {pushKey === null
           ? NOTIF_WORDS.noKeyCell
-          : mine && on
-            ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
-            : ""}
+          : enrollmentFailed
+            ? "Couldn't turn on notifications in this browser. Try again, or sign in again."
+            : mine && on
+              ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
+              : ""}
       </small>
     </>
   );
