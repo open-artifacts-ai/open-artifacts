@@ -117,6 +117,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /__oa/oauth-store/copy": {
     public: "OAuth store copy; 404 unless OAUTH_COPY_KEY is set",
   },
+  "GET /api/v1/me/handle": { user: "the caller" },
   "GET /api/v1/me": { user: "the caller" },
   // #2512: the caller's own For you inbox (their open asks).
   "GET /api/v1/me/inbox": { user: "the caller" },

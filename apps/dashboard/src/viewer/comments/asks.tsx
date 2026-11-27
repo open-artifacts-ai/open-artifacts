@@ -1486,7 +1486,9 @@ function mentioned(
         ) : (
           face && <PartyFace p={face} guest={guest} />
         )}
-        {body.slice(at, end)}
+        {face?.person?.handle
+          ? `${face.person.name} @${face.person.handle}`
+          : body.slice(at, end)}
       </span>,
     );
     last = end;
@@ -1616,10 +1618,12 @@ function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
 }
 
 /** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
-const rowName = (a: ArtifactAgent) =>
-  a.owner && a.name.endsWith(` (${a.owner})`)
-    ? a.name.slice(0, -` (${a.owner})`.length)
-    : a.name;
+const rowName = (a: ArtifactAgent & { personName?: string }) =>
+  a.personName
+    ? `${a.personName} @${a.name}`
+    : a.owner && a.name.endsWith(` (${a.owner})`)
+      ? a.name.slice(0, -` (${a.owner})`.length)
+      : a.name;
 
 export function MentionMenu({
   id,

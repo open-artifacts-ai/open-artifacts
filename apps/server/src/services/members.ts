@@ -1034,7 +1034,7 @@ const ERASE_WIPES = [
 // Last: it makes ERASABLE false (erased_at). Clearing removed_by_sync,
 // guest_lapsed and google_relink means no revive, share or relink can take
 // the row back; restricted_manual has nothing left to cap.
-const ERASE_USER = `update users set email = ?4, name = '', display_name = null,
+const ERASE_USER = `update users set email = ?4, name = '', display_name = null, handle = null,
   last_seen_at = null, removed_by_sync = 0, guest_lapsed = 0, google_relink = 0,
   restricted_manual = 0, session_epoch = session_epoch + 1,
   status_changed_at = ?5, erased_at = ?5

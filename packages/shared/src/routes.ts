@@ -13,6 +13,7 @@ export const R = {
   /** GET -> Me; PATCH MePatch (`{ displayName }`) -> Me. Any signed-in user, guests included. */
   me: "/api/v1/me",
   /** GET (?cursor) -> Inbox: needs-you, later and update items for the caller. */
+  meHandle: "/api/v1/me/handle",
   meInbox: "/api/v1/me/inbox",
   /** POST InboxReadBody (`{ ids }`, at most 200) -> 204. Marks those items read. */
   meInboxRead: "/api/v1/me/inbox/read",

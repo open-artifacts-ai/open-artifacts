@@ -2562,7 +2562,8 @@ function orgProbe(
 ): OrgSurface["probe"] {
   const [method = "GET", path = ""] = route.split(" ");
   return async (base, cred, t, io) => {
-    const p = fill(path, t);
+    const p =
+      path === "/api/v1/me/handle" ? path + "?handle=sample" : fill(path, t);
     if (method === "GET") {
       const r = await send(io, base, p, cred);
       // A 409 is allowed only as member_active (past the transfer guard).
@@ -2615,6 +2616,7 @@ const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
+  ["GET /api/v1/me/handle", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
   ["POST /api/v1/me/inbox/read", U],
   ["POST /api/v1/me/inbox/:id/later", U],
