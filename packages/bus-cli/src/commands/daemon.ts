@@ -12,7 +12,11 @@ import {
 import { wiredTo } from "../bus-cmd.ts";
 import { type Ctx, sayErr } from "../context.ts";
 import { originOf, readMachine } from "../machine.ts";
-import { reapplyClaudeProof, reapplyCodexEntries } from "../steps/adapters.ts";
+import {
+  agyOn,
+  reapplyClaudeProof,
+  reapplyCodexEntries,
+} from "../steps/adapters.ts";
 import { readRecord } from "../steps/claude-proof.ts";
 import { PROOF_EVENT } from "../steps/claude-proof-check.ts";
 import { removeHabitsBlocks } from "../steps/habits.ts";
@@ -109,6 +113,7 @@ export async function daemon(
     signals.once("SIGTERM", onSignal);
     run({
       version: ctx.version,
+      antigravity: { discover: agyOn(ctx.env, ctx.home) },
       events,
       // Only an older token was revoked: a restart picks up the new one.
       onRevoked: (replaced) => end(replaced ? 1 : REVOKED_EXIT),

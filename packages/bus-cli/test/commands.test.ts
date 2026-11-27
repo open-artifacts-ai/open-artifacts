@@ -1444,6 +1444,26 @@ describe("daemon command", () => {
     expect(f.stop).toHaveBeenCalledOnce();
   });
 
+  it.each([true, false])(
+    "passes the selected home's saved agy discovery setting (%s) to the foreground daemon",
+    async (enabled) => {
+      const f = fake();
+      const ctx = fakeCtx({ env: {} });
+      ctx.home = join(ctx.userHome, "selected-bus");
+      mkdirSync(ctx.home, { recursive: true });
+      writeFileSync(
+        join(ctx.home, "install.json"),
+        JSON.stringify({ agyEnabled: enabled }),
+      );
+      const done = daemon(ctx, f.run as never, f.signals);
+      f.signals.emit("SIGTERM");
+      expect(await done).toBe(0);
+      expect(f.run).toHaveBeenCalledWith(
+        expect.objectContaining({ antigravity: { discover: enabled } }),
+      );
+    },
+  );
+
   it("hands the daemon a skill refresher (#3203)", async () => {
     const f = fake();
     const done = daemon(fakeCtx(), f.run as never, f.signals);
