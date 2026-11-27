@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.261.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.260.0...v0.261.0) (2026-11-27)
+
+
+### Features
+
+* add Library row actions, selection and bulk Trash ([#3294](https://github.com/open-artifacts-ai/open-artifacts/issues/3294)) ([5f4df11](https://github.com/open-artifacts-ai/open-artifacts/commit/5f4df11214a0d232dbc2dfa4ac406d7eb223f729))
+
+
+### Bug Fixes
+
+* **bus:** skill check and refresh use each instance's own Codex copy ([#3250](https://github.com/open-artifacts-ai/open-artifacts/issues/3250)) ([#3251](https://github.com/open-artifacts-ai/open-artifacts/issues/3251)) ([67ec3ae](https://github.com/open-artifacts-ai/open-artifacts/commit/67ec3ae71527d90d00e3d32a2c654b800ab46c51))
+* **comments:** the removed-agent line clears after a reply or on close ([#3263](https://github.com/open-artifacts-ai/open-artifacts/issues/3263)) ([#3264](https://github.com/open-artifacts-ai/open-artifacts/issues/3264)) ([fbd5dbb](https://github.com/open-artifacts-ai/open-artifacts/commit/fbd5dbb215e5c4cb4c73ae7d669ad6650a8c4142))
+* **dashboard:** token dialog fits: one-line command, wider, sticky Done, Esc closes ([#3260](https://github.com/open-artifacts-ai/open-artifacts/issues/3260)) ([#3262](https://github.com/open-artifacts-ai/open-artifacts/issues/3262)) ([64f8e9d](https://github.com/open-artifacts-ai/open-artifacts/commit/64f8e9d8f11e00d8bcf71345d01085eb9ff174d4))
+
 ## [0.260.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.1...v0.260.0) (2026-11-27)
 
 
