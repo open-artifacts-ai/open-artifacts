@@ -598,7 +598,7 @@ function parseOwner(value: unknown): HookOwner | undefined {
 function hookOwnership(
   path: string,
   record: string,
-): { owner?: HookOwner; staged?: string } {
+): { owner?: HookOwner; staged?: string; stageId?: string } {
   let data: unknown;
   try {
     if (!lstatSync(record).isFile())
@@ -613,9 +613,10 @@ function hookOwnership(
   if (typeof data.stage !== "string" || !/^[0-9a-f-]{36}$/.test(data.stage))
     throw new Error("Invalid Codex hook transaction");
   const staged = `${path}.oa-${data.stage}.tmp`;
+  if (data.discard === true) return { staged, stageId: data.stage };
   try {
     lstatSync(staged);
-    return { owner: parseOwner(data.before), staged };
+    return { owner: parseOwner(data.before), staged, stageId: data.stage };
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     return { owner: parseOwner(data.after) };
@@ -799,6 +800,18 @@ export function uninstallCodexHook(
   removed: boolean;
   note?: string;
 } {
+  const prior = hookOwnership(path, record);
+  if (!prior.owner && prior.staged) {
+    // Removing the stage normally signals a committed rename. Disarm that
+    // interpretation first so interruption leaves the user's hook unclaimed.
+    writeAtomic(
+      record,
+      JSON.stringify({ stage: prior.stageId, discard: true }),
+    );
+    rmSync(prior.staged, { force: true });
+    rmSync(record, { force: true });
+    return { removed: false };
+  }
   const read = readHooksFile(path);
   if (read.kind === "missing") return { removed: false };
   if (read.kind === "skip") return { removed: false, note: read.note };
@@ -806,7 +819,6 @@ export function uninstallCodexHook(
   const hooks = doc.hooks;
   const list = hooks?.SessionStart;
   if (!hooks || !Array.isArray(list)) return { removed: false };
-  const prior = hookOwnership(path, record);
   const owner = prior.owner;
   if (!owner) return { removed: false };
   const group = list[owner.group];

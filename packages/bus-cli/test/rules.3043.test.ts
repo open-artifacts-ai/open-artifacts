@@ -220,6 +220,61 @@ describe("Codex hooks.json management (#3043)", () => {
     },
   );
 
+  it.each([true, false])(
+    "discards an unpublished first install with hooks.json present = %s",
+    (existing) => {
+      const dir = makeDir();
+      const path = join(dir, "hooks.json");
+      const record = join(dir, "owner");
+      const stage = "00000000-0000-4000-8000-000000000000";
+      const staged = `${path}.oa-${stage}.tmp`;
+      const user = '{ "hooks": { "SessionStart": [] } }\n';
+      if (existing) writeFileSync(path, user);
+      writeFileSync(
+        staged,
+        JSON.stringify({
+          hooks: { SessionStart: [{ hooks: [{ command: cmd1 }] }] },
+        }),
+      );
+      writeFileSync(
+        record,
+        JSON.stringify({ stage, after: { group: 0, command: cmd1 } }),
+      );
+      expect(uninstallCodexHook(path, record)).toEqual({ removed: false });
+      expect(existsSync(staged)).toBe(false);
+      expect(existsSync(record)).toBe(false);
+      expect(existsSync(path)).toBe(existing);
+      if (existing) expect(readFileSync(path, "utf8")).toBe(user);
+    },
+  );
+
+  it("finishes interrupted discard after the stage was removed", () => {
+    const dir = makeDir();
+    const path = join(dir, "hooks.json");
+    const record = join(dir, "owner");
+    const user = JSON.stringify({
+      hooks: {
+        SessionStart: [
+          {
+            matcher: "startup|resume",
+            hooks: [{ type: "command", command: cmd1, timeout: 10 }],
+          },
+        ],
+      },
+    });
+    writeFileSync(path, user);
+    writeFileSync(
+      record,
+      JSON.stringify({
+        stage: "00000000-0000-4000-8000-000000000000",
+        discard: true,
+      }),
+    );
+    expect(uninstallCodexHook(path, record)).toEqual({ removed: false });
+    expect(existsSync(record)).toBe(false);
+    expect(readFileSync(path, "utf8")).toBe(user);
+  });
+
   it("uninstall removes only our hook and cleans up emptied containers", () => {
     const dir = makeDir();
     const file = join(dir, "hooks.json");
