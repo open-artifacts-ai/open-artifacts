@@ -67,7 +67,7 @@ describe("one request per submit", () => {
   });
 
   it("Settings → Profile save", async () => {
-    serveMe(needsName({ needsDisplayName: false }));
+    serveMe(needsName({ needsDisplayName: false, handle: "ada" }));
     const count = track();
     mount("/settings/profile");
     const field = await screen.findByLabelText("Display name");

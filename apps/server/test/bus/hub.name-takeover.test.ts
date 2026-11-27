@@ -148,19 +148,34 @@ const roleCount = (namespace: string) =>
     namespace,
   ).then((r) => r[0]?.n ?? 0);
 
-async function scene(opts: { holderAway?: boolean; global?: boolean } = {}) {
+async function scene(
+  opts: { holderAway?: boolean; global?: boolean; selfPicked?: boolean } = {},
+) {
   await setClock(base());
   const n = ns("nt");
   const m = await machine("Work");
   const d = await connect(m.token);
   const name = uniq("Lead");
   const holderRef = uniq("holder");
-  expect(await reg(d, holderRef, name, n, { global: opts.global })).toBe(name);
+  if (opts.selfPicked) {
+    d.send(plainUp(id("u"), holderRef, name, n, opts.global ?? false));
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+  } else
+    expect(await reg(d, holderRef, name, n, { global: opts.global })).toBe(
+      name,
+    );
   if (opts.holderAway) await close(d, holderRef);
   return { d, m, n, name, holderRef };
 }
 
 describe("a held chosen name asks to take over its role (#3132)", () => {
+  it("the first person-chosen name holds its role before any other session asks", async () => {
+    const s = await scene();
+    expect(await roleOf(s.n, s.name)).toEqual([{ ref: s.holderRef }]);
+    expect(await asks(s.holderRef)).toEqual([]);
+    s.d.close();
+  });
+
   it("live holder: suffixed bus_name, pendingRole, one repoint proposal, the role made for the holder, both told", async () => {
     const s = await scene();
     const ref = uniq("new");
@@ -222,7 +237,9 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
           ? rename(s.d, holder, next)
           : reg(s.d, holder, next, s.n)),
       ).toBe(next);
-      const roles = (await hub.listRoles()).filter((r) => r.namespace === s.n);
+      const roles = (await hub.listRoles()).filter(
+        (r) => r.id === original.id || r.name === next,
+      );
       expect(roles).toMatchObject([
         { id: original.id, name: next, agentId: holderId },
       ]);
@@ -369,6 +386,7 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(put.ok).toBe(true);
     expect(await roleOf(s.n, s.name)).toEqual([{ ref }]);
     const row = (await hub.snapshot()).agents.find((a) => a.name === got);
+    expect(row).toMatchObject({ role: s.name, privateSessionName: true });
     expect(row?.pendingRole).toBeUndefined();
     // The ask the move answered is settled: no card is left for it.
     expect(await asks(ref)).toEqual([]);
@@ -452,12 +470,16 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
       expect(successor).not.toBe(prior);
       expect(await agentIdOf(s.holderRef)).toBe(prior);
       expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
-      expect(await asks(ref)).toEqual([
-        { name: role, action: "repoint", credential: null },
-      ]);
+      const expectedNames =
+        !global && role !== s.name ? [s.name, role] : [role];
+      const proposals = await asks(ref);
+      expect(proposals.map((p) => p.name).sort()).toEqual(expectedNames.sort());
+      expect(
+        proposals.every((p) => p.action === "repoint" && p.credential === null),
+      ).toBe(true);
       replace();
       await waitFor(s.d, "agent_ok");
-      expect(await asks(ref)).toHaveLength(1);
+      expect(await asks(ref)).toHaveLength(expectedNames.length);
       expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
       expect((await hub.putRole(s.n, role, successor)).ok).toBe(true);
       expect(await roleOf(s.n, role)).toEqual([{ ref }]);
@@ -469,7 +491,7 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     const s = await scene({ holderAway: true });
     expect(await reg(s.d, s.holderRef, s.name, s.n)).toBe(s.name);
     await fence(s.d);
-    expect(await roleCount(s.n)).toBe(0);
+    expect(await roleOf(s.n, s.name)).toEqual([{ ref: s.holderRef }]);
     expect(
       await sqlOf("select 1 as x from role_proposals where namespace = ?", s.n),
     ).toEqual([]);
@@ -563,7 +585,7 @@ describe("a self-picked name is no role (#3143)", () => {
   });
 
   it("agent_up asking an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
-    const s = await scene({ holderAway: true });
+    const s = await scene({ holderAway: true, selfPicked: true });
     const sm = await machine("Snd");
     const snd = await connect(sm.token);
     await reg(snd, "snd", uniq("Snd"), s.n);
@@ -589,7 +611,7 @@ describe("a self-picked name is no role (#3143)", () => {
   });
 
   it("rename to an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
-    const s = await scene({ holderAway: true });
+    const s = await scene({ holderAway: true, selfPicked: true });
     const sm = await machine("Snd");
     const snd = await connect(sm.token);
     await reg(snd, "snd", uniq("Snd"), s.n);

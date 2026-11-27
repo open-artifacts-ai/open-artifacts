@@ -26,6 +26,7 @@ import { FOR_YOU_ASK } from "./comments.js";
  * calm: nothing needs you; "While you were away" and two updates.
  * empty: nothing at all (first time).
  * back: the mention is back from Later.
+ * handover: one role handover card (#3132; pair with bus, its proposal is the bus fixture's).
  * held: one held request of someone else asking your agent (#2577; pair with agentAsks).
  * error: as mixed, but the list itself fails to load (the bell still counts).
  */
@@ -35,6 +36,7 @@ export type ForYouVariant =
   | "empty"
   | "back"
   | "held"
+  | "handover"
   | "error";
 
 type Deps = {
@@ -50,6 +52,8 @@ type Deps = {
 };
 
 const MIN = 60_000;
+/** The role proposal the "handover" variant's card is about: the bus fixture's pending one. */
+export const MOCK_ROLE_PROPOSAL_ID = "BpA1nPqRsTu4vWxY";
 /** Updates per page of R.meInbox. */
 export const INBOX_MOCK_PAGE = 20;
 
@@ -57,8 +61,11 @@ export function createForYouMock(d: Deps): {
   handlers: HttpHandler[];
   /** Me.inbox, or undefined when the variant is off. */
   counts: () => Inbox["counts"] | undefined;
+  /** #3132: answers the handover card `proposalId` (it leaves Needs you); false when none such. */
+  answerRole: (proposalId: string) => boolean;
 } {
-  if (!d.variant) return { handlers: [], counts: () => undefined };
+  if (!d.variant)
+    return { handlers: [], counts: () => undefined, answerRole: () => false };
   const now = d.now ?? Date.now;
   const ago = (ms: number) => new Date(now() - ms).toISOString();
   const page = (id: string, title: string) => ({ id, title });
@@ -201,6 +208,33 @@ export function createForYouMock(d: Deps): {
     ];
   }
   if (d.variant === "back") needsYou = [mention(true)];
+  if (d.variant === "handover")
+    needsYou = [
+      {
+        id: `role:${MOCK_ROLE_PROPOSAL_ID}`,
+        level: "needs_you",
+        kind: "role",
+        urgency: "approval",
+        artifact: null,
+        actor: null,
+        role: {
+          proposalId: MOCK_ROLE_PROPOSAL_ID,
+          action: "repoint",
+          name: "manager",
+          namespace: "github.com/open-artifacts-ai/open-artifacts",
+          agentName: "oa-design",
+          priorHolderName: "oa-manager",
+          priorMachine: "laptop",
+          targetMachine: "workstation",
+          holder: { state: "away", since: ago(40 * MIN) },
+          expiresAt: new Date(now() + 23 * 60 * MIN).toISOString(),
+        },
+        text: "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
+        href: "/agents/roles",
+        createdAt: ago(5 * MIN),
+        readAt: null,
+      },
+    ];
   if (d.variant === "held")
     needsYou = [
       {
@@ -261,6 +295,11 @@ export function createForYouMock(d: Deps): {
     x.readAt === null ? { ...x, readAt: ago(0) } : x;
   return {
     counts,
+    answerRole: (proposalId) => {
+      const had = needsYou.some((x) => x.id === `role:${proposalId}`);
+      needsYou = needsYou.filter((x) => x.id !== `role:${proposalId}`);
+      return had;
+    },
     handlers: [
       // Updates page by INBOX_MOCK_PAGE; the cursor is the next offset.
       http.get(`*${R.meInbox}`, ({ request }) => {

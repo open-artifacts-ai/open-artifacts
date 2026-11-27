@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.268.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.267.0...v0.268.0) (2026-11-27)
+
+
+### Features
+
+* **bus-cli:** redesign oa-bus status default screen ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S1) ([#3330](https://github.com/open-artifacts-ai/open-artifacts/issues/3330)) ([93a6d4d](https://github.com/open-artifacts-ai/open-artifacts/commit/93a6d4d8bf2698d56661533d20c0f82151c47627))
+
+## [0.267.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.266.0...v0.267.0) (2026-11-27)
+
+
+### Features
+
+* **profile:** let people choose handles and receive mentions by handle ([#3217](https://github.com/open-artifacts-ai/open-artifacts/issues/3217)) ([#3316](https://github.com/open-artifacts-ai/open-artifacts/issues/3316)) ([7c7585e](https://github.com/open-artifacts-ai/open-artifacts/commit/7c7585ef4e88dfd1899bae86f16fb51c3f3321a4))
+
+## [0.266.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.265.0...v0.266.0) (2026-11-27)
+
+
+### Features
+
+* **roles:** the handover card answers a take-over in one click ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3247](https://github.com/open-artifacts-ai/open-artifacts/issues/3247)) ([11355e2](https://github.com/open-artifacts-ai/open-artifacts/commit/11355e282d28c3d63cdea0d90b6ba77cc40aaa3d))
+
 ## [0.265.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.1...v0.265.0) (2026-11-27)
 
 

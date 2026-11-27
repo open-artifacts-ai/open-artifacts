@@ -396,7 +396,7 @@ describe("bus option (#1293)", () => {
     const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
     expect(got.live).toBe(true);
     expect(got.roles).toHaveLength(fixtures.busRoles.length);
-    expect(got.proposals).toHaveLength(fixtures.busRoleProposals.length);
+    expect(got.proposals).toEqual([]);
     const a = fixtures.busAgents[0] as (typeof fixtures.busAgents)[number];
     const put = await call("PUT", R.busRoles, {
       namespace: a.namespace,
@@ -420,6 +420,14 @@ describe("bus option (#1293)", () => {
     );
     expect(after.roles.some((x) => x.id === role.id)).toBe(false);
   });
+  it("offers the handover when the holder is away", async () => {
+    fresh({ bus: true, forYou: "handover" });
+    const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
+    expect(got.proposals).toMatchObject([
+      { name: "manager", priorMachine: "laptop", targetMachine: "workstation" },
+    ]);
+  });
+
   it("unauthenticated: 401 on the bus routes", async () => {
     fresh({ bus: true });
     for (const p of [R.busMachines, R.busAgents, R.busRoles, R.shareNotices])

@@ -1,7 +1,14 @@
 /** The ?mock= switches for For you and asking someone else's agent (#2577), read from the URL. */
 import type { ForYouVariant } from "@oa/shared/mocks";
 
-const VARIANTS = ["calm", "empty", "back", "held", "error"] as const;
+const VARIANTS = [
+  "calm",
+  "empty",
+  "back",
+  "held",
+  "handover",
+  "error",
+] as const;
 
 /** ?mock=foryou[&foryou=calm|empty|back|held|error] (else "mixed"), or ?mock=agent-asks (held). */
 export function forYouVariant(p: URLSearchParams): ForYouVariant | undefined {

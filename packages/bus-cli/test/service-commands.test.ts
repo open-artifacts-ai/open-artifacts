@@ -178,12 +178,10 @@ describe("install through the service", () => {
     // Not "Run npx @open-artifacts/bus install": install just ran, and fell back.
     expect(ctx.out()).toEqual(expect.arrayContaining(FALLBACK));
     expect(ctx.out()).not.toContain(NO_SERVICE[1]);
-    // status says the same thing afterwards.
+    // status stays compact without repeating daemon service wording (#3328 S1).
     expect(await statusCmd(ctx)).toBe(0);
-    // The line follows the printed command: npx while nothing was installed
-    // yet, the installed files after (never npx once a bus is installed).
     const after = /^ {3}After a reboot, start it again with .+ daemon\.$/;
-    expect(ctx.out().filter((l) => after.test(l))).toHaveLength(2);
+    expect(ctx.out().filter((l) => after.test(l))).toHaveLength(1);
   });
 
   it("a service that never answers is the timeout failure", async () => {
@@ -200,17 +198,18 @@ describe("install through the service", () => {
 });
 
 describe("status and doctor report the service", () => {
-  it("status: the no-service line only while no service is installed", async () => {
+  it("status: compact default screen omits pid and service wording (#3328 S1)", async () => {
     const a = withService("darwin", () => false);
     a.ctx.status = vi.fn(async () => status());
     expect(await statusCmd(a.ctx)).toBe(0);
-    expect(a.ctx.out()).toEqual(expect.arrayContaining(NO_SERVICE));
+    expect(a.ctx.out().join("\n")).not.toContain("pid ");
+    expect(a.ctx.out().join("\n")).not.toContain("Daemon running");
 
     const b = withService("darwin");
     await b.ctx.service.ensure();
     expect(await statusCmd(b.ctx)).toBe(0);
-    expect(b.ctx.out()).toContain(RUNNING_LAUNCHD);
-    expect(b.ctx.out()).not.toContain(NO_SERVICE[0]);
+    expect(b.ctx.out().join("\n")).not.toContain("pid ");
+    expect(b.ctx.out().join("\n")).not.toContain("launchd");
   });
 
   it("doctor: the service passes; a gone launcher fails, lingering off warns", async () => {

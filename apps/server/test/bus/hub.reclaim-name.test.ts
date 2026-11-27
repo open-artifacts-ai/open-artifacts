@@ -12,7 +12,7 @@ import {
   MAILBOX_PENDING_CAP,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -20,10 +20,11 @@ import {
   fence,
   framesSeen,
   hello,
-  hubOf,
-  machine,
+  member,
+  hubOf as memberHub,
   ns,
   up as plainUp,
+  machine as seedMachine,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
@@ -31,6 +32,13 @@ import { eventually } from "./helpers.ts";
 /** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
 const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
   ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
+
+let userId: string;
+beforeEach(async () => {
+  userId = (await member()).userId;
+});
+const machine = (label: string) => seedMachine(label, userId);
+const hubOf = () => memberHub(userId);
 
 const inHub = async <R>(fn: (i: BusHub, s: DurableObjectState) => R) =>
   runInDurableObject(await hubOf(), fn);
@@ -229,13 +237,14 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("the name is the holder's role now: a later send is refused (vacant to an old socket), never the newcomer", async () => {
+  it("mail to the chosen name queues for its away holder even from an old socket", async () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     const ref = uniq("new");
     await reg(s.d, ref, s.name, s.n);
     const r = await send(s.snd, "snd", s.name, "after");
-    expect(r).toMatchObject({ state: "refused", reason: "unknown_agent" });
+    expect(r.state).toBe("pending");
+    expect(await pendingOf(s.oldRef)).toEqual([r.msg_id]);
     await fence(s.d);
     expect(delivers(s.d)).toEqual([]);
     expect(await pendingOf(ref)).toEqual([]);
@@ -430,8 +439,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const s = await scene();
     await close(s.d, s.oldRef);
     await sqlRun(
-      "insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) select ?, org_id, namespace, name, lower(name), null, 0 from agents where native_ref = ?",
-      id("role"),
+      "update roles set agent_id = null where agent_id = (select id from agents where native_ref = ?)",
       s.oldRef,
     );
     expect(await reg(s.d, uniq("new"), s.name, s.n)).toBe(`${s.name}-2`);
@@ -853,7 +861,7 @@ describe("held mail stays with its session (#3208)", () => {
     snd.close();
   });
 
-  it("Claude /clear still carries mail", async () => {
+  it("Claude /clear still carries mail for a roleless session", async () => {
     await setClock(base());
     const n = ns("rc");
     const dm = await machine("Work");
@@ -862,7 +870,11 @@ describe("held mail stays with its session (#3208)", () => {
     const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
     const name = uniq("Lead");
     const oldRef = uniq("claude-1");
-    expect(await reg(d, oldRef, name, n, { kind: "claude-code" })).toBe(name);
+    d.send({
+      ...plainUp(id("u"), oldRef, name, n),
+      kind: "claude-code",
+    } as ClientFrame);
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
     await reg(snd, "snd", uniq("Snd"), n);
     const m = await send(snd, "snd", name, "before clear");
     const newRef = uniq("claude-2");

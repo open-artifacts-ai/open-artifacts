@@ -387,6 +387,35 @@ describe("this browser's notifications (slice 3, S5)", () => {
     expect(sub.patches).toEqual([{ needsYou: false }]);
   });
 
+  it.each([404, 500])(
+    "a subscribe %i leaves the switch off with retry guidance until enrollment succeeds",
+    async (status) => {
+      const base = createHandlers({ events, forYou: "mixed" });
+      server.use(
+        http.post(
+          `*${R.mePushSubscriptions}`,
+          () => new HttpResponse(null, { status }),
+          { once: true },
+        ),
+        ...pushSwitchHandlers(() => base),
+        ...base,
+      );
+      fakePush("granted");
+      mount("/settings/notifications");
+      const sw = await needs();
+      await waitFor(() => expect(sw).toBeEnabled());
+      fireEvent.click(sw);
+      const message =
+        "Couldn't turn on notifications in this browser. Try again, or sign in again.";
+      await waitFor(() => expect(sw).toHaveAccessibleDescription(message));
+      expect(screen.getByText(message)).toBeVisible();
+      expect(sw).toHaveAttribute("aria-checked", "false");
+      fireEvent.click(sw);
+      await waitFor(() => expect(sw).toHaveAttribute("aria-checked", "true"));
+      expect(screen.queryByText(message)).toBeNull();
+    },
+  );
+
   it("no subscription: Needs you is off and asks only on the click, Updates waits", async () => {
     const base = createHandlers({ events, forYou: "mixed" });
     server.use(...pushSwitchHandlers(() => base), ...base);

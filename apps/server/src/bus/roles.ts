@@ -313,7 +313,9 @@ export function putRole(
   if (moved !== null)
     sql.exec(
       `update role_proposals set status = 'applied', decided_at = ?
-         where org_id = ? and role_id = ? and agent_id = ? and status = 'pending'`,
+         where org_id = ? and role_id = ? and agent_id = ? and status = 'pending'
+           and exists (select 1 from agents a where a.id = role_proposals.agent_id
+             and a.takeover_role_id = role_proposals.role_id)`,
       now,
       orgId,
       id,

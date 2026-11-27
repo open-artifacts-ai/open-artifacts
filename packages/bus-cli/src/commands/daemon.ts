@@ -14,6 +14,7 @@ import { type Ctx, sayErr } from "../context.ts";
 import { originOf, readMachine } from "../machine.ts";
 import {
   type AdapterDeps,
+  agyOn,
   type RefreshResult,
   readAssets,
   reapplyClaudeProof,
@@ -121,6 +122,7 @@ export async function daemon(
     signals.once("SIGTERM", onSignal);
     run({
       version: ctx.version,
+      antigravity: { discover: agyOn(ctx.env, ctx.home) },
       events,
       // Only an older token was revoked: a restart picks up the new one.
       onRevoked: (replaced) => end(replaced ? 1 : REVOKED_EXIT),

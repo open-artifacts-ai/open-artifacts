@@ -67,11 +67,26 @@ export function paint(style: Style, tone: Tone, text: string): string {
   }
 }
 
+export function bold(style: Style, text: string): string {
+  if (text === "") return text;
+  switch (style.color) {
+    case "none":
+      return text;
+    case "tags":
+      return `[[bold]]${text}[[/bold]]`;
+    case "truecolor":
+    case "ansi":
+      return `\x1b[1m${text}\x1b[22m`;
+  }
+}
+
 const GLYPHS = {
   step: ["→", ">"],
   done: ["✓", "+"],
   retry: ["!", "!"],
   fail: ["×", "x"],
+  cross: ["✗", "x"],
+  degraded: ["▲", "!"],
   queued: ["○", "o"],
   live: ["●", "*"],
   sep: ["·", "-"],

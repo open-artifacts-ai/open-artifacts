@@ -248,6 +248,25 @@ describe("systemService: launchd", () => {
   const plistOf = (userHome: string) =>
     join(userHome, "Library/LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
+  it("preserves the installed agy opt-in when upgrade reruns the installer", async () => {
+    const { d, userHome } = deps("darwin");
+    const ensure = (flag?: string) =>
+      systemService({
+        ...d,
+        env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: flag },
+      }).ensure();
+    const plist = () => readFileSync(plistOf(userHome), "utf8");
+    await ensure("1");
+    expect(plist()).toContain("OA_BUS_EXPERIMENTAL_AGY");
+    await ensure();
+    expect(plist()).toContain(
+      "<key>OA_BUS_EXPERIMENTAL_AGY</key><string>1</string>",
+    );
+    await ensure("0");
+    await ensure();
+    expect(plist()).not.toContain("OA_BUS_EXPERIMENTAL_AGY");
+  });
+
   it.each(["file", "link"])(
     "leaves the working legacy unit running on a %s collision",
     async (kind) => {

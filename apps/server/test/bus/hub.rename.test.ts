@@ -89,13 +89,17 @@ async function reg(
   ref: string,
   name: string,
   namespace: string,
-  opts: { global?: boolean; kind?: "default" | "chosen" } = {},
+  opts: {
+    global?: boolean;
+    kind?: "default" | "chosen";
+    selfPicked?: boolean;
+  } = {},
 ): Promise<string> {
   d.send({
     v: 1,
     id: id("u"),
     type: "agent_up",
-    name_chosen: true,
+    ...(opts.selfPicked ? {} : { name_chosen: true }),
     agent_ref: ref,
     kind: "opencode",
     proposed_name: name,
@@ -577,7 +581,7 @@ describe("rename (R393b)", () => {
     d.close();
   });
 
-  it("close keeps chosen former names reserved and holds the current name (agent_down, sessions; OpenBus #451); a revoke frees both (#1448)", async () => {
+  it("close reserves former names; revocation releases session names and keeps the chosen role", async () => {
     const d = await at();
     const n = ns("rn");
     await reg(d, "s", uniq("Sender"), n);
@@ -625,7 +629,7 @@ describe("rename (R393b)", () => {
     await renamed(v, "rv", c2);
     expect(await (await hubOf()).revokeMachine(m.id)).toBe(true);
     expect(await reg(d, "z", c, n)).toBe(c);
-    expect(await reg(d, "z2", c2, n)).toBe(c2);
+    expect(await reg(d, "z2", c2, n)).toBe(`${c2}-2`);
     expect(await formerRows(c2)).toEqual([]);
     d.close();
   });
@@ -1701,7 +1705,7 @@ describe("OpenBus #451 nits", () => {
     const d = await at();
     const n = ns("rn");
     const dup = uniq("Dup");
-    await reg(d, "a", dup, n);
+    await reg(d, "a", dup, n, { selfPicked: true });
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
     // OpenBus #451: the close holds the name; past the away reservation (7 d,
     // #1295) another takes it (#3132: never before), and the old session
@@ -2386,9 +2390,8 @@ describe("#3028: a session the daemon reports closed is away, not gone", () => {
     });
     const r = await renamed(d, "ref-b", "OA Manager L");
     expect(r.bus_name).toBe("OA Manager L-2");
-    // The name is now the away holder's role: mail is never the asker's (a
-    // socket without the roles cap reads it as unknown, #1816).
+    // The old sender can still queue mail to the same away holder.
     const rc = await send(d, "ref-c", "OA Manager L");
-    expect(rc).toMatchObject({ state: "refused", reason: "unknown_agent" });
+    expect(rc.state).toBe("pending");
   });
 });

@@ -51,7 +51,7 @@ async function connect(caps: string[] | undefined): Promise<Daemon> {
 }
 
 async function agent(d: Daemon, ref: string, name: string, namespace: string) {
-  d.send(up(`u${++seq}`, ref, name, namespace));
+  d.send(plainUp(`u${++seq}`, ref, name, namespace));
   expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
 }
 

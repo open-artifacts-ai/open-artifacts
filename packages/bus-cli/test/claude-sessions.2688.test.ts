@@ -343,16 +343,14 @@ describe("doctor, live Claude sessions", () => {
 });
 
 describe("status, live Claude sessions", () => {
-  it("lists each unlinked session as a failure", async () => {
+  it("default screen omits per-session helper wording (#3328 S1)", async () => {
     const ctx = ctxWith(
       status({
         claude_sessions: [session("lost-9", "unlinked", "proof_refused")],
       }),
     );
     await statusCmd(ctx);
-    expect(ctx.err().join("\n")).toContain(
-      "Claude Code: the session lost-9 in /work/app is not linked.",
-    );
+    expect(ctx.err().join("\n")).not.toContain("is not linked");
   });
 
   it("says nothing about sessions when all are linked", async () => {

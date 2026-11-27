@@ -170,7 +170,7 @@ describe("status and doctor: not running, not responding, reconnecting (#274)", 
     expect(st).toHaveBeenCalledTimes(2);
   });
 
-  it("link down: reconnecting, daemon running", async () => {
+  it("link down: down verdict, hub can't reach", async () => {
     const ctx = fakeCtx({
       service: launchd(),
       status: up({
@@ -183,8 +183,8 @@ describe("status and doctor: not running, not responding, reconnecting (#274)", 
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(1);
     const out = ctx.all().join("\n");
-    expect(out).toContain("reconnecting");
-    expect(out).toContain("Daemon running as a launchd service");
+    expect(out).toContain("down");
+    expect(out).toContain("can't reach");
     expect(out).not.toContain("not responding");
     expect(out).not.toContain("not running");
   });
@@ -220,8 +220,7 @@ describe("status and doctor: not running, not responding, reconnecting (#274)", 
   });
 });
 
-describe("status: transcript state 7", () => {
-  const blocks = transcript("## 7. status");
+describe("status: default screen (#3328 S1)", () => {
   const healthy = status({
     namespaces: [
       {
@@ -239,24 +238,23 @@ describe("status: transcript state 7", () => {
     ],
   });
 
-  it("connected and healthy: rows, daemon, one roster per namespace; exit 0", async () => {
+  it("connected and healthy: verdict, instance, agents, other projects, More; exit 0", async () => {
     const ctx = fakeCtx({
       service: launchd(),
       status: vi.fn(async () => healthy),
     });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(0);
-    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
-      blocks[0],
+    expect(ctx.out()[0]).toBe(
+      "oa-bus 0.1.0 · [[success]]● working[[/success]] · this MacBook",
     );
-    expect(ctx.all()).toContain("Habits: on, sent by the bus");
-    expect(ctx.all()[2]).toBe(
-      "Hub      bus.example.com  [[success]]● connected[[/success]]",
-    );
+    expect(ctx.out()[1]).toBe("  [[success]]✓[[/success]] bus.example.com");
+    expect(ctx.all().join("\n")).toContain("Other projects: notes (1)");
+    expect(ctx.all().join("\n")).not.toContain("Habits:");
     noToken(ctx);
   });
 
-  it("hub not reachable: no roster rows; exit 1", async () => {
+  it("hub not reachable: down verdict, no agents; exit 1", async () => {
     const ctx = fakeCtx({
       service: launchd(),
       status: up({
@@ -268,22 +266,30 @@ describe("status: transcript state 7", () => {
     });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
-      blocks[1],
+    expect(ctx.out()[0]).toBe(
+      "oa-bus 0.1.0 · [[danger]]✗ down[[/danger]] · this MacBook",
     );
+    expect(ctx.out()[1]).toBe(
+      "  [[danger]]✗[[/danger]] bus.example.com[[muted]] (can't reach)[[/muted]]",
+    );
+    expect(ctx.all().join("\n")).not.toContain("Agents");
   });
 
   it("daemon not running; exit 1", async () => {
     const ctx = fakeCtx({ service: launchd() });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all()).toEqual(blocks[2]);
+    expect(ctx.out()[0]).toBe(
+      "oa-bus 0.1.0 · [[danger]]✗ down[[/danger]] · this MacBook",
+    );
+    expect(ctx.err()).toContain("[[danger]]×[[/danger]]  Daemon not running");
   });
 
-  it("not registered: no Hub or Machine rows; exit 1", async () => {
+  it("not registered: down verdict without machine; exit 1", async () => {
     const ctx = fakeCtx();
     expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all()).toEqual(blocks[3]);
+    expect(ctx.out()).toEqual(["oa-bus 0.1.0 · [[danger]]✗ down[[/danger]]"]);
+    expect(ctx.err().join("\n")).toContain("not connected to a bus");
   });
 
   it("names machine.json's hub, not OA_BUS_INSTANCE", async () => {
@@ -292,148 +298,54 @@ describe("status: transcript state 7", () => {
     });
     approve(ctx);
     await statusCmd(ctx);
-    expect(ctx.all()[2]).toBe("Hub      bus.example.com");
+    expect(ctx.out()[1]).toContain("bus.example.com");
+    expect(ctx.out()[1]).not.toContain("other.example.org");
   });
 
-  describe("hub link state (C20)", () => {
-    const hubRow = async (over: Parameters<typeof status>[0], ctxOver = {}) => {
-      const ctx = fakeCtx({ status: up(over), ...ctxOver });
-      approve(ctx);
-      await statusCmd(ctx);
-      return ctx.all()[2];
-    };
-    const down = (agoMs: number) => ({
-      hub: "connecting" as const,
-      hub_ever: true,
-      hub_since: 1_000_000 - agoMs,
+  it("a long host is cut so the instance row is at most 80", async () => {
+    const ctx = fakeCtx({
+      status: up({
+        hub: "connecting",
+        hub_ever: true,
+        hub_since: 1_000_000 - 120_000,
+      }),
     });
-    const R = "Hub      bus.example.com  [[warning]]○ reconnecting[[/warning]]";
-    it("reconnecting under 1 min has no duration", async () => {
-      expect(await hubRow(down(59_999))).toBe(R);
-    });
-    it("reconnecting 2 min", async () => {
-      expect(await hubRow(down(2 * 60_000 + 30_000))).toBe(
-        `${R}  [[muted]]for 2 min[[/muted]]`,
-      );
-    });
-    it("reconnecting 61 min reads 1 h", async () => {
-      expect(await hubRow(down(61 * 60_000))).toBe(
-        `${R}  [[muted]]for 1 h[[/muted]]`,
-      );
-    });
-    it("pins the 59 min and 60 min boundaries", async () => {
-      expect(await hubRow(down(59 * 60_000 + 59_000))).toBe(
-        `${R}  [[muted]]for 59 min[[/muted]]`,
-      );
-      expect(await hubRow(down(60 * 60_000))).toBe(
-        `${R}  [[muted]]for 1 h[[/muted]]`,
-      );
-    });
-    it("connecting: never connected since the daemon started", async () => {
-      expect(await hubRow({ hub: "connecting", hub_ever: false })).toBe(
-        "Hub      bus.example.com  [[warning]]○ connecting[[/warning]]",
-      );
-    });
-    it("an older daemon without the fields: connected, or connecting with no duration", async () => {
-      expect(await hubRow({})).toContain("● connected");
-      expect(await hubRow({ hub: "connecting" })).toBe(
-        "Hub      bus.example.com  [[warning]]○ connecting[[/warning]]",
-      );
-    });
-    it("a long host is cut so the row is at most 80", async () => {
-      const ctx = fakeCtx({ status: up(down(2 * 60_000)) });
-      approve(ctx);
-      writeFileSync(
-        join(ctx.home, "machine.json"),
-        JSON.stringify({
-          machine_id: "m",
-          label: LABEL,
-          machine_token: TOKEN,
-          hub: `https://${"a".repeat(30)}.${"b".repeat(60)}.example.com`,
-        }),
-      );
-      await statusCmd(ctx);
-      const line = ctx.all()[2] ?? "";
-      expect(line).toContain("…");
-      expect(line).toContain("reconnecting");
-      expect(line.replace(/\[\[\/?\w+\]\]/g, "").length).toBeLessThanOrEqual(
-        80,
-      );
-    });
+    approve(ctx);
+    writeFileSync(
+      join(ctx.home, "machine.json"),
+      JSON.stringify({
+        machine_id: "m",
+        label: LABEL,
+        machine_token: TOKEN,
+        hub: `https://${"a".repeat(30)}.${"b".repeat(60)}.example.com`,
+      }),
+    );
+    await statusCmd(ctx);
+    const line = ctx.out()[1] ?? "";
+    expect(line).toContain("…");
+    expect(line).toContain("can't reach");
+    expect(line.replace(/\[\[\/?\w+\]\]/g, "").length).toBeLessThanOrEqual(80);
   });
 
-  describe("late deliveries (C17)", () => {
-    const Q = "Can you regenerate the API reference pag…";
-    const late = (from: string, to: string, agoMs: number, excerpt = Q) => ({
-      from,
-      to,
-      ...(excerpt ? { excerpt } : {}),
-      at: 1_000_000 - agoMs,
+  it("default screen omits late deliveries list (#3328 S1)", async () => {
+    const ctx = fakeCtx({
+      service: launchd(),
+      status: vi.fn(async () => ({
+        ...healthy,
+        late: [
+          {
+            from: "oa-team-design",
+            to: "oa-team-frontend",
+            excerpt: "The Machines page empty state is ready",
+            at: 1_000_000 - 60_000,
+          },
+        ],
+      })),
     });
-    const run = async (l: ReturnType<typeof late>[]) => {
-      const ctx = fakeCtx({
-        service: launchd(),
-        status: vi.fn(async () => ({ ...healthy, late: l })),
-      });
-      approve(ctx);
-      const code = await statusCmd(ctx);
-      return {
-        code,
-        out: ctx.all().filter((l) => !l.startsWith("Habits:")),
-        base: blocks[0] as string[],
-      };
-    };
-
-    it("follows the last table and its footnote, newest first; exit unaffected", async () => {
-      const { code, out, base } = await run([
-        late(
-          "oa-team-design",
-          "oa-team-frontend",
-          14 * 60_000,
-          "The Machines page empty state is ready f…",
-        ),
-        late("oa-team-backend", "oa-team-e0", 2 * 60_000),
-      ]);
-      expect(code).toBe(0);
-      expect(out.slice(0, base.length)).toEqual(base);
-      const section = out.slice(base.length);
-      expect(section[0]).toBe("");
-      expect(section.slice(1)).toEqual(blocks[5]);
-    });
-
-    it("singular, and a row with no excerpt has no quote line", async () => {
-      const { out, base } = await run([late("a", "b", 10_000, "")]);
-      expect(out.slice(base.length)).toEqual([
-        "",
-        "1 message delivered late  [[muted]]last hour[[/muted]]",
-        "  a to b  [[muted]]now[[/muted]]",
-      ]);
-    });
-
-    it("is absent at 0", async () => {
-      expect((await run([])).out).toEqual(blocks[0]);
-    });
-
-    it("cuts long names so no row passes 80 columns", async () => {
-      const untag = (l: string) => l.replace(/\[\[\/?[a-z]+\]\]/g, "");
-      for (const [from, to] of [
-        ["f".repeat(64), "t".repeat(64)],
-        ["short", "t".repeat(128)],
-        ["f".repeat(128), "x"],
-      ]) {
-        const { out, base } = await run([late(from, to, 59 * 60_000)]);
-        for (const line of out.slice(base.length))
-          expect(untag(line).length).toBeLessThanOrEqual(80);
-        const row = untag(out[base.length + 2] as string);
-        expect(row).toHaveLength(80);
-        expect(row).toContain(" to ");
-      }
-    });
-
-    it("strips terminal controls from the quote", async () => {
-      const { out } = await run([late("a", "b", 0, "hi\x1b]52;c;x\x07 there")]);
-      expect(out.at(-1)).toBe('    "hi there"');
-    });
+    approve(ctx);
+    expect(await statusCmd(ctx)).toBe(0);
+    expect(ctx.all().join("\n")).not.toContain("delivered late");
+    expect(ctx.all().join("\n")).not.toContain("The Machines page");
   });
 
   it("revoked: the daemon's marker; exit 1", async () => {
@@ -441,19 +353,28 @@ describe("status: transcript state 7", () => {
     approve(ctx);
     writeFileSync(join(ctx.home, "revoked"), "{}");
     expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all()).toEqual(blocks[4]);
+    expect(ctx.out()[0]).toBe(
+      "oa-bus 0.1.0 · [[danger]]✗ down[[/danger]] · this MacBook",
+    );
+    expect(ctx.out()[1]).toBe(
+      "  [[danger]]✗[[/danger]] bus.example.com[[muted]] (revoked)[[/muted]]",
+    );
+    expect(ctx.err().join("\n")).toContain("revoked");
   });
 });
 
-describe("status and doctor: update available and unknown kinds (C26h)", () => {
+describe("doctor: update available and unknown kinds (C26h)", () => {
   const draft = transcript("## 7. status").at(-1) as string[];
-  const run = async (hub_version?: string, version = "0.46.3") => {
+  const runDoc = async (hub_version?: string, version = "0.46.3") => {
     const ctx = fakeCtx({
+      nodeVersion: "v22.11.0",
       service: launchd(),
       status: up({ version, ...(hub_version ? { hub_version } : {}) }),
+      fetch: vi.fn(async () => new Response("ok")) as unknown as typeof fetch,
+      which: () => false,
     });
     approve(ctx);
-    expect(await statusCmd(ctx)).toBe(0);
+    await doctor(ctx);
     return ctx.all();
   };
   const down = {
@@ -464,35 +385,32 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
     hub_version: "0.47.0",
   };
 
-  it("says so when the hub is newer, as the transcript shows", async () => {
-    const out = await run("0.47.0");
-    const at = out.indexOf(draft[0] as string);
-    expect(out.slice(at, at + draft.length)).toEqual(draft);
-    expect(await run("1.0.0", "0.46.3-rc.1")).toContain(
+  it("says so when the hub is newer", async () => {
+    expect(await runDoc("0.47.0")).toContain(draft[1]);
+    expect(await runDoc("1.0.0", "0.46.3-rc.1")).toContain(
       "[[warning]]![[/warning]]  Update available: 1.0.0 (this machine runs 0.46.3-rc.1)",
     );
   });
 
   it("compares and shows the core version only", async () => {
-    expect(await run("0.47.0-abc1234")).toContain(
+    expect(await runDoc("0.47.0-abc1234")).toContain(
       "[[warning]]![[/warning]]  Update available: 0.47.0 (this machine runs 0.46.3)",
     );
-    expect(await run("0.47.0+build.7")).toContain(
+    expect(await runDoc("0.47.0+build.7")).toContain(
       "[[warning]]![[/warning]]  Update available: 0.47.0 (this machine runs 0.46.3)",
     );
-    // A pre-release of the same core is never newer, on either side.
     for (const [hub, mine] of [
       ["0.47.0", "0.47.0-rc.1"],
       ["0.47.0-abc1234", "0.47.0-rc.1"],
       ["0.47.0-abc1234", "0.47.0"],
     ])
-      expect((await run(hub, mine)).join("\n")).not.toContain(
+      expect((await runDoc(hub, mine)).join("\n")).not.toContain(
         "Update available",
       );
   });
 
   it("stays within 80 columns at its longest", async () => {
-    const out = await run(
+    const out = await runDoc(
       "1234567890123.1234567890123.1234567890123-sha",
       "1234567890123.1234567890123.1234567890122-rc.1+build.9",
     );
@@ -505,11 +423,6 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
   });
 
   it("says nothing while the hub link is down", async () => {
-    const ctx = fakeCtx({ service: launchd(), status: up(down) });
-    approve(ctx);
-    expect(await statusCmd(ctx)).toBe(1);
-    expect(ctx.all().join("\n")).not.toContain("Update available");
-    expect(ctx.all().join("\n")).toContain("Hub not reachable");
     const doc = fakeCtx({
       nodeVersion: "v22.11.0",
       service: launchd(),
@@ -534,7 +447,7 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
       "e2e",
       "\x1b]52;c;aGk=\x07",
     ]) {
-      const out = await run(hub, "0.47.0");
+      const out = await runDoc(hub, "0.47.0");
       expect(out.join("\n")).not.toContain("Update available");
     }
   });
@@ -565,7 +478,13 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
           {
             namespace: NS,
             agents: [
-              { name: "zz-1", kind: "zz", machine: LABEL, state: "live" },
+              {
+                name: "zz-1",
+                kind: "zz",
+                machine: LABEL,
+                state: "live",
+                status: "working",
+              },
             ],
           },
         ],
@@ -573,9 +492,8 @@ describe("status and doctor: update available and unknown kinds (C26h)", () => {
     });
     approve(ctx);
     expect(await statusCmd(ctx)).toBe(0);
-    expect(ctx.all().find((l) => l.includes("zz-1"))).toMatch(
-      /^ {2}zz-1 {16}zz {11}leo-macbook-pro/,
-    );
+    const line = ctx.out().find((l) => l.includes("zz-1")) ?? "";
+    expect(line).toContain("zz");
   });
 });
 
@@ -604,7 +522,7 @@ describe("update available without hub_version (C26i)", () => {
     return ctx.all();
   };
 
-  for (const cmd of ["status", "doctor"] as const) {
+  for (const cmd of ["doctor"] as const) {
     it(`${cmd}: healthz newer than an old daemon shows the line`, async () => {
       const out = await text(cmd, { fetch: health("0.49.0") });
       expect(out).toContain(LINE("0.49.0", "0.44.1"));
@@ -725,17 +643,14 @@ describe("hub problem from /healthz (#294)", () => {
   };
   const bad = { version: "0.46.3", problem: "test_card_key" };
 
-  for (const [name, over] of [
-    ["link up", {}],
-    ["link down", { hub: "reconnecting", hub_ever: true }],
+  for (const [name, over, verdict] of [
+    ["link up", {}, "degraded"],
+    ["link down", { hub: "connecting", hub_ever: true }, "down"],
   ] as const) {
-    it(`status shows it with the ${name}, after the hub and daemon rows, and exits 1`, async () => {
+    it(`status reports ${verdict} with the ${name} and exits 1`, async () => {
       const { code, out } = await run("status", hz(bad), over);
       expect(code).toBe(1);
-      const i = out.indexOf(FAIL);
-      expect(i).toBeGreaterThan(0);
-      expect(out.slice(i + 1, i + 2)).toEqual(FIX);
-      expect(out[i - 1]).toContain("Daemon running");
+      expect(out[0]).toContain(verdict);
     });
   }
 
@@ -748,28 +663,24 @@ describe("hub problem from /healthz (#294)", () => {
     expect(out.at(-1)).toContain("1 failed");
   });
 
-  it("an unknown problem prints generically", async () => {
-    for (const cmd of ["status", "doctor"] as const) {
-      const { out } = await run(cmd, hz({ problem: "disk_full" }));
-      expect(out.join("\n")).toContain(
-        "The instance reports a problem: disk_full",
-      );
-      expect(out.join("\n")).not.toContain("ob:setup");
-    }
+  it("an unknown problem prints generically in doctor", async () => {
+    const { out } = await run("doctor", hz({ problem: "disk_full" }));
+    expect(out.join("\n")).toContain(
+      "The instance reports a problem: disk_full",
+    );
+    expect(out.join("\n")).not.toContain("ob:setup");
   });
 
-  it("a hostile problem is stripped and capped", async () => {
+  it("a hostile problem is stripped and capped in doctor", async () => {
     const evil = `\x1b]52;c;aGk=\x07\x1b[31mX${"y".repeat(500)}\n\r`;
-    for (const cmd of ["status", "doctor"] as const) {
-      const { out } = await run(cmd, hz({ problem: evil }));
-      const line = out.find((l) => l.includes("reports a problem")) as string;
-      expect(line).not.toContain("\x1b");
-      expect(line).not.toContain("\x07");
-      expect(line).not.toContain("\n");
-      expect(line).not.toContain("\r");
-      expect(line).not.toContain("52;c");
-      expect(line.length).toBeLessThan(120);
-    }
+    const { out } = await run("doctor", hz({ problem: evil }));
+    const line = out.find((l) => l.includes("reports a problem")) as string;
+    expect(line).not.toContain("\x1b");
+    expect(line).not.toContain("\x07");
+    expect(line).not.toContain("\n");
+    expect(line).not.toContain("\r");
+    expect(line).not.toContain("52;c");
+    expect(line.length).toBeLessThan(120);
   });
 
   it("no problem, an empty one or a failed fetch is silent and exits 0", async () => {
@@ -1466,6 +1377,26 @@ describe("daemon command", () => {
     expect(await done).toBe(0);
     expect(f.stop).toHaveBeenCalledOnce();
   });
+
+  it.each([true, false])(
+    "passes the selected home's saved agy discovery setting (%s) to the foreground daemon",
+    async (enabled) => {
+      const f = fake();
+      const ctx = fakeCtx({ env: {} });
+      ctx.home = join(ctx.userHome, "selected-bus");
+      mkdirSync(ctx.home, { recursive: true });
+      writeFileSync(
+        join(ctx.home, "install.json"),
+        JSON.stringify({ agyEnabled: enabled }),
+      );
+      const done = daemon(ctx, f.run as never, f.signals);
+      f.signals.emit("SIGTERM");
+      expect(await done).toBe(0);
+      expect(f.run).toHaveBeenCalledWith(
+        expect.objectContaining({ antigravity: { discover: enabled } }),
+      );
+    },
+  );
 
   it("hands the daemon a skill refresher (#3203)", async () => {
     const f = fake();

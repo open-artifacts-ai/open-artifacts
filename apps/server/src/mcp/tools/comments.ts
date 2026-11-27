@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { McpServer } from "@modelcontextprotocol/server";
-import type { Comment as CommentView } from "@oa/shared";
+import type { CommentThread, Comment as CommentView } from "@oa/shared";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
@@ -19,6 +19,7 @@ import {
   setStatus,
   withdrawAsk,
 } from "../../services/comments.js";
+import { mentionedHandles } from "../../services/person-handles.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
 
@@ -44,6 +45,20 @@ async function threadOf<T>(p: Promise<T>): Promise<T> {
 
 const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
 
+function commentForTool(c: CommentView) {
+  return c.people?.length
+    ? { ...c, mentions: [...(c.mentions ?? []), ...c.people] }
+    : c;
+}
+
+function threadForTool(thread: CommentThread) {
+  return { ...thread, comments: thread.comments.map(commentForTool) };
+}
+
+function threadsForTool<T extends { threads: CommentThread[] }>(list: T) {
+  return { ...list, threads: list.threads.map(threadForTool) };
+}
+
 /**
  * #3163: what a write returns by default: ids and status, not the comment.
  * Kept: `notice` (a non-fatal note, such as a cross-page replace that did not
@@ -64,6 +79,7 @@ function compact(
     ...(status ? { status } : {}),
     ...(c?.ask ? { askId: c.id } : {}),
     ...(c?.askedBy ? { askedBy: c.askedBy } : {}),
+    ...(c?.people?.length ? { mentions: c.people } : {}),
     ...(c?.notice ? { notice: c.notice } : {}),
     ...(gone.length ? { notReached: gone } : {}),
   };
@@ -128,7 +144,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
               ? " (that comment, the one before it and the first)"
               : ""
           }.`,
-          one,
+          threadsForTool(one),
         );
       }
       // #3168: delta read from an earlier list_comments cursor.
@@ -152,7 +168,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
           `${plural(out.threads.length, "changed thread")} on ${i.id} since your cursor (${out.open} open)${
             out.truncated ? ", more exist than are shown" : ""
           }.`,
-          out,
+          threadsForTool(out),
         );
       }
       if (
@@ -180,7 +196,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             `${plural(found.threads.length, "thread")} on ${i.id} since your time (${found.open} open)${
               found.truncated ? ", more exist than are shown" : ""
             }.`,
-            found,
+            threadsForTool(found),
           );
         }
         return ok(
@@ -195,7 +211,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         `${plural(out.threads.length, "thread")} on ${i.id} (${out.open} open)${
           out.truncated ? ", more exist than are shown" : ""
         }.`,
-        out,
+        threadsForTool(out),
       );
     }),
   );
@@ -231,6 +247,11 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   server.registerTool("add_comment", toolConfig("add_comment"), (i) =>
     guard(async () => {
       const { artifact, viewer, who } = await open(i.id, "comments.write");
+      const labels =
+        viewer.moderator && !viewer.guest && !viewer.capped
+          ? await mentionedHandles(env, i.body, i.id)
+          : {};
+      const targets = { people: Object.keys(labels), personLabels: labels };
       const opts = {
         moderator: viewer.moderator === true,
         after: {
@@ -258,6 +279,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             viewer,
             i.body,
             {
+              ...targets,
               ...(i.ask ? { ask: i.ask } : {}),
               ...(i.requestCommentId
                 ? { requestCommentId: i.requestCommentId }
@@ -270,7 +292,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         return ok(
           `Replied in thread ${i.threadId} on ${i.id}.`,
           i.verbose
-            ? { threadId: i.threadId, comment }
+            ? { threadId: i.threadId, comment: commentForTool(comment) }
             : compact(
                 i.threadId,
                 comment,
@@ -290,6 +312,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         {
           anchor: i.anchor ?? { kind: "note" },
           body: i.body,
+          ...targets,
           ...(i.ask ? { ask: i.ask } : {}),
         },
         opts,
@@ -298,7 +321,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
       return ok(
         `Started thread ${thread.id} on ${i.id}.`,
         i.verbose
-          ? { thread }
+          ? { thread: threadForTool(thread) }
           : compact(thread.id, thread.comments[0], thread.status),
       );
     }),
