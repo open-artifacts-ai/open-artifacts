@@ -1,6 +1,7 @@
 import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { personName } from "./users.js";
 
 /**
  * #2426 B, #2536: the slots a page holds, and where each ask lives. One table
@@ -78,7 +79,7 @@ export async function pageTitles(
   return out;
 }
 
-/** Public display names by user id (display_name, else name, else email local part). */
+/** Public display names by user id (via personName: display name, else IdP name, never email/local part, else "Someone"). */
 export async function userDisplayNames(
   env: Env,
   ids: string[],
@@ -99,12 +100,14 @@ export async function userDisplayNames(
       email: string;
     }>();
   for (const r of results) {
-    const label =
-      r.display_name?.trim() ||
-      r.name?.trim() ||
-      r.email.split("@")[0]?.trim() ||
-      "";
-    if (label) out.set(r.id, label);
+    out.set(
+      r.id,
+      personName({
+        email: r.email,
+        name: r.name,
+        displayName: r.display_name,
+      }),
+    );
   }
   return out;
 }

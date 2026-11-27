@@ -314,9 +314,19 @@ describe("ask slots: the read route", () => {
     expect(sameList).toHaveLength(1);
     expect(sameList[0]?.commentId).toBe(cSameId);
     expect(sameList[0]?.ask.question).toBe("Deploy v2 now?");
-    // User-only placer uses display name / email local part, never raw user id.
-    expect(sameList[0]?.placer?.name).toBeTruthy();
-    expect(sameList[0]?.placer?.name).not.toBe(owner.userId);
+    // User-only placer never exposes raw user id, email, or email local part.
+    const localPart = owner.email.split("@")[0] as string;
+    await E.DB.prepare(
+      "update users set name = ?, display_name = null where id = ?",
+    )
+      .bind(owner.email, owner.userId)
+      .run();
+    const emailPlacerList = (await (
+      await slots(shown, owner)
+    ).json()) as AskSlot[];
+    expect(emailPlacerList[0]?.placer?.name).toBe("Someone");
+    expect(emailPlacerList[0]?.placer?.name).not.toContain("@");
+    expect(emailPlacerList[0]?.placer?.name).not.toContain(localPart);
 
     // Cross-page replacement: withdraw cSameId pointing at a new ask on home2.
     const a2 = await ask(owner, home2);
