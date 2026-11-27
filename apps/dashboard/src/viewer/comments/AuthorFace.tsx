@@ -1,6 +1,6 @@
 import { type CommentAuthor, PRESENCE_PALETTE_SIZE } from "@oa/shared";
 import { Bot } from "lucide-react";
-import { AppMark, tidyToken } from "../../bus/AgentApp";
+import { AppMark, agentLocation, tidyToken } from "../../bus/AgentApp";
 import { AnimalIcon } from "../presence/animals";
 
 /** Up to two initials of a display name. */
@@ -104,6 +104,7 @@ export function AuthorFace({
     return (
       <span
         aria-hidden="true"
+        title={a.handle ? `${a.name} @${a.handle}` : undefined}
         data-avatar=""
         className={`flex ${small ? "size-4 text-[8px]" : "size-6 text-[length:var(--oa-text-xs)]"} shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-medium text-foreground`}
       >
@@ -127,12 +128,27 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
     : "";
   const lead = isLinked ? app : "not linked";
   const rest = a.for ? `for ${a.for}` : "";
-  if (!lead && !rest) return null;
+  // Machine labels are visible to the owner; other viewers get the app.
+  const role = a.role;
+  let session = "";
+  if (role) {
+    const origin = agentLocation(role.machine, app);
+    session = role.holder
+      ? `was on ${origin}, now on ${agentLocation(role.holderMachine, role.holderProduct)}`
+      : `on ${origin}`;
+  }
+  if (!lead && !rest && !session) return null;
   return (
     <span
       data-for=""
-      className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
+      className={`min-w-0 ${role ? "break-words" : "truncate"} text-[length:var(--oa-text-xs)] text-muted-foreground`}
     >
+      {session && (
+        <span data-role-session="">
+          {session}
+          {lead || rest ? " · " : ""}
+        </span>
+      )}
       {isLinked && <span className="sr-only">linked, </span>}
       {app ? (
         <>

@@ -1,6 +1,7 @@
 import { ASK_SLOT_KEY, ASK_SLOTS_MAX } from "@oa/shared";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { personName } from "./users.js";
 
 /**
  * #2426 B, #2536: the slots a page holds, and where each ask lives. One table
@@ -75,5 +76,38 @@ export async function pageTitles(
     .bind(...ids)
     .all<{ id: string; title: string }>();
   for (const r of results) out.set(r.id, r.title);
+  return out;
+}
+
+/** Public display names by user id (via personName: display name, else IdP name, never email/local part, else "Someone"). */
+export async function userDisplayNames(
+  env: Env,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return out;
+  const marks = uniq.map(() => "?").join(", ");
+  const { results } = await stmt(
+    env.DB,
+    `select id, display_name, name, email from users where id in (${marks})`,
+  )
+    .bind(...uniq)
+    .all<{
+      id: string;
+      display_name: string | null;
+      name: string | null;
+      email: string;
+    }>();
+  for (const r of results) {
+    out.set(
+      r.id,
+      personName({
+        email: r.email,
+        name: r.name,
+        displayName: r.display_name,
+      }),
+    );
+  }
   return out;
 }

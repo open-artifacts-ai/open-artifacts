@@ -1,6 +1,14 @@
 import {
   chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  linkSync,
+  lstatSync,
   mkdirSync,
+  openSync,
+  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -8,7 +16,7 @@ import {
 import { join } from "node:path";
 
 /**
- * The rescue shim (#2552). The service runs `<home>/rescue`, which sits
+ * The rescue shim (#2552). The service runs `<home>/Open Artifacts Bus`, which sits
  * outside `versions/`: a hand-run install writes it and an update never does,
  * so a release that cannot start cannot break the way back.
  *
@@ -37,12 +45,13 @@ import { join } from "node:path";
  * Limit: the shim reads only `update.json`. When that file does not parse it
  * cannot act: it starts bin/node and does nothing else.
  */
-export const RESCUE_VERSION = 1;
+export const RESCUE_VERSION = 2;
 
 /** The new version gets this many starts before it is undone. */
 export const RESCUE_MAX_STARTS = 2;
 
-export const rescueOf = (home: string) => join(home, "rescue");
+export const RESCUE_NAME = "Open Artifacts Bus";
+export const rescueOf = (home: string) => join(home, RESCUE_NAME);
 
 export function rescueShell(): string {
   return `#!/bin/sh
@@ -58,7 +67,13 @@ exec "$here/bin/node" "$@"
 export function rescueScript(): string {
   return `// Written by oa-bus install, never by an update. Rescue shim ${RESCUE_VERSION}.
 import {
-  chmodSync, lstatSync, readFileSync, readlinkSync, renameSync, rmSync,
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  openSync,
+  fstatSync,
+  linkSync, lstatSync, readFileSync, readlinkSync, renameSync, rmSync,
   symlinkSync, writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -133,11 +148,21 @@ function run() {
   // bin is on the old version now (just undone, or an earlier step back did not finish).
   delete j.pending;
   j.current = p.from;
-  j.failed = [...(Array.isArray(j.failed) ? j.failed : []).filter((v) => v !== p.to), p.to].slice(-20);
-  j.lastAt = Math.max(now, typeof j.lastAt === "number" ? j.lastAt : 0);
+  const failures = j.startFailures ?? {};
+  const prior = failures[p.to]?.count;
+  const count = (Number.isSafeInteger(prior) && prior > 0 ? prior : 0) + 1;
+  delete failures[p.to];
+  failures[p.to] = { at: now, count };
+  j.startFailures = Object.fromEntries(Object.entries(failures).slice(-20));
+  delete j.lastAt;
+  const notices = j.notified?.[p.to] ?? [];
+  const notify = count >= 3 && !notices.includes("failed");
+  if (count >= 3) j.needsYou = true;
+  if (notify) j.notified = { ...j.notified, [p.to]: [...notices, "failed"] };
   if (j.staged && j.staged.version === p.to) delete j.staged;
   put(file, JSON.stringify(j, null, 2) + "\\n");
   report("stepped_back", p.from, p.to, now);
+  if (notify) report("needs_you", p.from, p.to, now);
 }
 
 try {
@@ -146,9 +171,29 @@ try {
 `;
 }
 
+/** This visible name can already belong to the user in a shared bus home. */
+export function isManagedRescue(path: string): boolean {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  const shell = rescueShell();
+  return (
+    st?.isFile() === true &&
+    st.size === Buffer.byteLength(shell) &&
+    readFileSync(path, "utf8") === shell
+  );
+}
+
+export function checkRescueDestination(home: string): void {
+  const path = rescueOf(home);
+  if (lstatSync(path, { throwIfNoEntry: false }) && !isManagedRescue(path))
+    throw new Error(
+      `Cannot install the launcher: ${path} already exists. Move it aside and rerun install.`,
+    );
+}
+
 /** Writes the three files, atomically each. Only a hand-run install calls this. */
 export function writeRescue(home: string, launcher: string): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
+  checkRescueDestination(home);
   const put = (name: string, text: string) => {
     const path = join(home, name);
     const tmp = `${path}.${process.pid}.tmp`;
@@ -163,5 +208,39 @@ export function writeRescue(home: string, launcher: string): void {
   };
   put("rescue.mjs", rescueScript());
   put("rescue-node", launcher);
-  put("rescue", rescueShell());
+  const dest = rescueOf(home);
+  // Publish without replacing a file that appeared after preflight.
+  const stage = join(home, `rescue.${process.pid}.tmp`);
+  writeFileSync(stage, rescueShell(), { mode: 0o700, flag: "wx" });
+  try {
+    try {
+      linkSync(stage, dest);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const fd = openSync(
+        dest,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const st = fstatSync(fd);
+        if (
+          !st.isFile() ||
+          st.size !== Buffer.byteLength(rescueShell()) ||
+          readFileSync(fd, "utf8") !== rescueShell()
+        )
+          throw new Error(`Cannot replace the existing file at ${dest}.`);
+        fchmodSync(fd, 0o700);
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } finally {
+    rmSync(stage, { force: true });
+  }
+}
+
+/** Called after the service manager starts the replacement, including on a retry. */
+export function retireLegacyRescue(home: string): void {
+  const path = join(home, "rescue");
+  if (isManagedRescue(path)) rmSync(path, { force: true });
 }

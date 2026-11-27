@@ -19,6 +19,7 @@ import {
 import { isId } from "./ids.js";
 import { INLINE_TOO_LARGE_MESSAGE, LIMITS } from "./limits.js";
 import { findCaseCollision, normalizePath } from "./paths.js";
+import { PersonHandleSchema } from "./person-handle.js";
 import { utf8Exceeds } from "./utf8.js";
 import {
   PRESENCE_ACTIVITY_MAX,
@@ -913,6 +914,7 @@ export const MeSchema = z.object({
     .optional(),
   /** The name the user chose (PATCH R.me), or null. */
   displayName: z.string().nullable(),
+  handle: z.string().nullable().optional(),
   /** The IdP's name for the user when it is a real name (not the email's local part), else null. */
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
@@ -991,11 +993,12 @@ export const DisplayNameSchema = z
 export const MePatchSchema = z
   .strictObject({
     displayName: DisplayNameSchema.optional(),
+    handle: PersonHandleSchema.optional(),
     commentEmail: z.boolean().optional(),
   })
   .refine(
-    (p) => p.displayName !== undefined || p.commentEmail !== undefined,
-    "Send displayName or commentEmail",
+    (p) => Object.keys(p).length > 0,
+    "Send displayName, handle or commentEmail",
   );
 export type MePatch = z.infer<typeof MePatchSchema>;
 
@@ -1091,6 +1094,7 @@ export type OAuthClient = z.infer<typeof OAuthClientSchema>;
  * asked in time (unknown), never true once revoked.
  */
 export const BusMachineSchema = z.strictObject({
+  busVersion: z.string().nullable().optional(),
   id: z.string(),
   /** Client-supplied at the device step; not editable in v1. */
   label: z.string(),
@@ -1103,6 +1107,7 @@ export type BusMachine = z.infer<typeof BusMachineSchema>;
 
 /** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
 export const BusMachinesSchema = z.strictObject({
+  instanceVersion: z.string().optional(),
   machines: z.array(BusMachineSchema).max(100),
   /**
    * #2552: whether the owner paused every instance-driven machine update.
@@ -1149,6 +1154,14 @@ export const BusAgentSchema = z.strictObject({
   statusAt: z.string().optional(),
   /** #2311: still on a harness default name (never renamed); present only when true. */
   unnamed: z.boolean().optional(),
+  /** #3132: the role it holds in its own namespace: the address to @-mention it by. */
+  role: z.string().optional(),
+  roleId: z.string().optional(),
+  /** #3132: it handed its role on and holds none: the @ list leaves it out (its mail follows the role). */
+  handedOver: z.boolean().optional(),
+  /** #3132: the role it asked to take over, while that waits: the @ list leaves it out (no "-2"). */
+  privateSessionName: z.boolean().optional(),
+  pendingRole: z.string().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 

@@ -313,8 +313,8 @@ describe("sweepLostIndexJobs", () => {
         c.ctx as unknown as ExecutionContext,
       ),
     ).resolves.toBeUndefined();
-    // The sweep, run-version fan-out and browser push each register one task.
-    expect(c.pending).toHaveLength(3);
+    // The sweep and run-version fan-out each register one task.
+    expect(c.pending).toHaveLength(2);
     await c.drain();
     expect(sweepLog(spy)).toMatchObject([{ mode: "tick" }]);
     expect(await pending(id)).toMatchObject({ version: 1 });

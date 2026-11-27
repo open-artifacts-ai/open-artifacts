@@ -4,10 +4,14 @@ import {
   inOwnerHub,
   machine,
   ns,
+  up as plainUp,
   ready,
-  up,
   waitFor,
 } from "./helpers.js";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ReturnType<typeof plainUp>;
 
 const agentRow = (machineId: string, ref: string) =>
   inOwnerHub((s) =>
@@ -47,7 +51,7 @@ describe("hub sessions: open is the complete live set (#3192)", () => {
     d.close();
   });
 
-  it("the forgotten row frees its name", async () => {
+  it("the forgotten row keeps its name away: a new session asking it gets a suffix (#3132, was a reclaim)", async () => {
     const m = await machine();
     const d = await ready(m.token);
     const a = ns("free");
@@ -61,9 +65,9 @@ describe("hub sessions: open is the complete live set (#3192)", () => {
     await waitFor(d, "hello_ok");
 
     d.send(up("u3", "ses_c", "Pi", a));
-    expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi");
-    d.send(up("u4", "ses_d", "Pi", a));
     expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-2");
+    d.send(up("u4", "ses_d", "Pi", a));
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe("Pi-3");
     d.close();
   });
 

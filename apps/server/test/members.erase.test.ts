@@ -90,7 +90,7 @@ const count = async (sql: string, ...args: unknown[]) =>
   (await one<{ n: number }>(sql, ...args))?.n ?? -1;
 const userRow = (id: string) =>
   one<Record<string, unknown>>(
-    `select email, name, display_name, last_seen_at, status, role,
+    `select email, name, display_name, handle, last_seen_at, status, role,
       removed_by_sync, guest_lapsed, google_relink, restricted_manual,
       session_epoch, status_changed_at, erased_at from users where id = ?`,
     id,
@@ -174,7 +174,7 @@ async function fullyLoaded() {
   const now = Date.now();
   await env.DB.batch([
     env.DB.prepare(
-      "update users set display_name = 'Erin Erased', last_seen_at = ?, google_relink = 1, restricted_manual = 1 where id = ?",
+      "update users set display_name = 'Erin Erased', handle = lower(id), last_seen_at = ?, google_relink = 1, restricted_manual = 1 where id = ?",
     ).bind(now, id),
     env.DB.prepare(
       "insert into identities (provider, subject, tenant, user_id, created_at, directory_bound) values ('google', ?, 'a.com', ?, ?, 1)",
@@ -464,6 +464,7 @@ describe("POST R.memberErase(id): what goes and what stays", () => {
         email: placeholder(u.userId),
         name: "",
         display_name: null,
+        handle: null,
         last_seen_at: null,
         status: "removed",
         role: "member",

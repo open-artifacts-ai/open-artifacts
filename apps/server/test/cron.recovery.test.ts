@@ -50,8 +50,8 @@ const fire = async (cron: string, t: number, e: Env = env as Env) => {
   await c.drain();
   return c.pending.length;
 };
-// Sweep, run-version fan-out and push each register one task.
-const tickTasks = 3;
+// Sweep and run-version fan-out each register one task.
+const tickTasks = 2;
 const tick = (t: number) => fire(RECOVERY_CRON, t);
 const daily = (t: number, e?: Env) => fire(DAILY_CRON, t, e);
 
@@ -150,7 +150,7 @@ describe("the daily slot", () => {
 });
 
 describe("RECOVERY_CRON", () => {
-  it("an idle tick with thumbnails and push: the sweep, fan-out and push drain, six D1 statements, no daily work", async () => {
+  it("an idle tick with thumbnails and push: the sweep and fan-out, four D1 statements, no daily work", async () => {
     await scanDone();
     const { env: e, n } = counting({
       ...(env as Env),
@@ -170,12 +170,12 @@ describe("RECOVERY_CRON", () => {
     await c.drain();
     // The text and pdf-thumbnail windows (one indexed read each), the
     // drain's cursor read (#2719), the first-comment scan's marker read
-    // (#2953), the due Later lookup and the pending push lookup.
-    expect(n.q).toBe(6);
+    // (#2953).
+    expect(n.q).toBe(4);
     expect(await ranDay()).toBeNull();
   });
 
-  it("an idle tick with push and without server thumbnails executes five D1 statements", async () => {
+  it("an idle tick with push and without server thumbnails executes three D1 statements", async () => {
     await scanDone();
     const { env: e, n } = counting(env as Env);
     const c = ctxOf();
@@ -185,8 +185,8 @@ describe("RECOVERY_CRON", () => {
       c.ctx,
     );
     await c.drain();
-    // Sweep, fan-out cursor, scan marker, due Later lookup and pending push lookup.
-    expect(n.q).toBe(5);
+    // Sweep, fan-out cursor and scan marker.
+    expect(n.q).toBe(3);
   });
 
   it("the 03:16 tick runs no daily work; the 03:18 tick runs it once and logs it; 03:20 doesn't", async () => {

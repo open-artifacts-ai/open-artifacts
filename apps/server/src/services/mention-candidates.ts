@@ -49,6 +49,7 @@ export async function mentionCandidates(
         and (lower(name) like ?2 escape '\\' or lower(name) like '% ' || ?2 escape '\\'
              or lower(display_name) like ?2 escape '\\'
              or lower(display_name) like '% ' || ?2 escape '\\'
+             or handle like ?2 escape '\\'
              or lower(email) = ?4)
       order by name, id limit ?3`,
   )

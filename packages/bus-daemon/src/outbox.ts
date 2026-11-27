@@ -25,6 +25,8 @@ export class Outbox<T> {
       /** A frame whose sender is gone by flush time is dropped, not sent late. */
       stale?: (frame: T) => boolean;
       log?: (msg: string) => void;
+      /** Called when the queue may have shrunk. */
+      onChange?: () => void;
     },
   ) {
     this.#max = opts.max ?? 100;
@@ -45,7 +47,10 @@ export class Outbox<T> {
   push(frame: T): void {
     const e = { frame, at: this.#now(), seq: this.#seq++ };
     // Never overtake what is already waiting.
-    if (this.#queue.length === 0 && this.#send(e)) return;
+    if (this.#queue.length === 0 && this.#send(e)) {
+      this.opts.onChange?.();
+      return;
+    }
     this.#queue.push(e);
     this.#bound();
   }
@@ -79,6 +84,7 @@ export class Outbox<T> {
   }
 
   flush(): void {
+    const before = this.#queue.length;
     const cutoff = this.#now() - this.#maxAgeMs;
     const fresh = this.#queue.filter((e) => e.at >= cutoff);
     const expired = this.#queue.length - fresh.length;
@@ -96,5 +102,6 @@ export class Outbox<T> {
         this.#queue.unshift(e);
         break;
       }
+    if (this.#queue.length < before) this.opts.onChange?.();
   }
 }

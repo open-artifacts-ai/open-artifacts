@@ -396,7 +396,7 @@ describe("bus option (#1293)", () => {
     const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
     expect(got.live).toBe(true);
     expect(got.roles).toHaveLength(fixtures.busRoles.length);
-    expect(got.proposals).toHaveLength(fixtures.busRoleProposals.length);
+    expect(got.proposals).toEqual([]);
     const a = fixtures.busAgents[0] as (typeof fixtures.busAgents)[number];
     const put = await call("PUT", R.busRoles, {
       namespace: a.namespace,
@@ -420,6 +420,59 @@ describe("bus option (#1293)", () => {
     );
     expect(after.roles.some((x) => x.id === role.id)).toBe(false);
   });
+  it("moves an away-held role once and rejects a stale free", async () => {
+    fresh({ bus: true, awayName: true });
+    const roles = BusRolesSchema.parse(
+      await json(await call("GET", R.busRoles)),
+    );
+    const role = roles.roles.find((r) => r.awayHolder)!;
+    const target = fixtures.busAgents.find(
+      (a) =>
+        a.id !== role.agentId &&
+        a.state === "live" &&
+        (a.namespace === role.namespace || a.global),
+    )!;
+    const move = {
+      roleId: role.id,
+      holderId: role.agentId,
+      targetId: target.id,
+    };
+    expect((await call("POST", R.busRoles, move)).status).toBe(204);
+    expect(
+      (await call("POST", R.busRoles, { ...move, targetId: null })).status,
+    ).toBe(409);
+  });
+  it("shows the successor, predecessor and waiting session after a handover", async () => {
+    fresh({ bus: true, handoverAfter: true });
+    const { agents } = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(agents).toHaveLength(3);
+    expect(agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "manager",
+          name: "manager-2",
+          privateSessionName: true,
+        }),
+        expect.objectContaining({ handedOver: true }),
+        expect.objectContaining({
+          pendingRole: "manager",
+          name: "manager-3",
+          privateSessionName: true,
+        }),
+      ]),
+    );
+  });
+
+  it("offers the handover when the holder is away", async () => {
+    fresh({ bus: true, forYou: "handover" });
+    const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
+    expect(got.proposals).toMatchObject([
+      { name: "manager", priorMachine: "laptop", targetMachine: "workstation" },
+    ]);
+  });
+
   it("unauthenticated: 401 on the bus routes", async () => {
     fresh({ bus: true });
     for (const p of [R.busMachines, R.busAgents, R.busRoles, R.shareNotices])

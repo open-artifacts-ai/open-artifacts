@@ -28,10 +28,14 @@ import {
   machine,
   member,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 const inHub = async <R>(
   fn: (i: BusHub, s: DurableObjectState) => R,
@@ -160,7 +164,9 @@ describe("offline reap (open-bus #422)", () => {
     const a = await connect(away.token);
     const w = await connect(watch.token);
     const o = await connect(other.token);
-    const gone = await reg(a, "ga", uniq("Gone"), n);
+    const gone = uniq("Gone");
+    a.send(plainUp(id("u"), "ga", gone, n));
+    expect((await waitFor(a, "agent_ok")).bus_name).toBe(gone);
     await reg(w, "wa", uniq("Watch"), n);
     const stay = await reg(o, "oa", uniq("Stay"), n2);
 
@@ -274,6 +280,7 @@ describe("offline reap (open-bus #422)", () => {
       v: 1,
       id: fid,
       type: "rename",
+      name_chosen: true,
       agent_ref: "f",
       proposed_name: now,
     });
@@ -317,10 +324,10 @@ describe("offline reap (open-bus #422)", () => {
     const w = await machine("Watcher");
     const v = await connect(w.token, true);
     await reg(v, "s", uniq("Sender"), n);
-    // The chosen former name stays reserved; the current one, away, goes to a
-    // restarted session (#1742).
+    // The chosen former name stays reserved; the current one, away, is its
+    // holder's: a new session asking it gets a suffix and asks (#3132).
     expect(await reg(v, "y", old, n)).toBe(`${old}-2`);
-    expect(await reg(v, "x", now, n)).toBe(now);
+    expect(await reg(v, "x", now, n)).toBe(`${now}-2`);
     v.close();
     // A close keeps the rename log (OpenBus #446): the rolling hour purges it.
     expect(await count("rename_rl")).toBeGreaterThan(0);

@@ -45,7 +45,7 @@ import {
 } from "../src/steps/service.ts";
 
 /**
- * A fake service manager: starts `<home>/rescue <bin>/dist/index.js daemon`
+ * A fake service manager: starts `<home>/Open Artifacts Bus <bin>/dist/index.js daemon`
  * the way launchd or systemd would and restarts it on a non-zero exit. Every
  * version here is a shell script: no real daemon, no network, no real service.
  */
@@ -134,9 +134,9 @@ describe("the rescue shim", () => {
     ]);
     expect(currentVersion(home)).toBe("1.0.0");
     const p = readPolicy(home);
-    expect(p.failed).toEqual(["1.1.0"]);
+    expect(p.startFailures["1.1.0"]?.count).toBe(1);
     expect(p.pending).toBeUndefined();
-    expect(p.lastAt).toBeGreaterThan(0);
+    expect(p.lastAt).toBeUndefined();
     expect(readState(home)).toMatchObject({ armed: true, current: "1.0.0" });
     expect(readReports(home)).toMatchObject([
       {
@@ -185,6 +185,19 @@ describe("the rescue shim", () => {
     expect(readPolicy(home).failed).toEqual([]);
   });
 
+  it("reports the third rescued update once across restarts", () => {
+    const home = world({ "1.0.0": { exit: 0 }, "1.1.0": { exit: 1 } });
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      switched(home, "1.1.0", "1.0.0", Date.now());
+      expect(service(home)).toEqual([1, 1, 0]);
+      const policy = readPolicy(home);
+      expect(policy.startFailures["1.1.0"]?.count).toBe(attempt);
+      expect(
+        readReports(home).filter((r) => r.event === "needs_you"),
+      ).toHaveLength(attempt >= 3 ? 1 : 0);
+    }
+  });
+
   it("a new version with a broken launcher cannot trap the machine", () => {
     const home = world({
       "1.0.0": { exit: 0 },
@@ -195,7 +208,7 @@ describe("the rescue shim", () => {
     expect(codes.slice(0, 2).every((c) => c !== 0)).toBe(true);
     expect(codes.at(-1)).toBe(0);
     expect(currentVersion(home)).toBe("1.0.0");
-    expect(readPolicy(home).failed).toEqual(["1.1.0"]);
+    expect(readPolicy(home).startFailures["1.1.0"]?.count).toBe(1);
   });
 
   it("a double restart inside the window changes nothing until the limit", () => {
@@ -269,25 +282,22 @@ describe("the rescue shim", () => {
   });
 
   it("keeps its own version, and only an install writes it", () => {
-    expect(RESCUE_VERSION).toBe(1);
+    expect(RESCUE_VERSION).toBe(2);
     expect(rescueScript()).toContain(`Rescue shim ${RESCUE_VERSION}`);
     const home = world({ "1.0.0": { exit: 0 } });
-    for (const f of ["rescue", "rescue-node", "rescue.mjs"])
+    const launchers = ["Open Artifacts Bus", "rescue-node", "rescue.mjs"];
+    for (const f of launchers)
       expect(statSync(join(home, f)).mode & 0o777).toBe(0o700);
-    const before = ["rescue", "rescue-node", "rescue.mjs"].map((f) =>
-      readFileSync(join(home, f), "utf8"),
-    );
+    const before = launchers.map((f) => readFileSync(join(home, f), "utf8"));
     // A switch, a step back and a prune leave the three files as they were.
     installVersion(home, "1.2.0", (dir) => {
       mkdirSync(join(dir, "dist"));
       writeFileSync(join(dir, "dist/index.js"), "exit 0\n");
     });
     completeUpdate(home, { from: "1.0.0", to: "1.2.0" }, 1);
-    expect(
-      ["rescue", "rescue-node", "rescue.mjs"].map((f) =>
-        readFileSync(join(home, f), "utf8"),
-      ),
-    ).toEqual(before);
+    expect(launchers.map((f) => readFileSync(join(home, f), "utf8"))).toEqual(
+      before,
+    );
   });
 
   it("an install with no shim (no launcher, or win32) never arms auto-update", () => {
@@ -304,7 +314,7 @@ describe("the rescue shim", () => {
     };
     const a = mk();
     installCli(a.bus, a.src);
-    expect(existsSync(join(a.bus, "rescue"))).toBe(false);
+    expect(existsSync(join(a.bus, "Open Artifacts Bus"))).toBe(false);
     expect(readState(a.bus).armed).toBe(false);
     const b = mk();
     installCli(b.bus, b.src, process.execPath);
@@ -319,19 +329,38 @@ describe("the rescue shim", () => {
     writeFileSync(join(pkg, "dist/index.js"), "");
     const src: CliSource = { kind: "bundle", file: join(pkg, "dist/index.js") };
     installCli(join(home, ".oa-bus"), src, process.execPath);
-    expect(existsSync(join(home, ".oa-bus/rescue"))).toBe(true);
+    expect(existsSync(join(home, ".oa-bus/Open Artifacts Bus"))).toBe(true);
     expect(readlinkSync(join(home, ".oa-bus/bin"))).toBe("versions/2.0.0");
-    expect(existsSync(join(home, ".oa-bus/versions/2.0.0/rescue"))).toBe(false);
+    expect(
+      existsSync(join(home, ".oa-bus/versions/2.0.0/Open Artifacts Bus")),
+    ).toBe(false);
   });
 });
 
 describe("uninstall --purge", () => {
+  it.each(["file", "symlink"])(
+    "keeps an unrelated launcher-name %s during purge",
+    (kind) => {
+      const home = mkdtempSync(join(tmpdir(), "oa-shared-"));
+      writeFileSync(join(home, "install.json"), "{}");
+      const path = rescueOf(home);
+      if (kind === "symlink") symlinkSync("target", path);
+      else writeFileSync(path, "user file");
+      expect(purge(home, { isDefault: false })).toMatchObject({
+        leftDir: true,
+      });
+      if (kind === "symlink") expect(readlinkSync(path)).toBe("target");
+      else expect(readFileSync(path, "utf8")).toBe("user file");
+    },
+  );
   it("removes the rescue files and the update leftovers", () => {
     const home = world({ "1.0.0": { exit: 0 } });
     for (const f of [
       "update-reports.json",
       "update-request.json",
       "login.active",
+      "rescue",
+      "rescue.123.tmp",
       "update-request.json.taken.123",
       "bin.123.rescue",
       "update.json.123.rescue.tmp",

@@ -15,6 +15,7 @@ import { busHome, readAgyConversation } from "@oa/bus-adapter-claude-code";
 import { parseAgyPluginHome } from "@oa/bus-daemon";
 import { HelloRefused } from "@oa/bus-ipc";
 import { describe, expect, it, vi } from "vitest";
+import { nativeCallWitness } from "../src/commands/agy-call.ts";
 import { AGY_HELLO_EVENT, agyHello } from "../src/commands/agy-hello.ts";
 import { doctor } from "../src/commands/doctor.ts";
 import { install } from "../src/commands/install.ts";
@@ -34,16 +35,16 @@ import {
   agyPluginFiles,
   agyPluginProblem,
 } from "../src/steps/antigravity.ts";
+import { setHabitsOptOut } from "../src/steps/habits.ts";
 import { leftoverTargets } from "../src/steps/leftovers.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 const REF = "0b7e6a9c-1f2d-4c3b-9a8e-7d6c5b4a3f21";
 /** The default-home hook command an earlier build wrote: no pin, so it followed the agy process's OA_BUS_HOME. */
 const LEGACY_HOOK = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/opt/node/bin/node' '/h/.oa-bus/bin/oa-bus.js' 'agy-hello'; fi`;
 
-function setup(env: Record<string, string> = ON): {
+function setup(env: Record<string, string> = {}): {
   h: string;
   deps: AdapterDeps;
   dir: string;
@@ -63,10 +64,10 @@ const read = (p: string) => readFileSync(p, "utf8");
 const hooksOf = (dir: string) => JSON.parse(read(join(dir, "hooks.json")));
 
 describe("the oa-bus agy plugin (agy S2)", () => {
-  it("is off without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
+  it("is installed when agy is present without a flag", async () => {
     const { deps, dir } = setup({});
     await installAdapters(deps);
-    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(dir)).toBe(true);
   });
 
   it("install writes plugin.json and a root hooks.json whose SessionStart runs agy-hello", async () => {
@@ -84,7 +85,22 @@ describe("the oa-bus agy plugin (agy S2)", () => {
       timeout: 15,
     };
     expect(hooksOf(dir)).toEqual({
-      "oa-bus": { SessionStart: [handler], PreInvocation: [handler] },
+      "oa-bus": {
+        SessionStart: [handler],
+        PreInvocation: [handler],
+        PreToolUse: [
+          {
+            matcher: "call_mcp_tool",
+            hooks: [
+              {
+                type: "command",
+                command: expect.stringContaining("agy-call"),
+                timeout: 15,
+              },
+            ],
+          },
+        ],
+      },
     });
     expect(checkAdapters(deps).antigravity).toBe("configured");
   });
@@ -291,7 +307,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(read(join(dir, "plugin.json"))).toBe('{"name":"mine"}');
   });
 
-  it("uninstall removes only our files, even with the switch off; the user's stay", async () => {
+  it("uninstall removes only our files; the user's stay", async () => {
     const { deps, dir } = setup();
     await installAdapters(deps);
     const r = await uninstallAdapters({ ...deps, env: {} });
@@ -318,7 +334,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
 function make(over: Partial<Ctx> = {}): Fake {
   const ctx = fakeCtx({
     which: (c) => c === "agy",
-    env: { ...ON },
+    env: {},
     service: {
       kind: "launchd" as const,
       ensure: vi.fn(async () => ({})),
@@ -344,6 +360,39 @@ function make(over: Partial<Ctx> = {}): Fake {
 }
 
 describe("install, doctor and uninstall --purge with the plugin (agy S2)", () => {
+  it("wires a no-service install and reports it on reinstall", async () => {
+    const ctx = make();
+    const opts = { label: LABEL, hub: HUB, noService: true };
+    const doctorOutput = async () => {
+      const start = ctx.all().length;
+      await doctor(ctx);
+      return ctx.all().slice(start).join("\n");
+    };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    expect(await install(opts, ctx)).toBe(0);
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    expect(ctx.service.ensure).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    "doctor shows Antigravity habits without a shell flag (opt-out %s)",
+    async (optedOut) => {
+      const ctx = make();
+      await install({ label: LABEL, hub: HUB }, ctx);
+      setHabitsOptOut(ctx.home, optedOut, new Date().toISOString());
+      ctx.env = {};
+      await doctor(ctx);
+      expect(ctx.all()).toContain(
+        "[[success]]✓[[/success]]  Antigravity wired",
+      );
+      expect(ctx.all()).toContain(
+        optedOut
+          ? "Antigravity — Habits: off (you opted out)"
+          : "Antigravity — Habits: on, sent by the bus",
+      );
+    },
+  );
   it("doctor reports the plugin; purge leaves no agy folder install made", async () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
@@ -551,4 +600,46 @@ describe("oa-bus agy-hello (agy S2)", () => {
     // Not recorded: the hook's shell tries again at the next model call.
     expect(readAgyConversation(refused.home, 200)).toBeUndefined();
   });
+});
+
+it("binds a captured PreToolUse shape to its configured HTTP entry and exact arguments", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "ob-agy-native-")), "mcp.json");
+  const config = {
+    mcpServers: {
+      pages: { serverUrl: "https://one.example/mcp" },
+      second: { serverUrl: "https://two.example/mcp" },
+      local: { command: "local" },
+    },
+  };
+  writeFileSync(file, JSON.stringify(config));
+  const conversationId = "de77814a-7977-4ceb-b099-379ea43f490c";
+  const event = {
+    hookEventName: "PreToolUse",
+    conversationId,
+    stepIdx: 4,
+    toolCall: {
+      name: "call_mcp_tool",
+      id: "call_123456789abc",
+      args: {
+        ServerName: "pages",
+        ToolName: "get_artifact",
+        Arguments: { id: "sample" },
+      },
+    },
+  };
+  const witness = () => nativeCallWitness(JSON.stringify(event), file);
+  const first = await witness();
+  expect(first).toEqual({
+    conversation: conversationId,
+    hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  event.toolCall.args.ServerName = "second";
+  expect((await witness())?.hash).not.toBe(first?.hash);
+  event.toolCall.args.ServerName = "pages";
+  event.toolCall.args.Arguments.id = "another";
+  expect((await witness())?.hash).not.toBe(first?.hash);
+  event.toolCall.args.ServerName = "local";
+  expect(await witness()).toBeUndefined();
+  event.toolCall.args.ServerName = "unknown";
+  expect(await witness()).toBeUndefined();
 });

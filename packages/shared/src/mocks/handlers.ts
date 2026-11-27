@@ -24,12 +24,15 @@
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import {
+  AwayRoleActionSchema,
   BUS_LINK_MAX,
   BUS_LINKS_PER_NAMESPACE,
   type BusAddress,
   type BusLink,
   BusLinkPutSchema,
   type BusRole,
+  type BusRoleProposal,
+  BusRoleProposalDecideSchema,
   BusRolePutSchema,
   BusUpdatesPausedPutSchema,
   ShareNoticeAgentsSchema,
@@ -163,6 +166,9 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  awayName?: boolean;
+  /** #3252: Agents after a confirmed handover, with another session waiting. */
+  handoverAfter?: boolean;
   /**
    * #2287: the Welcome artifact is seeded for the owner, first in the
    * Library, and R.onboarding names it. The flags set how far the checklist
@@ -189,6 +195,7 @@ export type MockOptions = {
         commentStep?: boolean;
         /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
         bus?: boolean;
+        awayName?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -508,9 +515,102 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
   let busUpdatesPaused = false;
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
+  if (opts.forYou === "handover")
+    busAgents = busAgents.map((a) =>
+      a.id === f.busRoleProposals[0]?.priorAgentId
+        ? {
+            ...a,
+            state: "away",
+            since: new Date(Date.now() - 40 * 60_000).toISOString(),
+          }
+        : a,
+    );
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
-  const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
+  let busRoleProposals: BusRoleProposal[] = opts.bus
+    ? f.busRoleProposals.map((p) => ({
+        ...at(p),
+        ...(opts.forYou === "handover"
+          ? {
+              targetMachine: "workstation",
+              priorMachine: "laptop",
+              awaySince: new Date(Date.now() - 40 * 60_000).toISOString(),
+            }
+          : {}),
+      }))
+    : [];
+  if (opts.awayName && busRoles[0]) {
+    const role = busRoles[0];
+    busRoles[0] = {
+      ...role,
+      vacant: true,
+      awayHolder: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
+    const waiting = busRoleProposals.find((p) => p.roleId === role.id);
+    busAgents = busAgents
+      .filter((a) => a.id !== role.agentId)
+      .map((a) =>
+        a.id === waiting?.agentId
+          ? {
+              ...a,
+              name: `${role.name}-2`,
+              pendingRole: role.name,
+              privateSessionName: true,
+            }
+          : a,
+      );
+  }
+
+  if (opts.handoverAfter && busRoleProposals[0]) {
+    const proposal = busRoleProposals[0];
+    const role = busRoles.find((r) => r.id === proposal.roleId);
+    const successor = busAgents.find((a) => a.id === proposal.agentId);
+    const previous = busAgents.find((a) => a.id === proposal.priorAgentId);
+    const waiting = busAgents.find(
+      (a) =>
+        a.namespace === role?.namespace && a !== successor && a !== previous,
+    );
+    if (role && successor && previous && waiting) {
+      const route = `${role.name}-2`;
+      busAgents = [
+        {
+          ...successor,
+          name: route,
+          role: role.name,
+          roleId: role.id,
+          privateSessionName: true,
+        },
+        { ...previous, handedOver: true },
+        {
+          ...waiting,
+          name: `${role.name}-3`,
+          state: "live",
+          pendingRole: role.name,
+          privateSessionName: true,
+        },
+      ];
+      busRoles = [
+        {
+          ...role,
+          agentId: successor.id,
+          holderName: route,
+          privateSessionName: true,
+          vacant: false,
+        },
+      ];
+      busRoleProposals = [
+        {
+          ...proposal,
+          priorAgentId: successor.id,
+          priorHolderName: route,
+          agentId: waiting.id,
+          agentName: `${role.name}-3`,
+        },
+      ];
+    }
+  }
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -816,9 +916,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const inbox = forYouMock.counts();
       return HttpResponse.json(inbox ? { ...me, inbox } : me);
     }),
+    http.get(`*${R.meHandle}`, () =>
+      HttpResponse.json({ available: true, suggestion: null }),
+    ),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
       if (r.error) return r.error;
+      if (r.data.handle !== undefined) me.handle = r.data.handle;
       if (r.data.displayName !== undefined) {
         me.displayName = r.data.displayName;
         me.needsDisplayName = false;
@@ -897,10 +1001,62 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             a.namespace.localeCompare(b.namespace) ||
             a.name.localeCompare(b.name),
         ),
-        proposals: busRoleProposals,
+        proposals: busRoleProposals.filter(
+          (p) =>
+            p.status !== "pending" ||
+            p.action !== "repoint" ||
+            !busAgents.some(
+              (a) => a.id === p.priorAgentId && a.state === "live",
+            ),
+        ),
         live: opts.bus === true,
       }),
     ),
+    http.post(`*${R.busRoles}`, async ({ request }) => {
+      const parsed = await body(request, AwayRoleActionSchema);
+      if (parsed.error) return parsed.error;
+      const { roleId, holderId, targetId } = parsed.data;
+      const role = busRoles.find(
+        (r) => r.id === roleId && r.agentId === holderId && r.awayHolder,
+      );
+      if (!role) return err("conflict", "The holder has changed.");
+      if (targetId === null) {
+        busRoles = busRoles.filter((r) => r !== role);
+        busRoleProposals = busRoleProposals.filter((p) => p.roleId !== role.id);
+        busAgents = busAgents.map((a) =>
+          a.namespace === role.namespace && a.pendingRole === role.name
+            ? { ...a, pendingRole: undefined }
+            : a,
+        );
+      } else {
+        const target = busAgents.find(
+          (a) =>
+            a.id === targetId &&
+            a.state === "live" &&
+            (a.global || a.namespace === role.namespace),
+        );
+        if (!target) return err("conflict", "The destination has changed.");
+        busRoles = busRoles.map((r) =>
+          r === role
+            ? {
+                ...r,
+                agentId: target.id,
+                holderName: target.name,
+                vacant: false,
+                awayHolder: undefined,
+                awayMachine: undefined,
+                awaySince: undefined,
+              }
+            : r,
+        );
+        busAgents = busAgents.map((a) =>
+          a.id === target.id
+            ? { ...a, role: role.name, roleId: role.id, pendingRole: undefined }
+            : a,
+        );
+      }
+      return noContent();
+    }),
     // Set, re-point or vacate; the holder must be an open agent there (else 409 agent_not_open).
     http.put(`*${R.busRoles}`, async ({ request }) => {
       const r = await body(request, BusRolePutSchema);
@@ -930,6 +1086,45 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       busRoles = [...busRoles.filter((x) => x !== was), role];
       return HttpResponse.json({ role });
     }),
+    // #3132: the handover card's answer. Yes re-points the role, No refuses; either way the card leaves.
+    http.post(
+      `*${R.busRoles}/proposals/:id`,
+      async ({ request, params: p }) => {
+        const r = await body(request, BusRoleProposalDecideSchema);
+        if (r.error) return r.error;
+        const prop = busRoleProposals.find((x) => x.id === p.id);
+        const card = forYouMock.answerRole(String(p.id));
+        if (!prop && !card) return err("not_found", "Not found");
+        if (prop && prop.status !== "pending")
+          return err("conflict", "Already decided", { reason: "used" });
+        let role: BusRole | null = null;
+        if (prop && r.data.decision === "confirm") {
+          const was = busRoles.find((x) => x.id === prop.roleId);
+          const holder = busAgents.find((a) => a.id === prop.agentId);
+          if (was && holder) {
+            role = {
+              ...was,
+              agentId: holder.id,
+              holderName: holder.name,
+              vacant: false,
+              setAt: iso(),
+            };
+            busRoles = busRoles.map((x) => (x === was ? (role as BusRole) : x));
+          }
+        }
+        const decided: BusRoleProposal = {
+          ...(prop as BusRoleProposal),
+          status: r.data.decision === "confirm" ? "applied" : "refused",
+          reason: r.data.decision === "confirm" ? null : "rejected",
+          decidedAt: iso(),
+        };
+        if (prop)
+          busRoleProposals = busRoleProposals.map((x) =>
+            x === prop ? decided : x,
+          );
+        return HttpResponse.json({ proposal: decided, role });
+      },
+    ),
     http.delete(`*${R.busRoles}/:id`, ({ params: p }) => {
       busRoles = busRoles.filter((x) => x.id !== p.id);
       return noContent();

@@ -61,6 +61,48 @@ export async function agentKey(
   return `agent:${hex}`;
 }
 
+/** Role keys bind a verified roster entry to the lifetime of the role, even across moves. */
+export function roleIdFromKey(key: string): string | undefined {
+  const match = /^role:([1-9A-HJ-NP-Za-km-z]{16}):[0-9a-f]{32}$/.exec(key);
+  return match?.[1];
+}
+
+export async function roleKey(
+  artifactId: string,
+  userId: string,
+  namespace: string,
+  roleId: string,
+) {
+  const scoped = await agentKey(artifactId, userId, {
+    namespace,
+    name: roleId,
+  });
+  return `role:${roleId}:${scoped.slice("agent:".length)}`;
+}
+
+async function rosterEntry(
+  artifactId: string,
+  userId: string,
+  address: BusAddress,
+  a: BusAgent | undefined,
+  mine: boolean,
+  owner: string | null,
+): Promise<RosterAgent> {
+  const session = a?.name ?? address.name;
+  const role = a?.role && a.roleId ? { name: a.role, id: a.roleId } : null;
+  return {
+    key: role
+      ? await roleKey(artifactId, userId, address.namespace, role.id)
+      : await agentKey(artifactId, userId, address),
+    name: `${role?.name ?? a?.role ?? session}${owner ? ` (${owner})` : ""}`,
+    ...(a?.role && !a.privateSessionName ? { session } : {}),
+    ...sessionFor(a, mine),
+    owner,
+    userId,
+    address: role ? { namespace: address.namespace, name: role.name } : address,
+  };
+}
+
 /** Most of the viewer's own running agents the roster adds (the hub lists at most a few dozen). */
 export const OWN_AGENTS_MAX = 50;
 /** Most agents a roster returns in all: every follow the fan-out reads plus the viewer's own. */
@@ -87,7 +129,7 @@ function sessionsOf(agents: readonly BusAgent[]): Map<string, BusAgent> {
 }
 
 /** The short machine name: a host label loses its domain ("laptop.tail.ts.net" is "laptop"). */
-const shortMachine = (label: string): string | null =>
+export const shortMachine = (label: string): string | null =>
   label.split(".")[0]?.trim() || null;
 
 /**
@@ -121,15 +163,29 @@ const UNKNOWN: Session = {
 type OwnAgents = {
   /** The viewer's agents the bus lists (open first, then away), as bus addresses (bounded). */
   addresses: BusAddress[];
+  unrepresentedRoles: RosterAgent[];
   /** The same hub read by address, for each agent's state. */
   sessions: Map<string, BusAgent>;
   /** Whether the hub's state is known (false: unreadable, nothing is dropped). */
   known: boolean;
 };
 
-/** #2311: an offline agent still on a harness default name is no mention target. */
+/**
+ * Whether the @ list leaves a session out. #3143 (Leo 2026-11-24: "away
+ * agents leave at once"): a session that is not live (closed, or open on a
+ * machine that is not connected) is gone from the list the moment it stops
+ * being live, unless it holds a role: the role is the address, and mail to it
+ * waits for the next holder (#3132). #2311: an offline agent still on a
+ * harness default name is no mention target. #3132: nor is a session that
+ * handed its role on, or one waiting to take a role over: the @ list offers
+ * the role, held by another session.
+ */
 const hiddenUnnamed = (a: BusAgent): boolean =>
-  !a.running && a.unnamed === true;
+  (a.state !== "live" && !a.role) ||
+  (!a.running && a.unnamed === true) ||
+  a.handedOver === true ||
+  a.pendingRole !== undefined ||
+  (a.privateSessionName === true && !a.role);
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
@@ -149,7 +205,7 @@ export async function viewerAgents(
   const user = await getUser(env, viewerId);
   if (!user || !canConnect(user)) return null;
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
-  const view = await busView(env, viewerId, { away: true });
+  const view = await busView(env, viewerId, { away: true, roles: true });
   const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
   // #2309, #2311: running first, then offline named agents, most recently
@@ -167,7 +223,29 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, sessions, known: view.read };
+  const represented = new Set(
+    addresses.map((address) => sessions.get(addrKey(address))?.roleId),
+  );
+  const holders = new Map(view.agents.map((a) => [a.id, a]));
+  const unrepresentedRoles: RosterAgent[] = [];
+  for (const role of view.roles ?? []) {
+    if (represented.has(role.id)) continue;
+    const holder = role.agentId ? holders.get(role.agentId) : undefined;
+    unrepresentedRoles.push({
+      key: await roleKey(artifactId, viewerId, role.namespace, role.id),
+      name: role.name,
+      userId: viewerId,
+      owner: null,
+      address: { namespace: role.namespace, name: role.name },
+      ...(holder
+        ? {
+            ...sessionOf(holder, true),
+            ...(holder.privateSessionName ? {} : { session: holder.name }),
+          }
+        : { ...UNKNOWN, state: "away" as const }),
+    });
+  }
+  return { addresses, sessions, unrepresentedRoles, known: view.read };
 }
 
 /** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
@@ -180,14 +258,20 @@ export async function viewerRosterAgents(
   if (!own) return [];
   const out: RosterAgent[] = [];
   for (const address of own.addresses)
-    out.push({
-      key: await agentKey(artifactId, viewerId, address),
-      name: address.name,
-      ...sessionFor(own.sessions.get(addrKey(address))),
-      userId: viewerId,
-      address,
-    });
-  return out;
+    out.push(
+      await rosterEntry(
+        artifactId,
+        viewerId,
+        address,
+        own.sessions.get(addrKey(address)),
+        true,
+        null,
+      ),
+    );
+  return sortRoster([...out, ...own.unrepresentedRoles]).slice(
+    0,
+    OWN_AGENTS_MAX,
+  );
 }
 
 /**
@@ -209,8 +293,13 @@ export async function observedAway(
       const view = await busView(env, owner, { away: true }).catch(() => null);
       if (!view?.read) return;
       const sessions = sessionsOf(view.agents);
+      const roles = new Map(
+        view.agents.filter((a) => a.roleId).map((a) => [a.roleId, a]),
+      );
       for (const a of agents) {
-        const s = a.userId === owner ? sessions.get(addrKey(a.address)) : null;
+        if (a.userId !== owner) continue;
+        const roleId = roleIdFromKey(a.key);
+        const s = roleId ? roles.get(roleId) : sessions.get(addrKey(a.address));
         if (s && s.state !== "live") away.add(a.key);
       }
     }),
@@ -261,7 +350,7 @@ export async function agentRoster(
     for (const a of own.addresses) if (!have.has(addrKey(a))) list.push(a);
     if (list.length > 0) byUser.set(viewerId, list);
   }
-  const out: RosterAgent[] = [];
+  const entries = new Map<string, RosterAgent>();
   for (const [userId, addresses] of byUser) {
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
@@ -276,25 +365,27 @@ export async function agentRoster(
       if (view.read) sessions = sessionsOf(view.agents);
     }
     const mine = userId === viewerId;
-    const owner = mine ? "" : ` (${shownName(user)})`;
+    const owner = mine ? null : shownName(user);
     for (const address of addresses) {
       const a = sessions?.get(addrKey(address));
       if (sessions && (!a || hiddenUnnamed(a))) continue;
-      out.push({
-        key: await agentKey(artifactId, userId, address),
-        name: `${a?.name ?? address.name}${owner}`,
-        ...sessionFor(a, mine),
-        owner: mine ? null : shownName(user),
+      // #3132: an agent holding a role is offered by the role, the address
+      // the role's mail follows; its session is small print.
+      const entry = await rosterEntry(
+        artifactId,
         userId,
         address,
-      });
+        a,
+        mine,
+        owner,
+      );
+      entries.set(entry.key, entry);
     }
   }
-  // Online first, then trim: the cap never costs an online agent its place.
-  // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
-  // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
-  // below the hub's maxRosterAgents; away rows count like any other.
-  return sortRoster(out).slice(0, ROSTER_MAX);
+  // A followed holder outside the own-session cap can also appear in the role list.
+  for (const role of own?.unrepresentedRoles ?? [])
+    if (!entries.has(role.key)) entries.set(role.key, role);
+  return sortRoster([...entries.values()]).slice(0, ROSTER_MAX);
 }
 
 const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);
@@ -447,6 +538,7 @@ export async function notifyAgent(
   typedText?: string,
 ): Promise<DeliveryState> {
   const url = appOrigin(env) + viewerPath(artifactId);
+  const roleId = roleIdFromKey(to.key);
   const n: BusNotice = {
     id: newId(),
     kind: "comment",
@@ -455,7 +547,11 @@ export async function notifyAgent(
     version,
     url,
     to: { namespace: to.address.namespace, name: to.address.name },
-    ...(to.identityId ? { toIdentity: to.identityId } : {}),
+    ...(roleId
+      ? { toRoleId: roleId }
+      : to.identityId
+        ? { toIdentity: to.identityId }
+        : {}),
     ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
     text: commentNoticeText(
       kind,

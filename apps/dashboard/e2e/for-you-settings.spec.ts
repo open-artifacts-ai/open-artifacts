@@ -81,10 +81,9 @@ test("notification settings at 1280 light", async ({ page }) => {
   await expect(
     page.getByRole("switch", { name: "Needs you in this browser" }),
   ).toHaveAttribute("aria-checked", "false");
-  // Needs a subscription first (e2e/push.spec.ts drives it with a stubbed browser).
   await expect(
     page.getByRole("switch", { name: "Updates in this browser" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await expect(
     page.getByRole("combobox", { name: "Quiet hours start" }),
   ).toHaveText("22:00");

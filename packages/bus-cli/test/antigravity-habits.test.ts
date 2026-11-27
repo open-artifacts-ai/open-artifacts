@@ -1,5 +1,5 @@
 // agy S4: the skill for Antigravity, and no habits in any agy file (#3043),
-// behind OA_BUS_EXPERIMENTAL_AGY=1. The rules reach agy from the plugin's
+//. The rules reach agy from the plugin's
 // SessionStart hook instead (antigravity-rules.test.ts). A fake agy on PATH
 // (ctx.which), a fake instance and scratch homes only: no real agy runs.
 import {
@@ -24,7 +24,6 @@ import { SKILL_MARKER, skillDir } from "../src/steps/skill.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 const SKILL = "open-artifacts-oa-test";
 
 const put = (path: string, text: string) => {
@@ -33,13 +32,13 @@ const put = (path: string, text: string) => {
 };
 const read = (path: string) => readFileSync(path, "utf8");
 
-/** A ctx with agy on PATH, approved on HUB; the switch on unless `env` says otherwise. */
+/** A ctx with agy on PATH, approved on HUB. */
 function make(
   o: { second?: boolean; env?: Record<string, string>; cwd?: string } = {},
 ): Fake {
   const ctx = fakeCtx({
     which: (c) => c === "agy" || (o.cwd !== undefined && c === "git"),
-    env: o.env ?? { ...ON },
+    env: o.env ?? {},
     service: {
       kind: "launchd" as const,
       ensure: vi.fn(async () => ({})),
@@ -127,7 +126,7 @@ describe("install, uninstall (agy S4, #3043)", () => {
     expect(ctx.all().join("\n")).not.toContain("(Antigravity)");
   });
 
-  it("uninstall takes our skill out, with the switch off too, and the skills folder it emptied", async () => {
+  it("uninstall takes our skill out, and the skills folder it emptied", async () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     ctx.env = {};
@@ -152,8 +151,9 @@ describe("install, uninstall (agy S4, #3043)", () => {
     ).toBe("---\nname: mine\n---\n");
   });
 
-  it("with the switch off: no skill and nothing in agy's folders", async () => {
-    const ctx = make({ env: {} });
+  it("when agy is absent its folders stay untouched", async () => {
+    const ctx = make();
+    ctx.which = () => false;
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);
     expect(fetched(ctx).some((u) => u.includes("harness=antigravity"))).toBe(
       false,
@@ -217,10 +217,12 @@ describe("doctor and status with agy wired (agy S4, #3043)", () => {
     expect(ctx.all().join("\n")).not.toContain("not decided");
     const doc = await run(ctx, doctor);
     expect(doc.join("\n")).toContain("Antigravity wired");
-    expect(habits(doc)).toEqual(["Habits: on, sent by the bus"]);
-    expect(habits(await run(ctx, statusCmd))).toEqual([
+    expect(habits(doc)).toEqual([
+      "Antigravity — Habits: on, sent by the bus",
       "Habits: on, sent by the bus",
     ]);
+    // #3328 S1: default status screen omits helper/habits wording.
+    expect(habits(await run(ctx, statusCmd))).toEqual([]);
   });
 
   it("off after --no-habits: Antigravity still wired, both say you opted out", async () => {
@@ -229,13 +231,15 @@ describe("doctor and status with agy wired (agy S4, #3043)", () => {
     await run(ctx, (c) => install({ habits: "no" }, c));
     const doc = await run(ctx, doctor);
     expect(doc.join("\n")).toContain("Antigravity wired");
-    expect(habits(doc)).toEqual(["Habits: off (you opted out)"]);
-    expect(habits(await run(ctx, statusCmd))).toEqual([
+    expect(habits(doc)).toEqual([
+      "Antigravity — Habits: off (you opted out)",
       "Habits: off (you opted out)",
     ]);
+    expect(habits(await run(ctx, statusCmd))).toEqual([]);
     // And back on.
     await run(ctx, (c) => install({ habits: "yes" }, c));
     expect(habits(await run(ctx, doctor))).toEqual([
+      "Antigravity — Habits: on, sent by the bus",
       "Habits: on, sent by the bus",
     ]);
   });

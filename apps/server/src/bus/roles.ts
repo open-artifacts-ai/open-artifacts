@@ -74,15 +74,17 @@ export function roleTakenSql(
   lname: string,
   namespace: string,
   global: boolean,
+  /** #3132: a role the agent itself holds never blocks it (the name is the role). */
+  selfId: string | null = null,
 ): { sql: string; binds: SqlStorageValue[] } {
   return global
     ? {
-        sql: "exists (select 1 from roles indexed by roles_lname where org_id = ? and lname = ?)",
-        binds: [orgId, lname],
+        sql: "exists (select 1 from roles indexed by roles_lname where org_id = ? and lname = ? and coalesce(agent_id, '') <> ?)",
+        binds: [orgId, lname, selfId ?? "-"],
       }
     : {
-        sql: "exists (select 1 from roles where org_id = ? and namespace = ? and lname = ?)",
-        binds: [orgId, namespace, lname],
+        sql: "exists (select 1 from roles where org_id = ? and namespace = ? and lname = ? and coalesce(agent_id, '') <> ?)",
+        binds: [orgId, namespace, lname, selfId ?? "-"],
       };
 }
 
@@ -121,13 +123,18 @@ type StoredRole = {
   agentId: string | null;
   setAt: number;
   holderName: string | null;
+  privateSessionName: number | null;
   held: number;
+  awayHolder: number;
+  awayMachine: string | null;
+  awaySince: number | null;
 };
 
 const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt,
-    h.name as holderName,
+    h.name as holderName, h.takeover_route = h.name as privateSessionName, m.label as awayMachine, h.away_since as awaySince,
+    (r.agent_id is not null and (h.id is null or h.live = 0)) as awayHolder,
     (h.id is not null and h.live = 1 and (h.namespace = r.namespace or h.global = 1)) as held
-  from roles r left join agents h on h.id = r.agent_id`;
+  from roles r left join agents h on h.id = r.agent_id left join machines m on m.id = h.machine_id`;
 
 const roleDto = (r: StoredRole): BusRole => ({
   id: r.id,
@@ -135,7 +142,15 @@ const roleDto = (r: StoredRole): BusRole => ({
   name: r.name,
   agentId: r.agentId,
   holderName: r.holderName,
+  ...(r.privateSessionName === 1 ? { privateSessionName: true as const } : {}),
   vacant: r.held !== 1,
+  ...(r.awayHolder === 1
+    ? {
+        awayHolder: true as const,
+        ...(r.awayMachine && { awayMachine: r.awayMachine }),
+        ...(r.awaySince != null && { awaySince: iso(r.awaySince) }),
+      }
+    : {}),
   setAt: iso(r.setAt),
 });
 
@@ -210,22 +225,27 @@ export function checkRole(
     if (agent === null || (agent.global !== 1 && agent.namespace !== namespace))
       return { ok: false, reason: "agent_not_open" };
   }
+  const existing = roleRow(sql, orgId, namespace, lname);
+  // #3132: a role that exists already owns its name, even when a session
+  // (its holder, now named after it) wears it: a repoint is no new claim.
   const former = formerReservedSql(orgId, lname, now, namespace, false, null);
-  const taken = one<{ x: number }>(
-    sql,
-    `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
+  const taken =
+    existing !== null
+      ? null
+      : one<{ x: number }>(
+          sql,
+          `select (exists (select 1 from agents where org_id = ? and lower(name) = ? and live = 1 and (namespace = ? or global = 1))
          or ${former.sql}
          or exists (select 1 from minted_names where org_id = ? and lname = ? and agent_id is not ?)) as x`,
-    orgId,
-    lname,
-    namespace,
-    ...former.binds,
-    orgId,
-    lname,
-    agentId,
-  );
+          orgId,
+          lname,
+          namespace,
+          ...former.binds,
+          orgId,
+          lname,
+          agentId,
+        );
   if (taken?.x === 1) return { ok: false, reason: "name_taken" };
-  const existing = roleRow(sql, orgId, namespace, lname);
   if (
     existing === null &&
     (one<{ n: number }>(
@@ -301,7 +321,60 @@ export function putRole(
           newId,
         )
       : null;
+  // #3132: a take-over ask the move answers (the role now held by the one
+  // who asked) is settled, so no card is left for it.
+  if (moved !== null)
+    sql.exec(
+      `update role_proposals set status = 'applied', decided_at = ?
+         where org_id = ? and role_id = ? and agent_id = ? and status = 'pending'
+           and exists (select 1 from agents a where a.id = role_proposals.agent_id
+             and a.takeover_role_id = role_proposals.role_id)`,
+      now,
+      orgId,
+      id,
+      agentId,
+    );
   return { ok: true, role: roleDto(row), moved };
+}
+
+/**
+ * #3132, Leo's pick 2026-11-26 ("The name is the role, automatically"): a
+ * session in a namespace (not global) under the name it asked for, a chosen
+ * one (not a harness default), holds the role of that name from its first
+ * message, when no role there has it yet and the cap has room. True when
+ * the role was created. The role then follows a rename of the session.
+ */
+export function claimNameRole(
+  sql: SqlStorage,
+  orgId: string,
+  agent: { id: string; namespace: string; name: string; global: number },
+  now: number,
+  newId: () => string,
+  max: number = BUS_ROLE_MAX,
+): boolean {
+  if (agent.global === 1) return false;
+  const lname = agent.name.toLowerCase();
+  if (roleRow(sql, orgId, agent.namespace, lname) !== null) return false;
+  const n =
+    one<{ n: number }>(
+      sql,
+      "select count(*) as n from roles where org_id = ?",
+      orgId,
+    )?.n ?? 0;
+  if (n >= max) return false;
+  sql.exec(
+    `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at, held_since)
+     values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    newId(),
+    orgId,
+    agent.namespace,
+    agent.name,
+    lname,
+    agent.id,
+    now,
+    now,
+  );
+  return true;
 }
 
 /**
@@ -454,9 +527,14 @@ function recordMove(
   newId: () => string,
 ): RoleMove | null {
   const row = (id: string) =>
-    one<{ namespace: string; name: string; identity: string | null }>(
+    one<{
+      namespace: string;
+      name: string;
+      identity: string | null;
+      machine: string | null;
+    }>(
       sql,
-      "select namespace, name, identity_id as identity from agents where org_id = ? and id = ?",
+      "select a.namespace, a.name, a.identity_id as identity, m.label as machine from agents a left join machines m on m.id = a.machine_id where a.org_id = ? and a.id = ?",
       orgId,
       id,
     );
@@ -465,8 +543,8 @@ function recordMove(
   if (from === null || to === null) return null;
   const id = newId();
   sql.exec(
-    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, audited)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, from_machine_label, audited)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     id,
     orgId,
     roleId,
@@ -477,6 +555,7 @@ function recordMove(
     toId,
     heldFrom,
     now,
+    from.machine,
   );
   return {
     id,
@@ -492,6 +571,49 @@ function recordMove(
   };
 }
 
+/** Holding intervals use the same half-open bounds as roleForward. */
+export type RoleInterval = {
+  role: string;
+  holder: string | null;
+  machine: string | null;
+  holderMachine: string | null;
+  holderKind: string | null;
+  since: number;
+  until: number | null;
+};
+
+export type AgentNameRow = {
+  identityId: string;
+  name?: string;
+  intervals?: RoleInterval[];
+};
+
+export function roleIntervals(
+  sql: SqlStorage,
+  orgId: string,
+  identityId: string,
+) {
+  return all<RoleInterval>(
+    sql,
+    `select r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
+       from roles r join agents a on a.id = r.agent_id
+       left join machines machine on machine.id = a.machine_id
+       where r.org_id = ? and a.identity_id = ?
+     union all
+     select r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
+       from role_moves m indexed by role_moves_identity
+       join roles r on r.id = m.role_id
+       left join agents h on h.id = r.agent_id
+       left join machines machine on machine.id = h.machine_id
+       where m.org_id = ? and m.from_identity = ?
+     order by since desc, role`,
+    orgId,
+    identityId,
+    orgId,
+    identityId,
+  );
+}
+
 /**
  * #3132: where a notice for a session that handed its role on goes now: the
  * role's live holder. Approved design: what a session does "while it holds a
@@ -502,8 +624,8 @@ function recordMove(
  * mention of the old name) goes with the role it handed on last. `identity` set: the moves of the session with that
  * identity. Otherwise the moves from address (ns, lname), only while no
  * other agent has taken that name since (a namesake inherits nothing,
- * #3208). None applies while the session holds any role (its mail is its
- * own), or once the role is vacant, removed or held by nobody live. Null:
+ * #3208). Undated mail stays with a session that currently holds a role.
+ * A vacant, removed or offline target role cannot forward a notice. Null:
  * deliver as addressed.
  */
 export function roleForward(
@@ -515,13 +637,10 @@ export function roleForward(
   /** When the subject began; null: a new message to the session (a mention). */
   originAt: number | null,
 ): AgentRow | null {
-  // Only while the session holds no role now (a holder's mail is its own).
-  // A dated subject goes with the role it held then: held_from <= originAt <
-  // the move. An undated one, a new message to the session's old name, goes
-  // with the role it handed on last.
-  const window = originAt === null ? "1 = 1" : "m.held_from <= ? and ? < m.at";
-  const scope = `${window}
-    and not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)`;
+  const scope =
+    originAt === null
+      ? "not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)"
+      : "m.held_from <= ? and ? < m.at";
   const times = originAt === null ? [] : [originAt, originAt];
   const order =
     originAt === null
@@ -535,6 +654,7 @@ export function roleForward(
            ${order} limit 1`
       : `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_from
            where m.org_id = ? and m.from_ns = ? and m.from_lname = ? and ${scope}
+             ${originAt === null ? "and m.retired_from_name = 0" : ""}
              and not exists (select 1 from agents a where a.org_id = m.org_id
                and lower(a.name) = m.from_lname and a.namespace = m.from_ns
                and a.id <> m.from_agent_id)

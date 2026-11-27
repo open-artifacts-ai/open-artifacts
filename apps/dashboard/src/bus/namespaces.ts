@@ -141,7 +141,10 @@ export function scopeParam(s: Scope): string | undefined {
 }
 
 /** Whether the roster shows `a` in `s`. Global agents show only in all and global. */
-export function inScope(a: BusAgent, s: Scope): boolean {
+export function inScope(
+  a: Pick<BusAgent, "namespace" | "global">,
+  s: Scope,
+): boolean {
   if (s.kind === "all") return true;
   if (s.kind === "global") return a.global;
   if (a.global) return false;

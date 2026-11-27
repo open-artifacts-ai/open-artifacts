@@ -1,6 +1,6 @@
 import { normalizeEmail } from "@oa/auth-core";
 import { type Member, newId, type Role, type UserRef } from "@oa/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { withCap, withPlan } from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
@@ -16,9 +16,11 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
 import { publicName, readsAsAgent } from "./agent-display.js";
 import { inviteAcceptAuditDrizzle, signInAuditByEmail } from "./audit.js";
 import { outsiderLoginOff } from "./outside.js";
+import { handleAvailability } from "./person-handles.js";
 
 type UserRow = typeof users.$inferSelect;
 type NameFields = Pick<UserRow, "email" | "name" | "displayName">;
@@ -483,6 +485,7 @@ export function nameHiddenAs(u: NameFields): NameHiddenAs {
 }
 
 export type Profile = {
+  handle: string | null;
   displayName: string | null;
   suggestedName: string | null;
   needsDisplayName: boolean;
@@ -492,10 +495,13 @@ export type Profile = {
   nameHiddenAs: NameHiddenAs;
 };
 
-function toProfile(r: NameFields & { commentEmail: number }): Profile {
+function toProfile(
+  r: NameFields & { commentEmail: number; handle: string | null },
+): Profile {
   const suggestedName = idpName(r.name, r.email);
   return {
     displayName: r.displayName,
+    handle: r.handle,
     suggestedName,
     needsDisplayName: !r.displayName && !suggestedName,
     commentEmail: r.commentEmail !== 0,
@@ -511,6 +517,7 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
         email: users.email,
         name: users.name,
         displayName: users.displayName,
+        handle: users.handle,
         commentEmail: users.commentEmail,
       })
       .from(users)
@@ -528,11 +535,12 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
 export async function setDisplayName(
   env: Env,
   id: string,
-  patch: { displayName?: string; commentEmail?: boolean },
+  patch: { displayName?: string; commentEmail?: boolean; handle?: string },
 ): Promise<{ member: Member; profile: Profile }> {
   const [row] = await getDb(env)
     .update(users)
     .set({
+      handle: patch.handle,
       ...(patch.displayName !== undefined
         ? { displayName: patch.displayName }
         : {}),
@@ -540,8 +548,21 @@ export async function setDisplayName(
         ? { commentEmail: patch.commentEmail ? 1 : 0 }
         : {}),
     })
-    .where(eq(users.id, id))
+    .where(
+      and(
+        eq(users.id, id),
+        patch.handle === undefined
+          ? undefined
+          : sql`not exists (select 1 from users where handle = ${patch.handle} and id <> ${id})`,
+      ),
+    )
     .returning();
+  if (!row && patch.handle)
+    throw new ApiError(
+      "conflict",
+      `@${patch.handle} is taken`,
+      await handleAvailability(env, id, patch.handle),
+    );
   if (!row) throw new Error("user not found");
   return { member: toMember(row), profile: toProfile(row) };
 }

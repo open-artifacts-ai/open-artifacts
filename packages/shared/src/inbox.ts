@@ -29,6 +29,64 @@ const Iso = z.string().datetime({ offset: true });
 const Base64Url = z.string().regex(/^[A-Za-z0-9_-]+$/);
 const Hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 
+/**
+ * #3132: a pending role proposal as a card. `holder` is where the role's
+ * current holder (priorHolderName) is: live now, or away since a time; null
+ * when the role has no holder, or the hub can't say.
+ */
+export const RoleCardSchema = z.object({
+  proposalId: z.string(),
+  action: z.enum(["set", "repoint", "clear"]),
+  /** The role's name and namespace. */
+  name: z.string(),
+  namespace: z.string(),
+  /** The agent that would hold it (null for a clear). */
+  agentName: z.string().nullable(),
+  priorHolderName: z.string().nullable(),
+  targetMachine: z.string().optional(),
+  priorMachine: z.string().optional(),
+  holder: z
+    .object({ state: z.enum(["live", "away"]), since: Iso.nullable() })
+    .nullable(),
+  expiresAt: Iso,
+});
+export type RoleCard = z.infer<typeof RoleCardSchema>;
+
+const roleMinutes = (since: string, now: number) => {
+  const t = Date.parse(since);
+  const min = Number.isNaN(t) ? 0 : Math.max(1, Math.floor((now - t) / 60_000));
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  return h < 24 ? `${h} h` : `${Math.floor(h / 24)} d`;
+};
+
+/**
+ * The sentence on a handover card, in plain words: "OA Platform W wants to
+ * take over OA Platform from OA Platform L (away 40 min)." Shared by the
+ * server's item text and the dashboard, which passes a live `now`.
+ */
+export function roleCardText(c: RoleCard, now = Date.now()): string {
+  if (c.action === "clear")
+    return `An agent asks to remove the role ${c.name}.`;
+  const who = c.agentName ?? "An agent";
+  if (c.action === "set") return `${who} asks for the role ${c.name}.`;
+  const state =
+    c.holder === null
+      ? ""
+      : c.holder.state === "live"
+        ? " (live)"
+        : c.holder.since
+          ? ` (away ${roleMinutes(c.holder.since, now)})`
+          : " (away)";
+  const target = c.targetMachine
+    ? `A new session on the ${c.targetMachine}`
+    : "A new session";
+  const prior = c.priorMachine
+    ? `the ${c.priorMachine} session`
+    : "the previous session";
+  return `${target} wants to take over ${c.name} from ${prior}${state}.`;
+}
+
 export const InboxItemSchema = z
   .object({
     id: z.string(),
@@ -43,14 +101,15 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      "machine_update",
       // #2577: someone asked one of your agents and it is held for you.
       "request",
-      // #2577: someone asked one of your agents and it is held for you.
-      "request",
+      // #3132: an agent asks to take over a role (the handover card).
+      "role",
     ]),
     urgency: z.enum(["waiting", "approval", "plain"]).optional(),
     waitingSince: Iso.optional(),
-    /** Null only for kind "proposal", "away" and "member_set_up"; every other kind has its page. */
+    /** Null only for kind "proposal", "role", "away" and "member_set_up"; every other kind has its page. */
     artifact: z.object({ id: z.string(), title: z.string() }).nullable(),
     actor: CommentAuthorSchema.nullable(),
     /** The agent's bus identity id, used by Mute agent. */
@@ -62,6 +121,8 @@ export const InboxItemSchema = z
         agentName: z.string(),
       })
       .optional(),
+    /** Kind "role" (#3132): what the handover card shows; `id` is `role:<proposalId>`. */
+    role: RoleCardSchema.optional(),
     away: z
       .object({
         since: Iso,
@@ -82,7 +143,9 @@ export const InboxItemSchema = z
     if (
       item.artifact === null &&
       item.kind !== "proposal" &&
+      item.kind !== "role" &&
       item.kind !== "away" &&
+      item.kind !== "machine_update" &&
       item.kind !== "member_set_up"
     )
       ctx.addIssue({

@@ -89,12 +89,17 @@ async function reg(
   ref: string,
   name: string,
   namespace: string,
-  opts: { global?: boolean; kind?: "default" | "chosen" } = {},
+  opts: {
+    global?: boolean;
+    kind?: "default" | "chosen";
+    selfPicked?: boolean;
+  } = {},
 ): Promise<string> {
   d.send({
     v: 1,
     id: id("u"),
     type: "agent_up",
+    ...(opts.selfPicked ? {} : { name_chosen: true }),
     agent_ref: ref,
     kind: "opencode",
     proposed_name: name,
@@ -117,6 +122,7 @@ async function rename(
     v: 1,
     id: fid,
     type: "rename",
+    name_chosen: true,
     agent_ref: ref,
     proposed_name: name,
     ...(kind === undefined ? {} : { name_kind: kind }),
@@ -575,7 +581,7 @@ describe("rename (R393b)", () => {
     d.close();
   });
 
-  it("close keeps chosen former names reserved and holds the current name (agent_down, sessions; OpenBus #451); a revoke frees both (#1448)", async () => {
+  it("close reserves former names; revocation releases session names and keeps the chosen role", async () => {
     const d = await at();
     const n = ns("rn");
     await reg(d, "s", uniq("Sender"), n);
@@ -585,10 +591,10 @@ describe("rename (R393b)", () => {
     await renamed(d, "a", a2);
     expect(await formerRows(a2)).toEqual([a]);
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-    // The chosen former name stays reserved; the away current name goes to a
-    // restarted session (#1742).
+    // The chosen former name stays reserved; the away current name is its
+    // holder's: a new session asking it gets a suffix and asks (#3132).
     expect(await reg(d, "x", a, n)).toBe(`${a}-2`);
-    expect(await reg(d, "x2", a2, n)).toBe(a2);
+    expect(await reg(d, "x2", a2, n)).toBe(`${a2}-2`);
     expect(await formerRows(a2)).toEqual([a]);
 
     const b = uniq("Sess");
@@ -603,7 +609,7 @@ describe("rename (R393b)", () => {
       closed: ["b"],
     });
     expect(await reg(d, "y", b, n)).toBe(`${b}-2`);
-    expect(await reg(d, "y2", b2, n)).toBe(b2);
+    expect(await reg(d, "y2", b2, n)).toBe(`${b2}-2`);
     expect(await formerRows(b2)).toEqual([b]);
 
     const m = await machine("Revokee");
@@ -623,7 +629,7 @@ describe("rename (R393b)", () => {
     await renamed(v, "rv", c2);
     expect(await (await hubOf()).revokeMachine(m.id)).toBe(true);
     expect(await reg(d, "z", c, n)).toBe(c);
-    expect(await reg(d, "z2", c2, n)).toBe(c2);
+    expect(await reg(d, "z2", c2, n)).toBe(`${c2}-2`);
     expect(await formerRows(c2)).toEqual([]);
     d.close();
   });
@@ -1699,12 +1705,12 @@ describe("OpenBus #451 nits", () => {
     const d = await at();
     const n = ns("rn");
     const dup = uniq("Dup");
-    await reg(d, "a", dup, n);
+    await reg(d, "a", dup, n, { selfPicked: true });
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
-    // OpenBus #451: the close holds the name for the grace; then another
-    // takes it.
-    // #1742: a restarted session takes the away name; the old session
+    // OpenBus #451: the close holds the name; past the away reservation (7 d,
+    // #1295) another takes it (#3132: never before), and the old session
     // reopening finds it taken and is de-collided.
+    await setClock(t0 + MAILBOX_RETAIN_MS + 1000);
     expect(await reg(d, "o", dup, n)).toBe(dup);
     expect(await reg(d, "a", dup, n)).toBe(`${dup}-2`);
     const log = await inHub(
@@ -2259,11 +2265,12 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
     // The close reserves its own scope as `away`; the moves left `held` rows.
     expect(await holds(mine)).toEqual(spaces.slice(0, -1).map((s) => `${s}/0`));
     expect(await aways(mine)).toEqual([`${spaces[spaces.length - 1]}/0`]);
-    // The held scopes still block; the away one is taken back (#1742).
+    // The held scopes and the away one all still block (#3132: a new session
+    // never takes an away name back; it asks).
     const last = spaces[spaces.length - 1] as string;
     for (const s of spaces.slice(0, -1))
       expect(await reg(d, id("x"), mine, s)).toBe(`${mine}-2`);
-    expect(await reg(d, id("x"), mine, last)).toBe(mine);
+    expect(await reg(d, id("x"), mine, last)).toBe(`${mine}-2`);
     d.close();
   });
 });
@@ -2347,10 +2354,10 @@ describe("#1448: revoking a machine frees every name its agents held or reserved
     // C is not revoked: its live name and its 1 h hold still protect.
     expect(await reg(b.d, "x", live, n)).toBe(`${live}-2`);
     // (#1295: a plain close reserves as `away`, for 7 d; #1742: a restarted
-    // session on any machine takes an away name back.)
+    // session on any machine asks for an away name: #3132, a suffix.)
     expect(await aways(left)).toEqual([`${n}/0`]);
-    expect(await reg(b.d, "y", left, n)).toBe(left);
-    expect(await aways(left)).toEqual([]);
+    expect(await reg(b.d, "y", left, n)).toBe(`${left}-2`);
+    expect(await aways(left)).toEqual([`${n}/0`]);
     // Mail to the freed name reaches its new holder.
     const rc = await send(c.d, "s", open);
     expect(rc.state).toBe("pending");
@@ -2361,17 +2368,19 @@ describe("#1448: revoking a machine frees every name its agents held or reserved
   });
 });
 
-describe("#3028: a session the daemon reports closed stops holding its name", () => {
-  it("a rename takes the name of a session the daemon says is gone", async () => {
+describe("#3028: a session the daemon reports closed is away, not gone", () => {
+  it("a rename to its name asks for it (#3132): the live session keeps its suffix, mail never reaches the asker", async () => {
     const n = ns("3028");
-    const d = await at();
+    const d = await at(true, (await member()).userId);
     // A session named "OA Manager L" while another session of the machine
     // already held that name, so the hub answered "OA Manager L-2".
     expect(await reg(d, "ref-a", "OA Manager L", n)).toBe("OA Manager L");
     expect(await reg(d, "ref-b", "OA Manager L", n)).toBe("OA Manager L-2");
     await reg(d, "ref-c", "OA Codex", n);
     // The daemon restarts and says ref-a's session is gone: a restarted daemon
-    // reports the refs it cannot see as closed (#3028), so the hub ends the row.
+    // reports the refs it cannot see as closed (#3028), so the hub ends the
+    // row. It stays away under its name: ref-b is another session, so a
+    // /rename to the name asks the holder (or the member), it never takes it.
     d.send({
       v: 1,
       id: id("se"),
@@ -2379,17 +2388,10 @@ describe("#3028: a session the daemon reports closed stops holding its name", ()
       open: ["ref-b", "ref-c"],
       closed: ["ref-a"],
     });
-    // Its name is no longer a live holder: a /rename to it gets it bare, not
-    // "OA Manager L-3", and leaves the session with one name.
     const r = await renamed(d, "ref-b", "OA Manager L");
-    expect(r.bus_name).toBe("OA Manager L");
-    const rows = (await list(d, "ref-c")).agents.filter((a) =>
-      a.bus_name.startsWith("OA Manager L"),
-    );
-    expect(rows.map((a) => a.bus_name)).toEqual(["OA Manager L"]);
-    // Mail to the name reaches the live session, not a closed mailbox.
+    expect(r.bus_name).toBe("OA Manager L-2");
+    // A legacy sender sees the away role as unknown.
     const rc = await send(d, "ref-c", "OA Manager L");
-    expect(rc.state).toBe("pending");
-    expect((await delivered(d, rc.msg_id)).to_ref).toBe("ref-b");
+    expect(rc).toMatchObject({ state: "refused", reason: "unknown_agent" });
   });
 });

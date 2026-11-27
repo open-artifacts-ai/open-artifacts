@@ -1,6 +1,8 @@
 import {
+  AGY_CHECK_HEADER,
   BUS_ROUTES,
   BusNameSchema,
+  CODEX_VERDICT_HEADER,
   DeviceCodeRequestSchema,
   type DeviceCodeResponse,
   DeviceTokenRequestSchema,
@@ -17,11 +19,14 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  AwayRoleActionSchema,
   BUS_MACHINES_PAUSED_HEADER,
+  BUS_MACHINES_VERSIONS_HEADER,
   BusLinkProposeSchema,
   BusLinkPutSchema,
   BusReachProposeSchema,
   BusReachPutSchema,
+  BusRoleProposalDecideSchema,
   BusRolePutSchema,
   BusRunVersionPutSchema,
   BusUpdatesPausedPutSchema,
@@ -55,8 +60,10 @@ import { ipKey } from "../runtime/routes.js";
 import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText } from "../services/audit.js";
 import {
+  actOnAwayBusRole,
   busOn,
   busPing,
+  decideBusRoleProposalById,
   deleteBusLink,
   deleteBusReach,
   deleteBusRole,
@@ -752,11 +759,19 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
         Upgrade: "websocket",
         [MACHINE_ID_HEADER]: m.id,
         [MACHINE_LABEL_HEADER]: m.label,
+        ...(c.req.header(AGY_CHECK_HEADER) === "1"
+          ? { [AGY_CHECK_HEADER]: "1" }
+          : {}),
         [AUTHZ_AT_HEADER]: String(authzAt),
+        ...(c.req.header(CODEX_VERDICT_HEADER) === "1"
+          ? { [CODEX_VERDICT_HEADER]: "1" }
+          : {}),
       },
     }),
   );
 }
+
+import { VERSION } from "../version.gen.js";
 
 // -------------------------------------------------------------- dashboard
 
@@ -769,7 +784,12 @@ export function mountBus(app: AppType): void {
 
   app.get(R.busMachines, async (c) => {
     const user = requireUser(c);
-    const machines = await listBusMachines(c.env, user.id);
+    const versions = c.req.header(BUS_MACHINES_VERSIONS_HEADER) === "1";
+    const machines = await listBusMachines(c.env, user.id, versions);
+    const result = {
+      machines,
+      ...(versions ? { instanceVersion: VERSION } : {}),
+    };
     // #2552: the pause switch's state, for whoever may set it (the owner, in a
     // cookie session), and only when the client asks for it: a dashboard build
     // from before #2552 parses this read with a strict schema, so the field
@@ -780,10 +800,10 @@ export function mountBus(app: AppType): void {
       orgCan(user, "bus.updates_paused", { cap: capOfCaller(caller(c)) })
     )
       return c.json({
-        machines,
+        ...result,
         updatesPaused: await busUpdatesPaused(c.env),
       });
-    return c.json({ machines });
+    return c.json(result);
   });
   // In CAPPED_ALLOWED: cutting off a credential never sits behind a cap.
   app.delete(`${R.busMachines}/:id`, async (c) => {
@@ -874,6 +894,17 @@ export function mountBus(app: AppType): void {
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusRoles(c.env, user.id));
   });
+  app.post(R.busRoles, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    await actOnAwayBusRole(
+      c.env,
+      user.id,
+      await jsonBody(c, AwayRoleActionSchema),
+    );
+    return c.body(null, 204);
+  });
   app.put(R.busRoles, async (c) => {
     const user = roleWriter(c);
     const rl = await limited(c.env, RL_KEYS.write + user.id);
@@ -891,6 +922,20 @@ export function mountBus(app: AppType): void {
         body.agentId,
       ),
     });
+  });
+  // #3132: the handover card's answer (For you, Agents > Roles). One click in
+  // the member's own browser session; roleWriter refuses every token.
+  app.post(`${R.busRoles}/proposals/:id`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    const body = await jsonBody(c, BusRoleProposalDecideSchema);
+    return c.json(
+      await decideBusRoleProposalById(c.env, user.id, id, body.decision),
+    );
   });
   app.delete(`${R.busRoles}/:id`, async (c) => {
     const user = roleWriter(c);

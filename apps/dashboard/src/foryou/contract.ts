@@ -16,9 +16,12 @@ export const SHOWN_KINDS = [
   "comment",
   "share",
   "decision",
+  "machine_update",
   "away",
   // #2577: someone asked one of your agents; held for you.
   "request",
+  // #3132: an agent asks to take over a role; the handover card.
+  "role",
 ] as const;
 type ShownKind = (typeof SHOWN_KINDS)[number];
 

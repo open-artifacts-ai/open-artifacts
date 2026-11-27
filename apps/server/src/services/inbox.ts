@@ -1,8 +1,10 @@
 import type { CommentAuthor, Inbox, InboxItem } from "@oa/shared";
-import { viewerPath } from "@oa/shared";
+import { roleCardText, viewerPath } from "@oa/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { canConnect } from "../auth/agents.js";
 import { type Caller, capOfCaller, listFilterSql } from "../auth/authz.js";
 import { capsReads, isGuestRole } from "../auth/policy.js";
+import { machineUpdateNotices, readUpdateState } from "../bus/updates.js";
 import { getDb } from "../db/client.js";
 import { artifactAsks, artifacts, inboxItems } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -12,6 +14,7 @@ import type { StoredActor } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
+import { listBusMachines, pendingRoleCards } from "./bus.js";
 import { notifyAskLater } from "./comment-agents.js";
 import {
   askerFaces,
@@ -56,6 +59,48 @@ const forMe = (caller: Me) =>
     sql`${artifacts.deletedAt} is null and ${artifacts.comments} = 1`,
   );
 
+function machineItemId(row: {
+  id: string;
+  failureAt: number | null;
+  since: number | null;
+}) {
+  return `machine:${row.id}:${row.failureAt ?? row.since}`;
+}
+async function machineItems(env: Env, caller: Me): Promise<InboxItem[]> {
+  const rows = await machineUpdateNotices(env, caller.user.id, Date.now());
+  if (!rows.length) return [];
+  const [policy, machines] = await Promise.all([
+    readUpdateState(env),
+    listBusMachines(env, caller.user.id),
+  ]);
+  return rows.map((row) => {
+    const connected = machines.find((m) => m.id === row.id)?.connected;
+    const reason = row.failed
+      ? `failed the self-check for ${row.failed}`
+      : policy.paused
+        ? "updates are paused"
+        : policy.named
+          ? `updates are pinned to ${policy.named}`
+          : connected === false
+            ? "machine offline"
+            : "update pending";
+    return {
+      id: machineItemId(row),
+      level: "needs_you",
+      kind: "machine_update",
+      urgency: "plain",
+      artifact: null,
+      actor: null,
+      text: `${row.label} · ${reason}`,
+      href: "/agents",
+      createdAt: new Date(
+        row.failureAt ?? (row.since ?? 0) + 3600000,
+      ).toISOString(),
+      readAt: null,
+    };
+  });
+}
+
 /** How many open asks wait for the caller (the /me badge): one indexed query. */
 export async function needsYouCount(env: Env, caller: Me): Promise<number> {
   const now = Date.now();
@@ -90,8 +135,17 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
         sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'mention:' || ${inboxItems.id} and l.until > ${now})`,
       ),
     );
+  const machines = (
+    await machineUpdateNotices(env, caller.user.id, now)
+  ).filter((row) => (away.get(machineItemId(row)) ?? 0) <= now);
+  // #3132: handover cards (a hub that can't be read adds none).
+  const roles = await roleItems(env, caller).catch(() => [] as InboxItem[]);
   return Math.min(
-    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0),
+    (r[0]?.n ?? 0) +
+      shown.length +
+      (m[0]?.n ?? 0) +
+      roles.length +
+      machines.length,
     NEEDS_YOU_MAX,
   );
 }
@@ -412,6 +466,32 @@ export async function heldRequestItems(
   });
 }
 
+/**
+ * #3132: an agent asks to take over (or set, or remove) one of the caller's
+ * roles: one Needs-you item per pending proposal, from the caller's own hub
+ * (never another member's). A person's browser answers it on the card; an
+ * unreadable hub adds nothing.
+ */
+export async function roleItems(env: Env, caller: Me): Promise<InboxItem[]> {
+  if (!canConnect(caller.user)) return [];
+  const now = Date.now();
+  return (await pendingRoleCards(env, caller.user.id, now)).map(
+    ({ card, createdAt }): InboxItem => ({
+      id: `role:${card.proposalId}`,
+      level: "needs_you",
+      kind: "role",
+      urgency: "approval",
+      artifact: null,
+      actor: null,
+      role: card,
+      text: roleCardText(card, now),
+      href: "/agents/roles",
+      createdAt,
+      readAt: null,
+    }),
+  );
+}
+
 /** The key an item sits under in inbox_later: an ask's and a request's id are theirs; a stored mention's is "mention:" and its id. */
 const laterKey = (i: Pick<InboxItem, "id" | "kind">): string =>
   i.kind === "mention" ? `mention:${i.id}` : i.id;
@@ -422,11 +502,15 @@ export async function inboxOf(
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, requests, mentionRows, page, unread, setUp, awayRow] =
+  const [asks, requests, roles, mentionRows, page, unread, setUp, awayRow] =
     await Promise.all([
       needsYou(env, caller),
       heldRequestItems(env, caller).catch((e) => {
         logWarn("inbox_held_requests_failed", e);
+        return [] as InboxItem[];
+      }),
+      roleItems(env, caller).catch((e) => {
+        logWarn("inbox_roles_failed", e);
         return [] as InboxItem[];
       }),
       // #2770: people who @mentioned me, still waiting.
@@ -459,14 +543,17 @@ export async function inboxOf(
   );
   const ordered = [
     ...asks.filter((i) => i.urgency === "waiting"),
-    ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
-      byAge,
-    ),
+    ...[
+      ...asks.filter((i) => i.urgency === "approval"),
+      ...requests,
+      ...roles,
+    ].sort(byAge),
     ...[
       ...asks.filter(
         (i) => i.urgency !== "waiting" && i.urgency !== "approval",
       ),
       ...mentions,
+      ...(await machineItems(env, caller)),
     ].sort(byAge),
   ];
   // #2762: put-off items sit in Later until their time, then return on top,
@@ -539,7 +626,12 @@ export async function deferItem(
   const mentions = (await itemsOf(env, caller, mentionRows)).map(
     (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
   );
-  const item = [...asks, ...requests, ...mentions].find((i) => i.id === id);
+  const item = [
+    ...asks,
+    ...requests,
+    ...mentions,
+    ...(await machineItems(env, caller)),
+  ].find((i) => i.id === id);
   if (!item) throw new ApiError("not_found", "Not found");
   const key = laterKey(item);
   if (away.has(key))

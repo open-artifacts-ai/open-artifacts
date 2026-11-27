@@ -91,7 +91,7 @@ describe("doctor", () => {
 });
 
 describe("status", () => {
-  it("prints each config file the daemon reports, with its fix", async () => {
+  it("default screen stays compact even when config_files are reported (#3328 S1)", async () => {
     const ctx = fakeCtx();
     const f = `${ctx.userHome}/x/.oa-bus.json`;
     ctx.status = vi.fn(async () =>
@@ -107,37 +107,10 @@ describe("status", () => {
       }),
     );
     approve(ctx);
-    await statusCmd(ctx);
+    expect(await statusCmd(ctx)).toBe(0);
     const out = ctx.all().join("\n");
-    expect(out).toContain(
-      "~/x/.oa-bus.json belongs to another user, so it is ignored.",
-    );
-    expect(out).toContain(
-      `Fix: remove it (rm ${f}) or take it over (chown "$USER" ${f})`,
-    );
-  });
-
-  it("strips terminal controls from what the daemon reports", async () => {
-    const ctx = fakeCtx();
-    ctx.status = vi.fn(async () =>
-      status({
-        config_files: [
-          {
-            file: "/h/a\x1b]52;c;aGk=\x07b/.oa-bus.json",
-            state: "refused",
-            reason: "is writable by everyone",
-            fix: "run chmod o-w '/h/a\x1b[2Jb\nFORGED'",
-          },
-        ],
-      }),
-    );
-    approve(ctx);
-    await statusCmd(ctx);
-    const raw = ctx.all().join("\n");
-    expect(raw).not.toContain("\x1b");
-    expect(raw).not.toContain("\x07");
-    expect(ctx.all()).not.toContain("FORGED");
-    expect(ctx.all().join("\n")).toContain("Restart the session");
+    expect(out).toContain("working");
+    expect(out).not.toContain("\x1b");
   });
 
   it("prints nothing extra from an older daemon", async () => {

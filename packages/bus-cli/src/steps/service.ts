@@ -28,9 +28,13 @@ import { BUS_CMD } from "@oa/bus-protocol";
 import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
-import { AGY_FLAG, agyOn } from "./adapters.ts";
 import { codexHomeEnv } from "./codex.ts";
-import { rescueOf, writeRescue } from "./rescue.ts";
+import {
+  checkRescueDestination,
+  rescueOf,
+  retireLegacyRescue,
+  writeRescue,
+} from "./rescue.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const LAUNCHD_LABEL = "com.open-artifacts.bus";
@@ -286,6 +290,7 @@ export function installCli(
   src: CliSource,
   node?: string,
 ): string {
+  if (node !== undefined) checkRescueDestination(home);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   installVersion(
@@ -492,12 +497,21 @@ export function systemService(d: ServiceDeps): Service {
     return r && present(r) ? r : fresh();
   };
   const installed = () => manager !== undefined && present(file());
-  /** The installed unit starts the bus through the rescue shim (an older one does not). */
-  const unitRunsRescue = () => {
+  /** Doctor checks the launcher named by the installed unit, including pre-rename units. */
+  const installedRescue = (): string | undefined => {
     try {
-      return readFileSync(file(), "utf8").includes(rescueOf(home()));
+      const unit = readFileSync(file(), "utf8");
+      const launchProgram =
+        /<key>\s*ProgramArguments\s*<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(
+          unit,
+        )?.[1];
+      return [rescueOf(home()), join(home(), "rescue")].find((path) =>
+        manager === "launchd"
+          ? launchProgram === xml(path)
+          : unit.includes(`ExecStart=${execWord(path)} `),
+      );
     } catch {
-      return false;
+      return undefined;
     }
   };
   /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
@@ -612,6 +626,7 @@ export function systemService(d: ServiceDeps): Service {
           return { skipped, idle: true };
       }
       const h = home();
+      if (launcherNode() !== undefined) checkRescueDestination(h);
       const src = d.source();
       const logs = join(h, "logs");
       const u: Unit = {
@@ -622,9 +637,6 @@ export function systemService(d: ServiceDeps): Service {
           ...(isDefaultHome(h, d.userHome) ? {} : { OA_BUS_HOME: h }),
           // Attestation and wake read the Codex home this shell uses (C26e).
           ...codexHomeEnv(d.userHome, d.env),
-          // agy S2b: the daemon lists running agy processes only when the
-          // install that wired agy (the flag) is the one it runs under.
-          ...(agyOn(d.env) ? { [AGY_FLAG]: "1" } : {}),
         },
         // One file: the daemon logs to stderr, and `oa-bus logs` tails it.
         out: join(logs, "daemon.log"),
@@ -668,6 +680,7 @@ export function systemService(d: ServiceDeps): Service {
             ? await startSystemd(f, unit)
             : "failed";
       if (started === "started") {
+        retireLegacyRescue(h);
         updateInstallFile(installFile(), {
           service: {
             kind: manager,
@@ -689,7 +702,10 @@ export function systemService(d: ServiceDeps): Service {
         err: u.err,
       });
       updateInstallFile(installFile(), {
-        service: { fallback: true, pid } satisfies Record_,
+        service: {
+          fallback: true,
+          pid,
+        } satisfies Record_,
       });
       return skipped ? { skipped } : {};
     },
@@ -842,8 +858,8 @@ export function systemService(d: ServiceDeps): Service {
       )
         out.push({ kind: "linger-off" });
       // A unit that runs the rescue shim needs it there and owner-only (#2552).
-      if (d.platform !== "win32" && unitRunsRescue()) {
-        const r = rescueOf(home());
+      const r = installedRescue();
+      if (r) {
         // Owned by whoever runs this check, which is the service's account: the
         // deps' `uid` is only the launchd domain and can be anything in a test.
         const me = (d.ownerUid ?? (() => process.getuid?.()))();

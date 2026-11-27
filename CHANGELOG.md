@@ -1,5 +1,103 @@
 # Changelog
 
+## [0.271.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.0...v0.271.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* guard self-host deploys using the reviewed migration marker ([#3308](https://github.com/open-artifacts-ai/open-artifacts/issues/3308)) ([cdf5fcb](https://github.com/open-artifacts-ai/open-artifacts/commit/cdf5fcb3fbec8188d89b34911e88a58e32c93e90))
+
+## [0.271.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.270.0...v0.271.0) (2026-11-27)
+
+
+### Features
+
+* remove away sessions from the mention menu and keep their roles ([#3343](https://github.com/open-artifacts-ai/open-artifacts/issues/3343)) ([9e9c796](https://github.com/open-artifacts-ai/open-artifacts/commit/9e9c796756272ce9bbcd5e14cd7de40f81f9434e))
+
+## [0.270.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.269.0...v0.270.0) (2026-11-27)
+
+
+### Features
+
+* **agents:** move or free names held by away sessions ([#3321](https://github.com/open-artifacts-ai/open-artifacts/issues/3321)) ([#3323](https://github.com/open-artifacts-ai/open-artifacts/issues/3323)) ([01eb0cf](https://github.com/open-artifacts-ai/open-artifacts/commit/01eb0cf2631f666f362b2c90fe31df5fee73887a))
+
+## [0.269.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.1...v0.269.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** the name is the role; a second session asks, never -2 ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3252](https://github.com/open-artifacts-ai/open-artifacts/issues/3252)) ([a8ededa](https://github.com/open-artifacts-ai/open-artifacts/commit/a8ededac181197ac50c0884bdcfd65a5a138ea99))
+
+## [0.268.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.0...v0.268.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **bus:** releases reach machines by event, not clock ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3265](https://github.com/open-artifacts-ai/open-artifacts/issues/3265)) ([a562e14](https://github.com/open-artifacts-ai/open-artifacts/commit/a562e149fde9ed5e844f0bd0841e86ce7162f5b9))
+
+## [0.268.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.267.0...v0.268.0) (2026-11-27)
+
+
+### Features
+
+* **bus-cli:** redesign oa-bus status default screen ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S1) ([#3330](https://github.com/open-artifacts-ai/open-artifacts/issues/3330)) ([93a6d4d](https://github.com/open-artifacts-ai/open-artifacts/commit/93a6d4d8bf2698d56661533d20c0f82151c47627))
+
+## [0.267.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.266.0...v0.267.0) (2026-11-27)
+
+
+### Features
+
+* **profile:** let people choose handles and receive mentions by handle ([#3217](https://github.com/open-artifacts-ai/open-artifacts/issues/3217)) ([#3316](https://github.com/open-artifacts-ai/open-artifacts/issues/3316)) ([7c7585e](https://github.com/open-artifacts-ai/open-artifacts/commit/7c7585ef4e88dfd1899bae86f16fb51c3f3321a4))
+
+## [0.266.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.265.0...v0.266.0) (2026-11-27)
+
+
+### Features
+
+* **roles:** the handover card answers a take-over in one click ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3247](https://github.com/open-artifacts-ai/open-artifacts/issues/3247)) ([11355e2](https://github.com/open-artifacts-ai/open-artifacts/commit/11355e282d28c3d63cdea0d90b6ba77cc40aaa3d))
+
+## [0.265.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.1...v0.265.0) (2026-11-27)
+
+
+### Features
+
+* **comments:** the @ list offers an agent by its role ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3235](https://github.com/open-artifacts-ai/open-artifacts/issues/3235)) ([e403cb8](https://github.com/open-artifacts-ai/open-artifacts/commit/e403cb8b9e22c344e301179cc13c454e12c2dfb8))
+
+## [0.264.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.0...v0.264.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **asks:** harden cross-page ask-slots read, placer name and delete cleanup ([#2536](https://github.com/open-artifacts-ai/open-artifacts/issues/2536)) ([#3315](https://github.com/open-artifacts-ai/open-artifacts/issues/3315)) ([1f83fe4](https://github.com/open-artifacts-ai/open-artifacts/commit/1f83fe4bcf885a26650a3fec639bd7b6e27b5240))
+
+## [0.264.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.263.0...v0.264.0) (2026-11-27)
+
+
+### Features
+
+* **auth:** email codes for every active row, owner, admin and Google-linked ([#3184](https://github.com/open-artifacts-ai/open-artifacts/issues/3184)) ([#3215](https://github.com/open-artifacts-ai/open-artifacts/issues/3215)) ([36abde3](https://github.com/open-artifacts-ai/open-artifacts/commit/36abde380913ee458d6515d2d65397e6b13449bf))
+* **comments:** an agent's comment shows its role, and who holds it now ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3234](https://github.com/open-artifacts-ai/open-artifacts/issues/3234)) ([759f365](https://github.com/open-artifacts-ai/open-artifacts/commit/759f365be157fc446a699be5a3891bb42ebefdae))
+* **mcp:** add past-chat artifact import skill and MCP resource ([#1627](https://github.com/open-artifacts-ai/open-artifacts/issues/1627)) ([#3299](https://github.com/open-artifacts-ai/open-artifacts/issues/3299)) ([41b8160](https://github.com/open-artifacts-ai/open-artifacts/commit/41b81607cc142d6d0d665236fa6edcaeedd2b0c0))
+
+## [0.263.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.262.0...v0.263.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** every client gets the bus rules at session start; details in the skill ([#3043](https://github.com/open-artifacts-ai/open-artifacts/issues/3043), slice 3) ([#3172](https://github.com/open-artifacts-ai/open-artifacts/issues/3172)) ([98670da](https://github.com/open-artifacts-ai/open-artifacts/commit/98670da93a03a1ad879ef10120b6fd47db160ecf))
+
+## [0.262.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.261.0...v0.262.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** a live holder is asked for its role, and told when it moves ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3232](https://github.com/open-artifacts-ai/open-artifacts/issues/3232)) ([9416dcf](https://github.com/open-artifacts-ai/open-artifacts/commit/9416dcf33786b3f313f551a931d8219987993b43))
+
+
+### Bug Fixes
+
+* **test:** avoid O(N^2) slot reads in hook-ledger ([#3276](https://github.com/open-artifacts-ai/open-artifacts/issues/3276)) ([#3282](https://github.com/open-artifacts-ai/open-artifacts/issues/3282)) ([594a7ca](https://github.com/open-artifacts-ai/open-artifacts/commit/594a7ca2a6acbbb4f1803144791f582f3fd0af1d))
+
 ## [0.261.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.260.0...v0.261.0) (2026-11-27)
 
 

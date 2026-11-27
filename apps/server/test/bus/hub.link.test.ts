@@ -1,8 +1,9 @@
 // #1822: link_bind (BUS_CAPS.link) and the hub's proof lookup. A real hub and
 // real daemon sockets. A bind is accepted only for an agent the socket
 // registered; a new bind replaces the old hash; a close clears it; the
-// identity_id survives a rename and moves with a reclaimed name on the same
-// machine only. Waits are signals (the reply frame), never sleeps; time is
+// identity_id survives a rename and stays with the session: a reopen of the
+// same session keeps it, a new session asking its name never takes it (#3132;
+// it was #1742's reclaim on the same machine). Waits are signals (the reply frame), never sleeps; time is
 // BusHub.setTestClock, reset after each test.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
@@ -22,10 +23,14 @@ import {
   machine,
   member,
   ns,
-  up,
+  up as plainUp,
   waitFor,
 } from "./helpers.js";
 import { eventually } from "./helpers.ts";
+
+/** #3143: only a name a person gave is a role, so these tests' sessions choose theirs. */
+const up = (...a: Parameters<typeof plainUp>): ReturnType<typeof plainUp> =>
+  ({ ...plainUp(...a), name_chosen: true }) as ClientFrame;
 
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
@@ -301,6 +306,7 @@ describe("link_bind (#1822)", () => {
       v: 1,
       id: id("rn"),
       type: "rename",
+      name_chosen: true,
       agent_ref: "r1",
       proposed_name: "Captain",
     } as ClientFrame);
@@ -318,6 +324,7 @@ describe("link_bind (#1822)", () => {
       v: 1,
       id: id("rn"),
       type: "rename",
+      name_chosen: true,
       agent_ref: "r1",
       proposed_name: "Captain",
     } as ClientFrame);
@@ -335,7 +342,7 @@ describe("link_bind (#1822)", () => {
   });
 });
 
-describe("identity_id and a reclaimed name (#1822, #1742)", () => {
+describe("identity_id and a held name (#1822, #3132)", () => {
   async function restart(sameMachine: boolean) {
     const s = await scene();
     await setClock(s.m.userId, Date.now() + 3_600_000);
@@ -349,27 +356,44 @@ describe("identity_id and a reclaimed name (#1822, #1742)", () => {
       const other = await machine("Other", s.m.userId);
       d = await connect(other.token, [BUS_CAPS.link]);
     }
-    expect(await reg(d, "new", name, s.ns)).toBe(name);
+    expect(await reg(d, "new", name, s.ns)).toBe(`${name}-2`);
     await bind(d, "new", hashOf("6"));
     return { s, before, after: await lookup(s.m.userId, hashOf("6")) };
   }
 
-  it("moves with the name to the restarted session on the same machine", async () => {
+  it("stays with the old session: a new session on the same machine asking its name gets a new identity", async () => {
     const { s, before, after } = await restart(true);
-    expect(after?.identityId).toBe(before?.identityId);
-    // #2110: the old row's identity is unlinked, so its proof ends inside
-    // the away grace too.
-    expect(await lookup(s.m.userId, hashOf("5"))).toBeNull();
+    expect(after?.identityId).toBeDefined();
+    expect(after?.identityId).not.toBe(before?.identityId);
+    // #2110: the old away row keeps its link inside the grace.
+    expect((await lookup(s.m.userId, hashOf("5")))?.identityId).toBe(
+      before?.identityId,
+    );
     expect(
       await rows(
         s.m.userId,
-        "select identity_id from agents where native_ref = 'old'",
+        "select identity_id is not null as linked from agents where native_ref = 'old'",
       ),
-    ).toEqual([{ identity_id: null }]);
+    ).toEqual([{ linked: 1 }]);
     await setClock(s.m.userId, null);
   });
 
-  it("does not move to a session on another machine", async () => {
+  it("the same session reopening keeps its identity", async () => {
+    const s = await scene();
+    await setClock(s.m.userId, Date.now() + 3_600_000);
+    const name = `Lead-${++seq}x`;
+    await reg(s.d, "old", name, s.ns);
+    await bind(s.d, "old", hashOf("5"));
+    const before = await lookup(s.m.userId, hashOf("5"));
+    await close(s.d, s.m.userId, "old");
+    expect(await reg(s.d, "old", name, s.ns)).toBe(name);
+    expect((await lookup(s.m.userId, hashOf("5")))?.identityId).toBe(
+      before?.identityId,
+    );
+    await setClock(s.m.userId, null);
+  });
+
+  it("does not move to a new session on another machine either", async () => {
     const { s, before, after } = await restart(false);
     expect(after?.identityId).toBeDefined();
     expect(after?.identityId).not.toBe(before?.identityId);
@@ -600,16 +624,21 @@ async function namesOf(userId: string, ids: string[]) {
 }
 
 describe("namesOf (#1889)", () => {
-  it("returns only identityId and the current name, live or away", async () => {
+  it("returns the identity, chosen name and holding interval, live or away", async () => {
     const s = await scene();
     const name = await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("a"));
     const id = (await identityOf(s.m.userId, s.ns, name))?.identityId as string;
     const got = await namesOf(s.m.userId, [id, "nope"]);
-    expect(got).toEqual([{ identityId: id, name }]);
-    expect(Object.keys(got[0] ?? {}).sort()).toEqual(["identityId", "name"]);
+    expect(got).toMatchObject([
+      {
+        identityId: id,
+        name,
+        intervals: [{ role: name, since: expect.any(Number), until: null }],
+      },
+    ]);
     await close(s.d, s.m.userId, "r1");
-    expect(await namesOf(s.m.userId, [id])).toEqual([{ identityId: id, name }]);
+    expect(await namesOf(s.m.userId, [id])).toEqual(got);
   });
   it("never resolves another member's identity, and ignores junk input", async () => {
     const a = await scene();
@@ -731,17 +760,10 @@ describe("the away grace (#2110)", () => {
     await setClock(s.m.userId, null);
   });
 
-  it("an unlinked identity (its name taken back by a new session) ends the link", async () => {
+  it("a new session asking the away session's name does not end its link (#3132)", async () => {
     const s = await away();
-    expect(await reg(s.d, "r2", s.name, s.ns)).toBe(s.name);
-    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
-    // Even a proof row left on the unlinked row never resolves.
-    await rows(
-      s.m.userId,
-      "insert into agent_proofs (hash, agent_id, seq) select ?, id, 99 from agents where native_ref = 'r1'",
-      hashOf("e"),
-    );
-    expect(await lookup(s.m.userId, hashOf("e"))).toBeNull();
+    expect(await reg(s.d, "r2", s.name, s.ns)).toBe(`${s.name}-2`);
+    expect(await lookup(s.m.userId, hashOf("e"))).toEqual(s.live);
     await setClock(s.m.userId, null);
   });
 

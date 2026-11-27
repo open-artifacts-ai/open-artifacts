@@ -97,6 +97,33 @@ describe("GET/PATCH /api/v1/me", () => {
     expect(m.user.name).toBe(`dn-${tag}@x.com`);
   });
 
+  it("claims handles atomically, suggests a free handle and releases the old one immediately", async () => {
+    const other = await login(`handle-other-${tag}@x.com`);
+    const handle = `ana-${tag}`;
+    const responses = await Promise.all(
+      [u, other].map((person) =>
+        patchMe(person.cookie, { handle: handle.toUpperCase() }),
+      ),
+    );
+    const winner = responses[0]?.status === 200 ? u : other;
+    const loser = winner === u ? other : u;
+    expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+    const check = await api(
+      app,
+      R.meHandle + "?handle=" + handle,
+      loser.cookie,
+    );
+    expect(await check.json()).toMatchObject({
+      available: false,
+      suggestion: handle + "-2",
+    });
+    expect(
+      (await patchMe(winner.cookie, { handle: handle + "-new" })).status,
+    ).toBe(200);
+    expect((await patchMe(loser.cookie, { handle })).status).toBe(200);
+    expect((await patchMe(loser.cookie, { handle: "a" })).status).toBe(400);
+  });
+
   it("an IdP name is suggested and used; no prompt", async () => {
     const v = await login(`dn-idp-${tag}@x.com`);
     await setIdpName(v.userId, "Ada Lovelace");

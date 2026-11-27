@@ -39,6 +39,7 @@ import {
 export const SKILL_PATH = "/skill.md";
 export const SKILL_PART_PATH = "/skill/:part";
 export const SKILL_DOC_URI = "openartifacts://docs/skill";
+export const IMPORT_DOC_URI = "openartifacts://docs/import";
 
 type SkillEnv = Pick<
   Env,

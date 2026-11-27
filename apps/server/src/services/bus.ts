@@ -3,6 +3,7 @@ import {
   CodexDirectCallIdSchema,
   CodexExecCallIdSchema,
   CodexItemIdSchema,
+  type CodexLinkReason,
   CodexThreadIdSchema,
   CodexToolNameSchema,
   canonicalArgsSha256,
@@ -13,6 +14,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AuditCredKindSchema,
+  type AwayRoleAction,
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
@@ -23,8 +25,10 @@ import {
   type BusReachProposed,
   type BusRole,
   type BusRoleProposal,
+  type BusRoleProposalDecided,
   type BusRoleProposeInput,
   parseFeatures,
+  type RoleCard,
 } from "@oa/shared";
 import type { Cred } from "../auth/cred.js";
 import type {
@@ -43,11 +47,13 @@ import type {
 import type {
   DecideResult,
   ProposalAudit,
+  ProposalRefusalReason,
   ProposeInput,
   ProposeResult,
   ViewResult,
 } from "../bus/role-proposals.js";
 import type {
+  AgentNameRow,
   HandOverResult,
   MoveAudit,
   PutRoleResult,
@@ -139,6 +145,10 @@ export type BusHubRpc = {
   ownerAwayChanged(): Promise<void>;
   /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
   codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
+  codexCallDecision(
+    check: unknown,
+  ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }>;
+  codexCallVerdict(thread: string, reason: CodexLinkReason): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
@@ -148,6 +158,7 @@ export type BusHubRpc = {
     namespace: string;
     name: string;
     identityId?: string;
+    roleId?: string;
     artifactId: string;
     threadId: string;
     commentIds: string[];
@@ -167,10 +178,8 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
   ): Promise<{ identityId: string; kind: string } | null>;
-  /** #1889: the current bus name of each agent identity in this member's own hub; only `{identityId, name}`. */
-  namesOf(
-    identityIds: string[],
-  ): Promise<{ identityId: string; name: string }[]>;
+  /** #1889: the current bus name of each agent identity in this member's own hub, with its role (#3132). */
+  namesOf(identityIds: string[]): Promise<AgentNameRow[]>;
   /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
   roleHolderFor(
     identityId: string,
@@ -183,7 +192,8 @@ export type BusHubRpc = {
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
-  }): Promise<{ connected: string[]; agents: BusAgent[] }>;
+    roles?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[]; roles?: BusRole[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
   revokeMachine(id: string): Promise<boolean>;
   /**
@@ -196,6 +206,9 @@ export type BusHubRpc = {
   wipe(): Promise<void>;
   /** #1296: the member's role addresses. */
   listRoles(): Promise<BusRole[]>;
+  actOnAwayRole(
+    action: AwayRoleAction,
+  ): Promise<{ ok: boolean; moved: RoleMove | null }>;
   /** #1296: sets, re-points or (null) vacates a role; see bus/roles.ts putRole. */
   putRole(
     namespace: string,
@@ -276,6 +289,11 @@ export type BusHubRpc = {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult>;
+  /** #3132: confirms or rejects role proposal `id` (the dashboard card), once. */
+  decideRoleProposalById(
+    id: string,
+    decision: "confirm" | "reject",
+  ): Promise<DecideResult>;
   /** #1403: the credentials and machines behind the pending proposals. */
   pendingProposalSources(): Promise<{
     credentials: string[];
@@ -289,6 +307,8 @@ export type BusHubRpc = {
   listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
     expired: ProposalAudit[];
+    /** #3132: the current holder of each pending proposal: live, or away since (ms). */
+    holders: Record<string, { live: boolean; since: number | null }>;
   }>;
 };
 
@@ -345,6 +365,7 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 type MachineDbRow = {
+  busVersion?: string | null;
   id: string;
   label: string;
   createdAt: number;
@@ -352,7 +373,7 @@ type MachineDbRow = {
   revokedAt: number | null;
 };
 
-const MACHINES_OF = `select id, label, created_at as createdAt, last_used_at as lastUsedAt,
+const MACHINES_OF = `select id, label, bus_version as busVersion, created_at as createdAt, last_used_at as lastUsedAt,
     revoked_at as revokedAt from bus_machines
   where user_id = ?1 and (revoked_at is null or revoked_at > ?2)
   order by (revoked_at is null) desc, created_at desc, rowid desc limit ?3`;
@@ -364,17 +385,23 @@ async function hubSnapshot(
   env: Env,
   userId: string,
   everConnected: boolean,
-  away = false,
-): Promise<{ connected: Set<string>; agents: BusAgent[] } | null> {
+  opts: { away?: boolean; roles?: boolean } = {},
+): Promise<{
+  connected: Set<string>;
+  agents: BusAgent[];
+  roles?: BusRole[];
+} | null> {
   if (!busOn(env) || !everConnected) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
   try {
     const s = await within(
-      hub.snapshot(away ? { away: true } : undefined),
+      hub.snapshot(opts.away || opts.roles ? opts : undefined),
       BUS_HUB_TIMEOUT_MS,
     );
-    return s && { connected: new Set(s.connected), agents: s.agents };
+    return (
+      s && { connected: new Set(s.connected), agents: s.agents, roles: s.roles }
+    );
   } catch (e) {
     logError("bus_snapshot_failed", e);
     return null;
@@ -382,6 +409,7 @@ async function hubSnapshot(
 }
 
 export type BusView = {
+  roles?: BusRole[];
   machines: BusMachine[];
   agents: BusAgent[];
   /**
@@ -406,7 +434,7 @@ export async function busView(
   env: Env,
   userId: string,
   /** Also the agents away (closed, name kept): the @ menu lists them as away. */
-  opts: { away?: boolean } = {},
+  opts: { away?: boolean; roles?: boolean; versions?: boolean } = {},
 ): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
     .bind(userId, Date.now() - REVOKED_MACHINE_VISIBLE_MS, MAX_LISTED)
@@ -415,9 +443,12 @@ export async function busView(
     env,
     userId,
     results.some((m) => m.lastUsedAt !== null),
-    opts.away === true,
+    opts,
   );
-  const machines = results.map((m) => machineOf(m, snap?.connected ?? null));
+  const machines = results.map((m) => ({
+    ...machineOf(m, snap?.connected ?? null),
+    ...(opts.versions ? { busVersion: m.busVersion ?? null } : {}),
+  }));
   // Every active machine is listed (MAX_ACTIVE_MACHINES == MAX_LISTED).
   const mayBeLive = results.some(
     (m) => m.revokedAt === null && m.lastUsedAt !== null,
@@ -425,6 +456,7 @@ export async function busView(
   return {
     machines,
     agents: snap?.agents ?? [],
+    ...(opts.roles ? { roles: snap?.roles ?? [] } : {}),
     live: snap !== null || (busOn(env) && !mayBeLive),
     read: snap !== null,
   };
@@ -472,8 +504,9 @@ export async function busMachine(
 export async function listBusMachines(
   env: Env,
   userId: string,
+  versions = false,
 ): Promise<BusMachine[]> {
-  return (await busView(env, userId)).machines;
+  return (await busView(env, userId, { versions })).machines;
 }
 
 /** The member's open agents, or [] (with live false) when the hub can't be read. */
@@ -605,6 +638,24 @@ export async function agentNamesOf(
   identityIds: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  for (const [id, f] of await agentFacesOf(env, userId, identityIds))
+    if (f.name) out.set(id, f.name);
+  return out;
+}
+
+/** An agent identity's current bus name and role (#3132), as namesOf reads them. */
+export type AgentFaceRow = Omit<AgentNameRow, "identityId">;
+
+/**
+ * #1889 agentNamesOf, with each identity's role (#3132): the role its
+ * session holds, or the role it handed on and who holds that now.
+ */
+export async function agentFacesOf(
+  env: Env,
+  userId: string,
+  identityIds: string[],
+): Promise<Map<string, AgentFaceRow>> {
+  const out = new Map<string, AgentFaceRow>();
   try {
     if (!busOn(env) || identityIds.length === 0) return out;
     const rows = await within(
@@ -621,7 +672,7 @@ export async function agentNamesOf(
       })(),
       LINK_LOOKUP_MS,
     );
-    for (const r of rows ?? []) out.set(r.identityId, r.name);
+    for (const { identityId, ...face } of rows ?? []) out.set(identityId, face);
   } catch (e) {
     logError("bus_names_lookup_failed", e);
   }
@@ -888,7 +939,7 @@ const asRecord = (v: unknown): Record<string, unknown> | null =>
  */
 async function codexCheckOf(
   bodyText: string | undefined,
-): Promise<Record<string, unknown> | null> {
+): Promise<{ thread_id: string; tool: string; mode: object } | null> {
   if (bodyText === undefined) return null;
   let msg: unknown;
   try {
@@ -937,27 +988,148 @@ async function codexCheckOf(
   };
 }
 
-/** #3108: the identity of the Codex session behind a proof-less tools/call, or undefined (unlinked, the call still works). Never throws, never logs a value. */
-async function codexLink(
+// Inspect only top-level metadata for the local hook ID. Metadata is evidence
+// only after the member’s daemon confirms the complete call.
+function agyWireCall(text: string | undefined, userAgent: string | null) {
+  if (!text) return;
+  let msg: Record<string, unknown> | null;
+  try {
+    msg = asRecord(JSON.parse(text));
+  } catch {
+    return;
+  }
+  if (msg?.method !== "tools/call") return;
+  const params = asRecord(msg.params);
+  const meta = asRecord(params?._meta) ?? {};
+  const keys = Object.keys(meta);
+  if (
+    !keys.some((k) => k.startsWith("antigravity.google/")) &&
+    !/(?:antigravity|\bagy(?:\/|\s|$))/i.test(userAgent ?? "")
+  )
+    return;
+  // Unknown field names are useful during a new harness rollout. Accept short
+  // identifier words, excluding paths, addresses, token-shaped keys and free text.
+  const safeName = (key: string) =>
+    key.length <= 80 &&
+    /^(?:antigravity\.google\/)?[a-z]{1,18}(?:(?:[_.-][a-z]{1,18})|(?:[A-Z][a-z]{0,17})){0,6}$/.test(
+      key,
+    );
+  const known = keys.filter(safeName).sort().slice(0, 32);
+  const candidates = keys.filter(
+    (k) => CodexDirectCallIdSchema.safeParse(meta[k]).success,
+  );
+  const fields = {
+    meta_keys: known.join(","),
+    other_keys: keys.length - known.length,
+  };
+  if (candidates.length !== 1)
+    return {
+      fields,
+      verdict: candidates.length ? "ambiguous_id" : "no_hook_id",
+    };
+  const field = candidates[0];
+  if (!known.includes(field)) return { fields, verdict: "unreportable_key" };
+
+  const thread = CodexThreadIdSchema.safeParse(
+    meta["antigravity.google/conversation_id"],
+  );
+  const root = meta["antigravity.google/root_conversation_id"];
+  const tool = CodexToolNameSchema.safeParse(params?.name);
+  const valid =
+    thread.success &&
+    (root === undefined || root === thread.data) &&
+    tool.success;
+  return {
+    fields,
+    field,
+    verdict: "invalid_call",
+    evidence: valid
+      ? {
+          thread_id: thread.data,
+          tool: tool.data,
+          call_id: meta[field] as string,
+          args: params?.arguments ?? {},
+        }
+      : undefined,
+  };
+}
+
+/** Resolve a proof-less OAuth call through the member’s daemons. A miss leaves the call unlinked. */
+async function nativeCallLink(
   env: Env,
   userId: string,
   bodyText: string | undefined,
-): Promise<AgentIdentity | undefined> {
+  agy?: ReturnType<typeof agyWireCall>,
+  ctx?: Pick<ExecutionContext, "waitUntil">,
+): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
+  let verdict = agy?.verdict ?? "miss";
   try {
-    const check = await codexCheckOf(bodyText);
-    if (!check) return undefined;
-    const id = await within(
+    const e = agy?.evidence;
+    const hash = e && (await canonicalArgsSha256(e.args));
+    const check = agy
+      ? e && hash
+        ? {
+            harness: "antigravity",
+            thread_id: e.thread_id,
+            tool: e.tool,
+            mode: { kind: "direct", call_id: e.call_id, args_sha256: hash },
+          }
+        : null
+      : await codexCheckOf(bodyText);
+    if (!check) return { why: "no_proof" };
+    verdict = "miss";
+    const hub = busHub(env, userId);
+    if (!hub) return { why: agy ? "no_proof" : "no_hub" };
+    const decision = await within(
       (async () => {
-        if (!(await hasConnectedMachine(env, userId))) return null;
-        const hub = busHub(env, userId);
-        return hub ? await hub.codexCallCheck(check) : null;
-      })(),
+        if (!(await hasConnectedMachine(env, userId)))
+          return { identity: null, reason: "no_daemon" as const };
+        return hub.codexCallDecision(check);
+      })().catch((e) => {
+        logError("bus_codex_link_failed", e);
+        return { identity: null, reason: "lookup_error" as const };
+      }),
       PROOF_LOOKUP_MS,
     );
-    return id ?? undefined;
+    if (decision?.identity) verdict = "matched";
+    if (!agy && decision?.reason !== "no_daemon") {
+      const report = Promise.resolve()
+        .then(() =>
+          hub.codexCallVerdict(
+            check.thread_id,
+            decision?.reason ?? "lookup_timeout",
+          ),
+        )
+        .catch((e) => logError("bus_codex_verdict_failed", e));
+      ctx?.waitUntil(report);
+    }
+    if (decision?.identity) return { identity: decision.identity };
+    if (agy) return { why: "no_proof" };
+    switch (decision?.reason) {
+      case undefined:
+      case "lookup_timeout":
+        return { why: "timeout" };
+      case "no_daemon":
+        return { why: "no_hub" };
+      case "lookup_error":
+        return { why: "error" };
+      case "hub_rate_limit":
+      case "item_limit":
+        return { why: "rate_limited" };
+      default:
+        return { why: "refused" };
+    }
   } catch (e) {
+    verdict = "error";
     logError("bus_codex_link_failed", e);
-    return undefined;
+    return { why: agy ? "no_proof" : "error" };
+  } finally {
+    if (agy)
+      logInfo("bus_agy_call_check", {
+        ...agy.fields,
+        verdict,
+        matched_key: verdict === "matched" ? agy.field : undefined,
+      });
   }
 }
 
@@ -1013,17 +1185,21 @@ export async function linkRequest(
       out = new Request(out.url, { method: out.method, body: UNPARSEABLE });
     }
   }
+  const agy = agyWireCall(bodyText, req.headers.get("user-agent"));
+  if (poisoned && agy)
+    logInfo("bus_agy_call_check", { ...agy.fields, verdict: "invalid_proof" });
   if (poisoned)
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
-  // No proof at all: nothing was looked up, so nothing is logged; the note says so.
   if (proof === undefined) {
-    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
-    const identity = busOn(env)
-      ? await codexLink(env, userId, bodyText)
-      : undefined;
-    if (identity) return { req: out, identity };
-    return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+    if (busOn(env))
+      return {
+        req: out,
+        ...(await nativeCallLink(env, userId, bodyText, agy, ctx)),
+      };
+    if (agy)
+      logInfo("bus_agy_call_check", { ...agy.fields, verdict: "bus_off" });
+    return { req: out };
   }
   const r = await lookupProof(
     env,
@@ -1032,6 +1208,11 @@ export async function linkRequest(
     () => bodyHasToolsCall(bodyText),
     ctx,
   );
+  if (agy)
+    logInfo("bus_agy_call_check", {
+      ...agy.fields,
+      verdict: r.identity ? "proxy_matched" : "proxy_miss",
+    });
   return { req: out, ...r };
 }
 
@@ -1149,9 +1330,13 @@ export async function listBusRoles(
       BUS_HUB_TIMEOUT_MS,
     );
     if (r === null) return none;
-    const [roles, { proposals, expired }] = r;
+    const [roles, { proposals, expired, holders }] = r;
     await auditExpired(env, userId, expired);
-    return { roles, proposals, live: true };
+    return {
+      roles,
+      proposals: proposals.filter((p) => memberHandlesProposal(p, holders)),
+      live: true,
+    };
   } catch (e) {
     logError("bus_roles_failed", e);
     return none;
@@ -1224,6 +1409,25 @@ export async function handOverBusRole(
   throw new ApiError("conflict", ROLE_REFUSALS[r.reason], {
     reason: r.reason,
   });
+}
+
+export async function actOnAwayBusRole(
+  env: Env,
+  userId: string,
+  action: AwayRoleAction,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId)))
+    throw new ApiError("conflict", ROLE_REFUSALS.no_bus);
+  const hub = busHub(env, userId);
+  if (!hub) throw new ApiError("storage_unavailable", "Bus unavailable");
+  const result = await roleCall(hub.actOnAwayRole(action));
+  if (!result.ok)
+    throw new ApiError(
+      "conflict",
+      "The holder or destination has changed. Choose again.",
+    );
+  if (result.moved) await auditRoleMoves(env, userId, hub, result.moved);
 }
 
 /** #1296: removes the member's role `id`. Idempotent: unknown is fine. */
@@ -1910,6 +2114,133 @@ export async function decideBusRoleProposal(
       ),
     }).run();
   return r;
+}
+
+/**
+ * #3132: the answer on the handover card (POST R.busRoleProposal(id)): the
+ * member's browser session decides proposal `id` in their own hub, once. The
+ * route took only that session; audits as the link's decision does
+ * (bus.role.confirmed or bus.role.refused, plus bus.role.moved when a role
+ * moved). 404 for an unknown proposal; 409 conflict with details { reason }
+ * when it can't apply (used, expired, changed, a putRole refusal; the
+ * proposal is then refused). A reject answers with the refused proposal.
+ */
+export async function decideBusRoleProposalById(
+  env: Env,
+  userId: string,
+  id: string,
+  decision: "confirm" | "reject",
+): Promise<BusRoleProposalDecided> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId)))
+    throw new ApiError("not_found", "Not found");
+  const hub = busHub(env, userId);
+  if (!hub) throw new ApiError("not_found", "Not found");
+  await sweepRevokedProposers(env, userId, hub);
+  const r = await roleCall(hub.decideRoleProposalById(id, decision));
+  await auditExpired(env, userId, r.expired);
+  const actor = userActor(userId);
+  if (r.ok) {
+    await audit(env, "bus.role.confirmed", auditTarget(userId), actor, {
+      detail: detailOf(r.audit),
+    }).run();
+    if (r.moved !== null) await auditRoleMoves(env, userId, hub, r.moved);
+    return { proposal: r.proposal, role: r.role };
+  }
+  if (r.proposal === null) throw new ApiError("not_found", "Not found");
+  await audit(env, "bus.role.refused", auditTarget(userId), actor, {
+    detail: detailOf(
+      r.audit ?? {
+        proposalId: r.proposal.id,
+        action: r.proposal.action,
+        roleId: r.proposal.roleId,
+        agentId: r.proposal.agentId,
+        priorAgentId: r.proposal.priorAgentId,
+      },
+      r.reason,
+    ),
+  }).run();
+  if (r.reason === "rejected") return { proposal: r.proposal, role: null };
+  throw new ApiError("conflict", DECIDE_REFUSALS[r.reason], {
+    reason: r.reason,
+  });
+}
+
+const DECIDE_REFUSALS: Record<ProposalRefusalReason, string> = {
+  unknown: "Not found",
+  used: "This was already decided",
+  expired: "This ask has expired. Ask the agent to propose it again",
+  changed: "The role changed since this was asked, so nothing was moved",
+  invalid: "That role name isn't valid",
+  name_taken: ROLE_REFUSALS.name_taken,
+  agent_not_open: "That agent isn't open anymore, so nothing was moved",
+  role_limit: ROLE_REFUSALS.role_limit,
+};
+
+function memberHandlesProposal(
+  p: BusRoleProposal,
+  holders: Record<string, { live: boolean }>,
+) {
+  return (
+    p.status !== "pending" ||
+    p.action !== "repoint" ||
+    !p.priorAgentId ||
+    !holders[p.priorAgentId]?.live
+  );
+}
+
+/**
+ * #3132: the member's pending role proposals as handover cards, for For you
+ * (services/inbox.ts): newest first. Reads their own hub once, within
+ * BUS_HUB_TIMEOUT_MS; [] when the bus is off, no machine ever connected, or
+ * the read fails or times out.
+ */
+export async function pendingRoleCards(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<{ card: RoleCard; createdAt: string }[]> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return [];
+  const hub = busHub(env, userId);
+  if (!hub) return [];
+  try {
+    const r = await within(hub.listRoleProposals(), BUS_HUB_TIMEOUT_MS);
+    if (r === null) return [];
+    await auditExpired(env, userId, r.expired);
+    return r.proposals
+      .filter(
+        (p) =>
+          p.status === "pending" &&
+          Date.parse(p.expiresAt) > now &&
+          memberHandlesProposal(p, r.holders),
+      )
+      .map((p) => {
+        const h = p.priorAgentId ? r.holders[p.priorAgentId] : undefined;
+        return {
+          createdAt: p.createdAt,
+          card: {
+            proposalId: p.id,
+            action: p.action,
+            name: p.name,
+            namespace: p.namespace,
+            agentName: p.agentName,
+            priorHolderName: p.priorHolderName,
+            targetMachine: p.targetMachine,
+            priorMachine: p.priorMachine,
+            holder: h
+              ? {
+                  state: h.live ? ("live" as const) : ("away" as const),
+                  since:
+                    h.since === null ? null : new Date(h.since).toISOString(),
+                }
+              : null,
+            expiresAt: p.expiresAt,
+          },
+        };
+      });
+  } catch (e) {
+    logError("bus_role_cards_failed", e);
+    return [];
+  }
 }
 
 // ---------------------------------------------------------- reach proposals

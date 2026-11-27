@@ -252,21 +252,14 @@ describe("oa-bus status, Claude entry", () => {
   };
   const mine = { type: "http", url: `${FAKE_HUB}/mcp` };
 
-  it("says whether the entry has the helper", async () => {
-    expect(await line(mine, true, true)).toEqual([
-      "Claude Code: the open-artifacts entry (user scope) shows as this session on pages.",
-    ]);
-    expect(await line(mine, true)).toEqual([
-      "Claude Code: the open-artifacts entry (user scope) has no session helper, so what it posts can't be tied to this session.",
-      "Claude Code: automatic linking is off for this bus.",
-    ]);
+  it("default screen omits helper-run wording (#3328 S1)", async () => {
+    expect(await line(mine, true, true)).toEqual([]);
+    expect(await line(mine, true)).toEqual([]);
     expect(await line(undefined, true)).toEqual([]);
   });
 
-  it("an old daemon says to update", async () => {
-    expect(await line(mine, false, true)).toEqual([
-      "Claude Code: update the daemon so these entries can show as this session on pages.",
-    ]);
+  it("an old daemon also omits helper wording on default screen", async () => {
+    expect(await line(mine, false, true)).toEqual([]);
   });
 });
 
