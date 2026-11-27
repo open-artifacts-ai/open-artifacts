@@ -87,7 +87,6 @@ async function reg(
     v: 1,
     id: id("u"),
     type: "agent_up",
-    name_chosen: true,
     agent_ref: ref,
     kind: "opencode",
     proposed_name: name,
@@ -302,7 +301,6 @@ describe("sending to a role (#1296)", () => {
       v: 1,
       id: fid,
       type: "rename",
-      name_chosen: true,
       agent_ref: "a",
       proposed_name: renamedTo,
     });
@@ -446,7 +444,6 @@ describe("a global sender's role in one other namespace (#1296 review)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "x",
       proposed_name: now,
     });
@@ -480,7 +477,6 @@ describe("a global sender's role and left-behind former names (OpenBus #451, #45
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: ref,
       proposed_name: to,
     });
@@ -892,7 +888,6 @@ describe("role names share the agent-name space (#1296)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "b",
       proposed_name: "LEAD",
     });
@@ -947,7 +942,6 @@ describe("role names share the agent-name space (#1296)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "b",
       proposed_name: uniq("right"),
     });
@@ -968,7 +962,6 @@ describe("role names share the agent-name space (#1296)", () => {
         v: 1,
         id: id("r"),
         type: "rename",
-        name_chosen: true,
         agent_ref: ref,
         proposed_name: to,
       });
@@ -1009,7 +1002,6 @@ describe("role names share the agent-name space (#1296)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "a",
       proposed_name: other,
     });
@@ -1041,7 +1033,6 @@ describe("role names share the agent-name space (#1296)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "p",
       proposed_name: uniq("chosen"),
     });
@@ -1071,7 +1062,6 @@ describe("role names share the agent-name space (#1296)", () => {
       v: 1,
       id: id("r"),
       type: "rename",
-      name_chosen: true,
       agent_ref: "p",
       proposed_name: chosen,
     });
@@ -1174,7 +1164,6 @@ describe("only the member sets roles (#1296)", () => {
         v: 1,
         id: id("x"),
         type: "agent_up",
-        name_chosen: true,
         agent_ref: "a",
         kind: "opencode",
         proposed_name: "alice",

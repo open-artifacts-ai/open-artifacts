@@ -1630,6 +1630,7 @@ export type OrgReal = {
   grantId: string;
   /** #1291: the caller's own bus machine (a D1 row). */
   busMachineId: string;
+  busRoleProposalId: string;
   /** An enrolled device owned by the caller in the local matrix. */
   subscriptionId: string;
   /** An address nobody holds (an invite). */
@@ -2503,6 +2504,17 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: either(ok(200), code("conflict")),
     },
   },
+  "POST /api/v1/bus/roles/proposals/:id": {
+    refuse: invalid(),
+    real: {
+      needs: ["busRoleProposalId"],
+      req: (r) => ({
+        path: `/api/v1/bus/roles/proposals/${r.busRoleProposalId}`,
+        body: { decision: "reject" },
+      }),
+      allow: ok(200),
+    },
+  },
   // Idempotent: an unknown id answers 204 too.
   "DELETE /api/v1/bus/roles/:id": {
     real: {
@@ -2564,7 +2576,8 @@ function orgProbe(
 ): OrgSurface["probe"] {
   const [method = "GET", path = ""] = route.split(" ");
   return async (base, cred, t, io) => {
-    const p = fill(path, t);
+    const p =
+      path === "/api/v1/me/handle" ? path + "?handle=sample" : fill(path, t);
     if (method === "GET") {
       const r = await send(io, base, p, cred);
       // A 409 is allowed only as member_active (past the transfer guard).
@@ -2617,6 +2630,7 @@ const MANAGER = { user: true, space: "manager" } as const;
 const ADMIN = { user: true, space: "admin" } as const;
 const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/me", U, [200]],
+  ["GET /api/v1/me/handle", U, [200]],
   ["GET /api/v1/me/inbox", U, [200]],
   ["POST /api/v1/me/inbox/read", U],
   ["POST /api/v1/me/inbox/:id/later", U],
@@ -2776,6 +2790,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/bus/roles", org("mcp.connect")],
   ["PUT /api/v1/bus/roles", org("mcp.connect")],
   ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
+  ["POST /api/v1/bus/roles/proposals/:id", org("mcp.connect")],
   // #1567: project links; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/run-version", org("bus.run_version")],

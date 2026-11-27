@@ -147,7 +147,7 @@ export async function add(
  * pages show as the session there. Never fails the add.
  */
 function agyEntries(name: string, hub: string, ctx: Ctx): void {
-  if (!agyOn(ctx.env)) return;
+  if (!agyOn(ctx.env, ctx.home)) return;
   try {
     const r = installAgyEntries(
       agyEntryIo({

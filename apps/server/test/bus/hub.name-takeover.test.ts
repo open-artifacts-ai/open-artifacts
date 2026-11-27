@@ -7,7 +7,13 @@
 // the member decides. A true resume (the same agent_ref) is silent. Real hub,
 // real daemon sockets; time is BusHub.setTestClock, waits are signals.
 import { runInDurableObject } from "cloudflare:test";
-import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  LIMITS,
+  type ServerFrame,
+} from "@oa/bus-protocol";
+import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -142,19 +148,34 @@ const roleCount = (namespace: string) =>
     namespace,
   ).then((r) => r[0]?.n ?? 0);
 
-async function scene(opts: { holderAway?: boolean; global?: boolean } = {}) {
+async function scene(
+  opts: { holderAway?: boolean; global?: boolean; selfPicked?: boolean } = {},
+) {
   await setClock(base());
   const n = ns("nt");
   const m = await machine("Work");
   const d = await connect(m.token);
   const name = uniq("Lead");
   const holderRef = uniq("holder");
-  expect(await reg(d, holderRef, name, n, { global: opts.global })).toBe(name);
+  if (opts.selfPicked) {
+    d.send(plainUp(id("u"), holderRef, name, n, opts.global ?? false));
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+  } else
+    expect(await reg(d, holderRef, name, n, { global: opts.global })).toBe(
+      name,
+    );
   if (opts.holderAway) await close(d, holderRef);
   return { d, m, n, name, holderRef };
 }
 
 describe("a held chosen name asks to take over its role (#3132)", () => {
+  it("the first person-chosen name holds its role before any other session asks", async () => {
+    const s = await scene();
+    expect(await roleOf(s.n, s.name)).toEqual([{ ref: s.holderRef }]);
+    expect(await asks(s.holderRef)).toEqual([]);
+    s.d.close();
+  });
+
   it("live holder: suffixed bus_name, pendingRole, one repoint proposal, the role made for the holder, both told", async () => {
     const s = await scene();
     const ref = uniq("new");
@@ -186,6 +207,134 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
         ),
       ).toBe(true);
     });
+    s.d.close();
+  });
+
+  it.each([
+    { method: "rename", handover: false },
+    { method: "agent_up", handover: false },
+    { method: "rename", handover: true },
+    { method: "agent_up", handover: true },
+  ])(
+    "$method keeps the role ID and expires the old address after grace (handover: $handover)",
+    async ({ method, handover }) => {
+      const s = await scene();
+      const successor = uniq("successor");
+      expect(await reg(s.d, successor, s.name, s.n)).toBe(`${s.name}-2`);
+      const observer = uniq("observer");
+      await reg(s.d, observer, uniq("watch"), s.n);
+      const hub = await hubOf();
+      const original = (await hub.listRoles()).find((r) => r.name === s.name)!;
+      const holder = handover ? successor : s.holderRef;
+      const holderId = await agentIdOf(holder);
+      if (handover)
+        expect((await hub.putRole(s.n, s.name, holderId)).ok).toBe(true);
+      const next = uniq("Research");
+      const at = base();
+      await setClock(at);
+      expect(
+        await (method === "rename"
+          ? rename(s.d, holder, next)
+          : reg(s.d, holder, next, s.n)),
+      ).toBe(next);
+      const roles = (await hub.listRoles()).filter(
+        (r) => r.id === original.id || r.name === next,
+      );
+      expect(roles).toMatchObject([
+        { id: original.id, name: next, agentId: holderId },
+      ]);
+      const send = async (to: string) => {
+        s.d.send({
+          v: 1,
+          id: id("s"),
+          type: "send",
+          from_ref: observer,
+          to_name: to,
+          body: "rename check",
+        } as ClientFrame);
+        return waitFor(s.d, "receipt");
+      };
+      await setClock(at + LIMITS.formerNameGraceMs - 1);
+      const inGrace = await send(s.name);
+      expect(inGrace.state).toBe("pending");
+      await fence(s.d);
+      expect(framesSeen(s.d)).toContainEqual(
+        expect.objectContaining({
+          type: "deliver",
+          msg_id: inGrace.msg_id,
+          to_ref: holder,
+        }),
+      );
+      await setClock(at + LIMITS.formerNameGraceMs);
+      expect(await send(s.name)).toMatchObject({
+        state: "refused",
+        reason: "unknown_agent",
+      });
+      expect(
+        await hub.deliverNotice({
+          id: newId(),
+          kind: "comment",
+          from: NOTICE_SENDER,
+          artifactId: "doc",
+          version: 1,
+          url: "https://app.test/a/doc",
+          to: { namespace: s.n, name: s.name },
+          text: "Fresh notice",
+          coalesceKey: "new",
+        }),
+      ).toBe("dropped");
+      expect((await send(next)).state).toBe("pending");
+      s.d.close();
+    },
+  );
+
+  it("answers the predecessor's personal ask after the successor renames its role", async () => {
+    const s = await scene();
+    const successor = uniq("successor");
+    await reg(s.d, successor, s.name, s.n);
+    const hub = await hubOf();
+    const originalId = await agentIdOf(s.holderRef);
+    const identity = newId();
+    await sqlOf(
+      "update agents set identity_id = ? where id = ?",
+      identity,
+      originalId,
+    );
+    const handoverAt = base();
+    await setClock(handoverAt);
+    expect(
+      (await hub.putRole(s.n, s.name, await agentIdOf(successor))).ok,
+    ).toBe(true);
+    const askAt = handoverAt + 1;
+    await setClock(askAt);
+    const answer: BusNotice = {
+      id: newId(),
+      kind: "ask_answered",
+      from: NOTICE_SENDER,
+      artifactId: "doc",
+      version: 1,
+      url: "https://app.test/a/doc",
+      to: { namespace: s.n, name: s.name },
+      toIdentity: identity,
+      originAt: askAt,
+      text: "Personal answer",
+      coalesceKey: "personal",
+    };
+    await setClock(askAt + 1);
+    await rename(s.d, successor, uniq("Research"));
+    expect(await hub.deliverNotice(answer)).toBe("delivered");
+    expect(await hub.deliverNotice({ ...answer, toIdentity: newId() })).toBe(
+      "dropped",
+    );
+    expect(await hub.deliverNotice({ ...answer, originAt: askAt + 2 })).toBe(
+      "dropped",
+    );
+    await fence(s.d);
+    expect(
+      framesSeen(s.d).filter(
+        (f) => f.type === "deliver" && f.body === answer.text,
+      ),
+    ).toMatchObject([{ to_ref: s.holderRef }]);
     s.d.close();
   });
 
@@ -237,6 +386,7 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(put.ok).toBe(true);
     expect(await roleOf(s.n, s.name)).toEqual([{ ref }]);
     const row = (await hub.snapshot()).agents.find((a) => a.name === got);
+    expect(row).toMatchObject({ role: s.name, privateSessionName: true });
     expect(row?.pendingRole).toBeUndefined();
     // The ask the move answered is settled: no card is left for it.
     expect(await asks(ref)).toEqual([]);
@@ -320,12 +470,16 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
       expect(successor).not.toBe(prior);
       expect(await agentIdOf(s.holderRef)).toBe(prior);
       expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
-      expect(await asks(ref)).toEqual([
-        { name: role, action: "repoint", credential: null },
-      ]);
+      const expectedNames =
+        !global && role !== s.name ? [s.name, role] : [role];
+      const proposals = await asks(ref);
+      expect(proposals.map((p) => p.name).sort()).toEqual(expectedNames.sort());
+      expect(
+        proposals.every((p) => p.action === "repoint" && p.credential === null),
+      ).toBe(true);
       replace();
       await waitFor(s.d, "agent_ok");
-      expect(await asks(ref)).toHaveLength(1);
+      expect(await asks(ref)).toHaveLength(expectedNames.length);
       expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
       expect((await hub.putRole(s.n, role, successor)).ok).toBe(true);
       expect(await roleOf(s.n, role)).toEqual([{ ref }]);
@@ -337,7 +491,7 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     const s = await scene({ holderAway: true });
     expect(await reg(s.d, s.holderRef, s.name, s.n)).toBe(s.name);
     await fence(s.d);
-    expect(await roleCount(s.n)).toBe(0);
+    expect(await roleOf(s.n, s.name)).toEqual([{ ref: s.holderRef }]);
     expect(
       await sqlOf("select 1 as x from role_proposals where namespace = ?", s.n),
     ).toEqual([]);
@@ -431,7 +585,7 @@ describe("a self-picked name is no role (#3143)", () => {
   });
 
   it("agent_up asking an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
-    const s = await scene({ holderAway: true });
+    const s = await scene({ holderAway: true, selfPicked: true });
     const sm = await machine("Snd");
     const snd = await connect(sm.token);
     await reg(snd, "snd", uniq("Snd"), s.n);
@@ -457,7 +611,7 @@ describe("a self-picked name is no role (#3143)", () => {
   });
 
   it("rename to an away holder's name of the same kind: the #1742 reclaim, with its queued mail", async () => {
-    const s = await scene({ holderAway: true });
+    const s = await scene({ holderAway: true, selfPicked: true });
     const sm = await machine("Snd");
     const snd = await connect(sm.token);
     await reg(snd, "snd", uniq("Snd"), s.n);

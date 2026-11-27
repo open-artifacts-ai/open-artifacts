@@ -44,6 +44,11 @@ import { LIVE_DOWN, QUEUE_LEGEND, StatusBadge } from "./ui";
 
 type Filter = "all" | "live" | "queued";
 
+const agentLabel = (a: BusAgent) =>
+  a.pendingRole || a.handedOver || (a.privateSessionName && !a.role)
+    ? `Session on ${a.machineLabel}`
+    : (a.role ?? a.name);
+
 const ROW =
   "flex min-h-[30px] min-w-0 items-center gap-[6px] rounded-md px-[8px] text-[length:var(--oa-text-sm)] no-underline text-foreground hover:bg-accent aria-[current=true]:bg-accent aria-[current=true]:font-medium";
 const LABEL =
@@ -220,11 +225,6 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
     }
   }
 }
-
-const agentLabel = (a: BusAgent) =>
-  a.pendingRole || (a.privateSessionName && !a.role)
-    ? `Session on ${a.machineLabel}`
-    : (a.role ?? a.name);
 
 function awayAge(since?: string) {
   const minutes = since

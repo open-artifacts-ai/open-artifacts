@@ -68,6 +68,18 @@ describe("person @mention candidates", () => {
     expect(await find(id, owner, "ordan")).toEqual([]);
   });
 
+  it("matches a handle prefix only for a reader", async () => {
+    const who = await mk("handle-reader", "Ana Ruiz");
+    await api(app, R.me, who.cookie, {
+      method: "PATCH",
+      body: { handle: "ana-r_21" },
+    });
+    expect(await find(await page([who]), owner, "ANA-R_")).toEqual([
+      who.userId,
+    ]);
+    expect(await find(await page([]), owner, "ana-r_")).toEqual([]);
+  });
+
   it("a reader is still found by the IdP name", async () => {
     const who = await mk("kq9912", "Kay Q");
     await E.DB.prepare("update users set name = 'Kim Quinn' where id = ?")

@@ -236,10 +236,19 @@ describe("roster: the viewer's own running agents", () => {
       [s.owner.userId]: [
         { ...agentRow("ns-o", "OA Platform W"), role: "OA Platform" },
         agentRow("ns-o", "Plain"),
+        {
+          ...agentRow("ns-o", "Lead-2"),
+          role: "Lead",
+          roleId: "abcdef1234567890",
+          privateSessionName: true,
+        },
       ],
       [s.editor.userId]: [{ ...agentRow("ns-e", "Codex W"), role: "Codex" }],
     });
     const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const inherited = r.find((x) => x.name === "Lead");
+    expect(inherited).toBeDefined();
+    expect(inherited).not.toHaveProperty("session");
     const own = r.find((x) => x.address.name === "OA Platform W");
     expect(own).toMatchObject({
       name: "OA Platform",

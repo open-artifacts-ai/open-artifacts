@@ -1,23 +1,29 @@
-import { canonicalAddress, listInstances, readFolders } from "@oa/bus-daemon";
-import { stripTerminalControls } from "@oa/bus-ipc";
+import { existsSync } from "node:fs";
+import {
+  canonicalAddress,
+  listInstances,
+  readFolders,
+  resolveNamespace,
+} from "@oa/bus-daemon";
+import { type StatusReply, stripTerminalControls } from "@oa/bus-ipc";
 import { semverGte } from "@oa/bus-protocol";
 import {
   type Ctx,
-  configFileLines,
   probeDaemon,
   say,
   sayErr,
   socketFolderLines,
   tilde,
 } from "../context.ts";
-import { ago, forHowLong, type HubLink } from "../copy.ts";
-import { readMachine } from "../machine.ts";
-import { readRecord as readClaudePluginsRecord } from "../steps/claude-plugins.ts";
-import { claudeProofChecks } from "../steps/claude-proof-check.ts";
-import { sessionChecks } from "../steps/claude-sessions.ts";
-import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
-import { habitsLine } from "./habits.ts";
-import { rosters } from "./install.ts";
+import { originOf, readMachine } from "../machine.ts";
+import {
+  type InstanceView,
+  type OtherProject,
+  renderStatusScreen,
+  type StatusAgent,
+  terminalWidth,
+  type Verdict,
+} from "./status-view.ts";
 
 export const hostOf = (hub: string) => {
   try {
@@ -25,23 +31,6 @@ export const hostOf = (hub: string) => {
   } catch {
     return hub;
   }
-};
-
-/** An older daemon omits `hub_ever` and `hub_since`: not connected reads as connecting. */
-const linkOf = (
-  st: {
-    hub: string;
-    hub_ever?: boolean | undefined;
-    hub_since?: number | undefined;
-  },
-  now: number,
-): HubLink => {
-  if (st.hub === "connected") return { state: "connected" };
-  if (!st.hub_ever) return { state: "connecting" };
-  return {
-    state: "reconnecting",
-    for: st.hub_since === undefined ? undefined : forHowLong(st.hub_since, now),
-  };
 };
 
 /** `major.minor.patch` of a semver, without pre-release or build; undefined when it is not one. */
@@ -125,27 +114,12 @@ export const updateTarget = async (
   return newest !== undefined && !semverGte(mine, newest) ? newest : undefined;
 };
 
-/**
- * #1822, #2688: whether the instance's Claude entries have the proof helper,
- * so they show as this session on pages. The same check as doctor's; nothing
- * when there is no entry (doctor warns about that).
- */
-const proofLines = (ctx: Ctx, hub: string, daemonKnows: boolean): string[] =>
-  claudeProofChecks(ctx, hub)
-    .filter((c) => c.level !== "info")
-    .flatMap((c) =>
-      c.level === "pass" && !daemonKnows
-        ? [
-            "Claude Code: update the daemon so these entries can show as this session on pages.",
-          ]
-        : c.lines,
-    );
-
 const FOLDERS_SHOWN = 50;
 
 /**
  * #2793: with two or more instances, which hub each is and which folders use
  * which. With one, nothing: the output stays as it was.
+ * Kept exported for `--instances` (S3) and callers.
  */
 export function instanceBlocks(
   ctx: Ctx,
@@ -201,30 +175,151 @@ export function instanceBlocks(
   return [inst, ...folders];
 }
 
+function buildInstances(
+  ctx: Ctx,
+  mainHub: string,
+  mainRevoked: boolean,
+  st?: StatusReply,
+): InstanceView[] {
+  const configured = listInstances(ctx.home);
+  if (configured.length < 2) {
+    if (mainRevoked) {
+      return [
+        {
+          name: "main",
+          host: hostOf(mainHub),
+          ok: false,
+          reason: "revoked",
+        },
+      ];
+    }
+    const ok = st?.hub === "connected";
+    return [
+      {
+        name: "main",
+        host: hostOf(mainHub),
+        ok,
+        ...(ok ? {} : { reason: "can't reach" as const }),
+      },
+    ];
+  }
+  const rows = st?.instances ?? [];
+  return configured.map((inst) => {
+    const r = rows.find((x) => x.name === inst.name);
+    if (r?.revoked || (inst.main && mainRevoked)) {
+      return {
+        name: inst.name,
+        host: hostOf(inst.hub),
+        ok: false,
+        reason: "revoked" as const,
+      };
+    }
+    const ok = r
+      ? r.link === "connected"
+      : Boolean(inst.main && st?.hub === "connected");
+    return {
+      name: inst.name,
+      host: hostOf(inst.hub),
+      ok,
+      ...(ok ? {} : { reason: "can't reach" as const }),
+    };
+  });
+}
+
+function currentNamespace(ctx: Ctx, st: StatusReply): string | undefined {
+  if (st.namespace) return st.namespace;
+  if (ctx.cwd && existsSync(ctx.cwd)) {
+    try {
+      return resolveNamespace(ctx.cwd).namespace;
+    } catch {}
+  }
+  return st.namespaces[0]?.namespace;
+}
+
+function partitionNamespaces(
+  ctx: Ctx,
+  st: StatusReply,
+): { agents: StatusAgent[]; others: OtherProject[] } {
+  const cur = currentNamespace(ctx, st);
+  const byNs = new Map<string, StatusAgent[]>();
+  for (const block of st.namespaces) {
+    const list = byNs.get(block.namespace) ?? [];
+    for (const a of block.agents) {
+      if (
+        !list.some(
+          (x) =>
+            x.name === a.name && x.kind === a.kind && x.machine === a.machine,
+        )
+      ) {
+        list.push(a);
+      }
+    }
+    byNs.set(block.namespace, list);
+  }
+  const agents = cur ? (byNs.get(cur) ?? []) : [];
+  const others: OtherProject[] = [];
+  for (const [namespace, list] of byNs) {
+    if (namespace === cur || list.length === 0) continue;
+    others.push({ namespace, count: list.length });
+  }
+  return { agents, others };
+}
+
 /**
- * Transcript state 7. Read-only; never prints the token. Exit 0 only when
- * the daemon reports an open hub link.
+ * Default `oa-bus status` screen (#3328 S1). Read-only; never prints the token.
+ * Exit 0 only when working (daemon up, all instances connected, no hub problem).
  */
 export async function status(ctx: Ctx): Promise<number> {
   const c = ctx.copy;
-  say(ctx, c.header(ctx.version), "");
+  const width = terminalWidth(ctx);
   const m = readMachine(ctx.home);
   if (m.state !== "ok") {
+    say(
+      ctx,
+      renderStatusScreen(ctx.style, {
+        version: ctx.version,
+        verdict: "down",
+        instances: [],
+        busCmd: ctx.busCmd,
+        now: ctx.now(),
+        width,
+      }),
+    );
     sayErr(ctx, c.notRegistered());
     return 1;
   }
-  // machine.json's hub: OA_BUS_INSTANCE only picks one before login.
-  const host = hostOf(m.hub);
   if (m.revoked) {
-    say(ctx, c.hubRow(host), c.machineRow(m.label));
+    say(
+      ctx,
+      renderStatusScreen(ctx.style, {
+        version: ctx.version,
+        verdict: "down",
+        machine: m.label,
+        instances: buildInstances(ctx, m.hub, true),
+        busCmd: ctx.busCmd,
+        now: ctx.now(),
+        width,
+      }),
+    );
     sayErr(ctx, c.revoked());
     return 1;
   }
-  // Started now so it overlaps the daemon probe; awaited only where printed.
+  // Started now so it overlaps the daemon probe; awaited only once daemon answers.
   const health = probeHealthz(ctx, m.hub);
   const probe = await probeDaemon(ctx, { timeoutMs: 3000 });
   if (probe.state !== "up") {
-    say(ctx, c.hubRow(host), c.machineRow(m.label));
+    say(
+      ctx,
+      renderStatusScreen(ctx.style, {
+        version: ctx.version,
+        verdict: "down",
+        machine: m.label,
+        instances: buildInstances(ctx, m.hub, false),
+        busCmd: ctx.busCmd,
+        now: ctx.now(),
+        width,
+      }),
+    );
     sayErr(
       ctx,
       probe.state === "stalled"
@@ -234,54 +329,30 @@ export async function status(ctx: Ctx): Promise<number> {
     return 1;
   }
   const st = probe.st;
-  say(ctx, c.hubRow(host, linkOf(st, ctx.now())), c.machineRow(m.label));
-  say(ctx, c.daemonRunning(st.pid, ctx.service.kind, ctx.service.fallback));
-  // One bounded fetch serves both: the problem shows even with the link down.
   const { problem } = await health;
-  if (problem !== undefined) say(ctx, c.hubProblem(problem));
-  const update = await updateTarget(
+  const instances = buildInstances(ctx, m.hub, false, st);
+  const anyUp = instances.some((i) => i.ok);
+  const allUp = instances.length > 0 && instances.every((i) => i.ok);
+  const verdict: Verdict = !anyUp
+    ? "down"
+    : !allUp || problem !== undefined
+      ? "degraded"
+      : "working";
+  const agentsPageUrl = `${originOf(m.hub)}/settings/agents`;
+
+  say(
     ctx,
-    st,
-    async () => (await health).version,
+    renderStatusScreen(ctx.style, {
+      version: ctx.version,
+      verdict,
+      machine: m.label || st.label,
+      instances,
+      ...(anyUp ? { project: partitionNamespaces(ctx, st) } : {}),
+      agentsPageUrl,
+      busCmd: ctx.busCmd,
+      now: ctx.now(),
+      width,
+    }),
   );
-  if (update) say(ctx, c.updateAvailable(update, st.version, m.hub));
-  say(ctx, habitsLine(ctx));
-  // From the install record only: status never starts Claude Code.
-  if (readClaudePluginsRecord(ctx.home)?.plugins?.length)
-    say(ctx, c.pluginsStatus());
-  const proof = [...new Set(proofLines(ctx, m.hub, st.link === true))];
-  if (proof.length) say(ctx, proof);
-  // Static text, only where the plugin is installed: nothing in OpenClaw's config is read.
-  const ocState = openclawPluginState(
-    openclawPluginDir(ctx.userHome, ctx.env),
-    undefined,
-  );
-  if (ocState === "stale" || ocState === "current")
-    say(ctx, c.openclawDmNote());
-  // Before the hub check: a refused file explains a missing config either way.
-  if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
-  for (const block of instanceBlocks(ctx, st.instances ?? []))
-    say(ctx, "", block);
-  if (st.hub !== "connected") {
-    // Without the hub, no row's state can be known.
-    sayErr(ctx, c.hubNotReachable(host, st.hub_error, "status"));
-    return 1;
-  }
-  if (st.namespaces.length > 0) say(ctx, "", rosters(ctx, st.namespaces));
-  // #2688: live Claude sessions with no link, each with its likely cause.
-  for (const chk of sessionChecks(ctx, st, m.hub)) {
-    const ls = c.check(chk.level, chk.head, chk.notes);
-    if (chk.level === "fail") sayErr(ctx, ls);
-    else if (chk.level !== "warn") say(ctx, ls);
-  }
-  const late = [...(st.late ?? [])].sort((a, b) => b.at - a.at);
-  if (late.length > 0)
-    say(ctx, "", [
-      c.lateHeader(late.length),
-      ...late.flatMap((l) => [
-        c.lateRow(l.from, l.to, ago(l.at, ctx.now())),
-        ...(l.excerpt ? [c.lateQuote(stripTerminalControls(l.excerpt))] : []),
-      ]),
-    ]);
-  return problem === undefined ? 0 : 1;
+  return verdict === "working" ? 0 : 1;
 }

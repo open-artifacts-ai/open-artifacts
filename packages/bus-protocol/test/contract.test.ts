@@ -82,6 +82,7 @@ describe("contract is pinned", () => {
       "owner_away",
       "proof_seen",
       "codex_call_check",
+      "codex_call_verdict",
     ]);
   });
 
