@@ -100,6 +100,41 @@ const PROXY_ARGS = [
 ];
 
 describe("Antigravity pages entry (agy S5)", () => {
+  it("installs and removes the main pages proxy on a fresh machine", async () => {
+    const { deps, file, h } = setup();
+    await installAdapters(deps);
+    const config = read(file);
+    expect(entry(config)).toEqual({
+      command: BIN[0],
+      args: [
+        ...PROXY_ARGS.slice(0, -2),
+        "--token-file",
+        join(h, ".open-artifacts/artifacts-example-com-pat-token"),
+      ],
+    });
+    await installAdapters(deps);
+    expect(read(file)).toBe(config);
+    await uninstallAdapters(deps);
+    expect(entry(read(file))).toBeUndefined();
+  });
+  it("keeps an occupied name and preserves changes to the generated proxy", async () => {
+    const { deps, file, h } = setup();
+    const other = { command: "mine", args: [] };
+    put(file, JSON.stringify({ mcpServers: { "open-artifacts": other } }));
+    put(join(h, ".open-artifacts/artifacts-example-com-pat-token"), PAT);
+    await installAdapters(deps);
+    const config = JSON.parse(read(file));
+    expect(config.mcpServers["open-artifacts"]).toEqual(other);
+    const generated = config.mcpServers["open-artifacts-2"];
+    expect(generated.args).toContain(HUB);
+    generated.disabled = true;
+    put(file, JSON.stringify(config));
+    await installAdapters({ ...deps, busBin: ["/new/node", "/new/cli"] });
+    await uninstallAdapters(deps);
+    expect(entry(read(file), "open-artifacts-2")).toEqual(generated);
+    expect(entry(read(file))).toEqual(other);
+  });
+
   it("is left alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
     const { deps, file } = setup({ env: {} });
     put(file, THEIRS());

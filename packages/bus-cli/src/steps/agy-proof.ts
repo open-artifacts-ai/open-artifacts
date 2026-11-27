@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -7,7 +8,9 @@ import {
   agyEntryText,
   type Doc,
   parseAgyMcp,
+  removeAgyMcp,
   setAgyEntryText,
+  upsertAgyMcp,
 } from "@oa/bus-adapter-mcp-json";
 import { BUS_CMD } from "@oa/bus-protocol";
 
@@ -63,7 +66,9 @@ type Moved = {
   origin: string;
   instance?: string;
   /** The user's entry text, with TOKEN_MARK for the token when it had one. */
-  original: string;
+  original: string | null;
+  /** Digest of an installer-created entry, to preserve later user edits. */
+  createdDigest?: string;
 };
 
 const isRecord = (v: unknown): v is Doc =>
@@ -79,12 +84,16 @@ function readMoved(path: string): Moved[] {
         typeof e.name === "string" &&
         typeof e.origin === "string" &&
         (e.instance === undefined || typeof e.instance === "string") &&
-        typeof e.original === "string",
+        (typeof e.original === "string" ||
+          (e.original === null && typeof e.createdDigest === "string")),
     );
   } catch {
     return [];
   }
 }
+
+const digest = (entry: Doc) =>
+  createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 
 const movedText = (list: Moved[]) =>
   `${JSON.stringify({ entries: list }, null, 2)}\n`;
@@ -195,7 +204,7 @@ function proxyEntry(
   t: AgyTarget,
   cred: Cred,
   token: string | undefined,
-): Doc {
+): Doc & { command: string; args: string[] } {
   const kept = Object.fromEntries(
     Object.entries(base).filter(
       ([k]) => !HTTP_KEYS.includes(k) && !BLOCKING.includes(k),
@@ -288,7 +297,7 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
         out.push({
           kind: "left",
           name,
-          note: `the ${name} entry in ${io.file} reaches Open Artifacts through oa-bus, but its PAT file ${ours.cred.tokenFile} is gone, so Antigravity has no token and its tools fail. Save a PAT there again, or run ${BUS_CMD} uninstall to put your own entry back.`,
+          note: `the ${name} entry in ${io.file} reaches Open Artifacts through oa-bus, but its PAT file ${ours.cred.tokenFile} is gone, so Antigravity has no token and its tools fail. Save a PAT for this instance there.`,
         });
         continue;
       }
@@ -385,20 +394,67 @@ export function installAgyEntries(
 ): AgyOutcome {
   const out: AgyOutcome = { notes: [], changed: [] };
   const before = readFile(io.file);
-  if (before.trim() === "") return out;
   let text = before;
   const moved = readMoved(io.moved);
   let keep = [...moved];
   for (const t of targets) {
-    for (const p of plans(io, parseAgyMcp(text, io.file), t)) {
+    const doc = parseAgyMcp(text, io.file);
+    const entries = servers(doc);
+    const existing = plans(io, doc, t);
+    if (
+      !existing.length &&
+      !Object.values(entries).some(
+        (e) => isRecord(e) && isAgyInstanceEntry(e, t.origin),
+      )
+    ) {
+      const pat = io.patFile?.(t.origin);
+      if (!pat) continue;
+      try {
+        mcpUrl(t.origin);
+      } catch {
+        out.notes.push(
+          `Skipped Antigravity page tools for ${t.origin}: the proxy requires HTTPS or localhost.`,
+        );
+        continue;
+      }
+      const base = t.name ? `open-artifacts-${t.name}` : "open-artifacts";
+      let name = base;
+      for (let suffix = 2; Object.hasOwn(entries, name); suffix++)
+        name = `${base}-${suffix}`;
+      const want = proxyEntry(io, {}, t, { tokenFile: pat }, undefined);
+      text = upsertAgyMcp(text, name, want, io.busHome);
+      keep = keep.filter((m) => m.name !== name);
+      keep.push({
+        name,
+        origin: t.origin,
+        ...(t.name ? { instance: t.name } : {}),
+        original: null,
+        createdDigest: digest(want),
+      });
+      out.changed.push(name);
+      if (!existsSync(pat))
+        out.notes.push(
+          `Antigravity's ${name} proxy is configured. Save a PAT for ${t.origin} at ${pat} to use its page tools.`,
+        );
+    }
+    for (const p of existing) {
       if (p.kind === "left") {
         out.notes.push(p.note);
         continue;
       }
+      const prior = keep.find(
+        (m) => m.name === p.name && m.origin === t.origin,
+      );
+      if (
+        p.kind === "ours" &&
+        prior?.original === null &&
+        prior.createdDigest !== digest(p.entry)
+      )
+        continue;
       const want = proxyEntry(io, p.entry, t, p.cred, p.token);
       if (p.kind === "ours" && isDeepStrictEqual(p.entry, want)) continue;
       const raw = render(text, p.name, want);
-      let original: string | undefined;
+      let original: string | null | undefined;
       if (p.kind === "swap") {
         const cur = agyEntryText(text, p.name) as string;
         if (p.token !== undefined) {
@@ -424,20 +480,30 @@ export function installAgyEntries(
             : readMoved(io.keptOf(p.owner)).find(
                 (m) => m.name === p.name && m.origin === t.origin,
               );
-        original = theirs?.original ?? adoptedOriginal(t.origin, p.cred);
+        if (
+          theirs?.original === null &&
+          theirs.createdDigest !== digest(p.entry)
+        )
+          continue;
+        original = theirs ? theirs.original : adoptedOriginal(t.origin, p.cred);
         out.notes.push(
           `took over the ${p.name} entry in ${io.file}: the bus at ${p.owner ?? "the default home"} no longer runs`,
         );
       }
       text = setAgyEntryText(text, p.name, raw, want);
-      const prior = keep.find((m) => m.name === p.name);
       keep = keep.filter((m) => m.name !== p.name);
+      const source =
+        original !== undefined
+          ? original
+          : prior
+            ? prior.original
+            : adoptedOriginal(t.origin, p.cred);
       keep.push({
         name: p.name,
         origin: t.origin,
         ...(t.name === undefined ? {} : { instance: t.name }),
-        original:
-          original ?? prior?.original ?? adoptedOriginal(t.origin, p.cred),
+        original: source,
+        ...(source === null ? { createdDigest: digest(want) } : {}),
       });
       out.changed.push(p.name);
       if (p.kind === "swap")
@@ -484,6 +550,13 @@ export function restoreAgyEntries(io: AgyEntryIo): {
       // Another bus took the entry over (#3075): keep the original, so it is
       // not lost while that bus holds the entry.
       stay.push(m);
+      continue;
+    }
+    if (m.original === null) {
+      if (isRecord(cur) && digest(cur) === m.createdDigest) {
+        text = removeAgyMcp(text, m.name);
+        res.restored.push(m.name);
+      }
       continue;
     }
     let raw = m.original;
