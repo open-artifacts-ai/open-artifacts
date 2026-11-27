@@ -18,10 +18,12 @@ import {
   PURGE_FIELD_RULES,
   ROUTE_IDS,
   ROUTES,
+  TEST_INSTALL,
   TEST_MEMBER,
   TOKEN_DELETING_PURGE,
   TokenScopeSchema,
   TRANSITIONS,
+  testInstallOwns,
   testMemberOwns,
 } from "../src/index.js";
 
@@ -178,6 +180,21 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
     }
   });
 
+  it("isolates fixture operations from production and the rl-agents principal", () => {
+    const principal = { kind: "oidc", oidcWorkflow: "test-install" } as const;
+    const allowed = ["R2", "R3", "R4", "R9", "R15", "R26"];
+    expect(TEST_INSTALL.routes).toEqual(allowed);
+    for (const route of ROUTE_IDS) {
+      expect(authorize(route, principal, "staging").ok).toBe(
+        allowed.includes(route),
+      );
+      expect(authorize(route, principal, "prod").ok).toBe(false);
+    }
+    expect(testInstallOwns({ slug: "t-alpha", testHooks: true })).toBe(true);
+    for (const slug of ["rl-agents", "rl-a", "acme"])
+      expect(testInstallOwns({ slug, testHooks: true })).toBe(false);
+    expect(testInstallOwns({ slug: "t-alpha", testHooks: false })).toBe(false);
+  });
   it("the test member's reach is exactly rl-agents with test hooks", () => {
     expect(TEST_MEMBER.slug).toBe("rl-agents");
     expect(testMemberOwns({ slug: "rl-agents", testHooks: true })).toBe(true);
@@ -300,6 +317,31 @@ describe("R4 field rules (3.3)", () => {
   const D = "test.example";
   const auth = { providers: ["google"], domains: ["acme.com"] };
   const full = { ownerEmail: "o@acme.com", tier: "team", auth };
+  it("creates only isolated email-code fixtures in the staging test domain", () => {
+    const fixture = {
+      ...full,
+      slug: "t-alpha",
+      ownerEmail: `owner@${D}`,
+      testHooks: true,
+      auth: { providers: ["email"], domains: [D], domainCodes: true },
+    };
+    const check = (body: typeof fixture) =>
+      checkCreateFields(body, "oidc", "staging", D, "test-install");
+    expect(check(fixture)).toBeNull();
+    for (const body of [
+      { ...fixture, slug: "rl-agents" },
+      { ...fixture, slug: "customer" },
+      { ...fixture, testHooks: false },
+      { ...fixture, auth: { ...fixture.auth, domains: ["other.example"] } },
+      { ...fixture, auth: { ...fixture.auth, providers: ["google", "email"] } },
+      { ...fixture, auth: { ...fixture.auth, domainCodes: false } },
+      { ...fixture, ownerEmail: "owner@other.example" },
+    ])
+      expect(check(body)?.code).toBe("forbidden");
+    expect(
+      checkCreateFields(fixture, "oidc", "staging", D, "redline")?.code,
+    ).toBe("forbidden");
+  });
 
   it("admin testHooks: staging allowed, prod 403 forbidden", () => {
     expect(createFieldRule("testHooks", "admin", "staging")).toBe("optional");

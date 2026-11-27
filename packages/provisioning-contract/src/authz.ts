@@ -188,7 +188,11 @@ export type AuthzPrincipal = {
   oidcWorkflow?: OidcWorkflow;
 } | null;
 /** The pinned workflows an OIDC JWT may come from (authorize). */
-export type OidcWorkflow = "redline" | "test-admin" | "test-member";
+export type OidcWorkflow =
+  | "redline"
+  | "test-admin"
+  | "test-member"
+  | "test-install";
 
 /**
  * The staging test member's workflow (staging-test-member.yml): R26 on the
@@ -208,6 +212,16 @@ export const TEST_MEMBER = {
 /** The test member's reach: exactly `rl-agents`, with test hooks. */
 export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
   i.slug === TEST_MEMBER.slug && i.testHooks === true;
+/** A separate pinned staging workflow uses the same OIDC mechanism to manage
+ * disposable test installs. Its jobs never have reach over rl-agents. */
+export const TEST_INSTALL = {
+  slugPrefix: "t-",
+  actorSuffix: ":test-install",
+  routes: ["R2", "R3", "R4", "R9", "R15", "R26"] as readonly RouteId[],
+} as const;
+export const testInstallOwns = (i: { slug: string; testHooks: boolean }) =>
+  i.slug.startsWith(TEST_INSTALL.slugPrefix) && i.testHooks === true;
+
 export type AuthzDecision =
   | { ok: true; reach: "all" | "own" }
   | { ok: false; code: "unauthenticated" | "forbidden" };
@@ -235,6 +249,11 @@ export function authorize(
     if (
       principal.oidcWorkflow === "test-member" &&
       !TEST_MEMBER.routes.includes(route)
+    )
+      return { ok: false, code: "forbidden" };
+    if (
+      principal.oidcWorkflow === "test-install" &&
+      !TEST_INSTALL.routes.includes(route)
     )
       return { ok: false, code: "forbidden" };
   }
@@ -425,12 +444,27 @@ export type CreateFieldRefusal = {
  */
 export function checkCreateFields(
   body: Readonly<Partial<Record<CreateField, unknown>>> & {
-    auth?: { domains: readonly string[]; domainCodes?: boolean };
+    auth?: {
+      domains: readonly string[];
+      providers?: readonly string[];
+      domainCodes?: boolean;
+    };
   },
   principal: CreatePrincipal,
   env: ProvisioningEnv,
   stagingTestDomain: string,
+  workflow?: OidcWorkflow,
 ): CreateFieldRefusal | null {
+  const fixture = principal === "oidc" && workflow === "test-install";
+  if (
+    fixture &&
+    (body.auth?.domainCodes !== true ||
+      body.auth.providers?.length !== 1 ||
+      body.auth.providers[0] !== "email" ||
+      body.auth.domains.length !== 1 ||
+      body.auth.domains[0] !== stagingTestDomain)
+  )
+    return { field: "auth", code: "forbidden" };
   const rules = CREATE_FIELDS.map(
     (f) => [f, createFieldRule(f, principal, env)] as const,
   );
@@ -447,7 +481,10 @@ export function checkCreateFields(
       return { field: f, code: "forbidden" };
     if (
       r === "required_test_prefix" &&
-      !(typeof v === "string" && v.startsWith(OIDC_LIMITS.slugPrefix))
+      !(
+        typeof v === "string" &&
+        v.startsWith(fixture ? TEST_INSTALL.slugPrefix : OIDC_LIMITS.slugPrefix)
+      )
     )
       return { field: f, code: "forbidden" };
     if (
