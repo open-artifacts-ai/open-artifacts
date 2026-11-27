@@ -72,6 +72,7 @@ describe("roles REST (#1296)", () => {
     expect(Object.keys(role).sort()).toEqual(
       [
         "agentId",
+        "heldSince",
         "holderName",
         "id",
         "name",

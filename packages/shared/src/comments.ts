@@ -579,6 +579,10 @@ export const ArtifactAgentSchema = z.object({
   name: z.string(),
   /** #3132: with a role as `name`, the session's own bus name, for the small print. */
   session: z.string().optional(),
+  holderApp: z
+    .object({ kind: z.string(), product: z.string().optional() })
+    .optional(),
+  heldSince: z.string().optional(),
   /** `state === "online"`; kept for readers that predate `state`. */
   online: z.boolean(),
   /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */
