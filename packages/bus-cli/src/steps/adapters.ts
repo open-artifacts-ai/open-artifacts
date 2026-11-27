@@ -102,9 +102,11 @@ import {
   installHermes,
   pluginState,
   uninstallHermes,
+  writeManagedPlugin,
 } from "./hermes.ts";
 import {
   installOpenclaw,
+  OPENCLAW_MARKER,
   OPENCLAW_NIX,
   OPENCLAW_NO_CLI,
   OPENCLAW_PLUGIN,
@@ -1793,26 +1795,20 @@ export async function refreshAdapters(
     );
     return hook.status === "added" || hook.status === "updated";
   });
-  await step("hermes", async () => {
-    const dest = hermesPluginDir(deps.home, deps.env ?? {});
-    if (
-      deps.assets.hermes === undefined ||
-      pluginState(dest, deps.assets.hermes) !== "stale"
-    )
+  await step(
+    "hermes",
+    async () =>
+      deps.assets.hermes !== undefined &&
+      (await installHermes(deps, "refresh")) === "done",
+  );
+  await step("openclaw", () => {
+    if (!deps.which("openclaw") || openclawNix(deps.env)) return false;
+    const dest = openclawPluginDir(deps.home, deps.env ?? {});
+    const shipped = deps.assets.openclaw;
+    if (!shipped || openclawPluginState(dest, shipped) !== "stale")
       return false;
-    return (await installHermes(deps)) === "done";
-  });
-  await step("openclaw", async () => {
-    if (
-      openclawNix(deps.env) ||
-      deps.assets.openclaw === undefined ||
-      openclawPluginState(
-        openclawPluginDir(deps.home, deps.env ?? {}),
-        deps.assets.openclaw,
-      ) !== "stale"
-    )
-      return false;
-    return (await installOpenclaw(deps, [])) === "done";
+    writeManagedPlugin(dest, shipped, OPENCLAW_MARKER, true, deps.staging);
+    return true;
   });
   return { refreshed, skipped };
 }

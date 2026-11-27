@@ -165,10 +165,54 @@ function makeFakeExec(home: string, env: Record<string, string>) {
       };
     return { code: 0, stdout: "", stderr: "" };
   };
-  return { calls, exec };
+  return {
+    calls,
+    exec,
+    disablePlugins() {
+      hermesEnabled = false;
+      openclawEnabled = false;
+    },
+    enabled: () => [hermesEnabled, openclawEnabled],
+  };
 }
 
 describe("refreshAdapters (#3174)", () => {
+  it("refreshes stale disabled Hermes and OpenClaw files without enabling either plugin", async () => {
+    const home = tmp("oa-refresh-disabled-");
+    const env = makeHarnessEnv(home);
+    const fake = makeFakeExec(home, env);
+    const assets = readAssets();
+    const oc = makeOpenclawPair(assets.openclaw);
+    const deps: AdapterDeps = {
+      home,
+      env,
+      busHome: join(home, "bus"),
+      busBin: BIN,
+      assets: { ...assets, hermes: makeOldHermes(), openclaw: oc.oldDir },
+      exec: fake.exec,
+      which: (c) => c === "hermes" || c === "openclaw",
+      isolated: true,
+    };
+    expect((await installAdapters(deps)).skipped).toEqual([]);
+    fake.disablePlugins();
+    fake.calls.length = 0;
+    const result = await refreshAdapters({
+      ...deps,
+      assets: { ...assets, openclaw: oc.newDir },
+    });
+    expect(fake.enabled()).toEqual([false, false]);
+    expect(result.refreshed).toEqual(
+      expect.arrayContaining(["hermes", "openclaw"]),
+    );
+    expect(pluginState(hermesPluginDir(home, env), assets.hermes)).toBe(
+      "current",
+    );
+    expect(openclawPluginState(openclawPluginDir(home, env), oc.newDir)).toBe(
+      "current",
+    );
+    expect(fake.calls).toEqual([]);
+  });
+
   it("updates every wired harness after a simulated auto-update, then is idempotent", async () => {
     const home = tmp("oa-refresh-home-");
     const busHome = join(home, "bus");
