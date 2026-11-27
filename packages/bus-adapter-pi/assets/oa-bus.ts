@@ -1340,6 +1340,10 @@ export default function oaBus(pi: Pi): void {
   let proof: Proof | undefined;
   /** Whether the registered entry carries a proof header now. */
   let headed = false;
+  /** #3043: the bus rules the daemon gave this session; undefined when opted out or unavailable. */
+  let rules: string | undefined;
+  /** #3043: in-flight rules fetch for the current session, awaited by before_agent_start. */
+  let rulesFetch: Promise<void> | undefined;
 
   const isRecord = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1556,13 +1560,36 @@ export default function oaBus(pi: Pi): void {
     void offerProof(p);
   };
 
+  /** #3043: ask the daemon for the current bus rules once a link is open; never throws. */
+  const fetchRules = (link: Link): Promise<void> => {
+    const runFetch = async (): Promise<void> => {
+      try {
+        const r = await link.request({ type: "habits" }, SELF_TIMEOUT_MS);
+        if (stopped || current !== link) return;
+        rules =
+          r.type === "habits" &&
+          typeof r.rules === "string" &&
+          r.rules.length > 0
+            ? r.rules
+            : undefined;
+      } catch {
+        if (current === link) rules = undefined;
+      } finally {
+        if (rulesFetch === p) rulesFetch = undefined;
+      }
+    };
+    const p = runFetch();
+    rulesFetch = p;
+    return p;
+  };
+
   const reconnect = (e?: unknown) => {
     if (stopped || retry || !identity) return;
     const refused = (e as { refused?: boolean } | undefined)?.refused === true;
     refusals = refused ? refusals + 1 : 0;
     retry = setTimeout(() => {
       retry = undefined;
-      if (identity) void ensure(identity).catch(reconnect);
+      if (identity) void ensure(identity).then(fetchRules, reconnect);
     }, retryDelayMs(refusals));
     retry.unref?.();
   };
@@ -1586,7 +1613,11 @@ export default function oaBus(pi: Pi): void {
           );
         } catch {}
       },
-      lost: () => reconnect(),
+      lost: () => {
+        rules = undefined;
+        rulesFetch = undefined;
+        reconnect();
+      },
     }).then(
       (l) => {
         if (connecting?.link === link) connecting = undefined;
@@ -1717,6 +1748,8 @@ export default function oaBus(pi: Pi): void {
   pi.on("session_start", async (event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
+    rules = undefined;
+    rulesFetch = undefined;
     // The entry works unlinked: no header until this session's link is bound.
     identity = identityOf(ctx);
     stopWatchingName?.();
@@ -1737,7 +1770,35 @@ export default function oaBus(pi: Pi): void {
     register();
     if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
-    await ensure(identity).catch(reconnect);
+    const link = await ensure(identity).catch((e: unknown) => {
+      reconnect(e);
+      return undefined;
+    });
+    if (link) void fetchRules(link);
+  });
+  // #3043: append the daemon's bus rules to the system prompt for root sessions.
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (subagent(ctx)) return undefined;
+    if (rulesFetch) await rulesFetch;
+    const body = rules;
+    if (stopped || !body) return undefined;
+    const prompt =
+      event && typeof event === "object"
+        ? (event as { systemPrompt?: unknown }).systemPrompt
+        : undefined;
+    // Pi passes systemPrompt as a string; omp passes it as string[].
+    if (typeof prompt === "string")
+      return prompt.includes(body)
+        ? undefined
+        : { systemPrompt: `${prompt}\n\n${body}` };
+    if (
+      Array.isArray(prompt) &&
+      prompt.every((s): s is string => typeof s === "string")
+    )
+      return prompt.some((s) => s.includes(body))
+        ? undefined
+        : { systemPrompt: [...prompt, body] };
+    return undefined;
   });
   // omp's /new, /resume and fork keep the process and emit only these two, no
   // shutdown or start: a new session id gets a fresh link and a fresh proof.
@@ -1748,8 +1809,10 @@ export default function oaBus(pi: Pi): void {
       held = false;
       return;
     }
+    rules = undefined;
+    rulesFetch = undefined;
     dropHeader();
-    void ensure(id).catch(reconnect);
+    void ensure(id).then(fetchRules, reconnect);
   };
   // The switch emits before_switch first, and can be cancelled there: hold the
   // header back so a /mcp call inside newSession carries no old proof; a turn
@@ -1762,6 +1825,8 @@ export default function oaBus(pi: Pi): void {
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
+    rules = undefined;
+    rulesFetch = undefined;
     stopWatchingName?.();
     stopWatchingName = undefined;
     submittedName = undefined;

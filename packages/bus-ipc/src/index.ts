@@ -3,6 +3,7 @@ export {
   connectDaemon,
   type DaemonClient,
   DaemonSilentError,
+  daemonHabits,
   daemonLinkProof,
   daemonStatus,
   HelloRefused,

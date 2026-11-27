@@ -239,13 +239,7 @@ function Levels({
               </small>
             </th>
             <td className={td}>Always</td>
-            <td className={td}>
-              <UpdatesBrowser
-                pushKey={pushKey}
-                sub={sub}
-                mine={cantHere ? undefined : mine}
-              />
-            </td>
+            <td className={td}>Inbox only</td>
           </tr>
         </tbody>
       </table>
@@ -326,46 +320,6 @@ function NeedsYouBrowser({
           : mine && on
             ? PUSH_WORDS.onFor(mine.label ?? thisBrowser())
             : ""}
-      </small>
-    </>
-  );
-}
-
-/** Updates in this browser: its own switch once the browser is subscribed. */
-function UpdatesBrowser({
-  pushKey,
-  sub,
-  mine,
-}: {
-  pushKey: string | null;
-  sub: string;
-  mine: PushSubscriptionItem | undefined;
-}) {
-  const qc = useQueryClient();
-  const patch = usePatchSubscription();
-  return (
-    <>
-      <Switch
-        label="Updates in this browser"
-        describedBy="oa-updates-browser"
-        checked={mine?.updates === true}
-        disabled={!mine}
-        onChange={(next) =>
-          mine &&
-          patch.mutate(
-            { id: mine.id, body: { updates: next } },
-            { onError: (e) => patchFailed(e, qc) },
-          )
-        }
-      />
-      <small id="oa-updates-browser" className={sub}>
-        {pushKey === null
-          ? NOTIF_WORDS.noKeyCell
-          : mine
-            ? ""
-            : !pushSupported() && iosNeedsHomeScreen()
-              ? NOTIF_WORDS.iosCell
-              : PUSH_WORDS.turnOnFirst}
       </small>
     </>
   );

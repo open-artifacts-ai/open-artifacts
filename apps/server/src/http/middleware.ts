@@ -20,7 +20,7 @@ import {
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
-import { isGuestRole, isMemberRole, orgCan } from "../auth/policy.js";
+import { isGuestRole, orgCan } from "../auth/policy.js";
 import {
   readSession,
   type Session,
@@ -200,32 +200,27 @@ export const securityHeaders =
 const BEARER = /^\s*Bearer(?:\s+(.*?))?\s*$/i;
 
 /**
- * An invited member's code session (SessionPayload.m) still qualifies, as
- * codeRule would admit it now: a code session with no tenant, the row still a
- * member (not a guest, admin or owner), Google still offered, and the address
- * still outside the verified domains. No D1: the row is already loaded.
+ * A row's code session (SessionPayload.m, #3184; #3082's invited member
+ * cookies carry the same m: 1) still qualifies, as codeRule would admit it
+ * now: a code session with no tenant, the row still an owner, admin or member
+ * (not a guest), and the install still offering codes. The row is already
+ * loaded (active only, epoch checked). No D1.
  */
-export function invitedMemberStillOk(
+export function rowCodeStillOk(
   env: Env,
   s: Session,
-  user: Pick<Member, "role" | "email">,
+  user: Pick<Member, "role">,
 ): boolean {
-  if (s.p !== "code" || s.t !== undefined || !isMemberRole(user.role))
+  if (s.p !== "code" || s.t !== undefined || isGuestRole(user.role))
     return false;
-  const cfg = authConfig(env);
-  const at = user.email.lastIndexOf("@");
-  return (
-    cfg.providers.has("google") &&
-    at > 0 &&
-    !inDomains(cfg.domains, user.email.slice(at + 1).toLowerCase())
-  );
+  return authConfig(env).emailCodes;
 }
 
 /**
  * A signed session is still good for this user and install: its epoch is the
  * user's current one (a bump ends every session), its tenant, if any, is
  * still a verified domain, and a domain-code session ends once Google is on.
- * An invited member's code session (m) also needs invitedMemberStillOk.
+ * A row's code session (m) also needs rowCodeStillOk.
  */
 export function sessionStillValid(
   env: Env,
@@ -234,7 +229,7 @@ export function sessionStillValid(
   user?: Pick<Member, "role" | "email">,
 ): boolean {
   if ((s.e ?? 0) !== sessionEpoch) return false;
-  if (s.m === 1) return !!user && invitedMemberStillOk(env, s, user);
+  if (s.m === 1) return !!user && rowCodeStillOk(env, s, user);
   if (s.t === undefined) return true;
   const cfg = authConfig(env);
   if (!inDomains(cfg.domains, s.t)) return false;
@@ -313,8 +308,8 @@ export async function resolveSession(c: Context<AppEnv>): Promise<void> {
       // A restricted member stays "restricted"; anyone else becomes "guest",
       // whatever the billing plan says: the plan cap exempts admin reads
       // and billing, which a session this weak must not keep.
-      // An invited member's code session (m) passed sessionStillValid: the
-      // member, uncapped, as a domain member's code session is.
+      // A row's code session (m) passed sessionStillValid: the owner, admin
+      // or member, uncapped, as a domain member's code session is.
       if (s.p === "code" && s.t === undefined && s.m !== 1)
         c.set(
           "user",

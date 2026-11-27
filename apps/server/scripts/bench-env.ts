@@ -331,6 +331,7 @@ function cursor(rows: Record<string, unknown>[]) {
 }
 
 export class DOState {
+  constructor(readonly id: { name: string; toString(): string }) {}
   readonly db = new DatabaseSync(":memory:");
   readonly sockets: FakeSocket[] = [];
   alarm: number | null = null;
@@ -398,7 +399,7 @@ export class DONamespaceShim {
   instance(name: string) {
     let i = this.instances.get(name);
     if (!i) {
-      const state = new DOState();
+      const state = new DOState(this.idFromName(name));
       i = { state, obj: new this.cls(state, this.env()) };
       this.instances.set(name, i);
     }

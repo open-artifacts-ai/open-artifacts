@@ -63,9 +63,7 @@ advice for contributors.
   ready, rerun its whole workflow, and merge main into it while it isn't armed
   or queued. Run each `gh` write as one plain command (`gh pr ready 2196`),
   with no `cd`, pipe or chaining, so the allow rule matches it.
-- **Comments on another repo's PR** never use `-R`, `--repo` or a URL: a deny
-  rule keeps comments on the repo they run in. Run them from that repo's clone,
-  as `cd ~/code/open-artifacts-cloud && gh pr comment 192 --body-file <file>`.
-  A session started in this repo can't stay in another folder, and the `cd`
-  makes it a compound command, so the auto-mode classifier decides it, not the
-  allow rule. It passed for cloud PR 192; if it is refused, stop and ask.
+- **Comments on another repo's PR** name the repo: `gh pr comment 192 -R
+  open-artifacts-ai/open-artifacts-cloud --body-file <file>`. Run it as one
+  plain command, with no `cd`, so the allow rule matches it (#3283, Leo's pick
+  of 2026-11-26).
