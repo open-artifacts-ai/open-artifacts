@@ -113,8 +113,22 @@ const invite = async (email: string) => {
 
 describe("invite reachability", () => {
   it("outside_domains: the field error, no toast", async () => {
-    // Codes only: outside the domain, nothing admits the address.
-    mountHosted("/settings/members", { providers: ["email"] });
+    // #3184: with codes on every invite is reachable, so the server's
+    // refusal is stubbed to check the copy.
+    mountHosted("/settings/members", { providers: ["email"] }, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "invite_unreachable",
+              message: "server text",
+              details: { field: "email", reason: "outside_domains" },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    ]);
     const dialog = await invite("pat@elsewhere.org");
     expect(await within(dialog).findByRole("alert")).toHaveTextContent(
       "pat@elsewhere.org can't log in here. Only addresses at your login domains can. Use one of those addresses.",

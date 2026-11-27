@@ -1,6 +1,14 @@
-import { lstatSync, readdirSync, rmdirSync, rmSync } from "node:fs";
+import {
+  lstatSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+} from "node:fs";
 import { join } from "node:path";
 import { shortSocketDir, unsafeSocketDir } from "@oa/bus-adapter-claude-code";
+
+import { isManagedRescue, RESCUE_NAME } from "./rescue.ts";
 
 /** Files Open Artifacts bus writes at the top of its home. */
 const FILES = [
@@ -16,6 +24,7 @@ const FILES = [
   "revoked",
   "update.json",
   // The rescue shim the service runs (#2552): written only by an install.
+  RESCUE_NAME,
   "rescue",
   "rescue-node",
   "rescue.mjs",
@@ -53,6 +62,25 @@ const FOLDERS: {
   { path: "bin", ours: () => true },
   // The versions bin points at; ours whole, like bin.
   { path: "versions", ours: () => true },
+  // Asset receipts store the content digest under the digest of the asset path.
+  {
+    path: "adapter-assets",
+    ours: (name, path) => {
+      if (!/^[0-9a-f]{64}$/.test(name)) return false;
+      try {
+        const st = lstatSync(path);
+        return (
+          st.isFile() &&
+          st.size === 64 &&
+          /^[0-9a-f]{64}$/.test(readFileSync(path, "utf8"))
+        );
+      } catch {
+        return false;
+      }
+    },
+  },
+  // Hook uninstall consumes its own receipt. Keep any outstanding recovery record.
+  { path: "codex-hooks", ours: () => false },
   { path: "logs", ours: (n) => /^daemon(\.err)?\.log(\.\d+)?$/.test(n) },
   { path: "integrations/opencode", ours: (n) => n === "oa_bus" },
   { path: "integrations", ours: () => false },
@@ -140,6 +168,7 @@ export function purge(
     const k = kind(path);
     // A known file name that is a directory is not ours; a symlink is removed, never followed.
     if (k === undefined || k === "dir") continue;
+    if (name === RESCUE_NAME && !isManagedRescue(path)) continue;
     remove(path, k);
     removed.push(name);
   }

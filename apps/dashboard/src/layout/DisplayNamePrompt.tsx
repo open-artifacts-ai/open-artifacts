@@ -1,4 +1,4 @@
-import type { Me } from "@oa/shared";
+import { type Me, PersonHandleSchema, suggestedHandle } from "@oa/shared";
 import {
   Button,
   Dialog,
@@ -20,6 +20,7 @@ import {
   saveError,
   TOO_LONG,
 } from "../auth/displayName";
+import { HandleField } from "../auth/HandleField";
 
 /** "Not now" lasts for this browser session, per user. */
 const skipKey = (userId: string) => `oa:display-name-skipped:${userId}`;
@@ -73,6 +74,9 @@ export function DisplayNamePrompt({ me }: { me: Me }) {
   const once = useSingleFlight();
   const open = me.needsDisplayName && !dismissed;
   const trimmed = name.trim();
+  const [handleDraft, setHandleDraft] = useState<string | null>(null);
+  const handle = handleDraft ?? me.handle ?? suggestedHandle(name);
+  const valid = nameOk(trimmed) && PersonHandleSchema.safeParse(handle).success;
   const tooLong = nameLength(trimmed) > NAME_MAX;
   const notNow = () => {
     remember(userId);
@@ -101,11 +105,11 @@ export function DisplayNamePrompt({ me }: { me: Me }) {
           className="grid gap-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (!nameOk(trimmed) || update.isPending) return;
+            if (!valid || update.isPending) return;
             setError(null);
             once((done) =>
               update.mutate(
-                { displayName: trimmed },
+                { displayName: trimmed, handle },
                 { onError: (err) => setError(saveError(err)), onSettled: done },
               ),
             );
@@ -143,14 +147,16 @@ export function DisplayNamePrompt({ me }: { me: Me }) {
               </p>
             )}
           </div>
+          <HandleField
+            value={handle}
+            saved={me.handle}
+            onChange={setHandleDraft}
+          />
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={notNow}>
               Not now
             </Button>
-            <Button
-              type="submit"
-              disabled={!nameOk(trimmed) || update.isPending}
-            >
+            <Button type="submit" disabled={!valid || update.isPending}>
               Save
             </Button>
           </DialogFooter>

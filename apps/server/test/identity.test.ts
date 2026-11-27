@@ -326,32 +326,53 @@ describe("codeEligibility", () => {
   const kind = async (e: Env, email: string) =>
     (await codeEligibility(env, authConfig(e), email)).kind;
 
-  it("a Google-linked user is ineligible", async () => {
+  // #3184: every active row at its exact address, its own role, Google on
+  // or off, linked or not, in the domains or out.
+  it("a Google-linked member keeps their role (trial and Google install)", async () => {
     const email = uniq("linked");
-    await seedUser(email, "member", { googleSub: `L-${email}` });
-    expect(await kind(trial(), email)).toBe("none");
+    const uid = await seedUser(email, "member", { googleSub: `L-${email}` });
+    const want = { kind: "member", userId: uid, role: "member" };
+    expect(await codeEligibility(env, authConfig(trial()), email)).toEqual(
+      want,
+    );
+    expect(await codeEligibility(env, authConfig(direct()), email)).toEqual(
+      want,
+    );
   });
-  it("a domain user is ineligible while Google is on", async () => {
+  it("a domain member row is eligible while Google is on", async () => {
     const email = uniq("dom");
-    await seedUser(email, "member");
-    expect(await kind(direct(), email)).toBe("none");
-  });
-  it("outside-domain owner and admin rows are ineligible", async () => {
-    for (const role of ["owner", "admin"] as const) {
-      const email = uniq(role, "x.com");
-      await seedUser(email, role);
-      expect(await kind(direct(), email)).toBe("none");
-    }
-  });
-  it("an invited member outside the domains: a member on a Google install, none without Google", async () => {
-    const email = uniq("member", "x.com");
     const uid = await seedUser(email, "member");
     expect(await codeEligibility(env, authConfig(direct()), email)).toEqual({
       kind: "member",
       userId: uid,
       role: "member",
     });
-    expect(await kind(trial(), email)).toBe("none");
+  });
+  it("outside-domain owner and admin rows keep their role", async () => {
+    for (const role of ["owner", "admin"] as const) {
+      const email = uniq(role, "x.com");
+      const uid = await seedUser(email, role, { googleSub: `L-${email}` });
+      for (const e of [direct(), trial()])
+        expect(await codeEligibility(env, authConfig(e), email)).toEqual({
+          kind: "member",
+          userId: uid,
+          role,
+        });
+    }
+  });
+  it("an invited member outside the domains: a member, Google on or off", async () => {
+    const email = uniq("member", "x.com");
+    const uid = await seedUser(email, "member");
+    const want = { kind: "member", userId: uid, role: "member" };
+    expect(await codeEligibility(env, authConfig(direct()), email)).toEqual(
+      want,
+    );
+    expect(await codeEligibility(env, authConfig(trial()), email)).toEqual(
+      want,
+    );
+  });
+  it("a new login-domain address is still ineligible while Google is on", async () => {
+    expect(await kind(direct(), uniq("newdom"))).toBe("none");
   });
   it("only the exact invited address: another address at that domain is not the member", async () => {
     const email = uniq("exact", "x.com");
@@ -398,11 +419,12 @@ describe("codeEligibility", () => {
     );
   });
   it("a removed or suspended row's address is ineligible", async () => {
-    for (const status of ["removed", "suspended"]) {
-      const email = uniq(status, "x.com");
-      await seedUser(email, "guest", { status });
-      expect(await kind(direct(), email)).toBe("none");
-    }
+    for (const status of ["removed", "suspended"])
+      for (const role of ["guest", "member", "admin", "owner"] as const) {
+        const email = uniq(`${status}-${role}`, "x.com");
+        await seedUser(email, role, { status });
+        expect(await kind(direct(), email)).toBe("none");
+      }
   });
   it("garbage is ineligible", async () => {
     expect(await kind(direct(), "not-an-email")).toBe("none");

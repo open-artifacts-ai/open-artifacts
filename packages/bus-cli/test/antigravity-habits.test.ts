@@ -217,7 +217,10 @@ describe("doctor and status with agy wired (agy S4, #3043)", () => {
     expect(ctx.all().join("\n")).not.toContain("not decided");
     const doc = await run(ctx, doctor);
     expect(doc.join("\n")).toContain("Antigravity wired");
-    expect(habits(doc)).toEqual(["Habits: on, sent by the bus"]);
+    expect(habits(doc)).toEqual([
+      "Antigravity — Habits: on, sent by the bus",
+      "Habits: on, sent by the bus",
+    ]);
     expect(habits(await run(ctx, statusCmd))).toEqual([
       "Habits: on, sent by the bus",
     ]);
@@ -229,13 +232,17 @@ describe("doctor and status with agy wired (agy S4, #3043)", () => {
     await run(ctx, (c) => install({ habits: "no" }, c));
     const doc = await run(ctx, doctor);
     expect(doc.join("\n")).toContain("Antigravity wired");
-    expect(habits(doc)).toEqual(["Habits: off (you opted out)"]);
+    expect(habits(doc)).toEqual([
+      "Antigravity — Habits: off (you opted out)",
+      "Habits: off (you opted out)",
+    ]);
     expect(habits(await run(ctx, statusCmd))).toEqual([
       "Habits: off (you opted out)",
     ]);
     // And back on.
     await run(ctx, (c) => install({ habits: "yes" }, c));
     expect(habits(await run(ctx, doctor))).toEqual([
+      "Antigravity — Habits: on, sent by the bus",
       "Habits: on, sent by the bus",
     ]);
   });

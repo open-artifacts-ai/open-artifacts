@@ -1,4 +1,4 @@
-import type { Me } from "@oa/shared";
+import { type Me, PersonHandleSchema, suggestedHandle } from "@oa/shared";
 import {
   Button,
   Card,
@@ -17,6 +17,7 @@ import {
   saveError,
   TOO_LONG,
 } from "../auth/displayName";
+import { HandleField } from "../auth/HandleField";
 import { useMe } from "../auth/useMe";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
@@ -40,7 +41,13 @@ function ProfileForm({ me }: { me: Me }) {
   const once = useSingleFlight();
   const name = draft ?? me.displayName ?? me.suggestedName ?? "";
   const trimmed = name.trim();
-  const dirty = trimmed !== saved;
+  const [handleDraft, setHandleDraft] = useState<string | null>(null);
+  const handle = handleDraft ?? me.handle ?? suggestedHandle(name);
+  const handleChanged = handle !== me.handle;
+  const dirty = trimmed !== saved || handleChanged;
+  const valid =
+    (trimmed === saved || nameOk(trimmed)) &&
+    PersonHandleSchema.safeParse(handle).success;
   const tooLong = nameLength(trimmed) > NAME_MAX;
   const hidden = me.nameHiddenAs ?? null;
   const problem = error ?? (tooLong ? TOO_LONG : null);
@@ -51,16 +58,25 @@ function ProfileForm({ me }: { me: Me }) {
           className="contents"
           onSubmit={(e) => {
             e.preventDefault();
-            if (!dirty || !nameOk(trimmed) || update.isPending) return;
+            if (!dirty || !valid || update.isPending) return;
             setError(null);
             once((done) =>
               update.mutate(
-                { displayName: trimmed },
+                {
+                  ...(trimmed !== saved ? { displayName: trimmed } : {}),
+                  ...(handleChanged ? { handle } : {}),
+                },
                 {
                   onSuccess: () => {
                     setDraft(null);
+                    setHandleDraft(null);
                     setJustSaved(true);
-                    toast({ title: "Display name saved", tone: "success" });
+                    toast({
+                      title: handleChanged
+                        ? "Handle saved"
+                        : "Display name saved",
+                      tone: "success",
+                    });
                   },
                   onError: (err) => setError(saveError(err)),
                   onSettled: done,
@@ -117,6 +133,11 @@ function ProfileForm({ me }: { me: Me }) {
                 Shown on invites and shared artifacts.
               </p>
             </div>
+            <HandleField
+              value={handle}
+              saved={me.handle}
+              onChange={setHandleDraft}
+            />
             <div className="grid gap-1.5">
               <Label htmlFor="oa-profile-email">Email</Label>
               <Input
@@ -135,7 +156,7 @@ function ProfileForm({ me }: { me: Me }) {
             </span>
             <Button
               type="submit"
-              disabled={!dirty || !nameOk(trimmed) || update.isPending}
+              disabled={!dirty || !valid || update.isPending}
             >
               Save
             </Button>

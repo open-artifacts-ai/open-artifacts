@@ -12,6 +12,7 @@ import { dirname } from "node:path";
 import {
   AdapterFrame,
   type DaemonFrame,
+  Habits,
   type Hello,
   LinkProofRequest,
   MAX_BODY_BYTES,
@@ -65,6 +66,8 @@ export type ServeOptions = {
   oneRequest?: (hello: Hello) => boolean;
   /** Answers a `link_proof` request, which needs no hello; without it the frame is refused. */
   onLinkProof?: (req: LinkProofRequest) => { bound: boolean };
+  /** #3043: answers an un-helloed `habits` request (for the Codex SessionStart hook CLI). */
+  onHabits?: () => string | null;
   /** Answers a `status` request; without it, status needs a hello like anything else. */
   onStatus?: (
     req: StatusRequest,
@@ -224,6 +227,19 @@ function handle(sock: Socket, opts: ServeOptions) {
           bound = opts.onLinkProof(proof.data).bound;
         } catch {}
         send({ type: "link_proofed", id: proof.data.id, bound });
+        sock.end();
+        return;
+      }
+      const habits =
+        !hello && opts.onHabits ? Habits.safeParse(raw) : undefined;
+      if (habits?.success && opts.onHabits) {
+        answered = true;
+        sock.pause();
+        let rules: string | null = null;
+        try {
+          rules = opts.onHabits();
+        } catch {}
+        send({ type: "habits", id: habits.data.id, rules });
         sock.end();
         return;
       }

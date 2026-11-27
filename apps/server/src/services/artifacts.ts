@@ -2391,6 +2391,10 @@ async function purgeOne(
     env.DB.prepare("delete from comment_pictures where artifact_id = ?").bind(
       id,
     ),
+    // #2536: drop slots on this page or pointing at asks homed on this page.
+    env.DB.prepare(
+      "delete from artifact_ask_slots where artifact_id = ? or home_artifact_id = ?",
+    ).bind(id, id),
     env.DB.prepare(
       "delete from artifacts where id = ? and deleted_at is not null and deleted_at < ?",
     ).bind(id, cutoff),

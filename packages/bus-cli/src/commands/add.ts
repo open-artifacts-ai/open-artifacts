@@ -148,7 +148,7 @@ export async function add(
  * pages show as the session there. Never fails the add.
  */
 async function agyEntries(name: string, hub: string, ctx: Ctx): Promise<void> {
-  if (!agyOn(ctx.env)) return;
+  if (!agyOn(ctx.env, ctx.home)) return;
   try {
     const io = agyEntryIo({
       home: ctx.userHome,

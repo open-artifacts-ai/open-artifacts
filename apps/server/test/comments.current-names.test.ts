@@ -368,7 +368,7 @@ describe("lookups are bounded and cached (#1889)", () => {
       comments: [commentWith(u.userId, ids)],
     });
     expect(names.size).toBe(150);
-    expect(names.get(ids[149] as string)).toBe(`N-${ids[149]}`);
+    expect(names.get(ids[149] as string)?.name).toBe(`N-${ids[149]}`);
     expect(calls.map((c) => c.n)).toEqual([100, 50]);
   });
 

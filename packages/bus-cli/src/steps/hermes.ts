@@ -5,9 +5,13 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
   cpSync,
+  fchmodSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -26,6 +30,7 @@ import {
   resolve,
 } from "node:path";
 import type { AdapterDeps } from "./adapters.ts";
+import { writeAtomic } from "./skill.ts";
 
 /** The plugin's name in plugin.yaml, and its folder under plugins/. */
 export const HERMES_PLUGIN_NAME = "oa-bus";
@@ -318,6 +323,40 @@ export function pluginHash(dir: string): string {
   return h.digest("hex").slice(0, 16);
 }
 
+const managedPrefix =
+  "managed by the Open Artifacts bus installer: edits are replaced on reinstall.";
+const ownerPrefix = (deps: AdapterDeps) => {
+  const home = real(resolve(deps.busHome ?? join(deps.home, ".oa-bus")));
+  return `${managedPrefix} owner=${createHash("sha256").update(home).digest("hex")} `;
+};
+const markerText = (deps: AdapterDeps, shipped: string) =>
+  `${ownerPrefix(deps)}${pluginHash(shipped)}\n`;
+
+export function pluginOwnership(
+  deps: AdapterDeps,
+  marker: string,
+): "owned" | "legacy" | "other" {
+  if (kind(marker) !== "file") return "other";
+  const value = readFileSync(marker, "utf8");
+  if (value.startsWith(ownerPrefix(deps))) return "owned";
+  if (
+    value.startsWith(`${managedPrefix} `) &&
+    /^[a-f0-9]{16}\n$/.test(value.slice(managedPrefix.length + 1))
+  )
+    return "legacy";
+  return "other";
+}
+
+export function stampPlugin(
+  deps: AdapterDeps,
+  marker: string,
+  shipped: string,
+) {
+  const text = markerText(deps, shipped);
+  if (kind(marker) !== "file" || readFileSync(marker, "utf8") !== text)
+    writeAtomic(marker, text);
+}
+
 /** Whether `dir` is our folder, and whether it matches the shipped plugin. */
 export function pluginState(
   dir: string,
@@ -363,12 +402,104 @@ const exec = async (
 };
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 
+/** Publish staged files one at a time, keeping the installed folder and its
+ * ownership marker throughout. A failed rename leaves the next refresh able
+ * to recognize and finish the partially updated package. */
+function publishPluginFiles(
+  stage: string,
+  dest: string,
+  marker: string,
+  preserveRoots: boolean,
+) {
+  const names = new Set(readdirSync(stage));
+  for (const name of names) {
+    if (name === marker) continue;
+    const src = join(stage, name);
+    const out = join(dest, name);
+    if (kind(src) === "dir") {
+      if (kind(out) !== "dir") {
+        rmSync(out, { force: true });
+        mkdirSync(out, { recursive: true });
+      }
+      publishPluginFiles(src, out, "", false);
+    } else {
+      if (kind(out) === "dir") rmSync(out, { recursive: true, force: true });
+      renameSync(src, out);
+    }
+  }
+  for (const name of readdirSync(dest)) {
+    if (names.has(name)) continue;
+    const file = join(dest, name);
+    if (preserveRoots && name === HERMES_ROOTS_FILE && kind(file) === "file") {
+      const fd = openSync(
+        file,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        fchmodSync(fd, 0o600);
+      } finally {
+        closeSync(fd);
+      }
+    } else rmSync(file, { recursive: true, force: true });
+  }
+  if (marker) renameSync(join(stage, marker), join(dest, marker));
+}
+
+/** Replace only managed package files. Enabling a plugin belongs to explicit install. */
+export function writeManagedPlugin(
+  dest: string,
+  shipped: string,
+  marker: string,
+  replace: boolean,
+  deps: AdapterDeps,
+  preserveRoots = false,
+) {
+  const plugins = join(dest, "..");
+  mkdirSync(plugins, { recursive: true });
+  // Stage outside the harness plugin directory,
+  // but in the same harness home, so the rename stays on one filesystem. A
+  // killed install leaves its stage behind: the next install sweeps them.
+  const staging = join(plugins, "..", HERMES_STAGING);
+  const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
+  // A symlink or file here would make the sweep touch somewhere else.
+  const st = lstatSync(staging, { throwIfNoEntry: false });
+  if (st !== undefined && !st.isDirectory())
+    throw new Error(
+      `${staging} is not a plain folder; remove it and run the install again`,
+    );
+  mkdirSync(staging, { recursive: true });
+  sweepStaging(staging, own, deps.staging);
+  const tmp = join(staging, own);
+  try {
+    // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
+    mkdirSync(tmp, { recursive: true });
+    for (const f of files(shipped)) {
+      mkdirSync(join(tmp, f, ".."), { recursive: true });
+      cpSync(join(shipped, f), join(tmp, f));
+    }
+    writeFileSync(join(tmp, marker), markerText(deps, shipped));
+    if (replace) {
+      publishPluginFiles(tmp, dest, marker, preserveRoots);
+      rmSync(tmp, { recursive: true, force: true });
+    } else renameSync(tmp, dest);
+  } catch (e) {
+    rmSync(tmp, { recursive: true, force: true });
+    throw e;
+  } finally {
+    // Only the folder itself, and only when no peer is staging in it.
+    try {
+      rmdirSync(staging);
+    } catch {}
+  }
+}
+
 /**
  * Copies the shipped plugin into place and enables it. A folder that is not
  * ours is never replaced. Returns whether the folder was (re)written.
  */
 export async function installHermes(
   deps: AdapterDeps,
+  mode: "install" | "refresh" = "install",
 ): Promise<"done" | "absent"> {
   if (!deps.which("hermes")) return "absent";
   const shipped = deps.assets.hermes;
@@ -376,62 +507,36 @@ export async function installHermes(
     throw new Error("the Hermes plugin is missing from this install");
   const dest = hermesPluginDir(deps.home, deps.env ?? {});
   const state = pluginState(dest, shipped);
+  if (mode === "refresh") {
+    if (state !== "current" && state !== "stale") return "absent";
+    const owner = pluginOwnership(deps, join(dest, HERMES_MARKER));
+    if (owner === "legacy")
+      throw new Error(
+        `Hermes plugin at ${dest} has no recorded bus home; rerun oa-bus install once from the original bus home.`,
+      );
+    if (owner !== "owned" || state !== "stale") return "absent";
+  }
   if (state === "foreign")
     throw new Error(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
   if (state === "current") {
+    stampPlugin(deps, join(dest, HERMES_MARKER), shipped);
     // #3043: habits now come from the bus; remove any leftover marker.
     const marker = join(dest, HERMES_HABITS_MARKER);
     const mk = kind(marker);
     if (mk === "file" || mk === "link") rmSync(marker, { force: true });
   } else {
-    // The plugin's remembered chats: carried over only as a plain file, and rewritten owner-only.
-    const keepRoots =
-      state === "stale" && kind(join(dest, HERMES_ROOTS_FILE)) === "file"
-        ? readFileSync(join(dest, HERMES_ROOTS_FILE))
-        : undefined;
-    const plugins = join(dest, "..");
-    mkdirSync(plugins, { recursive: true });
-    // Staged outside plugins/ (Hermes loads any folder there with a plugin.yaml),
-    // but in the same Hermes home, so the rename stays on one filesystem. A
-    // killed install leaves its stage behind: the next install sweeps them.
-    const staging = join(plugins, "..", HERMES_STAGING);
-    const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
-    // A symlink or file here would make the sweep touch somewhere else.
-    const st = lstatSync(staging, { throwIfNoEntry: false });
-    if (st !== undefined && !st.isDirectory())
-      throw new Error(
-        `${staging} is not a plain folder; remove it and run the install again`,
-      );
-    mkdirSync(staging, { recursive: true });
-    sweepStaging(staging, own, deps.staging);
-    const tmp = join(staging, own);
-    try {
-      // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
-      mkdirSync(tmp, { recursive: true });
-      for (const f of files(shipped)) {
-        mkdirSync(join(tmp, f, ".."), { recursive: true });
-        cpSync(join(shipped, f), join(tmp, f));
-      }
-      writeFileSync(
-        join(tmp, HERMES_MARKER),
-        `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
-      );
-      if (keepRoots !== undefined)
-        writeFileSync(join(tmp, HERMES_ROOTS_FILE), keepRoots, { mode: 0o600 });
-      if (state === "stale") rmSync(dest, { recursive: true, force: true });
-      renameSync(tmp, dest);
-    } catch (e) {
-      rmSync(tmp, { recursive: true, force: true });
-      throw e;
-    } finally {
-      // Only the folder itself, and only when no peer is staging in it.
-      try {
-        rmdirSync(staging);
-      } catch {}
-    }
+    writeManagedPlugin(
+      dest,
+      shipped,
+      HERMES_MARKER,
+      state === "stale",
+      deps,
+      true,
+    );
   }
+  if (mode === "refresh") return "done";
   // Enable only a plugin Hermes does not list as enabled, so a reinstall never
   // rewrites the tool-override grant the user may have given it.
   if (await hermesEnabled(deps)) return "done";

@@ -1240,6 +1240,29 @@ describe("purge safety", () => {
     ]);
   });
 
+  it("purges adapter digests and empty hook folders, preserving foreign entries", () => {
+    const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
+    const assets = join(home, "adapter-assets");
+    const hooks = join(home, "codex-hooks");
+    mkdirSync(assets);
+    mkdirSync(hooks);
+    const hash = "a".repeat(64);
+    writeFileSync(join(assets, hash), "b".repeat(64));
+    writeFileSync(join(assets, "b".repeat(64)), "my notes");
+    mkdirSync(join(assets, "c".repeat(64)));
+    writeFileSync(join(assets, "notes.txt"), hash);
+    symlinkSync(join(assets, "notes.txt"), join(assets, "d".repeat(64)));
+    writeFileSync(join(hooks, "keep"), "mine");
+    expect(purge(home, own)).toMatchObject({ leftDir: true });
+    expect(readdirSync(assets).sort()).toEqual([
+      "b".repeat(64),
+      "c".repeat(64),
+      "d".repeat(64),
+      "notes.txt",
+    ]);
+    expect(readFileSync(join(hooks, "keep"), "utf8")).toBe("mine");
+  });
+
   it("keeps the user's own logs/ and config.json in a shared folder", () => {
     const home = mkdtempSync(join(tmpdir(), "ob-purge-"));
     mkdirSync(join(home, "logs"));
@@ -1443,6 +1466,26 @@ describe("daemon command", () => {
     expect(await done).toBe(0);
     expect(f.stop).toHaveBeenCalledOnce();
   });
+
+  it.each([true, false])(
+    "passes the selected home's saved agy discovery setting (%s) to the foreground daemon",
+    async (enabled) => {
+      const f = fake();
+      const ctx = fakeCtx({ env: {} });
+      ctx.home = join(ctx.userHome, "selected-bus");
+      mkdirSync(ctx.home, { recursive: true });
+      writeFileSync(
+        join(ctx.home, "install.json"),
+        JSON.stringify({ agyEnabled: enabled }),
+      );
+      const done = daemon(ctx, f.run as never, f.signals);
+      f.signals.emit("SIGTERM");
+      expect(await done).toBe(0);
+      expect(f.run).toHaveBeenCalledWith(
+        expect.objectContaining({ antigravity: { discover: enabled } }),
+      );
+    },
+  );
 
   it("hands the daemon a skill refresher (#3203)", async () => {
     const f = fake();

@@ -26,6 +26,7 @@ export type Command = (
     }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
+  | { cmd: "rules"; sub: "codex-hook" }
   | { cmd: "mcp-proof"; tokenFile?: string; instance?: string }
   | { cmd: "agy-call" }
   | { cmd: "agy-hello" }
@@ -72,6 +73,7 @@ const COMMANDS = new Set([
   "skill",
   "daemon",
   "mcp",
+  "rules",
   "mcp-proof",
   "agy-call",
   "agy-hello",
@@ -95,6 +97,7 @@ const HARNESSES = ["claude", "opencode", "codex", "pi", "antigravity"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
+const RULES_USAGE = `usage: ${BUS_CMD} rules codex-hook`;
 const AUTO_UPDATE_USAGE = `usage: ${BUS_CMD} auto-update <off|on|status>`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
@@ -201,6 +204,11 @@ export function parse(argv: string[]): Command {
     if (rest[2] !== undefined)
       throw new Error(`unexpected argument: ${rest[2]}`);
   }
+  if (cmd === "rules") {
+    if (rest[0] !== "codex-hook") throw new Error(RULES_USAGE);
+    if (rest[1] !== undefined)
+      throw new Error(`unexpected argument: ${rest[1]}`);
+  }
   if (cmd === "auto-update") {
     if (!["off", "on", "status"].includes(rest[0] ?? ""))
       throw new Error(AUTO_UPDATE_USAGE);
@@ -227,6 +235,7 @@ export function parse(argv: string[]): Command {
     cmd === "link" ||
     cmd === "unlink" ||
     cmd === "leads" ||
+    cmd === "rules" ||
     cmd === "upgrade" ||
     cmd === "auto-update"
       ? undefined
@@ -372,6 +381,8 @@ function route(cmd: string, values: Values, positionals: string[]) {
       const name = positionals[1];
       return { cmd, sub: "check" as const, ...(name ? { name } : {}) };
     }
+    case "rules":
+      return { cmd, sub: "codex-hook" as const };
     case "auto-update":
       return { cmd, sub: positionals[0] as "off" | "on" | "status" };
     case "upgrade":

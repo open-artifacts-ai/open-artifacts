@@ -175,6 +175,9 @@ export const BUS_CAPS = {
   codexCheck: "codex_check",
   agyCheck: "agy_check",
 } as const;
+/** Opt-in on the socket upgrade: released hubs accept at most 16 hello caps. */
+export const CODEX_VERDICT_HEADER = "x-oa-codex-link-verdict";
+
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
 /**

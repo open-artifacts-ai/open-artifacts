@@ -35,7 +35,9 @@ import {
   agyPluginFiles,
   agyPluginProblem,
 } from "../src/steps/antigravity.ts";
+import { setHabitsOptOut } from "../src/steps/habits.ts";
 import { leftoverTargets } from "../src/steps/leftovers.ts";
+import { updateInstallFile } from "../src/steps/step.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
@@ -360,6 +362,47 @@ function make(over: Partial<Ctx> = {}): Fake {
 }
 
 describe("install, doctor and uninstall --purge with the plugin (agy S2)", () => {
+  it("remembers --no-service opt-in on reinstall and an explicit opt-out", async () => {
+    const ctx = make();
+    const opts = { label: LABEL, hub: HUB, noService: true };
+    const doctorOutput = async () => {
+      const start = ctx.all().length;
+      await doctor(ctx);
+      return ctx.all().slice(start).join("\n");
+    };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    expect(await install(opts, ctx)).toBe(0);
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    updateInstallFile(join(ctx.home, "install.json"), { service: { env: ON } });
+    ctx.env = { OA_BUS_EXPERIMENTAL_AGY: "0" };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).not.toContain("Antigravity wired");
+    expect(ctx.service.ensure).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    "doctor shows Antigravity habits without a shell flag (opt-out %s)",
+    async (optedOut) => {
+      const ctx = make();
+      await install({ label: LABEL, hub: HUB }, ctx);
+      updateInstallFile(join(ctx.home, "install.json"), {
+        service: { env: ON },
+      });
+      setHabitsOptOut(ctx.home, optedOut, new Date().toISOString());
+      ctx.env = {};
+      await doctor(ctx);
+      expect(ctx.all()).toContain(
+        "[[success]]✓[[/success]]  Antigravity wired",
+      );
+      expect(ctx.all()).toContain(
+        optedOut
+          ? "Antigravity — Habits: off (you opted out)"
+          : "Antigravity — Habits: on, sent by the bus",
+      );
+    },
+  );
   it("doctor reports the plugin; purge leaves no agy folder install made", async () => {
     const ctx = make();
     expect(await install({ label: LABEL, hub: HUB }, ctx)).toBe(0);

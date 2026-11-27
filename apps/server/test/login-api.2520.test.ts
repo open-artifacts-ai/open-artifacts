@@ -78,7 +78,8 @@ describe("GET members/reach", () => {
     // the domains may sign in by code (no Gmail or Workspace needed).
     ["a gmail address", "gmail.com", ["google", "email_code"]],
     ["a googlemail address", "googlemail.com", ["google", "email_code"]],
-    ["an address in the login domains", "a.com", ["google"]],
+    // #3184: an invited row may also sign in by code at its exact address.
+    ["an address in the login domains", "a.com", ["google", "email_code"]],
     // A consumer account on a custom address is let in after a code (#2590 G2).
     [
       "any other domain, codes on",
@@ -93,12 +94,13 @@ describe("GET members/reach", () => {
 
   it("a login domain with domain codes on adds email_code", async () => {
     const e = trial({ AUTH_PROVIDERS: "google,email" });
-    // Codes and Google together: domain codes stay off (Google is on).
+    // Codes and Google together: domain codes stay off, but an invited row
+    // signs in by code at its exact address (#3184).
     expect(
       InviteReachSchema.parse(
         await (await reachOf(e, await owner(), uniq("r", "a.com"))).json(),
       ).ways,
-    ).toEqual(["google"]);
+    ).toEqual(["google", "email_code"]);
     const codes = trial();
     expect(
       InviteReachSchema.parse(
@@ -115,10 +117,12 @@ describe("GET members/reach", () => {
     });
   });
 
-  it("no way in: ways is empty", async () => {
+  it("email codes only, outside the domains: a code (#3184)", async () => {
     const e = direct({ AUTH_PROVIDERS: "email" });
     const r = await reachOf(e, await owner(), uniq("r", "other.com"));
-    expect(InviteReachSchema.parse(await r.json()).ways).toEqual([]);
+    expect(InviteReachSchema.parse(await r.json()).ways).toEqual([
+      "email_code",
+    ]);
   });
 
   it("a removed address carries removed.at", async () => {
@@ -136,7 +140,7 @@ describe("GET members/reach", () => {
     )?.email as string;
     const r = await reachOf(OWN, await owner(), email);
     expect(InviteReachSchema.parse(await r.json())).toEqual({
-      ways: ["google"],
+      ways: ["google", "email_code"],
       removed: { at: new Date(at).toISOString() },
     });
   });
@@ -158,21 +162,23 @@ describe("POST members (invite)", () => {
     const r = await invite(OWN, await owner(), uniq("i", "a.com"), "member");
     expect(r.status).toBe(201);
     expect(MemberInviteResultSchema.parse(await r.json()).reach).toEqual({
-      ways: ["google"],
+      ways: ["google", "email_code"],
     });
   });
 
-  it("refuses with 400 invite_unreachable when no way in exists; nothing created", async () => {
+  it("email codes only, outside the domains: invited, reach is a code (#3184)", async () => {
     const e = direct({ AUTH_PROVIDERS: "email" });
     const email = uniq("nw", "other.com");
     const r = await invite(e, await owner(), email, "member");
-    expect(r.status).toBe(400);
-    expect((await errOf(r)).code).toBe("invite_unreachable");
+    expect(r.status).toBe(201);
+    expect(MemberInviteResultSchema.parse(await r.json()).reach).toEqual({
+      ways: ["email_code"],
+    });
     expect(
       await env.DB.prepare("select 1 from users where email = ?")
         .bind(email)
         .first(),
-    ).toBeNull();
+    ).not.toBeNull();
   });
 
   it("a guest invite creates a guest row with invited_at set", async () => {
@@ -202,7 +208,7 @@ describe("POST members (invite)", () => {
     expect(r.status).toBe(200);
     const body = MemberInviteResultSchema.parse(await r.json());
     expect(body.id).toBe(u.userId);
-    expect(body.reach?.ways).toEqual(["google"]);
+    expect(body.reach?.ways).toEqual(["google", "email_code"]);
     expect(
       await env.DB.prepare(
         "select status, invited_at as at from users where id = ?",
