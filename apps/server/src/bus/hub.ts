@@ -9806,8 +9806,8 @@ export class BusHub extends DurableObject<Env> {
       // waiting row: the agent at the name is not who it was meant for.
       const at = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
       if (!at) {
-        // A personal ask posted between handing over a role and losing its
-        // routing name still belongs to the session that posted it.
+        // After a forced rename, a dated ask outside the original session’s
+        // role-holding intervals still belongs to its verified identity.
         if (
           !forwarded &&
           n.originAt !== undefined &&
@@ -9817,12 +9817,17 @@ export class BusHub extends DurableObject<Env> {
             sql,
             `select a.name from role_moves m join agents a on a.id = m.from_agent_id
              where m.org_id = ? and m.from_ns = ? and m.from_lname = ?
-               and m.at <= ? and ? <= m.route_retired_at
+               and ? <= m.route_retired_at
+               and not exists (
+                 select 1 from role_moves held where held.org_id = m.org_id and held.from_ns = m.from_ns
+                   and held.from_lname = m.from_lname and held.from_agent_id = m.from_agent_id
+                   and held.held_from <= ? and ? < held.at)
                and a.live = 1 and a.identity_id = ? and a.namespace = m.from_ns and a.name = m.personal_route
              limit 1`,
             OWNER_ORG_ID,
             n.to.namespace,
             sent,
+            n.originAt,
             n.originAt,
             n.originAt,
             n.toIdentity,
