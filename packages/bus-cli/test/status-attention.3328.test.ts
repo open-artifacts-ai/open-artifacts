@@ -6,10 +6,7 @@ import { saveInstance } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { hostSlug } from "@oa/shared/secrets";
 import { describe, expect, it, vi } from "vitest";
-import {
-  LATE_ATTENTION_MS,
-  status as statusCmd,
-} from "../src/commands/status.ts";
+import { status as statusCmd } from "../src/commands/status.ts";
 import { cols } from "../src/copy.ts";
 import { SKILL_MARKER } from "../src/steps/skill.ts";
 import type { Style } from "../src/term.ts";
@@ -166,52 +163,37 @@ describe("oa-bus status Needs attention (#3328 S2)", () => {
     expect(withSvc.out().join("\n")).toContain("Fix: run oa-bus install");
   });
 
-  it("late messages count only when well past normal delivery (>= 1 min)", async () => {
-    const brief = setup({
+  it("normal queueing (recipient busy for 5 minutes) does not trigger Needs attention", async () => {
+    const busy = setup({
       columns: 120,
       st: {
+        namespaces: [
+          {
+            namespace: NS,
+            agents: [
+              {
+                name: "b",
+                kind: "codex",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "working",
+                status_label: "running tests",
+                status_at: new Date(1_000_000 - 5 * 60_000).toISOString(),
+              },
+            ],
+          },
+        ],
         late: [
           {
             from: "a",
             to: "b",
             at: 1_000_000,
-            delay_ms: 8_000,
+            delay_ms: 5 * 60_000,
           },
         ],
       },
     });
-    expect(await statusCmd(brief)).toBe(0);
-    expect(brief.out().join("\n")).not.toContain("Needs attention");
-
-    const oldDaemon = setup({
-      columns: 120,
-      st: {
-        late: [{ from: "a", to: "b", at: 1_000_000 }],
-      },
-    });
-    expect(await statusCmd(oldDaemon)).toBe(0);
-    expect(oldDaemon.out().join("\n")).not.toContain("Needs attention");
-
-    const veryLate = setup({
-      columns: 120,
-      st: {
-        late: [
-          {
-            from: "a",
-            to: "b",
-            at: 1_000_000,
-            delay_ms: LATE_ATTENTION_MS,
-          },
-        ],
-      },
-    });
-    expect(await statusCmd(veryLate)).toBe(1);
-    expect(veryLate.out().join("\n")).toContain("Needs attention (1)");
-    expect(veryLate.out().join("\n")).toContain(
-      "1 message delivered over a minute late.",
-    );
-    expect(veryLate.out().join("\n")).toContain(
-      "Fix: run oa-bus status --messages",
-    );
+    expect(await statusCmd(busy)).toBe(0);
+    expect(busy.out().join("\n")).not.toContain("Needs attention");
   });
 });

@@ -31,9 +31,6 @@ import {
   type Verdict,
 } from "./status-view.ts";
 
-/** A late message counts for Needs attention only when well past normal 5 s delivery (#3328 S2). */
-export const LATE_ATTENTION_MS = 60_000;
-
 export const hostOf = (hub: string) => {
   try {
     return new URL(hub).host;
@@ -364,18 +361,6 @@ function collectAttention(
       opts.st.hub_version ?? opts.health.version,
     ),
   );
-  const veryLate = (opts.st.late ?? []).filter(
-    (l) => typeof l.delay_ms === "number" && l.delay_ms >= LATE_ATTENTION_MS,
-  );
-  if (veryLate.length > 0) {
-    items.push({
-      problem:
-        veryLate.length === 1
-          ? "1 message delivered over a minute late."
-          : `${veryLate.length} messages delivered over a minute late.`,
-      fix: `run ${ctx.busCmd} status --messages`,
-    });
-  }
   return items;
 }
 
