@@ -3,7 +3,7 @@
 // services, adding unwired harnesses, or prompting. Temp homes and fake exec;
 // nothing touches the real home.
 import { EventEmitter } from "node:events";
-import {
+import fs, {
   cpSync,
   existsSync,
   mkdirSync,
@@ -13,6 +13,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { HERMES_PLUGIN } from "@oa/bus-adapter-hermes";
@@ -177,41 +178,82 @@ function makeFakeExec(home: string, env: Record<string, string>) {
 }
 
 describe("refreshAdapters (#3174)", () => {
-  it("refreshes stale disabled Hermes and OpenClaw files without enabling either plugin", async () => {
-    const home = tmp("oa-refresh-disabled-");
-    const env = makeHarnessEnv(home);
-    const fake = makeFakeExec(home, env);
-    const assets = readAssets();
-    const oc = makeOpenclawPair(assets.openclaw);
-    const deps: AdapterDeps = {
-      home,
-      env,
-      busHome: join(home, "bus"),
-      busBin: BIN,
-      assets: { ...assets, hermes: makeOldHermes(), openclaw: oc.oldDir },
-      exec: fake.exec,
-      which: (c) => c === "hermes" || c === "openclaw",
-      isolated: true,
-    };
-    expect((await installAdapters(deps)).skipped).toEqual([]);
-    fake.disablePlugins();
-    fake.calls.length = 0;
-    const result = await refreshAdapters({
-      ...deps,
-      assets: { ...assets, openclaw: oc.newDir },
-    });
-    expect(fake.enabled()).toEqual([false, false]);
-    expect(result.refreshed).toEqual(
-      expect.arrayContaining(["hermes", "openclaw"]),
-    );
-    expect(pluginState(hermesPluginDir(home, env), assets.hermes)).toBe(
-      "current",
-    );
-    expect(openclawPluginState(openclawPluginDir(home, env), oc.newDir)).toBe(
-      "current",
-    );
-    expect(fake.calls).toEqual([]);
-  });
+  it.each([false, true])(
+    "refreshes disabled plugins and preserves remembered chats (failed rename: %s)",
+    async (interrupt) => {
+      const home = tmp("oa-refresh-disabled-");
+      const env = makeHarnessEnv(home);
+      const fake = makeFakeExec(home, env);
+      const assets = readAssets();
+      const oc = makeOpenclawPair(assets.openclaw);
+      const deps: AdapterDeps = {
+        home,
+        env,
+        busHome: join(home, "bus"),
+        busBin: BIN,
+        assets: { ...assets, hermes: makeOldHermes(), openclaw: oc.oldDir },
+        exec: fake.exec,
+        which: (c) => c === "hermes" || c === "openclaw",
+        isolated: true,
+      };
+      expect((await installAdapters(deps)).skipped).toEqual([]);
+      fake.disablePlugins();
+      fake.calls.length = 0;
+      const roots = join(hermesPluginDir(home, env), "gateway_roots.json");
+      put(roots, '{"room":"remember me"}');
+      if (interrupt) {
+        const destinations = [
+          hermesPluginDir(home, env),
+          openclawPluginDir(home, env),
+        ];
+        const rename = fs.renameSync;
+        const fault = vi
+          .spyOn(fs, "renameSync")
+          .mockImplementation((from, to) => {
+            if (
+              destinations.some(
+                (dir) =>
+                  String(to) === dir ||
+                  String(to) === join(dir, ".oa-bus-managed"),
+              )
+            )
+              throw new Error("injected publish failure");
+            return rename(from, to);
+          });
+        syncBuiltinESMExports();
+        try {
+          const first = await refreshAdapters({
+            ...deps,
+            assets: { ...assets, openclaw: oc.newDir },
+          });
+          expect(readFileSync(roots, "utf8")).toBe('{"room":"remember me"}');
+          expect(first.skipped.map((s) => s.harness)).toEqual([
+            "hermes",
+            "openclaw",
+          ]);
+        } finally {
+          fault.mockRestore();
+          syncBuiltinESMExports();
+        }
+      }
+      const result = await refreshAdapters({
+        ...deps,
+        assets: { ...assets, openclaw: oc.newDir },
+      });
+      expect(fake.enabled()).toEqual([false, false]);
+      expect(result.refreshed).toEqual(
+        expect.arrayContaining(["hermes", "openclaw"]),
+      );
+      expect(pluginState(hermesPluginDir(home, env), assets.hermes)).toBe(
+        "current",
+      );
+      expect(openclawPluginState(openclawPluginDir(home, env), oc.newDir)).toBe(
+        "current",
+      );
+      expect(readFileSync(roots, "utf8")).toBe('{"room":"remember me"}');
+      expect(fake.calls).toEqual([]);
+    },
+  );
 
   it("updates every wired harness after a simulated auto-update, then is idempotent", async () => {
     const home = tmp("oa-refresh-home-");

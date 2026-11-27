@@ -5,9 +5,13 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import {
+  closeSync,
+  constants,
   cpSync,
+  fchmodSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -363,6 +367,49 @@ const exec = async (
 };
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 
+/** Publish staged files one at a time, keeping the installed folder and its
+ * ownership marker throughout. A failed rename leaves the next refresh able
+ * to recognize and finish the partially updated package. */
+function publishPluginFiles(
+  stage: string,
+  dest: string,
+  marker: string,
+  preserveRoots: boolean,
+) {
+  const names = new Set(readdirSync(stage));
+  for (const name of names) {
+    if (name === marker) continue;
+    const src = join(stage, name);
+    const out = join(dest, name);
+    if (kind(src) === "dir") {
+      if (kind(out) !== "dir") {
+        rmSync(out, { force: true });
+        mkdirSync(out, { recursive: true });
+      }
+      publishPluginFiles(src, out, "", false);
+    } else {
+      if (kind(out) === "dir") rmSync(out, { recursive: true, force: true });
+      renameSync(src, out);
+    }
+  }
+  for (const name of readdirSync(dest)) {
+    if (names.has(name)) continue;
+    const file = join(dest, name);
+    if (preserveRoots && name === HERMES_ROOTS_FILE && kind(file) === "file") {
+      const fd = openSync(
+        file,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        fchmodSync(fd, 0o600);
+      } finally {
+        closeSync(fd);
+      }
+    } else rmSync(file, { recursive: true, force: true });
+  }
+  if (marker) renameSync(join(stage, marker), join(dest, marker));
+}
+
 /** Replace only managed package files. Enabling a plugin belongs to explicit install. */
 export function writeManagedPlugin(
   dest: string,
@@ -370,7 +417,7 @@ export function writeManagedPlugin(
   marker: string,
   replace: boolean,
   stagingOptions: AdapterDeps["staging"],
-  keepRoots?: Buffer,
+  preserveRoots = false,
 ) {
   const plugins = join(dest, "..");
   mkdirSync(plugins, { recursive: true });
@@ -399,10 +446,10 @@ export function writeManagedPlugin(
       join(tmp, marker),
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
-    if (keepRoots !== undefined)
-      writeFileSync(join(tmp, HERMES_ROOTS_FILE), keepRoots, { mode: 0o600 });
-    if (replace) rmSync(dest, { recursive: true, force: true });
-    renameSync(tmp, dest);
+    if (replace) {
+      publishPluginFiles(tmp, dest, marker, preserveRoots);
+      rmSync(tmp, { recursive: true, force: true });
+    } else renameSync(tmp, dest);
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
     throw e;
@@ -439,18 +486,13 @@ export async function installHermes(
     const mk = kind(marker);
     if (mk === "file" || mk === "link") rmSync(marker, { force: true });
   } else {
-    // The plugin's remembered chats: carried over only as a plain file, and rewritten owner-only.
-    const keepRoots =
-      state === "stale" && kind(join(dest, HERMES_ROOTS_FILE)) === "file"
-        ? readFileSync(join(dest, HERMES_ROOTS_FILE))
-        : undefined;
     writeManagedPlugin(
       dest,
       shipped,
       HERMES_MARKER,
       state === "stale",
       deps.staging,
-      keepRoots,
+      true,
     );
   }
   if (mode === "refresh") return "done";
