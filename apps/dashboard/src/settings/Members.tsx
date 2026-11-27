@@ -183,6 +183,7 @@ function OneInviteDialog({ onClose }: { onClose: () => void }) {
     trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
   );
   const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
   // The address belongs to a removed member: offer Restore (parity 1).
@@ -214,7 +215,7 @@ function OneInviteDialog({ onClose }: { onClose: () => void }) {
     setRemoved(null);
     sending.current = true;
     invite.mutate(
-      { email: parsed, role },
+      { email: parsed, role, ...(name.trim() ? { name: name.trim() } : {}) },
       {
         onSettled: () => {
           sending.current = false;
@@ -281,6 +282,15 @@ function OneInviteDialog({ onClose }: { onClose: () => void }) {
           aria-describedby={error ? "oa-invite-error" : undefined}
           onChange={(e) => setEmail(e.target.value)}
         />
+        <label htmlFor="oa-invite-name" className={muted}>
+          Name (optional)
+          <Input
+            id="oa-invite-name"
+            value={name}
+            maxLength={80}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
         {removed && (
           <div
             role="alert"

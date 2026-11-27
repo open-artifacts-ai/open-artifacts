@@ -62,6 +62,7 @@ import {
   agentOwnedBy,
   type FaceViewer,
   forLine,
+  memberTag,
   type NameClashes,
   nameClashes,
   partyIdentityFace,
@@ -389,6 +390,7 @@ export async function checkAnchor(
 // ------------------------------------------------------------------- views
 
 type UserLite = {
+  unnamedInvite?: boolean;
   handle?: string;
   id: string;
   name: string | null;
@@ -405,7 +407,7 @@ export async function usersById(
   for (let i = 0; i < list.length; i += 50) {
     const part = list.slice(i, i + 50);
     const { results } = await env.DB.prepare(
-      `select id, email, name, handle, display_name as displayName from users where id in (${part.map(() => "?").join(",")})`,
+      `select id, email, name, handle, display_name as displayName, (invited_at is not null and last_seen_at is null) as invited from users where id in (${part.map(() => "?").join(",")})`,
     )
       .bind(...part)
       .all<{
@@ -414,14 +416,18 @@ export async function usersById(
         name: string;
         displayName: string | null;
         handle: string | null;
+        invited: number;
       }>();
-    for (const r of results)
+    for (const r of results) {
+      const name = shownEffectiveName(r);
       out.set(r.id, {
         id: r.id,
         email: r.email,
-        name: shownEffectiveName(r),
+        name,
+        unnamedInvite: !!r.invited && name === r.email,
         ...(r.handle ? { handle: r.handle } : {}),
       });
+    }
   }
   return out;
 }
@@ -531,7 +537,12 @@ const authorView = (
     kind: "user",
     id: a.ref,
     ...(u?.handle ? { handle: u.handle } : {}),
-    name: u ? shownName(u) : "Member",
+    name:
+      u?.unnamedInvite && !faceViewer(viewer).outsider
+        ? `Invited member · ${memberTag(u.id)}`
+        : u
+          ? shownName(u)
+          : "Member",
     me,
   };
 };

@@ -127,8 +127,6 @@ const WIDENS: Readonly<Record<string, string>> = {
   // no owner exists. It never writes back an earlier read, so it can't undo
   // a racing demotion.
   "services/identity.ts:touch": "login promotion from the current role only",
-  // Access sign-in: .set(set) holds only lastSeenAt and name.
-  "services/users.ts:upsertOnLogin": "login touch: last_seen_at and name",
   // Removing a restricted group only lifts caps (restricted_sync recomputed
   // from the groups that remain).
   "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
