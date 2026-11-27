@@ -3,16 +3,21 @@
 // conversation's link proof; added instances get the `--name` form; doctor
 // reports each entry; uninstall puts the user's entry back byte for byte.
 // A fake agy on PATH (deps.which) and a scratch HOME only: no real agy runs.
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { jsoncValue } from "@oa/bus-adapter-mcp-json";
 import { saveInstance } from "@oa/bus-daemon";
@@ -25,9 +30,11 @@ import {
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
+import { withAgyConfigLock } from "../src/steps/agy-config-lock.ts";
 import {
   AGY_TOKEN_ENV,
   agyPagesState,
+  installAgyEntries,
   restoreAgyEntries,
 } from "../src/steps/agy-proof.ts";
 import { TOKEN } from "./fake.ts";
@@ -56,6 +63,20 @@ function setup(opts: { env?: Record<string, string>; busHome?: string } = {}) {
     file: join(h, ".gemini/config/mcp_config.json"),
     moved: join(opts.busHome ?? join(h, ".oa-bus"), "agy-pages-entries.json"),
   };
+}
+
+function ownershipProcess(...args: string[]) {
+  return spawn(
+    process.execPath,
+    [
+      fileURLToPath(
+        new URL("../node_modules/jiti/lib/jiti-cli.mjs", import.meta.url),
+      ),
+      fileURLToPath(new URL("./fixtures/agy-ownership.ts", import.meta.url)),
+      ...args,
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
 }
 
 const put = (path: string, text: string) => {
@@ -158,6 +179,95 @@ describe("Antigravity pages entry (agy S5)", () => {
       expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
     },
   );
+
+  it("recovers when the creator stops immediately after publishing the native entry", async () => {
+    const { deps, file, h } = setup();
+    const io = agyEntryIo(deps);
+    put(file, '{"mcpServers":{}}');
+    expect(() =>
+      installAgyEntries(
+        {
+          ...io,
+          write(text) {
+            io.write(text);
+            throw Error("interrupted");
+          },
+        },
+        [{ origin: HUB }],
+      ),
+    ).toThrow("interrupted");
+    const second = { ...deps, busHome: join(h, "second-bus") };
+    await installAdapters(second);
+    await installAdapters(deps);
+    await uninstallAdapters(deps);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    await uninstallAdapters(second);
+    expect(entry(read(file))).toBeUndefined();
+  });
+
+  it("recovers a ticket left by a process that exits inside the config lock", async () => {
+    const { deps, h, file } = setup();
+    const child = ownershipProcess("exit", h);
+    expect((await once(child, "exit"))[0]).toBe(42);
+    await installAdapters(deps);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    expect(
+      readdirSync(h).some((f) => f.startsWith(".oa-bus-agy-ticket.")),
+    ).toBe(false);
+  });
+
+  it("serializes two uninstall processes that are both ready to remove the same native entry", async () => {
+    const { deps, h, file } = setup();
+    const second = join(h, "second-bus");
+    await installAdapters(deps);
+    await installAdapters({ ...deps, busHome: second });
+    const children: ReturnType<typeof spawn>[] = [];
+    const done: Promise<void>[] = [];
+    try {
+      await withAgyConfigLock(h, async () => {
+        const watcher = watch(h);
+        try {
+          const queued = new Promise<void>((resolve, reject) => {
+            watcher.once("error", reject);
+            watcher.on("change", () => {
+              if (
+                readdirSync(h).filter((f) =>
+                  f.startsWith(".oa-bus-agy-ticket."),
+                ).length === 3
+              )
+                resolve();
+            });
+          });
+          for (const bus of [join(h, ".oa-bus"), second]) {
+            const child = ownershipProcess("uninstall", h, bus);
+            children.push(child);
+            done.push(
+              once(child, "exit").then(([code]) => {
+                expect(code).toBe(0);
+              }),
+            );
+          }
+          // An early exit means an uninstall bypassed the held lock.
+          await Promise.race([
+            queued,
+            ...done.map((p) =>
+              p.then(() => {
+                throw Error("uninstall escaped the config lock");
+              }),
+            ),
+          ]);
+        } finally {
+          watcher.close();
+        }
+      });
+      await Promise.all(done);
+      expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
+      expect(existsSync(file + ".oa-bus-claims")).toBe(false);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.allSettled(done);
+    }
+  }, 20_000);
 
   it("installs and removes the main pages proxy on a fresh machine", async () => {
     const { deps, file, h } = setup();

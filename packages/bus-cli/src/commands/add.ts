@@ -8,6 +8,7 @@ import {
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
 import { agyEntryIo, agyOn, proofIo } from "../steps/adapters.ts";
+import { withAgyConfigLock } from "../steps/agy-config-lock.ts";
 import { installAgyEntries } from "../steps/agy-proof.ts";
 import {
   addInstanceProof,
@@ -137,7 +138,7 @@ export async function add(
     `Heads up: after that restart, which can be an automatic update, every folder that is not mapped stops going to your main instance and sits on none. To keep your current folders on main, run ${ctx.busCmd} use main in a parent folder such as ~ (it covers everything below it).`,
   );
   claudeEntries(name, parsed.hub, ctx);
-  agyEntries(name, parsed.hub, ctx);
+  await agyEntries(name, parsed.hub, ctx);
   return 0;
 }
 
@@ -146,17 +147,17 @@ export async function add(
  * instance's address go through the proxy with `--name <instance>`, so its
  * pages show as the session there. Never fails the add.
  */
-function agyEntries(name: string, hub: string, ctx: Ctx): void {
+async function agyEntries(name: string, hub: string, ctx: Ctx): Promise<void> {
   if (!agyOn(ctx.env)) return;
   try {
-    const r = installAgyEntries(
-      agyEntryIo({
-        home: ctx.userHome,
-        busHome: ctx.home,
-        env: ctx.env,
-        busBin: ctx.service.argv?.() ?? ctx.service.cli(),
-      }),
-      [{ origin: new URL(hub).origin, name }],
+    const io = agyEntryIo({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+      busBin: ctx.service.argv?.() ?? ctx.service.cli(),
+    });
+    const r = await withAgyConfigLock(ctx.userHome, () =>
+      installAgyEntries(io, [{ origin: new URL(hub).origin, name }]),
     );
     for (const n of r.notes) say(ctx, n);
   } catch (e) {

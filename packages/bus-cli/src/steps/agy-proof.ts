@@ -592,7 +592,7 @@ export function installAgyEntries(
     }
   }
   if (!isDeepStrictEqual(keep, moved)) io.writeMoved(movedText(keep));
-  if (text !== before) io.write(text);
+  // Persist intent and claims before publishing the entry to another home.
   for (const m of keep) {
     if (
       m.native &&
@@ -601,6 +601,7 @@ export function installAgyEntries(
     )
       nativeClaim(io, m.name, m.createdDigest).add();
   }
+  if (text !== before) io.write(text);
   return out;
 }
 
