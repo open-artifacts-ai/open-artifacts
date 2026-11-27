@@ -29,3 +29,5 @@ if [ -n "$changed" ]; then
   exit 1
 fi
 echo "ok: no migration shipped in $tag was modified, renamed or deleted"
+
+python3 "$(dirname "${BASH_SOURCE[0]}")/check-migration-marker.py" "$root" "$tag" "$dir"
