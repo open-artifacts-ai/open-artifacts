@@ -130,6 +130,27 @@ describe("following the instance (#2552)", () => {
     expect(target).toBe("1.2.0");
   });
 
+  it.each([
+    { version: "2.1.0", paused: false, named: null, want: "2.1.0" },
+    { version: "2.2.0", paused: true, named: null, want: null },
+    { version: "2.3.0", paused: false, named: "1.0.9", want: "1.0.9" },
+  ])(
+    "delivers the observed release policy to an idle socket ($want)",
+    async ({ version, paused, named, want }) => {
+      const { d, target } = await open("1.1.0", "1.1.0");
+      expect(target).toBeNull();
+      if (paused) await setKey(UPDATES_PAUSED_KEY, "1");
+      if (named) await setKey(RUN_VERSION_KEY, named);
+      const observer = await hubOf("~release-lag");
+      await observer.observeRelease(version, "1.1.0");
+      // No second hello, update report, settings RPC or reconnect.
+      expect((await waitFor(d, "run_version")).run_version).toBe(want);
+      await observer.observeRelease(version, "1.1.0");
+      expect(pushes(d)).toEqual([null, want]);
+      d.close();
+    },
+  );
+
   it("offers the running release when an offline daemon reconnects after deployment", async () => {
     const { d, m, stub, target } = await open("1.1.0", "1.1.0");
     expect(target).toBeNull();

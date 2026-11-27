@@ -147,7 +147,7 @@ function observeRunningRelease(env: Env, ctx: ExecutionContext) {
   ctx.waitUntil(
     ns
       .get(ns.idFromName(RELEASE_LAG_HUB))
-      .observeRelease()
+      .observeRelease(VERSION, PREVIOUS_RELEASE)
       .catch((error) => {
         observedBindings.delete(ns);
         throw error;

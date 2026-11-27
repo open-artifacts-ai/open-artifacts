@@ -160,6 +160,21 @@ export type ReleaseDeadline = {
   since: number;
 };
 
+/** Page only members with a machine that has connected. Offline machines also get the release on hello. */
+export async function releaseOfferOwners(
+  env: Pick<Env, "DB">,
+  after: string,
+  limit: number,
+) {
+  const { results } = await stmt(
+    env.DB,
+    "select distinct user_id from bus_machines where user_id > ? and revoked_at is null and last_used_at is not null order by user_id limit ?",
+  )
+    .bind(after, limit)
+    .all<{ user_id: string }>();
+  return results.map((row) => row.user_id);
+}
+
 /** Keep the first observation, including timestamps written by pre-#3265 instances. */
 export async function firstReleaseObservation(
   env: Pick<Env, "DB">,

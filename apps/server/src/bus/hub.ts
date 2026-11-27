@@ -193,6 +193,7 @@ import {
   recordReport,
   refreshMachineLag,
   releaseOf,
+  releaseOfferOwners,
   STOPPED_AFTER_MS,
   targetFor,
   type UpdateState,
@@ -7077,21 +7078,34 @@ export class BusHub extends DurableObject<Env> {
    * this hub's connected sockets (null: none named now). The route calls this
    * on every member's hub.
    */
-  async runVersionChanged(): Promise<void> {
+  async runVersionChanged(release?: string): Promise<string | undefined> {
+    // A hibernatable socket can survive deployment. The observer names the
+    // release from the Worker probe even while an active hub is adopting code.
+    if (release !== undefined) {
+      if (releaseOf(release) !== release)
+        throw new Error("Invalid observed release");
+      this.#serverVersion = release;
+      if (!this.ctx.getWebSockets(DAEMON_TAG).some(runVersionGated))
+        return release;
+    }
     this.#runVersionAt = -Infinity;
-    await this.#refreshRunVersion();
+    if (!(await this.#refreshRunVersion()) && release !== undefined)
+      throw new Error("Could not read bus update settings");
     const owner = this.#userId();
-    if (owner && PREVIOUS_RELEASE)
+    if (release === undefined && owner && PREVIOUS_RELEASE)
       await refreshMachineLag(this.env, owner, PREVIOUS_RELEASE, this.#now());
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
       this.#pushRunVersion(ws);
     await this.#commitArm();
+    return release;
   }
 
   /** The reserved instance hub receives the first request event for a release. */
-  async observeRelease(): Promise<void> {
-    const version = releaseOf(this.#serverVersion);
-    const previous = this.#previousRelease;
+  async observeRelease(
+    running = this.#serverVersion,
+    previous = this.#previousRelease,
+  ): Promise<void> {
+    const version = releaseOf(running);
     if (this.ctx.id.name !== RELEASE_LAG_HUB || !version || !previous) return;
     await this.ctx.blockConcurrencyWhile(async () => {
       const storage = this.ctx.storage;
@@ -7114,11 +7128,41 @@ export class BusHub extends DurableObject<Env> {
         deadlines.push(release);
         await tx.put("lagDeadlines", deadlines);
         await tx.put("observedRelease", version);
-        await tx.setAlarm(
-          Math.min(...deadlines.map((d) => d.since + LAG_NOTICE_MS)),
-        );
+        // Journal delivery before the first send. The alarm resumes it if this RPC stops.
+        await tx.put("releaseOffers", { version, after: "" });
+        await tx.setAlarm(this.#now());
       });
+      await this.#releaseLagAlarm();
     });
+  }
+
+  /** One bounded page per event. Advance only after every member acknowledged the release. */
+  async #offerReleasePage() {
+    const storage = this.ctx.storage;
+    const page = await storage.get<{ version: string; after: string }>(
+      "releaseOffers",
+    );
+    if (!page) return false;
+    const ns = this.env.BUS_HUB;
+    if (!ns) throw new Error("Bus hub binding unavailable");
+    const limit = 32;
+    const owners = await releaseOfferOwners(this.env, page.after, limit + 1);
+    await Promise.all(
+      owners.slice(0, limit).map(async (owner) => {
+        const hub = ns.get(ns.idFromName(busHubName(owner)));
+        if ((await hub.runVersionChanged(page.version)) !== page.version)
+          throw new Error("Member hub has not adopted release offers yet");
+      }),
+    );
+    if (owners.length > limit) {
+      await storage.put("releaseOffers", {
+        version: page.version,
+        after: owners[limit - 1],
+      });
+      return true;
+    }
+    await storage.delete("releaseOffers");
+    return false;
   }
 
   async #releaseLagAlarm() {
@@ -7127,6 +7171,13 @@ export class BusHub extends DurableObject<Env> {
       (await this.ctx.storage.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
     const due = pending.filter((d) => d.since + LAG_NOTICE_MS <= now);
     for (const d of due) await reconcileReleaseLag(this.env, d, "mark-overdue");
+    let nextOfferAt = Infinity;
+    try {
+      if (await this.#offerReleasePage()) nextOfferAt = now;
+    } catch (error) {
+      logError("bus_release_offer_retry", error);
+      nextOfferAt = now + 30_000;
+    }
     await this.ctx.storage.transaction(async (tx) => {
       const current = (await tx.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
       const remaining = current.filter(
@@ -7136,10 +7187,11 @@ export class BusHub extends DurableObject<Env> {
           ),
       );
       await tx.put("lagDeadlines", remaining);
-      if (remaining.length)
-        await tx.setAlarm(
-          Math.min(...remaining.map((d) => d.since + LAG_NOTICE_MS)),
-        );
+      const next = Math.min(
+        nextOfferAt,
+        ...remaining.map((d) => d.since + LAG_NOTICE_MS),
+      );
+      if (Number.isFinite(next)) await tx.setAlarm(next);
     });
   }
 
