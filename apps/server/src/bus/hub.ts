@@ -1616,6 +1616,17 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
+  // A project role stays with its holder until the member decides the move.
+  if (
+    !global &&
+    one(
+      sql,
+      "select 1 from roles where org_id = ? and agent_id = ? limit 1",
+      OWNER_ORG_ID,
+      r.agentId,
+    )
+  )
+    return null;
   // #1346: mail that crossed a namespace boundary (admitted by a reach grant,
   // which may be gone by now) waits for its holder: the newcomer may hold no
   // such grant. Pending in-session mail from another namespace blocks the
@@ -2068,6 +2079,7 @@ function agentUp(
   machineId: string,
   frame: AgentUpFrame,
   now: number,
+  replacement = false,
 ): {
   reply: ServerFrame;
   change: RosterChange;
@@ -2144,7 +2156,7 @@ function agentUp(
     id,
     now,
     f.name_kind,
-    { kind: f.kind },
+    replacement ? undefined : { kind: f.kind },
     // #1916: agent_up carries the harness's title (the daemon sends renames,
     // user-made, as `rename` frames). An agent keeping its own current name
     // is not a new title, so neither rule touches it. Claude Code only writes a
@@ -2325,7 +2337,7 @@ function agentUp(
  * changes and the new ref registers as any other. An old session still open
  * is closed first into `away` (its address kept), so the agent_up always
  * takes the reopen path: the old session's delivered bodies go, its pending
- * mail stays.
+ * mail stays. A role holder keeps its row and returns its roles for an explicit move.
  */
 function takeOver(
   sql: SqlStorage,
@@ -2333,7 +2345,7 @@ function takeOver(
   oldRef: string,
   newRef: string,
   now: number,
-): void {
+): { holderId: string; namespace: string; asked: string }[] | undefined {
   if (oldRef === newRef) return;
   if (
     one(
@@ -2344,6 +2356,16 @@ function takeOver(
     ) !== null
   )
     return;
+  const roles = all<{ holderId: string; namespace: string; asked: string }>(
+    sql,
+    `select a.id as holderId, r.namespace, r.name as asked from agents a
+       join roles r on r.org_id = a.org_id and r.agent_id = a.id
+       where a.machine_id = ? and a.native_ref = ? and a.org_id = ?`,
+    machineId,
+    oldRef,
+    OWNER_ORG_ID,
+  );
+  if (roles.length) return roles;
   const taken = one<{ id: string; live: number }>(
     sql,
     "update agents set native_ref = ? where machine_id = ? and native_ref = ? and org_id = ? returning id, live",
@@ -4434,7 +4456,10 @@ export class BusHub extends DurableObject<Env> {
    * over (proposeRole); a gone one leaves the member's card. `a` is told it
    * waits. Never moves anything itself. A pending ask is not repeated.
    */
-  #askTakeover(a: AgentRow, p: { holderId: string; asked: string }): void {
+  #askTakeover(
+    a: AgentRow,
+    p: { holderId: string; asked: string; namespace?: string },
+  ): void {
     const sql = this.ctx.storage.sql;
     const holder = one<{
       id: string;
@@ -4447,26 +4472,38 @@ export class BusHub extends DurableObject<Env> {
       OWNER_ORG_ID,
       p.holderId,
     );
-    if (!holder || holder.global === 1 || a.global === 1) return;
-    if (holder.namespace !== a.namespace) return;
-    this.#withReachNotice(() =>
-      claimNameRole(
-        sql,
-        OWNER_ORG_ID,
-        holder,
-        this.#now(),
-        newId,
-        this.#maxRoles,
-      ),
-    );
+    if (!holder) return;
+    const namespace = p.namespace ?? a.namespace;
+    if (!a.global && a.namespace !== namespace) return;
+    if (!holder.global && holder.namespace !== namespace) return;
+    if (p.namespace === undefined && (holder.global || a.global)) return;
+    if (
+      p.namespace === undefined &&
+      holder.name.toLowerCase() === p.asked.toLowerCase()
+    )
+      this.#withReachNotice(() =>
+        claimNameRole(
+          sql,
+          OWNER_ORG_ID,
+          holder,
+          this.#now(),
+          newId,
+          this.#maxRoles,
+        ),
+      );
     const role = one<{ id: string; name: string; agentId: string | null }>(
       sql,
       "select id, name, agent_id as agentId from roles where org_id = ? and namespace = ? and lname = ?",
       OWNER_ORG_ID,
-      a.namespace,
+      namespace,
       p.asked.toLowerCase(),
     );
-    if (!role || role.agentId === a.id) return;
+    if (
+      !role ||
+      role.agentId === a.id ||
+      (p.namespace !== undefined && role.agentId !== p.holderId)
+    )
+      return;
     const waiting = one(
       sql,
       `select 1 as x from role_proposals where org_id = ? and role_id = ? and agent_id = ?
@@ -4481,7 +4518,7 @@ export class BusHub extends DurableObject<Env> {
         OWNER_ORG_ID,
         {
           action: "set",
-          namespace: a.namespace,
+          namespace,
           name: role.name,
           agent: a.name,
           credential: null,
@@ -6557,10 +6594,26 @@ export class BusHub extends DurableObject<Env> {
           sendError(ws, f.id, "rate_limited", AGENT_CAP_MESSAGES.machine);
           return;
         }
-        // #1295: a /clear. The same process reports a new session; the new
-        // ref takes over the old one's agent row (address, former names, mail).
-        if (f.replaces !== undefined && mailboxGated(ws))
-          takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
+        // A changed native ref starts a new session. Keep a role holder's row
+        // and mail under its original ref until the member decides the move.
+        const replacedRef = f.replaces;
+        const replacedRoles =
+          replacedRef !== undefined && mailboxGated(ws)
+            ? takeOver(sql, machineId, replacedRef, f.agent_ref, this.#now())
+            : undefined;
+        if (replacedRoles && replacedRef !== undefined) {
+          const closed = this.#withReachNotice(() =>
+            agentDown(sql, machineId, replacedRef, this.#now()),
+          );
+          if (closed) {
+            this.#closeSessions([closed.id]);
+            notifyRoster(
+              this.ctx,
+              { namespaces: [closed.namespace], global: closed.global === 1 },
+              ws,
+            );
+          }
+        }
         // #1766: where this session's follows are, read before agentUp (a
         // reclaim deletes the away row). Only an address still this session's:
         // its row is live, or it holds an unexpired away reservation of its own
@@ -6579,7 +6632,14 @@ export class BusHub extends DurableObject<Env> {
           this.#now(),
         );
         const { reply, change, arms, moved, pending } = this.#withReachNotice(
-          () => agentUp(sql, machineId, f, this.#now()),
+          () =>
+            agentUp(
+              sql,
+              machineId,
+              f,
+              this.#now(),
+              replacedRef !== undefined && mailboxGated(ws),
+            ),
         );
         for (const t of arms) this.#arm(t);
         this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
@@ -6590,6 +6650,14 @@ export class BusHub extends DurableObject<Env> {
         const a = registeredAgent(sql, machineId, f.agent_ref);
         // #3132: it asked for a name another session holds.
         if (a && pending) this.#askTakeover(a, pending);
+        if (a && replacedRoles)
+          for (const role of replacedRoles) {
+            if (
+              role.namespace !== a.namespace ||
+              role.asked.toLowerCase() !== pending?.asked.toLowerCase()
+            )
+              this.#askTakeover(a, role);
+          }
         const rekeyed = a ? this.#rekeyFollows(before, a) : undefined;
         if (a) {
           // Its queued mail, then what it missed as a sender.

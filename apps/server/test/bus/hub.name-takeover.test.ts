@@ -142,14 +142,14 @@ const roleCount = (namespace: string) =>
     namespace,
   ).then((r) => r[0]?.n ?? 0);
 
-async function scene(opts: { holderAway?: boolean } = {}) {
+async function scene(opts: { holderAway?: boolean; global?: boolean } = {}) {
   await setClock(base());
   const n = ns("nt");
   const m = await machine("Work");
   const d = await connect(m.token);
   const name = uniq("Lead");
   const holderRef = uniq("holder");
-  expect(await reg(d, holderRef, name, n)).toBe(name);
+  expect(await reg(d, holderRef, name, n, { global: opts.global })).toBe(name);
   if (opts.holderAway) await close(d, holderRef);
   return { d, m, n, name, holderRef };
 }
@@ -289,6 +289,49 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(await roleCount(n)).toBe(0);
     d.close();
   });
+
+  it.each([
+    { away: false, global: false },
+    { away: true, global: false },
+    { away: false, global: true },
+  ])(
+    "a /clear of a role holder (away: $away, global: $global) requires a decision",
+    async ({ away, global }) => {
+      const s = await scene({ global });
+      const hub = await hubOf();
+      const prior = await agentIdOf(s.holderRef);
+      const role = away ? s.name : uniq("Manager");
+      if (role === s.name) {
+        await reg(s.d, uniq("contender"), role, s.n);
+        expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
+      } else {
+        expect((await hub.putRole(s.n, role, prior)).ok).toBe(true);
+      }
+      if (away) await close(s.d, s.holderRef);
+      const ref = uniq("clear");
+      const replace = () =>
+        s.d.send({
+          ...plainUp(id("u"), ref, s.name, s.n, global),
+          replaces: s.holderRef,
+        } as ClientFrame);
+      replace();
+      await waitFor(s.d, "agent_ok");
+      const successor = await agentIdOf(ref);
+      expect(successor).not.toBe(prior);
+      expect(await agentIdOf(s.holderRef)).toBe(prior);
+      expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
+      expect(await asks(ref)).toEqual([
+        { name: role, action: "repoint", credential: null },
+      ]);
+      replace();
+      await waitFor(s.d, "agent_ok");
+      expect(await asks(ref)).toHaveLength(1);
+      expect(await roleOf(s.n, role)).toEqual([{ ref: s.holderRef }]);
+      expect((await hub.putRole(s.n, role, successor)).ok).toBe(true);
+      expect(await roleOf(s.n, role)).toEqual([{ ref }]);
+      s.d.close();
+    },
+  );
 
   it("a true resume (the same agent_ref reopening) keeps its name silently", async () => {
     const s = await scene({ holderAway: true });
