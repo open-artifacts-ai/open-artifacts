@@ -367,6 +367,7 @@ export const CodexToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const CodexCallCheck = z.strictObject({
   ...base,
   type: z.literal("codex_call_check"),
+  harness: z.literal("antigravity").optional(),
   thread_id: CodexThreadIdSchema,
   tool: CodexToolNameSchema,
   mode: z.discriminatedUnion("kind", [

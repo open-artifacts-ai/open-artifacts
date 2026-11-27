@@ -1,18 +1,20 @@
 // #2552 step 2: with no version named, machines follow the instance. The
-// default is the server's own strict x.y.z release, only once it has run here
-// for 24 h, only forward of the machine's own version, and never while the
-// owner has paused updates. A named version keeps its old meaning.
+// default is the server's own strict x.y.z release, offered at once, only
+// forward of the machine's own version, and never while the owner has paused
+// updates. A named version keeps its old meaning.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
 import {
+  machineUpdateNotices,
+  noteMachineVersion,
   RUN_VERSION_KEY,
-  SOAK_MS,
+  recordReport,
+  refreshMachineLag,
   UPDATES_PAUSED_KEY,
-  VERSION_SINCE_KEY,
 } from "../../src/bus/updates.js";
 import {
   RUN_VERSION_FANOUT_KEY,
@@ -52,16 +54,9 @@ const getKey = async (k: string) =>
       .bind(k)
       .first<{ value: string }>()
   )?.value ?? null;
-const since = (version: string, at: number) =>
-  setKey(VERSION_SINCE_KEY, JSON.stringify({ version, since: at }));
 
 afterEach(async () => {
-  for (const k of [
-    RUN_VERSION_KEY,
-    UPDATES_PAUSED_KEY,
-    VERSION_SINCE_KEY,
-    RUN_VERSION_FANOUT_KEY,
-  ])
+  for (const k of [RUN_VERSION_KEY, UPDATES_PAUSED_KEY, RUN_VERSION_FANOUT_KEY])
     await setKey(k, null);
 });
 
@@ -69,7 +64,7 @@ afterEach(async () => {
  * A member on a hub whose server VERSION is `server` and whose clock is NOW,
  * and a machine running `running` that has said hello.
  */
-async function open(server: string, running: string, soakedFor?: number) {
+async function open(server: string, running: string) {
   const who = await member();
   const m = await machine("MacBook", who.userId);
   const stub = await hubOf(who.userId);
@@ -77,7 +72,6 @@ async function open(server: string, running: string, soakedFor?: number) {
     BusHub.setTestServerVersion(i as unknown as BusHub, server);
     BusHub.setTestClock(i as unknown as BusHub, NOW);
   });
-  if (soakedFor !== undefined) await since(server, NOW - soakedFor);
   const d = await daemon(m.token);
   d.send({
     ...hello("h0"),
@@ -117,12 +111,12 @@ const ackOf = async (d: Daemon, f: ClientFrame) => {
 };
 
 describe("following the instance (#2552)", () => {
-  it("nothing named, soaked: an older machine is told the default; same or newer is told nothing to run", async () => {
-    const old = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+  it("a new release is offered at once: an older machine is told the server's release on its first hello, with no wait", async () => {
+    const old = await open("1.2.0", "1.0.0");
     expect(old.target).toBe("1.2.0");
-    const same = await open("1.2.0", "1.2.0", SOAK_MS + 1);
+    const same = await open("1.2.0", "1.2.0");
     expect(same.target).toBeNull();
-    const newer = await open("1.2.0", "1.3.0", SOAK_MS + 1);
+    const newer = await open("1.2.0", "1.3.0");
     expect(newer.target).toBeNull();
     // A later push says the same.
     await old.stub.runVersionChanged();
@@ -131,75 +125,73 @@ describe("following the instance (#2552)", () => {
     expect(pushes(same.d).at(-1)).toBeNull();
   });
 
-  it("not soaked: nothing, and the first sight is recorded once", async () => {
+  it("release offered right after the instance runs it", async () => {
     const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    const row = JSON.parse((await getKey(VERSION_SINCE_KEY)) as string);
-    expect(row).toEqual({ version: "1.2.0", since: NOW });
-    // A second hub on the same VERSION leaves the first record alone.
-    const later = await open("1.2.0", "1.0.0");
-    expect(later.target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string).since).toBe(
-      NOW,
-    );
+    expect(target).toBe("1.2.0");
   });
 
-  it("a malformed first-sight record heals instead of failing every read", async () => {
-    await setKey(VERSION_SINCE_KEY, "{not json");
-    const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string)).toEqual({
-      version: "1.2.0",
-      since: NOW,
-    });
-  });
+  it.each([
+    { version: "2.1.0", paused: false, named: null, want: "2.1.0" },
+    { version: "2.2.0", paused: true, named: null, want: null },
+    { version: "2.3.0", paused: false, named: "1.0.9", want: "1.0.9" },
+  ])(
+    "delivers the observed release policy to an idle socket ($want)",
+    async ({ version, paused, named, want }) => {
+      const { d, target } = await open("1.1.0", "1.1.0");
+      expect(target).toBeNull();
+      if (paused) await setKey(UPDATES_PAUSED_KEY, "1");
+      if (named) await setKey(RUN_VERSION_KEY, named);
+      const observer = await hubOf("~release-lag");
+      await observer.observeRelease(version, "1.1.0");
+      // No second hello, update report, settings RPC or reconnect.
+      expect((await waitFor(d, "run_version")).run_version).toBe(want);
+      await observer.observeRelease(version, "1.1.0");
+      expect(pushes(d)).toEqual([null, want]);
+      d.close();
+    },
+  );
 
-  it("the soak ends by alarm: the connected machine is then told the default", async () => {
-    const { d, stub } = await open("1.2.0", "1.0.0", SOAK_MS - 60_000);
-    expect(pushes(d)).toEqual([null]);
+  it("offers the running release when an offline daemon reconnects after deployment", async () => {
+    const { d, m, stub, target } = await open("1.1.0", "1.1.0");
+    expect(target).toBeNull();
+    d.close();
     await runInDurableObject(stub, (i) =>
-      BusHub.setTestClock(i as unknown as BusHub, NOW + 61_000),
+      BusHub.setTestServerVersion(i as unknown as BusHub, "1.2.0"),
     );
-    expect(await runDurableObjectAlarm(stub)).toBe(true);
-    expect(pushes(d).at(-1)).toBe("1.2.0");
+    const reconnected = await daemon(m.token);
+    reconnected.send({
+      ...hello("reconnected"),
+      client_version: "1.1.0",
+      caps: CAP,
+    } as ClientFrame);
+    const reply = await waitFor(reconnected, "hello_ok");
+    expect(reply.server_version).toBe("1.2.0");
+    expect(reply.run_version).toBe("1.2.0");
+    reconnected.close();
   });
 
-  it("a new VERSION restarts the soak", async () => {
-    await since("1.1.0", NOW - 10 * SOAK_MS);
-    const { target } = await open("1.2.0", "1.0.0");
-    expect(target).toBeNull();
-    expect(JSON.parse((await getKey(VERSION_SINCE_KEY)) as string)).toEqual({
-      version: "1.2.0",
-      since: NOW,
-    });
-  });
-
-  it("a -dev or pre-release VERSION gives no default and records nothing", async () => {
+  it("a -dev or pre-release VERSION gives no default", async () => {
     for (const v of ["1.2.0-dev+abc1234", "1.2.0-rc.1"]) {
       const { target } = await open(v, "1.0.0");
       expect(target).toBeNull();
     }
-    expect(await getKey(VERSION_SINCE_KEY)).toBeNull();
-    await since("1.2.0", NOW - 2 * SOAK_MS);
-    const dev = await open("1.2.0-dev+abc1234", "1.0.0");
-    expect(dev.target).toBeNull();
   });
 
   it("a server older than the machine leaves the machine alone", async () => {
-    const { target } = await open("1.0.0", "1.5.0", SOAK_MS + 1);
+    const { target } = await open("1.0.0", "1.5.0");
     expect(target).toBeNull();
   });
 
   it("an unreadable machine version gets no default", async () => {
-    const { target } = await open("1.2.0", "unknown-1700", SOAK_MS + 1);
+    const { target } = await open("1.2.0", "unknown-1700");
     expect(target).toBeNull();
   });
 
-  it("named wins: unsoaked, and a lower named version is still a step back", async () => {
+  it("named wins: a lower named version is still a step back", async () => {
     await setKey(RUN_VERSION_KEY, "1.1.0");
     const a = await open("1.2.0", "1.0.0");
     expect(a.target).toBe("1.1.0");
-    const b = await open("1.2.0", "1.2.0", SOAK_MS + 1);
+    const b = await open("1.2.0", "1.2.0");
     expect(b.target).toBe("1.1.0"); // below its own: a deliberate step back
     expect(
       await ackOf(b.d, sw({ from: "1.2.0", to: "1.1.0", reason: "ok" })),
@@ -210,8 +202,8 @@ describe("following the instance (#2552)", () => {
 });
 
 describe("update_ack with the default (#2552)", () => {
-  it("allows exactly the soaked, forward default; refuses anything else", async () => {
-    const { d, m } = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+  it("the forward default is allowed at once; refuses anything else", async () => {
+    const { d, m } = await open("1.2.0", "1.0.0");
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(true);
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.1.0" }))).toBe(false);
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.3.0" }))).toBe(false);
@@ -225,13 +217,7 @@ describe("update_ack with the default (#2552)", () => {
     void m;
   });
 
-  it("not soaked: refused", async () => {
-    const { d } = await open("1.2.0", "1.0.0");
-    expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(false);
-  });
-
   it("a -dev server: refused", async () => {
-    await since("1.2.0", NOW - 2 * SOAK_MS);
     const { d } = await open("1.2.0-dev+abc1234", "1.0.0");
     expect(await ackOf(d, sw({ from: "1.0.0", to: "1.2.0" }))).toBe(false);
   });
@@ -239,7 +225,7 @@ describe("update_ack with the default (#2552)", () => {
 
 describe("pause (#2552)", () => {
   it("pushes the cleared target and refuses every instance-driven switch; resume restores the default", async () => {
-    const { who, d, stub } = await open("1.2.0", "1.0.0", SOAK_MS + 1);
+    const { who, d, stub } = await open("1.2.0", "1.0.0");
     // Page 0: only this member's hub is told. Other tests' hubs run other
     // pretend VERSIONs, and each would rewrite the one first-seen row.
     await setBusUpdatesPaused(e, who.userId, true, 0);
@@ -288,6 +274,181 @@ describe("pause (#2552)", () => {
     ).results;
     expect(rows.map((r) => JSON.parse(r.detail).paused)).toEqual([true, false]);
     expect(rows[0]?.actor_id).toBe(owner.userId);
+  });
+
+  it("arms one instance deadline per release and reports offline machines without a hello", async () => {
+    const who = await member();
+    const m = await machine("offline laptop", who.userId);
+    await noteMachineVersion(e, m.id, "1.0.7");
+    const hub = await hubOf("~release-lag");
+    const start = NOW;
+    const observe = async (version: string, previous: string, at: number) => {
+      await runInDurableObject(hub, (i) => {
+        BusHub.setTestClock(i as unknown as BusHub, at);
+        BusHub.setTestServerVersion(i as unknown as BusHub, version, previous);
+      });
+      await hub.observeRelease();
+    };
+    const alarm = () =>
+      runInDurableObject(hub, (_, state) => state.storage.getAlarm());
+    await setKey(
+      "bus_version_since",
+      JSON.stringify({ version: "1.2.0", since: start }),
+    );
+    await observe("1.2.0", "1.1.0", start + 100);
+    await observe("1.2.0", "1.1.0", start + 200);
+    await observe("1.3.0", "1.2.0", start + 300);
+    expect(await alarm()).toBe(start + 3600000);
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 3599999),
+    ).toHaveLength(0);
+    await runInDurableObject(hub, (i) =>
+      BusHub.setTestClock(i as unknown as BusHub, start + 3600000),
+    );
+    await runDurableObjectAlarm(hub);
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 3600000),
+    ).toHaveLength(1);
+    expect(await alarm()).toBe(start + 300 + 3600000);
+    await runInDurableObject(hub, (i) =>
+      BusHub.setTestClock(i as unknown as BusHub, start + 300 + 3600000),
+    );
+    await runDurableObjectAlarm(hub);
+    expect(await alarm()).toBeNull();
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 300 + 3600000),
+    ).toHaveLength(1);
+  });
+
+  it("clears only resolved offline lag notices on instance rollback, without a hello", async () => {
+    const who = await member();
+    const recovered = await machine("Recovered laptop", who.userId);
+    const stillBehind = await machine("Older laptop", who.userId);
+    await noteMachineVersion(e, recovered.id, "1.1.0");
+    await noteMachineVersion(e, stillBehind.id, "1.0.0");
+    const hub = await hubOf("~release-lag");
+    const observe = async (v: string, previous: string) => {
+      await runInDurableObject(hub, (i) => {
+        BusHub.setTestClock(i as unknown as BusHub, NOW);
+        BusHub.setTestServerVersion(i as unknown as BusHub, v, previous);
+      });
+      await hub.observeRelease();
+    };
+    await observe("1.3.0", "1.2.0");
+    await refreshMachineLag(e, who.userId, "1.2.0", Date.now() - 3601000);
+    const notices = async () => {
+      const data = (await (await api(app, R.meInbox, who.cookie)).json()) as {
+        needsYou: { id: string; text: string }[];
+      };
+      return data.needsYou;
+    };
+    const before = await notices();
+    expect(before).toHaveLength(2);
+    await observe("1.2.0", "1.1.0");
+    expect(await notices()).toEqual([
+      before.find((item) => item.text.includes("Older laptop")),
+    ]);
+  });
+
+  it("keeps one lag episode across releases, isolated to the machine owner", async () => {
+    const who = await member();
+    const other = await member();
+    const m = await machine("MacBook", who.userId);
+    await noteMachineVersion(e, m.id, "1.1.9");
+    await refreshMachineLag(e, who.userId, "1.1.9", NOW);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600000),
+    ).toHaveLength(0);
+    await refreshMachineLag(e, who.userId, "1.2.0", NOW);
+    await refreshMachineLag(e, who.userId, "1.3.0", NOW + 1000);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3599999),
+    ).toHaveLength(0);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600000),
+    ).toHaveLength(1);
+    expect(
+      await machineUpdateNotices(e, other.userId, NOW + 3600000),
+    ).toHaveLength(0);
+    await noteMachineVersion(e, m.id, "1.3.0");
+    await refreshMachineLag(e, who.userId, "1.3.0", NOW + 3600001);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600001),
+    ).toHaveLength(0);
+  });
+
+  it("explains overdue machines in the owner's inbox", async () => {
+    const who = await member();
+    const m = await machine("Lag laptop", who.userId);
+    await noteMachineVersion(e, m.id, "1.0.0");
+    await refreshMachineLag(e, who.userId, "1.1.0", Date.now() - 3601000);
+    const item = async () => {
+      const data = (await (await api(app, R.meInbox, who.cookie)).json()) as {
+        needsYou: { text: string }[];
+      };
+      expect(data.needsYou).toHaveLength(1);
+      return data.needsYou[0].text;
+    };
+    expect(await item()).toContain("machine offline");
+    await setKey(UPDATES_PAUSED_KEY, "1");
+    expect(await item()).toContain("updates are paused");
+    await setKey(UPDATES_PAUSED_KEY, null);
+    await recordReport(
+      e,
+      m.id,
+      sw({ event: "stepped_back", reason: "unhealthy" }) as Extract<
+        ClientFrame,
+        { type: "update_report" }
+      >,
+      Date.now(),
+    );
+    expect(await item()).toContain("failed the self-check for 1.2.0");
+  });
+
+  it("keeps the third-failure notice through a retry and clears it on recovery", async () => {
+    const who = await member();
+    const m = await machine("MacBook", who.userId);
+    const report = (event: string) =>
+      recordReport(
+        e,
+        m.id,
+        sw({ event, reason: "unhealthy" }) as Extract<
+          ClientFrame,
+          { type: "update_report" }
+        >,
+        NOW,
+      );
+    await report("needs_you");
+    await report("switching");
+    const response = await (await api(app, R.meInbox, who.cookie)).json();
+    expect(response).toMatchObject({
+      needsYou: [
+        expect.objectContaining({
+          kind: "machine_update",
+          text: expect.stringContaining("MacBook"),
+        }),
+      ],
+    });
+    await report("updated");
+    expect(await machineUpdateNotices(e, who.userId, NOW)).toHaveLength(0);
+  });
+
+  it("keeps the last hello version after disconnect and preserves legacy responses", async () => {
+    const { who, d } = await open("1.2.0", "1.0.9");
+    d.close();
+    const legacy = (await (
+      await api(app, R.busMachines, who.cookie)
+    ).json()) as { machines: object[] };
+    expect(legacy.machines[0]).not.toHaveProperty("busVersion");
+    const versions = await (
+      await api(app, R.busMachines, who.cookie, {
+        headers: { "X-OA-Wants-Bus-Versions": "1" },
+      })
+    ).json();
+    expect(versions).toMatchObject({
+      instanceVersion: expect.any(String),
+      machines: [{ label: "MacBook", busVersion: "1.0.9" }],
+    });
   });
 
   it("GET R.busMachines tells the owner the pause state when asked, and no one else", async () => {

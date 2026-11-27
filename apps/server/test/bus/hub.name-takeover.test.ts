@@ -288,55 +288,86 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     },
   );
 
-  it("answers the predecessor's personal ask after the successor renames its role", async () => {
-    const s = await scene();
-    const successor = uniq("successor");
-    await reg(s.d, successor, s.name, s.n);
-    const hub = await hubOf();
-    const originalId = await agentIdOf(s.holderRef);
-    const identity = newId();
-    await sqlOf(
-      "update agents set identity_id = ? where id = ?",
-      identity,
-      originalId,
-    );
-    const handoverAt = base();
-    await setClock(handoverAt);
-    expect(
-      (await hub.putRole(s.n, s.name, await agentIdOf(successor))).ok,
-    ).toBe(true);
-    const askAt = handoverAt + 1;
-    await setClock(askAt);
-    const answer: BusNotice = {
-      id: newId(),
-      kind: "ask_answered",
-      from: NOTICE_SENDER,
-      artifactId: "doc",
-      version: 1,
-      url: "https://app.test/a/doc",
-      to: { namespace: s.n, name: s.name },
-      toIdentity: identity,
-      originAt: askAt,
-      text: "Personal answer",
-      coalesceKey: "personal",
-    };
-    await setClock(askAt + 1);
-    await rename(s.d, successor, uniq("Research"));
-    expect(await hub.deliverNotice(answer)).toBe("delivered");
-    expect(await hub.deliverNotice({ ...answer, toIdentity: newId() })).toBe(
-      "dropped",
-    );
-    expect(await hub.deliverNotice({ ...answer, originAt: askAt + 2 })).toBe(
-      "dropped",
-    );
-    await fence(s.d);
-    expect(
-      framesSeen(s.d).filter(
-        (f) => f.type === "deliver" && f.body === answer.text,
-      ),
-    ).toMatchObject([{ to_ref: s.holderRef }]);
-    s.d.close();
-  });
+  it.each([false, true])(
+    "keeps personal asks with the predecessor and role-era asks with the successor (predecessor takes a new role: %s)",
+    async (takesNewRole) => {
+      const s = await scene({ selfPicked: true });
+      const hub = await hubOf();
+      const identity = newId();
+      await sqlOf(
+        "update agents set identity_id = ? where id = ?",
+        identity,
+        await agentIdOf(s.holderRef),
+      );
+      const beforeRole = base();
+      await setClock(beforeRole);
+      expect(await roleOf(s.n, s.name)).toEqual([]);
+      const heldFrom = beforeRole + 1;
+      await setClock(heldFrom);
+      await rename(s.d, s.holderRef, s.name);
+      expect(await roleOf(s.n, s.name)).toEqual([{ ref: s.holderRef }]);
+      const successor = uniq("successor");
+      await reg(s.d, successor, s.name, s.n);
+      const handoverAt = heldFrom + 1;
+      await setClock(handoverAt);
+      expect(
+        (await hub.putRole(s.n, s.name, await agentIdOf(successor))).ok,
+      ).toBe(true);
+      const retiredAt = handoverAt + 1;
+      await setClock(retiredAt);
+      const research = uniq("Research");
+      await rename(s.d, successor, research);
+
+      if (takesNewRole) {
+        await setClock(retiredAt + 1);
+        const newRole = uniq("Editor");
+        await rename(s.d, s.holderRef, newRole);
+        expect(await roleOf(s.n, newRole)).toEqual([{ ref: s.holderRef }]);
+      }
+
+      const answer = (originAt: number, text: string): BusNotice => ({
+        id: newId(),
+        kind: "ask_answered",
+        from: NOTICE_SENDER,
+        artifactId: "doc",
+        version: 1,
+        url: "https://app.test/a/doc",
+        to: { namespace: s.n, name: s.name },
+        toIdentity: identity,
+        originAt,
+        text,
+        coalesceKey: text,
+      });
+      const cases = [
+        { at: beforeRole, text: "Before the role", to: s.holderRef },
+        { at: heldFrom, text: "During the role", to: successor },
+        { at: handoverAt, text: "After handover", to: s.holderRef },
+      ];
+      for (const c of cases)
+        expect(await hub.deliverNotice(answer(c.at, c.text))).toBe("delivered");
+      expect(
+        await hub.deliverNotice({
+          ...answer(beforeRole, "Wrong identity"),
+          toIdentity: newId(),
+        }),
+      ).toBe("dropped");
+      expect(
+        await hub.deliverNotice(answer(retiredAt + 1, "After retirement")),
+      ).toBe("dropped");
+      expect((await hub.putRole(s.n, research, null)).ok).toBe(true);
+      expect(await hub.deliverNotice(answer(heldFrom, "Vacant role"))).toBe(
+        "dropped",
+      );
+      await fence(s.d);
+      for (const c of cases)
+        expect(
+          framesSeen(s.d).filter(
+            (f) => f.type === "deliver" && f.body === c.text,
+          ),
+        ).toMatchObject([{ to_ref: c.to }]);
+      s.d.close();
+    },
+  );
 
   it("a second agent_up of the newcomer files no second proposal", async () => {
     const s = await scene();
@@ -387,6 +418,11 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     expect(await roleOf(s.n, s.name)).toEqual([{ ref }]);
     const row = (await hub.snapshot()).agents.find((a) => a.name === got);
     expect(row).toMatchObject({ role: s.name, privateSessionName: true });
+    expect(
+      (await hub.listRoles()).find(
+        (r) => r.namespace === s.n && r.name === s.name,
+      ),
+    ).toMatchObject({ holderName: got, privateSessionName: true });
     expect(row?.pendingRole).toBeUndefined();
     // The ask the move answered is settled: no card is left for it.
     expect(await asks(ref)).toEqual([]);

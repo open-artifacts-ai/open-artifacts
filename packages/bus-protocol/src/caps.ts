@@ -173,6 +173,7 @@ export const BUS_CAPS = {
    * listed it, and listed in `hello_ok.caps`.
    */
   codexCheck: "codex_check",
+  agyCheck: "agy_check",
 } as const;
 /** Opt-in on the socket upgrade: released hubs accept at most 16 hello caps. */
 export const CODEX_VERDICT_HEADER = "x-oa-codex-link-verdict";
@@ -202,3 +203,6 @@ export function hasCap(
 ): boolean {
   return hello?.caps?.includes(cap) ?? false;
 }
+
+/** Native agy proof support on the upgrade; legacy hubs accept at most 16 hello caps. */
+export const AGY_CHECK_HEADER = "x-oa-bus-agy-check";
