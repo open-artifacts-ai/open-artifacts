@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.264.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.263.0...v0.264.0) (2026-11-27)
+
+
+### Features
+
+* **auth:** email codes for every active row, owner, admin and Google-linked ([#3184](https://github.com/open-artifacts-ai/open-artifacts/issues/3184)) ([#3215](https://github.com/open-artifacts-ai/open-artifacts/issues/3215)) ([36abde3](https://github.com/open-artifacts-ai/open-artifacts/commit/36abde380913ee458d6515d2d65397e6b13449bf))
+* **comments:** an agent's comment shows its role, and who holds it now ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3234](https://github.com/open-artifacts-ai/open-artifacts/issues/3234)) ([759f365](https://github.com/open-artifacts-ai/open-artifacts/commit/759f365be157fc446a699be5a3891bb42ebefdae))
+* **mcp:** add past-chat artifact import skill and MCP resource ([#1627](https://github.com/open-artifacts-ai/open-artifacts/issues/1627)) ([#3299](https://github.com/open-artifacts-ai/open-artifacts/issues/3299)) ([41b8160](https://github.com/open-artifacts-ai/open-artifacts/commit/41b81607cc142d6d0d665236fa6edcaeedd2b0c0))
+
 ## [0.263.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.262.0...v0.263.0) (2026-11-27)
 
 
