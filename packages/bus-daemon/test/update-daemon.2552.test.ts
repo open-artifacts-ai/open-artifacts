@@ -6,7 +6,6 @@ import {
   currentVersion,
   installVersion,
   markFailed,
-  QUIET_MS,
   readPolicy,
   readReports,
   setOff,
@@ -85,7 +84,7 @@ describe("the daemon's self-check after a switch (#2552)", () => {
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
     expect(currentVersion(w.home)).toBe("1.0.0");
     expect(readPolicy(w.home).failed).toEqual([]);
-    expect(readPolicy(w.home).refused["1.1.0"]).toBeDefined();
+    expect(readPolicy(w.home).startFailures["1.1.0"]).toBeDefined();
     expect(readReports(w.home)).toMatchObject([{ event: "stepped_back" }]);
   });
 
@@ -200,6 +199,25 @@ describe("the loop on, end to end (#2552)", () => {
   const switching = (h: Awaited<ReturnType<typeof rig>>["h"]) =>
     h.of("update_report").filter((f) => f.event === "switching");
 
+  it("holds an empty-queue update until the last session with unknown turn state exits", async () => {
+    const w = await rig();
+    w.h.toDaemon(hello(null));
+    await w.h.quiet();
+    const first = await w.h.adapter("unknown-one", { kind: "pi" });
+    const last = await w.h.adapter("unknown-two", { kind: "pi" });
+    expect((await w.u.instructFromInstance("2.0.0")).kind).toBe("staged");
+    await w.h.quiet();
+    expect(switching(w.h)).toHaveLength(0);
+    const before = w.h.of("sessions").length;
+    first.close();
+    await w.h.next("sessions", before + 1);
+    await w.h.quiet();
+    expect(switching(w.h)).toHaveLength(0);
+    last.close();
+    const report = await w.h.next("update_report");
+    expect(report).toMatchObject({ event: "switching", to: "2.0.0" });
+  });
+
   it("named 2.0.0: fetch, verify, switching, ack, swap, then `updated` from the new daemon", async () => {
     const w = await rig();
     await w.h.next("hello");
@@ -208,12 +226,7 @@ describe("the loop on, end to end (#2552)", () => {
       expect(readPolicy(w.home).staged?.version).toBe("2.0.0"),
     );
     expect(w.fetched).toEqual(["2.0.0"]);
-    expect(currentVersion(w.home)).toBe("1.0.0");
-    await w.u.tick(); // starts the quiet window
-    await w.u.tick();
-    expect(switching(w.h)).toHaveLength(0); // not quiet yet
-    w.advance(QUIET_MS);
-    const done = w.u.tick();
+    // Idle at stage time: switching goes out at once with no clock advance.
     await vi.waitFor(() => expect(switching(w.h)).toHaveLength(1));
     const sw = switching(w.h)[0] as { id: string; from: string; to: string };
     expect([sw.from, sw.to]).toEqual(["1.0.0", "2.0.0"]);
@@ -221,8 +234,7 @@ describe("the loop on, end to end (#2552)", () => {
     expect(w.exit).not.toHaveBeenCalled();
     // The ack answers the switching frame's id.
     w.h.toDaemon({ type: "update_ack", id: sw.id, ok: true });
-    await done;
-    expect(w.exit).toHaveBeenCalledWith(1);
+    await vi.waitFor(() => expect(w.exit).toHaveBeenCalledWith(1));
     expect(currentVersion(w.home)).toBe("2.0.0");
 
     await w.h.daemon.stop(); // the old process is gone before the new one starts
@@ -255,16 +267,13 @@ describe("the loop on, end to end (#2552)", () => {
     const w = await rig();
     await w.h.next("hello");
     w.h.toDaemon(hello("2.0.0"));
-    await vi.waitFor(() =>
-      expect(readPolicy(w.home).staged?.version).toBe("2.0.0"),
-    );
+    await vi.waitFor(() => expect(switching(w.h)).toHaveLength(1));
+    const sw = switching(w.h)[0] as { id: string };
     w.h.toDaemon({ type: "run_version", id: "c", run_version: null });
     await vi.waitFor(() => expect(w.named()).toBeUndefined());
+    w.h.toDaemon({ type: "update_ack", id: sw.id, ok: true });
+    await w.u.onIdle();
     await w.u.tick();
-    w.advance(10 * QUIET_MS);
-    await w.u.tick();
-    await w.u.tick();
-    expect(switching(w.h)).toHaveLength(0);
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
   });
@@ -273,14 +282,12 @@ describe("the loop on, end to end (#2552)", () => {
     const w = await rig();
     await w.h.next("hello");
     w.h.toDaemon(hello("2.0.0"));
-    await vi.waitFor(() =>
-      expect(readPolicy(w.home).staged?.version).toBe("2.0.0"),
-    );
+    await vi.waitFor(() => expect(switching(w.h)).toHaveLength(1));
+    const sw = switching(w.h)[0] as { id: string };
     setOff(w.home, true);
+    w.h.toDaemon({ type: "update_ack", id: sw.id, ok: true });
+    await w.u.onIdle();
     await w.u.tick();
-    w.advance(10 * QUIET_MS);
-    await w.u.tick();
-    expect(switching(w.h)).toHaveLength(0);
     expect(w.exit).not.toHaveBeenCalled();
     expect(currentVersion(w.home)).toBe("1.0.0");
   });
@@ -292,8 +299,7 @@ describe("the loop on, end to end (#2552)", () => {
     // Unarmed: the instruction is not even staged.
     await vi.waitFor(() => expect(w.named()).toBe("2.0.0"));
     expect(readPolicy(w.home).staged).toBeUndefined();
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    await w.u.onIdle();
     await w.u.tick();
     expect(switching(w.h)).toHaveLength(0);
     expect(w.exit).not.toHaveBeenCalled();
@@ -304,8 +310,7 @@ describe("the loop on, end to end (#2552)", () => {
     const w = await rig();
     await w.h.next("hello");
     w.h.toDaemon(hello(null));
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.fetched).toEqual([]);
     expect(w.exit).not.toHaveBeenCalled();
@@ -317,8 +322,7 @@ describe("the loop on, end to end (#2552)", () => {
     w.h.toDaemon(hello("2.0.0"));
     w.h.toDaemon({ type: "run_version", id: "p", run_version: "2.0.0" });
     w.h.toDaemon({ type: "install_now", id: "i" });
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.named()).toBeUndefined();
     expect(w.fetched).toEqual([]);
@@ -333,8 +337,7 @@ describe("the loop on, end to end (#2552)", () => {
     await w.h.next("hello");
     // The default reaches the machine as run_version, exactly like a named one.
     w.h.toDaemon(hello("2.0.0"));
-    await w.u.tick();
-    w.advance(10 * QUIET_MS);
+    await w.u.onIdle();
     await w.u.tick();
     expect(w.fetched).toEqual([]);
     expect(readPolicy(w.home).staged).toBeUndefined();

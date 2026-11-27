@@ -323,7 +323,32 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   );
 }
 
-export function Roster({ scope: raw }: { scope?: string }) {
+export function Roster({ scope }: { scope?: string }) {
+  const { data } = useBusMachines();
+  return (
+    <div className="grid gap-4">
+      <AgentRoster scope={scope} />
+      {data?.instanceVersion && (
+        <section aria-label="Bus versions">
+          <h2 className="font-medium">Bus versions</h2>
+          <p>Instance {data.instanceVersion}</p>
+          <dl>
+            {data.machines
+              .filter((m) => m.revokedAt === null)
+              .map((m) => (
+                <div key={m.id} className="flex gap-2">
+                  <dt>{m.label}</dt>
+                  <dd>{m.busVersion ?? "Version unknown"}</dd>
+                </div>
+              ))}
+          </dl>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function AgentRoster({ scope: raw }: { scope?: string }) {
   const agents = useBusAgents();
   const machines = useBusMachines();
   const [filter, setFilter] = useState<Filter>("all");

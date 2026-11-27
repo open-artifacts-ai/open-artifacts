@@ -13,7 +13,7 @@ import { useBusAgents, useBusLinks, useBusRoles } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { muted, SettingsCard, STACK } from "../settings/ui";
-import { shortDate } from "./format";
+import { roleHolderLabel, shortDate } from "./format";
 import { LinksCard, linkedTo } from "./Links";
 import {
   buildRail,
@@ -27,7 +27,13 @@ import { BusLink, LINK } from "./nav";
 import { LIVE_DOWN } from "./ui";
 
 /** "bus-lead points at pi-3." / "reviewer is vacant. Its holder isn't open here." */
-export function RoleSentence({ role }: { role: BusRole }) {
+export function RoleSentence({
+  role,
+  holder,
+}: {
+  role: BusRole;
+  holder?: BusAgent;
+}) {
   return role.vacant || role.holderName === null ? (
     <>
       <b className="font-mono">{role.name}</b> is vacant. Its holder isn't open
@@ -36,7 +42,7 @@ export function RoleSentence({ role }: { role: BusRole }) {
   ) : (
     <>
       <b className="font-mono">{role.name}</b> points at{" "}
-      <b>{role.holderName}</b>.
+      <b>{roleHolderLabel(role, holder)}</b>.
     </>
   );
 }
@@ -133,7 +139,10 @@ function NamespacePage({
                 className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-4)] text-[length:var(--oa-text-sm)]"
               >
                 <span>
-                  <RoleSentence role={r} />
+                  <RoleSentence
+                    role={r}
+                    holder={agents.find((a) => a.id === r.agentId)}
+                  />
                 </span>
                 <span className={muted}>Set {shortDate(r.setAt)}</span>
               </li>

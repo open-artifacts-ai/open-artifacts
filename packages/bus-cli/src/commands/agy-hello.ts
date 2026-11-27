@@ -91,7 +91,7 @@ function readWatchLine(dirs: (string | undefined)[]): string | undefined {
   return undefined;
 }
 /** Reads stdin to its end, bounded in size and time. */
-function readStdin(): Promise<string> {
+export function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     const chunks: Buffer[] = [];
     let size = 0;

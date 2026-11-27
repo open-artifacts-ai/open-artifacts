@@ -45,7 +45,7 @@ import { join } from "node:path";
  * Limit: the shim reads only `update.json`. When that file does not parse it
  * cannot act: it starts bin/node and does nothing else.
  */
-export const RESCUE_VERSION = 1;
+export const RESCUE_VERSION = 2;
 
 /** The new version gets this many starts before it is undone. */
 export const RESCUE_MAX_STARTS = 2;
@@ -148,11 +148,21 @@ function run() {
   // bin is on the old version now (just undone, or an earlier step back did not finish).
   delete j.pending;
   j.current = p.from;
-  j.failed = [...(Array.isArray(j.failed) ? j.failed : []).filter((v) => v !== p.to), p.to].slice(-20);
-  j.lastAt = Math.max(now, typeof j.lastAt === "number" ? j.lastAt : 0);
+  const failures = j.startFailures ?? {};
+  const prior = failures[p.to]?.count;
+  const count = (Number.isSafeInteger(prior) && prior > 0 ? prior : 0) + 1;
+  delete failures[p.to];
+  failures[p.to] = { at: now, count };
+  j.startFailures = Object.fromEntries(Object.entries(failures).slice(-20));
+  delete j.lastAt;
+  const notices = j.notified?.[p.to] ?? [];
+  const notify = count >= 3 && !notices.includes("failed");
+  if (count >= 3) j.needsYou = true;
+  if (notify) j.notified = { ...j.notified, [p.to]: [...notices, "failed"] };
   if (j.staged && j.staged.version === p.to) delete j.staged;
   put(file, JSON.stringify(j, null, 2) + "\\n");
   report("stepped_back", p.from, p.to, now);
+  if (notify) report("needs_you", p.from, p.to, now);
 }
 
 try {

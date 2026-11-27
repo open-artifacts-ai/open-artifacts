@@ -101,6 +101,7 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      "machine_update",
       // #2577: someone asked one of your agents and it is held for you.
       "request",
       // #3132: an agent asks to take over a role (the handover card).
@@ -144,6 +145,7 @@ export const InboxItemSchema = z
       item.kind !== "proposal" &&
       item.kind !== "role" &&
       item.kind !== "away" &&
+      item.kind !== "machine_update" &&
       item.kind !== "member_set_up"
     )
       ctx.addIssue({

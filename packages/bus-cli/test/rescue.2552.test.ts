@@ -134,9 +134,9 @@ describe("the rescue shim", () => {
     ]);
     expect(currentVersion(home)).toBe("1.0.0");
     const p = readPolicy(home);
-    expect(p.failed).toEqual(["1.1.0"]);
+    expect(p.startFailures["1.1.0"]?.count).toBe(1);
     expect(p.pending).toBeUndefined();
-    expect(p.lastAt).toBeGreaterThan(0);
+    expect(p.lastAt).toBeUndefined();
     expect(readState(home)).toMatchObject({ armed: true, current: "1.0.0" });
     expect(readReports(home)).toMatchObject([
       {
@@ -185,6 +185,19 @@ describe("the rescue shim", () => {
     expect(readPolicy(home).failed).toEqual([]);
   });
 
+  it("reports the third rescued update once across restarts", () => {
+    const home = world({ "1.0.0": { exit: 0 }, "1.1.0": { exit: 1 } });
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      switched(home, "1.1.0", "1.0.0", Date.now());
+      expect(service(home)).toEqual([1, 1, 0]);
+      const policy = readPolicy(home);
+      expect(policy.startFailures["1.1.0"]?.count).toBe(attempt);
+      expect(
+        readReports(home).filter((r) => r.event === "needs_you"),
+      ).toHaveLength(attempt >= 3 ? 1 : 0);
+    }
+  });
+
   it("a new version with a broken launcher cannot trap the machine", () => {
     const home = world({
       "1.0.0": { exit: 0 },
@@ -195,7 +208,7 @@ describe("the rescue shim", () => {
     expect(codes.slice(0, 2).every((c) => c !== 0)).toBe(true);
     expect(codes.at(-1)).toBe(0);
     expect(currentVersion(home)).toBe("1.0.0");
-    expect(readPolicy(home).failed).toEqual(["1.1.0"]);
+    expect(readPolicy(home).startFailures["1.1.0"]?.count).toBe(1);
   });
 
   it("a double restart inside the window changes nothing until the limit", () => {
@@ -269,7 +282,7 @@ describe("the rescue shim", () => {
   });
 
   it("keeps its own version, and only an install writes it", () => {
-    expect(RESCUE_VERSION).toBe(1);
+    expect(RESCUE_VERSION).toBe(2);
     expect(rescueScript()).toContain(`Rescue shim ${RESCUE_VERSION}`);
     const home = world({ "1.0.0": { exit: 0 } });
     const launchers = ["Open Artifacts Bus", "rescue-node", "rescue.mjs"];

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.268.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.0...v0.268.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **bus:** releases reach machines by event, not clock ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3265](https://github.com/open-artifacts-ai/open-artifacts/issues/3265)) ([a562e14](https://github.com/open-artifacts-ai/open-artifacts/commit/a562e149fde9ed5e844f0bd0841e86ce7162f5b9))
+
 ## [0.268.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.267.0...v0.268.0) (2026-11-27)
 
 

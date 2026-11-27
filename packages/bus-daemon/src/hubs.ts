@@ -30,6 +30,7 @@ export class Lane {
   /** #3208: this hub listed sessions_gone: sessions frames may carry gone refs. */
   sessionsGone = false;
   /** #3108: this hub listed the codex check cap: codex_call_check frames come. */
+  agyCheck = false;
   codexCheck = false;
   ever = false;
   droppedAt?: number;
@@ -65,6 +66,7 @@ export class Lane {
     this.runCap = has(BUS_CAPS.runVersion);
     this.guest = has(BUS_CAPS.guest);
     this.sessionsGone = has(BUS_CAPS.sessionsGone);
+    this.agyCheck = has(BUS_CAPS.agyCheck);
     this.codexCheck = has(BUS_CAPS.codexCheck);
     this.helloed = true;
   }
@@ -87,6 +89,7 @@ export class Lane {
     this.runCap = false;
     this.guest = false;
     this.sessionsGone = false;
+    this.agyCheck = false;
     this.codexCheck = false;
   }
 }

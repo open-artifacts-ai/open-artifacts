@@ -1,12 +1,23 @@
-import { existsSync, readFileSync, rmSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { mcpUrl } from "@oa/bus-adapter-claude-code";
 import {
   agyEntryAt,
   agyEntryText,
   type Doc,
+  insertAgyEntry,
   parseAgyMcp,
+  removeAgyMcp,
   setAgyEntryText,
 } from "@oa/bus-adapter-mcp-json";
 import { BUS_CMD } from "@oa/bus-protocol";
@@ -63,7 +74,10 @@ type Moved = {
   origin: string;
   instance?: string;
   /** The user's entry text, with TOKEN_MARK for the token when it had one. */
-  original: string;
+  original: string | null;
+  /** Digest of an installer-created entry, to preserve later user edits. */
+  createdDigest?: string;
+  native?: boolean;
 };
 
 const isRecord = (v: unknown): v is Doc =>
@@ -79,11 +93,65 @@ function readMoved(path: string): Moved[] {
         typeof e.name === "string" &&
         typeof e.origin === "string" &&
         (e.instance === undefined || typeof e.instance === "string") &&
-        typeof e.original === "string",
+        (typeof e.original === "string" ||
+          (e.original === null && typeof e.createdDigest === "string")),
     );
   } catch {
     return [];
   }
+}
+
+const digest = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+
+const entryDigest = (text: string, name: string) => {
+  const raw = agyEntryText(text, name);
+  return raw === undefined ? undefined : digest(raw);
+};
+
+// All bus homes share agy's config. Store one claim per home beside it;
+// the raw entry digest scopes claims to the exact installer-created value.
+function nativeClaim(io: AgyEntryIo, name: string, fingerprint: string) {
+  const dir = `${io.file}.oa-bus-claims`;
+  const prefix = `${digest(JSON.stringify([name, fingerprint]))}.`;
+  const mine = prefix + digest(io.moved);
+  const path = join(dir, mine);
+  const owners = () => {
+    try {
+      return readdirSync(dir).filter(
+        (f) =>
+          f.startsWith(prefix) && /^[a-f0-9]{64}$/.test(f.slice(prefix.length)),
+      );
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw e;
+    }
+  };
+  return {
+    mine,
+    owners,
+    add() {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      try {
+        writeFileSync(path, "", { flag: "wx", mode: 0o600 });
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+    },
+    release() {
+      rmSync(path, { force: true });
+      try {
+        rmdirSync(dir);
+      } catch (e) {
+        if (
+          !["ENOENT", "ENOTEMPTY", "EEXIST"].includes(
+            (e as NodeJS.ErrnoException).code ?? "",
+          )
+        )
+          throw e;
+      }
+    },
+  };
 }
 
 const movedText = (list: Moved[]) =>
@@ -195,7 +263,7 @@ function proxyEntry(
   t: AgyTarget,
   cred: Cred,
   token: string | undefined,
-): Doc {
+): Doc & { command: string; args: string[] } {
   const kept = Object.fromEntries(
     Object.entries(base).filter(
       ([k]) => !HTTP_KEYS.includes(k) && !BLOCKING.includes(k),
@@ -288,7 +356,7 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
         out.push({
           kind: "left",
           name,
-          note: `the ${name} entry in ${io.file} reaches Open Artifacts through oa-bus, but its PAT file ${ours.cred.tokenFile} is gone, so Antigravity has no token and its tools fail. Save a PAT there again, or run ${BUS_CMD} uninstall to put your own entry back.`,
+          note: `the ${name} entry in ${io.file} reaches Open Artifacts through oa-bus, but its PAT file ${ours.cred.tokenFile} is gone, so Antigravity has no token and its tools fail. Save a PAT for this instance there.`,
         });
         continue;
       }
@@ -339,20 +407,15 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
       });
       continue;
     }
-    const pat = io.patFile?.(t.origin);
-    if (token === null && pat !== undefined && existsSync(pat)) {
-      out.push({ kind: "swap", name, entry: e, cred: { tokenFile: pat } });
+    if (token === null) {
+      out.push({
+        kind: "left",
+        name,
+        note: `Antigravity uses its own sign-in for ${name} at ${t.origin}.`,
+      });
       continue;
     }
-    out.push(
-      left(
-        name,
-        io.file,
-        token === undefined
-          ? "it sends headers oa-bus can't pass on (only one `Authorization: Bearer` header is)."
-          : `it has no token, and there is no PAT at ${pat ?? "the connect guide's path"} for the proxy to use. Save one there (see the connect guide) and run ${BUS_CMD} install again.`,
-      ),
-    );
+    out.push(left(name, io.file, "it sends headers oa-bus cannot pass on."));
   }
   return out;
 }
@@ -385,20 +448,88 @@ export function installAgyEntries(
 ): AgyOutcome {
   const out: AgyOutcome = { notes: [], changed: [] };
   const before = readFile(io.file);
-  if (before.trim() === "") return out;
   let text = before;
   const moved = readMoved(io.moved);
   let keep = [...moved];
   for (const t of targets) {
-    for (const p of plans(io, parseAgyMcp(text, io.file), t)) {
+    const doc = parseAgyMcp(text, io.file);
+    const entries = servers(doc);
+    const existing = plans(io, doc, t);
+    if (
+      !existing.length &&
+      !Object.values(entries).some(
+        (e) => isRecord(e) && isAgyInstanceEntry(e, t.origin),
+      )
+    ) {
+      const pat = io.patFile?.(t.origin);
+      try {
+        mcpUrl(t.origin);
+      } catch {
+        out.notes.push(
+          `Skipped Antigravity page tools for ${t.origin}: the proxy requires HTTPS or localhost.`,
+        );
+        continue;
+      }
+      const base = t.name ? `open-artifacts-${t.name}` : "open-artifacts";
+      let name = base;
+      for (let suffix = 2; Object.hasOwn(entries, name); suffix++)
+        name = `${base}-${suffix}`;
+      const want =
+        pat && existsSync(pat)
+          ? proxyEntry(io, {}, t, { tokenFile: pat }, undefined)
+          : { serverUrl: mcpUrl(t.origin).href };
+      text = insertAgyEntry(text, name, want);
+      const body = agyEntryText(text, name) as string;
+      keep = keep.filter((m) => m.name !== name);
+      keep.push({
+        name,
+        origin: t.origin,
+        ...(t.name ? { instance: t.name } : {}),
+        original: null,
+        createdDigest: digest(body),
+        ...("serverUrl" in want ? { native: true } : {}),
+      });
+      out.changed.push(name);
+    }
+    for (const p of existing) {
       if (p.kind === "left") {
+        const cur = entries[p.name];
+        const fingerprint = entryDigest(text, p.name);
+        if (
+          fingerprint &&
+          isRecord(cur) &&
+          isAgyInstanceEntry(cur, t.origin) &&
+          nativeClaim(io, p.name, fingerprint).owners().length &&
+          !keep.some(
+            (m) =>
+              m.name === p.name && m.native && m.createdDigest === fingerprint,
+          )
+        ) {
+          keep = keep.filter((m) => m.name !== p.name);
+          keep.push({
+            name: p.name,
+            origin: t.origin,
+            original: null,
+            native: true,
+            createdDigest: fingerprint,
+          });
+        }
         out.notes.push(p.note);
         continue;
       }
+      const prior = keep.find(
+        (m) => m.name === p.name && m.origin === t.origin,
+      );
+      if (
+        p.kind === "ours" &&
+        prior?.original === null &&
+        prior.createdDigest !== entryDigest(text, p.name)
+      )
+        continue;
       const want = proxyEntry(io, p.entry, t, p.cred, p.token);
       if (p.kind === "ours" && isDeepStrictEqual(p.entry, want)) continue;
       const raw = render(text, p.name, want);
-      let original: string | undefined;
+      let original: string | null | undefined;
       if (p.kind === "swap") {
         const cur = agyEntryText(text, p.name) as string;
         if (p.token !== undefined) {
@@ -424,20 +555,30 @@ export function installAgyEntries(
             : readMoved(io.keptOf(p.owner)).find(
                 (m) => m.name === p.name && m.origin === t.origin,
               );
-        original = theirs?.original ?? adoptedOriginal(t.origin, p.cred);
+        if (
+          theirs?.original === null &&
+          theirs.createdDigest !== entryDigest(text, p.name)
+        )
+          continue;
+        original = theirs ? theirs.original : adoptedOriginal(t.origin, p.cred);
         out.notes.push(
           `took over the ${p.name} entry in ${io.file}: the bus at ${p.owner ?? "the default home"} no longer runs`,
         );
       }
       text = setAgyEntryText(text, p.name, raw, want);
-      const prior = keep.find((m) => m.name === p.name);
       keep = keep.filter((m) => m.name !== p.name);
+      const source =
+        original !== undefined
+          ? original
+          : prior
+            ? prior.original
+            : adoptedOriginal(t.origin, p.cred);
       keep.push({
         name: p.name,
         origin: t.origin,
         ...(t.name === undefined ? {} : { instance: t.name }),
-        original:
-          original ?? prior?.original ?? adoptedOriginal(t.origin, p.cred),
+        original: source,
+        ...(source === null ? { createdDigest: digest(raw) } : {}),
       });
       out.changed.push(p.name);
       if (p.kind === "swap")
@@ -450,9 +591,17 @@ export function installAgyEntries(
         );
     }
   }
-  if (text === before) return out;
   if (!isDeepStrictEqual(keep, moved)) io.writeMoved(movedText(keep));
-  io.write(text);
+  // Persist intent and claims before publishing the entry to another home.
+  for (const m of keep) {
+    if (
+      m.native &&
+      m.createdDigest &&
+      entryDigest(text, m.name) === m.createdDigest
+    )
+      nativeClaim(io, m.name, m.createdDigest).add();
+  }
+  if (text !== before) io.write(text);
   return out;
 }
 
@@ -479,11 +628,34 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     const doc = text.trim() === "" ? {} : parseAgyMcp(text, io.file);
     const cur = servers(doc)[m.name];
     const ours = isRecord(cur) ? ourAgyEntry(cur, m.origin) : undefined;
-    if (!ours) continue;
+    if (!ours) {
+      if (
+        m.native &&
+        m.createdDigest &&
+        isRecord(cur) &&
+        isAgyInstanceEntry(cur, m.origin) &&
+        entryDigest(text, m.name) === m.createdDigest
+      ) {
+        const claim = nativeClaim(io, m.name, m.createdDigest);
+        const owners = claim.owners();
+        if (owners.length === 1 && owners[0] === claim.mine) {
+          text = removeAgyMcp(text, m.name);
+          res.restored.push(m.name);
+        }
+      }
+      continue;
+    }
     if (ours.owner !== io.busHome) {
       // Another bus took the entry over (#3075): keep the original, so it is
       // not lost while that bus holds the entry.
       stay.push(m);
+      continue;
+    }
+    if (m.original === null) {
+      if (isRecord(cur) && entryDigest(text, m.name) === m.createdDigest) {
+        text = removeAgyMcp(text, m.name);
+        res.restored.push(m.name);
+      }
       continue;
     }
     let raw = m.original;
@@ -508,6 +680,10 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     res.restored.push(m.name);
   }
   if (text !== before) io.write(text);
+  for (const m of moved) {
+    if (m.native && m.createdDigest && !stay.includes(m))
+      nativeClaim(io, m.name, m.createdDigest).release();
+  }
   if (stay.length > 0) io.writeMoved(movedText(stay));
   else rmSync(io.moved, { force: true });
   return res;
