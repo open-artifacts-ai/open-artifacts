@@ -8,14 +8,6 @@ on:
         description: Existing release tag whose landing site to (re)deploy
         required: true
         type: string
-      restore_on_failure:
-        description: >-
-          Prod, a release with a non-additive migration only: if the upgrade or
-          its verification fails, roll the Worker back and restore D1 to the
-          pre-migration bookmark (needs the user's yes for that release)
-        required: false
-        type: boolean
-        default: false
 # No workflow-wide grant: every job sets its own permissions (T3b).
 # No job has actions: write. cloud-pin-bump's App token can start workflows,
 # in the cloud repo only.
@@ -341,18 +333,8 @@ jobs:
           done
           echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
           exit 1
-      # Restore only when explicitly authorized for this run. Otherwise report
-      # the recorded Worker version and bookmark for a recovery decision.
-      - name: Roll the Worker back and restore D1 to the bookmark
-        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
-          BOOKMARK: ${{ steps.record.outputs.bookmark }}
-        run: bash scripts/ci/prod-migration-guard.sh restore
-      - name: Page (verification failed; no restore authorized for this run)
-        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true
+      - name: Page with the restore point after a guarded upgrade fails
+        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success'
         env:
           WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
           BOOKMARK: ${{ steps.record.outputs.bookmark }}

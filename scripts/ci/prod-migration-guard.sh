@@ -2,7 +2,7 @@
 # The prod deploy's guard for a non-additive D1 migration (a table rebuild).
 # A marked migration needs a Worker version and D1 bookmark before upgrade.
 # After upgrade, compare the applied migration names to the release tag.
-# Restore runs only with an explicit choice for this release.
+# Recovery remains a separate operator decision.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="${GITHUB_OUTPUT:-/dev/null}"
@@ -111,18 +111,8 @@ case "${1:-}" in
       jq -er 'if length == 1 and .[0].success == true then .[0].results[].name else error("migration list unavailable") end')"
     [ "$applied" = "$expected" ] || { echo "applied migration list differs from $TAG" >&2; exit 1; }
     ;;
-  restore)
-    : "${PROD_NAME:?}" "${WORKER_VERSION:?}" "${BOOKMARK:?}"
-    echo "::error title=Prod restore::verification failed: rolling the Worker back to $WORKER_VERSION and D1 to bookmark $BOOKMARK"
-    # The restore discards every write made since the bookmark (accepted for
-    # this release: the user's yes covers it).
-    echo "**Restoring:** this discards every write made to $PROD_NAME since bookmark \`$BOOKMARK\`." >> "$summary"
-    wr rollback "$WORKER_VERSION" --name "$PROD_NAME" --message "non-additive migration failed verification" --yes
-    wr d1 time-travel restore "$PROD_NAME" --bookmark "$BOOKMARK" --json > /dev/null
-    echo "**Restored:** Worker $WORKER_VERSION and D1 bookmark \`$BOOKMARK\`." >> "$summary"
-    ;;
   *)
-    echo "usage: prod-migration-guard.sh detect|record|verify|restore" >&2
+    echo "usage: prod-migration-guard.sh detect|record|verify" >&2
     exit 2
     ;;
 esac

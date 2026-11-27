@@ -268,7 +268,7 @@ describe("prod-migration-guard.sh detect", () => {
   });
 });
 
-describe("prod-migration-guard.sh record, verify, restore", () => {
+describe("prod-migration-guard.sh record and verify", () => {
   it("record: the live (last) Worker version, a bookmark, and no row capture", () => {
     const r = repo();
     const d = r.run("record");
@@ -296,20 +296,5 @@ describe("prod-migration-guard.sh record, verify, restore", () => {
     const r = repo();
     expect(r.run("verify").code).toBe(0);
     expect(r.run("verify", { APPLIED: "unexpected.sql" }).code).toBe(1);
-  });
-  it("restore: Worker first, then D1 to the bookmark, with the recorded bookmark", () => {
-    const r = repo();
-    r.run("record");
-    const env = { WORKER_VERSION: "live-2", BOOKMARK: "bm-123" };
-    const ok = r.run("restore", env);
-    expect(ok.code).toBe(0);
-    expect(ok.calls).toEqual([
-      "wrangler rollback live-2 --name open-artifacts-prod --message non-additive migration failed verification --yes",
-      "wrangler d1 time-travel restore open-artifacts-prod --bookmark bm-123 --json",
-    ]);
-    expect(ok.summary).toContain("**Restored:**");
-    expect(ok.summary).toContain(
-      "discards every write made to open-artifacts-prod since bookmark",
-    );
   });
 });
