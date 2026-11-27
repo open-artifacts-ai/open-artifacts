@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.268.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.267.0...v0.268.0) (2026-11-27)
+
+
+### Features
+
+* **bus-cli:** redesign oa-bus status default screen ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S1) ([#3330](https://github.com/open-artifacts-ai/open-artifacts/issues/3330)) ([93a6d4d](https://github.com/open-artifacts-ai/open-artifacts/commit/93a6d4d8bf2698d56661533d20c0f82151c47627))
+
 ## [0.267.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.266.0...v0.267.0) (2026-11-27)
 
 
