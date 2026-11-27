@@ -19,6 +19,7 @@ import {
   readPolicy,
   setPending,
   stage,
+  startupRetryAt,
   unpackTo,
   type VerifiedRelease,
   verifyRelease,
@@ -132,7 +133,7 @@ export async function upgrade(
   // A step back only when the person names the version: a bare `upgrade`
   // follows the instance forward, never back.
   const isPrevious = named && policy.previous === target;
-  if (policy.failed.includes(target) && opts.allowFailed !== true) {
+  if (startupRetryAt(policy, target) > ctx.now() && opts.allowFailed !== true) {
     sayErr(ctx, c.upgradeFailedVersion(target));
     return 1;
   }
