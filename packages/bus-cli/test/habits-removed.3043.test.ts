@@ -487,10 +487,10 @@ describe("status and doctor habits line (#3043)", () => {
       return ctx;
     };
 
-    // Default: on, sent by the bus.
+    // Default: on, sent by the bus in doctor; omitted on default status screen (#3328 S1).
     const def = make();
     expect(await statusCmd(def)).toBe(0);
-    expect(def.all()).toContain("Habits: on, sent by the bus");
+    expect(def.all().join("\n")).not.toContain("Habits:");
     const defDoc = make();
     await doctor(defDoc);
     expect(defDoc.all()).toContain("Habits: on, sent by the bus");
@@ -499,8 +499,7 @@ describe("status and doctor habits line (#3043)", () => {
     const stale = make();
     putFile(join(stale.userHome, ".claude", "CLAUDE.md"), `x\n\n${OLD_LF}\n`);
     await statusCmd(stale);
-    expect(stale.all()).toContain("Habits: on, sent by the bus");
-    expect(stale.all().join("\n")).not.toContain("Habits: on in");
+    expect(stale.all().join("\n")).not.toContain("Habits:");
     const staleDoc = make();
     putFile(
       join(staleDoc.userHome, ".claude", "CLAUDE.md"),
@@ -510,14 +509,12 @@ describe("status and doctor habits line (#3043)", () => {
     expect(staleDoc.all()).toContain("Habits: on, sent by the bus");
     expect(staleDoc.all().join("\n")).not.toContain("Habits: on in");
 
-    // After --no-habits: off (you opted out).
+    // After --no-habits: off (you opted out) in doctor.
     const off = make();
     await install({ habits: "no" }, off);
     const beforeStatus = off.all().length;
     await statusCmd(off);
-    expect(off.all().slice(beforeStatus)).toContain(
-      "Habits: off (you opted out)",
-    );
+    expect(off.all().slice(beforeStatus).join("\n")).not.toContain("Habits:");
     const beforeDoc = off.all().length;
     await doctor(off);
     expect(off.all().slice(beforeDoc)).toContain("Habits: off (you opted out)");
