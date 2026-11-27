@@ -5,6 +5,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -210,6 +212,16 @@ describe("prod-migration-guard.sh detect", () => {
       });
       held(detect(r));
       held(detect(r, "workflow_dispatch"));
+    });
+    it("a change to a released migration's file type holds", () => {
+      const r = repo();
+      const path = join(r.dir, "apps/server/migrations/0001_init.sql");
+      unlinkSync(path);
+      symlinkSync("0002_add.sql", path);
+      r.release("v1.1.0", {
+        "apps/server/migrations/0002_add.sql": "create table b (x);",
+      });
+      held(detect(r));
     });
     it("a deleted migration holds", () => {
       const r = repo();

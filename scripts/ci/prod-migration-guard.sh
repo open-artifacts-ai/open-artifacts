@@ -63,11 +63,11 @@ case "${1:-}" in
       hold "could not list the migrations $TAG adds"
     # An already-shipped server migration must never change: installs record
     # applied migrations by name, so an edit never reaches a deployed database.
-    changed="$(git -C "$root" diff --name-only --diff-filter=MDR "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
+    changed="$(git -C "$root" diff --name-only --diff-filter=MDRT "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
       hold "could not list the migrations $TAG changes"
     if [ -n "$changed" ]; then
       names="$(printf '%s' "$changed" | tr '\n' ' ')"
-      hold "$TAG modifies, deletes or renames an already-deployed server migration (${names% }); add a new migration instead"
+      hold "$TAG changes an already-deployed server migration (${names% }); add a new migration instead"
     fi
     # Validate the released files against the same policy that reviewed the PR.
     validation="$(python3 "$root/scripts/ci/check-migration-marker.py" "$root" "$prev" apps/server/migrations "$TAG" 2>&1)" ||
