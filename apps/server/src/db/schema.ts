@@ -961,7 +961,12 @@ export const busMachines = sqliteTable(
     lastUsedAt: integer("last_used_at"),
     revokedAt: integer("revoked_at"),
   },
-  (t) => [index("bus_machines_user_idx").on(t.userId, t.revokedAt)],
+  (t) => [
+    index("bus_machines_user_idx").on(t.userId, t.revokedAt),
+    index("bus_machines_version_idx")
+      .on(t.busVersion)
+      .where(sql`${t.revokedAt} is null`),
+  ],
 );
 
 // #2552 the latest update report of each machine (BUS_CAPS.runVersion): one

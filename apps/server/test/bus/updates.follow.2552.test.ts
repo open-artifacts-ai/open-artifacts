@@ -2,7 +2,7 @@
 // default is the server's own strict x.y.z release, offered at once, only
 // forward of the machine's own version, and never while the owner has paused
 // updates. A named version keeps its old meaning.
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
@@ -255,6 +255,50 @@ describe("pause (#2552)", () => {
     expect(rows[0]?.actor_id).toBe(owner.userId);
   });
 
+  it("arms one instance deadline per release and reports offline machines without a hello", async () => {
+    const who = await member();
+    const m = await machine("offline laptop", who.userId);
+    await noteMachineVersion(e, m.id, "1.0.7");
+    const hub = await hubOf("~release-lag");
+    const start = NOW;
+    const observe = async (version: string, previous: string, at: number) => {
+      await runInDurableObject(hub, (i) => {
+        BusHub.setTestClock(i as unknown as BusHub, at);
+        BusHub.setTestServerVersion(i as unknown as BusHub, version, previous);
+      });
+      await hub.observeRelease();
+    };
+    const alarm = () =>
+      runInDurableObject(hub, (_, state) => state.storage.getAlarm());
+    await setKey(
+      "bus_version_since",
+      JSON.stringify({ version: "1.2.0", since: start }),
+    );
+    await observe("1.2.0", "1.1.0", start + 100);
+    await observe("1.2.0", "1.1.0", start + 200);
+    await observe("1.3.0", "1.2.0", start + 300);
+    expect(await alarm()).toBe(start + 3600000);
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 3599999),
+    ).toHaveLength(0);
+    await runInDurableObject(hub, (i) =>
+      BusHub.setTestClock(i as unknown as BusHub, start + 3600000),
+    );
+    await runDurableObjectAlarm(hub);
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 3600000),
+    ).toHaveLength(1);
+    expect(await alarm()).toBe(start + 300 + 3600000);
+    await runInDurableObject(hub, (i) =>
+      BusHub.setTestClock(i as unknown as BusHub, start + 300 + 3600000),
+    );
+    await runDurableObjectAlarm(hub);
+    expect(await alarm()).toBeNull();
+    expect(
+      await machineUpdateNotices(e, who.userId, start + 300 + 3600000),
+    ).toHaveLength(1);
+  });
+
   it("keeps one lag episode across releases, isolated to the machine owner", async () => {
     const who = await member();
     const other = await member();
@@ -280,6 +324,34 @@ describe("pause (#2552)", () => {
     expect(
       await machineUpdateNotices(e, who.userId, NOW + 3600001),
     ).toHaveLength(0);
+  });
+
+  it("explains overdue machines in the owner's inbox", async () => {
+    const who = await member();
+    const m = await machine("Lag laptop", who.userId);
+    await noteMachineVersion(e, m.id, "1.0.0");
+    await refreshMachineLag(e, who.userId, "1.1.0", Date.now() - 3601000);
+    const item = async () => {
+      const data = (await (await api(app, R.meInbox, who.cookie)).json()) as {
+        needsYou: { text: string }[];
+      };
+      expect(data.needsYou).toHaveLength(1);
+      return data.needsYou[0].text;
+    };
+    expect(await item()).toContain("machine offline");
+    await setKey(UPDATES_PAUSED_KEY, "1");
+    expect(await item()).toContain("updates are paused");
+    await setKey(UPDATES_PAUSED_KEY, null);
+    await recordReport(
+      e,
+      m.id,
+      sw({ event: "stepped_back", reason: "unhealthy" }) as Extract<
+        ClientFrame,
+        { type: "update_report" }
+      >,
+      Date.now(),
+    );
+    expect(await item()).toContain("failed the self-check for 1.2.0");
   });
 
   it("keeps the third-failure notice through a retry and clears it on recovery", async () => {

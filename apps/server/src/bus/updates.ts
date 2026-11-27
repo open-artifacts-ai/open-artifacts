@@ -151,7 +151,67 @@ export async function recordReport(
   await env.DB.batch(statements);
 }
 
-const LAG_NOTICE_MS = 60 * 60_000;
+export const LAG_NOTICE_MS = 60 * 60_000;
+
+export const RELEASE_LAG_HUB = "bus:~release-lag";
+export type ReleaseDeadline = {
+  version: string;
+  previous: string;
+  since: number;
+};
+
+/** Keep the first observation, including timestamps written by pre-#3265 instances. */
+export async function firstReleaseObservation(
+  env: Pick<Env, "DB">,
+  version: string,
+  now: number,
+) {
+  const row = await stmt(
+    env.DB,
+    `insert into settings(key,value) values ('bus_version_since',?1)
+    on conflict(key) do update set value=case
+    when json_valid(settings.value) and json_extract(settings.value,'$.version')=?2
+      and json_type(settings.value,'$.since')='integer' then settings.value else excluded.value end
+    returning value`,
+  )
+    .bind(JSON.stringify({ version, since: now }), version)
+    .first<{ value: string }>();
+  if (!row) throw new Error("Release timestamp missing");
+  return (JSON.parse(row.value) as { since: number }).since;
+}
+
+/** One release deadline covers all members, including those with no connected machines. */
+export async function markReleaseLag(
+  env: Pick<Env, "DB">,
+  deadline: ReleaseDeadline,
+) {
+  let after = "";
+  for (;;) {
+    const { results } = await stmt(
+      env.DB,
+      `select distinct bus_version as version from bus_machines
+      where revoked_at is null and bus_version > ? order by bus_version limit 64`,
+    )
+      .bind(after)
+      .all<{ version: string }>();
+    const changes = results
+      .filter(
+        ({ version }) =>
+          semverGte(deadline.previous, version) &&
+          !semverGte(version, deadline.previous),
+      )
+      .map(({ version }) =>
+        stmt(
+          env.DB,
+          `update bus_machines set lag_since=?1 where revoked_at is null and bus_version=?2
+        and (lag_since is null or lag_since > ?1)`,
+        ).bind(deadline.since, version),
+      );
+    if (changes.length) await env.DB.batch(changes);
+    if (results.length < 64) return;
+    after = results[results.length - 1].version;
+  }
+}
 
 /** Compare against the actual preceding release, preserving an ongoing lag episode. */
 export async function refreshMachineLag(
@@ -189,8 +249,9 @@ export async function machineUpdateNotices(
 ) {
   const { results } = await stmt(
     env.DB,
-    `select id,label,bus_version as version,lag_since as since,failure_at as failureAt,failure_version as failed
-    from bus_machines where user_id = ? and revoked_at is null and (lag_since <= ? or failure_at is not null) order by id`,
+    `select id,label,bus_version as version,lag_since as since,failure_at as failureAt,
+      coalesce(failure_version, case when u.event = 'stepped_back' and u.reason in ('unhealthy','hub_unreachable') then u.to_version end) as failed
+    from bus_machines left join bus_machine_updates u on u.machine_id=bus_machines.id where user_id = ? and revoked_at is null and (lag_since <= ? or failure_at is not null) order by id`,
   )
     .bind(userId, now - LAG_NOTICE_MS)
     .all<{
