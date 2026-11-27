@@ -52,8 +52,8 @@ export async function signSession(
      * prompt=login, or an email code sign-in (#1372). Absent otherwise.
      */
     authAt?: number;
-    /** SessionPayload.m: an invited member's code session outside the domains. */
-    invitedMember?: boolean;
+    /** SessionPayload.m: a code session of an owner, admin or member row (#3184). */
+    rowCode?: boolean;
   },
 ): Promise<string> {
   if (!isId(uid)) throw new Error("invalid uid");
@@ -67,7 +67,7 @@ export async function signSession(
     ...(opts.hd ? { h: opts.hd.toLowerCase() } : {}),
     e: opts.epoch,
     ...(opts.authAt !== undefined ? { a: opts.authAt } : {}),
-    ...(opts.invitedMember ? { m: 1 as const } : {}),
+    ...(opts.rowCode ? { m: 1 as const } : {}),
   };
   const p = b64urlEncode(utf8Encoder.encode(JSON.stringify(payload)));
   return `${p}.${await hmacSign(key, p)}`;

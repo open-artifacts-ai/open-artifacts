@@ -1,6 +1,7 @@
 import type { CommentAuthor, Inbox, InboxItem } from "@oa/shared";
-import { viewerPath } from "@oa/shared";
+import { roleCardText, viewerPath } from "@oa/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
+import { canConnect } from "../auth/agents.js";
 import { type Caller, capOfCaller, listFilterSql } from "../auth/authz.js";
 import { capsReads, isGuestRole } from "../auth/policy.js";
 import { machineUpdateNotices, readUpdateState } from "../bus/updates.js";
@@ -13,7 +14,7 @@ import type { StoredActor } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
-import { listBusMachines } from "./bus.js";
+import { listBusMachines, pendingRoleCards } from "./bus.js";
 import { notifyAskLater } from "./comment-agents.js";
 import {
   askerFaces,
@@ -137,8 +138,14 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
   const machines = (
     await machineUpdateNotices(env, caller.user.id, now)
   ).filter((row) => (away.get(machineItemId(row)) ?? 0) <= now);
+  // #3132: handover cards (a hub that can't be read adds none).
+  const roles = await roleItems(env, caller).catch(() => [] as InboxItem[]);
   return Math.min(
-    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0) + machines.length,
+    (r[0]?.n ?? 0) +
+      shown.length +
+      (m[0]?.n ?? 0) +
+      roles.length +
+      machines.length,
     NEEDS_YOU_MAX,
   );
 }
@@ -459,6 +466,32 @@ export async function heldRequestItems(
   });
 }
 
+/**
+ * #3132: an agent asks to take over (or set, or remove) one of the caller's
+ * roles: one Needs-you item per pending proposal, from the caller's own hub
+ * (never another member's). A person's browser answers it on the card; an
+ * unreadable hub adds nothing.
+ */
+export async function roleItems(env: Env, caller: Me): Promise<InboxItem[]> {
+  if (!canConnect(caller.user)) return [];
+  const now = Date.now();
+  return (await pendingRoleCards(env, caller.user.id, now)).map(
+    ({ card, createdAt }): InboxItem => ({
+      id: `role:${card.proposalId}`,
+      level: "needs_you",
+      kind: "role",
+      urgency: "approval",
+      artifact: null,
+      actor: null,
+      role: card,
+      text: roleCardText(card, now),
+      href: "/agents/roles",
+      createdAt,
+      readAt: null,
+    }),
+  );
+}
+
 /** The key an item sits under in inbox_later: an ask's and a request's id are theirs; a stored mention's is "mention:" and its id. */
 const laterKey = (i: Pick<InboxItem, "id" | "kind">): string =>
   i.kind === "mention" ? `mention:${i.id}` : i.id;
@@ -469,11 +502,15 @@ export async function inboxOf(
   caller: Me,
   cursor?: string,
 ): Promise<Inbox> {
-  const [asks, requests, mentionRows, page, unread, setUp, awayRow] =
+  const [asks, requests, roles, mentionRows, page, unread, setUp, awayRow] =
     await Promise.all([
       needsYou(env, caller),
       heldRequestItems(env, caller).catch((e) => {
         logWarn("inbox_held_requests_failed", e);
+        return [] as InboxItem[];
+      }),
+      roleItems(env, caller).catch((e) => {
+        logWarn("inbox_roles_failed", e);
         return [] as InboxItem[];
       }),
       // #2770: people who @mentioned me, still waiting.
@@ -506,9 +543,11 @@ export async function inboxOf(
   );
   const ordered = [
     ...asks.filter((i) => i.urgency === "waiting"),
-    ...[...asks.filter((i) => i.urgency === "approval"), ...requests].sort(
-      byAge,
-    ),
+    ...[
+      ...asks.filter((i) => i.urgency === "approval"),
+      ...requests,
+      ...roles,
+    ].sort(byAge),
     ...[
       ...asks.filter(
         (i) => i.urgency !== "waiting" && i.urgency !== "approval",

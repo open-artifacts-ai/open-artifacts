@@ -28,12 +28,11 @@ import { DropZone } from "../upload/DropZone";
 import { KINDS_LINE } from "../upload/openable";
 import { GUEST } from "../viewer/guest";
 import { AppLink } from "./AppLink";
-import { ArtifactCard } from "./ArtifactCard";
-import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
 import { FirstSetupAsk } from "./FirstSetupAsk";
 import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
+import { LibraryItems } from "./LibraryItems";
 import { GuestPublishNote, MemberGetStarted } from "./MemberGetStarted";
 import {
   AGENT_LINE,
@@ -406,20 +405,20 @@ export function Library({ scope }: { scope: Scope }) {
         />
       )}
       {items.length > 0 && (
-        <div className={view === "grid" ? GRID : LIST}>
-          {items.map((a) =>
-            view === "grid" ? (
-              <ArtifactCard
-                key={a.id}
-                artifact={a}
-                meId={meId}
-                showSpace={!space}
-              />
-            ) : (
-              <ArtifactRow key={a.id} artifact={a} showSpace={!space} />
-            ),
-          )}
-        </div>
+        <LibraryItems
+          key={JSON.stringify([
+            scope,
+            spaceId,
+            s.format,
+            agent,
+            agentVia,
+            filter,
+          ])}
+          items={items}
+          view={view}
+          meId={meId}
+          showSpace={!space}
+        />
       )}
       <div ref={sentinel} className="h-px" />
     </>

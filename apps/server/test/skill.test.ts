@@ -32,6 +32,7 @@ import {
 import {
   applyDocTools,
   busLine,
+  IMPORT_DOC_URI,
   renderSkill,
   renderSkillPart,
   SKILL_DOC_URI,
@@ -1135,5 +1136,57 @@ describe("core size, short instructions, and on-demand parts (#3169)", () => {
       expect(r.status, p).toBe(200);
     }
     expect(touched).toBe(0);
+  });
+});
+
+describe("import skill part and MCP resource (#1627)", () => {
+  it("covers past-chat discovery, dedupe skip, private publishing, versions, unreachable fallback and React working pages", async () => {
+    const md = await skillPart("import");
+    expect(md).toContain("past-chat search");
+    expect(md).toContain("search_artifacts");
+    expect(md).toContain("Moved from your chat");
+    expect(md).toContain("already moved");
+    expect(md).toContain('visibility: "private"');
+    expect(md).toContain("oldest version first");
+    expect(md).toContain("only the latest version was available");
+    expect(md).toContain("move this artifact to Open Artifacts");
+    expect(md).toContain("Interactive React / JSX");
+    expect(md).toContain("esm.sh");
+    expect(md).toContain("lucide-react");
+    expect(md).toContain("recharts");
+    expect(md).toContain("@/components/ui/*");
+    expect(md).toContain("window.storage");
+    expect(md).not.toContain("\u2014");
+    expect(md).not.toContain("list_spaces");
+    expect(await skillPart("import", E({ FEATURES: "spaces" }))).toContain(
+      "list_spaces",
+    );
+  });
+
+  it("registers openartifacts://docs/import on MCP when skill is enabled and hides it when SKILL_MD=off", async () => {
+    const u = await login(
+      `skill-import-${newId().slice(0, 6).toLowerCase()}@x.com`,
+    );
+    const pat = (await createPat(env, u.userId, "imp")).token;
+    const on = await connect(pat, { env: E() });
+    try {
+      const { resources } = await on.listResources();
+      expect(resources.map((x) => x.uri)).toContain(IMPORT_DOC_URI);
+      expect(on.getInstructions()).toContain("/skill/import.md");
+      expect(on.getInstructions()).toContain(IMPORT_DOC_URI);
+      const r = await on.readResource({ uri: IMPORT_DOC_URI });
+      const text = (r.contents[0] as { text?: string })?.text ?? "";
+      expect(text).toBe(await skillPart("import"));
+    } finally {
+      await on.close();
+    }
+
+    const off = await connect(pat, { env: E({ SKILL_MD: "off" }) });
+    try {
+      const { resources } = await off.listResources();
+      expect(resources.map((x) => x.uri)).not.toContain(IMPORT_DOC_URI);
+    } finally {
+      await off.close();
+    }
   });
 });

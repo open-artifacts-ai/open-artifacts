@@ -22,6 +22,7 @@ import type { RosterAgent } from "../copy.ts";
 import { spinner } from "../live.ts";
 import { originOf, readMachine } from "../machine.ts";
 import {
+  AGY_FLAG,
   checkAdapters,
   type Harness,
   installAdapters,
@@ -37,7 +38,12 @@ import { openclawVerify } from "../steps/openclaw.ts";
 import { installShim } from "../steps/path-shim.ts";
 import { isDefaultHome } from "../steps/service.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
-import { checkSteps, runSteps, type Step } from "../steps/step.ts";
+import {
+  checkSteps,
+  runSteps,
+  type Step,
+  updateInstallFile,
+} from "../steps/step.ts";
 import { type HabitsMode, habitsCommand, removeOldHabits } from "./habits.ts";
 import { LoginFailed, login } from "./login.ts";
 
@@ -615,6 +621,11 @@ async function installRun(
     }
     return results.every((r) => r.state === "done") ? 0 : 1;
   }
+  const agySetting = ctx.env[AGY_FLAG];
+  if (agySetting !== undefined)
+    updateInstallFile(join(ctx.home, "install.json"), {
+      agyEnabled: agySetting === "1",
+    });
   // #3043: habits now come with the bus; remove any old managed blocks left by
   // earlier installs before runSteps restarts the daemon (which also removes
   // them on startup for the auto-update path), so install sees the true count.

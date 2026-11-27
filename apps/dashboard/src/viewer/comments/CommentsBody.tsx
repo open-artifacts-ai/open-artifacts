@@ -1199,6 +1199,7 @@ function Who({
             title={hideTime ? `${a.name}, ${exactDate(at)}` : a.name}
           >
             {a.name}
+            {a.handle && ` @${a.handle}`}
           </b>
           {isAgent && (
             <span

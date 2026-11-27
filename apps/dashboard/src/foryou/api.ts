@@ -4,6 +4,7 @@
  * Updates page on with `cursor` ("Show more").
  */
 import {
+  BusRoleProposalDecidedSchema,
   type InboxMutes,
   InboxMutesSchema,
   type Me,
@@ -298,5 +299,29 @@ export const useUnmute = () => {
       if (ctx?.prev) qc.setQueryData(mutesKey, ctx.prev);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: mutesKey }),
+  });
+};
+
+/**
+ * #3132: the answer on a handover card (POST R.busRoleProposal). The card's own
+ * error line says why a refusal happened (it stays on the card); on any
+ * outcome the inbox, the bell and the roles list are read again, so the card
+ * goes (or says what changed).
+ */
+export const useDecideRoleProposal = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: string; decision: "confirm" | "reject" }) =>
+      api.send(
+        "POST",
+        R.busRoleProposal(v.id),
+        { decision: v.decision },
+        BusRoleProposalDecidedSchema,
+      ),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: inboxKey });
+      void qc.invalidateQueries({ queryKey: qk.me, exact: true });
+      void qc.invalidateQueries({ queryKey: qk.busRoles });
+    },
   });
 };

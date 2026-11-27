@@ -223,7 +223,7 @@ function codexChecks(
   const skill = codexSkillState({ home: ctx.userHome, env: ctx.env });
   if (skill.file && skill.block && skill.shared)
     out.warn(c.codexSkillSharedTwice());
-  else if (skill.file && skill.block)
+  else if (skill.file && skill.block && !skill.separate)
     out.warn(
       c.codexSkillTwice(tilde(ctx, skill.file), tilde(ctx, skill.block)),
     );
@@ -362,6 +362,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       else fail(c.notWired(h));
       if (bad?.problem === "disabled" && wiring[h] === "configured")
         warn(c.agyDisabled());
+      say(ctx, `Antigravity — ${habitsLine(ctx)}`);
       // agy S5: each Open Artifacts entry, and whether it links pages.
       if (bad?.problem !== "malformed")
         try {

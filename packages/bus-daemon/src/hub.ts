@@ -1,6 +1,7 @@
 import {
   BUS_CAPS,
   type ClientFrame,
+  CODEX_VERDICT_HEADER,
   decodeServerFrame,
   encodeFrame,
   frameId,
@@ -166,7 +167,10 @@ export class HubConnection {
     if (this.#stopped) return;
     const pingMs = this.opts.pingMs ?? 25_000;
     const ws = new WebSocket(this.opts.url, {
-      headers: { authorization: `Bearer ${this.opts.token}` },
+      headers: {
+        authorization: `Bearer ${this.opts.token}`,
+        [CODEX_VERDICT_HEADER]: "1",
+      },
       handshakeTimeout: this.opts.handshakeTimeoutMs ?? 15_000,
     });
     this.#ws = ws;

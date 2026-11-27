@@ -141,6 +141,8 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
       return when;
     case "share":
       return `"${title}" · ${when}`;
+    case "role":
+      return when;
     case "away":
       return x.away ? awayText(x.away) : when;
     case "mention": {

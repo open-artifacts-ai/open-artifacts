@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -332,5 +333,21 @@ describe("the generation chain", () => {
     expect(existsSync(join(dir, "s1.g0"))).toBe(true);
     expect(n).toBe(2);
     expect(hookWindowCount(APP, { root, now: c.now })).toBe(2);
+  });
+
+  it("replacing the ledger directory invalidates cached slot times", async () => {
+    const root = scratch();
+    const c = clock(1_000);
+    await claimHookSlot(APP, { root, now: c.now });
+    const dir = hookLedgerDir(APP, root);
+    renameSync(dir, `${dir}.aside`);
+    // Another process recreates the ledger directory and takes s0.g0 at t=61_000.
+    const t2 = 1_000 + HOOK_WINDOW_MS;
+    rawSlot(root, "s0.g0", String(t2), t2);
+    c.set(t2);
+    expect(hookWindowCount(APP, { root, now: c.now })).toBe(1);
+    await expect(
+      claimHookSlot(APP, { root, now: c.now, reserve: HOOK_LIMIT - 1 }),
+    ).rejects.toBeInstanceOf(HookBudgetError);
   });
 });

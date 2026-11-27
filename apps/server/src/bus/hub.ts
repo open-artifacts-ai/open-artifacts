@@ -7,9 +7,11 @@ import {
   BUS_CAPS,
   BusNameSchema,
   type ClientFrame,
+  CODEX_VERDICT_HEADER,
   CodexDirectCallIdSchema,
   CodexExecCallIdSchema,
   CodexItemIdSchema,
+  type CodexLinkReason,
   CodexThreadIdSchema,
   CodexToolNameSchema,
   candidateName,
@@ -71,7 +73,7 @@ import {
   PROOF_LOOKUP_MS,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
-import { agentKey } from "../services/comment-agents.js";
+import { agentKey, roleKey } from "../services/comment-agents.js";
 import {
   artifactIdOf,
   follow,
@@ -130,6 +132,7 @@ import {
 import {
   type DecideResult,
   decideProposal,
+  decideProposalById,
   expireByCredential,
   expireProposals,
   listProposals,
@@ -141,6 +144,7 @@ import {
   viewProposal,
 } from "./role-proposals.js";
 import {
+  type AgentNameRow,
   deleteRole,
   formerReservedSql,
   type HandOverResult,
@@ -154,6 +158,7 @@ import {
   resolveRoleAnywhere,
   resolveRoleIn,
   roleForward,
+  roleIntervals,
   roleTakenSql,
   settleMoveAudits,
 } from "./roles.js";
@@ -334,6 +339,7 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
  */
 type Attachment = {
   machineId: string;
+  codexVerdicts?: true;
   replaced?: true;
   revoked?: true;
   /**
@@ -2663,7 +2669,13 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
   a.name_chosen as nameChosen,
   exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
-  exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder`;
+  exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
+  (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
+     and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleName,
+  (select ro.id from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
+     and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleId,
+  (exists (select 1 from role_moves rm where rm.org_id = a.org_id and rm.from_agent_id = a.id)
+     and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -2801,6 +2813,29 @@ function liveVisibleIn(
     lname,
     ns,
     ...(identity ? [identity] : []),
+  );
+}
+
+// A colon cannot occur in a session name. Role IDs are case sensitive.
+const roleNoticeName = (id: string) => `:${id}`;
+
+/** Resolve held mail on each delivery, so a later holder receives it. */
+function noticeRecipient(
+  sql: SqlStorage,
+  ns: string,
+  name: string,
+  identity?: string | null,
+) {
+  if (!name.startsWith(":")) return liveVisibleIn(sql, ns, name, identity);
+  return one<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where id = (
+    select agent_id from roles where id = ? and org_id = ? and namespace = ?)
+    and live = 1 and (namespace = ? or global = 1)`,
+    name.slice(1),
+    OWNER_ORG_ID,
+    ns,
+    ns,
   );
 }
 
@@ -4270,7 +4305,8 @@ export class BusHub extends DurableObject<Env> {
    */
   async snapshot(opts?: {
     away?: boolean;
-  }): Promise<{ connected: string[]; agents: BusAgent[] }> {
+    roles?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[]; roles?: BusRole[] }> {
     const connected = all<StoredMachine>(
       this.ctx.storage.sql,
       `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
@@ -4281,6 +4317,15 @@ export class BusHub extends DurableObject<Env> {
     return {
       connected,
       agents: agentList(this.ctx, undefined, opts?.away === true),
+      ...(opts?.roles
+        ? {
+            roles: listRoles(
+              this.ctx.storage.sql,
+              OWNER_ORG_ID,
+              this.#maxRoles,
+            ),
+          }
+        : {}),
     };
   }
 
@@ -4326,6 +4371,7 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    if (r.ok && !r.moved && agentId) this.#wakeRoleNotices(r.role.id);
     return r;
   }
 
@@ -4536,6 +4582,7 @@ export class BusHub extends DurableObject<Env> {
     namespace: string;
     name: string;
     identityId?: string;
+    roleId?: string;
     artifactId: string;
     threadId: string;
     commentIds: string[];
@@ -4626,6 +4673,14 @@ export class BusHub extends DurableObject<Env> {
                 names.map((n) => agentKey(a.artifactId, userId, n)),
               ),
             );
+      if (a.roleId) {
+        addrs.clear();
+        addrs.set(a.roleId, [a.namespace, roleNoticeName(a.roleId)]);
+        if (keys && userId) {
+          keys.clear();
+          keys.add(await roleKey(a.artifactId, userId, a.namespace, a.roleId));
+        }
+      }
       const keyOk = (k: string) => keys === null || keys.has(k);
       const askerPrefix = `${a.artifactId}:${a.threadId}:asker:`;
       const replyPrefix = `${a.artifactId}:${a.threadId}:thread_reply:`;
@@ -4663,9 +4718,11 @@ export class BusHub extends DurableObject<Env> {
           return null;
         }
       };
-      const agent = byIdentity
-        ? `i:${identityId}`
-        : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
+      const agent = a.roleId
+        ? `r:${a.roleId}`
+        : byIdentity
+          ? `i:${identityId}`
+          : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
       const found: Array<Withdrawn & { whole: number }> = [];
       this.ctx.storage.transactionSync(() => {
         for (const [ns, lname] of addrs.values()) {
@@ -4916,7 +4973,7 @@ export class BusHub extends DurableObject<Env> {
   >();
   #codexStarts: number[] = [];
   #codexMiss = new Map<string, number>();
-  #codexFlight = new Map<string, Promise<AgentIdentity | null>>();
+  #codexFlight = new Set<string>();
   #codexAdmitted = new Set<string>();
   #codexItems = new Map<string, number>();
 
@@ -4931,6 +4988,34 @@ export class BusHub extends DurableObject<Env> {
    * Worker only.
    */
   async codexCallCheck(check: unknown): Promise<AgentIdentity | null> {
+    return (await this.codexCallDecision(check)).identity;
+  }
+
+  /** Notify only the machine registered for this thread. Diagnostics never grant identity. */
+  codexCallVerdict(thread: string, reason: CodexLinkReason): void {
+    const rows = this.ctx.storage.sql
+      .exec<{ machine_id: string; name: string }>(
+        "select machine_id, name from agents where native_ref = ? and kind = 'codex' and live = 1 and org_id = ? limit 2",
+        thread,
+        OWNER_ORG_ID,
+      )
+      .toArray();
+    if (rows.length !== 1 || !rows[0]) return;
+    const ws = liveSocket(this.ctx, rows[0].machine_id);
+    if (ws && attachmentOf(ws)?.codexVerdicts && codexCheckGated(ws))
+      trySendFrame(ws, {
+        v: 1,
+        id: frameId(),
+        type: "codex_call_verdict",
+        name: rows[0].name,
+        reason,
+      });
+  }
+
+  async codexCallDecision(
+    check: unknown,
+  ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
+    const miss = (reason: CodexLinkReason) => ({ identity: null, reason });
     const c = check as {
       thread_id?: unknown;
       tool?: unknown;
@@ -4943,50 +5028,51 @@ export class BusHub extends DurableObject<Env> {
     } | null;
     const thread = CodexThreadIdSchema.safeParse(c?.thread_id);
     const tool = CodexToolNameSchema.safeParse(c?.tool);
-    if (!thread.success || !tool.success || !c?.mode) return null;
+    if (!thread.success || !tool.success || !c?.mode)
+      return miss("invalid_check");
     let mode:
       | { kind: "direct"; call_id: string; args_sha256: string }
       | { kind: "code"; call_id: string; item_id: string };
     if (c.mode.kind === "code") {
       const call = CodexExecCallIdSchema.safeParse(c.mode.call_id);
       const item = CodexItemIdSchema.safeParse(c.mode.item_id);
-      if (!call.success || !item.success) return null;
+      if (!call.success || !item.success) return miss("invalid_check");
       mode = { kind: "code", call_id: call.data, item_id: item.data };
     } else if (c.mode.kind === "direct") {
       const call = CodexDirectCallIdSchema.safeParse(c.mode.call_id);
       const hash = LinkProofHashSchema.safeParse(c.mode.args_sha256);
-      if (!call.success || !hash.success) return null;
+      if (!call.success || !hash.success) return miss("invalid_check");
       mode = { kind: "direct", call_id: call.data, args_sha256: hash.data };
-    } else return null;
+    } else return miss("invalid_check");
     // `once` is the (thread, call) that links at most once; `key` also binds
     // the tool and the args hash or item, so another tool or args never joins
     // a running check nor shares its miss.
     const once = `${thread.data}\n${mode.call_id}`;
     const key = `${once}\n${tool.data}\n${mode.kind === "code" ? mode.item_id : mode.args_sha256}`;
     const now = this.#now();
-    if (this.#codexAdmitted.has(once)) return null;
+    if (this.#codexAdmitted.has(once)) return miss("already_used");
     if (
       mode.kind === "code" &&
       (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
     )
-      return null;
+      return miss("item_limit");
     const missUntil = this.#codexMiss.get(key);
-    if (missUntil !== undefined && missUntil > now) return null;
+    if (missUntil !== undefined && missUntil > now) return miss("cached_miss");
     // A duplicate in flight is unlinked: the identity goes to the first only.
-    if (this.#codexFlight.has(key)) return null;
+    if (this.#codexFlight.has(key)) return miss("in_flight");
     this.#codexStarts = this.#codexStarts.filter(
       (t) => t > now - CODEX_CHECK_WINDOW_MS,
     );
     if (this.#codexStarts.length >= CODEX_CHECKS_PER_WINDOW) {
       logInfo("bus_codex_check_none", { reason: "rate" });
-      return null;
+      return miss("hub_rate_limit");
     }
     this.#codexStarts.push(now);
     const p = this.#codexAsk(thread.data, tool.data, mode).then(
-      (id) => {
-        if (id) {
+      (decision) => {
+        if (decision.identity) {
           // Another check for this (thread, call) linked first.
-          if (this.#codexAdmitted.has(once)) return null;
+          if (this.#codexAdmitted.has(once)) return miss("already_used");
           this.#codexAdmitted.add(once);
           if (this.#codexAdmitted.size > CODEX_MAP_MAX)
             this.#codexAdmitted.delete(
@@ -5009,14 +5095,14 @@ export class BusHub extends DurableObject<Env> {
               this.#codexMiss.keys().next().value as string,
             );
         }
-        return id;
+        return decision;
       },
       (e) => {
         logError("bus_codex_check_failed", e);
-        return null;
+        return miss("lookup_error");
       },
     );
-    this.#codexFlight.set(key, p);
+    this.#codexFlight.add(key);
     void p.finally(() => this.#codexFlight.delete(key));
     return p;
   }
@@ -5027,13 +5113,13 @@ export class BusHub extends DurableObject<Env> {
     mode:
       | { kind: "direct"; call_id: string; args_sha256: string }
       | { kind: "code"; call_id: string; item_id: string },
-  ): Promise<AgentIdentity | null> {
+  ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
     const asked: WebSocket[] = [];
     const waits: Promise<WebSocket | null>[] = [];
     const frameIds: string[] = [];
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<null>((r) => {
-      timer = setTimeout(() => r(null), PROOF_LOOKUP_MS);
+    const late = new Promise<"timeout">((r) => {
+      timer = setTimeout(() => r("timeout"), PROOF_LOOKUP_MS);
     });
     try {
       for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
@@ -5065,7 +5151,7 @@ export class BusHub extends DurableObject<Env> {
       }
       if (waits.length === 0) {
         logInfo("bus_codex_check_none", { reason: "no_daemon" });
-        return null;
+        return { identity: null, reason: "no_daemon" };
       }
       // The first ok from an asked socket wins; every "no" must arrive to give up early.
       const first = new Promise<WebSocket | null>((resolve) => {
@@ -5077,12 +5163,16 @@ export class BusHub extends DurableObject<Env> {
           });
       });
       const ws = await Promise.race([first, late]);
-      if (!ws) {
+      if (!ws || ws === "timeout") {
         logInfo("bus_codex_check_none", { reason: "refused_or_timeout" });
-        return null;
+        return {
+          identity: null,
+          reason: ws === "timeout" ? "lookup_timeout" : "daemon_refused",
+        };
       }
       const machineId = attachmentOf(ws)?.machineId;
-      if (!machineId || isReplaced(ws) || ws.readyState !== OPEN) return null;
+      if (!machineId || isReplaced(ws) || ws.readyState !== OPEN)
+        return { identity: null, reason: "no_daemon" };
       // A Codex session that never bound a proof has no identity yet; mint it
       // here, as bindProof does at a first bind (the hub's own row, one write).
       this.ctx.storage.sql.exec(
@@ -5105,7 +5195,7 @@ export class BusHub extends DurableObject<Env> {
         OWNER_ORG_ID,
       );
       if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
-      return id;
+      return { identity: id, reason: id ? "attested" : "no_agent" };
     } finally {
       clearTimeout(timer);
       for (const id of frameIds) this.#codexPending.delete(id);
@@ -5171,13 +5261,11 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #1889: the current bus name of each agent identity in `identityIds`, from
    * this member's own hub only (an id of another member's agent is not here,
-   * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
-   * kind, machine or state (one row per identity). At most
+   * so it returns nothing). Includes holding intervals for dated authorship.
+   * A purged session can have intervals without a current name. At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
-  async namesOf(
-    identityIds: string[],
-  ): Promise<{ identityId: string; name: string }[]> {
+  async namesOf(identityIds: string[]): Promise<AgentNameRow[]> {
     if (!Array.isArray(identityIds)) return [];
     const ids = [
       ...new Set(identityIds.filter((x) => typeof x === "string" && x !== "")),
@@ -5192,12 +5280,23 @@ export class BusHub extends DurableObject<Env> {
         ...ids,
       )
       .toArray();
-    const seen = new Set<string>();
-    const out: { identityId: string; name: string }[] = [];
-    for (const r of rows) {
-      if (seen.has(r.identityId)) continue;
-      seen.add(r.identityId);
-      out.push({ identityId: r.identityId, name: r.name });
+    const names = new Map<string, string>();
+    for (const row of rows)
+      if (!names.has(row.identityId)) names.set(row.identityId, row.name);
+    const out: AgentNameRow[] = [];
+    for (const identityId of ids) {
+      const name = names.get(identityId);
+      const intervals = roleIntervals(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        identityId,
+      );
+      if (name || intervals.length)
+        out.push({
+          identityId,
+          ...(name && { name }),
+          ...(intervals.length && { intervals }),
+        });
     }
     return out;
   }
@@ -5449,7 +5548,30 @@ export class BusHub extends DurableObject<Env> {
       this.#maxRoles,
     );
     logEvent("role_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    // The proposal identifies the intended holder. Its caller may be unlinked.
+    const p = r.ok ? r.proposal : null;
+    if (p?.action === "repoint" && p.priorAgentId && p.agentName)
+      this.#say(
+        p.priorAgentId,
+        `A proposal would move your role "${p.name}" in ${p.namespace} to ${p.agentName}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}".`,
+      );
     return r;
+  }
+
+  /**
+   * #3132: a short text from the hub to agent `agentId` while it is live,
+   * from the reserved sender. Best effort: never held for a closed agent.
+   */
+  #say(agentId: string, text: string): void {
+    const agent = one<AgentRow>(
+      this.ctx.storage.sql,
+      `select ${AGENT_COLS} from agents where org_id = ? and id = ? and live = 1`,
+      OWNER_ORG_ID,
+      agentId,
+    );
+    if (!agent) return;
+    const ws = liveSocket(this.ctx, agent.machineId);
+    if (ws && noticeGated(ws)) trySendFrame(ws, noticeFrame(agent, text));
   }
 
   /** #1372: the proposal behind `tokenHash`, for the confirm page; decides nothing but expiry. Worker only. */
@@ -5488,6 +5610,34 @@ export class BusHub extends DurableObject<Env> {
     // A confirmed set (not a clear) names the holder.
     if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    if (r.ok && !r.moved && r.role?.agentId) this.#wakeRoleNotices(r.role.id);
+    return r;
+  }
+
+  /**
+   * #3132: the dashboard card's answer: confirms or rejects role proposal
+   * `id`, once. Worker only, and only from POST R.busRoleProposal(id) (a
+   * member's browser session). Applies as decideRoleProposal does, and the
+   * hub checks again that the role is still as proposed.
+   */
+  async decideRoleProposalById(
+    id: string,
+    decision: "confirm" | "reject",
+  ): Promise<DecideResult> {
+    const r = this.#withReachNotice(() =>
+      decideProposalById(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        id,
+        decision,
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      ),
+    );
+    logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
+    if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
     return r;
   }
 
@@ -5498,7 +5648,34 @@ export class BusHub extends DurableObject<Env> {
    */
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
+    this.#wakeRoleNotices(m.roleId);
     void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
+    // The old session, if still open, is told it no longer holds the role.
+    const role = one<{ name: string }>(
+      this.ctx.storage.sql,
+      "select name from roles where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      m.roleId,
+    );
+    if (role)
+      this.#say(
+        m.fromAgentId,
+        `Your role "${role.name}" moved to ${m.to.name}. What you began while you held it (open asks, followed pages) and new mentions of you go there now.`,
+      );
+  }
+
+  #wakeRoleNotices(roleId: string): void {
+    const sql = this.ctx.storage.sql;
+    const row = one<{ namespace: string }>(
+      sql,
+      "select namespace from roles where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      roleId,
+    );
+    if (!row) return;
+    const agent = noticeRecipient(sql, row.namespace, roleNoticeName(roleId));
+    const socket = agent && liveSocket(this.ctx, agent.machineId);
+    if (agent && socket) this.#flushNoticesFor(socket, agent);
   }
 
   /**
@@ -5566,10 +5743,61 @@ export class BusHub extends DurableObject<Env> {
   async listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
     expired: ProposalAudit[];
+    /** #3132: where each pending proposal's current holder is: live now, or away since a time (ms). */
+    holders: Record<string, { live: boolean; since: number | null }>;
   }> {
     const sql = this.ctx.storage.sql;
     const expired = expireProposals(sql, OWNER_ORG_ID, this.#now());
-    return { proposals: listProposals(sql, OWNER_ORG_ID), expired };
+    const proposals = listProposals(sql, OWNER_ORG_ID);
+    const ids = [
+      ...new Set(
+        proposals.flatMap((p) =>
+          p.status === "pending"
+            ? [p.priorAgentId, p.agentId].filter(
+                (id): id is string => id !== null,
+              )
+            : [],
+        ),
+      ),
+    ];
+    const holders: Record<string, { live: boolean; since: number | null }> = {};
+    const labels = new Map<string, string>();
+    for (const a of ids.length
+      ? sql
+          .exec<{
+            id: string;
+            live: number;
+            since: number | null;
+            label: string | null;
+          }>(
+            "select a.id, a.live, coalesce(a.away_since, a.updated_at) as since, m.label from agents a left join machines m on m.id = a.machine_id and m.org_id = a.org_id where a.org_id = ? and a.id in (select value from json_each(?))",
+            OWNER_ORG_ID,
+            JSON.stringify(ids),
+          )
+          .toArray()
+      : []) {
+      if (a.label) labels.set(a.id, a.label);
+      holders[a.id] = {
+        live: a.live === 1,
+        since: a.live === 1 ? null : a.since,
+      };
+    }
+    return {
+      proposals: proposals.map((p) => {
+        if (p.status !== "pending" || p.action !== "repoint") return p;
+        const since = p.priorAgentId ? holders[p.priorAgentId]?.since : null;
+        return {
+          ...p,
+          targetMachine: labels.get(p.agentId ?? ""),
+          priorMachine: labels.get(p.priorAgentId ?? ""),
+          ...(since != null
+            ? { awaySince: new Date(since).toISOString() }
+            : {}),
+        };
+      }),
+      expired,
+      holders,
+    };
   }
 
   /** When the last closeAll started (ms), or null. */
@@ -5771,8 +5999,8 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * GET /bus/connect (bus/connect.ts) forwards a verified upgrade here, to
-   * CONNECT_DO_PATH, with only Upgrade, MACHINE_ID_HEADER,
-   * MACHINE_LABEL_HEADER and AUTHZ_AT_HEADER (never the client's headers).
+   * CONNECT_DO_PATH. The Worker supplies the verified machine identity and
+   * authorization time, and normalizes the optional verdict opt-in to 1.
    * The Worker checked the token in D1 (unrevoked), the member (active,
    * canConnect) and that this is their hub. Here: an upgrade authorized at
    * or before the last closeAll (+ SKEW_MS) is refused 429 (the daemon
@@ -5847,7 +6075,12 @@ export class BusHub extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [DAEMON_TAG, machineId]);
-    server.serializeAttachment({ machineId } satisfies Attachment);
+    server.serializeAttachment({
+      machineId,
+      ...(req.headers.get(CODEX_VERDICT_HEADER) === "1"
+        ? { codexVerdicts: true }
+        : {}),
+    } satisfies Attachment);
     // open-bus #422: online again; the offline clock stops.
     this.ctx.storage.sql.exec(
       "update machines set disconnected_at = null where id = ? and disconnected_at is not null",
@@ -9104,7 +9337,20 @@ export class BusHub extends DurableObject<Env> {
     // #3132: a notice for a session that handed its role on (an ask's answer,
     // a mention, a follow) goes to the role's live holder, as if sent there.
     // Once only: two sessions that swapped roles never bounce a notice.
-    if (!forwarded) {
+    const roleId = n.toRoleId;
+    if (
+      roleId &&
+      (n.toIdentity ||
+        !one(
+          sql,
+          "select id from roles where id = ? and org_id = ? and namespace = ?",
+          roleId,
+          OWNER_ORG_ID,
+          n.to.namespace,
+        ))
+    )
+      return "dropped";
+    if (!roleId && !forwarded) {
       const holder = roleForward(
         sql,
         OWNER_ORG_ID,
@@ -9151,12 +9397,15 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     const byRole =
-      n.toIdentity !== undefined
+      roleId || n.toIdentity !== undefined
         ? null
         : resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
     const liveNamed = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
     const former =
-      byRole !== null || liveNamed !== null || n.toIdentity !== undefined
+      roleId ||
+      byRole !== null ||
+      liveNamed !== null ||
+      n.toIdentity !== undefined
         ? []
         : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
     const byAlias = byRole?.ok
@@ -9164,20 +9413,24 @@ export class BusHub extends DurableObject<Env> {
       : former.length === 1
         ? former[0]
         : undefined;
-    const lname = byAlias ? byAlias.name.toLowerCase() : sent;
+    const lname = roleId
+      ? roleNoticeName(roleId)
+      : byAlias
+        ? byAlias.name.toLowerCase()
+        : sent;
     const to = byAlias
       ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
     const agent =
-      byAlias ?? liveVisibleIn(sql, to.namespace, lname, n.toIdentity);
+      byAlias ?? noticeRecipient(sql, to.namespace, lname, n.toIdentity);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
-    if (!agent) {
+    if (!agent && !roleId) {
       this.#dropHeld(...key);
       return "dropped";
     }
-    const live = liveSocket(this.ctx, agent.machineId);
+    const live = agent?.live ? liveSocket(this.ctx, agent.machineId) : null;
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
@@ -9193,7 +9446,10 @@ export class BusHub extends DurableObject<Env> {
     );
     // #2238: a waiting notice for another identity than this address holds now
     // is not this agent's: it settles as gone and never folds into this one.
-    if (old?.toIdentity && old.toIdentity !== identityOfAgent(sql, agent.id)) {
+    if (
+      old?.toIdentity &&
+      (!agent || old.toIdentity !== identityOfAgent(sql, agent.id))
+    ) {
       this.#settleGone([old.ack, ...parseAcks(old.foldAcks)]);
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -9211,7 +9467,7 @@ export class BusHub extends DurableObject<Env> {
       folds.splice(0, Math.max(0, folds.length - NOTICE_FOLD_MAX)),
     );
     const foldN = old && n.kind === "comment" ? old.foldN + 1 : 0;
-    if (socket && notBefore <= now) {
+    if (socket && agent && notBefore <= now) {
       // A socket that refuses the frame (#1752) leaves the notice held
       // (parked) for the next agent_up, never stored as delivered. An older
       // held notice of the key is folded in and goes only once this is sent.
@@ -9324,18 +9580,22 @@ export class BusHub extends DurableObject<Env> {
     const now = this.#now();
     const rows = all<NoticeRow>(
       sql,
-      `select ${NOTICE_COLS} from notices where to_lname = ? and not_before <= ? and expires_at > ?
-         and (to_ns = ? or ?) order by not_before limit ?`,
+      `select ${NOTICE_COLS} from notices where ((to_lname = ? and (to_ns = ? or ?))
+         or (to_ns,to_lname) in (select namespace, ':' || id from roles where agent_id = ?))
+         and not_before <= ? and expires_at > ? order by not_before limit ?`,
       agent.name.toLowerCase(),
-      now,
-      now,
       agent.namespace,
       agent.global === 1 ? 1 : 0,
+      agent.id,
+      now,
+      now,
       NOTICE_FLUSH_BATCH,
     );
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
-      if (liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id)
+      if (
+        noticeRecipient(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id
+      )
         continue;
       if (this.#identityMismatch(r, agent)) continue;
       if (
@@ -9353,10 +9613,11 @@ export class BusHub extends DurableObject<Env> {
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
+        "update notices set parked = 0 where ((to_lname = ? and (to_ns = ? or ?)) or (to_ns,to_lname) in (select namespace, ':' || id from roles where agent_id = ?)) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
+        agent.id,
       );
       this.#arm(now + NOTICE_PACE_MS);
     }
@@ -9430,7 +9691,7 @@ export class BusHub extends DurableObject<Env> {
         paced = true;
         break;
       }
-      const agent = liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity);
+      const agent = noticeRecipient(sql, r.toNs, r.toLname, r.toIdentity);
       if (agent && this.#identityMismatch(r, agent)) continue;
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
@@ -9452,7 +9713,7 @@ export class BusHub extends DurableObject<Env> {
           r.toLname,
           r.ckey,
         );
-      } else if (agent) {
+      } else if (agent || r.toLname.startsWith(":")) {
         // A live socket that cannot read it: old-daemon share; none: offline.
         // A capable socket that refused the frame (#1752) is offline-like (1).
         const tooOld = live && !socket;

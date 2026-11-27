@@ -73,8 +73,13 @@ export function useHosted(): Hosted {
 }
 
 /** What the caller may do with `a`. Every action gate reads this, never `access`. */
-export const useCan = (a: ArtifactSummary): ArtifactCan => {
-  const { features, cap, soloPaused } = useHosted();
+export const useCan = (a: ArtifactSummary): ArtifactCan =>
+  artifactPermissions(a, useHosted());
+
+export function artifactPermissions(
+  a: ArtifactSummary,
+  { features, cap, soloPaused }: Hosted,
+): ArtifactCan {
   // Sharing is free on every plan: the plan cap leaves share and visibility
   // as the artifact's own `can` says (the server keeps both on for the
   // owner), while the other capped callers lose them with every write.
@@ -95,7 +100,7 @@ export const useCan = (a: ArtifactSummary): ArtifactCan => {
     move: false,
     dataWrite: false,
   };
-};
+}
 
 /** Whether the caller may publish into a space: never when capped (guest, restricted). */
 export const canPublishTo = (

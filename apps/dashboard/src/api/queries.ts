@@ -14,6 +14,7 @@ import {
   BusRoleSchema,
   BusRolesSchema,
   DocVersionResultSchema,
+  HandleAvailabilitySchema,
   type ListQueryInput,
   ListQuerySchema,
   type Me,
@@ -725,6 +726,17 @@ export const useUpdateMe = () => {
   return useMutation({
     mutationFn: (patch: MePatch) => api.send("PATCH", R.me, patch, MeSchema),
     onSuccess: (me) => qc.setQueryData(qk.me, me),
+    onError: (error, patch) => {
+      if (
+        patch.handle &&
+        error instanceof ApiClientError &&
+        error.status === 409
+      ) {
+        const check = HandleAvailabilitySchema.safeParse(error.details);
+        if (check.success)
+          qc.setQueryData(["handle-availability", patch.handle], check.data);
+      }
+    },
   });
 };
 

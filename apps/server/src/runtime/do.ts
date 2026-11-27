@@ -41,6 +41,11 @@ import {
   type CommentStatus,
   THREAD_REPLY_NOTICES_MAX,
 } from "../services/comment-rules.js";
+import {
+  deliverMemberPush,
+  type PushItem,
+  queuePush,
+} from "../services/push.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
   captureThumbnail,
@@ -1888,6 +1893,40 @@ export class ArtifactRuntime extends DurableObject<Env> {
       : null;
   }
 
+  /** A reserved name in the existing binding gives each member one delivery queue and one alarm. */
+  private delivery: Promise<void> = Promise.resolve();
+
+  async pushEvent(
+    userId: string,
+    item?: PushItem,
+    wakeAt?: number,
+  ): Promise<void> {
+    if (this.ctx.id.name !== `push:${userId}`)
+      throw new Error("Wrong push recipient");
+    return this.runPush(userId, item, wakeAt);
+  }
+
+  private runPush(userId: string, item?: PushItem, wakeAt?: number) {
+    const work = this.delivery.then(async () => {
+      // The name can be absent when an alarm wakes a hibernated object.
+      await this.ctx.storage.put("pushRecipient", userId);
+      if (wakeAt !== undefined) return this.armAt(wakeAt);
+      const now = this.now();
+      if (item) await queuePush(this.env, [userId], item, now);
+      try {
+        const { next } = await deliverMemberPush(this.env, userId, now);
+        if (next === null) await this.ctx.storage.deleteAlarm();
+        else await this.ctx.storage.setAlarm(next);
+      } catch (error) {
+        // On an event there is no firing alarm to retry an interrupted database operation.
+        if (item) await this.armAt(now + 1000);
+        throw error;
+      }
+    });
+    this.delivery = work.catch(() => {});
+    return work;
+  }
+
   /**
    * One alarm, multiplexed by the next due time of both kinds of work:
    * - Socket lifetime: closes sockets older than LIMITS.signedUrlTtlSec (minus
@@ -1905,6 +1944,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * Re-arms for the oldest remaining socket or the pending job.
    */
   override async alarm(): Promise<void> {
+    const name = this.ctx.id.name;
+    const recipient = name
+      ? name.startsWith("push:")
+        ? name.slice(5)
+        : null
+      : await this.ctx.storage.get<string>("pushRecipient");
+    if (recipient) return this.runPush(recipient);
     const sockets = this.ctx.getWebSockets();
     const job = this.pendingIndex();
     // Gate off: no thumbnail bookkeeping at all (a job queued while it was
