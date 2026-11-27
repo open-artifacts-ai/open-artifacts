@@ -25,7 +25,7 @@ import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
 import { muted } from "../settings/ui";
-import { AgentApp } from "./AgentApp";
+import { AgentApp, appName } from "./AgentApp";
 import {
   buildRail,
   type Count,
@@ -224,55 +224,132 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
 const agentLabel = (a: BusAgent) =>
   a.pendingRole ? `Session on ${a.machineLabel}` : (a.role ?? a.name);
 
-function AwayName({ role, agents }: { role: BusRole; agents: BusAgent[] }) {
+function awayAge(since?: string) {
+  const minutes = since
+    ? Math.floor((Date.now() - Date.parse(since)) / 60000)
+    : NaN;
+  if (!Number.isFinite(minutes)) return "away";
+  if (minutes < 60) return `away ${Math.max(0, minutes)} min`;
+  if (minutes < 1440) return `away ${Math.floor(minutes / 60)} h`;
+  return `away ${Math.floor(minutes / 1440)} d`;
+}
+
+function AwayName({
+  role,
+  agents,
+  onFreed,
+}: {
+  role: BusRole;
+  agents: BusAgent[];
+  onFreed: (name: string) => void;
+}) {
   const action = useAwayRoleAction();
-  const [picking, setPicking] = useState(false);
+  const [mode, setMode] = useState<"move" | "free" | null>(null);
+  const [targetId, setTargetId] = useState("");
   const targets = agents.filter(
     (a) => a.state === "live" && (a.global || a.namespace === role.namespace),
   );
-  const submit = (targetId: string | null) => {
-    if (role.agentId)
-      action.mutate({ roleId: role.id, holderId: role.agentId, targetId });
+  const submit = async (id: string | null) => {
+    if (!role.agentId || action.isPending) return;
+    try {
+      await action.mutateAsync({
+        roleId: role.id,
+        holderId: role.agentId,
+        targetId: id,
+      });
+      if (id === null) onFreed(role.name);
+    } catch {
+      /* The mutation shows the failure and refreshes stale rows. */
+    }
   };
+  const cancel = (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={action.isPending}
+      onClick={() => {
+        setMode(null);
+        setTargetId("");
+      }}
+    >
+      Cancel
+    </Button>
+  );
   return (
     <li className="flex flex-wrap items-center gap-2 py-2">
-      <b className="mr-auto">{role.name}</b>
-      {picking ? (
-        <select
-          aria-label={`Move ${role.name} to`}
-          value=""
-          disabled={action.isPending}
-          onChange={(e) => submit(e.target.value)}
-        >
-          <option disabled value="">
-            Choose a live session
-          </option>
-          {targets.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.pendingRole
-                ? agentLabel(a)
-                : `${agentLabel(a)} · ${a.machineLabel}`}
-            </option>
-          ))}
-        </select>
-      ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={!targets.length || action.isPending}
-          onClick={() => setPicking(true)}
-        >
-          Move to…
-        </Button>
+      <div className="mr-auto">
+        <b>{role.name}</b>
+        <div className={muted}>
+          {[
+            role.awayMachine && `on the ${role.awayMachine.split(".")[0]}`,
+            awayAge(role.awaySince),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      </div>
+      {mode === null && (
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!targets.length}
+            onClick={() => setMode("move")}
+          >
+            Move to…
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setMode("free")}>
+            Free this name
+          </Button>
+        </>
       )}
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={action.isPending}
-        onClick={() => submit(null)}
-      >
-        Free this name
-      </Button>
+      {mode === "move" && (
+        <div className="flex basis-full flex-wrap items-center gap-2">
+          <select
+            aria-label={`Move ${role.name} to`}
+            value={targetId}
+            disabled={action.isPending}
+            onChange={(e) => setTargetId(e.target.value)}
+          >
+            <option disabled value="">
+              Choose a live session
+            </option>
+            {targets.map((a) => (
+              <option key={a.id} value={a.id}>
+                {appName(a)} on the {a.machineLabel.split(".")[0]}
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            disabled={
+              action.isPending || !targets.some((a) => a.id === targetId)
+            }
+            onClick={() => void submit(targetId)}
+          >
+            Move {role.name} here
+          </Button>
+          {cancel}
+          <p className={`m-0 basis-full ${muted}`}>
+            Its open asks, mentions and follows move too.
+          </p>
+        </div>
+      )}
+      {mode === "free" && (
+        <div className="flex basis-full flex-wrap items-center gap-2">
+          <p className="m-0 basis-full">
+            Free {role.name}? The next session can take this name.
+          </p>
+          <Button
+            size="sm"
+            disabled={action.isPending}
+            onClick={() => void submit(null)}
+          >
+            Free it
+          </Button>
+          {cancel}
+        </div>
+      )}
     </li>
   );
 }
@@ -383,6 +460,12 @@ export function Roster({ scope: raw }: { scope?: string }) {
   const agents = useBusAgents();
   const machines = useBusMachines();
   const roles = useBusRoles();
+  const [freed, setFreed] = useState<string | null>(null);
+  const confirmation = freed && (
+    <p role="status" className={`m-0 ${muted}`}>
+      {freed} is free
+    </p>
+  );
   const [filter, setFilter] = useState<Filter>("all");
   const scope = parseScope(raw);
   if (agents.isPending || roles.isPending)
@@ -427,6 +510,7 @@ export function Roster({ scope: raw }: { scope?: string }) {
             ? "Connect a machine first."
             : "Agents appear here while a session on one of your machines is running."}
         </p>
+        {confirmation}
         {noMachine && (
           <Button asChild variant="outline" size="sm">
             <BusLink to="/settings/machines">Go to Machines</BusLink>
@@ -480,14 +564,22 @@ export function Roster({ scope: raw }: { scope?: string }) {
         )}
         {away.length > 0 && filter === "all" && (
           <section aria-label="Names held by away sessions">
-            <h3>Names held by away sessions</h3>
+            <h3 className={`m-0 font-semibold ${LABEL}`}>
+              Names held by away sessions
+            </h3>
             <ul className="m-0 list-none divide-y p-0">
               {away.map((role) => (
-                <AwayName key={role.id} role={role} agents={list} />
+                <AwayName
+                  key={role.id}
+                  role={role}
+                  agents={list}
+                  onFreed={setFreed}
+                />
               ))}
             </ul>
           </section>
         )}
+        {confirmation}
         {scope.kind === "ns" && globalsFrom(list, scope.ns) > 0 && (
           <p className={`m-0 ${muted}`}>
             {globalsLine(globalsFrom(list, scope.ns))}

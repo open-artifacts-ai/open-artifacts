@@ -515,7 +515,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
   if (opts.awayName && busRoles[0]) {
     const role = busRoles[0];
-    busRoles[0] = { ...role, vacant: true, awayHolder: true };
+    busRoles[0] = {
+      ...role,
+      vacant: true,
+      awayHolder: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
     busAgents = busAgents.filter((a) => a.id !== role.agentId);
   }
   const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
@@ -934,6 +940,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
                 holderName: target.name,
                 vacant: false,
                 awayHolder: undefined,
+                awayMachine: undefined,
+                awaySince: undefined,
               }
             : r,
         );

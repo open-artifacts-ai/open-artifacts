@@ -125,13 +125,15 @@ type StoredRole = {
   holderName: string | null;
   held: number;
   awayHolder: number;
+  awayMachine: string | null;
+  awaySince: number | null;
 };
 
 const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt,
-    h.name as holderName,
+    h.name as holderName, m.label as awayMachine, h.away_since as awaySince,
     (r.agent_id is not null and (h.id is null or h.live = 0)) as awayHolder,
     (h.id is not null and h.live = 1 and (h.namespace = r.namespace or h.global = 1)) as held
-  from roles r left join agents h on h.id = r.agent_id`;
+  from roles r left join agents h on h.id = r.agent_id left join machines m on m.id = h.machine_id`;
 
 const roleDto = (r: StoredRole): BusRole => ({
   id: r.id,
@@ -140,7 +142,13 @@ const roleDto = (r: StoredRole): BusRole => ({
   agentId: r.agentId,
   holderName: r.holderName,
   vacant: r.held !== 1,
-  ...(r.awayHolder === 1 ? { awayHolder: true as const } : {}),
+  ...(r.awayHolder === 1
+    ? {
+        awayHolder: true as const,
+        ...(r.awayMachine && { awayMachine: r.awayMachine }),
+        ...(r.awaySince != null && { awaySince: iso(r.awaySince) }),
+      }
+    : {}),
   setAt: iso(r.setAt),
 });
 

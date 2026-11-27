@@ -75,7 +75,13 @@ const settingsTabs = () =>
 describe("away names on Agents", () => {
   it.each(["move", "free"])("offers %s on the held role", async (operation) => {
     withBus();
-    const role = { ...fixtures.busRoles[0]!, awayHolder: true, vacant: true };
+    const role = {
+      ...fixtures.busRoles[0]!,
+      awayHolder: true,
+      vacant: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
     const target = A.find(
       (a) =>
         a.state === "live" &&
@@ -107,15 +113,32 @@ describe("away names on Agents", () => {
       name: "Names held by away sessions",
     });
     expect(within(held).getByText(role.name)).toBeInTheDocument();
+    expect(
+      within(held).getByText("on the laptop · away 19 h"),
+    ).toBeInTheDocument();
     if (operation === "move") {
       fireEvent.click(within(held).getByRole("button", { name: "Move to…" }));
       fireEvent.change(within(held).getByRole("combobox"), {
         target: { value: target.id },
       });
-    } else
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: `Move ${role.name} here` }),
+      );
+    } else {
       fireEvent.click(
         within(held).getByRole("button", { name: "Free this name" }),
       );
+      fireEvent.click(within(held).getByRole("button", { name: "Cancel" }));
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+      fireEvent.click(within(held).getByRole("button", { name: "Free it" }));
+      expect(
+        await screen.findByText(`${role.name} is free`),
+      ).toBeInTheDocument();
+    }
     await waitFor(() =>
       expect(
         screen.queryByRole("region", { name: "Names held by away sessions" }),

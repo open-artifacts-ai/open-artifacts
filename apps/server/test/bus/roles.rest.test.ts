@@ -155,8 +155,12 @@ describe("roles REST (#1296)", () => {
       d.send({ v: 1, id: "barrier", type: "list", from_ref: "next" });
       await waitFor(d, "roster");
       expect(
-        (await hub.listRoles()).find((r) => r.id === role.id)?.awayHolder,
-      ).toBe(true);
+        (await hub.listRoles()).find((r) => r.id === role.id),
+      ).toMatchObject({
+        awayHolder: true,
+        awayMachine: "MacBook",
+        awaySince: expect.stringMatching(/^\d{4}-/),
+      });
       expect((await act("missing")).status).toBe(409);
       if (operation === "move") {
         expect((await act(target.id)).status).toBe(204);
