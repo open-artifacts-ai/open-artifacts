@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.271.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.0...v0.271.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* guard self-host deploys using the reviewed migration marker ([#3308](https://github.com/open-artifacts-ai/open-artifacts/issues/3308)) ([cdf5fcb](https://github.com/open-artifacts-ai/open-artifacts/commit/cdf5fcb3fbec8188d89b34911e88a58e32c93e90))
+
 ## [0.271.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.270.0...v0.271.0) (2026-11-27)
 
 
