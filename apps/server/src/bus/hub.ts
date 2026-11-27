@@ -9822,7 +9822,8 @@ export class BusHub extends DurableObject<Env> {
                  select 1 from role_moves held where held.org_id = m.org_id and held.from_ns = m.from_ns
                    and held.from_lname = m.from_lname and held.from_agent_id = m.from_agent_id
                    and held.held_from <= ? and ? < held.at)
-               and a.live = 1 and a.identity_id = ? and a.namespace = m.from_ns and a.name = m.personal_route
+               and m.personal_route is not null
+               and a.live = 1 and a.identity_id = ? and a.namespace = m.from_ns
              limit 1`,
             OWNER_ORG_ID,
             n.to.namespace,

@@ -611,8 +611,8 @@ export function roleIntervals(
  * mention of the old name) goes with the role it handed on last. `identity` set: the moves of the session with that
  * identity. Otherwise the moves from address (ns, lname), only while no
  * other agent has taken that name since (a namesake inherits nothing,
- * #3208). None applies while the session holds any role (its mail is its
- * own), or once the role is vacant, removed or held by nobody live. Null:
+ * #3208). Undated mail stays with a session that currently holds a role.
+ * A vacant, removed or offline target role cannot forward a notice. Null:
  * deliver as addressed.
  */
 export function roleForward(
@@ -624,13 +624,10 @@ export function roleForward(
   /** When the subject began; null: a new message to the session (a mention). */
   originAt: number | null,
 ): AgentRow | null {
-  // Only while the session holds no role now (a holder's mail is its own).
-  // A dated subject goes with the role it held then: held_from <= originAt <
-  // the move. An undated one, a new message to the session's old name, goes
-  // with the role it handed on last.
-  const window = originAt === null ? "1 = 1" : "m.held_from <= ? and ? < m.at";
-  const scope = `${window}
-    and not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)`;
+  const scope =
+    originAt === null
+      ? "not exists (select 1 from roles h where h.org_id = m.org_id and h.agent_id = m.from_agent_id)"
+      : "m.held_from <= ? and ? < m.at";
   const times = originAt === null ? [] : [originAt, originAt];
   const order =
     originAt === null
