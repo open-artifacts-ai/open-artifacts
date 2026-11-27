@@ -30,8 +30,8 @@ const LANDING_ID = "Cd5fGhJkLm6nPqRs";
 const bell = () =>
   screen.findByRole("button", { name: /^For you/ }, { timeout: FIRST_LOAD_MS });
 
-const forYou = (variant: "mixed" | "calm" | "empty" | "back") =>
-  server.use(...createHandlers({ events, forYou: variant }));
+const forYou = (variant: "mixed" | "calm" | "empty" | "back" | "handover") =>
+  server.use(...createHandlers({ events, forYou: variant, bus: true }));
 
 const openPanel = async () => {
   fireEvent.click(await bell());
@@ -891,5 +891,55 @@ describe("failures and announcements", () => {
       await screen.findByRole("menuitem", { name: "Tomorrow morning" }),
     );
     await waitFor(() => expect(live).toHaveTextContent("For you, 1 needs you"));
+  });
+});
+
+describe("the handover card in For you (#3132)", () => {
+  it("shows who wants the role, from whom, and since when, with Yes and No", async () => {
+    forYou("handover");
+    mount("/");
+    const panel = await openPanel();
+    const needs = within(panel).getByRole("region", { name: "Needs you" });
+    const row = within(needs).getByRole("listitem");
+    expect(row.getAttribute("data-for-you-item")).toBe("role:BpA1nPqRsTu4vWxY");
+    expect(row).toHaveTextContent(
+      "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
+    );
+    expect(within(row).getByRole("button", { name: "No" })).toBeInTheDocument();
+    expect(
+      within(row).getByRole("button", { name: "Yes, hand it over" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Yes calls the route, and the card leaves Needs you and the bell count", async () => {
+    forYou("handover");
+    const sent = calls("POST");
+    mount("/");
+    const b = await bell();
+    expect(b).toHaveAccessibleName("For you, 1 needs you");
+    const panel = await openPanel();
+    fireEvent.click(
+      within(panel).getByRole("button", { name: "Yes, hand it over" }),
+    );
+    await waitFor(() =>
+      expect(sent.map((c) => [c.path, c.body])).toEqual([
+        [R.busRoleProposal("BpA1nPqRsTu4vWxY"), { decision: "confirm" }],
+      ]),
+    );
+    expect(
+      await within(panel).findByText("You're all caught up."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(b).toHaveAccessibleName("For you"));
+  });
+
+  it("No calls the route with reject", async () => {
+    forYou("handover");
+    const sent = calls("POST");
+    mount("/");
+    const panel = await openPanel();
+    fireEvent.click(within(panel).getByRole("button", { name: "No" }));
+    await waitFor(() =>
+      expect(sent.map((c) => c.body)).toEqual([{ decision: "reject" }]),
+    );
   });
 });

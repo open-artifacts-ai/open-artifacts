@@ -432,6 +432,7 @@ const BUS_TOOL_SURFACES = new Set(["mcp bus_role_propose"]);
 const BUS_OFF_ROUTES = new Set([
   "GET /api/v1/bus/ping",
   "PUT /api/v1/bus/roles",
+  "POST /api/v1/bus/roles/proposals/:id",
   "DELETE /api/v1/bus/roles/:id",
   "PUT /api/v1/bus/links",
   "DELETE /api/v1/bus/links/:id",

@@ -30,6 +30,8 @@ import {
   type BusLink,
   BusLinkPutSchema,
   type BusRole,
+  type BusRoleProposal,
+  BusRoleProposalDecideSchema,
   BusRolePutSchema,
   BusUpdatesPausedPutSchema,
   ShareNoticeAgentsSchema,
@@ -508,9 +510,30 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
   let busUpdatesPaused = false;
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
+  if (opts.forYou === "handover")
+    busAgents = busAgents.map((a) =>
+      a.id === f.busRoleProposals[0]?.priorAgentId
+        ? {
+            ...a,
+            state: "away",
+            since: new Date(Date.now() - 40 * 60_000).toISOString(),
+          }
+        : a,
+    );
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
-  const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
+  let busRoleProposals: BusRoleProposal[] = opts.bus
+    ? f.busRoleProposals.map((p) => ({
+        ...at(p),
+        ...(opts.forYou === "handover"
+          ? {
+              targetMachine: "workstation",
+              priorMachine: "laptop",
+              awaySince: new Date(Date.now() - 40 * 60_000).toISOString(),
+            }
+          : {}),
+      }))
+    : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -897,7 +920,14 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             a.namespace.localeCompare(b.namespace) ||
             a.name.localeCompare(b.name),
         ),
-        proposals: busRoleProposals,
+        proposals: busRoleProposals.filter(
+          (p) =>
+            p.status !== "pending" ||
+            p.action !== "repoint" ||
+            !busAgents.some(
+              (a) => a.id === p.priorAgentId && a.state === "live",
+            ),
+        ),
         live: opts.bus === true,
       }),
     ),
@@ -930,6 +960,45 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       busRoles = [...busRoles.filter((x) => x !== was), role];
       return HttpResponse.json({ role });
     }),
+    // #3132: the handover card's answer. Yes re-points the role, No refuses; either way the card leaves.
+    http.post(
+      `*${R.busRoles}/proposals/:id`,
+      async ({ request, params: p }) => {
+        const r = await body(request, BusRoleProposalDecideSchema);
+        if (r.error) return r.error;
+        const prop = busRoleProposals.find((x) => x.id === p.id);
+        const card = forYouMock.answerRole(String(p.id));
+        if (!prop && !card) return err("not_found", "Not found");
+        if (prop && prop.status !== "pending")
+          return err("conflict", "Already decided", { reason: "used" });
+        let role: BusRole | null = null;
+        if (prop && r.data.decision === "confirm") {
+          const was = busRoles.find((x) => x.id === prop.roleId);
+          const holder = busAgents.find((a) => a.id === prop.agentId);
+          if (was && holder) {
+            role = {
+              ...was,
+              agentId: holder.id,
+              holderName: holder.name,
+              vacant: false,
+              setAt: iso(),
+            };
+            busRoles = busRoles.map((x) => (x === was ? (role as BusRole) : x));
+          }
+        }
+        const decided: BusRoleProposal = {
+          ...(prop as BusRoleProposal),
+          status: r.data.decision === "confirm" ? "applied" : "refused",
+          reason: r.data.decision === "confirm" ? null : "rejected",
+          decidedAt: iso(),
+        };
+        if (prop)
+          busRoleProposals = busRoleProposals.map((x) =>
+            x === prop ? decided : x,
+          );
+        return HttpResponse.json({ proposal: decided, role });
+      },
+    ),
     http.delete(`*${R.busRoles}/:id`, ({ params: p }) => {
       busRoles = busRoles.filter((x) => x.id !== p.id);
       return noContent();

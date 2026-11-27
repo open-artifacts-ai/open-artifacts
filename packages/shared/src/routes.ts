@@ -238,6 +238,18 @@ export const R = {
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
   busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
   /**
+   * POST BusRoleProposalDecide { decision: "confirm" | "reject" } ->
+   * BusRoleProposalDecided (#3132): the member answers the handover card for
+   * role proposal `id` (For you, Agents > Roles). Confirm moves the role (the
+   * hub checks again that it is still as proposed); reject refuses it. 404
+   * unknown proposal; 409 conflict with details `{ reason }` when it can't
+   * apply: `used` (decided already), `expired` (a day after it was made),
+   * `changed` (the role moved since), or a PUT R.busRoles refusal. Takes an
+   * interactive cookie session only (a PAT, OAuth grant or machine token gets
+   * 404), so no AI agent can answer for the member.
+   */
+  busRoleProposal: (id: string) => `/api/v1/bus/roles/proposals/${seg(id)}`,
+  /**
    * GET -> BusLinks: the member's links between namespaces (#1567). PUT
    * BusLinkPut -> { link: BusLink }: links two namespaces (idempotent: an
    * existing link is returned); 400 bad_request (invalid or equal
