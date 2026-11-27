@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.269.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.1...v0.269.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** the name is the role; a second session asks, never -2 ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3252](https://github.com/open-artifacts-ai/open-artifacts/issues/3252)) ([a8ededa](https://github.com/open-artifacts-ai/open-artifacts/commit/a8ededac181197ac50c0884bdcfd65a5a138ea99))
+
 ## [0.268.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.0...v0.268.1) (2026-11-27)
 
 
