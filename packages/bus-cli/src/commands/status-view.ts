@@ -75,7 +75,9 @@ export function shortMachine(label: string): string {
   if (/mac[\s-]?studio/i.test(host)) return "Mac Studio";
   if (/mac[\s-]?mini/i.test(host)) return "Mac Mini";
   if (/\bimac\b/i.test(host)) return "iMac";
-  return host;
+  if (/workstation/i.test(host)) return "Workstation";
+  const possessive = /^[a-z0-9]+['’]s\s+(.+)$/i.exec(host);
+  return possessive?.[1] ?? host;
 }
 
 const SHORT_APP: Record<string, string> = {
@@ -269,11 +271,15 @@ export function renderStatusScreen(
     idleOld.sort((a, b) => a.name.localeCompare(b.name));
 
     const showMachine = width >= WIDE_COLS;
-    const nameW = 20;
-    const appW = 8;
-    const machineW = showMachine ? 11 : 0;
     const shownWorking = working.slice(0, WORKING_CAP);
     const visibleRows = [...needsYou, ...shownWorking];
+    const maxName = Math.max(
+      0,
+      ...visibleRows.map((a) => cols(cleanText(a.name))),
+    );
+    const nameW = showMachine ? Math.min(28, Math.max(20, maxName)) : 20;
+    const appW = 8;
+    const machineW = showMachine ? 12 : 0;
     const ageW = Math.max(
       3,
       ...visibleRows.map((a) => cols(shortAge(a.status_at, now))),

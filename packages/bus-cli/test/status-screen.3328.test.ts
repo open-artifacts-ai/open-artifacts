@@ -112,6 +112,15 @@ describe("oa-bus status default screen (#3328 S1)", () => {
                 status_at: isoAgo(now, 60_000),
               },
               {
+                name: "Prove release-chain fixes",
+                kind: "codex",
+                machine: "Leo-Workstation",
+                state: "live",
+                status: "working",
+                status_label: "Watching next public release",
+                status_at: isoAgo(now, 3 * 3_600_000),
+              },
+              {
                 name: "OA Bus Pi",
                 kind: "pi",
                 machine: "Leo-Workstation",
@@ -176,11 +185,14 @@ describe("oa-bus status default screen (#3328 S1)", () => {
     expect(lines[0]).toBe("oa-bus 0.262.0 · ● working · this MacBook");
     expect(lines[1]).toBe("  ✓ bus.example.com    ✓ mit-ai.open-artifacts.app");
     expect(joined).toContain(
-      "Agents  6 named · 2 unnamed hidden · this project",
+      "Agents  7 named · 2 unnamed hidden · this project",
     );
     expect(joined).toContain("NEEDS YOU");
     expect(joined).toContain("WORKING");
     expect(joined).toContain("MacBook");
+    expect(joined).toContain("Workstation");
+    expect(joined).toContain("Prove release-chain fixes");
+    expect(joined).not.toContain("Leo-Works");
     expect(joined).toContain("agy-5");
     expect(joined).toContain("agy");
     expect(joined).toContain("IDLE OVER A DAY (2)  Fix Pi Config, OA Bus Pi");
