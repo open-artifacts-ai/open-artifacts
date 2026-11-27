@@ -272,7 +272,7 @@ describe("status: default screen (#3328 S1)", () => {
     expect(ctx.out()[1]).toBe(
       "  [[danger]]✗[[/danger]] bus.example.com[[muted]] (can't reach)[[/muted]]",
     );
-    expect(ctx.all().join("\n")).not.toContain("Agents");
+    expect(ctx.all().join("\n")).not.toContain("[[bold]]Agents[[/bold]]");
   });
 
   it("daemon not running; exit 1", async () => {

@@ -50,6 +50,8 @@ type Entry = SentMeta & {
   /** A delivered the sender is owed a "delivered after all" correction for, until told (#1951). */
   correction?: true;
   late?: true;
+  /** Delivery delay in ms when marked late (deliveredAt - sentAt). */
+  delay_ms?: number;
   shown?: true;
 };
 type Late = { msgId: string; meta: SentMeta };
@@ -60,6 +62,7 @@ const metaOf = ({
   outcome: __,
   delivered: ___,
   late: ____,
+  delay_ms: _________,
   shown: _____,
   native: ______,
   expired: _______,
@@ -93,6 +96,8 @@ const valid = (id: string, e: unknown): e is Entry => {
     (r.expired === undefined || r.expired === true) &&
     (r.correction === undefined || r.correction === true) &&
     (r.late === undefined || r.late === true) &&
+    (r.delay_ms === undefined ||
+      (typeof r.delay_ms === "number" && r.delay_ms >= 0)) &&
     (r.shown === undefined || r.shown === true) &&
     (r.native === undefined || r.native === true)
   );
@@ -161,12 +166,14 @@ export class SentStore {
     // An outcome already settled is still owed to its sender.
     if (!e || e.outcome) return;
     const { outcome: _, ...rest } = e;
+    const now = this.#now();
+    const delayMs = Math.max(0, Math.round(now - e.at));
     this.#all.delete(msgId);
     this.#all.set(msgId, {
       ...rest,
-      at: this.#now(),
+      at: now,
       delivered: true,
-      ...(late && !e.native ? { late } : {}),
+      ...(late && !e.native ? { late, delay_ms: delayMs } : {}),
     });
     this.#save();
   }
@@ -192,11 +199,16 @@ export class SentStore {
   }
 
   /** Every late delivery since `cutoff` (ms), oldest first; read-only. */
-  lateSince(cutoff: number): (Late & { at: number })[] {
-    const out: (Late & { at: number })[] = [];
+  lateSince(cutoff: number): (Late & { at: number; delay_ms?: number })[] {
+    const out: (Late & { at: number; delay_ms?: number })[] = [];
     for (const [msgId, e] of this.#all)
       if (e.late && e.at >= cutoff)
-        out.push({ msgId, meta: metaOf(e), at: e.at });
+        out.push({
+          msgId,
+          meta: metaOf(e),
+          at: e.at,
+          ...(e.delay_ms !== undefined ? { delay_ms: e.delay_ms } : {}),
+        });
     return out;
   }
 

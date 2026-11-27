@@ -673,6 +673,8 @@ export const StatusReply = z.object({
         excerpt: z.string().optional(),
         /** When it was delivered, ms since the epoch. */
         at: z.number(),
+        /** Delivery delay in ms (deliveredAt - sentAt); absent from older daemons (#3328 S2). */
+        delay_ms: z.number().int().nonnegative().optional(),
       }),
     )
     .optional(),
