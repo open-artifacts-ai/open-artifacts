@@ -248,25 +248,6 @@ describe("systemService: launchd", () => {
   const plistOf = (userHome: string) =>
     join(userHome, "Library/LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
-  it("preserves the installed agy opt-in when upgrade reruns the installer", async () => {
-    const { d, userHome } = deps("darwin");
-    const ensure = (flag?: string) =>
-      systemService({
-        ...d,
-        env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: flag },
-      }).ensure();
-    const plist = () => readFileSync(plistOf(userHome), "utf8");
-    await ensure("1");
-    expect(plist()).toContain("OA_BUS_EXPERIMENTAL_AGY");
-    await ensure();
-    expect(plist()).toContain(
-      "<key>OA_BUS_EXPERIMENTAL_AGY</key><string>1</string>",
-    );
-    await ensure("0");
-    await ensure();
-    expect(plist()).not.toContain("OA_BUS_EXPERIMENTAL_AGY");
-  });
-
   it.each(["file", "link"])(
     "leaves the working legacy unit running on a %s collision",
     async (kind) => {
@@ -401,25 +382,17 @@ describe("systemService: launchd", () => {
     });
   });
 
-  it("passes OA_BUS_EXPERIMENTAL_AGY to the daemon only when the install runs with it (agy S2b)", async () => {
+  it("omits the obsolete agy flag from the service environment", async () => {
     const { d, userHome } = deps("darwin");
     const s = systemService({
       ...d,
       env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: "1" },
     });
     await s.ensure();
-    expect(readFileSync(plistOf(userHome), "utf8")).toContain(
-      "<key>OA_BUS_EXPERIMENTAL_AGY</key><string>1</string>",
-    );
-    expect(s.env?.()).toMatchObject({ OA_BUS_EXPERIMENTAL_AGY: "1" });
-    const t = systemService({
-      ...d,
-      env: { ...d.env, OA_BUS_EXPERIMENTAL_AGY: "yes" },
-    });
-    await t.ensure();
     expect(readFileSync(plistOf(userHome), "utf8")).not.toContain(
       "OA_BUS_EXPERIMENTAL_AGY",
     );
+    expect(s.env?.()).not.toHaveProperty("OA_BUS_EXPERIMENTAL_AGY");
   });
 
   it("boots out and writes the same label under a symlinked, missing home", async () => {

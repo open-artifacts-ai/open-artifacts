@@ -37,16 +37,14 @@ import {
 } from "../src/steps/antigravity.ts";
 import { setHabitsOptOut } from "../src/steps/habits.ts";
 import { leftoverTargets } from "../src/steps/leftovers.ts";
-import { updateInstallFile } from "../src/steps/step.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 const REF = "0b7e6a9c-1f2d-4c3b-9a8e-7d6c5b4a3f21";
 /** The default-home hook command an earlier build wrote: no pin, so it followed the agy process's OA_BUS_HOME. */
 const LEGACY_HOOK = `f="\${OA_BUS_HOME:-$HOME/.oa-bus}/antigravity/$PPID.json"; if [ -n "$ANTIGRAVITY_CONVERSATION_ID" ] && grep -qF "\\"conversationId\\":\\"$ANTIGRAVITY_CONVERSATION_ID\\"" "$f" 2>/dev/null; then echo '{}'; else exec '/opt/node/bin/node' '/h/.oa-bus/bin/oa-bus.js' 'agy-hello'; fi`;
 
-function setup(env: Record<string, string> = ON): {
+function setup(env: Record<string, string> = {}): {
   h: string;
   deps: AdapterDeps;
   dir: string;
@@ -66,10 +64,10 @@ const read = (p: string) => readFileSync(p, "utf8");
 const hooksOf = (dir: string) => JSON.parse(read(join(dir, "hooks.json")));
 
 describe("the oa-bus agy plugin (agy S2)", () => {
-  it("is off without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
+  it("is installed when agy is present without a flag", async () => {
     const { deps, dir } = setup({});
     await installAdapters(deps);
-    expect(existsSync(dir)).toBe(false);
+    expect(existsSync(dir)).toBe(true);
   });
 
   it("install writes plugin.json and a root hooks.json whose SessionStart runs agy-hello", async () => {
@@ -309,7 +307,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
     expect(read(join(dir, "plugin.json"))).toBe('{"name":"mine"}');
   });
 
-  it("uninstall removes only our files, even with the switch off; the user's stay", async () => {
+  it("uninstall removes only our files; the user's stay", async () => {
     const { deps, dir } = setup();
     await installAdapters(deps);
     const r = await uninstallAdapters({ ...deps, env: {} });
@@ -336,7 +334,7 @@ describe("the oa-bus agy plugin (agy S2)", () => {
 function make(over: Partial<Ctx> = {}): Fake {
   const ctx = fakeCtx({
     which: (c) => c === "agy",
-    env: { ...ON },
+    env: {},
     service: {
       kind: "launchd" as const,
       ensure: vi.fn(async () => ({})),
@@ -362,7 +360,7 @@ function make(over: Partial<Ctx> = {}): Fake {
 }
 
 describe("install, doctor and uninstall --purge with the plugin (agy S2)", () => {
-  it("remembers --no-service opt-in on reinstall and an explicit opt-out", async () => {
+  it("wires a no-service install and reports it on reinstall", async () => {
     const ctx = make();
     const opts = { label: LABEL, hub: HUB, noService: true };
     const doctorOutput = async () => {
@@ -375,11 +373,6 @@ describe("install, doctor and uninstall --purge with the plugin (agy S2)", () =>
     expect(await doctorOutput()).toContain("Antigravity wired");
     expect(await install(opts, ctx)).toBe(0);
     expect(await doctorOutput()).toContain("Antigravity wired");
-    updateInstallFile(join(ctx.home, "install.json"), { service: { env: ON } });
-    ctx.env = { OA_BUS_EXPERIMENTAL_AGY: "0" };
-    expect(await install(opts, ctx)).toBe(0);
-    ctx.env = {};
-    expect(await doctorOutput()).not.toContain("Antigravity wired");
     expect(ctx.service.ensure).not.toHaveBeenCalled();
   });
   it.each([false, true])(
@@ -387,9 +380,6 @@ describe("install, doctor and uninstall --purge with the plugin (agy S2)", () =>
     async (optedOut) => {
       const ctx = make();
       await install({ label: LABEL, hub: HUB }, ctx);
-      updateInstallFile(join(ctx.home, "install.json"), {
-        service: { env: ON },
-      });
       setHabitsOptOut(ctx.home, optedOut, new Date().toISOString());
       ctx.env = {};
       await doctor(ctx);

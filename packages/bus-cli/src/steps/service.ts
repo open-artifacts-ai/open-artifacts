@@ -28,7 +28,6 @@ import { BUS_CMD } from "@oa/bus-protocol";
 import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
-import { AGY_FLAG, agyOn } from "./adapters.ts";
 import { codexHomeEnv } from "./codex.ts";
 import {
   checkRescueDestination,
@@ -638,9 +637,6 @@ export function systemService(d: ServiceDeps): Service {
           ...(isDefaultHome(h, d.userHome) ? {} : { OA_BUS_HOME: h }),
           // Attestation and wake read the Codex home this shell uses (C26e).
           ...codexHomeEnv(d.userHome, d.env),
-          // agy S2b: the daemon lists running agy processes only when the
-          // install that wired agy (the flag) is the one it runs under.
-          ...(agyOn(d.env, h) ? { [AGY_FLAG]: "1" } : {}),
         },
         // One file: the daemon logs to stderr, and `oa-bus logs` tails it.
         out: join(logs, "daemon.log"),
@@ -709,7 +705,6 @@ export function systemService(d: ServiceDeps): Service {
         service: {
           fallback: true,
           pid,
-          ...(u.env[AGY_FLAG] === "1" ? { env: { [AGY_FLAG]: "1" } } : {}),
         } satisfies Record_,
       });
       return skipped ? { skipped } : {};

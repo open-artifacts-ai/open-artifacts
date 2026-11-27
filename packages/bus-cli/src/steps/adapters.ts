@@ -139,7 +139,6 @@ import {
   pendingEntry,
   restoreEntry,
 } from "./pi-proof.ts";
-import { readInstallFile } from "./step.ts";
 
 export { OMP_ORIGIN_FILE };
 
@@ -248,31 +247,8 @@ const HARNESSES: Harness[] = [
   "antigravity",
 ];
 
-/**
- * Antigravity (agy) is wired only with OA_BUS_EXPERIMENTAL_AGY=1 until its
- * agent kind is live on the instances (agy S1a) and it can join and get
- * messages (S2, S3). Install also writes the oa-bus agy plugin (S2,
- * steps/antigravity.ts). Uninstall does not wait for it: it removes only our
- * entry and our plugin folder.
- */
-export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
-/** An explicit shell setting wins over the opt-in saved for this bus home. */
-export function agyOn(
-  env: Record<string, string | undefined> | undefined,
-  busDir: string,
-): boolean {
-  if (env?.[AGY_FLAG] !== undefined) return env[AGY_FLAG] === "1";
-  const record = readInstallFile(join(busDir, "install.json"));
-  if (typeof record.agyEnabled === "boolean") return record.agyEnabled;
-  // Installs before the independent setting kept the opt-in in the service.
-  const service = record.service as
-    | { env?: Record<string, unknown> }
-    | undefined;
-  return service?.env?.[AGY_FLAG] === "1";
-}
-
 /** agy is on PATH, or its folders are under ~/.gemini. */
-const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
+export const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
   deps.which("agy") ||
   present(join(deps.home, ".gemini", "antigravity-cli")) ||
   present(join(deps.home, ".gemini", "antigravity"));
@@ -1210,7 +1186,7 @@ const install: Record<Harness, Step> = {
   // byte for byte. `agy mcp add` would rewrite the whole file.
   async antigravity(deps, notes) {
     const p = paths(deps);
-    if (!hasAgy(deps) || !agyOn(deps.env, p.busDir)) return "absent";
+    if (!hasAgy(deps)) return "absent";
     return withAgyConfigLock(deps.home, () => {
       const text = readAgy(p.agyMcp);
       const server = agyServer(deps.busBin);
@@ -1584,7 +1560,7 @@ export function checkAdapters(
           ? // Plugin commands are off in Nix mode: nothing here to wire.
             deps.which(h) && !openclawNix(deps.env)
           : h === "antigravity"
-            ? hasAgy(deps) && agyOn(deps.env, p.busDir)
+            ? hasAgy(deps)
             : deps.which(h))
       ? "absent"
       : safely(ok)

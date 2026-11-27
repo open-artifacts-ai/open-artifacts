@@ -509,7 +509,7 @@ export type DaemonDeps = {
     agentsFile?: string;
     /**
      * agy S2b: list running agy processes with no conversation yet as
-     * "starting". Default: OA_BUS_EXPERIMENTAL_AGY=1, in any home; only the
+     * "starting". Enabled by default in any home; only the
      * home the agy plugin routes to lists (pluginHome), so one daemon does.
      */
     discover?: boolean;
@@ -1173,9 +1173,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ag.procStartTtlMs === undefined ? {} : { ttlMs: ag.procStartTtlMs },
   );
   const agComm = ag.comm ?? commOf;
-  // agy S2b: behind the flag, in every home; agyRoutedHere picks the one
+  // agy S2b: enabled in every home; agyRoutedHere picks the one
   // home that lists (the plugin's), so two running daemons never both do.
-  const agDiscover = ag.discover ?? process.env.OA_BUS_EXPERIMENTAL_AGY === "1";
+  const agDiscover = ag.discover ?? true;
   const agHome = ag.home ?? home();
   const agPids = ag.pids ?? agyPids;
   const agCwd = ag.cwdOf ?? cwdOfPid;
