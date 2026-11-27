@@ -4555,11 +4555,24 @@ export class BusHub extends DurableObject<Env> {
           { namespace: agent.namespace, global: false },
           now,
         );
-        if (prior.ownsAddress)
+        if (prior.ownsAddress) {
+          sql.exec(
+            `update role_moves set personal_route = ?, route_retired_at = ? where id = (
+              select id from role_moves where role_id = ? and from_agent_id = ?
+                and from_ns = ? and from_lname = ? order by at desc, rowid desc limit 1
+            ) and route_retired_at is null`,
+            route.name,
+            now,
+            role.id,
+            prior.id,
+            agent.namespace,
+            role.lname,
+          );
           void this.#rekeyFollows(
             { namespace: agent.namespace, name: prior.name },
             { namespace: agent.namespace, name: route.name },
           );
+        }
       }
       sql.exec(
         `delete from former_names where namespace = ? and lname = ? and global = 0
@@ -9641,6 +9654,33 @@ export class BusHub extends DurableObject<Env> {
       // waiting row: the agent at the name is not who it was meant for.
       const at = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
       if (!at) {
+        // A personal ask posted between handing over a role and losing its
+        // routing name still belongs to the session that posted it.
+        if (
+          !forwarded &&
+          n.originAt !== undefined &&
+          (n.kind === "ask_answered" || n.kind === "ask_later")
+        ) {
+          const personal = one<{ name: string }>(
+            sql,
+            `select a.name from role_moves m join agents a on a.id = m.from_agent_id
+             where m.org_id = ? and m.from_ns = ? and m.from_lname = ?
+               and m.at <= ? and ? <= m.route_retired_at
+               and a.live = 1 and a.identity_id = ? and a.namespace = m.from_ns and a.name = m.personal_route
+             limit 1`,
+            OWNER_ORG_ID,
+            n.to.namespace,
+            sent,
+            n.originAt,
+            n.originAt,
+            n.toIdentity,
+          );
+          if (personal)
+            return this.#acceptNotice(
+              { ...n, to: { ...n.to, name: personal.name } },
+              true,
+            );
+        }
         // #2793 S3b: no agent holds it, but a guest of this member may: only
         // the three structured kinds reach it, now or never (nothing is held).
         const viaGuest = this.#guestNotice(n);

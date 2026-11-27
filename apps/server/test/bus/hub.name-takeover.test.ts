@@ -13,7 +13,7 @@ import {
   LIMITS,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { NOTICE_SENDER, newId } from "@oa/shared";
+import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -270,6 +270,56 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
       s.d.close();
     },
   );
+
+  it("answers the predecessor's personal ask after the successor renames its role", async () => {
+    const s = await scene();
+    const successor = uniq("successor");
+    await reg(s.d, successor, s.name, s.n);
+    const hub = await hubOf();
+    const originalId = await agentIdOf(s.holderRef);
+    const identity = newId();
+    await sqlOf(
+      "update agents set identity_id = ? where id = ?",
+      identity,
+      originalId,
+    );
+    const handoverAt = base();
+    await setClock(handoverAt);
+    expect(
+      (await hub.putRole(s.n, s.name, await agentIdOf(successor))).ok,
+    ).toBe(true);
+    const askAt = handoverAt + 1;
+    await setClock(askAt);
+    const answer: BusNotice = {
+      id: newId(),
+      kind: "ask_answered",
+      from: NOTICE_SENDER,
+      artifactId: "doc",
+      version: 1,
+      url: "https://app.test/a/doc",
+      to: { namespace: s.n, name: s.name },
+      toIdentity: identity,
+      originAt: askAt,
+      text: "Personal answer",
+      coalesceKey: "personal",
+    };
+    await setClock(askAt + 1);
+    await rename(s.d, successor, uniq("Research"));
+    expect(await hub.deliverNotice(answer)).toBe("delivered");
+    expect(await hub.deliverNotice({ ...answer, toIdentity: newId() })).toBe(
+      "dropped",
+    );
+    expect(await hub.deliverNotice({ ...answer, originAt: askAt + 2 })).toBe(
+      "dropped",
+    );
+    await fence(s.d);
+    expect(
+      framesSeen(s.d).filter(
+        (f) => f.type === "deliver" && f.body === answer.text,
+      ),
+    ).toMatchObject([{ to_ref: s.holderRef }]);
+    s.d.close();
+  });
 
   it("a second agent_up of the newcomer files no second proposal", async () => {
     const s = await scene();

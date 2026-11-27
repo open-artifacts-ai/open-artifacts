@@ -530,6 +530,8 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
       where a.id = role_moves.from_agent_id)`);
   }
   for (const [col, type] of [
+    ["personal_route", "text"],
+    ["route_retired_at", "integer"],
     ["retired_from_name", "integer not null default 0"],
     ["moved_by", "text not null default 'member'"],
     ["audited", "integer not null default 1"],
