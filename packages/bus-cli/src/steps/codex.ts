@@ -1,5 +1,6 @@
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { codexAppBin, resolveCodexBin } from "@oa/bus-daemon";
 import { parse } from "smol-toml";
 import { writeAtomic } from "./skill.ts";
@@ -512,7 +513,6 @@ export async function readCodexVersion(o: {
 
 // --- #3043: Codex SessionStart hook in $CODEX_HOME/hooks.json.
 
-const HOOK_SUFFIX = "rules codex-hook";
 const HOOK_MATCHER = "startup|resume";
 const HOOK_TIMEOUT = 10;
 
@@ -576,10 +576,27 @@ export function codexHookCommand(
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-const isOurHook = (h: unknown): h is Record<string, unknown> =>
-  isRecord(h) &&
-  typeof h.command === "string" &&
-  h.command.trimEnd().endsWith(HOOK_SUFFIX);
+function hookOwner(
+  record: string,
+): { group: number; command: string } | undefined {
+  try {
+    if (!lstatSync(record).isFile()) return;
+    const owner = JSON.parse(readFileSync(record, "utf8"));
+    if (
+      Number.isSafeInteger(owner?.group) &&
+      owner.group >= 0 &&
+      typeof owner.command === "string"
+    )
+      return owner;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+}
+const ownedHook = (command: string) => ({
+  type: "command",
+  command,
+  timeout: HOOK_TIMEOUT,
+});
 
 type HooksDoc = Record<string, unknown> & {
   hooks?: Record<string, unknown> & {
@@ -662,41 +679,47 @@ export type CodexHookResult = {
 export function installCodexHook(
   path: string,
   command: string,
+  record = `${path}.oa-bus-owner`,
 ): CodexHookResult {
   const read = readHooksFile(path);
   if (read.kind === "skip") return { status: "skipped", note: read.note };
-  const ourHook = { type: "command", command, timeout: HOOK_TIMEOUT };
-  const ourGroup = { matcher: HOOK_MATCHER, hooks: [ourHook] };
-  if (read.kind === "missing") {
-    const doc = { hooks: { SessionStart: [ourGroup] } };
-    writeAtomic(path, formatJson(doc, DEFAULT_JSON_FORMAT));
-    return { status: "added" };
+  const doc = read.kind === "missing" ? {} : read.doc;
+  const fmt = read.kind === "missing" ? DEFAULT_JSON_FORMAT : read.format;
+  const hooks = doc.hooks ?? {};
+  const groups = hooks.SessionStart ?? [];
+  const owner = hookOwner(record);
+  const group = owner && groups[owner.group];
+  // Codex binds trust to the group and hook positions. Only edit our recorded slot.
+  if (
+    owner &&
+    group?.matcher === HOOK_MATCHER &&
+    group.hooks &&
+    isDeepStrictEqual(group.hooks[0], ownedHook(owner.command))
+  ) {
+    if (command === owner.command) return { status: "unchanged" };
+    group.hooks[0] = ownedHook(command);
+    writeAtomic(path, formatJson(doc, fmt));
+    writeAtomic(record, JSON.stringify({ ...owner, command }));
+    return { status: "updated" };
   }
-  const doc = read.doc;
-  const hooks = isRecord(doc.hooks) ? doc.hooks : {};
-  const list = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
-  // Codex keys hook trust by position (<path>:session_start:<group>:<hook>).
-  // Update our hook in place when present, and always append a new group at
-  // the end (never prepend or reorder), so user groups before ours keep their
-  // trust keys.
-  for (const group of list) {
-    if (!Array.isArray(group.hooks)) continue;
-    const idx = group.hooks.findIndex(isOurHook);
-    if (idx !== -1) {
-      const existing = group.hooks[idx] as Record<string, unknown>;
-      if (
-        existing.type === "command" &&
-        existing.command === command &&
-        existing.timeout === HOOK_TIMEOUT
-      )
-        return { status: "unchanged" };
-      group.hooks[idx] = { ...existing, ...ourHook };
-      writeAtomic(path, formatJson(doc, read.format));
-      return { status: "updated" };
-    }
-  }
-  doc.hooks = { ...hooks, SessionStart: [...list, ourGroup] };
-  writeAtomic(path, formatJson(doc, read.format));
+  // An identical pre-existing hook already supplies the rules. Do not claim it.
+  if (
+    groups.some(
+      (g) =>
+        g.matcher === HOOK_MATCHER &&
+        g.hooks?.some((h) => isDeepStrictEqual(h, ownedHook(command))),
+    )
+  )
+    return { status: "unchanged" };
+  doc.hooks = {
+    ...hooks,
+    SessionStart: [
+      ...groups,
+      { matcher: HOOK_MATCHER, hooks: [ownedHook(command)] },
+    ],
+  };
+  writeAtomic(path, formatJson(doc, fmt));
+  writeAtomic(record, JSON.stringify({ group: groups.length, command }));
   return { status: "added" };
 }
 
@@ -705,7 +728,10 @@ export function installCodexHook(
  * plus any group/SessionStart/hooks container we emptied. Deletes the file
  * when nothing else remains.
  */
-export function uninstallCodexHook(path: string): {
+export function uninstallCodexHook(
+  path: string,
+  record = `${path}.oa-bus-owner`,
+): {
   removed: boolean;
   note?: string;
 } {
@@ -716,28 +742,23 @@ export function uninstallCodexHook(path: string): {
   const hooks = doc.hooks;
   const list = hooks?.SessionStart;
   if (!hooks || !Array.isArray(list)) return { removed: false };
-  let removed = false;
-  let shifted = false;
-  const nextList: typeof list = [];
-  for (let i = 0; i < list.length; i++) {
-    const group = list[i];
-    if (!group || !Array.isArray(group.hooks)) {
-      if (group) nextList.push(group);
-      continue;
-    }
-    const kept = group.hooks.filter((h) => !isOurHook(h));
-    if (kept.length !== group.hooks.length) {
-      removed = true;
-      if (kept.length > 0) {
-        nextList.push({ ...group, hooks: kept });
-      } else if (i < list.length - 1) {
-        shifted = true;
-      }
-    } else {
-      nextList.push(group);
-    }
-  }
-  if (!removed) return { removed: false };
+  const owner = hookOwner(record);
+  if (!owner) return { removed: false };
+  const group = list[owner.group];
+  if (
+    group?.matcher !== HOOK_MATCHER ||
+    !group.hooks ||
+    !isDeepStrictEqual(group.hooks[0], ownedHook(owner.command))
+  )
+    return { removed: false };
+  const kept = group.hooks.slice(1);
+  const nextList = [...list];
+  const empty =
+    !kept.length &&
+    Object.keys(group).every((k) => k === "matcher" || k === "hooks");
+  const shifted = empty ? owner.group < list.length - 1 : kept.length > 0;
+  if (empty) nextList.splice(owner.group, 1);
+  else nextList[owner.group] = { ...group, hooks: kept };
   if (nextList.length > 0) {
     hooks.SessionStart = nextList;
   } else {
@@ -749,6 +770,7 @@ export function uninstallCodexHook(path: string): {
   } else {
     writeAtomic(path, formatJson(doc, read.format));
   }
+  rmSync(record, { force: true });
   return shifted
     ? { removed: true, note: CODEX_HOOK_SHIFT_NOTE }
     : { removed: true };

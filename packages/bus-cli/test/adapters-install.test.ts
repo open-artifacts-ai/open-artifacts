@@ -176,7 +176,7 @@ describe("installAdapters", () => {
     ]);
     expect(calls).toEqual([]);
     expect(existsSync(join(h, ".config"))).toBe(false);
-    expect(existsSync(join(h, ".oa-bus"))).toBe(false);
+    expect(readdirSync(join(h, ".oa-bus"))).toEqual(["adapter-assets"]);
   });
 
   it("creates the opencode files when missing", async () => {

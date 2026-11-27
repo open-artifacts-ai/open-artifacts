@@ -360,6 +360,50 @@ describe("refreshAdapters (#3174)", () => {
     expect(readFileSync(piPath, "utf8")).toBe(otherPi);
   });
 
+  it("leaves foreign Pi, omp and OpenCode files at default home untouched", async () => {
+    const home = tmp("oa-refresh-foreign-");
+    const deps: AdapterDeps = {
+      home,
+      env: makeHarnessEnv(home),
+      busBin: BIN,
+      assets: readAssets(),
+      which: () => false,
+      exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      isolated: true,
+    };
+    const p = paths(deps);
+    const files = [p.pi, p.omp, join(p.opencodePlugin, "tui.js")];
+    for (const file of files) put(file, "// user plugin");
+    expect((await refreshAdapters(deps)).refreshed).toEqual([]);
+    for (const file of files)
+      expect(readFileSync(file, "utf8")).toBe("// user plugin");
+  });
+
+  it("recognizes the installed release bytes before ownership records existed", async () => {
+    const home = tmp("oa-refresh-legacy-");
+    const deps: AdapterDeps = {
+      home,
+      env: makeHarnessEnv(home),
+      busBin: BIN,
+      assets: readAssets(),
+      which: () => false,
+      exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+      isolated: true,
+    };
+    const p = paths(deps);
+    put(
+      join(p.busDir, "update.json"),
+      JSON.stringify({ current: "1.1.0", previous: "1.0.0" }),
+    );
+    put(join(p.busDir, "versions/1.0.0/assets/oa-bus.ts"), "// shipped v1");
+    put(p.pi, "// shipped v1");
+    expect((await refreshAdapters(deps)).refreshed).toContain("pi");
+    expect(readFileSync(p.pi, "utf8")).toBe(deps.assets.pi);
+    put(p.pi, "// edited by user");
+    await refreshAdapters(deps);
+    expect(readFileSync(p.pi, "utf8")).toBe("// edited by user");
+  });
+
   it("removes an earlier Codex hook when habits are opted out", async () => {
     const home = tmp("oa-refresh-optout-");
     const busHome = join(home, "bus");
@@ -376,8 +420,22 @@ describe("refreshAdapters (#3174)", () => {
       isolated: true,
     };
 
-    await installAdapters(deps);
     const hooksPath = codexHooks(home, env);
+    const foreign = {
+      matcher: "startup|resume",
+      hooks: [
+        {
+          type: "command",
+          command: "/tmp/wrapper rules codex-hook",
+          timeout: 10,
+        },
+      ],
+    };
+    put(hooksPath, JSON.stringify({ hooks: { SessionStart: [foreign] } }));
+    await installAdapters(deps);
+    expect(
+      JSON.parse(readFileSync(hooksPath, "utf8")).hooks.SessionStart,
+    ).toHaveLength(2);
     expect(existsSync(hooksPath)).toBe(true);
     expect(readFileSync(hooksPath, "utf8")).toContain("rules codex-hook");
 
@@ -386,7 +444,9 @@ describe("refreshAdapters (#3174)", () => {
     const res = await refreshAdapters(deps);
     expect(res.skipped).toEqual([]);
     expect(res.refreshed).toContain("codex");
-    expect(existsSync(hooksPath)).toBe(false);
+    expect(
+      JSON.parse(readFileSync(hooksPath, "utf8")).hooks.SessionStart,
+    ).toEqual([foreign]);
   });
 });
 

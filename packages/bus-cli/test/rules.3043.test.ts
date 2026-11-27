@@ -98,7 +98,13 @@ describe("Codex hooks.json management (#3043)", () => {
     const file = join(dir, "hooks.json");
     const otherGroup = {
       matcher: "startup",
-      hooks: [{ type: "command", command: "/bin/other-hook", timeout: 5 }],
+      hooks: [
+        {
+          type: "command",
+          command: "/bin/wrapper rules codex-hook",
+          timeout: 5,
+        },
+      ],
     };
     const before = {
       hooks: {
@@ -147,7 +153,13 @@ describe("Codex hooks.json management (#3043)", () => {
     const file = join(dir, "hooks.json");
     const otherGroup = {
       matcher: "startup",
-      hooks: [{ type: "command", command: "/bin/other-hook", timeout: 5 }],
+      hooks: [
+        {
+          type: "command",
+          command: "/bin/wrapper rules codex-hook",
+          timeout: 5,
+        },
+      ],
     };
     writeFileSync(
       file,
@@ -196,6 +208,7 @@ describe("Codex hooks.json management (#3043)", () => {
       matcher: "startup",
       hooks: [{ type: "command", command: "/bin/user-after", timeout: 5 }],
     };
+    installCodexHook(file, cmd1);
     writeFileSync(
       file,
       `${JSON.stringify(

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -42,6 +42,8 @@ import {
   codexBinFile,
   codexBinPin,
   listInstances,
+  readState,
+  versionDir,
 } from "@oa/bus-daemon";
 import { habitsOff } from "@oa/bus-ipc";
 import { hostSlug } from "@oa/shared/secrets";
@@ -304,6 +306,15 @@ const homed = (file: string, ob: string | undefined): boolean => {
     : first === homeLine(ob);
 };
 
+const digest = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+const assetRecord = (busDir: string, file: string) =>
+  join(busDir, "adapter-assets", digest(resolve(file)));
+function writeAdapterAsset(busDir: string, file: string, text: string) {
+  writeAtomic(file, text, 0o644);
+  writeAtomic(assetRecord(busDir, file), digest(text), 0o600);
+}
+
 export const paths = (deps: AdapterDeps) => {
   const env = deps.env ?? {};
   const opencode =
@@ -337,6 +348,11 @@ export const paths = (deps: AdapterDeps) => {
     omp: join(ompAgentDir(deps.home, env), "extensions/oa-bus.ts"),
     codex: codexConfig(deps.home, env),
     codexBin: codexBinFile(busDir),
+    codexHookOwner: join(
+      busDir,
+      "codex-hooks",
+      digest(codexHooks(deps.home, env)),
+    ),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
     // agy S5: the user's Antigravity pages entries, kept for uninstall (0600).
@@ -1062,7 +1078,7 @@ const install: Record<Harness, Step> = {
       pluginBefore = readFileSync(pluginFile, "utf8");
     } catch {}
     const touched = { changed: pluginBefore !== pluginText };
-    writeAtomic(pluginFile, pluginText, 0o644);
+    writeAdapterAsset(p.busDir, pluginFile, pluginText);
     if (
       saveText(configPath, config, nextConfig, (d) =>
         isDeepStrictEqual(servers(d)?.[NAME], server),
@@ -1088,10 +1104,10 @@ const install: Record<Harness, Step> = {
 
   async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
-    writeAtomic(
+    writeAdapterAsset(
+      paths(deps).busDir,
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
-      0o644,
     );
     await piEntry(deps, notes);
     return "done";
@@ -1102,10 +1118,10 @@ const install: Record<Harness, Step> = {
     ompOrigin(deps, notes);
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
-    writeAtomic(
+    writeAdapterAsset(
+      paths(deps).busDir,
       paths(deps).omp,
       withHome(deps.assets.pi, movedHome(deps)),
-      0o644,
     );
     return "done";
   },
@@ -1140,12 +1156,13 @@ const install: Record<Harness, Step> = {
     await codexEntryStep(deps, notes);
     const hooksPath = codexHooks(deps.home, deps.env ?? {});
     if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED) {
-      const hook = uninstallCodexHook(hooksPath);
+      const hook = uninstallCodexHook(hooksPath, p.codexHookOwner);
       if (hook.note) notes.push(hook.note);
     } else {
       const hook = installCodexHook(
         hooksPath,
         codexHookCommand(deps.busBin, deps.home, p.busDir),
+        p.codexHookOwner,
       );
       if (hook.note) notes.push(hook.note);
       if (hook.status === "added" || hook.status === "updated")
@@ -1331,7 +1348,10 @@ const uninstall: Record<Harness, Step> = {
         saved = true;
       }
     }
-    const hook = uninstallCodexHook(codexHooks(deps.home, deps.env ?? {}));
+    const hook = uninstallCodexHook(
+      codexHooks(deps.home, deps.env ?? {}),
+      p.codexHookOwner,
+    );
     if (hook.note) notes.push(hook.note);
     if (hook.removed) saved = true;
     // The config first: the pin goes only once the entry is gone.
@@ -1701,10 +1721,29 @@ export async function refreshAdapters(
   const skipped: Skipped[] = [];
   const p = paths(deps);
   const ob = movedHome(deps);
-  const refreshFile = (file: string, text: string): boolean => {
-    if (!homed(file, ob)) return false;
-    if (readFileSync(file, "utf8") === text) return false;
-    writeAtomic(file, text, 0o644);
+  const refreshFile = (file: string, text: string, asset: string): boolean => {
+    if (!present(file) || !lstatSync(file).isFile()) return false;
+    const before = readFileSync(file, "utf8");
+    if (before === text) return false;
+    const record = assetRecord(p.busDir, file);
+    if (present(record)) {
+      if (readFileSync(record, "utf8") !== digest(before)) return false;
+    } else {
+      // Pre-record installs retain the prior release bundle on a successful switch.
+      const { current, previous } = readState(p.busDir);
+      if (
+        ![current, previous].some((version) => {
+          if (!version) return false;
+          const prior = join(versionDir(p.busDir, version), "assets", asset);
+          return (
+            existsSync(prior) &&
+            withHome(readFileSync(prior, "utf8"), ob) === before
+          );
+        })
+      )
+        return false;
+    }
+    writeAdapterAsset(p.busDir, file, text);
     return true;
   };
   const step = async (
@@ -1724,11 +1763,16 @@ export async function refreshAdapters(
     refreshFile(
       join(p.opencodePlugin, "tui.js"),
       withHome(deps.assets.opencodePlugin, ob),
+      "opencode-tui/tui.js",
     ),
   );
-  await step("pi", () => refreshFile(p.pi, withHome(deps.assets.pi, ob)));
+  await step("pi", () =>
+    refreshFile(p.pi, withHome(deps.assets.pi, ob), "oa-bus.ts"),
+  );
   if (p.omp !== p.pi)
-    await step("omp", () => refreshFile(p.omp, withHome(deps.assets.pi, ob)));
+    await step("omp", () =>
+      refreshFile(p.omp, withHome(deps.assets.pi, ob), "oa-bus.ts"),
+    );
   await step("codex", () => {
     if (!present(p.codex)) return false;
     if (
@@ -1741,10 +1785,11 @@ export async function refreshAdapters(
       return false;
     const hooksPath = codexHooks(deps.home, deps.env ?? {});
     if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED)
-      return uninstallCodexHook(hooksPath).removed;
+      return uninstallCodexHook(hooksPath, p.codexHookOwner).removed;
     const hook = installCodexHook(
       hooksPath,
       codexHookCommand(deps.busBin, deps.home, p.busDir),
+      p.codexHookOwner,
     );
     return hook.status === "added" || hook.status === "updated";
   });
