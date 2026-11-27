@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.265.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.1...v0.265.0) (2026-11-27)
+
+
+### Features
+
+* **comments:** the @ list offers an agent by its role ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3235](https://github.com/open-artifacts-ai/open-artifacts/issues/3235)) ([e403cb8](https://github.com/open-artifacts-ai/open-artifacts/commit/e403cb8b9e22c344e301179cc13c454e12c2dfb8))
+
 ## [0.264.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.0...v0.264.1) (2026-11-27)
 
 
