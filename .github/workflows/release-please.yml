@@ -339,8 +339,8 @@ jobs:
           WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
           BOOKMARK: ${{ steps.record.outputs.bookmark }}
         run: |
-          echo "::error title=Prod migration failed::not restored (not authorized for this run). Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
-          echo "**Not restored.** Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=Prod migration failed::Restore requires a separate decision because it discards writes since the bookmark. Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
+          echo "**Restore requires a separate decision.** It discards writes since the bookmark. Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
       - name: Revoke leaked setup-ci tokens
         if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3

@@ -69,7 +69,7 @@ export function renderUpgradeTemplate(): string {
   return `---
 name: ${T("name")}
 description: "Open Artifacts (${T("host")}) upgrade: check whether ${T("host")}, the user's own Open Artifacts instance, runs the latest stable release, show what changed, and upgrade it with the user's Cloudflare deploy token. Use when the user asks to upgrade, update or check the version of their Open Artifacts instance, or asks what is new in it."
-compatibility: "Requires a shell with git, pnpm, curl and Node.js, and the user's Cloudflare deploy token"
+compatibility: "Requires a shell with git, pnpm, curl, jq and Node.js, and the user's Cloudflare deploy token"
 metadata:
   version: "${T("version")}"
   instance: "${T("host")}"
@@ -191,7 +191,7 @@ ${SETUP} --upgrade --name ${NAME} --check --json
 
 ### Before upgrading
 
-Record the live Worker version and D1 Time Travel bookmark before applying a marked migration. Keep both for recovery.
+Before every upgrade, save the version ID serving 100% of the current Worker deployment and the D1 Time Travel bookmark. Stop if either is unavailable. Keep both for recovery.
 
 \`\`\`sh
 ${WRANGLER} deployments list --name ${NAME} --json
@@ -204,7 +204,7 @@ ${WRANGLER} d1 time-travel info ${NAME} --json
 ${SETUP} --upgrade --name ${NAME} --json
 \`\`\`
 
-Setup checks health after deployment. If a guarded upgrade fails, stop and report the failure, Worker version and bookmark. Keep the restore point for the user's decision. Restoring D1 discards writes made since the bookmark.
+After setup succeeds, complete both checks in step 9. On failure, stop and report the failure, Worker version and bookmark. Keep the restore point for the user's decision. Restoring D1 discards writes made since the bookmark.
 
 Add \`--account-id <id>\` if the deploy token can reach more than one Cloudflare account. With no saved state, setup reads the hosts and owner email from the deployed Worker.
 
@@ -212,7 +212,7 @@ Never pass \`--allow-downgrade\` unless the user explicitly asks for a downgrade
 
 ## 8. Roll back a failed deploy
 
-Roll back only when step 7 exits 1 and its last \`error\` line has ${STEPS_JSON}: those steps run after the deploy, so the new version is live and failing. For a marked migration, follow the recovery decision in step 7. If it failed at any earlier step, nothing was deployed: do not roll back; show the user the \`message\` and stop.
+Roll back only when step 7 exits 1 and its last \`error\` line has ${STEPS_JSON}: those steps run after the deploy, so the new version is live and failing. Ask the operator to decide on recovery before running the rollback command. If it failed at any earlier step, nothing was deployed: do not roll back; show the user the \`message\` and stop.
 
 Exit code 2 is never a reason to roll back. Relay the \`message\` verbatim, then:
 
@@ -230,7 +230,15 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 
 ## 9. Report
 
-\`GET ${T("origin")}/healthz\` again and tell the user the version that is now running. If it is not the version you upgraded to, say so.
+\`GET ${T("origin")}/healthz\` must report healthy on the selected release. From the release checkout, set TAG to the exact tag selected in step 2. Verify the remote migration ledger against that tag, then verify the live response:
+
+\`\`\`sh
+${CF_ENV} PROD_NAME=${NAME} TAG="$TAG" bash scripts/ci/prod-migration-guard.sh verify &&
+  health="$(curl -fsS "${T("origin")}/healthz")" &&
+  printf '%s' "$health" | jq -es --arg version "\${TAG#v}" 'length == 1 and (.[0] | .ok == true and .version == $version)'
+\`\`\`
+
+If either check fails, stop and keep the recorded Worker version and bookmark for the operator. Report success only after both checks pass.
 
 If your user's machines run the agent bus, they update it by running the "Install the bus" step of \`${T("origin")}/llms.txt\` again: it checks the download against this release before it runs anything (see https://open-artifacts.com/docs/agent-bus/). Never tell them to run \`npx @open-artifacts/bus\`.
 `;
