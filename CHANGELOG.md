@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.262.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.261.0...v0.262.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** a live holder is asked for its role, and told when it moves ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3232](https://github.com/open-artifacts-ai/open-artifacts/issues/3232)) ([9416dcf](https://github.com/open-artifacts-ai/open-artifacts/commit/9416dcf33786b3f313f551a931d8219987993b43))
+
+
+### Bug Fixes
+
+* **test:** avoid O(N^2) slot reads in hook-ledger ([#3276](https://github.com/open-artifacts-ai/open-artifacts/issues/3276)) ([#3282](https://github.com/open-artifacts-ai/open-artifacts/issues/3282)) ([594a7ca](https://github.com/open-artifacts-ai/open-artifacts/commit/594a7ca2a6acbbb4f1803144791f582f3fd0af1d))
+
 ## [0.261.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.260.0...v0.261.0) (2026-11-27)
 
 
