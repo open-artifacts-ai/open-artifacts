@@ -95,7 +95,7 @@ async function rosterEntry(
       ? await roleKey(artifactId, userId, address.namespace, role.id)
       : await agentKey(artifactId, userId, address),
     name: `${role?.name ?? a?.role ?? session}${owner ? ` (${owner})` : ""}`,
-    ...(a?.role ? { session } : {}),
+    ...(a?.role && !a.privateSessionName ? { session } : {}),
     ...sessionFor(a, mine),
     owner,
     userId,
@@ -177,7 +177,8 @@ type OwnAgents = {
 const hiddenUnnamed = (a: BusAgent): boolean =>
   (!a.running && a.unnamed === true) ||
   a.handedOver === true ||
-  a.pendingRole !== undefined;
+  a.pendingRole !== undefined ||
+  (a.privateSessionName === true && !a.role);
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 

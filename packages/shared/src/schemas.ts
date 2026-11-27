@@ -1155,6 +1155,7 @@ export const BusAgentSchema = z.strictObject({
   /** #3132: it handed its role on and holds none: the @ list leaves it out (its mail follows the role). */
   handedOver: z.boolean().optional(),
   /** #3132: the role it asked to take over, while that waits: the @ list leaves it out (no "-2"). */
+  privateSessionName: z.boolean().optional(),
   pendingRole: z.string().optional(),
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;

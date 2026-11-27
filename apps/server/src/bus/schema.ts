@@ -682,6 +682,8 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     sql.exec(
       "alter table agents add column name_chosen integer not null default 0",
     );
+  if (!agentCols.has("takeover_alias"))
+    sql.exec("alter table agents add column takeover_alias text");
   // #2110 (after away_since exists): the first trigger dropped proofs on every live = 0; replaced on
   // existing hubs (drop if exists is a no-op once it has gone).
   sql.exec("drop trigger if exists agent_proofs_close");

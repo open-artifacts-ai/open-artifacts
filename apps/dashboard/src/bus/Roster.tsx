@@ -222,7 +222,9 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
 }
 
 const agentLabel = (a: BusAgent) =>
-  a.pendingRole ? `Session on ${a.machineLabel}` : (a.role ?? a.name);
+  a.pendingRole || (a.privateSessionName && !a.role)
+    ? `Session on ${a.machineLabel}`
+    : (a.role ?? a.name);
 
 function awayAge(since?: string) {
   const minutes = since

@@ -5,12 +5,14 @@
 // Another member's call reaches only their own hub.
 import { env } from "cloudflare:workers";
 import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
-import { type BusRole, R } from "@oa/shared";
+import { type ArtifactAgent, type BusRole, type Member, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
+import { publish } from "../../src/services/artifacts.js";
+import { getUser } from "../../src/services/users.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
-import { limiter } from "../mcp-helpers.js";
+import { E, limiter } from "../mcp-helpers.js";
 import {
   daemon,
   e,
@@ -189,8 +191,38 @@ describe("roles REST (#1296)", () => {
         expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
       } else {
         expect((await act(null)).status).toBe(204);
+        const waiting = (await hub.snapshot()).agents.find(
+          (a) => a.id === target.id,
+        );
+        expect(waiting).toMatchObject({
+          name: target.name,
+          privateSessionName: true,
+          state: "live",
+        });
+        expect(waiting?.pendingRole).toBeUndefined();
         announce("fresh");
         expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+        const doc = await publish(
+          E(),
+          (await getUser(e, who.userId)) as Member,
+          {
+            title: "Free name",
+            format: "html",
+            content: "<p>Notes</p>",
+            comments: "everyone",
+          } as never,
+          null,
+          undefined,
+          "create",
+        );
+        const response = await api(app, R.artifactAgents(doc.id), who.cookie);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as
+          | ArtifactAgent[]
+          | { agents: ArtifactAgent[] };
+        const mentions = Array.isArray(body) ? body : body.agents;
+        expect(mentions.map((a) => a.name)).toContain(name);
+        expect(mentions.map((a) => a.name)).not.toContain(target.name);
       }
       d.close();
     },

@@ -93,7 +93,17 @@ describe("away names on Agents", () => {
       http.get(`*${R.busAgents}`, () =>
         HttpResponse.json({
           live: true,
-          agents: operation === "free" ? [] : [target],
+          agents:
+            operation === "free"
+              ? [
+                  {
+                    ...target,
+                    name: "OA Test-2",
+                    privateSessionName: true,
+                    pendingRole: submitted ? undefined : role.name,
+                  },
+                ]
+              : [target],
         }),
       ),
       http.get(`*${R.busRoles}`, () =>
@@ -144,6 +154,12 @@ describe("away names on Agents", () => {
         screen.queryByRole("region", { name: "Names held by away sessions" }),
       ).not.toBeInTheDocument(),
     );
+    if (operation === "free") {
+      expect(
+        screen.getByText(`Session on ${target.machineLabel}`),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("OA Test-2")).not.toBeInTheDocument();
+    }
     expect(submitted).toEqual({
       roleId: role.id,
       holderId: role.agentId,

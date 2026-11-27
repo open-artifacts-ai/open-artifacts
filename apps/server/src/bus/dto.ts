@@ -35,6 +35,7 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   /** #3132: it handed a role on and holds none now. */
   handedOver?: number;
   /** #3132: the role it asked to take over, while that ask is pending. */
+  privateSessionName?: number | null;
   pendingRole?: string | null;
 };
 
@@ -73,6 +74,7 @@ export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => {
     ...(a.roleName ? { role: a.roleName } : {}),
     ...(a.roleId ? { roleId: a.roleId } : {}),
     ...(a.handedOver === 1 ? { handedOver: true } : {}),
+    ...(a.privateSessionName === 1 ? { privateSessionName: true } : {}),
     ...(a.pendingRole ? { pendingRole: a.pendingRole } : {}),
   };
 };

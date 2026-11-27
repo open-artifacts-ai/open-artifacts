@@ -513,6 +513,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
+  let busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
   if (opts.awayName && busRoles[0]) {
     const role = busRoles[0];
     busRoles[0] = {
@@ -522,9 +523,20 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       awayMachine: "laptop",
       awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
     };
-    busAgents = busAgents.filter((a) => a.id !== role.agentId);
+    const waiting = busRoleProposals.find((p) => p.roleId === role.id);
+    busAgents = busAgents
+      .filter((a) => a.id !== role.agentId)
+      .map((a) =>
+        a.id === waiting?.agentId
+          ? {
+              ...a,
+              name: `${role.name}-2`,
+              pendingRole: role.name,
+              privateSessionName: true,
+            }
+          : a,
+      );
   }
-  const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
@@ -923,8 +935,15 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         (r) => r.id === roleId && r.agentId === holderId && r.awayHolder,
       );
       if (!role) return err("conflict", "The holder has changed.");
-      if (targetId === null) busRoles = busRoles.filter((r) => r !== role);
-      else {
+      if (targetId === null) {
+        busRoles = busRoles.filter((r) => r !== role);
+        busRoleProposals = busRoleProposals.filter((p) => p.roleId !== role.id);
+        busAgents = busAgents.map((a) =>
+          a.namespace === role.namespace && a.pendingRole === role.name
+            ? { ...a, pendingRole: undefined }
+            : a,
+        );
+      } else {
         const target = busAgents.find(
           (a) =>
             a.id === targetId &&

@@ -1865,6 +1865,19 @@ function commitName(
   at: Scope,
   now: number,
 ): void {
+  // A refused or freed proposal leaves the generated routing address private.
+  if (a.pending)
+    sql.exec(
+      "update agents set takeover_alias = ? where id = ?",
+      a.name,
+      agentId,
+    );
+  else
+    sql.exec(
+      "update agents set takeover_alias = null where id = ? and takeover_alias <> ?",
+      agentId,
+      a.name,
+    );
   if (a.mint)
     sql.exec(
       "insert into minted_names (org_id, lname, name, agent_id, lbase, created_at) values (?, ?, ?, ?, ?, ?) on conflict do nothing",
@@ -2746,7 +2759,7 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
-  a.name_chosen as nameChosen,
+  a.name_chosen as nameChosen, a.name = a.takeover_alias as privateSessionName,
   exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
