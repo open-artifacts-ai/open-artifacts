@@ -5,6 +5,7 @@ import {
   ASK_SLOT_HOMES_MAX,
   type AskSlot,
   COMMENT_KEY_RE,
+  type CommentThread,
   isId,
   MentionCandidatesBodySchema,
   NewThreadBodySchema,
@@ -38,7 +39,11 @@ import type { AppEnv } from "../http/middleware.js";
 import { readAnonId, resolveAnonId } from "../runtime/anon-id.js";
 import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
-import { pageTitles, slotsOfPage } from "../services/ask-slots.js";
+import {
+  pageTitles,
+  slotsOfPage,
+  userDisplayNames,
+} from "../services/ask-slots.js";
 import {
   addReply,
   addThread,
@@ -314,34 +319,48 @@ export function mountComments(app: AppType): void {
   app.get(ASK_SLOTS, async (c) => {
     const { id, who } = await open(c, "comments.read");
     if (!c.var.user) return c.json([]);
+    // #2536: bound fan-out reads per viewer (up to ASK_SLOT_HOMES_MAX DO reads).
+    if (
+      c.env.RL_ANON &&
+      !(await c.env.RL_ANON.limit({ key: `ask-slots:${c.var.user.id}` }))
+        .success
+    )
+      throw new ApiError(
+        "rate_limited",
+        "Too many requests. Wait a moment and try again.",
+      );
     const slots = await slotsOfPage(c.env, id);
     if (!slots.length) return c.json([]);
-    // The page's slots grouped by the page each ask lives on, in key order.
-    const byHome = new Map<string, typeof slots>();
-    for (const s of slots) {
-      const group = byHome.get(s.homeArtifactId) ?? [];
-      group.push(s);
-      byHome.set(s.homeArtifactId, group);
-    }
-    const out: AskSlot[] = [];
-    // One read per home page, at most ASK_SLOT_HOMES_MAX of them: a page with
-    // twenty slots from twenty pages must not fan out over the instance. Only
-    // homes this viewer may read count, so slots they cannot open can never
-    // use up the budget of the ones they can (the authorize calls themselves
-    // are bounded by ASK_SLOTS_MAX).
+    const placerNames = await userDisplayNames(
+      c.env,
+      slots.map((s) => s.placedBy ?? "").filter(Boolean),
+    );
+    type LoadedHome = {
+      title: string;
+      threads: CommentThread[];
+    };
+    // Cache home-page reads per request, bounded by ASK_SLOT_HOMES_MAX.
+    const homes = new Map<string, LoadedHome | null>();
     let read = 0;
-    for (const [homeId, rows] of byHome) {
-      if (read >= ASK_SLOT_HOMES_MAX) break;
-      // This viewer cannot open the home, or it is deleted: nothing, not a mask.
+    const loadHome = async (homeId: string): Promise<LoadedHome | null> => {
+      if (homes.has(homeId)) return homes.get(homeId) ?? null;
+      if (read >= ASK_SLOT_HOMES_MAX) return null;
       const home = await authorize(c.env, who, homeId, "comments.read", {
         allowDeleted: true,
       }).catch(() => null);
-      if (!home || home.artifact.deletedAt != null) continue;
-      // Comments off at home: there is no ask to read there either.
-      if (home.artifact.comments !== 1) continue;
-      // Only now, for a home this viewer may read, is its title read.
+      if (!home || home.artifact.deletedAt != null) {
+        homes.set(homeId, null);
+        return null;
+      }
+      if (home.artifact.comments !== 1) {
+        homes.set(homeId, null);
+        return null;
+      }
       const title = (await pageTitles(c.env, [homeId])).get(homeId);
-      if (title === undefined) continue;
+      if (title === undefined) {
+        homes.set(homeId, null);
+        return null;
+      }
       read += 1;
       const moderator = modOf(who, home.level, home.artifact);
       const { viewer } = await identity(c, homeId, false, moderator);
@@ -349,31 +368,100 @@ export function mountComments(app: AppType): void {
         ...viewer,
         owner: meetsLevel(home.level, "owner"),
       });
-      for (const row of rows) {
-        const thread = list.threads.find((t) => t.id === row.threadId);
-        const comment = thread?.comments.find((x) => x.id === row.commentId);
-        // A withdrawn, deleted or replaced ask is gone from the thread: the
-        // slot is left out, never a stale open card. A decision stays, so the
-        // card can show "Decided".
-        if (!comment?.ask || comment.ask.withdrawn) continue;
-        out.push({
-          key: row.key,
-          home: { artifactId: homeId, title },
-          threadId: row.threadId,
-          commentId: row.commentId,
-          ask: comment.ask,
-          author: comment.author,
-          ...(row.note ? { note: row.note } : {}),
-          ...(row.placedBy || row.placedAgent
-            ? {
-                placer: {
-                  ...(row.placedBy ? { id: row.placedBy } : {}),
-                  ...(row.placedAgent ? { agent: row.placedAgent } : {}),
-                },
-              }
-            : {}),
-        });
+      const loaded: LoadedHome = { title, threads: list.threads };
+      homes.set(homeId, loaded);
+      return loaded;
+    };
+    const findComment = (
+      loaded: LoadedHome,
+      threadId: string | null,
+      commentId: string,
+    ) => {
+      if (threadId !== null) {
+        const thread = loaded.threads.find((t) => t.id === threadId);
+        const comment = thread?.comments.find((x) => x.id === commentId);
+        return thread && comment ? { thread, comment } : null;
       }
+      for (const thread of loaded.threads) {
+        const comment = thread.comments.find((x) => x.id === commentId);
+        if (comment) return { thread, comment };
+      }
+      return null;
+    };
+
+    const out: AskSlot[] = [];
+    const MAX_HOPS = 5;
+    for (const row of slots) {
+      let homeId = row.homeArtifactId;
+      let threadId: string | null = row.threadId;
+      let commentId = row.commentId;
+      const visited = new Set<string>();
+      let resolved: {
+        homeId: string;
+        title: string;
+        threadId: string;
+        commentId: string;
+        ask: NonNullable<
+          LoadedHome["threads"][number]["comments"][number]["ask"]
+        >;
+        author: LoadedHome["threads"][number]["comments"][number]["author"];
+      } | null = null;
+      for (let hop = 0; hop <= MAX_HOPS; hop++) {
+        const key = `${homeId}:${commentId}`;
+        if (visited.has(key)) break;
+        visited.add(key);
+        const loaded = await loadHome(homeId);
+        if (!loaded) break;
+        const found = findComment(loaded, threadId, commentId);
+        const ask = found?.comment.ask;
+        if (!found || !ask) break;
+        // #2536: follow replacedBy (same-page or cross-page) when this viewer
+        // can read the replacement; drop when withdrawn without replacement or
+        // when the replacement is unreadable.
+        if (ask.replacedBy) {
+          threadId = null;
+          commentId = ask.replacedBy;
+          continue;
+        }
+        if (ask.withdrawn) {
+          const next = ask.withdrawn.replacedBy;
+          if (!next) break;
+          homeId = next.artifactId;
+          threadId = next.threadId;
+          commentId = next.commentId;
+          continue;
+        }
+        resolved = {
+          homeId,
+          title: loaded.title,
+          threadId: found.thread.id,
+          commentId: found.comment.id,
+          ask,
+          author: found.comment.author,
+        };
+        break;
+      }
+      if (!resolved) continue;
+      const placerName =
+        row.placedAgent ||
+        (row.placedBy ? placerNames.get(row.placedBy) : undefined);
+      out.push({
+        key: row.key,
+        home: { artifactId: resolved.homeId, title: resolved.title },
+        threadId: resolved.threadId,
+        commentId: resolved.commentId,
+        ask: resolved.ask,
+        author: resolved.author,
+        ...(row.note ? { note: row.note } : {}),
+        ...(placerName
+          ? {
+              placer: {
+                name: placerName,
+                ...(row.placedAgent ? { agent: row.placedAgent } : {}),
+              },
+            }
+          : {}),
+      });
     }
     // Key order, so a page's slots read the same way every time.
     out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));

@@ -1609,8 +1609,8 @@ function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
   const stem = stemOf(a.name);
   const repeats =
     all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
-  // #3132: offered by its role, the session holding it is small print.
-  return [head, a.session, repeats ? a.machine : null]
+  // A role identifies its current holder by machine in the picker.
+  return [head, a.session || repeats ? a.machine : null]
     .filter(Boolean)
     .join(" \u00b7 ");
 }

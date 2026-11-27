@@ -154,7 +154,9 @@ describe("share recipient reach (review item 37)", () => {
     expect(r).toEqual({ canSignIn: false, reason: "workspace_only" });
   });
 
-  it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help), and the email says so", async () => {
+  // #3184: an invited row signs in by code at its exact address, so an
+  // invite now helps here.
+  it("email only, domain codes off, in-domain: needs_invite, and the email says so", async () => {
     const { share, sent } = await setup(direct, {
       AUTH_PROVIDERS: "email",
       AUTH_DOMAIN_JOIN: "invite",
@@ -162,10 +164,10 @@ describe("share recipient reach (review item 37)", () => {
     const email = uniq("in", "a.com");
     expect((await share(email)).recipient).toEqual({
       canSignIn: false,
-      reason: "no_sign_in_method",
+      reason: "needs_invite",
     });
     const m = sent.find((x) => x.to === email);
-    expect(m?.text).toMatch(NO_ADDRESS);
+    expect(m?.text).toContain("Ask an admin there to invite you");
     expect(m?.text).not.toContain("one-time code");
   });
 

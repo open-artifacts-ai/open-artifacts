@@ -4401,7 +4401,8 @@ export class BusHub extends DurableObject<Env> {
    */
   async snapshot(opts?: {
     away?: boolean;
-  }): Promise<{ connected: string[]; agents: BusAgent[] }> {
+    roles?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[]; roles?: BusRole[] }> {
     const connected = all<StoredMachine>(
       this.ctx.storage.sql,
       `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
@@ -4412,6 +4413,15 @@ export class BusHub extends DurableObject<Env> {
     return {
       connected,
       agents: agentList(this.ctx, undefined, opts?.away === true),
+      ...(opts?.roles
+        ? {
+            roles: listRoles(
+              this.ctx.storage.sql,
+              OWNER_ORG_ID,
+              this.#maxRoles,
+            ),
+          }
+        : {}),
     };
   }
 

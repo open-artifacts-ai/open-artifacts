@@ -163,6 +163,7 @@ const UNKNOWN: Session = {
 type OwnAgents = {
   /** The viewer's agents the bus lists (open first, then away), as bus addresses (bounded). */
   addresses: BusAddress[];
+  unrepresentedRoles: RosterAgent[];
   /** The same hub read by address, for each agent's state. */
   sessions: Map<string, BusAgent>;
   /** Whether the hub's state is known (false: unreadable, nothing is dropped). */
@@ -198,7 +199,7 @@ export async function viewerAgents(
   const user = await getUser(env, viewerId);
   if (!user || !canConnect(user)) return null;
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
-  const view = await busView(env, viewerId, { away: true });
+  const view = await busView(env, viewerId, { away: true, roles: true });
   const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
   // #2309, #2311: running first, then offline named agents, most recently
@@ -216,7 +217,29 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, sessions, known: view.read };
+  const represented = new Set(
+    addresses.map((address) => sessions.get(addrKey(address))?.roleId),
+  );
+  const holders = new Map(view.agents.map((a) => [a.id, a]));
+  const unrepresentedRoles: RosterAgent[] = [];
+  for (const role of view.roles ?? []) {
+    if (represented.has(role.id)) continue;
+    const holder = role.agentId ? holders.get(role.agentId) : undefined;
+    unrepresentedRoles.push({
+      key: await roleKey(artifactId, viewerId, role.namespace, role.id),
+      name: role.name,
+      userId: viewerId,
+      owner: null,
+      address: { namespace: role.namespace, name: role.name },
+      ...(holder
+        ? {
+            ...sessionOf(holder, true),
+            ...(holder.privateSessionName ? {} : { session: holder.name }),
+          }
+        : { ...UNKNOWN, state: "away" as const }),
+    });
+  }
+  return { addresses, sessions, unrepresentedRoles, known: view.read };
 }
 
 /** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
@@ -239,7 +262,10 @@ export async function viewerRosterAgents(
         null,
       ),
     );
-  return out;
+  return sortRoster([...out, ...own.unrepresentedRoles]).slice(
+    0,
+    OWN_AGENTS_MAX,
+  );
 }
 
 /**
@@ -346,7 +372,10 @@ export async function agentRoster(
   // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
   // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
   // below the hub's maxRosterAgents; away rows count like any other.
-  return sortRoster(out).slice(0, ROSTER_MAX);
+  return sortRoster([...out, ...(own?.unrepresentedRoles ?? [])]).slice(
+    0,
+    ROSTER_MAX,
+  );
 }
 
 const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);

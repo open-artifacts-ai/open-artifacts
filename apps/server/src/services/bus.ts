@@ -184,7 +184,8 @@ export type BusHubRpc = {
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
-  }): Promise<{ connected: string[]; agents: BusAgent[] }>;
+    roles?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[]; roles?: BusRole[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
   revokeMachine(id: string): Promise<boolean>;
   /**
@@ -368,17 +369,23 @@ async function hubSnapshot(
   env: Env,
   userId: string,
   everConnected: boolean,
-  away = false,
-): Promise<{ connected: Set<string>; agents: BusAgent[] } | null> {
+  opts: { away?: boolean; roles?: boolean } = {},
+): Promise<{
+  connected: Set<string>;
+  agents: BusAgent[];
+  roles?: BusRole[];
+} | null> {
   if (!busOn(env) || !everConnected) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
   try {
     const s = await within(
-      hub.snapshot(away ? { away: true } : undefined),
+      hub.snapshot(opts.away || opts.roles ? opts : undefined),
       BUS_HUB_TIMEOUT_MS,
     );
-    return s && { connected: new Set(s.connected), agents: s.agents };
+    return (
+      s && { connected: new Set(s.connected), agents: s.agents, roles: s.roles }
+    );
   } catch (e) {
     logError("bus_snapshot_failed", e);
     return null;
@@ -386,6 +393,7 @@ async function hubSnapshot(
 }
 
 export type BusView = {
+  roles?: BusRole[];
   machines: BusMachine[];
   agents: BusAgent[];
   /**
@@ -410,7 +418,7 @@ export async function busView(
   env: Env,
   userId: string,
   /** Also the agents away (closed, name kept): the @ menu lists them as away. */
-  opts: { away?: boolean } = {},
+  opts: { away?: boolean; roles?: boolean } = {},
 ): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
     .bind(userId, Date.now() - REVOKED_MACHINE_VISIBLE_MS, MAX_LISTED)
@@ -419,7 +427,7 @@ export async function busView(
     env,
     userId,
     results.some((m) => m.lastUsedAt !== null),
-    opts.away === true,
+    opts,
   );
   const machines = results.map((m) => machineOf(m, snap?.connected ?? null));
   // Every active machine is listed (MAX_ACTIVE_MACHINES == MAX_LISTED).
@@ -429,6 +437,7 @@ export async function busView(
   return {
     machines,
     agents: snap?.agents ?? [],
+    ...(opts.roles ? { roles: snap?.roles ?? [] } : {}),
     live: snap !== null || (busOn(env) && !mayBeLive),
     read: snap !== null,
   };
