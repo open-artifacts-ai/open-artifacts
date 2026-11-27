@@ -4,6 +4,7 @@
 // daemon sockets; the daemon's answers are frames, the time cap is a fake timer.
 import { runInDurableObject } from "cloudflare:test";
 import {
+  AGY_CHECK_HEADER,
   BUS_CAPS,
   type ClientFrame,
   canonicalArgsSha256,
@@ -47,10 +48,13 @@ type Check = {
 };
 
 /** A member, a machine, a daemon that listed codex_check and a live codex session `thread`. */
-async function scene(caps: string[] = CAPS, thread = uuid()) {
+async function scene(caps: string[] = CAPS, thread = uuid(), kind = "codex") {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
-  const d = await daemon(mach.token);
+  const d = await daemon(
+    mach.token,
+    kind === "antigravity" ? { [AGY_CHECK_HEADER]: "1" } : {},
+  );
   d.send({ ...hello(id("h")), caps } as ClientFrame);
   const ok = await waitFor(d, "hello_ok");
   d.send({
@@ -58,7 +62,7 @@ async function scene(caps: string[] = CAPS, thread = uuid()) {
     id: id("u"),
     type: "agent_up",
     agent_ref: thread,
-    kind: "codex",
+    kind,
     proposed_name: `Cx${seq}`,
     namespace: ns("cx"),
     global: false,
@@ -134,6 +138,7 @@ describe("hello (#3108)", () => {
   it("lists codex_check only to a hello that listed it", async () => {
     const a = await scene();
     expect(a.ok.caps).toContain(BUS_CAPS.codexCheck);
+    expect(a.ok.caps).not.toContain(BUS_CAPS.agyCheck);
     const b = await scene([BUS_CAPS.link, BUS_CAPS.ids]);
     expect(b.ok.caps).not.toContain(BUS_CAPS.codexCheck);
   });
@@ -519,4 +524,52 @@ describe("logging (#3108)", () => {
     ])
       expect(logged).not.toContain(v);
   });
+});
+
+it("checks a native agy hook ID once and logs metadata names and verdicts", async () => {
+  const { m, d, thread, ok } = await scene(CAPS, uuid(), "antigravity");
+  expect(ok.caps).toContain(BUS_CAPS.agyCheck);
+  const log = vi.spyOn(console, "log");
+  const call = directCall();
+  const meta = {
+    "antigravity.google/conversation_id": thread,
+    "antigravity.google/tool_call_id": call,
+    progressToken: "private-progress",
+  };
+  const b = body("get_artifact", meta, { id: "private-page" });
+  expect((await run(m.userId, d, b, true)).identity?.kind).toBe("antigravity");
+  expect((await run(m.userId, null, b, null)).identity).toBeUndefined();
+  expect(
+    (
+      await run(
+        m.userId,
+        null,
+        body("get_artifact", {
+          "antigravity.google/conversation_id": thread,
+          progressToken: "p:2",
+        }),
+        null,
+      )
+    ).identity,
+  ).toBeUndefined();
+  const diagnostic = log.mock.calls
+    .map(([s]) => String(s))
+    .filter((s) => s.includes("bus_agy_call_check"))
+    .join("\n");
+  expect(diagnostic).toContain(
+    '"matched_key":"antigravity.google/tool_call_id"',
+  );
+  expect(diagnostic).toContain('"verdict":"no_hook_id"');
+  for (const value of [thread, call, "private-progress", "private-page"])
+    expect(diagnostic).not.toContain(value);
+  expect(
+    (
+      await run(
+        m.userId,
+        null,
+        body("get_artifact", { ...meta, callId: directCall() }),
+        null,
+      )
+    ).identity,
+  ).toBeUndefined();
 });

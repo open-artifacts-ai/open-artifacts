@@ -1,4 +1,5 @@
 import {
+  AGY_CHECK_HEADER,
   BUS_ROUTES,
   BusNameSchema,
   DeviceCodeRequestSchema,
@@ -752,6 +753,9 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
         Upgrade: "websocket",
         [MACHINE_ID_HEADER]: m.id,
         [MACHINE_LABEL_HEADER]: m.label,
+        ...(c.req.header(AGY_CHECK_HEADER) === "1"
+          ? { [AGY_CHECK_HEADER]: "1" }
+          : {}),
         [AUTHZ_AT_HEADER]: String(authzAt),
       },
     }),

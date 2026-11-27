@@ -108,7 +108,21 @@ export function agyPluginFiles(
     timeout: AGY_HOOK_TIMEOUT_S,
   };
   const hooks = {
-    [AGY_HOOK_NAME]: { SessionStart: [handler], PreInvocation: [handler] },
+    [AGY_HOOK_NAME]: {
+      SessionStart: [handler],
+      PreInvocation: [handler],
+      PreToolUse: [
+        {
+          matcher: "call_mcp_tool",
+          hooks: [
+            {
+              ...handler,
+              command: `export OA_BUS_HOME=${sh(busHome)}; exec ${[...busBin, "agy-call"].map(sh).join(" ")}`,
+            },
+          ],
+        },
+      ],
+    },
   };
   return {
     ...Object.fromEntries(

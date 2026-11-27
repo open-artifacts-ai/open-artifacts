@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { markLive } from "@oa/bus-daemon";
 import { copyFor, useBusCmd } from "./bus-cmd.ts";
 import { add } from "./commands/add.ts";
+import { agyCall } from "./commands/agy-call.ts";
 import { agyHello } from "./commands/agy-hello.ts";
 import { agyWatch } from "./commands/agy-watch.ts";
 import { autoUpdate } from "./commands/auto-update.ts";
@@ -142,6 +143,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
         },
         ctx,
       );
+    case "agy-call":
+      return agyCall(ctx);
     case "agy-hello":
       // agy S2: the oa-bus agy plugin's SessionStart hook; OA_BUS_HOME as the adapters read it.
       return agyHello(ctx);
