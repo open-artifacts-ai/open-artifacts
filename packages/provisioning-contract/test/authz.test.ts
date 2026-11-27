@@ -301,16 +301,26 @@ describe("R4 field rules (3.3)", () => {
   const auth = { providers: ["google"], domains: ["acme.com"] };
   const full = { ownerEmail: "o@acme.com", tier: "team", auth };
 
-  it("admin testHooks: staging allowed, prod 403 forbidden", () => {
-    expect(createFieldRule("testHooks", "admin", "staging")).toBe("optional");
-    expect(createFieldRule("testHooks", "admin", "prod")).toBe("forbidden");
-    expect(
-      checkCreateFields({ ...full, testHooks: true }, "admin", "staging", D),
-    ).toBeNull();
-    expect(
-      checkCreateFields({ ...full, testHooks: true }, "admin", "prod", D),
-    ).toEqual({ field: "testHooks", code: "forbidden" });
-  });
+  it.each(["admin", "token"] as const)(
+    "%s can request test hooks only on staging",
+    (principal) => {
+      expect(createFieldRule("testHooks", principal, "staging")).toBe(
+        "optional",
+      );
+      expect(createFieldRule("testHooks", principal, "prod")).toBe("forbidden");
+      expect(
+        checkCreateFields(
+          { ...full, testHooks: true },
+          principal,
+          "staging",
+          D,
+        ),
+      ).toBeNull();
+      expect(
+        checkCreateFields({ ...full, testHooks: true }, principal, "prod", D),
+      ).toEqual({ field: "testHooks", code: "forbidden" });
+    },
+  );
 
   describe("auth.domains empty: owner and invites only", () => {
     const body = (domains: string[], ownerEmail: string) => ({

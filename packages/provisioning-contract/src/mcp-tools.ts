@@ -248,7 +248,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "create_install",
     "R4",
-    "Create an install. ownerEmail's domain must be in auth.domains; sendWelcome and testHooks are not allowed for tokens.",
+    "Create an install. ownerEmail's domain must be in auth.domains; admin tokens can set testHooks on staging only. sendWelcome requires an admin session.",
   ),
   write(
     "upgrade_install",

@@ -386,7 +386,7 @@ export const CREATE_FIELD_RULES: Readonly<
   // Prod refuses TEST_DOMAIN in the API too, not only in wfp.ts.
   testHooks: {
     admin: { staging: "optional", prod: "forbidden" },
-    token: "forbidden",
+    token: { staging: "optional", prod: "forbidden" },
     oidc: { staging: "required_true", prod: "forbidden" },
     user: "forbidden",
   },
