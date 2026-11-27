@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.263.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.262.0...v0.263.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** every client gets the bus rules at session start; details in the skill ([#3043](https://github.com/open-artifacts-ai/open-artifacts/issues/3043), slice 3) ([#3172](https://github.com/open-artifacts-ai/open-artifacts/issues/3172)) ([98670da](https://github.com/open-artifacts-ai/open-artifacts/commit/98670da93a03a1ad879ef10120b6fd47db160ecf))
+
 ## [0.262.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.261.0...v0.262.0) (2026-11-27)
 
 
