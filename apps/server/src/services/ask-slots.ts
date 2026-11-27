@@ -77,3 +77,34 @@ export async function pageTitles(
   for (const r of results) out.set(r.id, r.title);
   return out;
 }
+
+/** Public display names by user id (display_name, else name, else email local part). */
+export async function userDisplayNames(
+  env: Env,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return out;
+  const marks = uniq.map(() => "?").join(", ");
+  const { results } = await stmt(
+    env.DB,
+    `select id, display_name, name, email from users where id in (${marks})`,
+  )
+    .bind(...uniq)
+    .all<{
+      id: string;
+      display_name: string | null;
+      name: string | null;
+      email: string;
+    }>();
+  for (const r of results) {
+    const label =
+      r.display_name?.trim() ||
+      r.name?.trim() ||
+      r.email.split("@")[0]?.trim() ||
+      "";
+    if (label) out.set(r.id, label);
+  }
+  return out;
+}
