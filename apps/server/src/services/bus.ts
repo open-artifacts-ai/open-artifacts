@@ -13,6 +13,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AuditCredKindSchema,
+  type AwayRoleAction,
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
@@ -196,6 +197,9 @@ export type BusHubRpc = {
   wipe(): Promise<void>;
   /** #1296: the member's role addresses. */
   listRoles(): Promise<BusRole[]>;
+  actOnAwayRole(
+    action: AwayRoleAction,
+  ): Promise<{ ok: boolean; moved: RoleMove | null }>;
   /** #1296: sets, re-points or (null) vacates a role; see bus/roles.ts putRole. */
   putRole(
     namespace: string,
@@ -1242,6 +1246,23 @@ export async function handOverBusRole(
   throw new ApiError("conflict", ROLE_REFUSALS[r.reason], {
     reason: r.reason,
   });
+}
+
+export async function actOnAwayBusRole(
+  env: Env,
+  userId: string,
+  action: AwayRoleAction,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  const hub = busHub(env, userId);
+  if (!hub) throw new ApiError("storage_unavailable", "Bus unavailable");
+  const result = await roleCall(hub.actOnAwayRole(action));
+  if (!result.ok)
+    throw new ApiError(
+      "conflict",
+      "The holder or destination has changed. Choose again.",
+    );
+  if (result.moved) await auditRoleMoves(env, userId, hub, result.moved);
 }
 
 /** #1296: removes the member's role `id`. Idempotent: unknown is fine. */

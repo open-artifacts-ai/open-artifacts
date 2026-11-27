@@ -1,5 +1,5 @@
 // #1293: Agents › Agents: the namespace rail and the roster.
-import { type BusAgent, busAgentStarting } from "@oa/shared";
+import { type BusAgent, type BusRole, busAgentStarting } from "@oa/shared";
 import {
   Button,
   cn,
@@ -15,7 +15,12 @@ import {
   useIsMobile,
 } from "@oa/ui/shadcn";
 import { useState } from "react";
-import { useBusAgents, useBusMachines } from "../api/queries";
+import {
+  useAwayRoleAction,
+  useBusAgents,
+  useBusMachines,
+  useBusRoles,
+} from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
@@ -216,6 +221,62 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
   }
 }
 
+const agentLabel = (a: BusAgent) =>
+  a.pendingRole ? `Session on ${a.machineLabel}` : (a.role ?? a.name);
+
+function AwayName({ role, agents }: { role: BusRole; agents: BusAgent[] }) {
+  const action = useAwayRoleAction();
+  const [picking, setPicking] = useState(false);
+  const targets = agents.filter(
+    (a) => a.state === "live" && (a.global || a.namespace === role.namespace),
+  );
+  const submit = (targetId: string | null) => {
+    if (role.agentId)
+      action.mutate({ roleId: role.id, holderId: role.agentId, targetId });
+  };
+  return (
+    <li className="flex flex-wrap items-center gap-2 py-2">
+      <b className="mr-auto">{role.name}</b>
+      {picking ? (
+        <select
+          aria-label={`Move ${role.name} to`}
+          value=""
+          disabled={action.isPending}
+          onChange={(e) => submit(e.target.value)}
+        >
+          <option disabled value="">
+            Choose a live session
+          </option>
+          {targets.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.pendingRole
+                ? agentLabel(a)
+                : `${agentLabel(a)} · ${a.machineLabel}`}
+            </option>
+          ))}
+        </select>
+      ) : (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!targets.length || action.isPending}
+          onClick={() => setPicking(true)}
+        >
+          Move to…
+        </Button>
+      )}
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={action.isPending}
+        onClick={() => submit(null)}
+      >
+        Free this name
+      </Button>
+    </li>
+  );
+}
+
 function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   const stacked = useIsMobile();
   // agy S2b: a starting session's label is the bus's, shown as its status.
@@ -247,7 +308,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
             className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
           >
             <span className="min-w-0 truncate">
-              <span className="font-medium">{a.name}</span>{" "}
+              <span className="font-medium">{agentLabel(a)}</span>{" "}
               <span className="text-muted-foreground">
                 · {shortName(a.namespace, all)}
               </span>
@@ -289,7 +350,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
           {agents.map((a) => (
             <TableRow key={a.id}>
               <TableCell className="max-w-[220px] whitespace-normal @min-[840px]/roster:max-w-none @min-[840px]/roster:whitespace-nowrap">
-                <span className="font-medium">{a.name}</span>{" "}
+                <span className="font-medium">{agentLabel(a)}</span>{" "}
                 <span className="text-muted-foreground" title={a.namespace}>
                   · {shortName(a.namespace, all)}
                 </span>
@@ -321,9 +382,11 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
 export function Roster({ scope: raw }: { scope?: string }) {
   const agents = useBusAgents();
   const machines = useBusMachines();
+  const roles = useBusRoles();
   const [filter, setFilter] = useState<Filter>("all");
   const scope = parseScope(raw);
-  if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
+  if (agents.isPending || roles.isPending)
+    return <p className={`m-0 ${muted}`}>Loading…</p>;
   if (agents.isError)
     return (
       <LoadError
@@ -333,9 +396,24 @@ export function Roster({ scope: raw }: { scope?: string }) {
         onRetry={() => void agents.refetch()}
       />
     );
+  if (roles.isError)
+    return (
+      <LoadError
+        title="Couldn't load held names."
+        error={roles.error}
+        busy={roles.isFetching}
+        onRetry={() => void roles.refetch()}
+      />
+    );
   const list = agents.data.agents;
   if (!agents.data.live) return <Notice tone="warning">{LIVE_DOWN}</Notice>;
-  if (list.length === 0) {
+  const away = roles.data.roles.filter(
+    (r) =>
+      r.awayHolder &&
+      r.agentId &&
+      inScope({ namespace: r.namespace, global: false }, scope),
+  );
+  if (list.length === 0 && away.length === 0) {
     const noMachine =
       machines.data !== undefined &&
       !machines.data.machines.some((m) => m.revokedAt === null);
@@ -399,6 +477,16 @@ export function Roster({ scope: raw }: { scope?: string }) {
           <p className={`m-0 ${muted}`}>No agents here.</p>
         ) : (
           <RosterTable agents={shown} all={all} />
+        )}
+        {away.length > 0 && filter === "all" && (
+          <section aria-label="Names held by away sessions">
+            <h3>Names held by away sessions</h3>
+            <ul className="m-0 list-none divide-y p-0">
+              {away.map((role) => (
+                <AwayName key={role.id} role={role} agents={list} />
+              ))}
+            </ul>
+          </section>
         )}
         {scope.kind === "ns" && globalsFrom(list, scope.ns) > 0 && (
           <p className={`m-0 ${muted}`}>

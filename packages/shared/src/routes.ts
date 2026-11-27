@@ -222,7 +222,9 @@ export const R = {
   busAgents: "/api/v1/bus/agents",
   /**
    * GET -> BusRoles: the caller's role addresses (#1296), with `live` false
-   * when the bus could not be asked. PUT BusRolePut -> `{ role: BusRole }`:
+   * when the bus could not be asked. POST AwayRoleAction -> 204: move an away-held
+   * name to a live session or free it. A changed holder or destination returns 409.
+   * PUT BusRolePut -> `{ role: BusRole }`:
    * sets, re-points or (agentId null) vacates the role (namespace, name),
    * creating it if needed; 400 bad_request (invalid body, name or
    * namespace), 409 conflict with details `{ reason }`: `name_taken` (a live

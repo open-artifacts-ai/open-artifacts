@@ -72,6 +72,63 @@ const settingsTabs = () =>
 
 // ---------------------------------------------------------------- units
 
+describe("away names on Agents", () => {
+  it.each(["move", "free"])("offers %s on the held role", async (operation) => {
+    withBus();
+    const role = { ...fixtures.busRoles[0]!, awayHolder: true, vacant: true };
+    const target = A.find(
+      (a) =>
+        a.state === "live" &&
+        a.id !== role.agentId &&
+        (a.namespace === role.namespace || a.global),
+    )!;
+    let submitted: unknown;
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents: operation === "free" ? [] : [target],
+        }),
+      ),
+      http.get(`*${R.busRoles}`, () =>
+        HttpResponse.json({
+          live: true,
+          roles: submitted ? [] : [role],
+          proposals: [],
+        }),
+      ),
+      http.post(`*${R.busRoles}`, async ({ request }) => {
+        submitted = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/agents");
+    const held = await screen.findByRole("region", {
+      name: "Names held by away sessions",
+    });
+    expect(within(held).getByText(role.name)).toBeInTheDocument();
+    if (operation === "move") {
+      fireEvent.click(within(held).getByRole("button", { name: "Move to…" }));
+      fireEvent.change(within(held).getByRole("combobox"), {
+        target: { value: target.id },
+      });
+    } else
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Names held by away sessions" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(submitted).toEqual({
+      roleId: role.id,
+      holderId: role.agentId,
+      targetId: operation === "move" ? target.id : null,
+    });
+  });
+});
+
 describe("canUseBus", () => {
   it.each([
     [{ canConnect: true, busOn: true }, true],

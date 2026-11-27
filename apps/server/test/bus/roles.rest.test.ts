@@ -4,14 +4,23 @@
 // or a machine token never sets one, so no AI agent can set or claim a role.
 // Another member's call reaches only their own hub.
 import { env } from "cloudflare:workers";
-import { BUS_CAPS } from "@oa/bus-protocol";
+import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
 import { type BusRole, R } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
 import { limiter } from "../mcp-helpers.js";
-import { daemon, e, hubOf, machine, member, ns, waitFor } from "./helpers.js";
+import {
+  daemon,
+  e,
+  hubOf,
+  machine,
+  member,
+  ns,
+  up,
+  waitFor,
+} from "./helpers.js";
 
 const app = createApp();
 let seq = 0;
@@ -118,6 +127,70 @@ describe("roles REST (#1296)", () => {
     });
     d.close();
   });
+
+  it.each(["move", "free"])(
+    "guards the away holder and lets the member %s its name",
+    async (operation) => {
+      const n = ns("away");
+      const { who, d, agentId, name } = await withAgent(n);
+      const announce = (ref: string) =>
+        d.send({
+          ...up(uniq("up"), ref, name, n),
+          name_chosen: true,
+        } as ClientFrame);
+      announce("next");
+      await waitFor(d, "agent_ok");
+      const hub = await hubOf(who.userId);
+      const role = (await hub.listRoles()).find((r) => r.name === name)!;
+      const target = (await hub.snapshot()).agents.find(
+        (a) => a.id !== agentId,
+      )!;
+      const act = (targetId: string | null) =>
+        api(app, R.busRoles, who.cookie, {
+          method: "POST",
+          body: { roleId: role.id, holderId: agentId, targetId },
+        });
+      expect((await act(null)).status).toBe(409);
+      d.send({ v: 1, id: "down", type: "agent_down", agent_ref: "a" });
+      d.send({ v: 1, id: "barrier", type: "list", from_ref: "next" });
+      await waitFor(d, "roster");
+      expect(
+        (await hub.listRoles()).find((r) => r.id === role.id)?.awayHolder,
+      ).toBe(true);
+      expect((await act("missing")).status).toBe(409);
+      if (operation === "move") {
+        expect((await act(target.id)).status).toBe(204);
+        expect(
+          (await hub.listRoles()).find((r) => r.id === role.id)?.agentId,
+        ).toBe(target.id);
+        expect((await act(null)).status).toBe(409);
+        expect(
+          (await hub.snapshot()).agents.find((a) => a.id === target.id)?.role,
+        ).toBe(name);
+        // Free after a handover must release the first holder's old reservation too.
+        d.send({
+          v: 1,
+          id: "away-again",
+          type: "agent_down",
+          agent_ref: "next",
+        });
+        d.send(up("barrier-up", "barrier", uniq("Observer"), n));
+        await waitFor(d, "agent_ok");
+        const freed = await api(app, R.busRoles, who.cookie, {
+          method: "POST",
+          body: { roleId: role.id, holderId: target.id, targetId: null },
+        });
+        expect(freed.status).toBe(204);
+        announce("after-move");
+        expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+      } else {
+        expect((await act(null)).status).toBe(204);
+        announce("fresh");
+        expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+      }
+      d.close();
+    },
+  );
 
   it("409 conflict for a taken name, a holder that isn't open there, and the cap", async () => {
     const n = ns("rr");

@@ -124,10 +124,12 @@ type StoredRole = {
   setAt: number;
   holderName: string | null;
   held: number;
+  awayHolder: number;
 };
 
 const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt,
     h.name as holderName,
+    (r.agent_id is not null and (h.id is null or h.live = 0)) as awayHolder,
     (h.id is not null and h.live = 1 and (h.namespace = r.namespace or h.global = 1)) as held
   from roles r left join agents h on h.id = r.agent_id`;
 
@@ -138,6 +140,7 @@ const roleDto = (r: StoredRole): BusRole => ({
   agentId: r.agentId,
   holderName: r.holderName,
   vacant: r.held !== 1,
+  ...(r.awayHolder === 1 ? { awayHolder: true as const } : {}),
   setAt: iso(r.setAt),
 });
 

@@ -1,6 +1,7 @@
 import {
   type ArtifactPatch,
   ArtifactSummarySchema,
+  type AwayRoleAction,
   BUS_MACHINES_PAUSED_HEADER,
   type BusAddress,
   BusAgentsSchema,
@@ -396,6 +397,13 @@ export const usePutBusRole = () => {
     onSettled: () => qc.invalidateQueries({ queryKey: qk.busRoles }),
   });
 };
+export const useAwayRoleAction = () =>
+  useInvalidating(
+    (action: AwayRoleAction) => api.send("POST", R.busRoles, action),
+    () => [qk.busRoles, qk.busAgents],
+    "Couldn’t update the held name.",
+  );
+
 /** Remove a role (DELETE R.busRole(id), idempotent). */
 export const useDeleteBusRole = () =>
   useInvalidating(

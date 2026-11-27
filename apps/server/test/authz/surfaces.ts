@@ -2479,6 +2479,20 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
   },
   // #1296: the caller's own role addresses. A vacant role (agentId null) is
   // 200 on a member's bus, or the named conflict while they have none.
+  "POST /api/v1/bus/roles": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          roleId: "missing-role",
+          holderId: "missing-holder",
+          targetId: null,
+        },
+      }),
+      allow: code("conflict"),
+    },
+  },
   "PUT /api/v1/bus/roles": {
     refuse: invalid(),
     real: {
@@ -2759,6 +2773,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/bus/agents", org("mcp.connect"), [200]],
   // #1296: role addresses; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/roles", org("mcp.connect"), [200]],
+  ["POST /api/v1/bus/roles", org("mcp.connect")],
   ["PUT /api/v1/bus/roles", org("mcp.connect")],
   ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
   // #1567: project links; writes also need a cookie session (the handler).

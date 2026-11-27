@@ -47,6 +47,7 @@ import {
   utf8Bytes,
 } from "@oa/bus-protocol";
 import {
+  type AwayRoleAction,
   BUS_LINK_MAX,
   BUS_REACH_MAX,
   BUS_ROLE_MAX,
@@ -4644,6 +4645,62 @@ export class BusHub extends DurableObject<Env> {
         reachOnly: true,
       });
     return out;
+  }
+
+  async actOnAwayRole(
+    action: AwayRoleAction,
+  ): Promise<{ ok: boolean; moved: RoleMove | null }> {
+    const sql = this.ctx.storage.sql;
+    const role = one<{ name: string; namespace: string; lname: string }>(
+      sql,
+      `select r.name, r.namespace, r.lname from roles r left join agents a on a.id = r.agent_id
+       where r.org_id = ? and r.id = ? and r.agent_id = ? and (a.id is null or a.live = 0)`,
+      OWNER_ORG_ID,
+      action.roleId,
+      action.holderId,
+    );
+    if (!role) return { ok: false, moved: null };
+    if (action.targetId !== null) {
+      const target = one<{ machineId: string }>(
+        sql,
+        "select machine_id as machineId from agents where org_id = ? and id = ? and live = 1 and (namespace = ? or global = 1)",
+        OWNER_ORG_ID,
+        action.targetId,
+        role.namespace,
+      );
+      if (!target || !liveSocket(this.ctx, target.machineId))
+        return { ok: false, moved: null };
+      const result = await this.putRole(
+        role.namespace,
+        role.name,
+        action.targetId,
+      );
+      return { ok: result.ok, moved: result.ok ? result.moved : null };
+    }
+    this.#withReachNotice(() => {
+      sql.exec(
+        `delete from former_names where org_id = ? and lname = ? and (namespace = ? or global = 1)
+         and (agent_id = ? or agent_id in (
+           select from_agent_id from role_moves where org_id = ? and from_ns = ? and from_lname = ? and role_id = ?
+         ))`,
+        OWNER_ORG_ID,
+        role.lname,
+        role.namespace,
+        action.holderId,
+        OWNER_ORG_ID,
+        role.namespace,
+        role.lname,
+        action.roleId,
+      );
+      sql.exec(
+        "update role_proposals set status = 'refused', reason = 'no_role', decided_at = ? where org_id = ? and role_id = ? and status = 'pending'",
+        this.#now(),
+        OWNER_ORG_ID,
+        action.roleId,
+      );
+      deleteRole(sql, OWNER_ORG_ID, action.roleId);
+    });
+    return { ok: true, moved: null };
   }
 
   /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */

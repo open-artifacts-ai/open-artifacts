@@ -132,6 +132,7 @@ export const BusRoleSchema = z.strictObject({
   agentId: z.string().nullable(),
   holderName: z.string().nullable(),
   vacant: z.boolean(),
+  awayHolder: z.literal(true).optional(),
   setAt: z.string(),
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
@@ -320,6 +321,13 @@ export const BusRolePutSchema = z.strictObject({
   name: BusAddressSchema.shape.name,
   agentId: z.string().min(1).max(64).nullable(),
 });
+export const AwayRoleActionSchema = z.strictObject({
+  roleId: z.string().min(1).max(64),
+  holderId: z.string().min(1).max(64),
+  // null frees the name, otherwise move it to this live session.
+  targetId: z.string().min(1).max(64).nullable(),
+});
+export type AwayRoleAction = z.infer<typeof AwayRoleActionSchema>;
 export type BusRolePut = z.infer<typeof BusRolePutSchema>;
 
 /**
