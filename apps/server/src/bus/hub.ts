@@ -4457,6 +4457,68 @@ export class BusHub extends DurableObject<Env> {
     return r;
   }
 
+  /** A person's rename keeps the ID and held interval of their same-name role. */
+  #renameChosenRole(
+    before: { namespace: string; name: string } | null,
+    agent: AgentRow,
+    frame: {
+      proposed_name: string;
+      name_chosen?: boolean;
+      name_kind?: NameKind;
+    },
+  ): void {
+    if (
+      !before ||
+      before.namespace !== agent.namespace ||
+      before.name === agent.name ||
+      agent.global ||
+      frame.name_chosen !== true ||
+      frame.name_kind === "default" ||
+      candidateName(frame.proposed_name) !== agent.name ||
+      droppedRefusedChars(frame.proposed_name, { harness: false })
+    )
+      return;
+    const sql = this.ctx.storage.sql;
+    const old = before.name.toLowerCase();
+    const next = agent.name.toLowerCase();
+    const role = one<{ id: string }>(
+      sql,
+      "select id from roles where org_id = ? and namespace = ? and lname = ? and agent_id = ?",
+      OWNER_ORG_ID,
+      agent.namespace,
+      old,
+      agent.id,
+    );
+    if (
+      !role ||
+      (old !== next &&
+        one(
+          sql,
+          "select 1 from roles where org_id = ? and namespace = ? and lname = ?",
+          OWNER_ORG_ID,
+          agent.namespace,
+          next,
+        ))
+    )
+      return;
+    this.#withReachNotice(() => {
+      sql.exec(
+        "update roles set name = ?, lname = ? where id = ?",
+        agent.name,
+        next,
+        role.id,
+      );
+      sql.exec(
+        "update reach_grants set role_name = ?, lname = ? where org_id = ? and role_ns = ? and lname = ?",
+        agent.name,
+        next,
+        OWNER_ORG_ID,
+        agent.namespace,
+        old,
+      );
+    });
+  }
+
   /**
    * #3132 (Leo, 2026-11-26: "The name is the role, automatically"; a second
    * session "never makes a new role (no -2): it asks the holder, or you if
@@ -6660,6 +6722,7 @@ export class BusHub extends DurableObject<Env> {
         const a = registeredAgent(sql, machineId, f.agent_ref);
         // #3132: it asked for a name another session holds.
         if (a && pending) this.#askTakeover(a, pending);
+        else if (a) this.#renameChosenRole(before, a, f);
         if (a && replacedRoles)
           for (const role of replacedRoles) {
             if (
@@ -7717,6 +7780,7 @@ export class BusHub extends DurableObject<Env> {
     // #3132: it asked for a name another session holds.
     if (assigned.pending)
       this.#askTakeover({ ...agent, name }, assigned.pending);
+    else this.#renameChosenRole(agent, { ...agent, name }, f);
     return this.#rekeyFollows(agent, { namespace: agent.namespace, name });
   }
 

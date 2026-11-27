@@ -7,7 +7,12 @@
 // the member decides. A true resume (the same agent_ref) is silent. Real hub,
 // real daemon sockets; time is BusHub.setTestClock, waits are signals.
 import { runInDurableObject } from "cloudflare:test";
-import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
+import {
+  BUS_CAPS,
+  type ClientFrame,
+  LIMITS,
+  type ServerFrame,
+} from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -188,6 +193,49 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     });
     s.d.close();
   });
+
+  it.each(["rename", "agent_up"])(
+    "%s keeps the role ID and expires the old address after grace",
+    async (method) => {
+      const s = await scene();
+      const observer = uniq("observer");
+      await reg(s.d, observer, s.name, s.n);
+      const hub = await hubOf();
+      const original = (await hub.listRoles()).find((r) => r.name === s.name)!;
+      const next = uniq("Research");
+      const at = base();
+      await setClock(at);
+      expect(
+        await (method === "rename"
+          ? rename(s.d, s.holderRef, next)
+          : reg(s.d, s.holderRef, next, s.n)),
+      ).toBe(next);
+      const roles = (await hub.listRoles()).filter((r) => r.namespace === s.n);
+      expect(roles).toMatchObject([
+        { id: original.id, name: next, agentId: original.agentId },
+      ]);
+      const send = async (to: string) => {
+        s.d.send({
+          v: 1,
+          id: id("s"),
+          type: "send",
+          from_ref: observer,
+          to_name: to,
+          body: "rename check",
+        } as ClientFrame);
+        return waitFor(s.d, "receipt");
+      };
+      await setClock(at + LIMITS.formerNameGraceMs - 1);
+      expect((await send(s.name)).state).toBe("pending");
+      await setClock(at + LIMITS.formerNameGraceMs);
+      expect(await send(s.name)).toMatchObject({
+        state: "refused",
+        reason: "unknown_agent",
+      });
+      expect((await send(next)).state).toBe("pending");
+      s.d.close();
+    },
+  );
 
   it("a second agent_up of the newcomer files no second proposal", async () => {
     const s = await scene();
