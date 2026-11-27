@@ -2,7 +2,7 @@ import { lstatSync, readdirSync, rmdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { shortSocketDir, unsafeSocketDir } from "@oa/bus-adapter-claude-code";
 
-import { RESCUE_NAME } from "./rescue.ts";
+import { isManagedRescue, RESCUE_NAME } from "./rescue.ts";
 
 /** Files Open Artifacts bus writes at the top of its home. */
 const FILES = [
@@ -42,7 +42,6 @@ const TEMP = [
   /^update-reports\.json\.\d+\.tmp$/,
   /^update-request\.json\.(\d+\.tmp|taken\.\d+)$/,
   /^bin\.\d+\.rescue$/,
-  /^Open Artifacts Bus\.\d+\.tmp$/,
   /^rescue(-node|\.mjs)?\.\d+\.tmp$/,
 ];
 /**
@@ -144,6 +143,7 @@ export function purge(
     const k = kind(path);
     // A known file name that is a directory is not ours; a symlink is removed, never followed.
     if (k === undefined || k === "dir") continue;
+    if (name === RESCUE_NAME && !isManagedRescue(path)) continue;
     remove(path, k);
     removed.push(name);
   }

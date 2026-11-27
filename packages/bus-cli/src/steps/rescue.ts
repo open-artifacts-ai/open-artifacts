@@ -1,7 +1,13 @@
 import {
   chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -61,7 +67,13 @@ exec "$here/bin/node" "$@"
 export function rescueScript(): string {
   return `// Written by oa-bus install, never by an update. Rescue shim ${RESCUE_VERSION}.
 import {
-  chmodSync, lstatSync, readFileSync, readlinkSync, renameSync, rmSync,
+  chmodSync,
+  closeSync,
+  constants,
+  fchmodSync,
+  openSync,
+  fstatSync,
+  linkSync, lstatSync, readFileSync, readlinkSync, renameSync, rmSync,
   symlinkSync, writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -149,9 +161,29 @@ try {
 `;
 }
 
+/** This visible name can already belong to the user in a shared bus home. */
+export function isManagedRescue(path: string): boolean {
+  const st = lstatSync(path, { throwIfNoEntry: false });
+  const shell = rescueShell();
+  return (
+    st?.isFile() === true &&
+    st.size === Buffer.byteLength(shell) &&
+    readFileSync(path, "utf8") === shell
+  );
+}
+
+export function checkRescueDestination(home: string): void {
+  const path = rescueOf(home);
+  if (lstatSync(path, { throwIfNoEntry: false }) && !isManagedRescue(path))
+    throw new Error(
+      `Cannot install the launcher: ${path} already exists. Move it aside and rerun install.`,
+    );
+}
+
 /** Writes the three files, atomically each. Only a hand-run install calls this. */
 export function writeRescue(home: string, launcher: string): void {
   mkdirSync(home, { recursive: true, mode: 0o700 });
+  checkRescueDestination(home);
   const put = (name: string, text: string) => {
     const path = join(home, name);
     const tmp = `${path}.${process.pid}.tmp`;
@@ -166,15 +198,39 @@ export function writeRescue(home: string, launcher: string): void {
   };
   put("rescue.mjs", rescueScript());
   put("rescue-node", launcher);
-  put(RESCUE_NAME, rescueShell());
+  const dest = rescueOf(home);
+  // Publish without replacing a file that appeared after preflight.
+  const stage = join(home, `rescue.${process.pid}.tmp`);
+  writeFileSync(stage, rescueShell(), { mode: 0o700, flag: "wx" });
+  try {
+    try {
+      linkSync(stage, dest);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const fd = openSync(
+        dest,
+        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      );
+      try {
+        const st = fstatSync(fd);
+        if (
+          !st.isFile() ||
+          st.size !== Buffer.byteLength(rescueShell()) ||
+          readFileSync(fd, "utf8") !== rescueShell()
+        )
+          throw new Error(`Cannot replace the existing file at ${dest}.`);
+        fchmodSync(fd, 0o700);
+      } finally {
+        closeSync(fd);
+      }
+    }
+  } finally {
+    rmSync(stage, { force: true });
+  }
 }
 
 /** Called after the service manager starts the replacement, including on a retry. */
 export function retireLegacyRescue(home: string): void {
   const path = join(home, "rescue");
-  if (
-    lstatSync(path, { throwIfNoEntry: false })?.isFile() &&
-    readFileSync(path, "utf8") === rescueShell()
-  )
-    rmSync(path, { force: true });
+  if (isManagedRescue(path)) rmSync(path, { force: true });
 }

@@ -30,7 +30,12 @@ import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
 import { AGY_FLAG, agyOn } from "./adapters.ts";
 import { codexHomeEnv } from "./codex.ts";
-import { rescueOf, retireLegacyRescue, writeRescue } from "./rescue.ts";
+import {
+  checkRescueDestination,
+  rescueOf,
+  retireLegacyRescue,
+  writeRescue,
+} from "./rescue.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const LAUNCHD_LABEL = "com.open-artifacts.bus";
@@ -286,6 +291,7 @@ export function installCli(
   src: CliSource,
   node?: string,
 ): string {
+  if (node !== undefined) checkRescueDestination(home);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   chmodSync(home, 0o700);
   installVersion(
@@ -496,9 +502,13 @@ export function systemService(d: ServiceDeps): Service {
   const installedRescue = (): string | undefined => {
     try {
       const unit = readFileSync(file(), "utf8");
+      const launchProgram =
+        /<key>\s*ProgramArguments\s*<\/key>\s*<array>\s*<string>([^<]*)<\/string>/.exec(
+          unit,
+        )?.[1];
       return [rescueOf(home()), join(home(), "rescue")].find((path) =>
         manager === "launchd"
-          ? unit.includes(`<array><string>${xml(path)}</string>`)
+          ? launchProgram === xml(path)
           : unit.includes(`ExecStart=${execWord(path)} `),
       );
     } catch {
@@ -617,6 +627,7 @@ export function systemService(d: ServiceDeps): Service {
           return { skipped, idle: true };
       }
       const h = home();
+      if (launcherNode() !== undefined) checkRescueDestination(h);
       const src = d.source();
       const logs = join(h, "logs");
       const u: Unit = {

@@ -325,6 +325,21 @@ describe("the rescue shim", () => {
 });
 
 describe("uninstall --purge", () => {
+  it.each(["file", "symlink"])(
+    "keeps an unrelated launcher-name %s during purge",
+    (kind) => {
+      const home = mkdtempSync(join(tmpdir(), "oa-shared-"));
+      writeFileSync(join(home, "install.json"), "{}");
+      const path = rescueOf(home);
+      if (kind === "symlink") symlinkSync("target", path);
+      else writeFileSync(path, "user file");
+      expect(purge(home, { isDefault: false })).toMatchObject({
+        leftDir: true,
+      });
+      if (kind === "symlink") expect(readlinkSync(path)).toBe("target");
+      else expect(readFileSync(path, "utf8")).toBe("user file");
+    },
+  );
   it("removes the rescue files and the update leftovers", () => {
     const home = world({ "1.0.0": { exit: 0 } });
     for (const f of [
@@ -332,7 +347,7 @@ describe("uninstall --purge", () => {
       "update-request.json",
       "login.active",
       "rescue",
-      "Open Artifacts Bus.123.tmp",
+      "rescue.123.tmp",
       "update-request.json.taken.123",
       "bin.123.rescue",
       "update.json.123.rescue.tmp",

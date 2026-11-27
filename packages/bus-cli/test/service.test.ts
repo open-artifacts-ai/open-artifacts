@@ -248,6 +248,28 @@ describe("systemService: launchd", () => {
   const plistOf = (userHome: string) =>
     join(userHome, "Library/LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 
+  it.each(["file", "link"])(
+    "leaves the working legacy unit running on a %s collision",
+    async (kind) => {
+      const { d, userHome, home, calls } = deps("darwin");
+      const service = systemService(d);
+      await service.ensure();
+      const current = join(home, "Open Artifacts Bus");
+      const legacy = join(home, "rescue");
+      renameSync(current, legacy);
+      const plist = plistOf(userHome);
+      const before = readFileSync(plist, "utf8").replace(current, legacy);
+      writeFileSync(plist, before);
+      if (kind === "link") symlinkSync(legacy, current);
+      else writeFileSync(current, "user file");
+      calls.length = 0;
+      await expect(service.ensure()).rejects.toThrow(/Open Artifacts Bus/);
+      expect(calls).toEqual([]);
+      expect(readFileSync(plist, "utf8")).toBe(before);
+      if (kind === "link") expect(readlinkSync(current)).toBe(legacy);
+      else expect(readFileSync(current, "utf8")).toBe("user file");
+    },
+  );
   it("moves a legacy launchd install to Open Artifacts Bus", async () => {
     const { d, userHome, home } = deps("darwin");
     const service = systemService(d);
@@ -256,7 +278,12 @@ describe("systemService: launchd", () => {
     const legacy = join(home, "rescue");
     const plist = plistOf(userHome);
     renameSync(current, legacy);
-    writeFileSync(plist, readFileSync(plist, "utf8").replace(current, legacy));
+    writeFileSync(
+      plist,
+      readFileSync(plist, "utf8")
+        .replace(current, legacy)
+        .replaceAll("><", ">\n  <"),
+    );
     chmodSync(legacy, 0o755);
     expect(service.problems?.()).toContainEqual({
       kind: "rescue-open",
