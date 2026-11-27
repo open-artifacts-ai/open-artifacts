@@ -102,7 +102,7 @@ describe("layout behaviour", () => {
       async () => (authed ? meAs("member") : unauth()),
       "/",
     );
-    await screen.findAllByRole("link", { name: "Team" });
+    await screen.findAllByRole("link", { name: "Settings" });
     authed = false;
     await act(() => client.invalidateQueries({ queryKey: qk.me }));
     await waitFor(() =>
@@ -234,17 +234,19 @@ describe("layout behaviour", () => {
     await waitFor(() => expect(redirect).toHaveBeenCalledWith("/sign-in"));
   });
 
-  it("only owner/admin see Usage", async () => {
+  it("only owner/admin see Usage in Settings", async () => {
     for (const [role, usage] of [
       ["admin", true],
       ["member", false],
       ["guest", false],
     ] as const) {
-      mount(async () => meAs(role), "/shared");
-      // #2590: a guest's sidebar link reads "Shared with you".
-      await screen.findAllByRole("link", {
-        name: role === "guest" ? "Shared with you" : "Shared with me",
-      });
+      mount(
+        async () => meAs(role),
+        role === "guest" ? "/shared" : "/settings/profile",
+      );
+      if (role === "guest")
+        await screen.findAllByRole("link", { name: "Shared with you" });
+      else await screen.findByRole("navigation", { name: "Settings sections" });
       expect(!!screen.queryByRole("link", { name: "Usage" })).toBe(usage);
       cleanup();
     }
@@ -272,12 +274,12 @@ describe("layout behaviour", () => {
     const retry = await screen.findByRole("button", { name: "Retry" });
     fail = false;
     fireEvent.click(retry);
-    await screen.findAllByRole("link", { name: "Team" });
+    await screen.findAllByRole("link", { name: "Settings" });
   });
 
   it("quota banner clears after a later successful query", async () => {
     const { client } = mount(async () => meAs("member"), "/");
-    await screen.findAllByRole("link", { name: "Team" });
+    await screen.findAllByRole("link", { name: "Settings" });
     await act(async () => {
       client.setQueryData(QUOTA_KEY, true);
     });
@@ -295,13 +297,13 @@ describe("layout behaviour", () => {
           : meAs("member"),
       "/",
     );
-    await screen.findAllByRole("link", { name: "Team" });
+    await screen.findAllByRole("link", { name: "Settings" });
     fail = true;
     await act(() => client.invalidateQueries({ queryKey: qk.me }));
     expect(client.getQueryState(qk.me)?.status).toBe("error");
     expect(screen.queryByText("Couldn't load your account")).toBeNull();
     expect(
-      screen.getAllByRole("link", { name: "Team" }).length,
+      screen.getAllByRole("link", { name: "Settings" }).length,
     ).toBeGreaterThan(0);
   });
 });

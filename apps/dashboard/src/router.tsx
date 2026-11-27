@@ -277,7 +277,7 @@ function UsageRoute() {
   );
 }
 const usage = createRoute({
-  getParentRoute: () => root,
+  getParentRoute: () => settings,
   path: "/settings/usage",
   component: UsageRoute,
 });
@@ -337,13 +337,13 @@ const routeTree = root.addChildren([
     gated("/settings/instance", ADMINS, "/settings/connections", Instance),
     // Owners and admins, also while the plan locks the instance.
     gated("/settings/plan", ADMINS, "/settings/connections", Plan),
+    usage,
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/machines",
       component: MachinesRoute,
     }),
   ]),
-  usage,
   route("/no-access", NoAccess),
   createRoute({
     getParentRoute: () => root,
