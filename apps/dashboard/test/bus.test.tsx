@@ -4,7 +4,7 @@ import { type BusAgent, type Me, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import { BUS_POLL_MS, qk } from "../src/api/queries";
 import { canUseBus } from "../src/bus/access";
@@ -1454,6 +1454,36 @@ describe("Agents › Roles and access", () => {
       within(w).getByRole("button", { name: "Yes, give it" }),
     ).toBeInTheDocument();
   });
+
+  it.each([
+    [1280, "table"],
+    [390, "list"],
+  ] as const)(
+    "hides handover routing aliases in Roles and its holder picker at %i px",
+    async (width, layout) => {
+      vi.stubGlobal("innerWidth", width);
+      withBus();
+      server.use(...createHandlers({ bus: true, handoverAfter: true }));
+      mount("/agents/roles?mock=bus&handover=after");
+      const table = await screen.findByRole(layout, { name: "Roles" });
+      expect(
+        await within(table).findByText("Codex on leo-work"),
+      ).toBeInTheDocument();
+      expect(table).not.toHaveTextContent("manager-2");
+      fireEvent.click(
+        within(table).getByRole("button", { name: "Change holder of manager" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Change holder of manager",
+      });
+      fireEvent.click(
+        within(dialog).getByRole("combobox", { name: "Held by" }),
+      );
+      const list = await screen.findByRole("listbox");
+      expect(list).not.toHaveTextContent(/manager-[23]/);
+      expect(list).toHaveTextContent("Antigravity on home-desktop");
+    },
+  );
 
   it("roles show holder or Vacant; Remove confirms, then DELETEs", async () => {
     withBus();
