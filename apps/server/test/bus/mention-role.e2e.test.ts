@@ -147,7 +147,7 @@ describe("an @-mention of a role (#3132)", () => {
     },
   );
 
-  it("a closed session leaves the @ list at once; a closed role holder stays as its role, away (#3143)", async () => {
+  it("an unnamed session is hidden even when live; a role stays listed after its holder closes (#3143)", async () => {
     const m = await member();
     const user = (await getUser(e, m.userId)) as Member;
     const mach = await machine("Laptop", m.userId);
@@ -196,7 +196,7 @@ describe("an @-mention of a role (#3132)", () => {
       return Array.isArray(j) ? j : j.agents;
     };
     const before = await listed();
-    expect(before.some((a) => a.name === names[0])).toBe(true);
+    expect(before.some((a) => a.name === names[0])).toBe(false);
     expect(before.some((a) => a.name === role)).toBe(true);
 
     d.send({ v: 1, id: "d0", type: "agent_down", agent_ref: "ref0" });

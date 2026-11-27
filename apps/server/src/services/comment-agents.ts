@@ -182,7 +182,7 @@ type OwnAgents = {
  */
 const hiddenUnnamed = (a: BusAgent): boolean =>
   (a.state !== "live" && !a.role) ||
-  (!a.running && a.unnamed === true) ||
+  a.unnamed === true ||
   a.handedOver === true ||
   a.pendingRole !== undefined ||
   (a.privateSessionName === true && !a.role);

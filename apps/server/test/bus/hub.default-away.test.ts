@@ -330,7 +330,7 @@ describe("agent_up name_chosen (#2311)", () => {
       { n: "ref_c", c: 1 },
       { n: "ref_d", c: 0 },
     ]);
-    // A re-derived title (name_chosen false) leaves the flag as it is; a plain rename marks it.
+    // A different title without the person marker clears the flag.
     send({
       v: 1,
       id: "r1",
@@ -363,7 +363,7 @@ describe("agent_up name_chosen (#2311)", () => {
           .toArray(),
       );
     expect(await flagsNow()).toEqual([
-      { n: "ref_c", c: 1 },
+      { n: "ref_c", c: 0 },
       { n: "ref_d", c: 0 },
     ]);
     send({
@@ -371,7 +371,8 @@ describe("agent_up name_chosen (#2311)", () => {
       id: "r3",
       type: "rename",
       agent_ref: "ref_d",
-      proposed_name: "Chosen B",
+      proposed_name: "Title B",
+      name_chosen: true,
     });
     await eventually(
       () =>
@@ -423,7 +424,7 @@ describe("role holders and named-by-words (#2311)", () => {
       agents: { id: string; unnamed?: boolean }[];
     };
     expect(list.agents.find((x) => x.id === holder)?.unnamed).toBeUndefined();
-    expect(list.agents.find((x) => x.id === docs)?.unnamed).toBeUndefined();
+    expect(list.agents.find((x) => x.id === docs)?.unnamed).toBe(true);
     expect(list.agents.find((x) => x.id === plain)?.unnamed).toBe(true);
     await clock(h, t0 + 2 * DEFAULT_NAME_AWAY_MS);
     await alarms(h, 3);
