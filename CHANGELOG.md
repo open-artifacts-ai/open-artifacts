@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.271.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.270.0...v0.271.0) (2026-11-27)
+
+
+### Features
+
+* remove away sessions from the mention menu and keep their roles ([#3343](https://github.com/open-artifacts-ai/open-artifacts/issues/3343)) ([9e9c796](https://github.com/open-artifacts-ai/open-artifacts/commit/9e9c796756272ce9bbcd5e14cd7de40f81f9434e))
+
 ## [0.270.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.269.0...v0.270.0) (2026-11-27)
 
 
