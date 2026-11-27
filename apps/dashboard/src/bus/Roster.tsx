@@ -25,7 +25,7 @@ import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
 import { muted } from "../settings/ui";
-import { AgentApp, appName } from "./AgentApp";
+import { AgentApp, agentLocation, appName } from "./AgentApp";
 import {
   buildRail,
   type Count,
@@ -283,7 +283,8 @@ function AwayName({
         <b>{role.name}</b>
         <div className={muted}>
           {[
-            role.awayMachine && `on the ${role.awayMachine.split(".")[0]}`,
+            role.awayMachine &&
+              `on ${agentLocation(role.awayMachine.split(".")[0])}`,
             awayAge(role.awaySince),
           ]
             .filter(Boolean)
@@ -318,7 +319,7 @@ function AwayName({
             </option>
             {targets.map((a) => (
               <option key={a.id} value={a.id}>
-                {appName(a)} on the {a.machineLabel.split(".")[0]}
+                {appName(a)} on {agentLocation(a.machineLabel.split(".")[0])}
               </option>
             ))}
           </select>
@@ -340,7 +341,8 @@ function AwayName({
       {mode === "free" && (
         <div className="flex basis-full flex-wrap items-center gap-2">
           <p className="m-0 basis-full">
-            Free {role.name}? The next session can take this name.
+            Free {role.name}? It leaves the @ list. Another session can take the
+            name without inheriting its asks or mentions.
           </p>
           <Button
             size="sm"

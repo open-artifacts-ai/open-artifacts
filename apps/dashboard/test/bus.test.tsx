@@ -128,6 +128,9 @@ describe("away names on Agents", () => {
     ).toBeInTheDocument();
     if (operation === "move") {
       fireEvent.click(within(held).getByRole("button", { name: "Move to…" }));
+      expect(
+        within(held).getByRole("option", { name: "Codex on leo-work" }),
+      ).toHaveValue(target.id);
       fireEvent.change(within(held).getByRole("combobox"), {
         target: { value: target.id },
       });
@@ -139,6 +142,11 @@ describe("away names on Agents", () => {
       fireEvent.click(
         within(held).getByRole("button", { name: "Free this name" }),
       );
+      expect(
+        within(held).getByText(
+          `Free ${role.name}? It leaves the @ list. Another session can take the name without inheriting its asks or mentions.`,
+        ),
+      ).toBeInTheDocument();
       fireEvent.click(within(held).getByRole("button", { name: "Cancel" }));
       expect(submitted).toBeUndefined();
       fireEvent.click(
