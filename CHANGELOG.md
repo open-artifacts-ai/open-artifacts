@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.266.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.265.0...v0.266.0) (2026-11-27)
+
+
+### Features
+
+* **roles:** the handover card answers a take-over in one click ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3247](https://github.com/open-artifacts-ai/open-artifacts/issues/3247)) ([11355e2](https://github.com/open-artifacts-ai/open-artifacts/commit/11355e282d28c3d63cdea0d90b6ba77cc40aaa3d))
+
 ## [0.265.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.1...v0.265.0) (2026-11-27)
 
 
