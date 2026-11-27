@@ -121,6 +121,7 @@ describe("hello caps", () => {
       mailExpiry: "mail_expiry",
       sessionsGone: "sessions_gone",
       codexCheck: "codex_check",
+      agyCheck: "agy_check",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

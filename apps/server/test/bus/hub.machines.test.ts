@@ -102,6 +102,7 @@ const RPC_ALLOWLIST = [
   "listRoleProposals",
   "listRoles",
   "namesOf",
+  "observeRelease",
   "ownerAwayChanged",
   "pendingProposalSources",
   "pendingRoleMoveAudits",

@@ -1,4 +1,5 @@
 import {
+  AGY_CHECK_HEADER,
   BUS_CAPS,
   type ClientFrame,
   CODEX_VERDICT_HEADER,
@@ -168,6 +169,7 @@ export class HubConnection {
     const pingMs = this.opts.pingMs ?? 25_000;
     const ws = new WebSocket(this.opts.url, {
       headers: {
+        [AGY_CHECK_HEADER]: "1",
         authorization: `Bearer ${this.opts.token}`,
         [CODEX_VERDICT_HEADER]: "1",
       },

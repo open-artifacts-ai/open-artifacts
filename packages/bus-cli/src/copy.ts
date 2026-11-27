@@ -1237,7 +1237,7 @@ export function copy(
     updateOff: () =>
       `Auto-update is off. Turn it on with ${bus} auto-update on.`,
     updateFailedVersion: (v: string) =>
-      `${v} failed on this machine before, so it won't be installed. The next version will be.`,
+      `${v} failed its last check. The bus will retry automatically.`,
     updatePrompt: (v: string) =>
       `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",

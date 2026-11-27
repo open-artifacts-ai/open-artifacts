@@ -131,6 +131,8 @@ export const BusRoleSchema = z.strictObject({
   name: BusAddressSchema.shape.name,
   agentId: z.string().nullable(),
   holderName: z.string().nullable(),
+  /** The holder uses an internal routing alias after a takeover. */
+  privateSessionName: z.literal(true).optional(),
   vacant: z.boolean(),
   awayHolder: z.literal(true).optional(),
   awayMachine: z.string().optional(),

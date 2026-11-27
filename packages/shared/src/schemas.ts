@@ -1094,6 +1094,7 @@ export type OAuthClient = z.infer<typeof OAuthClientSchema>;
  * asked in time (unknown), never true once revoked.
  */
 export const BusMachineSchema = z.strictObject({
+  busVersion: z.string().nullable().optional(),
   id: z.string(),
   /** Client-supplied at the device step; not editable in v1. */
   label: z.string(),
@@ -1106,6 +1107,7 @@ export type BusMachine = z.infer<typeof BusMachineSchema>;
 
 /** GET R.busMachines: active newest first, then revoked newest first, at most 100. */
 export const BusMachinesSchema = z.strictObject({
+  instanceVersion: z.string().optional(),
   machines: z.array(BusMachineSchema).max(100),
   /**
    * #2552: whether the owner paused every instance-driven machine update.

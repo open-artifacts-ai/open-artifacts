@@ -592,7 +592,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         },
       ];
       busRoles = [
-        { ...role, agentId: successor.id, holderName: route, vacant: false },
+        {
+          ...role,
+          agentId: successor.id,
+          holderName: route,
+          privateSessionName: true,
+          vacant: false,
+        },
       ];
       busRoleProposals = [
         {

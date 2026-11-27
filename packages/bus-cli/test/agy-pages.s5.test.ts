@@ -3,15 +3,21 @@
 // conversation's link proof; added instances get the `--name` form; doctor
 // reports each entry; uninstall puts the user's entry back byte for byte.
 // A fake agy on PATH (deps.which) and a scratch HOME only: no real agy runs.
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   statSync,
+  watch,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { jsoncValue } from "@oa/bus-adapter-mcp-json";
 import { saveInstance } from "@oa/bus-daemon";
@@ -24,9 +30,11 @@ import {
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
+import { withAgyConfigLock } from "../src/steps/agy-config-lock.ts";
 import {
   AGY_TOKEN_ENV,
   agyPagesState,
+  installAgyEntries,
   restoreAgyEntries,
 } from "../src/steps/agy-proof.ts";
 import { TOKEN } from "./fake.ts";
@@ -55,6 +63,20 @@ function setup(opts: { env?: Record<string, string>; busHome?: string } = {}) {
     file: join(h, ".gemini/config/mcp_config.json"),
     moved: join(opts.busHome ?? join(h, ".oa-bus"), "agy-pages-entries.json"),
   };
+}
+
+function ownershipProcess(...args: string[]) {
+  return spawn(
+    process.execPath,
+    [
+      fileURLToPath(
+        new URL("../node_modules/jiti/lib/jiti-cli.mjs", import.meta.url),
+      ),
+      fileURLToPath(new URL("./fixtures/agy-ownership.ts", import.meta.url)),
+      ...args,
+    ],
+    { stdio: ["ignore", "ignore", "inherit"] },
+  );
 }
 
 const put = (path: string, text: string) => {
@@ -100,6 +122,196 @@ const PROXY_ARGS = [
 ];
 
 describe("Antigravity pages entry (agy S5)", () => {
+  it("never binds a slug-only PAT to either colliding install target", async () => {
+    const { deps, h, file } = setup();
+    const other = "https://artifacts-example.com";
+    saveInstance(
+      {
+        name: "other",
+        hub: other,
+        machine_id: "",
+        label: "m",
+        machine_token: TOKEN,
+      },
+      join(h, ".oa-bus"),
+    );
+    put(join(h, ".open-artifacts/artifacts-example-com-pat-token"), PAT);
+    const r = await installAdapters(deps);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    expect(entry(read(file), "open-artifacts-other")).toEqual({
+      serverUrl: `${other}/mcp`,
+    });
+    expect(r.notes.join("\n")).not.toContain(PAT);
+    const before = read(file);
+    put(
+      join(h, ".open-artifacts/pats", encodeURIComponent(other)),
+      "dummy-other-credential",
+    );
+    await installAdapters(deps);
+    expect(read(file)).toBe(before);
+    await uninstallAdapters(deps);
+    expect(entry(read(file))).toBeUndefined();
+  });
+  it("keeps a user comment inside a generated native entry", async () => {
+    const { deps, file } = setup();
+    await installAdapters(deps);
+    put(
+      file,
+      read(file).replace('"serverUrl"', '/* keep my note */ "serverUrl"'),
+    );
+    await installAdapters(deps);
+    await uninstallAdapters(deps);
+    expect(read(file)).toContain("/* keep my note */");
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+  });
+
+  it.each([true, false])(
+    "removes the shared native entry only on last uninstall (creator first: %s)",
+    async (creatorFirst) => {
+      const { deps, file, h } = setup();
+      const other = { ...deps, busHome: join(h, "second-bus") };
+      await installAdapters(deps);
+      await installAdapters(other);
+      await uninstallAdapters(creatorFirst ? deps : other);
+      expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+      await uninstallAdapters(creatorFirst ? other : deps);
+      // Last uninstall may remove the empty config file.
+      expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
+    },
+  );
+
+  it("recovers when the creator stops immediately after publishing the native entry", async () => {
+    const { deps, file, h } = setup();
+    const io = agyEntryIo(deps);
+    put(file, '{"mcpServers":{}}');
+    expect(() =>
+      installAgyEntries(
+        {
+          ...io,
+          write(text) {
+            io.write(text);
+            throw Error("interrupted");
+          },
+        },
+        [{ origin: HUB }],
+      ),
+    ).toThrow("interrupted");
+    const second = { ...deps, busHome: join(h, "second-bus") };
+    await installAdapters(second);
+    await installAdapters(deps);
+    await uninstallAdapters(deps);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    await uninstallAdapters(second);
+    expect(entry(read(file))).toBeUndefined();
+  });
+
+  it("recovers a ticket left by a process that exits inside the config lock", async () => {
+    const { deps, h, file } = setup();
+    const child = spawn(
+      process.execPath,
+      [
+        fileURLToPath(new URL("./fixtures/agy-lock-exit.ts", import.meta.url)),
+        h,
+      ],
+      { stdio: "inherit" },
+    );
+    expect((await once(child, "exit"))[0]).toBe(42);
+    await installAdapters(deps);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    expect(
+      readdirSync(h).some((f) => f.startsWith(".oa-bus-agy-ticket.")),
+    ).toBe(false);
+  });
+
+  it("serializes two uninstall processes that are both ready to remove the same native entry", async () => {
+    const { deps, h, file } = setup();
+    const second = join(h, "second-bus");
+    await installAdapters(deps);
+    await installAdapters({ ...deps, busHome: second });
+    const children: ReturnType<typeof spawn>[] = [];
+    const done: Promise<void>[] = [];
+    try {
+      await withAgyConfigLock(h, async () => {
+        const watcher = watch(h);
+        try {
+          const queued = new Promise<void>((resolve, reject) => {
+            watcher.once("error", reject);
+            watcher.on("change", () => {
+              if (
+                readdirSync(h).filter((f) =>
+                  f.startsWith(".oa-bus-agy-ticket."),
+                ).length === 3
+              )
+                resolve();
+            });
+          });
+          for (const bus of [join(h, ".oa-bus"), second]) {
+            const child = ownershipProcess(h, bus);
+            children.push(child);
+            done.push(
+              once(child, "exit").then(([code]) => {
+                expect(code).toBe(0);
+              }),
+            );
+          }
+          // An early exit means an uninstall bypassed the held lock.
+          await Promise.race([
+            queued,
+            ...done.map((p) =>
+              p.then(() => {
+                throw Error("uninstall escaped the config lock");
+              }),
+            ),
+          ]);
+        } finally {
+          watcher.close();
+        }
+      });
+      await Promise.all(done);
+      expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
+      expect(existsSync(file + ".oa-bus-claims")).toBe(false);
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.allSettled(done);
+    }
+  }, 20_000);
+
+  it("installs and removes the main pages proxy on a fresh machine", async () => {
+    const { deps, file, h } = setup();
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
+    await installAdapters(deps);
+    const config = read(file);
+    expect(entry(config)).toEqual({
+      command: BIN[0],
+      args: [
+        ...PROXY_ARGS.slice(0, -2),
+        "--token-file",
+        join(h, ".open-artifacts/pats", encodeURIComponent(HUB)),
+      ],
+    });
+    await installAdapters(deps);
+    expect(read(file)).toBe(config);
+    await uninstallAdapters(deps);
+    expect(entry(read(file))).toBeUndefined();
+  });
+  it("keeps an occupied name and preserves changes to the generated proxy", async () => {
+    const { deps, file, h } = setup();
+    const other = { command: "mine", args: [] };
+    put(file, JSON.stringify({ mcpServers: { "open-artifacts": other } }));
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
+    await installAdapters(deps);
+    const config = JSON.parse(read(file));
+    expect(config.mcpServers["open-artifacts"]).toEqual(other);
+    const generated = config.mcpServers["open-artifacts-2"];
+    expect(generated.args).toContain(HUB);
+    generated.disabled = true;
+    put(file, JSON.stringify(config));
+    await installAdapters({ ...deps, busBin: ["/new/node", "/new/cli"] });
+    await uninstallAdapters(deps);
+    expect(entry(read(file), "open-artifacts-2")).toEqual(generated);
+    expect(entry(read(file))).toEqual(other);
+  });
+
   it("is left alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
     const { deps, file } = setup({ env: {} });
     put(file, THEIRS());
@@ -138,24 +350,15 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(read(file)).toBe(THEIRS());
   });
 
-  it("an entry with no header uses the PAT file when there is one, else stays with a note", async () => {
-    const a = setup();
-    put(a.file, THEIRS(`${HUB}/mcp`, ""));
-    const r = await installAdapters(a.deps);
-    expect(entry(read(a.file)).serverUrl).toBe(`${HUB}/mcp`);
-    expect(r.notes.join("\n")).toMatch(
-      /no PAT at .*artifacts-example-com-pat-token/,
-    );
-    const b = setup();
-    put(b.file, THEIRS(`${HUB}/mcp`, ""));
-    const pat = join(b.h, ".open-artifacts", "artifacts-example-com-pat-token");
-    put(pat, PAT);
-    await installAdapters(b.deps);
-    const e = entry(read(b.file));
-    expect(e.args).toEqual([...PROXY_ARGS.slice(0, -2), "--token-file", pat]);
-    expect(e).not.toHaveProperty("env");
-    await uninstallAdapters(b.deps);
-    expect(read(b.file)).toBe(THEIRS(`${HUB}/mcp`, ""));
+  it("preserves existing native OAuth entries even with a PAT available", async () => {
+    const { deps, file, h } = setup();
+    const original = THEIRS(`${HUB}/mcp`, "");
+    put(file, original);
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
+    await installAdapters(deps);
+    expect(entry(read(file))).toEqual(entry(original));
+    await uninstallAdapters(deps);
+    expect(read(file)).toBe(original);
   });
 
   it("leaves an entry with other headers, another address, or turned off", async () => {

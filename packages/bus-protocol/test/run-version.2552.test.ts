@@ -32,7 +32,7 @@ const hello = {
 describe("run_version cap (#2552)", () => {
   it("is one token, within MAX_CAPS of the other caps", () => {
     expect(BUS_CAPS.runVersion).toBe("run_version");
-    expect(Object.values(BUS_CAPS)).toHaveLength(21);
+    expect(Object.values(BUS_CAPS)).toHaveLength(22);
     expect(Object.values(BUS_CAPS).length).toBeLessThanOrEqual(MAX_CAPS);
   });
   it("hello_ok.run_version is strict x.y.z, at most 32 chars", () => {

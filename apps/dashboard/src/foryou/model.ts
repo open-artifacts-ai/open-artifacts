@@ -137,6 +137,8 @@ export function contextLine(x: InboxItem, now = Date.now()): string {
       const who = x.actor ? `${x.actor.name} asks · ${on}` : on;
       return waitMs(x, now) !== undefined ? who : `${who} · ${when}`;
     }
+    case "machine_update":
+      return when;
     case "share":
       return `"${title}" · ${when}`;
     case "role":

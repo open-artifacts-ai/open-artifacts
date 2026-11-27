@@ -656,6 +656,7 @@ describe("RPC surface", () => {
       "listRoleProposals",
       "listRoles",
       "namesOf",
+      "observeRelease",
       "ownerAwayChanged",
       "pendingProposalSources",
       "pendingRoleMoveAudits",

@@ -409,6 +409,19 @@ export function upsertAgyMcp(
   });
 }
 
+/** Adds a fresh named server, retaining agy's BOM and the surrounding JSONC. */
+export function insertAgyEntry(text: string, name: string, entry: Doc): string {
+  return withoutBom(text, (body) => {
+    const servers = record(
+      parseJsonc(body, "mcp_config.json").mcpServers,
+      "mcpServers",
+    );
+    if (servers && Object.hasOwn(servers, name))
+      throw new Error(`mcp_config.json already has a ${name} entry`);
+    return setJsoncValue(body, ["mcpServers", name], entry);
+  });
+}
+
 /** Removes `mcpServers.<name>` and nothing else; unchanged when it is not there. */
 export function removeAgyMcp(text: string, name: string): string {
   return withoutBom(text, (body) => {
