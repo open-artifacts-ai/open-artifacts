@@ -6,6 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import {
   BUS_CAPS,
   type ClientFrame,
+  CODEX_VERDICT_HEADER,
   canonicalArgsSha256,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -47,10 +48,14 @@ type Check = {
 };
 
 /** A member, a machine, a daemon that listed codex_check and a live codex session `thread`. */
-async function scene(caps: string[] = CAPS, thread = uuid()) {
+async function scene(
+  caps: string[] = CAPS,
+  thread = uuid(),
+  headers: Record<string, string> = {},
+) {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
-  const d = await daemon(mach.token);
+  const d = await daemon(mach.token, headers);
   d.send({ ...hello(id("h")), caps } as ClientFrame);
   const ok = await waitFor(d, "hello_ok");
   d.send({
@@ -146,7 +151,9 @@ describe("a Codex call with no proof (#3108)", () => {
   ] as const)(
     "reports the final link decision for daemon answer %s",
     async (ok, reason) => {
-      const { m, d, thread } = await scene([...CAPS, BUS_CAPS.codexVerdict]);
+      const { m, d, thread } = await scene(CAPS, uuid(), {
+        [CODEX_VERDICT_HEADER]: "1",
+      });
       const result = await run(m.userId, d, body("ping", codeMeta(thread)), ok);
       expect(Boolean(result.identity)).toBe(ok);
       const verdict = await waitFor(d, "codex_call_verdict");
@@ -159,6 +166,17 @@ describe("a Codex call with no proof (#3108)", () => {
       });
     },
   );
+  it("does not send verdicts to a released codex_check daemon", async () => {
+    const { m, d, thread } = await scene();
+    const hub = await hubOf(m.userId);
+    await hub.codexCallVerdict(thread, "daemon_refused");
+    // A later check and its answer confirm the old connection remains usable.
+    const result = await run(m.userId, d, body("ping", codeMeta(thread)), true);
+    expect(result.identity).toBeDefined();
+    expect(
+      framesSeen(d).some((frame) => frame.type === "codex_call_verdict"),
+    ).toBe(false);
+  });
   it("code mode: links to the codex session of the thread when the daemon says yes", async () => {
     const { m, d, thread } = await scene();
     const meta = codeMeta(thread);

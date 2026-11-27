@@ -7,6 +7,7 @@ import {
   BUS_CAPS,
   BusNameSchema,
   type ClientFrame,
+  CODEX_VERDICT_HEADER,
   CodexDirectCallIdSchema,
   CodexExecCallIdSchema,
   CodexItemIdSchema,
@@ -333,6 +334,7 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
  */
 type Attachment = {
   machineId: string;
+  codexVerdicts?: true;
   replaced?: true;
   revoked?: true;
   /**
@@ -4995,8 +4997,7 @@ export class BusHub extends DurableObject<Env> {
       .toArray();
     if (rows.length !== 1 || !rows[0]) return;
     const ws = liveSocket(this.ctx, rows[0].machine_id);
-    const caps = ws && attachmentOf(ws)?.caps;
-    if (ws && caps && hasCap({ caps }, BUS_CAPS.codexVerdict))
+    if (ws && attachmentOf(ws)?.codexVerdicts && codexCheckGated(ws))
       trySendFrame(ws, {
         v: 1,
         id: frameId(),
@@ -5993,8 +5994,8 @@ export class BusHub extends DurableObject<Env> {
 
   /**
    * GET /bus/connect (bus/connect.ts) forwards a verified upgrade here, to
-   * CONNECT_DO_PATH, with only Upgrade, MACHINE_ID_HEADER,
-   * MACHINE_LABEL_HEADER and AUTHZ_AT_HEADER (never the client's headers).
+   * CONNECT_DO_PATH. The Worker supplies the verified machine identity and
+   * authorization time, and normalizes the optional verdict opt-in to 1.
    * The Worker checked the token in D1 (unrevoked), the member (active,
    * canConnect) and that this is their hub. Here: an upgrade authorized at
    * or before the last closeAll (+ SKEW_MS) is refused 429 (the daemon
@@ -6069,7 +6070,12 @@ export class BusHub extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [DAEMON_TAG, machineId]);
-    server.serializeAttachment({ machineId } satisfies Attachment);
+    server.serializeAttachment({
+      machineId,
+      ...(req.headers.get(CODEX_VERDICT_HEADER) === "1"
+        ? { codexVerdicts: true }
+        : {}),
+    } satisfies Attachment);
     // open-bus #422: online again; the offline clock stops.
     this.ctx.storage.sql.exec(
       "update machines set disconnected_at = null where id = ? and disconnected_at is not null",

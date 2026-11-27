@@ -1,6 +1,7 @@
 import {
   BUS_ROUTES,
   BusNameSchema,
+  CODEX_VERDICT_HEADER,
   DeviceCodeRequestSchema,
   type DeviceCodeResponse,
   DeviceTokenRequestSchema,
@@ -755,6 +756,9 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
         [MACHINE_ID_HEADER]: m.id,
         [MACHINE_LABEL_HEADER]: m.label,
         [AUTHZ_AT_HEADER]: String(authzAt),
+        ...(c.req.header(CODEX_VERDICT_HEADER) === "1"
+          ? { [CODEX_VERDICT_HEADER]: "1" }
+          : {}),
       },
     }),
   );
