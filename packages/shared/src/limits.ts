@@ -72,6 +72,8 @@ export const LIMITS = {
   indexTextBytes: 64 * 1024,
   /** Body text is indexed this long after a publish/restore/undelete; bursts coalesce. */
   indexDebounceMs: 10_000,
+  /** The longest GET versions `wait` holds a request for the latest version's search index. */
+  indexWaitMaxMs: 30_000,
 } as const;
 
 /**

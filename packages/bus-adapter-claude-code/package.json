@@ -11,7 +11,8 @@
     "./main": "./src/main.ts",
     "./codex": "./src/codex-main.ts",
     "./codex-proxy": "./src/codex-proxy-main.ts",
-    "./antigravity": "./src/antigravity-main.ts"
+    "./antigravity": "./src/antigravity-main.ts",
+    "./agy-proxy": "./src/agy-proxy-main.ts"
   },
   "scripts": {
     "test": "vitest run",

@@ -91,9 +91,20 @@ async function reconnected(d: { frames: Frame[][] }, n: number) {
 
 let name: string | undefined;
 let agent: { kind: string } | undefined;
+let editorText: string;
+let terminalInput: ((data: string) => void) | undefined;
 const ctx = (id = "pi-sess-r") => ({
   cwd: "/work/repo",
   sessionManager: { getSessionId: () => id, getSessionName: () => name },
+  ui: {
+    getEditorText: () => editorText,
+    onTerminalInput: (handler: (data: string) => void) => {
+      terminalInput = handler;
+      return () => {
+        terminalInput = undefined;
+      };
+    },
+  },
   ...(agent ? { agent } : {}),
 });
 type C = ReturnType<typeof ctx>;
@@ -110,7 +121,11 @@ async function pi(awaitStart = true) {
     for (const h of handlers.get(e) ?? []) await h({}, c);
   };
   shutdowns.push(() => emit("session_shutdown"));
-  const started = emit("session_start");
+  const started = Promise.all(
+    (handlers.get("session_start") ?? []).map((h) =>
+      h({ reason: "startup" }, ctx()),
+    ),
+  );
   if (awaitStart) await started;
   return emit;
 }
@@ -120,6 +135,8 @@ beforeEach(() => {
   vi.stubEnv("OA_BUS_HOME", home);
   name = "First Name";
   agent = undefined;
+  editorText = "";
+  terminalInput = undefined;
 });
 afterEach(async () => {
   for (const s of shutdowns.splice(0)) await s();
@@ -139,19 +156,57 @@ describe("pi rename (#1635)", () => {
     expect((d.frames[0][0].caps as string[]).includes("rename")).toBe(true);
   });
 
-  it("sends one rename per change and nothing when unchanged", async () => {
+  it("marks a submitted /name chosen and sends it only once", async () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     await emit("session_info_changed");
     await emit("turn_start");
     expect(d.renames(0)).toHaveLength(0);
+    editorText = "/name Second Name";
+    terminalInput?.("\r");
     name = "Second Name";
     await emit("session_info_changed");
     await emit("turn_start");
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("Second Name");
+    expect(d.renames(0)[0]).toMatchObject({
+      name: "Second Name",
+      name_chosen: true,
+    });
+    await d.settled(0);
+    expect(d.renames(0)).toHaveLength(1);
   });
+
+  it("forwards setSessionName without marking it chosen", async () => {
+    const d = await daemon(["rename"]);
+    const emit = await pi();
+    // An unsubmitted command in the editor is not evidence of a choice.
+    editorText = "/name Extension Title";
+    name = "Extension Title";
+    await emit("session_info_changed");
+    await d.settled(0);
+    expect(d.renames(0)).toHaveLength(1);
+    expect(d.renames(0)[0]).toMatchObject({ name: "Extension Title" });
+    expect(d.renames(0)[0]).not.toHaveProperty("name_chosen");
+  });
+
+  it.each(["--name", "-n"])(
+    "marks the startup %s chosen in hello",
+    async (flag) => {
+      const d = await daemon(["rename"]);
+      const argv = process.argv;
+      process.argv = [...argv.slice(0, 2), flag, "First Name"];
+      try {
+        await pi();
+        expect(d.frames[0][0]).toMatchObject({
+          proposed_name: "First Name",
+          name_chosen: true,
+        });
+      } finally {
+        process.argv = argv;
+      }
+    },
+  );
 
   it("a turn start catches a rename when the event is missing", async () => {
     const d = await daemon(["rename"]);
@@ -228,12 +283,17 @@ describe("pi rename (#1635)", () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    editorText = "/name After Rename";
+    terminalInput?.("\x1b[13u");
     name = "After Rename";
     await emit("session_info_changed");
     d.drop();
     // Faked time passes while the real socket close and reconnect settle.
     await reconnected(d, 1);
-    expect(d.frames[1][0].proposed_name).toBe("After Rename");
+    expect(d.frames[1][0]).toMatchObject({
+      proposed_name: "After Rename",
+      name_chosen: true,
+    });
   });
 
   it("a reconnect echoes the binding token the first welcome issued (#1608)", async () => {
@@ -251,11 +311,18 @@ describe("pi rename (#1635)", () => {
     // Not awaited: session_start resolves only once the welcome arrives.
     const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    editorText = "/name Typed During Hello";
+    terminalInput?.("\r");
     name = "Typed During Hello";
+    // Another extension can delay Pi's metadata event by a microtask.
+    await Promise.resolve();
     await emit("session_info_changed");
     d.releaseWelcome();
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("Typed During Hello");
+    expect(d.renames(0)[0]).toMatchObject({
+      name: "Typed During Hello",
+      name_chosen: true,
+    });
   });
 
   it("an event from another session neither renames nor changes what a reconnect proposes", async () => {
@@ -278,6 +345,7 @@ describe("pi rename (#1635)", () => {
     const d = await daemon(["rename"]);
     const emit = await pi();
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    expect(d.frames[0][0]).not.toHaveProperty("name_chosen");
     name = "Auto Title";
     await emit("session_info_changed");
     await emit("turn_start");

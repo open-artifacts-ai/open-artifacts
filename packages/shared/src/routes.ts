@@ -61,12 +61,24 @@ export const R = {
    * A page holds at most VERSIONS_PAGE_SIZE (20) and stops early once its manifests pass
    * ~1 MiB (always at least one), so pages may be shorter than 20: page on with
    * `before` = the last version; only an empty array means the end.
+   * `wait` (ms, a safe integer >= 0, at most 16 digits; the server clamps it to LIMITS.indexWaitMaxMs):
+   * on the first page (no `before`), while the newest version's search index
+   * is still pending (`textIndexed` false), the request is held and answers the
+   * moment that index job settles, or at the cap with the then-current list; it
+   * never blocks anything else and changes nothing. Absent or 0: answers at
+   * once. Same access as the plain read.
    * POST PublishInput (new version) -> PublishResult
    */
-  versions: (id: string, before?: number) => {
+  versions: (id: string, before?: number, wait?: number) => {
     if (before !== undefined && !(Number.isInteger(before) && before >= 1))
       throw new RangeError(`before must be an integer >= 1: ${before}`);
-    return `${A}/${seg(id)}/versions${before === undefined ? "" : `?before=${before}`}`;
+    if (wait !== undefined && !(Number.isSafeInteger(wait) && wait >= 0))
+      throw new RangeError(`wait must be an integer >= 0: ${wait}`);
+    const q = [
+      before === undefined ? "" : `before=${before}`,
+      wait === undefined ? "" : `wait=${wait}`,
+    ].filter(Boolean);
+    return `${A}/${seg(id)}/versions${q.length === 0 ? "" : `?${q.join("&")}`}`;
   },
   /** GET raw file bytes (auth), for diff */
   versionFile: (id: string, v: number, path: string) =>

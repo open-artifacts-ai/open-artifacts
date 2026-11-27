@@ -370,6 +370,8 @@ export function daemonLinkProof(opts: {
   hash: string;
   /** The instance the proof is for; omitted means main (the frame is then what it always was). */
   instance?: string;
+  /** agy S5: the Antigravity conversation; `pid` is then the agy process. */
+  conversation?: string;
   timeoutMs?: number;
 }): Promise<boolean> {
   return new Promise((resolve, reject) => {
@@ -390,7 +392,7 @@ export function daemonLinkProof(opts: {
     );
     sock.once("connect", () =>
       sock.write(
-        `${JSON.stringify({ v: 1, id: "link", type: "link_proof", pid: opts.pid, hash: opts.hash, ...(opts.instance === undefined ? {} : { instance: opts.instance }) })}\n`,
+        `${JSON.stringify({ v: 1, id: "link", type: "link_proof", pid: opts.pid, hash: opts.hash, ...(opts.instance === undefined ? {} : { instance: opts.instance }), ...(opts.conversation === undefined ? {} : { conversation: opts.conversation }) })}\n`,
       ),
     );
     sock.on("data", (chunk) => {

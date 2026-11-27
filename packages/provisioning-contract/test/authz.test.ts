@@ -162,9 +162,9 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
       expect(o(id), id).toEqual({ ok: false, code: "forbidden" });
   });
 
-  it("the test member's workflow: exactly R2, R15 and R26 (own reach) on staging, 403 on every other route, 401 on prod", () => {
+  it("the test member's workflow: exactly R2, R3, R5, R15 and R26 (own reach) on staging, 403 on every other route, 401 on prod", () => {
     const tm = { kind: "oidc", oidcWorkflow: "test-member" } as const;
-    expect(TEST_MEMBER.routes).toEqual(["R2", "R15", "R26"]);
+    expect(TEST_MEMBER.routes).toEqual(["R2", "R3", "R5", "R15", "R26"]);
     for (const id of ROUTE_IDS) {
       expect(authorize(id, tm, "prod"), id).toEqual({
         ok: false,

@@ -139,6 +139,8 @@ export const Hello = z.object({
     .max(64)
     .refine(isWellFormed, WELL_FORMED)
     .optional(),
+  /** Pi observed a person choose the proposed name. */
+  name_chosen: z.literal(true).optional(),
   /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
   caps: z.array(z.string().max(32)).max(16).optional(),
   /**
@@ -262,6 +264,8 @@ export const Rename = z.object({
   ...optIn,
   type: z.literal("rename"),
   name: z.string().min(1).max(64).refine(isWellFormed, WELL_FORMED),
+  /** Pi observed a person choose this name. */
+  name_chosen: z.literal(true).optional(),
 });
 /**
  * Follow, unfollow or list follows (#1317). The agent is the connection's
@@ -330,6 +334,13 @@ export const LinkProofRequest = z.object({
     .string()
     .regex(/^[a-z0-9-]{1,32}$/)
     .optional(),
+  /**
+   * agy S5: the Antigravity conversation this proof is for, from the
+   * tools/call `_meta` agy sends. Present, `pid` is an agy process and the
+   * daemon binds the hash only to the live antigravity session of that pid
+   * and conversation. Absent, the request is Claude's, as before.
+   */
+  conversation: AGENT_REF.optional(),
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 

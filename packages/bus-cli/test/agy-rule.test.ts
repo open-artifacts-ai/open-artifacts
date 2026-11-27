@@ -5,7 +5,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  renameSync,
   statSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +24,8 @@ import {
   agyRuleState,
   agySettingsFile,
   agyWatchRule,
+  installAgyRule,
+  uninstallAgyRule,
 } from "../src/steps/agy-rule.ts";
 import {
   AGY_WATCH_FILE,
@@ -50,6 +55,16 @@ function setup(): { h: string; deps: AdapterDeps; file: string } {
   };
   return { h, deps, file: agySettingsFile(h) };
 }
+const grants = [
+  "list_agents",
+  "send_message",
+  "fetch",
+  "self",
+  "set_status",
+  "follow",
+  "unfollow",
+  "following",
+].map((name) => `mcp(oa_bus/${name})`);
 const read = (p: string) => readFileSync(p, "utf8");
 const put = (p: string, text: string) => {
   mkdirSync(dirname(p), { recursive: true });
@@ -88,9 +103,14 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
     put(file, before);
     await installAdapters(deps);
     const after = read(file);
-    expect(allowOf(file)).toEqual(["command(git status)", RULE]);
+    expect(allowOf(file)).toEqual(["command(git status)", RULE, ...grants]);
     // Only our string went in.
-    expect(after.replace(`,\n      ${JSON.stringify(RULE)}`, "")).toBe(before);
+    expect(
+      after.replace(
+        [RULE, ...grants].map((r) => `,\n      ${JSON.stringify(r)}`).join(""),
+        "",
+      ),
+    ).toBe(before);
     expect(statSync(file).mode & 0o777).toBe(0o600);
     // Idempotent.
     await installAdapters(deps);
@@ -105,7 +125,9 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
     const { h, deps, file } = setup();
     const RULE = pinnedRule(h);
     await installAdapters(deps);
-    expect(JSON.parse(read(file))).toEqual({ permissions: { allow: [RULE] } });
+    expect(JSON.parse(read(file))).toEqual({
+      permissions: { allow: [RULE, ...grants] },
+    });
     await uninstallAdapters(deps);
     expect(JSON.parse(read(file))).toEqual({});
   });
@@ -118,11 +140,58 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
     expect(allowOf(file)).toEqual([
       "command(git)",
       agyWatchRule(agyWatchCommand(["/old/oa-bus"], join(h, ".oa-bus"))),
+      ...grants,
     ]);
     await installAdapters(deps);
-    expect(allowOf(file)).toEqual(["command(git)", RULE]);
+    expect(allowOf(file)).toEqual(["command(git)", ...grants, RULE]);
     await uninstallAdapters(deps);
     expect(allowOf(file)).toEqual(["command(git)"]);
+  });
+
+  it.each([true, false])(
+    "cleans up a failed watcher move with retry=%s",
+    (retry) => {
+      const { h, file } = setup();
+      const busDir = join(h, ".oa-bus");
+      const before = '{"permissions":{"allow":["mcp(oa_bus/self)"]}}\n';
+      put(file, before);
+      const oldLine = agyWatchCommand(["/old/oa-bus"], busDir);
+      installAgyRule(h, busDir, oldLine);
+      const original = file + ".original";
+      renameSync(file, original);
+      symlinkSync(original, file);
+      expect(() => installAgyRule(h, busDir, pinnedLine(h))).toThrow(/symlink/);
+      expect(allowOf(file)).toContain(agyWatchRule(oldLine));
+      unlinkSync(file);
+      renameSync(original, file);
+      if (retry) {
+        installAgyRule(h, busDir, pinnedLine(h));
+        expect(allowOf(file)).not.toContain(agyWatchRule(oldLine));
+        expect(allowOf(file)).toContain(pinnedRule(h));
+      }
+      uninstallAgyRule(h, busDir);
+      expect(read(file)).toBe(before);
+    },
+  );
+
+  it("preserves user-owned grants across reinstalls and names missing or restricted tools", async () => {
+    const { h, deps, file } = setup();
+    const before =
+      '{"permissions":{"allow":["mcp(oa_bus/self)","mcp(other/fetch)"],"deny":["mcp(oa_bus/follow)"]}}\r\n';
+    put(file, before);
+    await installAdapters(deps);
+    await installAdapters(deps);
+    expect(allowOf(file)).not.toContain("mcp(oa_bus/propose_reach)");
+    const busDir = join(h, ".oa-bus");
+    const owned = JSON.parse(read(join(busDir, "agy-rule.json"))).toolRules;
+    expect(owned).toEqual(grants.filter((r) => r !== "mcp(oa_bus/self)"));
+    put(file, read(file).replace(', "mcp(oa_bus/fetch)"', ""));
+    expect(agyRuleState(h, busDir, pinnedLine(h)).missingTools.sort()).toEqual([
+      "mcp(oa_bus/fetch)",
+      "mcp(oa_bus/follow)",
+    ]);
+    await uninstallAdapters(deps);
+    expect(read(file)).toBe(before);
   });
 
   it("doctor says present, missing or altered, with the fix", async () => {
@@ -165,7 +234,7 @@ describe("the always-allow rule for the watcher (agy S3)", () => {
               : null,
         procStart: () => "t0",
         title: async () => undefined,
-        hello: async () => "agy",
+        hello: async () => ({ name: "agy" }),
         ppid: 300,
         watcherLive: () => live,
         watchLine: () => LINE,

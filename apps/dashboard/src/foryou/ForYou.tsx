@@ -82,6 +82,7 @@ import {
   useMeId,
   useNotificationOpen,
   usePushKey,
+  usePushSubscriptions,
   useThisBrowserOn,
   waitedFor,
 } from "./push";
@@ -635,7 +636,12 @@ function PushNudge({ needsYou }: { needsYou: InboxItem[] }) {
   const savePrefs = useSavePrefs();
   const [gone, setGone] = useState(nudgeDismissed);
   const [busy, setBusy] = useState(false);
-  const [on] = useThisBrowserOn();
+  const subs = usePushSubscriptions(!!key.data && pushSupported());
+  const [on] = useThisBrowserOn(
+    key.isError ? null : key.data,
+    subs.isError ? [] : subs.data?.items,
+    userId,
+  );
   const waits = needsYou
     .map((x) => waitMs(x))
     .filter((w): w is number => w !== undefined);

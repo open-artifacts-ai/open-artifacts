@@ -4,6 +4,8 @@ import {
   BUS_HUB_TIMEOUT_MS,
   busView,
   listBusAgents,
+  REVOKED_MACHINE_VISIBLE_MS,
+  revokeBusMachine,
 } from "../../src/services/bus.js";
 import { e, machine, member } from "./helpers.js";
 
@@ -122,6 +124,43 @@ describe("listBusAgents", () => {
     expect(await listBusAgents(e, m.userId)).toEqual({
       agents: [],
       live: true,
+    });
+  });
+});
+
+describe("revoked machine visibility (#3123)", () => {
+  it("shows machines revoked under 24 h ago and hides those revoked 24 h+ ago while keeping the audit row", async () => {
+    const m = await member();
+    const active = await machine("active", m.userId);
+    const recent = await machine("recent-revoked", m.userId);
+    const old = await machine("old-revoked", m.userId);
+
+    expect(await revokeBusMachine(e, m.userId, recent.id)).toBe(true);
+    expect(await revokeBusMachine(e, m.userId, old.id)).toBe(true);
+
+    const now = Date.now();
+    await e.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
+      .bind(now - REVOKED_MACHINE_VISIBLE_MS + 60_000, recent.id)
+      .run();
+    await e.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
+      .bind(now - REVOKED_MACHINE_VISIBLE_MS - 60_000, old.id)
+      .run();
+
+    const v = await busView(e, m.userId);
+    expect(v.machines.map((x) => x.id)).toEqual([active.id, recent.id]);
+    const recentRow = v.machines.find((x) => x.id === recent.id);
+    expect(recentRow?.revokedAt).not.toBeNull();
+    expect(recentRow?.connected).toBe(false);
+
+    const auditRow = await e.DB.prepare(
+      "select action, target_type as targetType, target_id as targetId from audit_events where action = 'machine.revoke' and target_id = ?",
+    )
+      .bind(old.id)
+      .first<{ action: string; targetType: string; targetId: string }>();
+    expect(auditRow).toEqual({
+      action: "machine.revoke",
+      targetType: "bus_machine",
+      targetId: old.id,
     });
   });
 });

@@ -8,6 +8,7 @@ import {
 import { sql } from "drizzle-orm";
 import {
   check,
+  foreignKey,
   index,
   integer,
   primaryKey,
@@ -514,6 +515,24 @@ export const shares = sqliteTable(
     primaryKey({ columns: [t.artifactId, t.email] }),
     index("shares_email_idx").on(t.email),
     check("shares_role_check", inList("role", ["viewer", "editor"])),
+  ],
+);
+
+/** Compatibility grants for pre-3269 shares. See migration 0054 for the legacy writer triggers. */
+export const legacyViewerComments = sqliteTable(
+  "legacy_viewer_comments",
+  {
+    id: integer("id").primaryKey(),
+    artifactId: text("artifact_id").notNull(),
+    email: text("email").notNull(),
+    canComment: integer("can_comment").notNull(),
+  },
+  (t) => [
+    index("legacy_viewer_by_share").on(t.artifactId, t.email, t.id),
+    foreignKey({
+      columns: [t.artifactId, t.email],
+      foreignColumns: [shares.artifactId, shares.email],
+    }).onDelete("cascade"),
   ],
 );
 
