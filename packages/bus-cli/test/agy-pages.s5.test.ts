@@ -100,8 +100,35 @@ const PROXY_ARGS = [
 ];
 
 describe("Antigravity pages entry (agy S5)", () => {
+  it("never binds a slug-only PAT to either colliding install target", async () => {
+    const { deps, h, file } = setup();
+    const other = "https://artifacts-example.com";
+    saveInstance(
+      {
+        name: "other",
+        hub: other,
+        machine_id: "",
+        label: "m",
+        machine_token: TOKEN,
+      },
+      join(h, ".oa-bus"),
+    );
+    put(join(h, ".open-artifacts/artifacts-example-com-pat-token"), PAT);
+    const r = await installAdapters(deps);
+    expect(entry(read(file))).toBeUndefined();
+    expect(entry(read(file), "open-artifacts-other")).toBeUndefined();
+    expect(r.notes.join("\n")).toContain(other);
+    expect(r.notes.join("\n")).not.toContain(PAT);
+    const bound = join(h, ".open-artifacts/pats", encodeURIComponent(other));
+    put(bound, "dummy-other-credential");
+    await installAdapters(deps);
+    expect(entry(read(file))).toBeUndefined();
+    expect(entry(read(file), "open-artifacts-other").args).toContain(bound);
+    expect(read(file)).not.toContain("dummy-other-credential");
+  });
   it("installs and removes the main pages proxy on a fresh machine", async () => {
     const { deps, file, h } = setup();
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
     await installAdapters(deps);
     const config = read(file);
     expect(entry(config)).toEqual({
@@ -109,7 +136,7 @@ describe("Antigravity pages entry (agy S5)", () => {
       args: [
         ...PROXY_ARGS.slice(0, -2),
         "--token-file",
-        join(h, ".open-artifacts/artifacts-example-com-pat-token"),
+        join(h, ".open-artifacts/pats", encodeURIComponent(HUB)),
       ],
     });
     await installAdapters(deps);
@@ -121,7 +148,7 @@ describe("Antigravity pages entry (agy S5)", () => {
     const { deps, file, h } = setup();
     const other = { command: "mine", args: [] };
     put(file, JSON.stringify({ mcpServers: { "open-artifacts": other } }));
-    put(join(h, ".open-artifacts/artifacts-example-com-pat-token"), PAT);
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
     await installAdapters(deps);
     const config = JSON.parse(read(file));
     expect(config.mcpServers["open-artifacts"]).toEqual(other);
@@ -179,11 +206,11 @@ describe("Antigravity pages entry (agy S5)", () => {
     const r = await installAdapters(a.deps);
     expect(entry(read(a.file)).serverUrl).toBe(`${HUB}/mcp`);
     expect(r.notes.join("\n")).toMatch(
-      /no PAT at .*artifacts-example-com-pat-token/,
+      /no PAT at .*pats\/https%3A%2F%2Fartifacts\.example\.com/,
     );
     const b = setup();
     put(b.file, THEIRS(`${HUB}/mcp`, ""));
-    const pat = join(b.h, ".open-artifacts", "artifacts-example-com-pat-token");
+    const pat = join(b.h, ".open-artifacts/pats", encodeURIComponent(HUB));
     put(pat, PAT);
     await installAdapters(b.deps);
     const e = entry(read(b.file));

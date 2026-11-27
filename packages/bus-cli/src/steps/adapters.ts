@@ -601,11 +601,14 @@ export const agyEntryIo = (
     ...(movedHome(deps as AdapterDeps)
       ? { busHome: movedHome(deps as AdapterDeps) as string }
       : {}),
+    // A host slug loses dots, hyphens, ports and the scheme. Never use it to
+    // choose a credential for an Antigravity proxy.
     patFile: (origin) =>
       join(
         deps.home,
         ".open-artifacts",
-        `${hostSlug(new URL(origin).host)}-pat-token`,
+        "pats",
+        encodeURIComponent(new URL(origin).origin),
       ),
     stopped: stoppedBus(deps, false),
     keptOf: (owner) =>

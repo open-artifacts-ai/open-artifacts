@@ -359,7 +359,7 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
         io.file,
         token === undefined
           ? "it sends headers oa-bus can't pass on (only one `Authorization: Bearer` header is)."
-          : `it has no token, and there is no PAT at ${pat ?? "the connect guide's path"} for the proxy to use. Save one there (see the connect guide) and run ${BUS_CMD} install again.`,
+          : `it has no token, and there is no PAT at ${pat ?? "the connect guide's path"} for the proxy to use. Use an origin-bound credential and run ${BUS_CMD} install again.`,
       ),
     );
   }
@@ -408,7 +408,12 @@ export function installAgyEntries(
       )
     ) {
       const pat = io.patFile?.(t.origin);
-      if (!pat) continue;
+      if (!pat || !existsSync(pat)) {
+        out.notes.push(
+          `Antigravity page tools for ${t.origin} were not configured: no origin-bound credential is available.`,
+        );
+        continue;
+      }
       try {
         mcpUrl(t.origin);
       } catch {
@@ -432,10 +437,6 @@ export function installAgyEntries(
         createdDigest: digest(want),
       });
       out.changed.push(name);
-      if (!existsSync(pat))
-        out.notes.push(
-          `Antigravity's ${name} proxy is configured. Save a PAT for ${t.origin} at ${pat} to use its page tools.`,
-        );
     }
     for (const p of existing) {
       if (p.kind === "left") {
