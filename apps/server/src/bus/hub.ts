@@ -4711,6 +4711,22 @@ export class BusHub extends DurableObject<Env> {
         OWNER_ORG_ID,
         action.roleId,
       );
+      sql.exec(
+        "insert into freed_role_names (namespace, lname, freed_at) values (?, ?, ?) on conflict (namespace, lname) do update set freed_at = excluded.freed_at",
+        role.namespace,
+        role.lname,
+        this.#now(),
+      );
+      // Unbound notices already held for this address belong to its old
+      // occupant. Notices parked on the deleted role ID can never resolve.
+      for (const held of all<{ lname: string; ckey: string }>(
+        sql,
+        "select to_lname as lname, ckey from notices where to_ns = ? and (to_lname = ? or (to_lname = ? and to_identity is null))",
+        role.namespace,
+        roleNoticeName(action.roleId),
+        role.lname,
+      ))
+        this.#dropHeld(role.namespace, held.lname, held.ckey);
       deleteRole(sql, OWNER_ORG_ID, action.roleId);
     });
     return { ok: true, moved: null };
@@ -9495,6 +9511,21 @@ export class BusHub extends DurableObject<Env> {
     )
       return "dropped";
     if (!roleId && !forwarded) {
+      // An address-only answer cannot cross a Free. Older senders may omit
+      // the ask time, in which case the asker cannot be established either.
+      if (
+        n.toIdentity === undefined &&
+        (n.kind === "ask_answered" || n.kind === "ask_later") &&
+        one(
+          sql,
+          "select 1 from freed_role_names where namespace = ? and lname = ? and (? is null or freed_at >= ?)",
+          n.to.namespace,
+          n.to.name.toLowerCase(),
+          n.originAt ?? null,
+          n.originAt ?? null,
+        )
+      )
+        return "dropped";
       const holder = roleForward(
         sql,
         OWNER_ORG_ID,
