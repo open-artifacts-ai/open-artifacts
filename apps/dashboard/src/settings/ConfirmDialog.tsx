@@ -21,6 +21,7 @@ export function ConfirmDialog({
   onConfirm,
   pending,
   busy = false,
+  disabled = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -36,6 +37,7 @@ export function ConfirmDialog({
    */
   pending?: string;
   busy?: boolean;
+  disabled?: boolean;
 }) {
   const opener = useRef<HTMLElement | null>(null);
   return (
@@ -65,7 +67,7 @@ export function ConfirmDialog({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <Button
             variant={danger ? "destructive" : "default"}
-            disabled={busy}
+            disabled={busy || disabled}
             aria-busy={busy || undefined}
             onClick={() => {
               if (pending === undefined) onClose();

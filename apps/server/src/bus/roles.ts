@@ -454,9 +454,14 @@ function recordMove(
   newId: () => string,
 ): RoleMove | null {
   const row = (id: string) =>
-    one<{ namespace: string; name: string; identity: string | null }>(
+    one<{
+      namespace: string;
+      name: string;
+      identity: string | null;
+      machine: string | null;
+    }>(
       sql,
-      "select namespace, name, identity_id as identity from agents where org_id = ? and id = ?",
+      "select a.namespace, a.name, a.identity_id as identity, m.label as machine from agents a left join machines m on m.id = a.machine_id where a.org_id = ? and a.id = ?",
       orgId,
       id,
     );
@@ -465,8 +470,8 @@ function recordMove(
   if (from === null || to === null) return null;
   const id = newId();
   sql.exec(
-    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, audited)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+    `insert into role_moves (id, org_id, role_id, from_agent_id, from_ns, from_lname, from_identity, to_agent_id, held_from, at, from_machine_label, audited)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     id,
     orgId,
     roleId,
@@ -477,6 +482,7 @@ function recordMove(
     toId,
     heldFrom,
     now,
+    from.machine,
   );
   return {
     id,
@@ -492,45 +498,47 @@ function recordMove(
   };
 }
 
-/** #1889 namesOf's row, with #3132's role (roleOfIdentity). */
-export type AgentNameRow = {
-  identityId: string;
-  name: string;
-  role?: string;
-  holder?: string;
+/** Holding intervals use the same half-open bounds as roleForward. */
+export type RoleInterval = {
+  role: string;
+  holder: string | null;
+  machine: string | null;
+  holderMachine: string | null;
+  holderKind: string | null;
+  since: number;
+  until: number | null;
 };
 
-/**
- * #3132: the role the session with `identityId` holds now (no `holder`), or
- * else the role it last handed on, with `holder` the session holding it now
- * (none while it is vacant). Empty when it never held one, or the role is gone.
- */
-export function roleOfIdentity(
+export type AgentNameRow = {
+  identityId: string;
+  name?: string;
+  intervals?: RoleInterval[];
+};
+
+export function roleIntervals(
   sql: SqlStorage,
   orgId: string,
   identityId: string,
-): { role?: string; holder?: string } {
-  const held = one<{ role: string }>(
+) {
+  return all<RoleInterval>(
     sql,
-    `select r.name as role from roles r join agents a on a.id = r.agent_id
-       where r.org_id = ? and a.identity_id = ? order by r.set_at desc limit 1`,
-    orgId,
-    identityId,
-  );
-  if (held) return { role: held.role };
-  const moved = one<{ role: string; holder: string | null }>(
-    sql,
-    `select r.name as role, h.name as holder from role_moves m indexed by role_moves_identity
+    `select r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
+       from roles r join agents a on a.id = r.agent_id
+       left join machines machine on machine.id = a.machine_id
+       where r.org_id = ? and a.identity_id = ?
+     union all
+     select r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
+       from role_moves m indexed by role_moves_identity
        join roles r on r.id = m.role_id
        left join agents h on h.id = r.agent_id
-       where m.org_id = ? and m.from_identity = ? order by m.at desc, m.rowid desc limit 1`,
+       left join machines machine on machine.id = h.machine_id
+       where m.org_id = ? and m.from_identity = ?
+     order by since desc, role`,
+    orgId,
+    identityId,
     orgId,
     identityId,
   );
-  if (!moved) return {};
-  return moved.holder
-    ? { role: moved.role, holder: moved.holder }
-    : { role: moved.role };
 }
 
 /**

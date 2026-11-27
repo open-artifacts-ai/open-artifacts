@@ -4,6 +4,7 @@ import {
   type Me,
   MeSchema,
   R,
+  shareRoleLabel,
 } from "@oa/shared";
 import { useQuery } from "@tanstack/react-query";
 import { ApiClientError, api } from "../api/client";
@@ -72,8 +73,13 @@ export function useHosted(): Hosted {
 }
 
 /** What the caller may do with `a`. Every action gate reads this, never `access`. */
-export const useCan = (a: ArtifactSummary): ArtifactCan => {
-  const { features, cap, soloPaused } = useHosted();
+export const useCan = (a: ArtifactSummary): ArtifactCan =>
+  artifactPermissions(a, useHosted());
+
+export function artifactPermissions(
+  a: ArtifactSummary,
+  { features, cap, soloPaused }: Hosted,
+): ArtifactCan {
   // Sharing is free on every plan: the plan cap leaves share and visibility
   // as the artifact's own `can` says (the server keeps both on for the
   // owner), while the other capped callers lose them with every write.
@@ -94,7 +100,7 @@ export const useCan = (a: ArtifactSummary): ArtifactCan => {
     move: false,
     dataWrite: false,
   };
-};
+}
 
 /** Whether the caller may publish into a space: never when capped (guest, restricted). */
 export const canPublishTo = (
@@ -113,19 +119,12 @@ const LABEL = {
 
 export const accessLabel = (level: AccessLevel) => LABEL[level];
 
-/**
- * #2932: what the signed-in visitor's own access reads as in the title bar. An
- * outsider (a guest) reads it as the Share panel says it: the server returns a
- * Can comment share as access "viewer" with can.comment. Members keep their role.
- */
+/** The title bar names the signed-in visitor's effective page access. */
 export const ownAccessLabel = (
-  a: { access: AccessLevel; can?: { comment?: boolean } | null },
-  outsider: boolean,
+  a: Pick<ArtifactSummary, "access" | "shareRole">,
 ) =>
-  outsider && a.access === "viewer"
-    ? a.can?.comment === true
-      ? "Can comment"
-      : "Can view"
+  a.access === "viewer" && a.shareRole === "commenter"
+    ? shareRoleLabel("commenter")
     : LABEL[a.access];
 
 /**

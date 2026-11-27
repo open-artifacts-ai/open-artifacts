@@ -1,5 +1,3 @@
-// #2590: sharing with someone outside the instance offers only "Can comment"
-// and "Can view", starting at Can comment; members keep Viewer and Editor.
 // The hosted mocks list example.com as the login domain, so a Gmail address
 // is outside. At 1280 and 390, light and dark, with axe. Writes PNGs to
 // SHOTS_DIR when set.
@@ -53,21 +51,23 @@ for (const [scheme, width] of [["light", 1280]] as const) {
   test.describe(`${scheme} ${width}`, () => {
     test.use({ colorScheme: scheme, viewport: { width, height: 900 } });
 
-    test("an outside address: Can comment by default, only Can comment and Can view", async ({
+    test("member and outside addresses get the same roles, defaulting to Editor", async ({
       page,
     }, info) => {
       await open(page);
-      // A member's address keeps Viewer and Editor.
       await page
         .getByRole("textbox", { name: "Email" })
         .fill("maya@example.com");
-      await expect(inviteRole(page)).toHaveText("Viewer");
+      await expect(inviteRole(page)).toHaveText("Editor");
       await inviteRole(page).click();
-      await expect(page.getByRole("option")).toHaveText(["Viewer", "Editor"]);
+      await expect(page.getByRole("option")).toHaveText([
+        "Viewer",
+        "Commenter",
+        "Editor",
+      ]);
       await page.keyboard.press("Escape");
-      // Outside: Can comment, with only the two outsider choices.
       await page.getByRole("textbox", { name: "Email" }).fill("sam@gmail.com");
-      await expect(inviteRole(page)).toHaveText("Can comment");
+      await expect(inviteRole(page)).toHaveText("Editor");
       // OA Product's line under an outside address. Email is off here, so
       // codes are too: the Google-only line, beside "We won't email them".
       await expect(
@@ -83,8 +83,9 @@ for (const [scheme, width] of [["light", 1280]] as const) {
       await expect(page.getByText(/a code we email them/)).toHaveCount(0);
       await inviteRole(page).click();
       await expect(page.getByRole("option")).toHaveText([
-        "Can comment",
-        "Can view",
+        "Viewer",
+        "Commenter",
+        "Editor",
       ]);
       await shot(page, info, `share-commenter-picker-${scheme}-${width}.png`);
       await page.keyboard.press("Escape");
@@ -95,38 +96,39 @@ for (const [scheme, width] of [["light", 1280]] as const) {
       await page.getByRole("button", { name: "Add" }).click();
       expect((await put).postDataJSON()).toEqual({
         email: "sam@gmail.com",
-        role: "commenter",
+        role: "editor",
       });
-      // The saved row reads Can comment, and offers the outsider choices.
       const row = page.getByRole("combobox", {
         name: "Role for sam@gmail.com",
       });
-      await expect(row).toHaveText("Can comment");
+      await expect(row).toHaveText("Editor");
       await row.click();
       await expect(page.getByRole("option")).toHaveText([
-        "Can comment",
-        "Can view",
+        "Viewer",
+        "Commenter",
+        "Editor",
+        "Remove access",
       ]);
       await shot(
         page,
         info,
         `share-commenter-row-picker-${scheme}-${width}.png`,
       );
-      // Can view, then saved.
+      // Changing the saved grant sends its corresponding API value.
       const put2 = page.waitForRequest(
         (r: Request) => r.method() === "PUT" && r.url().endsWith("/shares"),
       );
-      await page.getByRole("option", { name: "Can view" }).click();
+      await page.getByRole("option", { name: "Viewer" }).click();
       expect((await put2).postDataJSON()).toEqual({
         email: "sam@gmail.com",
         role: "viewer",
       });
-      await expect(row).toHaveText("Can view");
+      await expect(row).toHaveText("Viewer");
       await page
         .getByRole("combobox", { name: "Role for sam@gmail.com" })
         .click();
-      await page.getByRole("option", { name: "Can comment" }).click();
-      await expect(row).toHaveText("Can comment");
+      await page.getByRole("option", { name: "Commenter" }).click();
+      await expect(row).toHaveText("Commenter");
       await shot(page, info, `share-commenter-saved-${scheme}-${width}.png`);
       await axe(page);
     });

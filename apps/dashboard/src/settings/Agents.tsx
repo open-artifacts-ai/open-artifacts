@@ -325,8 +325,12 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
   };
   return (
     <Modal
-      // Mid-request or with the token on screen, only Done closes it.
-      onClose={() => !busy && !created && onClose()}
+      // Mid-request it stays open; with the token on screen, Esc and the X
+      // close it like Done (the parent unmounts this, dropping the token).
+      onClose={() => !busy && onClose()}
+      wide
+      stickyFooter
+      blockOutside={!!created}
       title={created ? "Token created" : "Create token"}
       description={
         created
@@ -365,7 +369,7 @@ function CreateDialog({ onClose }: { onClose: () => void }) {
                 hidden. In Claude Code, type <Kbd>!</Kbd> and a space, then
                 paste the line.
               </p>
-              <Code code={saveTokenCommand()} label="Copy save command" wrap />
+              <Code code={saveTokenCommand()} label="Copy save command" />
               <p className={muted}>
                 Then set up your client below. Never paste the token into chat
                 or into a config file.

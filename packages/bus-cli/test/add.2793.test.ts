@@ -319,3 +319,60 @@ describe("oa-bus add (#2793 S1)", () => {
     });
   });
 });
+
+// agy S5: with OA_BUS_EXPERIMENTAL_AGY=1, add gives Antigravity's entry at the
+// new instance's address the --name form; without it the file stays as it is.
+// A scratch HOME and a hand-written agy config only: no real agy runs.
+describe("oa-bus add: Antigravity's entry (agy S5)", () => {
+  const PAT = `oa_pat_${"c".repeat(40)}`;
+  const agyConfig = `{
+  "mcpServers": {
+    "oa-work": {
+      "headers": { "Authorization": "Bearer ${PAT}" },
+      "serverUrl": "https://a.example.com/mcp"
+    }
+  }
+}
+`;
+  const run = async (env: Record<string, string>) => {
+    const ctx = fakeCtx(
+      { fetch: approvalServer("https://a.example.com"), stdinIsTTY: true, env },
+      true,
+    );
+    writeMain(ctx.home);
+    const file = join(ctx.userHome, ".gemini", "config", "mcp_config.json");
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, agyConfig);
+    expect(
+      await add(
+        { address: "https://a.example.com/", name: "work", noOpen: true },
+        ctx,
+      ),
+    ).toBe(0);
+    return readFileSync(file, "utf8");
+  };
+
+  it("gives the new instance's entry the proxy with --name <instance>", async () => {
+    const e = JSON.parse(await run({ OA_BUS_EXPERIMENTAL_AGY: "1" }))
+      .mcpServers["oa-work"];
+    const args = e.args as string[];
+    const i = args.indexOf("mcp-proxy");
+    expect(args.slice(i)).toEqual([
+      "mcp-proxy",
+      "--instance",
+      "https://a.example.com",
+      "--for",
+      "antigravity",
+      "--name",
+      "work",
+      "--token-env",
+      "OA_PAGES_TOKEN",
+    ]);
+    expect(e.env.OA_PAGES_TOKEN).toBe(PAT);
+    expect(JSON.stringify(args)).not.toContain(PAT);
+  });
+
+  it("leaves the entry alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
+    expect(await run({})).toBe(agyConfig);
+  });
+});

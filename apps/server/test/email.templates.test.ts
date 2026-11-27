@@ -111,6 +111,21 @@ describe("email templates", () => {
     expect(m.subject).toMatch(/^Mal.* shared “Plan/);
   });
 
+  it.each([
+    ["viewer", "Viewer"],
+    ["commenter", "Commenter"],
+  ] as const)("names a %s share in both email parts", (role, label) => {
+    const email = shareEmail({
+      ...common,
+      title: "Notes",
+      path: "/a/abc",
+      format: "markdown",
+      role,
+    });
+    expect(email.text).toContain(`Your role: ${label}`);
+    expect(email.html).toContain(label);
+  });
+
   it("refuses links off the app host", () => {
     for (const appHost of ["x.com/@evil", "evil.com:80@x", "a b"])
       expect(() => inviteEmail({ ...common, appHost, guest: false })).toThrow();

@@ -27,7 +27,7 @@ let seq = 0;
 const uniq = (t: string) => `${t}${++seq}x${Date.now() % 1e8}`;
 
 describe("an @-mention of a role (#3132)", () => {
-  it("the @ list offers the role after a move, and a mention of it reaches its holder", async () => {
+  it("a role key stays valid while away and its queued mention reaches the next holder", async () => {
     const m = await member();
     const user = (await getUser(e, m.userId)) as Member;
     const mach = await machine("Laptop", m.userId);
@@ -50,8 +50,6 @@ describe("an @-mention of a role (#3132)", () => {
         body: { namespace: space, name: role, agentId },
       });
     expect((await put(await idOf(names[0]!))).status).toBe(200);
-    expect((await put(await idOf(names[1]!))).status).toBe(200);
-    d.send({ v: 1, id: "down", type: "agent_down", agent_ref: "ref0" });
 
     const id = (
       await publish(
@@ -68,19 +66,23 @@ describe("an @-mention of a role (#3132)", () => {
         "create",
       )
     ).id;
-    const listed = await api(app, R.artifactAgents(id), m.cookie);
-    expect(listed.status).toBe(200);
-    const agents = (await listed.json()) as
-      | ArtifactAgent[]
-      | { agents: ArtifactAgent[] };
-    const all = Array.isArray(agents) ? agents : agents.agents;
-    const entry = all.find((a) => a.name === role);
-    expect(entry).toMatchObject({ name: role, session: names[1] });
-    // The role shows once; neither session shows by its own name.
-    expect(all.filter((a) => a.name === role)).toHaveLength(1);
-    expect(all.some((a) => a.name === names[1])).toBe(false);
-    expect(all.some((a) => a.name === names[0])).toBe(false);
-
+    const roster = async () => {
+      const listed = await api(app, R.artifactAgents(id), m.cookie);
+      expect(listed.status).toBe(200);
+      const agents = (await listed.json()) as
+        | ArtifactAgent[]
+        | { agents: ArtifactAgent[] };
+      return Array.isArray(agents) ? agents : agents.agents;
+    };
+    const entry = (await roster()).find((a) => a.name === role);
+    expect(entry?.session).toBe(names[0]);
+    d.send({ v: 1, id: "down", type: "agent_down", agent_ref: "ref0" });
+    d.send({ v: 1, id: "barrier", type: "list", from_ref: "ref1" });
+    await waitFor(d, "roster");
+    expect((await roster()).find((a) => a.key === entry?.key)).toMatchObject({
+      name: role,
+      state: "away",
+    });
     const posted = await api(app, R.comments(id), m.cookie, {
       method: "POST",
       body: {
@@ -90,11 +92,40 @@ describe("an @-mention of a role (#3132)", () => {
       },
     });
     expect(posted.status, await posted.clone().text()).toBeLessThan(300);
+    expect((await put(await idOf(names[1]!))).status).toBe(200);
+    const all = await roster();
+    expect(all.filter((a) => a.name === role)).toHaveLength(1);
+    expect(all.find((a) => a.key === entry?.key)).toMatchObject({
+      name: role,
+      session: names[1],
+    });
+    expect(all.some((a) => a.name === names[0] || a.name === names[1])).toBe(
+      false,
+    );
     for (;;) {
       const f = await d.next();
       if (f.type !== "deliver" || f.body?.startsWith("Your role ")) continue;
       expect(f.to_ref).toBe("ref1");
       break;
     }
+
+    // Freeing and reusing the same name creates a new role. A stale picker
+    // cannot send a comment to that unrelated holder.
+    const current = (await hub.listRoles()).find((r) => r.name === role);
+    expect(current).toBeDefined();
+    await hub.deleteRole(current!.id);
+    expect((await put(await idOf(names[1]!))).status).toBe(200);
+    const replacement = (await roster()).find((a) => a.name === role);
+    expect(replacement?.key).toBeTruthy();
+    expect(replacement?.key).not.toBe(entry?.key);
+    const stale = await api(app, R.comments(id), m.cookie, {
+      method: "POST",
+      body: {
+        anchor: { kind: "note" },
+        body: "Old picker",
+        mentions: [{ key: entry?.key }],
+      },
+    });
+    expect(stale.status).toBe(400);
   });
 });

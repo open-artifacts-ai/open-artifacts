@@ -195,7 +195,7 @@ describe("list_comments cursor and since (#3168)", () => {
     const id = await pub();
     await putShare(E, owner.member, id, {
       email: reader.email,
-      role: "viewer",
+      role: "commenter",
     });
 
     // Empty page has a cursor; first thread appears after it.

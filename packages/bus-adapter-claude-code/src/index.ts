@@ -1,4 +1,11 @@
 export {
+  AGY_CONVERSATION_META,
+  AGY_ROOT_META,
+  AgyProxy,
+  type AgyProxyDeps,
+  agyConversation,
+} from "./agy-proxy.ts";
+export {
   AGY_DEFAULT_NAME,
   AGY_SENT_MAX,
   type AgyConversation,

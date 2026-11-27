@@ -71,7 +71,7 @@ import {
   PROOF_LOOKUP_MS,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
-import { agentKey } from "../services/comment-agents.js";
+import { agentKey, roleKey } from "../services/comment-agents.js";
 import {
   artifactIdOf,
   follow,
@@ -155,7 +155,7 @@ import {
   resolveRoleAnywhere,
   resolveRoleIn,
   roleForward,
-  roleOfIdentity,
+  roleIntervals,
   roleTakenSql,
   settleMoveAudits,
 } from "./roles.js";
@@ -2663,6 +2663,8 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
      and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleName,
+  (select ro.id from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
+     and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleId,
   (exists (select 1 from role_moves rm where rm.org_id = a.org_id and rm.from_agent_id = a.id)
      and not exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id)) as handedOver`;
 
@@ -2802,6 +2804,29 @@ function liveVisibleIn(
     lname,
     ns,
     ...(identity ? [identity] : []),
+  );
+}
+
+// A colon cannot occur in a session name. Role IDs are case sensitive.
+const roleNoticeName = (id: string) => `:${id}`;
+
+/** Resolve held mail on each delivery, so a later holder receives it. */
+function noticeRecipient(
+  sql: SqlStorage,
+  ns: string,
+  name: string,
+  identity?: string | null,
+) {
+  if (!name.startsWith(":")) return liveVisibleIn(sql, ns, name, identity);
+  return one<AgentRow>(
+    sql,
+    `select ${AGENT_COLS} from agents where id = (
+    select agent_id from roles where id = ? and org_id = ? and namespace = ?)
+    and live = 1 and (namespace = ? or global = 1)`,
+    name.slice(1),
+    OWNER_ORG_ID,
+    ns,
+    ns,
   );
 }
 
@@ -4327,6 +4352,7 @@ export class BusHub extends DurableObject<Env> {
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     if (r.ok && agentId !== null) this.#noteNamed();
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    if (r.ok && !r.moved && agentId) this.#wakeRoleNotices(r.role.id);
     return r;
   }
 
@@ -4537,6 +4563,7 @@ export class BusHub extends DurableObject<Env> {
     namespace: string;
     name: string;
     identityId?: string;
+    roleId?: string;
     artifactId: string;
     threadId: string;
     commentIds: string[];
@@ -4627,6 +4654,14 @@ export class BusHub extends DurableObject<Env> {
                 names.map((n) => agentKey(a.artifactId, userId, n)),
               ),
             );
+      if (a.roleId) {
+        addrs.clear();
+        addrs.set(a.roleId, [a.namespace, roleNoticeName(a.roleId)]);
+        if (keys && userId) {
+          keys.clear();
+          keys.add(await roleKey(a.artifactId, userId, a.namespace, a.roleId));
+        }
+      }
       const keyOk = (k: string) => keys === null || keys.has(k);
       const askerPrefix = `${a.artifactId}:${a.threadId}:asker:`;
       const replyPrefix = `${a.artifactId}:${a.threadId}:thread_reply:`;
@@ -4664,9 +4699,11 @@ export class BusHub extends DurableObject<Env> {
           return null;
         }
       };
-      const agent = byIdentity
-        ? `i:${identityId}`
-        : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
+      const agent = a.roleId
+        ? `r:${a.roleId}`
+        : byIdentity
+          ? `i:${identityId}`
+          : `n:${a.namespace}\u0000${a.name.toLowerCase()}`;
       const found: Array<Withdrawn & { whole: number }> = [];
       this.ctx.storage.transactionSync(() => {
         for (const [ns, lname] of addrs.values()) {
@@ -5172,8 +5209,8 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #1889: the current bus name of each agent identity in `identityIds`, from
    * this member's own hub only (an id of another member's agent is not here,
-   * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
-   * kind, machine or state (one row per identity). At most
+   * so it returns nothing). Includes holding intervals for dated authorship.
+   * A purged session can have intervals without a current name. At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
   async namesOf(identityIds: string[]): Promise<AgentNameRow[]> {
@@ -5191,17 +5228,23 @@ export class BusHub extends DurableObject<Env> {
         ...ids,
       )
       .toArray();
-    const seen = new Set<string>();
+    const names = new Map<string, string>();
+    for (const row of rows)
+      if (!names.has(row.identityId)) names.set(row.identityId, row.name);
     const out: AgentNameRow[] = [];
-    for (const r of rows) {
-      if (seen.has(r.identityId)) continue;
-      seen.add(r.identityId);
-      const role = roleOfIdentity(
+    for (const identityId of ids) {
+      const name = names.get(identityId);
+      const intervals = roleIntervals(
         this.ctx.storage.sql,
         OWNER_ORG_ID,
-        r.identityId,
+        identityId,
       );
-      out.push({ identityId: r.identityId, name: r.name, ...role });
+      if (name || intervals.length)
+        out.push({
+          identityId,
+          ...(name && { name }),
+          ...(intervals.length && { intervals }),
+        });
     }
     return out;
   }
@@ -5453,13 +5496,12 @@ export class BusHub extends DurableObject<Env> {
       this.#maxRoles,
     );
     logEvent("role_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
-    // #3132: a live holder hears that another session asks for its role, and
-    // how to hand it over at once (bus_role_propose by the holder).
+    // The proposal identifies the intended holder. Its caller may be unlinked.
     const p = r.ok ? r.proposal : null;
     if (p?.action === "repoint" && p.priorAgentId && p.agentName)
       this.#say(
         p.priorAgentId,
-        `${p.agentName} asks to take over your role "${p.name}" in ${p.namespace}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}". To keep it, tell ${p.agentName} on the bus.`,
+        `A proposal would move your role "${p.name}" in ${p.namespace} to ${p.agentName}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${p.namespace}", name "${p.name}" and agent "${p.agentName}".`,
       );
     return r;
   }
@@ -5516,6 +5558,7 @@ export class BusHub extends DurableObject<Env> {
     // A confirmed set (not a clear) names the holder.
     if (r.ok && r.proposal.action !== "clear") this.#noteNamed();
     if (r.ok && r.moved !== null) this.#roleMoved(r.moved);
+    if (r.ok && !r.moved && r.role?.agentId) this.#wakeRoleNotices(r.role.id);
     return r;
   }
 
@@ -5526,6 +5569,7 @@ export class BusHub extends DurableObject<Env> {
    */
   #roleMoved(m: RoleMove): void {
     logEvent("role_moved", {});
+    this.#wakeRoleNotices(m.roleId);
     void this.#moveFollowRows(m.from, m.to, m.heldFrom, m.at, m.roleId);
     // The old session, if still open, is told it no longer holds the role.
     const role = one<{ name: string }>(
@@ -5539,6 +5583,20 @@ export class BusHub extends DurableObject<Env> {
         m.fromAgentId,
         `Your role "${role.name}" moved to ${m.to.name}. What you began while you held it (open asks, followed pages) and new mentions of you go there now.`,
       );
+  }
+
+  #wakeRoleNotices(roleId: string): void {
+    const sql = this.ctx.storage.sql;
+    const row = one<{ namespace: string }>(
+      sql,
+      "select namespace from roles where org_id = ? and id = ?",
+      OWNER_ORG_ID,
+      roleId,
+    );
+    if (!row) return;
+    const agent = noticeRecipient(sql, row.namespace, roleNoticeName(roleId));
+    const socket = agent && liveSocket(this.ctx, agent.machineId);
+    if (agent && socket) this.#flushNoticesFor(socket, agent);
   }
 
   /**
@@ -9127,7 +9185,20 @@ export class BusHub extends DurableObject<Env> {
     // #3132: a notice for a session that handed its role on (an ask's answer,
     // a mention, a follow) goes to the role's live holder, as if sent there.
     // Once only: two sessions that swapped roles never bounce a notice.
-    if (!forwarded) {
+    const roleId = n.toRoleId;
+    if (
+      roleId &&
+      (n.toIdentity ||
+        !one(
+          sql,
+          "select id from roles where id = ? and org_id = ? and namespace = ?",
+          roleId,
+          OWNER_ORG_ID,
+          n.to.namespace,
+        ))
+    )
+      return "dropped";
+    if (!roleId && !forwarded) {
       const holder = roleForward(
         sql,
         OWNER_ORG_ID,
@@ -9174,12 +9245,15 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     const byRole =
-      n.toIdentity !== undefined
+      roleId || n.toIdentity !== undefined
         ? null
         : resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
     const liveNamed = liveVisibleIn(sql, n.to.namespace, sent, n.toIdentity);
     const former =
-      byRole !== null || liveNamed !== null || n.toIdentity !== undefined
+      roleId ||
+      byRole !== null ||
+      liveNamed !== null ||
+      n.toIdentity !== undefined
         ? []
         : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
     const byAlias = byRole?.ok
@@ -9187,20 +9261,24 @@ export class BusHub extends DurableObject<Env> {
       : former.length === 1
         ? former[0]
         : undefined;
-    const lname = byAlias ? byAlias.name.toLowerCase() : sent;
+    const lname = roleId
+      ? roleNoticeName(roleId)
+      : byAlias
+        ? byAlias.name.toLowerCase()
+        : sent;
     const to = byAlias
       ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
     const agent =
-      byAlias ?? liveVisibleIn(sql, to.namespace, lname, n.toIdentity);
+      byAlias ?? noticeRecipient(sql, to.namespace, lname, n.toIdentity);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
-    if (!agent) {
+    if (!agent && !roleId) {
       this.#dropHeld(...key);
       return "dropped";
     }
-    const live = liveSocket(this.ctx, agent.machineId);
+    const live = agent?.live ? liveSocket(this.ctx, agent.machineId) : null;
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
@@ -9216,7 +9294,10 @@ export class BusHub extends DurableObject<Env> {
     );
     // #2238: a waiting notice for another identity than this address holds now
     // is not this agent's: it settles as gone and never folds into this one.
-    if (old?.toIdentity && old.toIdentity !== identityOfAgent(sql, agent.id)) {
+    if (
+      old?.toIdentity &&
+      (!agent || old.toIdentity !== identityOfAgent(sql, agent.id))
+    ) {
       this.#settleGone([old.ack, ...parseAcks(old.foldAcks)]);
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -9234,7 +9315,7 @@ export class BusHub extends DurableObject<Env> {
       folds.splice(0, Math.max(0, folds.length - NOTICE_FOLD_MAX)),
     );
     const foldN = old && n.kind === "comment" ? old.foldN + 1 : 0;
-    if (socket && notBefore <= now) {
+    if (socket && agent && notBefore <= now) {
       // A socket that refuses the frame (#1752) leaves the notice held
       // (parked) for the next agent_up, never stored as delivered. An older
       // held notice of the key is folded in and goes only once this is sent.
@@ -9347,18 +9428,22 @@ export class BusHub extends DurableObject<Env> {
     const now = this.#now();
     const rows = all<NoticeRow>(
       sql,
-      `select ${NOTICE_COLS} from notices where to_lname = ? and not_before <= ? and expires_at > ?
-         and (to_ns = ? or ?) order by not_before limit ?`,
+      `select ${NOTICE_COLS} from notices where ((to_lname = ? and (to_ns = ? or ?))
+         or (to_ns,to_lname) in (select namespace, ':' || id from roles where agent_id = ?))
+         and not_before <= ? and expires_at > ? order by not_before limit ?`,
       agent.name.toLowerCase(),
-      now,
-      now,
       agent.namespace,
       agent.global === 1 ? 1 : 0,
+      agent.id,
+      now,
+      now,
       NOTICE_FLUSH_BATCH,
     );
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
-      if (liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id)
+      if (
+        noticeRecipient(sql, r.toNs, r.toLname, r.toIdentity)?.id !== agent.id
+      )
         continue;
       if (this.#identityMismatch(r, agent)) continue;
       if (
@@ -9376,10 +9461,11 @@ export class BusHub extends DurableObject<Env> {
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
+        "update notices set parked = 0 where ((to_lname = ? and (to_ns = ? or ?)) or (to_ns,to_lname) in (select namespace, ':' || id from roles where agent_id = ?)) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
+        agent.id,
       );
       this.#arm(now + NOTICE_PACE_MS);
     }
@@ -9453,7 +9539,7 @@ export class BusHub extends DurableObject<Env> {
         paced = true;
         break;
       }
-      const agent = liveVisibleIn(sql, r.toNs, r.toLname, r.toIdentity);
+      const agent = noticeRecipient(sql, r.toNs, r.toLname, r.toIdentity);
       if (agent && this.#identityMismatch(r, agent)) continue;
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
@@ -9475,7 +9561,7 @@ export class BusHub extends DurableObject<Env> {
           r.toLname,
           r.ckey,
         );
-      } else if (agent) {
+      } else if (agent || r.toLname.startsWith(":")) {
         // A live socket that cannot read it: old-daemon share; none: offline.
         // A capable socket that refused the frame (#1752) is offline-like (1).
         const tooOld = live && !socket;
