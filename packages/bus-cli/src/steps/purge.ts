@@ -8,6 +8,8 @@ import {
 import { join } from "node:path";
 import { shortSocketDir, unsafeSocketDir } from "@oa/bus-adapter-claude-code";
 
+import { isManagedRescue, RESCUE_NAME } from "./rescue.ts";
+
 /** Files Open Artifacts bus writes at the top of its home. */
 const FILES = [
   "machine.json",
@@ -22,6 +24,7 @@ const FILES = [
   "revoked",
   "update.json",
   // The rescue shim the service runs (#2552): written only by an install.
+  RESCUE_NAME,
   "rescue",
   "rescue-node",
   "rescue.mjs",
@@ -165,6 +168,7 @@ export function purge(
     const k = kind(path);
     // A known file name that is a directory is not ours; a symlink is removed, never followed.
     if (k === undefined || k === "dir") continue;
+    if (name === RESCUE_NAME && !isManagedRescue(path)) continue;
     remove(path, k);
     removed.push(name);
   }
