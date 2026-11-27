@@ -1254,6 +1254,8 @@ export async function actOnAwayBusRole(
   action: AwayRoleAction,
 ): Promise<void> {
   if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId)))
+    throw new ApiError("conflict", ROLE_REFUSALS.no_bus);
   const hub = busHub(env, userId);
   if (!hub) throw new ApiError("storage_unavailable", "Bus unavailable");
   const result = await roleCall(hub.actOnAwayRole(action));
