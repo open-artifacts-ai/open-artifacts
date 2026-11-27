@@ -133,7 +133,6 @@ export const BusRoleSchema = z.strictObject({
   holderName: z.string().nullable(),
   vacant: z.boolean(),
   setAt: z.string(),
-  heldSince: z.string().optional(),
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
 

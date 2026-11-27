@@ -1991,18 +1991,13 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
         session: "OA Platform-2",
         online: state === "online",
         state,
-        lastActiveAt: hoursAgo(19),
-        heldSince: new Date(2026, 10, 27, 11, 20).toISOString(),
-        holderApp: { kind: "codex", product: "Codex" },
+        lastActiveAt: hoursAgo(0),
         machine: "workstation",
       };
       open([role]);
       expect(
         screen.getByRole("option", {
-          name:
-            state === "online"
-              ? /OA Platform.*Codex.*workstation · since 11:20.*online/
-              : /OA Platform.*Codex.*workstation · away 19 h.*offline/,
+          name: new RegExp(`OA Platform.*${state}.* · workstation`),
         }),
       ).toBeInTheDocument();
       expect(screen.getByRole("option")).not.toHaveTextContent("OA Platform-2");

@@ -19,7 +19,6 @@ import {
   useCommentErrorCtx,
   useTakeBackAsk,
 } from "../../api/comments";
-import { AppMark, appName } from "../../bus/AgentApp";
 import { AskWaiting, askWaitingSince } from "../../foryou/waiting";
 import { AppLink } from "../../library/AppLink";
 import { TXT } from "../ui";
@@ -1610,45 +1609,11 @@ function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
   const stem = stemOf(a.name);
   const repeats =
     all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
-  return [head, repeats ? a.machine : null].filter(Boolean).join(" \u00b7 ");
+  // A role identifies its current holder by machine in the picker.
+  return [head, a.session || repeats ? a.machine : null]
+    .filter(Boolean)
+    .join(" \u00b7 ");
 }
-
-function RoleRow({ a }: { a: ArtifactAgent }) {
-  const live = isOnline(a);
-  const elapsed = ago(a.lastActiveAt).replace(/(\d)([mhd])$/, "$1 $2");
-  const since = a.heldSince ? new Date(a.heldSince) : null;
-  const time = live
-    ? since &&
-      Number.isFinite(since.getTime()) &&
-      `since ${since.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`
-    : elapsed && `away ${elapsed}`;
-  const detail = [a.machine, time].filter(Boolean).join(" · ");
-  return (
-    <>
-      <span className="flex min-w-0 flex-1 flex-col">
-        <b className="truncate">{a.name}</b>
-        <span className={`flex items-center gap-1 text-xs ${MUTED}`}>
-          {a.holderApp && (
-            <AppMark
-              {...a.holderApp}
-              product={a.holderApp.product}
-              name={appName(a.holderApp)}
-              className="size-3"
-            />
-          )}
-          {a.holderApp && detail && " · "}
-          {detail}
-        </span>
-      </span>
-      <span className={`shrink-0 text-xs ${MUTED}`}>
-        {live ? "online" : "offline"}
-      </span>
-    </>
-  );
-}
-
-const ownRole = (a: ArtifactAgent) =>
-  !a.owner && (a.key.startsWith("role:") || Boolean(a.session));
 
 /** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
 const rowName = (a: ArtifactAgent) =>
@@ -1680,7 +1645,7 @@ export function MentionMenu({
       tabIndex={-1}
       aria-selected={i === active}
       aria-disabled={a.askState === "off" ? true : undefined}
-      className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)] ${a.askState === "off" || (ownRole(a) && !isOnline(a)) ? "opacity-60" : ""}`}
+      className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)] ${a.askState === "off" ? "opacity-60" : ""}`}
       // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
       onMouseDown={(e) => {
         e.preventDefault();
@@ -1698,26 +1663,22 @@ export function MentionMenu({
           />
         )
       )}
-      {ownRole(a) ? (
-        <RoleRow a={a} />
-      ) : (
-        <span
-          className={`min-w-0 flex-1 ${grouped ? "flex flex-col" : "flex items-center gap-2"}`}
+      <span
+        className={`min-w-0 flex-1 ${grouped ? "flex flex-col" : "flex items-center gap-2"}`}
+      >
+        <b
+          className={`min-w-0 ${grouped ? "" : "flex-1"} truncate ${a.state === "away" ? MUTED : ""}`}
         >
-          <b
-            className={`min-w-0 ${grouped ? "" : "flex-1"} truncate ${a.state === "away" ? MUTED : ""}`}
-          >
-            {rowName(a)}
-          </b>
-          <span className={`${MUTED} ${grouped ? "" : "shrink-0"}`}>
-            {isPersonKey(a.key)
-              ? "Person"
-              : grouped && !a.owner
-                ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
-                : stateText(a, all)}
-          </span>
+          {rowName(a)}
+        </b>
+        <span className={`${MUTED} ${grouped ? "" : "shrink-0"}`}>
+          {isPersonKey(a.key)
+            ? "Person"
+            : grouped && !a.owner
+              ? [stateText(a, all), "yours"].filter(Boolean).join(" \u00b7 ")
+              : stateText(a, all)}
         </span>
-      )}
+      </span>
     </div>
   );
   const group = (label: string, from: number, to: number) => (

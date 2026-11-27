@@ -3259,9 +3259,6 @@ export async function artifactAgents(
       key: a.key,
       name: a.name,
       ...(a.session && !masked ? { session: a.session } : {}),
-      ...(!masked && a.holderApp
-        ? { holderApp: a.holderApp, heldSince: a.heldSince }
-        : {}),
       online: a.online,
       state: a.state,
       lastActiveAt: masked ? null : a.lastActiveAt,

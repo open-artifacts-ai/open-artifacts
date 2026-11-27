@@ -112,9 +112,6 @@ describe("an @-mention of a role (#3132)", () => {
       expect(all.find((a) => a.key === entry?.key)).toMatchObject({
         name: role,
         session: names[1],
-        holderApp: { kind: expect.any(String) },
-        heldSince: expect.stringMatching(/^\d{4}-/),
-        machine: expect.any(String),
       });
       expect(all.some((a) => a.name === names[1])).toBe(false);
       // Explicitly vacating leaves the old session its own independent name.

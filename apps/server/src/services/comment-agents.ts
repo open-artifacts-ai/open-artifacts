@@ -87,7 +87,6 @@ async function rosterEntry(
   a: BusAgent | undefined,
   mine: boolean,
   owner: string | null,
-  heldSince?: string,
 ): Promise<RosterAgent> {
   const session = a?.name ?? address.name;
   const role = a?.role && a.roleId ? { name: a.role, id: a.roleId } : null;
@@ -97,9 +96,6 @@ async function rosterEntry(
       : await agentKey(artifactId, userId, address),
     name: `${role?.name ?? a?.role ?? session}${owner ? ` (${owner})` : ""}`,
     ...(a?.role ? { session } : {}),
-    ...(mine && a?.role
-      ? { holderApp: { kind: a.kind, product: a.product }, heldSince }
-      : {}),
     ...sessionFor(a, mine),
     owner,
     userId,
@@ -170,7 +166,6 @@ type OwnAgents = {
   unrepresentedRoles: RosterAgent[];
   /** The same hub read by address, for each agent's state. */
   sessions: Map<string, BusAgent>;
-  heldSince: Map<string, string | undefined>;
   /** Whether the hub's state is known (false: unreadable, nothing is dropped). */
   known: boolean;
 };
@@ -222,7 +217,6 @@ export async function viewerAgents(
   const represented = new Set(
     addresses.map((address) => sessions.get(addrKey(address))?.roleId),
   );
-  const heldSince = new Map(view.roles?.map((r) => [r.id, r.heldSince]));
   const holders = new Map(view.agents.map((a) => [a.id, a]));
   const unrepresentedRoles: RosterAgent[] = [];
   for (const role of view.roles ?? []) {
@@ -235,22 +229,11 @@ export async function viewerAgents(
       owner: null,
       address: { namespace: role.namespace, name: role.name },
       ...(holder
-        ? {
-            ...sessionOf(holder, true),
-            session: holder.name,
-            holderApp: { kind: holder.kind, product: holder.product },
-            heldSince: role.heldSince,
-          }
+        ? { ...sessionOf(holder, true), session: holder.name }
         : { ...UNKNOWN, state: "away" as const }),
     });
   }
-  return {
-    addresses,
-    sessions,
-    heldSince,
-    unrepresentedRoles,
-    known: view.read,
-  };
+  return { addresses, sessions, unrepresentedRoles, known: view.read };
 }
 
 /** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
@@ -262,20 +245,17 @@ export async function viewerRosterAgents(
   const own = await viewerAgents(env, artifactId, viewerId);
   if (!own) return [];
   const out: RosterAgent[] = [];
-  for (const address of own.addresses) {
-    const a = own.sessions.get(addrKey(address));
+  for (const address of own.addresses)
     out.push(
       await rosterEntry(
         artifactId,
         viewerId,
         address,
-        a,
+        own.sessions.get(addrKey(address)),
         true,
         null,
-        a?.roleId ? own.heldSince.get(a.roleId) : undefined,
       ),
     );
-  }
   return sortRoster([...out, ...own.unrepresentedRoles]).slice(
     0,
     OWN_AGENTS_MAX,
@@ -379,17 +359,7 @@ export async function agentRoster(
       if (sessions && (!a || hiddenUnnamed(a))) continue;
       // #3132: an agent holding a role is offered by the role, the address
       // the role's mail follows; its session is small print.
-      out.push(
-        await rosterEntry(
-          artifactId,
-          userId,
-          address,
-          a,
-          mine,
-          owner,
-          mine && a?.roleId ? own?.heldSince.get(a.roleId) : undefined,
-        ),
-      );
+      out.push(await rosterEntry(artifactId, userId, address, a, mine, owner));
     }
   }
   // Online first, then trim: the cap never costs an online agent its place.

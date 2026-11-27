@@ -120,12 +120,11 @@ type StoredRole = {
   name: string;
   agentId: string | null;
   setAt: number;
-  heldSince: number | null;
   holderName: string | null;
   held: number;
 };
 
-const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt, r.held_since as heldSince,
+const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt,
     h.name as holderName,
     (h.id is not null and h.live = 1 and (h.namespace = r.namespace or h.global = 1)) as held
   from roles r left join agents h on h.id = r.agent_id`;
@@ -138,7 +137,6 @@ const roleDto = (r: StoredRole): BusRole => ({
   holderName: r.holderName,
   vacant: r.held !== 1,
   setAt: iso(r.setAt),
-  ...(r.agentId && r.heldSince != null ? { heldSince: iso(r.heldSince) } : {}),
 });
 
 /** Every role of the hub (at most `max`), by namespace then name. */
