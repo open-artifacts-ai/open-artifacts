@@ -29,8 +29,6 @@ import {
   HELD_SNOOZE_MS,
   HELD_SNOOZE_REASON_MAX,
   HealthzSchema,
-  INVITE_UNREACHABLE_MESSAGE,
-  InviteUnreachableDetailsSchema,
   ListQuerySchema,
   MemberInviteResultSchema,
   MemberOwnsArtifactsDetailsSchema,
@@ -382,8 +380,8 @@ describe("mock signInMethods (#799)", () => {
     use();
     expect(await shareTo("new@example.com")).toEqual([]);
     expect(await shareTo("guest@elsewhere.com")).toEqual(["email"]);
-    expect(await inviteTo("in@example.com")).toEqual(["google"]);
-    expect(await inviteTo("sec@secondary.com")).toEqual(["google"]);
+    expect(await inviteTo("in@example.com")).toEqual(["google", "email"]);
+    expect(await inviteTo("sec@secondary.com")).toEqual(["google", "email"]);
     use(["email"]);
     expect(await inviteTo("in2@example.com")).toEqual(["email"]);
     use(["google"]);
@@ -399,17 +397,13 @@ describe("mock invite reachability (review item 11)", () => {
   const invite = (email: string) =>
     call("POST", R.members, { email, role: "member" });
 
-  it("email only, outside the domain: 400 invite_unreachable", async () => {
+  it("email only, outside the domain: 201, a code (#3184)", async () => {
     use(["email"]);
     const r = await invite("out@elsewhere.com");
-    expect(r.status).toBe(400);
-    const { error } = ApiErrorSchema.parse(await r.json());
-    expect(error.code).toBe("invite_unreachable");
-    expect(InviteUnreachableDetailsSchema.parse(error.details)).toEqual({
-      field: "email",
-      reason: "outside_domains",
-    });
-    expect(error.message).toBe(INVITE_UNREACHABLE_MESSAGE.outside_domains);
+    expect(r.status).toBe(201);
+    const body = MemberInviteResultSchema.parse(await r.json());
+    expect(body.signIn).toBeUndefined();
+    expect(body.signInMethods).toEqual(["email"]);
   });
 
   it("Google on, outside the domain: 201 with signIn uncertain", async () => {
