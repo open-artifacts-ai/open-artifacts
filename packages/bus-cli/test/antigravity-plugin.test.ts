@@ -346,6 +346,26 @@ function make(over: Partial<Ctx> = {}): Fake {
 }
 
 describe("install, doctor and uninstall --purge with the plugin (agy S2)", () => {
+  it("remembers --no-service opt-in on reinstall and an explicit opt-out", async () => {
+    const ctx = make();
+    const opts = { label: LABEL, hub: HUB, noService: true };
+    const doctorOutput = async () => {
+      const start = ctx.all().length;
+      await doctor(ctx);
+      return ctx.all().slice(start).join("\n");
+    };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    expect(await install(opts, ctx)).toBe(0);
+    expect(await doctorOutput()).toContain("Antigravity wired");
+    updateInstallFile(join(ctx.home, "install.json"), { service: { env: ON } });
+    ctx.env = { OA_BUS_EXPERIMENTAL_AGY: "0" };
+    expect(await install(opts, ctx)).toBe(0);
+    ctx.env = {};
+    expect(await doctorOutput()).not.toContain("Antigravity wired");
+    expect(ctx.service.ensure).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     "doctor shows Antigravity habits without a shell flag (opt-out %s)",
     async (optedOut) => {

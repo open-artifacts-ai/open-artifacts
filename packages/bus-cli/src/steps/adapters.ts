@@ -245,7 +245,10 @@ export function agyOn(
   busDir: string,
 ): boolean {
   if (env?.[AGY_FLAG] !== undefined) return env[AGY_FLAG] === "1";
-  const service = readInstallFile(join(busDir, "install.json")).service as
+  const record = readInstallFile(join(busDir, "install.json"));
+  if (typeof record.agyEnabled === "boolean") return record.agyEnabled;
+  // Installs before the independent setting kept the opt-in in the service.
+  const service = record.service as
     | { env?: Record<string, unknown> }
     | undefined;
   return service?.env?.[AGY_FLAG] === "1";
