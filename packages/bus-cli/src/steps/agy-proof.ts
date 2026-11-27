@@ -613,13 +613,16 @@ export function installAgyEntries(
   }
   if (text !== before) io.write(text);
   if (io.settings) {
-    for (const m of keep)
+    for (const m of keep) {
+      const current = entryDigest(text, m.name);
       setAgyPageGrants(
         io.settings,
         m.name,
         io.moved,
-        !!m.createdDigest && entryDigest(text, m.name) === m.createdDigest,
+        m.createdDigest && current === m.createdDigest ? "claim" : "invalidate",
+        current,
       );
+    }
   }
   return out;
 }
@@ -700,7 +703,13 @@ export function restoreAgyEntries(io: AgyEntryIo): {
   }
   if (io.settings)
     for (const m of moved)
-      setAgyPageGrants(io.settings, m.name, io.moved, false);
+      setAgyPageGrants(
+        io.settings,
+        m.name,
+        io.moved,
+        "release",
+        entryDigest(before, m.name),
+      );
   if (text !== before) io.write(text);
   for (const m of moved) {
     if (m.native && m.createdDigest && !stay.includes(m))

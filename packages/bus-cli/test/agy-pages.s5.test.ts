@@ -204,6 +204,24 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
   });
 
+  it("revokes shared grants when one home finds the alias repointed", async () => {
+    const { deps, h, file } = setup();
+    const settings = join(h, ".gemini/antigravity-cli/settings.json");
+    const manual = "mcp(open-artifacts/get_artifact)";
+    put(settings, JSON.stringify({ permissions: { allow: [manual] } }));
+    await installAdapters(deps);
+    await installAdapters({ ...deps, busHome: join(h, "second-bus") });
+    put(file, read(file).replace(HUB, "https://replacement.example.org"));
+    await installAdapters(deps);
+    const allow: string[] = JSON.parse(read(settings)).permissions.allow;
+    expect(allow.filter((r) => r.startsWith("mcp(open-artifacts/"))).toEqual([
+      manual,
+    ]);
+    expect(
+      allow.filter((r) => r.startsWith("mcp(open-artifacts-2/")),
+    ).toHaveLength(20);
+  });
+
   it.each([true, false])(
     "removes the shared native entry only on last uninstall (creator first: %s)",
     async (creatorFirst) => {

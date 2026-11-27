@@ -184,7 +184,8 @@ export function setAgyPageGrants(
   file: string,
   name: string,
   homeRecord: string,
-  enable: boolean,
+  operation: "claim" | "release" | "invalidate",
+  currentDigest: string | undefined,
 ) {
   // Names containing rule syntax cannot safely form an exact permission.
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) return;
@@ -194,15 +195,30 @@ export function setAgyPageGrants(
     createHash("sha256").update(name).digest("hex") +
     ".json";
   const data = readText(stamp);
+  const enable = operation === "claim";
   if (!enable && data === undefined) return;
-  const record: { homes: string[]; tools: string[]; made: string[][] } =
+  const record: {
+    digest?: string;
+    homes: string[];
+    tools: string[];
+    made: string[][];
+  } =
     data === undefined ? { homes: [], tools: [], made: [] } : JSON.parse(data);
-  if (!enable && !record.homes.includes(homeRecord)) return;
+  // A change of entry invalidates every claim tied to its old contents. A
+  // stale home must also leave a newer, independently claimed entry intact.
+  const changed =
+    record.digest !== undefined
+      ? record.digest !== currentDigest
+      : operation === "invalidate";
+  if (!enable && !changed && !record.homes.includes(homeRecord)) return;
   const text = readText(file) ?? "";
   let out = text;
-  let homes = record.homes.filter((h) => h !== homeRecord);
+  let homes = changed ? [] : record.homes.filter((h) => h !== homeRecord);
   if (enable) {
-    homes = [...new Set([...record.homes, homeRecord])];
+    homes = changed
+      ? [homeRecord]
+      : [...new Set([...record.homes, homeRecord])];
+    record.digest = currentDigest;
     const perms = lists(text, file);
     if (!data)
       record.made = [["permissions", "allow"], ["permissions"]].filter(
