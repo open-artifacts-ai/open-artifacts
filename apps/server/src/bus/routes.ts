@@ -1,6 +1,8 @@
 import {
+  AGY_CHECK_HEADER,
   BUS_ROUTES,
   BusNameSchema,
+  CODEX_VERDICT_HEADER,
   DeviceCodeRequestSchema,
   type DeviceCodeResponse,
   DeviceTokenRequestSchema,
@@ -22,6 +24,7 @@ import {
   BusLinkPutSchema,
   BusReachProposeSchema,
   BusReachPutSchema,
+  BusRoleProposalDecideSchema,
   BusRolePutSchema,
   BusRunVersionPutSchema,
   BusUpdatesPausedPutSchema,
@@ -57,6 +60,7 @@ import { audit, auditText } from "../services/audit.js";
 import {
   busOn,
   busPing,
+  decideBusRoleProposalById,
   deleteBusLink,
   deleteBusReach,
   deleteBusRole,
@@ -752,7 +756,13 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
         Upgrade: "websocket",
         [MACHINE_ID_HEADER]: m.id,
         [MACHINE_LABEL_HEADER]: m.label,
+        ...(c.req.header(AGY_CHECK_HEADER) === "1"
+          ? { [AGY_CHECK_HEADER]: "1" }
+          : {}),
         [AUTHZ_AT_HEADER]: String(authzAt),
+        ...(c.req.header(CODEX_VERDICT_HEADER) === "1"
+          ? { [CODEX_VERDICT_HEADER]: "1" }
+          : {}),
       },
     }),
   );
@@ -891,6 +901,20 @@ export function mountBus(app: AppType): void {
         body.agentId,
       ),
     });
+  });
+  // #3132: the handover card's answer (For you, Agents > Roles). One click in
+  // the member's own browser session; roleWriter refuses every token.
+  app.post(`${R.busRoles}/proposals/:id`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    const body = await jsonBody(c, BusRoleProposalDecideSchema);
+    return c.json(
+      await decideBusRoleProposalById(c.env, user.id, id, body.decision),
+    );
   });
   app.delete(`${R.busRoles}/:id`, async (c) => {
     const user = roleWriter(c);

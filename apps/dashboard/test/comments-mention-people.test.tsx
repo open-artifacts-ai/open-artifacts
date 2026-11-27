@@ -191,7 +191,9 @@ describe("@ lists people with the agents (#2770)", () => {
   it("picks with the keyboard, shows a pill, and sends the id in people", async () => {
     serve();
     server.use(
-      http.post(CAND, () => HttpResponse.json({ items: [DANA, DANIELLE] })),
+      http.post(CAND, () =>
+        HttpResponse.json({ items: [DANA, { ...DANIELLE, handle: "dan-o" }] }),
+      ),
     );
     const all = calls("POST");
     // The candidates search is a POST too: only comments count here.
@@ -214,21 +216,24 @@ describe("@ lists people with the agents (#2770)", () => {
       expect(within(c).getAllByRole("option")).toHaveLength(2),
     );
     expect(b.getAttribute("aria-activedescendant")).toMatch(/-0$/);
+    expect(within(c).getAllByRole("option")[1]).toHaveTextContent(
+      "Danielle Okafor @dan-o",
+    );
     fireEvent.keyDown(b, { key: "ArrowDown" });
     fireEvent.keyDown(b, { key: "Enter" });
-    expect((b as HTMLTextAreaElement).value).toBe("@Danielle Okafor ");
+    expect((b as HTMLTextAreaElement).value).toBe("@dan-o ");
     expect(
       within(c).getByRole("button", {
-        name: "Remove mention of Danielle Okafor",
+        name: "Remove mention of dan-o",
       }),
     ).toBeTruthy();
-    expect(within(c).getByText("Will notify Danielle Okafor")).toBeTruthy();
+    expect(within(c).getByText("Will notify dan-o")).toBeTruthy();
     expect(within(c).queryByRole("listbox")).toBeNull();
-    type(b, "@Danielle Okafor can you check?");
+    type(b, "@dan-o can you check?");
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts.length).toBeGreaterThan(0));
     expect(posts[0]?.body).toMatchObject({
-      body: "@Danielle Okafor can you check?",
+      body: "@dan-o can you check?",
       people: ["usr_danielle"],
     });
     expect(posts[0]?.body).not.toHaveProperty("mentions");

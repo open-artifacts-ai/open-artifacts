@@ -239,7 +239,7 @@ describe("roles helpers", () => {
     );
     expect(roleError(new Error("boom"))).toBe("That didn't save. Try again.");
   });
-  it("pending: only pending proposals whose link still works", () => {
+  it("pending: only pending proposals whose card can still be answered", () => {
     const p = fixtures
       .busRoleProposals[0] as (typeof fixtures.busRoleProposals)[number];
     const now = Date.parse(p.createdAt);
@@ -1321,17 +1321,118 @@ describe("Agents › Namespaces › Links (#1567)", () => {
 });
 
 describe("Agents › Roles and access", () => {
-  it("a pending proposal waits, pointing at the agent's link (no confirm here yet)", async () => {
+  it("a pending take-over shows as the handover card on the role's row, with Yes and No", async () => {
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
+    const sent = calls("POST");
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    // The role exists, so its card sits on its row, not under "Waiting for you".
+    expect(
+      screen.queryByRole("region", { name: "Waiting for you" }),
+    ).toBeNull();
+    const card = await within(t).findByText(
+      "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
+    );
+    expect(card.closest("[data-role-card]")).not.toBeNull();
+    expect(within(t).getByRole("button", { name: "No" })).toBeInTheDocument();
+    fireEvent.click(
+      within(t).getByRole("button", { name: "Yes, hand it over" }),
+    );
+    await waitFor(() =>
+      expect(sent.map((c) => [c.path, c.body])).toEqual([
+        [R.busRoleProposal("BpA1nPqRsTu4vWxY"), { decision: "confirm" }],
+      ]),
+    );
+    // The role now points at oa-design and the card is gone.
+    await waitFor(() =>
+      expect(screen.queryByText(/wants to take over/)).toBeNull(),
+    );
+    expect(t).toHaveTextContent("manageroa-design");
+  });
+
+  it("No refuses it: the role stays, the card goes", async () => {
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
+    const sent = calls("POST");
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    fireEvent.click(await within(t).findByRole("button", { name: "No" }));
+    await waitFor(() =>
+      expect(sent.map((c) => c.body)).toEqual([{ decision: "reject" }]),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/wants to take over/)).toBeNull(),
+    );
+    expect(t).toHaveTextContent("manageroa-manager");
+  });
+
+  it("says how long the holder has been away, and why a Yes was refused", async () => {
+    server.use(...createHandlers({ bus: true, forYou: "handover" }));
+    const away = {
+      ...agentNamed("oa-manager"),
+      state: "away" as const,
+      since: new Date(Date.now() - 40 * 60_000).toISOString(),
+    };
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          agents: [away, agentNamed("oa-design")],
+          live: true,
+        }),
+      ),
+      http.post(`*${R.busRoles}/proposals/:id`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "conflict",
+              message: "changed",
+              details: { reason: "changed" },
+            },
+          },
+          { status: 409 },
+        ),
+      ),
+    );
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    expect(
+      await within(t).findByText(
+        "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(t).getByRole("button", { name: "Yes, hand it over" }),
+    );
+    expect(await within(t).findByRole("alert")).toHaveTextContent(
+      "The role changed since this was asked, so nothing was moved.",
+    );
+  });
+
+  it("a request for a role that doesn't exist yet waits under Waiting for you, as the same card", async () => {
     withBus();
+    server.use(
+      http.get(`*${R.busRoles}`, () =>
+        HttpResponse.json({
+          roles: [],
+          live: true,
+          proposals: [
+            {
+              ...fixtures.busRoleProposals[0],
+              action: "set",
+              roleId: null,
+              priorAgentId: null,
+              priorHolderName: null,
+              expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            },
+          ],
+        }),
+      ),
+    );
     mount("/agents/roles");
     const w = await screen.findByRole("region", { name: "Waiting for you" });
-    expect(w).toHaveTextContent(
-      "Point manager in open-artifacts at oa-design (now oa-manager).",
-    );
-    expect(w).toHaveTextContent(
-      "Open the link the agent gave you to confirm it.",
-    );
-    expect(within(w).queryByRole("button")).toBeNull();
+    expect(w).toHaveTextContent("oa-design asks for the role manager.");
+    expect(
+      within(w).getByRole("button", { name: "Yes, give it" }),
+    ).toBeInTheDocument();
   });
 
   it("roles show holder or Vacant; Remove confirms, then DELETEs", async () => {

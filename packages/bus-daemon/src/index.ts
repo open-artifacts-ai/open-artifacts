@@ -40,6 +40,7 @@ import {
 import {
   AGY_STARTING_LABEL,
   AgentRefSchema,
+  agyCallDigest,
   BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
@@ -2207,11 +2208,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   /** #3108: the last time each entry's link was logged; one line an hour at most. */
   const linkedLogged = new Map<string, number>();
-  /**
-   * The hub saw a /mcp call from a Codex entry that signs in itself and asks
-   * whether it is open in a thread this daemon holds for that instance. The
-   * answer is only ever yes or no; nothing from the frame is logged.
-   */
+  // One-use native hook observations. Store only digests and local process identity.
+  const agyCalls = new Map<
+    string,
+    { pid: number; start: string; ref: string; seen: number }
+  >();
   const onCodexCheck = async (
     lane: Lane,
     frame: Extract<ServerFrame, { type: "codex_call_check" }>,
@@ -2222,13 +2223,41 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         .all()
         .find(
           (a) =>
-            a.kind === "codex" &&
+            a.kind === (frame.harness ?? "codex") &&
             a.live &&
             a.ref === frame.thread_id &&
             a.pid !== undefined &&
             homedOf(a) === lane.name,
         );
-      if (rec && lane.codexCheck && !lane.revoked) {
+      if (frame.harness === "antigravity") {
+        if (
+          rec?.pid &&
+          lane.agyCheck &&
+          !lane.revoked &&
+          frame.mode.kind === "direct"
+        ) {
+          const key = await agyCallDigest(
+            instanceOrigin(lane.cfg.hub),
+            rec.ref,
+            frame.mode.call_id,
+            frame.tool,
+            frame.mode.args_sha256,
+          );
+          const witness = key && agyCalls.get(key);
+          if (
+            key &&
+            witness &&
+            witness.ref === rec.ref &&
+            witness.pid === rec.pid &&
+            performance.now() - witness.seen < 60_000 &&
+            witness.start === rec.procStart &&
+            basename((ag.comm ?? commOf)(rec.pid) ?? "") === "agy" &&
+            (ag.procStart ?? procStartOf)(rec.pid) === witness.start
+          ) {
+            ok = agyCalls.delete(key);
+          }
+        }
+      } else if (rec && lane.codexCheck && !lane.revoked) {
         const names = codexOaEntries(home(), instanceOrigin(lane.cfg.hub));
         const hit = await codexCheck.remote(frame, {
           pid: rec.pid as number,
@@ -2261,6 +2290,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Frames about guests, before any routing: true when handled here. */
   const guestFrame = (lane: Lane, frame: ServerFrame): boolean => {
     switch (frame.type) {
+      case "codex_call_verdict": {
+        const { reason } = frame;
+        const verdict =
+          reason === "attested"
+            ? "linked"
+            : reason === "lookup_timeout"
+              ? "timeout"
+              : reason === "hub_rate_limit" || reason === "item_limit"
+                ? "rate-limited"
+                : "refused";
+        ev("codex_call_verdict", {
+          instance: lane.name,
+          name: frame.name,
+          verdict,
+          reason,
+        });
+        return true;
+      }
       case "codex_call_check":
         // Only a hub that listed the cap; anything else is ignored.
         if (lane.codexCheck)
@@ -3238,12 +3285,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A codex hello proves one call id, so it buys one request: `hello.pid`
     // is a claim (no peer credentials), and a won race must not become a session.
     oneRequest: (h) => h.kind === "codex",
+    // #3043: un-helloed rules query for the Codex SessionStart hook CLI.
+    onHabits: () =>
+      (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
     // #1822: `oa-bus mcp-proof` names the Claude process it runs under. The pid
     // in the request is the caller's claim, not attested (no peer credentials):
     // any process of this OS user can bind. The owner accepted that. What the
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      if (req.type === "agy_call_seen") {
+        const rec = req.conversation && agents.byRef(req.conversation);
+        if (
+          !rec ||
+          !rec.live ||
+          rec.kind !== "antigravity" ||
+          rec.pid !== req.pid ||
+          !rec.procStart ||
+          (ag.procStart ?? procStartOf)(req.pid) !== rec.procStart ||
+          basename((ag.comm ?? commOf)(req.pid) ?? "") !== "agy"
+        )
+          return { bound: false };
+        agyCalls.set(req.hash, {
+          pid: req.pid,
+          start: rec.procStart,
+          ref: rec.ref,
+          seen: performance.now(),
+        });
+        if (agyCalls.size > 2048)
+          agyCalls.delete(agyCalls.keys().next().value as string);
+        return { bound: true };
+      }
       if (req.conversation !== undefined)
         return agyLinkProof(req.pid, req.conversation, req.hash, req.instance);
       const want = req.instance ?? MAIN_INSTANCE;

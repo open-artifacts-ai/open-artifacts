@@ -212,6 +212,39 @@ describe("roster: the viewer's own running agents", () => {
     expect(again.find((x) => x.name === "Runner")?.key).toBe(runner?.key);
   });
 
+  it("#3132: an agent holding a role is offered by the role, with its session as small print", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Codex W" },
+      s.id,
+    );
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "OA Platform W"), role: "OA Platform" },
+        agentRow("ns-o", "Plain"),
+      ],
+      [s.editor.userId]: [{ ...agentRow("ns-e", "Codex W"), role: "Codex" }],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const own = r.find((x) => x.address.name === "OA Platform W");
+    expect(own).toMatchObject({
+      name: "OA Platform",
+      session: "OA Platform W",
+    });
+    // Mail still goes to the session's address, which the role follows.
+    expect(own?.address).toEqual({ namespace: "ns-o", name: "OA Platform W" });
+    expect(r.find((x) => x.address.name === "Plain")).not.toHaveProperty(
+      "session",
+    );
+    expect(r.find((x) => x.address.name === "Codex W")?.name).toMatch(
+      /^Codex \(/,
+    );
+  });
+
   it("online is a connected daemon: a running agent whose machine is away is listed, offline", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
@@ -534,7 +567,7 @@ describe("@ menu: per-session state, last active and machine", () => {
       true,
       true,
     );
-    expect(asked).toEqual({ away: true });
+    expect(asked).toEqual({ away: true, roles: true });
   });
 });
 
@@ -546,12 +579,13 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
     // The menu (online read) hands out the key.
     const key = (await agentRoster(h.env, s.id, s.owner.userId, true, true))[0]
       ?.key as string;
+    const body = "Please review this comment.";
     const t = (await addThread(
       h.env,
       art(s.id),
       who(s.owner),
       view(s.owner),
-      { anchor: { kind: "note" }, body: "hi", mentions: [{ key }] },
+      { anchor: { kind: "note" }, body, mentions: [{ key }] },
       { moderator: true },
     )) as Thread;
     expect(t.comments[0]?.mentions?.[0]).toEqual({
@@ -564,12 +598,14 @@ describe("mention: a viewer's running agent (#3164: no page follow)", () => {
       { namespace: "ns-o", name: "Runner" },
     ]);
     expect(await followRows(s.id)).toEqual([]);
-    // The notice names the thread and the comment, nothing authored.
+    // Only the verified quote carries the typed comment body.
     const n = bus.sent[0]?.notice as BusNotice;
     expect(n.threadId).toBe(t.id);
     expect(n.commentId).toBe(t.comments[0]?.id);
     expect(n.text).toContain(`Thread ${t.id}, comment ${t.comments[0]?.id}.`);
-    expect(n.text).not.toContain("hi\n");
+    expect(n.text.split("\n").filter((line) => line.includes(body))).toEqual([
+      `Their words: ${JSON.stringify(body)}`,
+    ]);
   });
 
   it("another member's running agent cannot be mentioned by key", async () => {

@@ -50,6 +50,39 @@ describe("codex_call_check frame (#3108)", () => {
     expect(h.of("codex_call_checked")).toHaveLength(1);
   });
 
+  it("logs each final verdict with the instance, agent and reason", async () => {
+    const seen: unknown[] = [];
+    const h = await daemonHarness({
+      events: (event, fields) => {
+        if (event === "codex_call_verdict") seen.push(fields);
+      },
+    });
+    h.toDaemon(helloOk([BUS_CAPS.ids, BUS_CAPS.codexCheck]));
+    const cases = [
+      ["attested", "linked"],
+      ["daemon_refused", "refused"],
+      ["lookup_timeout", "timeout"],
+      ["hub_rate_limit", "rate-limited"],
+    ] as const;
+    for (const [reason] of cases)
+      h.toDaemon({
+        id: reason,
+        type: "codex_call_verdict",
+        name: "Agent",
+        reason,
+      });
+    h.toDaemon(check("marker"));
+    await h.next("codex_call_checked");
+    expect(seen).toEqual(
+      cases.map(([reason, verdict]) => ({
+        instance: "main",
+        name: "Agent",
+        reason,
+        verdict,
+      })),
+    );
+  });
+
   it("drops a frame that fails the schemas, and the next one is still answered", async () => {
     const h = await daemonHarness();
     h.toDaemon(helloOk([BUS_CAPS.ids, BUS_CAPS.codexCheck]));

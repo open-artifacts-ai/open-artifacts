@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -42,8 +42,12 @@ import {
   codexBinFile,
   codexBinPin,
   listInstances,
+  readState,
+  versionDir,
 } from "@oa/bus-daemon";
+import { habitsOff } from "@oa/bus-ipc";
 import { hostSlug } from "@oa/shared/secrets";
+import { withAgyConfigLock } from "./agy-config-lock.ts";
 import {
   type AgyEntryIo,
   type AgyTarget,
@@ -68,14 +72,20 @@ import {
   uninstallProof,
 } from "./claude-proof.ts";
 import {
+  CODEX_HOOK_ENABLED,
+  CODEX_HOOK_TRUST_LINE,
   codexConfig,
   codexEntry,
   codexEntryOf,
+  codexHookCommand,
+  codexHooks,
   entryIs,
   findCodexBin,
   hasCodex,
+  installCodexHook,
   readToml,
   removeCodexEntry,
+  uninstallCodexHook,
   upsertCodexEntry,
 } from "./codex.ts";
 import {
@@ -93,15 +103,18 @@ import {
   installHermes,
   pluginState,
   uninstallHermes,
+  writeManagedPlugin,
 } from "./hermes.ts";
 import {
   installOpenclaw,
+  OPENCLAW_MARKER,
   OPENCLAW_NIX,
   OPENCLAW_NO_CLI,
   OPENCLAW_PLUGIN,
   openclawNix,
   openclawPluginDir,
   openclawPluginState,
+  ownsOpenclawPlugin,
   uninstallOpenclaw,
 } from "./openclaw.ts";
 import {
@@ -122,6 +135,7 @@ import {
   pendingEntry,
   restoreEntry,
 } from "./pi-proof.ts";
+import { readInstallFile } from "./step.ts";
 
 export { OMP_ORIGIN_FILE };
 
@@ -238,8 +252,20 @@ const HARNESSES: Harness[] = [
  * entry and our plugin folder.
  */
 export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
-export const agyOn = (env: Record<string, string | undefined> | undefined) =>
-  env?.[AGY_FLAG] === "1";
+/** An explicit shell setting wins over the opt-in saved for this bus home. */
+export function agyOn(
+  env: Record<string, string | undefined> | undefined,
+  busDir: string,
+): boolean {
+  if (env?.[AGY_FLAG] !== undefined) return env[AGY_FLAG] === "1";
+  const record = readInstallFile(join(busDir, "install.json"));
+  if (typeof record.agyEnabled === "boolean") return record.agyEnabled;
+  // Installs before the independent setting kept the opt-in in the service.
+  const service = record.service as
+    | { env?: Record<string, unknown> }
+    | undefined;
+  return service?.env?.[AGY_FLAG] === "1";
+}
 
 /** agy is on PATH, or its folders are under ~/.gemini. */
 const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
@@ -289,6 +315,22 @@ const homeLine = (ob: string) =>
   `process.env.OA_BUS_HOME ||= ${JSON.stringify(ob)};`;
 const withHome = (text: string, ob: string | undefined) =>
   ob === undefined ? text : `${homeLine(ob)}\n${text}`;
+const homed = (file: string, ob: string | undefined): boolean => {
+  if (!existsSync(file)) return false;
+  const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+  return ob === undefined
+    ? !first.startsWith("process.env.OA_BUS_HOME ||=")
+    : first === homeLine(ob);
+};
+
+const digest = (text: string) =>
+  createHash("sha256").update(text).digest("hex");
+const assetRecord = (busDir: string, file: string) =>
+  join(busDir, "adapter-assets", digest(resolve(file)));
+function writeAdapterAsset(busDir: string, file: string, text: string) {
+  writeAtomic(file, text, 0o644);
+  writeAtomic(assetRecord(busDir, file), digest(text), 0o600);
+}
 
 export const paths = (deps: AdapterDeps) => {
   const env = deps.env ?? {};
@@ -323,6 +365,11 @@ export const paths = (deps: AdapterDeps) => {
     omp: join(ompAgentDir(deps.home, env), "extensions/oa-bus.ts"),
     codex: codexConfig(deps.home, env),
     codexBin: codexBinFile(busDir),
+    codexHookOwner: join(
+      busDir,
+      "codex-hooks",
+      digest(codexHooks(deps.home, env)),
+    ),
     // #1856: where install keeps the Codex entry it swapped for the proxy.
     codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
     // agy S5: the user's Antigravity pages entries, kept for uninstall (0600).
@@ -601,11 +648,14 @@ export const agyEntryIo = (
     ...(movedHome(deps as AdapterDeps)
       ? { busHome: movedHome(deps as AdapterDeps) as string }
       : {}),
+    // A host slug loses dots, hyphens, ports and the scheme. Never use it to
+    // choose a credential for an Antigravity proxy.
     patFile: (origin) =>
       join(
         deps.home,
         ".open-artifacts",
-        `${hostSlug(new URL(origin).host)}-pat-token`,
+        "pats",
+        encodeURIComponent(new URL(origin).origin),
       ),
     stopped: stoppedBus(deps, false),
     keptOf: (owner) =>
@@ -1048,7 +1098,7 @@ const install: Record<Harness, Step> = {
       pluginBefore = readFileSync(pluginFile, "utf8");
     } catch {}
     const touched = { changed: pluginBefore !== pluginText };
-    writeAtomic(pluginFile, pluginText, 0o644);
+    writeAdapterAsset(p.busDir, pluginFile, pluginText);
     if (
       saveText(configPath, config, nextConfig, (d) =>
         isDeepStrictEqual(servers(d)?.[NAME], server),
@@ -1074,10 +1124,10 @@ const install: Record<Harness, Step> = {
 
   async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
-    writeAtomic(
+    writeAdapterAsset(
+      paths(deps).busDir,
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
-      0o644,
     );
     await piEntry(deps, notes);
     return "done";
@@ -1088,10 +1138,10 @@ const install: Record<Harness, Step> = {
     ompOrigin(deps, notes);
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
-    writeAtomic(
+    writeAdapterAsset(
+      paths(deps).busDir,
       paths(deps).omp,
       withHome(deps.assets.pi, movedHome(deps)),
-      0o644,
     );
     return "done";
   },
@@ -1124,6 +1174,20 @@ const install: Record<Harness, Step> = {
       notes.push(CODEX_NO_BIN);
     }
     await codexEntryStep(deps, notes);
+    const hooksPath = codexHooks(deps.home, deps.env ?? {});
+    if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED) {
+      const hook = uninstallCodexHook(hooksPath, p.codexHookOwner);
+      if (hook.note) notes.push(hook.note);
+    } else {
+      const hook = installCodexHook(
+        hooksPath,
+        codexHookCommand(deps.busBin, deps.home, p.busDir),
+        p.codexHookOwner,
+      );
+      if (hook.note) notes.push(hook.note);
+      if (hook.status === "added" || hook.status === "updated")
+        notes.push(CODEX_HOOK_TRUST_LINE);
+    }
     return "done";
   },
 
@@ -1140,30 +1204,35 @@ const install: Record<Harness, Step> = {
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
   // byte for byte. `agy mcp add` would rewrite the whole file.
   async antigravity(deps, notes) {
-    if (!agyOn(deps.env) || !hasAgy(deps)) return "absent";
     const p = paths(deps);
-    const text = readAgy(p.agyMcp);
-    const server = agyServer(deps.busBin);
-    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
-    // read the conversation file the hook wrote, whatever agy's own env says.
-    const home = agyHookHome(deps);
-    const next = upsertAgyMcp(text, NAME, server, home);
-    target(p.agyMcp);
-    const record = readRecord(p.record);
-    const made = missing(text.replace(/^\uFEFF/, ""), [["mcpServers"]]);
-    if (made.length > 0 && record[p.agyMcp] === undefined)
-      writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
-    saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
-    // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
-    // agy S3: the one always-allow rule, for exactly the watcher's line.
-    installAgyRule(
-      deps.home,
-      p.busDir,
-      agyWatchCommand(deps.busBin, agyHookHome(deps)),
-    );
-    agyPagesStep(deps, notes);
-    return "done";
+    if (!hasAgy(deps) || !agyOn(deps.env, p.busDir)) return "absent";
+    return withAgyConfigLock(deps.home, () => {
+      const text = readAgy(p.agyMcp);
+      const server = agyServer(deps.busBin);
+      // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+      // read the conversation file the hook wrote, whatever agy's own env says.
+      const home = agyHookHome(deps);
+      const next = upsertAgyMcp(text, NAME, server, home);
+      target(p.agyMcp);
+      const record = readRecord(p.record);
+      const made = missing(text.replace(/^\uFEFF/, ""), [["mcpServers"]]);
+      if (made.length > 0 && record[p.agyMcp] === undefined)
+        writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
+      saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+      // agy S2: the plugin whose SessionStart hook joins each conversation.
+      installAgyPlugin(
+        deps.home,
+        agyPluginFiles(deps.busBin, agyHookHome(deps)),
+      );
+      // agy S3: the one always-allow rule, for exactly the watcher's line.
+      installAgyRule(
+        deps.home,
+        p.busDir,
+        agyWatchCommand(deps.busBin, agyHookHome(deps)),
+      );
+      agyPagesStep(deps, notes);
+      return "done" as const;
+    });
   },
 };
 
@@ -1304,6 +1373,12 @@ const uninstall: Record<Harness, Step> = {
         saved = true;
       }
     }
+    const hook = uninstallCodexHook(
+      codexHooks(deps.home, deps.env ?? {}),
+      p.codexHookOwner,
+    );
+    if (hook.note) notes.push(hook.note);
+    if (hook.removed) saved = true;
     // The config first: the pin goes only once the entry is gone.
     const pinned = present(p.codexBin);
     rmSync(p.codexBin, { force: true });
@@ -1320,44 +1395,49 @@ const uninstall: Record<Harness, Step> = {
 
   async antigravity(deps, notes) {
     const p = paths(deps);
-    // Only our marked folder goes; a folder not ours stays as it is.
-    const folder = uninstallAgyPlugin(deps.home);
-    // agy S3: our rule, and only ours, leaves agy's settings.
-    const rule = uninstallAgyRule(
-      deps.home,
-      p.busDir,
-      agyWatchCommand(deps.busBin, agyHookHome(deps)),
-    );
-    const plugin = folder || rule;
-    if (!present(p.agyMcp)) return plugin ? "done" : "none";
-    // agy S5: the user's pages entries go back first, byte for byte.
-    let put = false;
-    try {
-      const r = restoreAgyEntries(agyEntryIo(deps));
-      put = r.restored.length > 0;
-      notes.push(...r.notes);
-    } catch (e) {
-      notes.push(
-        `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
+    return withAgyConfigLock(deps.home, (): "done" | "none" => {
+      // Only our marked folder goes; a folder not ours stays as it is.
+      const folder = uninstallAgyPlugin(deps.home);
+      // agy S3: our rule, and only ours, leaves agy's settings.
+      const rule = uninstallAgyRule(
+        deps.home,
+        p.busDir,
+        agyWatchCommand(deps.busBin, agyHookHome(deps)),
       );
-    }
-    const before = readAgy(p.agyMcp);
-    const record = readRecord(p.record);
-    const next = (record[p.agyMcp] ?? []).reduce(
-      removeAgyIfEmpty,
-      removeAgyMcp(before, NAME),
-    );
-    const saved = saveAgy(
-      p.agyMcp,
-      before,
-      next,
-      (d) => (d.mcpServers as Doc | undefined)?.[NAME] === undefined,
-    );
-    if (record[p.agyMcp] !== undefined) {
-      const { [p.agyMcp]: _, ...left } = record;
-      writeRecord(p.record, record, left);
-    }
-    return saved || put || plugin ? "done" : "none";
+      const plugin = folder || rule;
+      if (!present(p.agyMcp)) {
+        if (present(p.agyPages)) restoreAgyEntries(agyEntryIo(deps));
+        return plugin ? "done" : "none";
+      }
+      // agy S5: the user's pages entries go back first, byte for byte.
+      let put = false;
+      try {
+        const r = restoreAgyEntries(agyEntryIo(deps));
+        put = r.restored.length > 0;
+        notes.push(...r.notes);
+      } catch (e) {
+        notes.push(
+          `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      const before = readAgy(p.agyMcp);
+      const record = readRecord(p.record);
+      const next = (record[p.agyMcp] ?? []).reduce(
+        removeAgyIfEmpty,
+        removeAgyMcp(before, NAME),
+      );
+      const saved = saveAgy(
+        p.agyMcp,
+        before,
+        next,
+        (d) => (d.mcpServers as Doc | undefined)?.[NAME] === undefined,
+      );
+      if (record[p.agyMcp] !== undefined) {
+        const { [p.agyMcp]: _, ...left } = record;
+        writeRecord(p.record, record, left);
+      }
+      return saved || put || plugin ? "done" : "none";
+    });
   },
 };
 
@@ -1492,14 +1572,7 @@ export function checkAdapters(
     typeof env === "object" && env !== null
       ? ((env as Doc).OA_BUS_HOME as string | undefined)
       : undefined;
-  const homed = (file: string) => {
-    if (!existsSync(file)) return false;
-    const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
-    const ob = movedHome(deps);
-    return ob === undefined
-      ? !first.startsWith("process.env.OA_BUS_HOME ||=")
-      : first === homeLine(ob);
-  };
+  const ob = movedHome(deps);
   const state = (h: Harness, ok: () => boolean): AdapterState =>
     !(h === "omp"
       ? hasOmp(deps)
@@ -1509,7 +1582,7 @@ export function checkAdapters(
           ? // Plugin commands are off in Nix mode: nothing here to wire.
             deps.which(h) && !openclawNix(deps.env)
           : h === "antigravity"
-            ? agyOn(deps.env) && hasAgy(deps)
+            ? hasAgy(deps) && agyOn(deps.env, p.busDir)
             : deps.which(h))
       ? "absent"
       : safely(ok)
@@ -1535,10 +1608,10 @@ export function checkAdapters(
           parseJsonc(readFileSync(p.opencodeCli, "utf8"), p.opencodeCli),
           p.opencodePlugin,
         ) &&
-        homed(join(p.opencodePlugin, "tui.js")),
+        homed(join(p.opencodePlugin, "tui.js"), ob),
     ),
-    pi: state("pi", () => homed(p.pi)),
-    omp: state("omp", () => homed(p.omp)),
+    pi: state("pi", () => homed(p.pi, ob)),
+    omp: state("omp", () => homed(p.omp, ob)),
     codex: state("codex", () =>
       entryIs(
         codexEntryOf(readToml(p.codex).doc),
@@ -1657,6 +1730,119 @@ export function skippedProxyEntries(
       out.push({ harness: "OpenCode", note });
   } catch {}
   return out;
+}
+
+export type RefreshResult = { refreshed: Harness[]; skipped: Skipped[] };
+
+/**
+ * #3174: on daemon start (so after every auto-update restart), brings the
+ * wiring install copied up to this version: the Pi / oh-my-pi extension file,
+ * OpenCode's TUI plugin file, the Codex SessionStart hook, and the Hermes and
+ * OpenClaw plugin folders. Only what is already there and ours; never adds a
+ * harness, never edits a harness config, never restarts a service, never
+ * prompts. OpenCode's MCP entry runs `<busHome>/bin`, so it is new already.
+ * Never throws.
+ */
+export async function refreshAdapters(
+  deps: AdapterDeps,
+): Promise<RefreshResult> {
+  if (deps.busBin.length === 0) return { refreshed: [], skipped: [] };
+  const refreshed: Harness[] = [];
+  const skipped: Skipped[] = [];
+  const p = paths(deps);
+  const ob = movedHome(deps);
+  const refreshFile = (file: string, text: string, asset: string): boolean => {
+    if (!present(file) || !lstatSync(file).isFile()) return false;
+    const before = readFileSync(file, "utf8");
+    if (before === text) return false;
+    const record = assetRecord(p.busDir, file);
+    if (present(record)) {
+      if (readFileSync(record, "utf8") !== digest(before)) return false;
+    } else {
+      // Pre-record installs retain the prior release bundle on a successful switch.
+      const { current, previous } = readState(p.busDir);
+      if (
+        ![current, previous].some((version) => {
+          if (!version) return false;
+          const prior = join(versionDir(p.busDir, version), "assets", asset);
+          return (
+            existsSync(prior) &&
+            withHome(readFileSync(prior, "utf8"), ob) === before
+          );
+        })
+      )
+        return false;
+    }
+    writeAdapterAsset(p.busDir, file, text);
+    return true;
+  };
+  const step = async (
+    harness: Harness,
+    fn: () => Promise<boolean> | boolean,
+  ) => {
+    try {
+      if (await fn()) refreshed.push(harness);
+    } catch (e) {
+      skipped.push({
+        harness,
+        reason: e instanceof Error ? e.message : String(e),
+      });
+    }
+  };
+  await step("opencode", () =>
+    refreshFile(
+      join(p.opencodePlugin, "tui.js"),
+      withHome(deps.assets.opencodePlugin, ob),
+      "opencode-tui/tui.js",
+    ),
+  );
+  await step("pi", () =>
+    refreshFile(p.pi, withHome(deps.assets.pi, ob), "oa-bus.ts"),
+  );
+  if (p.omp !== p.pi)
+    await step("omp", () =>
+      refreshFile(p.omp, withHome(deps.assets.pi, ob), "oa-bus.ts"),
+    );
+  await step("codex", () => {
+    if (!present(p.codex)) return false;
+    if (
+      !entryIs(
+        codexEntryOf(readToml(p.codex).doc),
+        codexEntry(deps.busBin, deps.home, p.busDir),
+        true,
+      )
+    )
+      return false;
+    const hooksPath = codexHooks(deps.home, deps.env ?? {});
+    if (habitsOff(p.busDir) || !CODEX_HOOK_ENABLED)
+      return uninstallCodexHook(hooksPath, p.codexHookOwner).removed;
+    const hook = installCodexHook(
+      hooksPath,
+      codexHookCommand(deps.busBin, deps.home, p.busDir),
+      p.codexHookOwner,
+    );
+    return hook.status === "added" || hook.status === "updated";
+  });
+  await step(
+    "hermes",
+    async () =>
+      deps.assets.hermes !== undefined &&
+      (await installHermes(deps, "refresh")) === "done",
+  );
+  await step("openclaw", () => {
+    if (!deps.which("openclaw") || openclawNix(deps.env)) return false;
+    const dest = openclawPluginDir(deps.home, deps.env ?? {});
+    const shipped = deps.assets.openclaw;
+    if (
+      !shipped ||
+      !ownsOpenclawPlugin(deps, dest) ||
+      openclawPluginState(dest, shipped) !== "stale"
+    )
+      return false;
+    writeManagedPlugin(dest, shipped, OPENCLAW_MARKER, true, deps);
+    return true;
+  });
+  return { refreshed, skipped };
 }
 
 /**
