@@ -73,6 +73,7 @@ import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { VERSION } from "../version.gen.js";
 import {
   type AgentIdentity,
+  type LateVersion,
   NAMES_OF_MAX,
   type UnlinkedWhy,
   type Via,
@@ -145,8 +146,13 @@ export type BusHubRpc = {
   ownerAwayChanged(): Promise<void>;
   /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
   codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
+  codexVersionTarget(
+    ticket: string,
+    target: { artifactId: string; version: number } | null,
+  ): Promise<void>;
   codexCallDecision(
     check: unknown,
+    ticket?: string,
   ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }>;
   codexCallVerdict(thread: string, reason: CodexLinkReason): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
@@ -768,7 +774,11 @@ async function lookupProof(
   /** #2793 S3b: whether the request is a tools/call (read lazily, only on a miss). */
   isToolsCall: () => boolean = () => false,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
+): Promise<{
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
@@ -1061,7 +1071,11 @@ async function nativeCallLink(
   bodyText: string | undefined,
   agy?: ReturnType<typeof agyWireCall>,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
+): Promise<{
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   let verdict = agy?.verdict ?? "miss";
   try {
     const e = agy?.evidence;
@@ -1080,17 +1094,36 @@ async function nativeCallLink(
     verdict = "miss";
     const hub = busHub(env, userId);
     if (!hub) return { why: agy ? "no_proof" : "no_hub" };
-    const decision = await within(
-      (async () => {
-        if (!(await hasConnectedMachine(env, userId)))
-          return { identity: null, reason: "no_daemon" as const };
-        return hub.codexCallDecision(check);
-      })().catch((e) => {
-        logError("bus_codex_link_failed", e);
-        return { identity: null, reason: "lookup_error" as const };
-      }),
-      PROOF_LOOKUP_MS,
-    );
+    const ticket =
+      !agy && check.tool === "publish_artifact"
+        ? crypto.randomUUID()
+        : undefined;
+    const lookup = (async () => {
+      if (!(await hasConnectedMachine(env, userId)))
+        return { identity: null, reason: "no_daemon" as const };
+      return ticket
+        ? hub.codexCallDecision(check, ticket)
+        : hub.codexCallDecision(check);
+    })().catch((e) => {
+      logError("bus_codex_link_failed", e);
+      return { identity: null, reason: "lookup_error" as const };
+    });
+    const decision = await within(lookup, PROOF_LOOKUP_MS);
+    let settled = false;
+    const late = ticket
+      ? {
+          ticket,
+          settle(target: { artifactId: string; version: number } | null) {
+            if (settled) return;
+            settled = true;
+            const work = lookup
+              .then(() => hub.codexVersionTarget(ticket, target))
+              .catch((e) => logError("bus_codex_version_failed", e));
+            ctx?.waitUntil(work);
+          },
+        }
+      : undefined;
+    if (decision?.identity) late?.settle(null);
     if (decision?.identity) verdict = "matched";
     if (!agy && decision?.reason !== "no_daemon") {
       const report = Promise.resolve()
@@ -1108,7 +1141,7 @@ async function nativeCallLink(
     switch (decision?.reason) {
       case undefined:
       case "lookup_timeout":
-        return { why: "timeout" };
+        return { why: "timeout", ...(late ? { late } : {}) };
       case "no_daemon":
         return { why: "no_hub" };
       case "lookup_error":
@@ -1145,7 +1178,12 @@ export async function linkRequest(
   userId: string,
   req: Request,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
+): Promise<{
+  req: Request;
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;

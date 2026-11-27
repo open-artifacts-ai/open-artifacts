@@ -9,10 +9,14 @@ import {
   type ClientFrame,
   CODEX_VERDICT_HEADER,
   canonicalArgsSha256,
+  encodeFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
+import { lateVersion } from "../../src/services/agent-usage.js";
+import { publish } from "../../src/services/artifacts.js";
 import { linkRequest, PROOF_LOOKUP_MS } from "../../src/services/bus.js";
+import { getUser } from "../../src/services/users.js";
 import { MCP_URL } from "../mcp-helpers.js";
 import {
   type Daemon,
@@ -318,6 +322,155 @@ describe("a Codex call with no proof (#3108)", () => {
     });
     expect(out).toEqual({ identity: null, reason: "lookup_timeout" });
     expect(checksOf(d)).toHaveLength(1);
+  });
+
+  it("passes only the exact saved version to a lookup that outlasts the worker deadline", async () => {
+    const { m, thread } = await scene();
+    const tasks: Promise<unknown>[] = [];
+    let finish!: () => void;
+    const lookup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let announce!: (ticket: string) => void;
+    const started = new Promise<string>((resolve) => {
+      announce = resolve;
+    });
+    const bind = vi.fn(async () => {});
+    const stub = {
+      codexCallDecision(_check: unknown, ticket: string) {
+        announce(ticket);
+        return lookup.then(() => ({
+          identity: null,
+          reason: "lookup_timeout",
+        }));
+      },
+      codexVersionTarget: bind,
+      codexCallVerdict() {},
+    };
+    const env = {
+      ...e,
+      BUS_HUB: { idFromName: (name: string) => name, get: () => stub },
+    } as unknown as typeof e;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const read = linkRequest(
+        env,
+        m.userId,
+        req(body("publish_artifact", directMeta(thread))),
+        {
+          waitUntil(p) {
+            tasks.push(p);
+          },
+        },
+      );
+      const ticket = await started;
+      await vi.advanceTimersByTimeAsync(PROOF_LOOKUP_MS);
+      const result = await read;
+      expect(result.identity).toBeUndefined();
+      expect(result.why).toBe("timeout");
+      vi.useRealTimers();
+      const user = await getUser(e, m.userId);
+      if (!user || !result.late) throw new Error("missing pending version");
+      const saved = await publish(
+        e,
+        user,
+        { title: "deadline", format: "html", content: "<p>saved</p>" },
+        {
+          name: "Codex",
+          version: null,
+          unlinked: result.why,
+          [lateVersion]: result.late,
+        },
+      );
+      finish();
+      await Promise.all(tasks);
+      expect(bind.mock.calls).toEqual([
+        [ticket, { artifactId: saved.id, version: saved.version }],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late verified socket frame attributes only the committed version", async () => {
+    const { m, mach, d, thread } = await scene();
+    const hub = await hubOf(m.userId);
+    const user = await getUser(e, m.userId);
+    if (!user) throw new Error("missing member");
+    const ticket = uuid();
+    const decision = await runInDurableObject(hub, async (inst: BusHub) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const checking = inst.codexCallDecision(
+          {
+            thread_id: thread,
+            tool: "publish_artifact",
+            mode: { kind: "code", call_id: execCall(), item_id: itemId() },
+          },
+          ticket,
+        );
+        await vi.advanceTimersByTimeAsync(PROOF_LOOKUP_MS);
+        return await checking;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    expect(decision).toEqual({ identity: null, reason: "lookup_timeout" });
+    const check = await waitFor(d, "codex_call_check");
+    const tasks: Promise<void>[] = [];
+    const saved = await publish(
+      e,
+      user,
+      { title: "late", format: "html", content: "<p>first</p>" },
+      {
+        name: "Codex",
+        version: null,
+        unlinked: "timeout",
+        [lateVersion]: {
+          ticket,
+          settle(target) {
+            tasks.push(hub.codexVersionTarget(ticket, target));
+          },
+        },
+      },
+    );
+    await Promise.all(tasks);
+    await publish(
+      e,
+      user,
+      { id: saved.id, format: "html", content: "<p>next</p>" },
+      null,
+    );
+    const rows = () =>
+      e.DB.prepare(
+        "select agent_identity from versions where artifact_id = ? order by version",
+      )
+        .bind(saved.id)
+        .raw<[string | null]>();
+    expect(await rows()).toEqual([
+      [JSON.stringify({ reason: "timeout", ticket })],
+      [null],
+    ]);
+    await runInDurableObject(hub, async (inst: BusHub, state) => {
+      const ws = state.getWebSockets(mach.id)[0];
+      if (!ws) throw new Error("missing original connection");
+      await inst.webSocketMessage(
+        ws,
+        encodeFrame({
+          v: 1,
+          id: id("late"),
+          type: "codex_call_checked",
+          re: check.id,
+          ok: true,
+        }),
+      );
+    });
+    const [first, second] = await rows();
+    expect(JSON.parse(first?.[0] ?? "null")).toMatchObject({
+      kind: "codex",
+      identityId: expect.any(String),
+    });
+    expect(second).toEqual([null]);
   });
 
   it("an answer from another socket never vouches: identity comes from the answering socket's own session", async () => {

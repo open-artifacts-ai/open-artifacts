@@ -82,6 +82,7 @@ const RPC_ALLOWLIST = [
   "codexCallCheck",
   "codexCallDecision",
   "codexCallVerdict",
+  "codexVersionTarget",
   "decideLinkProposal",
   "decideReachProposal",
   "decideRoleProposal",
