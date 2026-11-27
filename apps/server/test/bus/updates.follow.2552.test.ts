@@ -130,6 +130,25 @@ describe("following the instance (#2552)", () => {
     expect(target).toBe("1.2.0");
   });
 
+  it("offers the running release when an offline daemon reconnects after deployment", async () => {
+    const { d, m, stub, target } = await open("1.1.0", "1.1.0");
+    expect(target).toBeNull();
+    d.close();
+    await runInDurableObject(stub, (i) =>
+      BusHub.setTestServerVersion(i as unknown as BusHub, "1.2.0"),
+    );
+    const reconnected = await daemon(m.token);
+    reconnected.send({
+      ...hello("reconnected"),
+      client_version: "1.1.0",
+      caps: CAP,
+    } as ClientFrame);
+    const reply = await waitFor(reconnected, "hello_ok");
+    expect(reply.server_version).toBe("1.2.0");
+    expect(reply.run_version).toBe("1.2.0");
+    reconnected.close();
+  });
+
   it("a -dev or pre-release VERSION gives no default", async () => {
     for (const v of ["1.2.0-dev+abc1234", "1.2.0-rc.1"]) {
       const { target } = await open(v, "1.0.0");

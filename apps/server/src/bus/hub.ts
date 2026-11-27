@@ -6184,7 +6184,7 @@ export class BusHub extends DurableObject<Env> {
           type: "hello_ok",
           machine_id: machine.id,
           machine_label: machine.label,
-          server_version: VERSION,
+          server_version: this.#serverVersion,
           // Only to a hello that listed ids: any other client decodes hello_ok
           // strictly, a rename-only one included.
           ...(hasCap(f, BUS_CAPS.ids) ||
