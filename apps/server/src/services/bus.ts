@@ -979,16 +979,96 @@ async function codexCheckOf(
   };
 }
 
-/** #3108: the identity of the Codex session behind a proof-less tools/call, or undefined (unlinked, the call still works). Never throws, never logs a value. */
-async function codexLink(
+// Inspect only top-level metadata for the local hook ID. Metadata is evidence
+// only after the member’s daemon confirms the complete call.
+function agyWireCall(text: string | undefined, userAgent: string | null) {
+  if (!text) return;
+  let msg: Record<string, unknown> | null;
+  try {
+    msg = asRecord(JSON.parse(text));
+  } catch {
+    return;
+  }
+  if (msg?.method !== "tools/call") return;
+  const params = asRecord(msg.params);
+  const meta = asRecord(params?._meta) ?? {};
+  const keys = Object.keys(meta);
+  if (
+    !keys.some((k) => k.startsWith("antigravity.google/")) &&
+    !/(?:antigravity|\bagy(?:\/|\s|$))/i.test(userAgent ?? "")
+  )
+    return;
+  // Unknown field names are useful during a new harness rollout. Accept short
+  // identifier words, excluding paths, addresses, token-shaped keys and free text.
+  const safeName = (key: string) =>
+    key.length <= 80 &&
+    /^(?:antigravity\.google\/)?[a-z]{1,18}(?:(?:[_.-][a-z]{1,18})|(?:[A-Z][a-z]{0,17})){0,6}$/.test(
+      key,
+    );
+  const known = keys.filter(safeName).sort().slice(0, 32);
+  const candidates = keys.filter(
+    (k) => CodexDirectCallIdSchema.safeParse(meta[k]).success,
+  );
+  const fields = {
+    meta_keys: known.join(","),
+    other_keys: keys.length - known.length,
+  };
+  if (candidates.length !== 1)
+    return {
+      fields,
+      verdict: candidates.length ? "ambiguous_id" : "no_hook_id",
+    };
+  const field = candidates[0];
+  if (!known.includes(field)) return { fields, verdict: "unreportable_key" };
+
+  const thread = CodexThreadIdSchema.safeParse(
+    meta["antigravity.google/conversation_id"],
+  );
+  const root = meta["antigravity.google/root_conversation_id"];
+  const tool = CodexToolNameSchema.safeParse(params?.name);
+  const valid =
+    thread.success &&
+    (root === undefined || root === thread.data) &&
+    tool.success;
+  return {
+    fields,
+    field,
+    verdict: "invalid_call",
+    evidence: valid
+      ? {
+          thread_id: thread.data,
+          tool: tool.data,
+          call_id: meta[field] as string,
+          args: params?.arguments ?? {},
+        }
+      : undefined,
+  };
+}
+
+/** Resolve a proof-less OAuth call through the member’s daemons. A miss leaves the call unlinked. */
+async function nativeCallLink(
   env: Env,
   userId: string,
   bodyText: string | undefined,
+  agy?: ReturnType<typeof agyWireCall>,
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<AgentIdentity | undefined> {
+  let verdict = agy?.verdict ?? "miss";
   try {
-    const check = await codexCheckOf(bodyText);
+    const e = agy?.evidence;
+    const hash = e && (await canonicalArgsSha256(e.args));
+    const check = agy
+      ? e && hash
+        ? {
+            harness: "antigravity",
+            thread_id: e.thread_id,
+            tool: e.tool,
+            mode: { kind: "direct", call_id: e.call_id, args_sha256: hash },
+          }
+        : null
+      : await codexCheckOf(bodyText);
     if (!check) return undefined;
+    verdict = "miss";
     const hub = busHub(env, userId);
     if (!hub) return undefined;
     const decision = await within(
@@ -1002,7 +1082,8 @@ async function codexLink(
       }),
       PROOF_LOOKUP_MS,
     );
-    if (decision?.reason !== "no_daemon") {
+    if (decision?.identity) verdict = "matched";
+    if (!agy && decision?.reason !== "no_daemon") {
       const report = Promise.resolve()
         .then(() =>
           hub.codexCallVerdict(
@@ -1015,8 +1096,16 @@ async function codexLink(
     }
     return decision?.identity ?? undefined;
   } catch (e) {
+    verdict = "error";
     logError("bus_codex_link_failed", e);
     return undefined;
+  } finally {
+    if (agy)
+      logInfo("bus_agy_call_check", {
+        ...agy.fields,
+        verdict,
+        matched_key: verdict === "matched" ? agy.field : undefined,
+      });
   }
 }
 
@@ -1072,6 +1161,9 @@ export async function linkRequest(
       out = new Request(out.url, { method: out.method, body: UNPARSEABLE });
     }
   }
+  const agy = agyWireCall(bodyText, req.headers.get("user-agent"));
+  if (poisoned && agy)
+    logInfo("bus_agy_call_check", { ...agy.fields, verdict: "invalid_proof" });
   if (poisoned)
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
@@ -1079,8 +1171,10 @@ export async function linkRequest(
   if (proof === undefined) {
     // #3108: Codex's OAuth entry sends no proof, only its own call ids.
     const identity = busOn(env)
-      ? await codexLink(env, userId, bodyText, ctx)
+      ? await nativeCallLink(env, userId, bodyText, agy, ctx)
       : undefined;
+    if (agy && !busOn(env))
+      logInfo("bus_agy_call_check", { ...agy.fields, verdict: "bus_off" });
     if (identity) return { req: out, identity };
     return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
   }
@@ -1091,6 +1185,11 @@ export async function linkRequest(
     () => bodyHasToolsCall(bodyText),
     ctx,
   );
+  if (agy)
+    logInfo("bus_agy_call_check", {
+      ...agy.fields,
+      verdict: r.identity ? "proxy_matched" : "proxy_miss",
+    });
   return { req: out, ...r };
 }
 

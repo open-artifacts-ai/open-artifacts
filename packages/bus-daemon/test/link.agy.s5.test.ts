@@ -4,7 +4,7 @@
 // start takes it, on its own instance's hub. Waits are signals (a frame
 // arriving), never sleeps.
 import { daemonLinkProof } from "@oa/bus-ipc";
-import { BUS_CAPS } from "@oa/bus-protocol";
+import { agyCallDigest, BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
@@ -177,4 +177,49 @@ describe("antigravity link_proof (agy S5)", () => {
     await h.next("link_bind", 2);
     expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH, HASH]);
   });
+});
+
+it("consumes a native hook witness once for the exact origin, call, tool and arguments", async () => {
+  const h = await start({
+    caps: [BUS_CAPS.ids, BUS_CAPS.codexCheck, BUS_CAPS.agyCheck],
+  });
+  await session(h);
+  await h.next("agent_up");
+  const origin = `http://127.0.0.1:${(h.wss.address() as { port: number }).port}`;
+  const call = "call_123456789abc";
+  const bind = async (o: string) =>
+    daemonLinkProof({
+      path: h.socketPath,
+      pid: 4242,
+      conversation: CONV,
+      agyCallSeen: true,
+      hash: (await agyCallDigest(o, CONV, call, "get_artifact", HASH))!,
+    });
+  const check = async (id: string, tool = "get_artifact", hash = HASH) => {
+    const answered = new Promise<boolean>((resolve) => {
+      const off = h.onFrame((f) => {
+        if (f.type === "codex_call_checked" && f.re === id) {
+          off();
+          resolve(f.ok === true);
+        }
+      });
+    });
+    h.toDaemon({
+      type: "codex_call_check",
+      id,
+      harness: "antigravity",
+      thread_id: CONV,
+      tool,
+      mode: { kind: "direct", call_id: call, args_sha256: hash },
+    });
+    return answered;
+  };
+  expect(await bind("https://unrelated.example")).toBe(true);
+  expect(await check("origin")).toBe(false);
+  expect(await bind(origin)).toBe(true);
+  expect(await check("tool", "list_agents")).toBe(false);
+  expect(await check("args", "get_artifact", HASH2)).toBe(false);
+  expect(await check("good")).toBe(true);
+  expect(await check("again")).toBe(false);
+  expect(h.of("link_bind")).toHaveLength(0);
 });

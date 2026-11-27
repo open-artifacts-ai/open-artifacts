@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import {
   AGENT_CAP_MESSAGES,
+  AGY_CHECK_HEADER,
   type AgentKind,
   type AgentUpFrame,
   BUS_CAPS,
@@ -333,6 +334,7 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
  * processed and its close runs no bookkeeping.
  */
 type Attachment = {
+  agyCheck?: true;
   machineId: string;
   codexVerdicts?: true;
   replaced?: true;
@@ -400,6 +402,7 @@ const HUB_CAPS = [
   BUS_CAPS.mailExpiry,
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
+  BUS_CAPS.agyCheck,
 ];
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
@@ -5012,6 +5015,7 @@ export class BusHub extends DurableObject<Env> {
   ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
     const miss = (reason: CodexLinkReason) => ({ identity: null, reason });
     const c = check as {
+      harness?: unknown;
       thread_id?: unknown;
       tool?: unknown;
       mode?: {
@@ -5024,6 +5028,11 @@ export class BusHub extends DurableObject<Env> {
     const thread = CodexThreadIdSchema.safeParse(c?.thread_id);
     const tool = CodexToolNameSchema.safeParse(c?.tool);
     if (!thread.success || !tool.success || !c?.mode)
+      return miss("invalid_check");
+    if (c.harness !== undefined && c.harness !== "antigravity")
+      return miss("invalid_check");
+    const harness = c.harness ?? "codex";
+    if (harness === "antigravity" && c.mode.kind !== "direct")
       return miss("invalid_check");
     let mode:
       | { kind: "direct"; call_id: string; args_sha256: string }
@@ -5042,7 +5051,7 @@ export class BusHub extends DurableObject<Env> {
     // `once` is the (thread, call) that links at most once; `key` also binds
     // the tool and the args hash or item, so another tool or args never joins
     // a running check nor shares its miss.
-    const once = `${thread.data}\n${mode.call_id}`;
+    const once = `${harness}\n${thread.data}\n${mode.call_id}`;
     const key = `${once}\n${tool.data}\n${mode.kind === "code" ? mode.item_id : mode.args_sha256}`;
     const now = this.#now();
     if (this.#codexAdmitted.has(once)) return miss("already_used");
@@ -5063,7 +5072,7 @@ export class BusHub extends DurableObject<Env> {
       return miss("hub_rate_limit");
     }
     this.#codexStarts.push(now);
-    const p = this.#codexAsk(thread.data, tool.data, mode).then(
+    const p = this.#codexAsk(thread.data, tool.data, mode, harness).then(
       (decision) => {
         if (decision.identity) {
           // Another check for this (thread, call) linked first.
@@ -5108,6 +5117,7 @@ export class BusHub extends DurableObject<Env> {
     mode:
       | { kind: "direct"; call_id: string; args_sha256: string }
       | { kind: "code"; call_id: string; item_id: string },
+    harness: "codex" | "antigravity",
   ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
     const asked: WebSocket[] = [];
     const waits: Promise<WebSocket | null>[] = [];
@@ -5120,6 +5130,7 @@ export class BusHub extends DurableObject<Env> {
       for (const ws of this.ctx.getWebSockets(DAEMON_TAG)) {
         if (ws.readyState !== OPEN || isReplaced(ws) || !codexCheckGated(ws))
           continue;
+        if (harness === "antigravity" && !attachmentOf(ws)?.agyCheck) continue;
         const id = frameId();
         const answered = new Promise<WebSocket | null>((resolve) => {
           this.#codexPending.set(id, {
@@ -5132,6 +5143,7 @@ export class BusHub extends DurableObject<Env> {
             v: 1,
             id,
             type: "codex_call_check",
+            ...(harness === "antigravity" ? { harness } : {}),
             thread_id: thread,
             tool,
             mode,
@@ -5157,7 +5169,14 @@ export class BusHub extends DurableObject<Env> {
             else if (--left === 0) resolve(null);
           });
       });
-      const ws = await Promise.race([first, late]);
+      const response =
+        harness === "antigravity"
+          ? Promise.all(waits).then((answers) => {
+              const matches = answers.filter((ws) => ws !== null);
+              return matches.length === 1 ? matches[0] : null;
+            })
+          : first;
+      const ws = await Promise.race([response, late]);
       if (!ws || ws === "timeout") {
         logInfo("bus_codex_check_none", { reason: "refused_or_timeout" });
         return {
@@ -5172,21 +5191,23 @@ export class BusHub extends DurableObject<Env> {
       // here, as bindProof does at a first bind (the hub's own row, one write).
       this.ctx.storage.sql.exec(
         `update agents set identity_id = ? where machine_id = ? and native_ref = ?
-            and kind = 'codex' and live = 1 and org_id = ? and identity_id is null`,
+            and kind = ? and live = 1 and org_id = ? and identity_id is null`,
         randomHex(32),
         machineId,
         thread,
+        harness,
         OWNER_ORG_ID,
       );
       const id = one<AgentIdentity>(
         this.ctx.storage.sql,
         `select a.identity_id as identityId, a.namespace, a.name, a.kind
            from agents a
-          where a.machine_id = ? and a.native_ref = ? and a.kind = 'codex'
+          where a.machine_id = ? and a.native_ref = ? and a.kind = ?
             and a.live = 1 and a.org_id = ? and a.identity_id is not null
             and not exists (select 1 from machines m where m.id = a.machine_id and m.revoked_at is not null)`,
         machineId,
         thread,
+        harness,
         OWNER_ORG_ID,
       );
       if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
@@ -6072,6 +6093,7 @@ export class BusHub extends DurableObject<Env> {
     this.ctx.acceptWebSocket(server, [DAEMON_TAG, machineId]);
     server.serializeAttachment({
       machineId,
+      ...(req.headers.get(AGY_CHECK_HEADER) === "1" ? { agyCheck: true } : {}),
       ...(req.headers.get(CODEX_VERDICT_HEADER) === "1"
         ? { codexVerdicts: true }
         : {}),
@@ -6448,8 +6470,12 @@ export class BusHub extends DurableObject<Env> {
                       c !== BUS_CAPS.guest &&
                       c !== BUS_CAPS.mailExpiry &&
                       c !== BUS_CAPS.sessionsGone &&
-                      c !== BUS_CAPS.codexCheck) ||
-                    hasCap(f, c),
+                      c !== BUS_CAPS.codexCheck &&
+                      c !== BUS_CAPS.agyCheck) ||
+                    (c === BUS_CAPS.agyCheck
+                      ? !!attachmentOf(ws)?.agyCheck &&
+                        hasCap(f, BUS_CAPS.codexCheck)
+                      : hasCap(f, c)),
                 ),
               }
             : {}),
