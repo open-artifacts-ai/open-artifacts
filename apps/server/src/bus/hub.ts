@@ -3197,26 +3197,7 @@ function resolveTarget(
   };
   const visibleIn = (ns: string): Resolution | null => {
     const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname, awayAt);
-    if (role) {
-      // Older senders could queue to a session by name before it became a
-      // role. Keep that address only while the same away session holds both.
-      if (!role.ok && !withMailbox) {
-        const away = awayAgent(sql, ns, lname, now);
-        if (
-          away?.ok &&
-          one(
-            sql,
-            "select 1 from roles where org_id = ? and namespace = ? and lname = ? and agent_id = ?",
-            OWNER_ORG_ID,
-            ns,
-            lname,
-            away.agent.id,
-          )
-        )
-          return away;
-      }
-      return role;
-    }
+    if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
   };

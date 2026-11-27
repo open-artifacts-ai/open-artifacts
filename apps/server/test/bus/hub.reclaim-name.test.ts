@@ -193,13 +193,15 @@ const waitExpired = async (d: Daemon, msgIds: string[]) => {
 };
 
 /** One machine `d` (the restarting harness) with a closed agent `old` away under `name`, and a sender on another machine. */
-async function scene(opts: { kind?: string; global?: boolean } = {}) {
+async function scene(
+  opts: { kind?: string; global?: boolean; oldSender?: boolean } = {},
+) {
   await setClock(base());
   const n = ns("rc");
   const dm = await machine("Work");
   const sm = await machine("Snd");
   const d = await connect(dm.token);
-  const snd = await connect(sm.token);
+  const snd = await connect(sm.token, opts.oldSender ? [] : [BUS_CAPS.mailbox]);
   const name = uniq("Lead");
   const oldRef = uniq("old");
   expect(await reg(d, oldRef, name, n, opts)).toBe(name);
@@ -237,14 +239,13 @@ describe("a restarted session takes back its own name (#1742)", () => {
     shut(s);
   });
 
-  it("mail to the chosen name queues for its away holder even from an old socket", async () => {
-    const s = await scene();
+  it("a legacy sender sees the away role as unknown", async () => {
+    const s = await scene({ oldSender: true });
     await close(s.d, s.oldRef);
     const ref = uniq("new");
     await reg(s.d, ref, s.name, s.n);
     const r = await send(s.snd, "snd", s.name, "after");
-    expect(r.state).toBe("pending");
-    expect(await pendingOf(s.oldRef)).toEqual([r.msg_id]);
+    expect(r).toMatchObject({ state: "refused", reason: "unknown_agent" });
     await fence(s.d);
     expect(delivers(s.d)).toEqual([]);
     expect(await pendingOf(ref)).toEqual([]);
@@ -508,7 +509,7 @@ describe("a restarted session takes back its own name (#1742)", () => {
     const dm = await machine("Work");
     const sm = await machine("Snd");
     const d = await connect(dm.token);
-    const snd = await connect(sm.token);
+    const snd = await connect(sm.token, [BUS_CAPS.mailbox]);
     await reg(snd, "snd", uniq("Snd"), n);
     const names = [uniq("Lead"), uniq("Back"), uniq("Front")];
     const oldRefs = names.map(() => uniq("old"));
