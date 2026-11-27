@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.264.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.264.0...v0.264.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **asks:** harden cross-page ask-slots read, placer name and delete cleanup ([#2536](https://github.com/open-artifacts-ai/open-artifacts/issues/2536)) ([#3315](https://github.com/open-artifacts-ai/open-artifacts/issues/3315)) ([1f83fe4](https://github.com/open-artifacts-ai/open-artifacts/commit/1f83fe4bcf885a26650a3fec639bd7b6e27b5240))
+
 ## [0.264.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.263.0...v0.264.0) (2026-11-27)
 
 
