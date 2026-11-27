@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.260.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.1...v0.260.0) (2026-11-27)
+
+
+### Features
+
+* **provisioning-contract:** the staging test member may read and upgrade rl-agents (R3, R5) ([#3167](https://github.com/open-artifacts-ai/open-artifacts/issues/3167)) ([#3259](https://github.com/open-artifacts-ai/open-artifacts/issues/3259)) ([d8cdb5d](https://github.com/open-artifacts-ai/open-artifacts/commit/d8cdb5d87bb47adc432f89980225de3b1687e609))
+
 ## [0.259.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.259.0...v0.259.1) (2026-11-26)
 
 
