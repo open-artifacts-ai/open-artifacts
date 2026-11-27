@@ -4481,17 +4481,22 @@ export class BusHub extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     const old = before.name.toLowerCase();
     const next = agent.name.toLowerCase();
-    const role = one<{ id: string }>(
+    const role = one<{ id: string; name: string; lname: string }>(
       sql,
-      "select id from roles where org_id = ? and namespace = ? and lname = ? and agent_id = ?",
+      `select r.id, r.name, r.lname from roles r join agents a on a.id = r.agent_id
+       where r.org_id = ? and r.namespace = ? and r.agent_id = ?
+         and (r.lname = ? or (r.id = a.takeover_role_id and a.takeover_route = ?))
+       order by (r.lname = ?) desc limit 1`,
       OWNER_ORG_ID,
       agent.namespace,
-      old,
       agent.id,
+      old,
+      before.name,
+      old,
     );
     if (
       !role ||
-      (old !== next &&
+      (role.lname !== next &&
         one(
           sql,
           "select 1 from roles where org_id = ? and namespace = ? and lname = ?",
@@ -4501,6 +4506,96 @@ export class BusHub extends DurableObject<Env> {
         ))
     )
       return;
+    if (role.lname !== old) {
+      const now = this.#now();
+      sql.exec(
+        "update role_moves set retired_from_name = 1 where role_id = ? and from_ns = ? and from_lname = ?",
+        role.id,
+        agent.namespace,
+        role.lname,
+      );
+      // The old holder may still be online under the name it handed over.
+      // Give that session its own route before exposing the former role address.
+      const previous = all<{
+        id: string;
+        name: string;
+        kind: string;
+        ownsAddress: number;
+      }>(
+        sql,
+        `select a.id, a.name, a.kind, (a.live = 1 or exists (
+           select 1 from former_names f where f.agent_id = a.id and f.lname = lower(a.name)
+           and f.namespace = a.namespace and f.kind = 'away' and f.expires_at > ?)) as ownsAddress
+         from agents a where a.org_id = ? and a.namespace = ? and a.global = 0 and lower(a.name) = ?
+           and a.id in (select from_agent_id from role_moves where role_id = ?)`,
+        now,
+        OWNER_ORG_ID,
+        agent.namespace,
+        role.lname,
+        role.id,
+      );
+      for (const prior of previous) {
+        const route = mintName(
+          sql,
+          agent.namespace,
+          prior.kind,
+          false,
+          prior.id,
+          now,
+        );
+        sql.exec(
+          "update agents set name = ?, name_chosen = 0 where id = ?",
+          route.name,
+          prior.id,
+        );
+        commitName(
+          sql,
+          prior.id,
+          route,
+          { namespace: agent.namespace, global: false },
+          now,
+        );
+        if (prior.ownsAddress)
+          void this.#rekeyFollows(
+            { namespace: agent.namespace, name: prior.name },
+            { namespace: agent.namespace, name: route.name },
+          );
+      }
+      sql.exec(
+        `delete from former_names where namespace = ? and lname = ? and global = 0
+        and agent_id in (select from_agent_id from role_moves where role_id = ? and from_ns = ? and from_lname = ?)`,
+        agent.namespace,
+        role.lname,
+        role.id,
+        agent.namespace,
+        role.lname,
+      );
+      // The private routing alias occupied this rename's former-name slot.
+      sql.exec(
+        "delete from former_names where agent_id = ? and namespace = ? and lname in (?, ?)",
+        agent.id,
+        agent.namespace,
+        old,
+        role.lname,
+      );
+      if (role.lname !== next) {
+        const until = now + LIMITS.formerNameGraceMs;
+        sql.exec(
+          "insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global) values (?, ?, ?, ?, 'chosen', ?, ?, 0)",
+          agent.id,
+          OWNER_ORG_ID,
+          role.name,
+          role.lname,
+          until,
+          agent.namespace,
+        );
+        this.#arm(until);
+      }
+    }
+    sql.exec(
+      "update agents set takeover_role_id = null, takeover_route = null where id = ?",
+      agent.id,
+    );
     this.#withReachNotice(() => {
       sql.exec(
         "update roles set name = ?, lname = ? where id = ?",
@@ -4514,7 +4609,7 @@ export class BusHub extends DurableObject<Env> {
         next,
         OWNER_ORG_ID,
         agent.namespace,
-        old,
+        role.lname,
       );
     });
   }
@@ -4576,6 +4671,16 @@ export class BusHub extends DurableObject<Env> {
       (p.namespace !== undefined && role.agentId !== p.holderId)
     )
       return;
+    if (
+      p.namespace === undefined &&
+      a.name.toLowerCase() !== role.name.toLowerCase()
+    )
+      sql.exec(
+        "update agents set takeover_role_id = ?, takeover_route = ? where id = ?",
+        role.id,
+        a.name,
+        a.id,
+      );
     const waiting = one(
       sql,
       `select 1 as x from role_proposals where org_id = ? and role_id = ? and agent_id = ?

@@ -642,6 +642,7 @@ export function roleForward(
            ${order} limit 1`
       : `select m.role_id as roleId, m.from_agent_id as fromId from role_moves m indexed by role_moves_from
            where m.org_id = ? and m.from_ns = ? and m.from_lname = ? and ${scope}
+             ${originAt === null ? "and m.retired_from_name = 0" : ""}
              and not exists (select 1 from agents a where a.org_id = m.org_id
                and lower(a.name) = m.from_lname and a.namespace = m.from_ns
                and a.id <> m.from_agent_id)

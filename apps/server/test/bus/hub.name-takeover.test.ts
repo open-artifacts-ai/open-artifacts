@@ -13,6 +13,7 @@ import {
   LIMITS,
   type ServerFrame,
 } from "@oa/bus-protocol";
+import { NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
 import {
@@ -194,25 +195,36 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
     s.d.close();
   });
 
-  it.each(["rename", "agent_up"])(
-    "%s keeps the role ID and expires the old address after grace",
-    async (method) => {
+  it.each([
+    { method: "rename", handover: false },
+    { method: "agent_up", handover: false },
+    { method: "rename", handover: true },
+    { method: "agent_up", handover: true },
+  ])(
+    "$method keeps the role ID and expires the old address after grace (handover: $handover)",
+    async ({ method, handover }) => {
       const s = await scene();
+      const successor = uniq("successor");
+      expect(await reg(s.d, successor, s.name, s.n)).toBe(`${s.name}-2`);
       const observer = uniq("observer");
-      await reg(s.d, observer, s.name, s.n);
+      await reg(s.d, observer, uniq("watch"), s.n);
       const hub = await hubOf();
       const original = (await hub.listRoles()).find((r) => r.name === s.name)!;
+      const holder = handover ? successor : s.holderRef;
+      const holderId = await agentIdOf(holder);
+      if (handover)
+        expect((await hub.putRole(s.n, s.name, holderId)).ok).toBe(true);
       const next = uniq("Research");
       const at = base();
       await setClock(at);
       expect(
         await (method === "rename"
-          ? rename(s.d, s.holderRef, next)
-          : reg(s.d, s.holderRef, next, s.n)),
+          ? rename(s.d, holder, next)
+          : reg(s.d, holder, next, s.n)),
       ).toBe(next);
       const roles = (await hub.listRoles()).filter((r) => r.namespace === s.n);
       expect(roles).toMatchObject([
-        { id: original.id, name: next, agentId: original.agentId },
+        { id: original.id, name: next, agentId: holderId },
       ]);
       const send = async (to: string) => {
         s.d.send({
@@ -226,12 +238,34 @@ describe("a held chosen name asks to take over its role (#3132)", () => {
         return waitFor(s.d, "receipt");
       };
       await setClock(at + LIMITS.formerNameGraceMs - 1);
-      expect((await send(s.name)).state).toBe("pending");
+      const inGrace = await send(s.name);
+      expect(inGrace.state).toBe("pending");
+      await fence(s.d);
+      expect(framesSeen(s.d)).toContainEqual(
+        expect.objectContaining({
+          type: "deliver",
+          msg_id: inGrace.msg_id,
+          to_ref: holder,
+        }),
+      );
       await setClock(at + LIMITS.formerNameGraceMs);
       expect(await send(s.name)).toMatchObject({
         state: "refused",
         reason: "unknown_agent",
       });
+      expect(
+        await hub.deliverNotice({
+          id: newId(),
+          kind: "comment",
+          from: NOTICE_SENDER,
+          artifactId: "doc",
+          version: 1,
+          url: "https://app.test/a/doc",
+          to: { namespace: s.n, name: s.name },
+          text: "Fresh notice",
+          coalesceKey: "new",
+        }),
+      ).toBe("dropped");
       expect((await send(next)).state).toBe("pending");
       s.d.close();
     },
