@@ -218,6 +218,21 @@ describe("refreshAdapters (#3174)", () => {
         (await installAdapters({ ...other, which: (c) => c === "codex" }))
           .installed,
       ).toContain("codex");
+      for (const bundle of [owner.assets, newer]) {
+        const result = await refreshAdapters({ ...other, assets: bundle });
+        expect(result.skipped.filter((s) => s.harness === "hermes")).toEqual(
+          legacy
+            ? [
+                {
+                  harness: "hermes",
+                  reason: expect.stringContaining(
+                    "rerun oa-bus install once from the original bus home",
+                  ),
+                },
+              ]
+            : [],
+        );
+      }
       const refreshed = await refreshAdapters(other);
       expect(refreshed.refreshed).not.toContain("hermes");
       expect(refreshed.refreshed).not.toContain("openclaw");

@@ -332,19 +332,19 @@ const ownerPrefix = (deps: AdapterDeps) => {
 const markerText = (deps: AdapterDeps, shipped: string) =>
   `${ownerPrefix(deps)}${pluginHash(shipped)}\n`;
 
-export function ownsPlugin(
+export function pluginOwnership(
   deps: AdapterDeps,
   marker: string,
-  recordedLegacyInstall = false,
-): boolean {
-  if (kind(marker) !== "file") return false;
+): "owned" | "legacy" | "other" {
+  if (kind(marker) !== "file") return "other";
   const value = readFileSync(marker, "utf8");
-  return (
-    value.startsWith(ownerPrefix(deps)) ||
-    (recordedLegacyInstall &&
-      value.startsWith(`${managedPrefix} `) &&
-      /^[a-f0-9]{16}\n$/.test(value.slice(managedPrefix.length + 1)))
-  );
+  if (value.startsWith(ownerPrefix(deps))) return "owned";
+  if (
+    value.startsWith(`${managedPrefix} `) &&
+    /^[a-f0-9]{16}\n$/.test(value.slice(managedPrefix.length + 1))
+  )
+    return "legacy";
+  return "other";
 }
 
 export function stampPlugin(
@@ -507,11 +507,15 @@ export async function installHermes(
     throw new Error("the Hermes plugin is missing from this install");
   const dest = hermesPluginDir(deps.home, deps.env ?? {});
   const state = pluginState(dest, shipped);
-  if (
-    mode === "refresh" &&
-    (state !== "stale" || !ownsPlugin(deps, join(dest, HERMES_MARKER)))
-  )
-    return "absent";
+  if (mode === "refresh") {
+    if (state !== "current" && state !== "stale") return "absent";
+    const owner = pluginOwnership(deps, join(dest, HERMES_MARKER));
+    if (owner === "legacy")
+      throw new Error(
+        `Hermes plugin at ${dest} has no recorded bus home; rerun oa-bus install once from the original bus home.`,
+      );
+    if (owner !== "owned" || state !== "stale") return "absent";
+  }
   if (state === "foreign")
     throw new Error(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,

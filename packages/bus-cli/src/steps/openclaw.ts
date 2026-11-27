@@ -16,7 +16,7 @@ import {
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterDeps } from "./adapters.ts";
-import { ownsPlugin, pluginHash, stampPlugin } from "./hermes.ts";
+import { pluginHash, pluginOwnership, stampPlugin } from "./hermes.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 /** The plugin's id in openclaw.plugin.json, and its folder under extensions/. */
@@ -189,10 +189,10 @@ const recordedStateDir = (deps: AdapterDeps): string | undefined => {
 const thisStateDir = (deps: AdapterDeps): string =>
   openclawStateDir(deps.home, deps.env ?? {});
 export function ownsOpenclawPlugin(deps: AdapterDeps, dest: string): boolean {
-  return ownsPlugin(
-    deps,
-    join(dest, OPENCLAW_MARKER),
-    recordedStateDir(deps) === thisStateDir(deps),
+  const owner = pluginOwnership(deps, join(dest, OPENCLAW_MARKER));
+  return (
+    owner === "owned" ||
+    (owner === "legacy" && recordedStateDir(deps) === thisStateDir(deps))
   );
 }
 /** Clears the record only when it is for this state dir: another one's stays. */
