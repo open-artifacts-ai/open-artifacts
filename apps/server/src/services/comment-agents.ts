@@ -87,7 +87,7 @@ function sessionsOf(agents: readonly BusAgent[]): Map<string, BusAgent> {
 }
 
 /** The short machine name: a host label loses its domain ("laptop.tail.ts.net" is "laptop"). */
-const shortMachine = (label: string): string | null =>
+export const shortMachine = (label: string): string | null =>
   label.split(".")[0]?.trim() || null;
 
 /**

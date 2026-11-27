@@ -141,6 +141,7 @@ import {
   viewProposal,
 } from "./role-proposals.js";
 import {
+  type AgentNameRow,
   deleteRole,
   formerReservedSql,
   type HandOverResult,
@@ -154,6 +155,7 @@ import {
   resolveRoleAnywhere,
   resolveRoleIn,
   roleForward,
+  roleIntervals,
   roleTakenSql,
   settleMoveAudits,
 } from "./roles.js";
@@ -5166,13 +5168,11 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #1889: the current bus name of each agent identity in `identityIds`, from
    * this member's own hub only (an id of another member's agent is not here,
-   * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
-   * kind, machine or state (one row per identity). At most
+   * so it returns nothing). Includes holding intervals for dated authorship.
+   * A purged session can have intervals without a current name. At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
-  async namesOf(
-    identityIds: string[],
-  ): Promise<{ identityId: string; name: string }[]> {
+  async namesOf(identityIds: string[]): Promise<AgentNameRow[]> {
     if (!Array.isArray(identityIds)) return [];
     const ids = [
       ...new Set(identityIds.filter((x) => typeof x === "string" && x !== "")),
@@ -5187,12 +5187,23 @@ export class BusHub extends DurableObject<Env> {
         ...ids,
       )
       .toArray();
-    const seen = new Set<string>();
-    const out: { identityId: string; name: string }[] = [];
-    for (const r of rows) {
-      if (seen.has(r.identityId)) continue;
-      seen.add(r.identityId);
-      out.push({ identityId: r.identityId, name: r.name });
+    const names = new Map<string, string>();
+    for (const row of rows)
+      if (!names.has(row.identityId)) names.set(row.identityId, row.name);
+    const out: AgentNameRow[] = [];
+    for (const identityId of ids) {
+      const name = names.get(identityId);
+      const intervals = roleIntervals(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        identityId,
+      );
+      if (name || intervals.length)
+        out.push({
+          identityId,
+          ...(name && { name }),
+          ...(intervals.length && { intervals }),
+        });
     }
     return out;
   }

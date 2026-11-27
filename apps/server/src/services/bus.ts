@@ -48,6 +48,7 @@ import type {
   ViewResult,
 } from "../bus/role-proposals.js";
 import type {
+  AgentNameRow,
   HandOverResult,
   MoveAudit,
   PutRoleResult,
@@ -167,10 +168,8 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
   ): Promise<{ identityId: string; kind: string } | null>;
-  /** #1889: the current bus name of each agent identity in this member's own hub; only `{identityId, name}`. */
-  namesOf(
-    identityIds: string[],
-  ): Promise<{ identityId: string; name: string }[]>;
+  /** #1889: the current bus name of each agent identity in this member's own hub, with its role (#3132). */
+  namesOf(identityIds: string[]): Promise<AgentNameRow[]>;
   /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
   roleHolderFor(
     identityId: string,
@@ -605,6 +604,24 @@ export async function agentNamesOf(
   identityIds: string[],
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
+  for (const [id, f] of await agentFacesOf(env, userId, identityIds))
+    if (f.name) out.set(id, f.name);
+  return out;
+}
+
+/** An agent identity's current bus name and role (#3132), as namesOf reads them. */
+export type AgentFaceRow = Omit<AgentNameRow, "identityId">;
+
+/**
+ * #1889 agentNamesOf, with each identity's role (#3132): the role its
+ * session holds, or the role it handed on and who holds that now.
+ */
+export async function agentFacesOf(
+  env: Env,
+  userId: string,
+  identityIds: string[],
+): Promise<Map<string, AgentFaceRow>> {
+  const out = new Map<string, AgentFaceRow>();
   try {
     if (!busOn(env) || identityIds.length === 0) return out;
     const rows = await within(
@@ -621,7 +638,7 @@ export async function agentNamesOf(
       })(),
       LINK_LOOKUP_MS,
     );
-    for (const r of rows ?? []) out.set(r.identityId, r.name);
+    for (const { identityId, ...face } of rows ?? []) out.set(identityId, face);
   } catch (e) {
     logError("bus_names_lookup_failed", e);
   }

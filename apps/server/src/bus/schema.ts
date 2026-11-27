@@ -523,6 +523,12 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
       .toArray()
       .map((r) => r.name),
   );
+  if (!moveCols.has("from_machine_label")) {
+    sql.exec("alter table role_moves add column from_machine_label text");
+    sql.exec(`update role_moves set from_machine_label = (
+      select m.label from agents a join machines m on m.id = a.machine_id
+      where a.id = role_moves.from_agent_id)`);
+  }
   for (const [col, type] of [
     ["moved_by", "text not null default 'member'"],
     ["audited", "integer not null default 1"],
