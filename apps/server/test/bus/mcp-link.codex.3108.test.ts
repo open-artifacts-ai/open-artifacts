@@ -573,3 +573,25 @@ it("checks a native agy hook ID once and logs metadata names and verdicts", asyn
     ).identity,
   ).toBeUndefined();
 });
+
+it("never challenges an agy daemon for a hook ID under an unreportable key", async () => {
+  const { m, d, thread } = await scene(CAPS, uuid(), "antigravity");
+  const log = vi.spyOn(console, "log");
+  const key = "private field";
+  const call = directCall();
+  const result = await run(
+    m.userId,
+    null,
+    body("get_artifact", {
+      "antigravity.google/conversation_id": thread,
+      [key]: call,
+    }),
+    null,
+  );
+  expect(result.identity).toBeUndefined();
+  expect(checksOf(d)).toHaveLength(0);
+  const diagnostic = JSON.stringify(log.mock.calls);
+  expect(diagnostic).toContain("unreportable_key");
+  expect(diagnostic).not.toContain(key);
+  expect(diagnostic).not.toContain(call);
+});

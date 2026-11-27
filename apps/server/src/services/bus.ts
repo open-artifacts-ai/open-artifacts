@@ -967,39 +967,36 @@ function agyWireCall(text: string | undefined, userAgent: string | null) {
   const candidates = keys.filter(
     (k) => CodexDirectCallIdSchema.safeParse(meta[k]).success,
   );
+  const fields = {
+    meta_keys: known.join(","),
+    other_keys: keys.length - known.length,
+  };
+  if (candidates.length !== 1)
+    return {
+      fields,
+      verdict: candidates.length ? "ambiguous_id" : "no_hook_id",
+    };
+  const field = candidates[0];
+  if (!known.includes(field)) return { fields, verdict: "unreportable_key" };
+
   const thread = CodexThreadIdSchema.safeParse(
     meta["antigravity.google/conversation_id"],
   );
   const root = meta["antigravity.google/root_conversation_id"];
   const tool = CodexToolNameSchema.safeParse(params?.name);
-  const call =
-    candidates.length === 1 ? (meta[candidates[0]] as string) : undefined;
-  const fields = {
-    meta_keys: known.join(","),
-    other_keys: keys.length - known.length,
-  };
   const valid =
     thread.success &&
     (root === undefined || root === thread.data) &&
-    tool.success &&
-    call !== undefined;
+    tool.success;
   return {
     fields,
-    field:
-      candidates.length === 1 && safeName(candidates[0])
-        ? candidates[0]
-        : undefined,
-    verdict:
-      candidates.length > 1
-        ? "ambiguous_id"
-        : call === undefined
-          ? "no_hook_id"
-          : "invalid_call",
+    field,
+    verdict: "invalid_call",
     evidence: valid
       ? {
           thread_id: thread.data,
           tool: tool.data,
-          call_id: call,
+          call_id: meta[field] as string,
           args: params?.arguments ?? {},
         }
       : undefined,
