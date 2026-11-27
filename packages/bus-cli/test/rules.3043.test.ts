@@ -1,5 +1,6 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -9,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { codexHookOutput } from "../src/commands/rules.ts";
 import { parse } from "../src/index.ts";
 import {
@@ -17,6 +18,8 @@ import {
   installCodexHook,
   uninstallCodexHook,
 } from "../src/steps/codex.ts";
+
+import * as files from "../src/steps/skill.ts";
 
 const dirs: string[] = [];
 const makeDir = () => {
@@ -147,6 +150,75 @@ describe("Codex hooks.json management (#3043)", () => {
     expect(doc.hooks.SessionStart).toHaveLength(1);
     expect(doc.hooks.SessionStart[0].hooks[0].command).toBe(cmd2);
   });
+
+  it.each(["install", "update"] as const)(
+    "recovers an owner write failure on %s and leaves an identical user hook",
+    (op) => {
+      const dir = makeDir();
+      const path = join(dir, "hooks.json");
+      const ledger = join(dir, "records");
+      mkdirSync(ledger);
+      const record = join(ledger, "owner");
+      if (op === "update") installCodexHook(path, cmd1, record);
+      const write = files.writeAtomic;
+      const failure = vi
+        .spyOn(files, "writeAtomic")
+        .mockImplementation((path, text) => {
+          if (path === record) throw new Error("test ownership write failed");
+          return write(path, text);
+        });
+      try {
+        expect(() => installCodexHook(path, cmd2, record)).toThrow();
+      } finally {
+        failure.mockRestore();
+      }
+      installCodexHook(path, cmd2, record);
+      const doc = JSON.parse(readFileSync(path, "utf8"));
+      const userGroup = structuredClone(doc.hooks.SessionStart[0]);
+      userGroup.hooks.push({ type: "command", command: "/bin/user-hook" });
+      doc.hooks.SessionStart.push(userGroup);
+      writeFileSync(path, JSON.stringify(doc));
+      expect(uninstallCodexHook(path, record).removed).toBe(true);
+      expect(JSON.parse(readFileSync(path, "utf8")).hooks.SessionStart).toEqual(
+        [userGroup],
+      );
+    },
+  );
+
+  it.each([true, false])(
+    "uninstall recovers an interrupted rename, staged file present = %s",
+    (pending) => {
+      const dir = makeDir();
+      const path = join(dir, "hooks.json");
+      const record = join(dir, "owner");
+      const stage = "00000000-0000-4000-8000-000000000000";
+      const group = (command: string) => ({
+        matcher: "startup|resume",
+        hooks: [{ type: "command", command, timeout: 10 }],
+      });
+      const userGroup = group(cmd2);
+      writeFileSync(
+        path,
+        JSON.stringify({
+          hooks: { SessionStart: [userGroup, group(pending ? cmd1 : cmd2)] },
+        }),
+      );
+      writeFileSync(
+        record,
+        JSON.stringify({
+          stage,
+          before: { group: 1, command: cmd1 },
+          after: { group: 1, command: cmd2 },
+        }),
+      );
+      if (pending) writeFileSync(`${path}.oa-${stage}.tmp`, "{}");
+      expect(uninstallCodexHook(path, record).removed).toBe(true);
+      expect(JSON.parse(readFileSync(path, "utf8")).hooks.SessionStart).toEqual(
+        [userGroup],
+      );
+      expect(existsSync(`${path}.oa-${stage}.tmp`)).toBe(false);
+    },
+  );
 
   it("uninstall removes only our hook and cleans up emptied containers", () => {
     const dir = makeDir();

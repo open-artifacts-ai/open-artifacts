@@ -1,5 +1,13 @@
-import { lstatSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { codexAppBin, resolveCodexBin } from "@oa/bus-daemon";
 import { parse } from "smol-toml";
@@ -576,22 +584,73 @@ export function codexHookCommand(
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-function hookOwner(
+type HookOwner = { group: number; command: string };
+function parseOwner(value: unknown): HookOwner | undefined {
+  if (
+    isRecord(value) &&
+    typeof value.group === "number" &&
+    Number.isSafeInteger(value.group) &&
+    value.group >= 0 &&
+    typeof value.command === "string"
+  )
+    return { group: value.group, command: value.command };
+}
+function hookOwnership(
+  path: string,
   record: string,
-): { group: number; command: string } | undefined {
+): { owner?: HookOwner; staged?: string } {
+  let data: unknown;
   try {
-    if (!lstatSync(record).isFile()) return;
-    const owner = JSON.parse(readFileSync(record, "utf8"));
-    if (
-      Number.isSafeInteger(owner?.group) &&
-      owner.group >= 0 &&
-      typeof owner.command === "string"
-    )
-      return owner;
+    if (!lstatSync(record).isFile())
+      throw new Error("Invalid Codex hook ownership record");
+    data = JSON.parse(readFileSync(record, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw e;
+  }
+  if (!isRecord(data) || data.stage === undefined)
+    return { owner: parseOwner(data) };
+  if (typeof data.stage !== "string" || !/^[0-9a-f-]{36}$/.test(data.stage))
+    throw new Error("Invalid Codex hook transaction");
+  const staged = `${path}.oa-${data.stage}.tmp`;
+  try {
+    lstatSync(staged);
+    return { owner: parseOwner(data.before), staged };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return { owner: parseOwner(data.after) };
+  }
+}
+
+// The rename both publishes the hooks and consumes the staged filename.
+// After interruption its presence tells retry/uninstall which slot is ours.
+function commitHooks(
+  path: string,
+  record: string,
+  text: string,
+  prior: ReturnType<typeof hookOwnership>,
+  after?: HookOwner,
+) {
+  const stage = randomUUID();
+  const staged = `${path}.oa-${stage}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = lstatSync(path).mode & 0o777;
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(staged, text, { flag: "wx", mode });
+  try {
+    writeAtomic(record, JSON.stringify({ stage, before: prior.owner, after }));
+  } catch (e) {
+    rmSync(staged, { force: true });
+    throw e;
+  }
+  if (prior.staged) rmSync(prior.staged, { force: true });
+  renameSync(staged, path);
 }
+
 const ownedHook = (command: string) => ({
   type: "command",
   command,
@@ -687,7 +746,8 @@ export function installCodexHook(
   const fmt = read.kind === "missing" ? DEFAULT_JSON_FORMAT : read.format;
   const hooks = doc.hooks ?? {};
   const groups = hooks.SessionStart ?? [];
-  const owner = hookOwner(record);
+  const prior = hookOwnership(path, record);
+  const owner = prior.owner;
   const group = owner && groups[owner.group];
   // Codex binds trust to the group and hook positions. Only edit our recorded slot.
   if (
@@ -698,8 +758,10 @@ export function installCodexHook(
   ) {
     if (command === owner.command) return { status: "unchanged" };
     group.hooks[0] = ownedHook(command);
-    writeAtomic(path, formatJson(doc, fmt));
-    writeAtomic(record, JSON.stringify({ ...owner, command }));
+    commitHooks(path, record, formatJson(doc, fmt), prior, {
+      ...owner,
+      command,
+    });
     return { status: "updated" };
   }
   // An identical pre-existing hook already supplies the rules. Do not claim it.
@@ -718,8 +780,10 @@ export function installCodexHook(
       { matcher: HOOK_MATCHER, hooks: [ownedHook(command)] },
     ],
   };
-  writeAtomic(path, formatJson(doc, fmt));
-  writeAtomic(record, JSON.stringify({ group: groups.length, command }));
+  commitHooks(path, record, formatJson(doc, fmt), prior, {
+    group: groups.length,
+    command,
+  });
   return { status: "added" };
 }
 
@@ -742,7 +806,8 @@ export function uninstallCodexHook(
   const hooks = doc.hooks;
   const list = hooks?.SessionStart;
   if (!hooks || !Array.isArray(list)) return { removed: false };
-  const owner = hookOwner(record);
+  const prior = hookOwnership(path, record);
+  const owner = prior.owner;
   if (!owner) return { removed: false };
   const group = list[owner.group];
   if (
@@ -765,11 +830,8 @@ export function uninstallCodexHook(
     delete hooks.SessionStart;
     if (Object.keys(hooks).length === 0) delete doc.hooks;
   }
-  if (Object.keys(doc).length === 0) {
-    rmSync(path, { force: true });
-  } else {
-    writeAtomic(path, formatJson(doc, read.format));
-  }
+  commitHooks(path, record, formatJson(doc, read.format), prior);
+  if (Object.keys(doc).length === 0) rmSync(path, { force: true });
   rmSync(record, { force: true });
   return shifted
     ? { removed: true, note: CODEX_HOOK_SHIFT_NOTE }
