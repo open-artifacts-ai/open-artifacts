@@ -1,7 +1,9 @@
 // #2762 "Later": a Needs-you item put off once. The rows hold (user, item id,
 // until); the item itself is still the open ask or held request, so nothing
 // here copies it. Never touches artifact_asks.
+
 import type { Env } from "../env.js";
+import { pushOn } from "./web-push.js";
 import { instantAt, wall } from "./zone-time.js";
 
 /**
@@ -66,6 +68,12 @@ export async function recordLater(
   )
     .bind(userId, itemId, until, now)
     .run();
+  if (pushOn(env) && r.meta.changes)
+    await env.ARTIFACT_RUNTIME.getByName(`push:${userId}`).pushEvent(
+      userId,
+      undefined,
+      until,
+    );
   return (r.meta.changes ?? 0) > 0;
 }
 

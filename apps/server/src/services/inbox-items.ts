@@ -107,9 +107,11 @@ export async function writeInboxItems(
     const rows = candidates.filter((it) =>
       ok.has(`${it.userId}|${it.artifactId}`),
     );
-    for (let i = 0; i < rows.length; i += 50)
-      await env.DB.batch(
-        rows.slice(i, i + 50).map((r) =>
+    const mentions: NewItem[] = [];
+    for (let i = 0; i < rows.length; i += 50) {
+      const batch = rows.slice(i, i + 50);
+      const inserted = await env.DB.batch(
+        batch.map((r) =>
           stmt(
             env.DB,
             `insert or ignore into inbox_items (id, user_id, kind, level, key, artifact_id, thread_id, comment_id, actor, excerpt, agent_name, created_at, read_at)
@@ -130,8 +132,12 @@ export async function writeInboxItems(
           ),
         ),
       );
-    // Updates stay in the inbox. Only personal mentions can need a delivery.
-    const mentions = rows.filter(isPersonalMention);
+      for (const [index, row] of batch.entries()) {
+        if (inserted[index]?.meta.changes && isPersonalMention(row))
+          mentions.push(row);
+      }
+    }
+    // A replay of an already indexed mention must not send another push.
     if (!pushOn(env) || mentions.length === 0) return;
     const enrolled = await stmt(
       env.DB,

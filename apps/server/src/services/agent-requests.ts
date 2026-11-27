@@ -46,7 +46,7 @@ import {
 } from "./mention-guards.js";
 import { getPrefs } from "./notification-prefs.js";
 import { listenChallenge } from "./passkeys.js";
-import { HELD_PUSH_PREFIX, queuePush } from "./push.js";
+import { deliverPushEvent, HELD_PUSH_PREFIX } from "./push.js";
 import { getUser, personName } from "./users.js";
 
 // #2577: asking someone else's agent. The comment posts; its delivery to the
@@ -757,23 +757,6 @@ async function recordHoldsOnce(
           userActor(senderId),
           { detail: { artifactId } },
         ).run();
-        // A held request is Needs you: queued for a member whose account Needs
-        // you is on and who has a device (queuePush checks), otherwise the inbox
-        // alone. Never the words.
-        await queuePush(
-          env,
-          [owner],
-          {
-            key: `${HELD_PUSH_PREFIX}${req.id}`,
-            kind: "ask",
-            artifactId,
-            threadId: "",
-            // No name: a held request's push carries neither the words nor the sender.
-            askerName: "Someone",
-            excerpt: HELD_EXCERPT,
-          },
-          now,
-        );
       }
       for (const h of held.filter((x) => x.agent.owner === owner))
         await stmt(
@@ -792,6 +775,20 @@ async function recordHoldsOnce(
             now + HELD_LAPSE_MS,
           )
           .run();
+      if (!known) {
+        // A held request is Needs you: queued for a member whose account Needs
+        // you is on and who has a device (deliverPushEvent checks), otherwise the inbox
+        // alone. Never the words.
+        await deliverPushEvent(env, [owner], {
+          key: `${HELD_PUSH_PREFIX}${req.id}`,
+          kind: "ask",
+          artifactId,
+          threadId: "",
+          // No name: a held request's push carries neither the words nor the sender.
+          askerName: "Someone",
+          excerpt: HELD_EXCERPT,
+        });
+      }
     }
     return true;
   } catch {

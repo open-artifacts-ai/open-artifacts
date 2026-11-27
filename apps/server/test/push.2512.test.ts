@@ -1,5 +1,5 @@
 // #2512 S5, #3024: browser push. Keys are generated here, per run; none is committed.
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { type NotificationPrefs, newId, R } from "@oa/shared";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -20,7 +20,7 @@ import {
   DEFAULT_BODY,
   DEFAULT_HELD_BODY,
   DEFAULT_MENTION_BODY,
-  drainPush,
+  deliverMemberPush,
   HELD_PUSH_PREFIX,
   MAX_SUBSCRIPTIONS,
   queueAskPush,
@@ -246,6 +246,28 @@ async function seed(
         .run();
   }
 }
+/** Drive the queued fixture members at the test clock's exact deadline. */
+async function drainPush(e: Env, now: number) {
+  if (!pushOn(e)) return 0;
+  const { results } =
+    await e.DB.prepare(`select user_id from push_pending where send_after <= ?1
+    union select user_id from inbox_later where pushed_at is null and until <= ?1`)
+      .bind(now)
+      .all<{ user_id: string }>();
+  let sent = 0;
+  for (const { user_id } of results)
+    sent += (await deliverMemberPush(e, user_id, now)).sent;
+  return sent;
+}
+
+async function lastSent(userId: string, at: number | null = Date.now()) {
+  await env.DB.prepare(
+    "update push_subscriptions set last_sent_at = ? where user_id = ?",
+  )
+    .bind(at, userId)
+    .run();
+}
+
 const queuePush = async (e: Env, users: string[], it: QItem, now?: number) => {
   await seed(users, it);
   return rawQueuePush(e, users, it, now);
@@ -624,6 +646,76 @@ describe("the routes", () => {
 // ---------------------------------------------------------------- sending
 
 describe("sending", () => {
+  it("delivers a new ask on creation and arms one alarm for the next ask", async () => {
+    const { E } = await world();
+    const { u, b } = await enroll(E);
+    const { sent } = fakePush();
+    const asker = JSON.stringify({
+      kind: "user",
+      ref: u.userId,
+      agent: { name: "Scout" },
+    });
+    const create = async (id: string) => {
+      await seed([u.userId], item(`ask:${id}`));
+      await queueAskPush(E, [u.userId], new Set(), PUB, "th1", id, {
+        question: "Ship?",
+        asker,
+      });
+    };
+    await create("event-first");
+    expect(sentTo(sent, b)).toHaveLength(1);
+    await create("event-second");
+    expect(sentTo(sent, b)).toHaveLength(1);
+    const device = await E.DB.prepare(
+      "select last_sent_at from push_subscriptions where user_id = ?",
+    )
+      .bind(u.userId)
+      .first<number>("last_sent_at");
+    const stub = E.ARTIFACT_RUNTIME.getByName(`push:${u.userId}`);
+    expect(
+      await runInDurableObject(stub, (_obj, state) => state.storage.getAlarm()),
+    ).toBe(Number(device) + BUNDLE_MS);
+    vi.spyOn(Date, "now").mockReturnValue(Number(device) + BUNDLE_MS);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(sentTo(sent, b)).toHaveLength(2);
+    expect(
+      await runInDurableObject(stub, (_obj, state) => state.storage.getAlarm()),
+    ).toBeNull();
+  });
+
+  it("quiet hours arm one alarm for the exact local end and deliver the bundle once", async () => {
+    const night = Date.UTC(2099, 0, 1, 23);
+    const morning = Date.UTC(2099, 0, 2, 6, 30);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(night);
+    const { E } = await world();
+    const { u, b } = await enroll(E, {
+      quietHours: { start: "22:00", end: "07:30" },
+      timeZone: "Europe/Paris",
+    });
+    const { sent } = fakePush();
+    for (const id of ["quiet-a", "quiet-b"]) {
+      await seed([u.userId], item(`ask:${id}`));
+      await queueAskPush(E, [u.userId], new Set(), PUB, "th1", id, {
+        question: "Ship?",
+        asker: JSON.stringify({ ref: u.userId, agent: { name: "Scout" } }),
+      });
+    }
+    const stub = E.ARTIFACT_RUNTIME.getByName(`push:${u.userId}`);
+    expect(sentTo(sent, b)).toHaveLength(0);
+    expect(
+      await runInDurableObject(stub, (_obj, state) => state.storage.getAlarm()),
+    ).toBe(morning);
+    clock.mockReturnValue(morning);
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(sentTo(sent, b)).toHaveLength(1);
+    expect(
+      JSON.parse(await decrypt((sentTo(sent, b)[0] as Sent).body, b)).count,
+    ).toBe(2);
+    expect(
+      await runInDurableObject(stub, (_obj, state) => state.storage.getAlarm()),
+    ).toBeNull();
+  });
+
   it("the default text hides the question: one fixed line, a link to the ask, no actions", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
@@ -889,10 +981,9 @@ describe("sending", () => {
     ]);
   });
 
-  it("a stale row outside this tick's selection is deleted and logged per member", async () => {
+  it("a recipient event discards and logs even a stale row with a future deadline", async () => {
     const { E } = await world();
     const stale = await enroll(E);
-    const live = await enroll(E);
     fakePush();
     await env.DB.prepare(
       `insert into push_pending (id, user_id, key, kind, artifact_id, thread_id, asker_name, excerpt, send_after, created_at)
@@ -900,10 +991,10 @@ describe("sending", () => {
     )
       .bind(newId(), stale.u.userId, PUB, T0 + 10 ** 9, T0 - 25 * 3600_000)
       .run();
-    await queuePush(E, [live.u.userId], item("ask:fresh"), T0);
+    await queuePush(E, [stale.u.userId], item("ask:fresh"), T0);
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    await drainPush(E, T0);
-    expect(await pendingCount(stale.u.userId)).toBe(0);
+    await deliverMemberPush(E, stale.u.userId, T0);
+    expect(await pendingCount(stale.u.userId)).toBe(1); // the fresh ask shares the pre-existing future deadline
     const lines = log.mock.calls
       .map((c) => String(c[0]))
       .filter((l) => l.includes("push_dropped") && l.includes(stale.u.userId));
@@ -979,6 +1070,8 @@ describe("sending", () => {
       name: "Typer",
       typed: true,
     });
+    await lastSent(waiter.u.userId);
+    await lastSent(typer.u.userId);
     await queueAskPush(
       E,
       [typer.u.userId, waiter.u.userId, held.u.userId],
@@ -1500,7 +1593,9 @@ describe("a person's @mention back from Later (#3024)", () => {
     const { E } = await world();
     const e = await enroll(E, { browserAllAsks: false, ...over });
     const cid = `lm-${newId().slice(0, 6)}`;
+    await lastSent(e.u.userId);
     await writePersonMention(E, e.u.userId, cid);
+    await lastSent(e.u.userId, null);
     await env.DB.prepare("delete from push_pending where user_id = ?")
       .bind(e.u.userId)
       .run();
@@ -1555,11 +1650,12 @@ describe("a person's @mention back from Later (#3024)", () => {
     const { E } = await world();
     const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
+    await lastSent(u.userId);
     await writePersonMention(E, u.userId, "lm-away");
     const id = await inboxIdOf(u.userId, "lm-away");
     const until = Date.now() + 3_600_000;
     await putOff(u.userId, id, until);
-    await drainPush(E, Date.now() + 1000);
+    await drainPush(E, Date.now() + BUNDLE_MS);
     expect(sentTo(sent, b)).toHaveLength(0);
     expect(await pendingKeys(u.userId)).toEqual([]);
     await drainPush(E, until + 1000);
@@ -1585,6 +1681,7 @@ describe("a person's @mention back from Later (#3024)", () => {
     const { E } = await world();
     const { u, b } = await enroll(E, { browserAllAsks: false });
     const { sent } = fakePush();
+    await lastSent(u.userId);
     await writePersonMention(E, u.userId, "delayed");
     const id = await inboxIdOf(u.userId, "delayed");
     const until = Date.now() + 3_600_000;
@@ -1611,6 +1708,7 @@ describe("a person's @mention back from Later (#3024)", () => {
     await putOff(u.userId, "no-such-item", T0 - 1000);
     // Another member's item id in this member's Later row.
     const other = await enroll(E);
+    await lastSent(other.u.userId);
     await writePersonMention(E, other.u.userId, "lm-theirs");
     const theirs = await inboxIdOf(other.u.userId, "lm-theirs");
     await env.DB.prepare("delete from push_pending where user_id = ?")
@@ -1931,7 +2029,7 @@ describe("the topic and bad keys", () => {
 });
 
 describe("the cron tick", () => {
-  it("self-host's RECOVERY_CRON sends what is due; an idle tick or push off adds nothing", async () => {
+  it("self-host recovery does not drain notifications", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
@@ -1953,8 +2051,8 @@ describe("the cron tick", () => {
     const mine = () => sent.filter((x) => x.url === b.body.endpoint);
     expect(await run(off, T0)).toBe(base);
     expect(mine()).toHaveLength(0);
-    expect(await run(E, T0)).toBe(base + 1);
-    expect(mine()).toHaveLength(1);
+    expect(await run(E, T0)).toBe(base);
+    expect(mine()).toHaveLength(0);
   });
 });
 
@@ -1993,14 +2091,6 @@ describe("a person's @-mention of the member (#2781)", () => {
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
     await mention(E, u.userId, "pm1");
-    expect(await pendingCount(u.userId)).toBe(1);
-    const row = await env.DB.prepare(
-      "select kind, key from push_pending where user_id = ?",
-    )
-      .bind(u.userId)
-      .first<{ kind: string; key: string }>();
-    expect(row).toEqual({ kind: "ask", key: "person:pm1" });
-    await drainPush(E, Date.now());
     expect(mineOf(sent, b)).toHaveLength(1);
     const p = await bodyOf(sent, b);
     expect(p.body).toBe(DEFAULT_MENTION_BODY);
@@ -2043,6 +2133,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     });
     const { sent } = fakePush();
     const night = Date.UTC(2026, 10, 18, 23, 0);
+    vi.spyOn(Date, "now").mockReturnValue(night);
     await mention(E, u.userId, "pm4");
     await env.DB.prepare(
       "update push_pending set send_after = ? where user_id = ?",
@@ -2120,6 +2211,7 @@ describe("a person's @-mention of the member (#2781)", () => {
     })();
     const { sent } = fakePush();
     // The item is gone (its comment was deleted): nothing is sent.
+    await lastSent(u.userId);
     await mention(E, u.userId, "pm6", { artifactId: art });
     await forgetCommentItems(E, {
       artifactId: art,
@@ -2154,10 +2246,12 @@ describe("a person's @-mention of the member (#2781)", () => {
   });
 
   it("a bundle that holds a mention: 'N things need you', 'X asks, Y mentions', counts only, even with lock-screen detail", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(T0);
     const { E } = await world();
     for (const lockScreenDetail of [false, true]) {
       const { u, b } = await enroll(E, { lockScreenDetail });
       const { sent } = fakePush();
+      await lastSent(u.userId, T0);
       await queuePush(E, [u.userId], item("ask:pm9a"), T0);
       await queuePush(E, [u.userId], item("ask:pm9b"), T0);
       await queuePush(E, [u.userId], item("ask:pm9c"), T0);
@@ -2174,9 +2268,11 @@ describe("a person's @-mention of the member (#2781)", () => {
   });
 
   it("singular and mention-only bundles read right; an asks-only bundle uses the same format", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(T0);
     const { E } = await world();
     const { u, b } = await enroll(E);
     const { sent } = fakePush();
+    await lastSent(u.userId, T0);
     await queuePush(E, [u.userId], item("ask:pm10a"), T0);
     await mention(E, u.userId, "pm10");
     await env.DB.prepare("update push_pending set send_after = 0").run();
