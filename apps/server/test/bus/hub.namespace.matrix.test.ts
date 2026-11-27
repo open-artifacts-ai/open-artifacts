@@ -638,6 +638,7 @@ describe("RPC surface", () => {
       "codexCallCheck",
       "codexCallDecision",
       "codexCallVerdict",
+      "codexVersionTarget",
       "decideLinkProposal",
       "decideReachProposal",
       "decideRoleProposal",

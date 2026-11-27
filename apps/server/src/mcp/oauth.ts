@@ -42,6 +42,7 @@ import {
   type GrantIdentity,
   type GrantUsage,
   grantUsage,
+  lateVersion,
   pruneGrantUsage,
   redirectInfo,
   setGrantLabel,
@@ -172,6 +173,7 @@ async function apiFetch(
       name: props?.clientName || "unknown agent",
       version: null,
       ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
+      ...(link.late ? { [lateVersion]: link.late } : {}),
       ...(link.identity ? { identity: link.identity } : {}),
       ...(!link.identity && link.why ? { unlinked: link.why } : {}),
     };
