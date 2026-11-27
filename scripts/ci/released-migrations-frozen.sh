@@ -3,7 +3,7 @@
 # Installs record applied migrations by name, so an edit (even a comment) never
 # reaches a deployed database and only breaks the deploy-time guard. Fails when
 # a file under apps/server/migrations that exists in the newest release tag is
-# modified, renamed or deleted in HEAD. New files are fine. Fails closed: no
+# modified, renamed, deleted or changed in type in HEAD. Fails closed: no
 # release tag or any git error fails the check.
 # Newest release tag: the highest vX.Y.Z (no prerelease) merged into HEAD.
 # Env: ROOT (repo to check, default this repo).
@@ -18,7 +18,7 @@ tag="$(printf '%s\n' "$tags" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k
 [ -n "$tag" ] || fail "no release tag vX.Y.Z is merged into HEAD (is the checkout shallow? fetch tags); cannot tell which migrations shipped"
 
 # --no-renames: a rename shows as a delete of the shipped name.
-changed="$(g diff --name-only --no-renames --diff-filter=MD "$tag" HEAD -- "$dir/*.sql")" ||
+changed="$(g diff --name-only --no-renames --diff-filter=MDT "$tag" HEAD -- "$dir/*.sql")" ||
   fail "could not compare $dir with $tag"
 if [ -n "$changed" ]; then
   while IFS= read -r f; do
@@ -28,6 +28,6 @@ if [ -n "$changed" ]; then
   done <<< "$changed"
   exit 1
 fi
-echo "ok: no migration shipped in $tag was modified, renamed or deleted"
+echo "ok: no migration shipped in $tag changed"
 
 python3 "$(dirname "${BASH_SOURCE[0]}")/check-migration-marker.py" "$root" "$tag" "$dir"

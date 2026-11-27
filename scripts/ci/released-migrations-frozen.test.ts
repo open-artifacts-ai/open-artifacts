@@ -5,6 +5,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -163,6 +164,18 @@ describe("released-migrations-frozen.sh", () => {
     expect(res.err).toContain(
       "apps/server/migrations/0001_init.sql shipped in v1.0.0; add a new migration instead",
     );
+    r.done();
+  });
+  it("rejects a file type change at a shipped migration path", () => {
+    const r = repo();
+    r.tag("v1.0.0");
+    const path = join(r.dir, M, "0002_b.sql");
+    rmSync(path);
+    symlinkSync("0001_init.sql", path);
+    r.commit("change file type");
+    const res = r.run();
+    expect(res.code).toBe(1);
+    expect(res.err).toContain("0002_b.sql shipped in v1.0.0");
     r.done();
   });
   it("fails on a rename", () => {
