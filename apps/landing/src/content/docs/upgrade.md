@@ -4,7 +4,7 @@ description: Move an existing instance to the latest release without losing data
 order: 6
 ---
 
-Upgrades keep all your artifacts, versions, shares, and live-page data. Database migrations add to the schema; they never rename or drop anything your data depends on. One migration, `0017_image_format`, rebuilds three tables to allow image artifacts; it runs guarded (see below).
+A release may contain a reviewed migration that removes data. Before upgrading, check the release changes and record a restore point before every upgrade.
 
 ## Steps
 
@@ -35,42 +35,26 @@ Upgrades keep all your artifacts, versions, shares, and live-page data. Database
    An instance below 0.109.0 upgrades to `v0.109.0` first, then to the latest: from 0.109.0 the agent bus's storage ships one release before the code that turns it on. Setup stops with `action_required` and says so.
 4. **Install dependencies:** `pnpm install --frozen-lockfile`.
 5. **Preview, if you like:** `pnpm --reporter=silent oa:setup --upgrade --check --json` is read-only. It reports each step as `done` or `todo` without changing anything, so you can see what the upgrade would do. Steps that always run show `todo`; that isn't pending work.
-6. **Run the upgrade:** `pnpm --reporter=silent oa:setup --upgrade --json`. It uses your `wrangler login`. In CI, or on a machine with no login, use a Cloudflare deploy token instead, as your instance's `/upgrade.md` does. `pnpm --reporter=silent oa:setup --token-links --json` prints the link that creates it (with the permissions it needs) and the line that saves it as `~/.open-artifacts/<name>-cloudflare-token`. Run that line in your own terminal, then put `CLOUDFLARE_API_TOKEN="$(cat ~/.open-artifacts/<name>-cloudflare-token)"` in front of the command. It reuses the hostnames and email saved by setup. Every step runs, but only `deploy` (new database migrations, then a redeploy), `healthcheck`, `selftest` and `agent-config` do work: `prereqs` reports `ok` (its `data.warnings` and `data.notes` hold plan warnings and notes) and `resources` verifies, and `access`, `secrets` and `owner-token` report `skipped` unless something is missing. It keeps the existing owner token and needs no `OA_ACCESS_TOKEN` when the state is saved. It never creates resources: if one is missing, it reports `action_required` and asks for a full setup. Go by the exit code, as in setup:
-   - **0:** done.
+6. **Record a restore point before every upgrade.** Replace `<name>` with the install name. Save the version ID serving 100% of the current Worker deployment and the D1 Time Travel bookmark. Stop if either is unavailable.
+
+   ```sh
+   pnpm -s --filter @oa/server exec wrangler deployments list --name <name> --json
+   pnpm -s --filter @oa/server exec wrangler d1 time-travel info <name> --json
+   ```
+
+7. **Run the upgrade:** `pnpm --reporter=silent oa:setup --upgrade --json`. It uses your `wrangler login`. In CI, or on a machine with no login, use a Cloudflare deploy token instead, as your instance's `/upgrade.md` does. `pnpm --reporter=silent oa:setup --token-links --json` prints the link that creates it (with the permissions it needs) and the line that saves it as `~/.open-artifacts/<name>-cloudflare-token`. Run that line in your own terminal, then put `CLOUDFLARE_API_TOKEN="$(cat ~/.open-artifacts/<name>-cloudflare-token)"` in front of the command. It reuses the hostnames and email saved by setup. Every step runs, but only `deploy` (new database migrations, then a redeploy), `healthcheck`, `selftest` and `agent-config` do work: `prereqs` reports `ok` (its `data.warnings` and `data.notes` hold plan warnings and notes) and `resources` verifies, and `access`, `secrets` and `owner-token` report `skipped` unless something is missing. It keeps the existing owner token and needs no `OA_ACCESS_TOKEN` when the state is saved. It never creates resources: if one is missing, it reports `action_required` and asks for a full setup. Go by the exit code, as in setup:
+   - **0:** continue to verification.
    - **2:** relay the `action_required` line's `message` to the user verbatim, wait until they've done it, then run the same command again.
    - **1:** show the user the `error` line's `message`. If it says to rerun setup without `--upgrade`, run `pnpm --reporter=silent oa:setup --json`, then the upgrade again. That run may need the Access token again. Get its save line from `pnpm --reporter=silent oa:setup --token-links --json` (`saveCommand`) and have the user run it in their own terminal (in Claude Code, type `! ` then the line). Never paste a token into the chat. If `read` fails, the shell can't hide input, so use a real terminal. Setup then reads `~/.open-artifacts/<name>-access-token`.
-7. **Tell the user** which version is now running: the `deploy` line's `data.deployedVersion`.
-
-## The guarded migration (0017, image format)
-
-Migration `0017_image_format` rebuilds the `artifacts`, `versions` and `shares` tables to widen their format check to `image`, keeping every row and rowid, index, trigger and the search index. Because it isn't purely additive, record a way back and check the result. From the release directory, with the deploy token in `CLOUDFLARE_API_TOKEN` (and `CLOUDFLARE_ACCOUNT_ID` if the token reaches several accounts), and `<db>` your install name:
-
-1. **Capture** the database before the upgrade. Exit 1 with "already applied" means the instance already has it: upgrade as usual. Any other exit 1, or exit 2: stop, and don't upgrade; the message says why.
+8. **Verify the release.** Set `TAG` to the exact release tag you checked out, `NAME` to the install name and `ORIGIN` to the instance origin. Use the same Cloudflare credentials as setup. From the release checkout, compare the remote D1 ledger to the tag and check that the live instance is healthy on that version.
 
    ```sh
-   node --experimental-strip-types apps/server/scripts/verify-migration.ts capture --db <db> --out .openartifacts/migration-0017-before.json
+   PROD_NAME="$NAME" TAG="$TAG" bash scripts/ci/prod-migration-guard.sh verify &&
+     health="$(curl -fsS "$ORIGIN/healthz")" &&
+     printf '%s' "$health" | node -e 'const h = JSON.parse(require("node:fs").readFileSync(0, "utf8")); process.exit(h?.ok === true && h.version === process.argv[1] ? 0 : 1)' "${TAG#v}"
    ```
 
-2. **Record a D1 Time Travel bookmark** and keep its `bookmark` value:
-
-   ```sh
-   pnpm -s --filter @oa/server exec wrangler d1 time-travel info <db> --json
-   ```
-
-3. **Upgrade** (step 6 above).
-4. **Verify.** Exit 0 means every row, index, trigger and the search index are as before, `foreign_key_check` is empty and the integrity check passes.
-
-   ```sh
-   node --experimental-strip-types apps/server/scripts/verify-migration.ts verify --db <db> --in .openartifacts/migration-0017-before.json
-   ```
-
-5. **If verify fails**, restore the database, then roll the Worker back as your instance's `/upgrade.md` describes (its step 8). A restore discards every write since the bookmark: anything published, shared or written to live data during the upgrade is lost.
-
-   ```sh
-   pnpm -s --filter @oa/server exec wrangler d1 time-travel restore <db> --bookmark=<bookmark>
-   ```
-
-Verify reports rows added while the upgrade ran as notes, never as failures, and so are rows the app deleted meanwhile when their audit row or state explains them (an unshare, a transfer, a directory removal, an address change, the trash purge). A captured row that's gone otherwise, a change to the three rebuilt tables other than the widened check, a search row detached from its artifact, a foreign key violation or a failed integrity check fails it. Later migrations may add or change other objects.
+   On either mismatch or command failure, stop and retain the recorded Worker version and bookmark. Restoring D1 discards writes made since the bookmark and requires a separate decision. Report success only when both checks pass.
 
 ## If the Cloudflare login has expired
 
