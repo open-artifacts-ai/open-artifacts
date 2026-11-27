@@ -344,7 +344,7 @@ export async function agentRoster(
     for (const a of own.addresses) if (!have.has(addrKey(a))) list.push(a);
     if (list.length > 0) byUser.set(viewerId, list);
   }
-  const out: RosterAgent[] = [];
+  const entries = new Map<string, RosterAgent>();
   for (const [userId, addresses] of byUser) {
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
@@ -365,17 +365,21 @@ export async function agentRoster(
       if (sessions && (!a || hiddenUnnamed(a))) continue;
       // #3132: an agent holding a role is offered by the role, the address
       // the role's mail follows; its session is small print.
-      out.push(await rosterEntry(artifactId, userId, address, a, mine, owner));
+      const entry = await rosterEntry(
+        artifactId,
+        userId,
+        address,
+        a,
+        mine,
+        owner,
+      );
+      entries.set(entry.key, entry);
     }
   }
-  // Online first, then trim: the cap never costs an online agent its place.
-  // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
-  // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
-  // below the hub's maxRosterAgents; away rows count like any other.
-  return sortRoster([...out, ...(own?.unrepresentedRoles ?? [])]).slice(
-    0,
-    ROSTER_MAX,
-  );
+  // A followed holder outside the own-session cap can also appear in the role list.
+  for (const role of own?.unrepresentedRoles ?? [])
+    if (!entries.has(role.key)) entries.set(role.key, role);
+  return sortRoster([...entries.values()]).slice(0, ROSTER_MAX);
 }
 
 const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);

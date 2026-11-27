@@ -828,6 +828,7 @@ async function startMocks() {
     commentersSignedIn: params.get("mock") === "signed-out",
     // ?mock=bus (#1293): the bus is on, with machines and agents.
     bus: params.get("mock") === "bus" || forYouVariant(params) === "handover",
+    awayName: params.get("mock") === "bus" && params.has("awayName"),
     handoverAfter:
       params.get("mock") === "bus" && params.get("handover") === "after",
     // ?mock=foryou (#2512, PROVISIONAL contract): the bell and For you, with Design's

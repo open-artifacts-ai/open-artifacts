@@ -106,7 +106,17 @@ describe("an @-mention of a role (#3132)", () => {
         },
       });
       expect(posted.status, await posted.clone().text()).toBeLessThan(300);
-      expect((await put(await idOf(names[1]!))).status).toBe(200);
+      const targetId = await idOf(names[1]!);
+      if (transition === "vacated") {
+        expect((await put(targetId)).status).toBe(200);
+      } else {
+        const awayRole = (await hub.listRoles()).find((r) => r.name === role)!;
+        const moved = await api(app, R.busRoles, m.cookie, {
+          method: "POST",
+          body: { roleId: awayRole.id, holderId: priorId, targetId },
+        });
+        expect(moved.status).toBe(204);
+      }
       const all = await roster();
       expect(all.filter((a) => a.name === role)).toHaveLength(1);
       expect(all.find((a) => a.key === entry?.key)).toMatchObject({

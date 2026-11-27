@@ -3,15 +3,35 @@
 // removes it. Only the member, in a browser session: a PAT, an OAuth grant
 // or a machine token never sets one, so no AI agent can set or claim a role.
 // Another member's call reaches only their own hub.
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { BUS_CAPS } from "@oa/bus-protocol";
-import { type BusRole, R } from "@oa/shared";
+import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
+import {
+  type ArtifactAgent,
+  type BusNotice,
+  type BusRole,
+  type Member,
+  NOTICE_SENDER,
+  newId,
+  R,
+} from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
+import { publish } from "../../src/services/artifacts.js";
+import { getUser } from "../../src/services/users.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
-import { limiter } from "../mcp-helpers.js";
-import { daemon, e, hubOf, machine, member, ns, waitFor } from "./helpers.js";
+import { E, limiter } from "../mcp-helpers.js";
+import {
+  daemon,
+  e,
+  hubOf,
+  machine,
+  member,
+  ns,
+  up,
+  waitFor,
+} from "./helpers.js";
 
 const app = createApp();
 let seq = 0;
@@ -28,7 +48,7 @@ async function withAgent(namespace: string) {
     type: "hello",
     machine_label: "MacBook",
     client_version: "0.0.0",
-    caps: [BUS_CAPS.roles],
+    caps: [BUS_CAPS.roles, BUS_CAPS.follow],
   });
   await waitFor(d, "hello_ok");
   const name = uniq("alice");
@@ -115,6 +135,169 @@ describe("roles REST (#1296)", () => {
       roles: [],
       proposals: [],
       live: true,
+    });
+    d.close();
+  });
+
+  it.each(["move", "free"])(
+    "guards the away holder and lets the member %s its name",
+    async (operation) => {
+      const n = ns("away");
+      const { who, d, agentId, name } = await withAgent(n);
+      const announce = (ref: string) =>
+        d.send({
+          ...up(uniq("up"), ref, name, n),
+          name_chosen: true,
+        } as ClientFrame);
+      announce("next");
+      await waitFor(d, "agent_ok");
+      const hub = await hubOf(who.userId);
+      const role = (await hub.listRoles()).find((r) => r.name === name)!;
+      const target = (await hub.snapshot()).agents.find(
+        (a) => a.id !== agentId,
+      )!;
+      const act = (targetId: string | null) =>
+        api(app, R.busRoles, who.cookie, {
+          method: "POST",
+          body: { roleId: role.id, holderId: agentId, targetId },
+        });
+      expect((await act(null)).status).toBe(409);
+      d.send({ v: 1, id: "down", type: "agent_down", agent_ref: "a" });
+      d.send({ v: 1, id: "barrier", type: "list", from_ref: "next" });
+      await waitFor(d, "roster");
+      expect(
+        (await hub.listRoles()).find((r) => r.id === role.id),
+      ).toMatchObject({
+        awayHolder: true,
+        awayMachine: "MacBook",
+        awaySince: expect.stringMatching(/^\d{4}-/),
+      });
+      expect((await act("missing")).status).toBe(409);
+      if (operation === "move") {
+        expect((await act(target.id)).status).toBe(204);
+        expect(
+          (await hub.listRoles()).find((r) => r.id === role.id)?.agentId,
+        ).toBe(target.id);
+        expect((await act(null)).status).toBe(409);
+        expect(
+          (await hub.snapshot()).agents.find((a) => a.id === target.id)?.role,
+        ).toBe(name);
+        // Free after a handover must release the first holder's old reservation too.
+        d.send({
+          v: 1,
+          id: "away-again",
+          type: "agent_down",
+          agent_ref: "next",
+        });
+        d.send(up("barrier-up", "barrier", uniq("Observer"), n));
+        await waitFor(d, "agent_ok");
+        const freed = await api(app, R.busRoles, who.cookie, {
+          method: "POST",
+          body: { roleId: role.id, holderId: target.id, targetId: null },
+        });
+        expect(freed.status).toBe(204);
+        announce("after-move");
+        expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+      } else {
+        expect((await act(null)).status).toBe(204);
+        const waiting = (await hub.snapshot()).agents.find(
+          (a) => a.id === target.id,
+        );
+        expect(waiting).toMatchObject({
+          name: target.name,
+          privateSessionName: true,
+          state: "live",
+        });
+        expect(waiting?.pendingRole).toBeUndefined();
+        announce("fresh");
+        expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+        const doc = await publish(
+          E(),
+          (await getUser(e, who.userId)) as Member,
+          {
+            title: "Free name",
+            format: "html",
+            content: "<p>Notes</p>",
+            comments: "everyone",
+          } as never,
+          null,
+          undefined,
+          "create",
+        );
+        const response = await api(app, R.artifactAgents(doc.id), who.cookie);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as
+          | ArtifactAgent[]
+          | { agents: ArtifactAgent[] };
+        const mentions = Array.isArray(body) ? body : body.agents;
+        expect(mentions.map((a) => a.name)).toContain(name);
+        expect(mentions.map((a) => a.name)).not.toContain(target.name);
+      }
+      d.close();
+    },
+  );
+
+  it("Free prevents an old address-only ask answer from reaching the next session", async () => {
+    const namespace = ns("free-answer");
+    const { who, d, name, agentId } = await withAgent(namespace);
+    const hub = await hubOf(who.userId);
+    d.send({
+      ...up("collision", "waiting", name, namespace),
+      name_chosen: true,
+    } as ClientFrame);
+    await waitFor(d, "agent_ok");
+    const role = (await hub.listRoles()).find((r) => r.agentId === agentId)!;
+    const answer: BusNotice = {
+      kind: "ask_answered",
+      id: newId(),
+      artifactId: "doc",
+      version: 1,
+      url: "https://app.test/a/doc",
+      from: NOTICE_SENDER,
+      to: { namespace, name },
+      text: "Answer for the original asker",
+      coalesceKey: "ask-answer",
+    };
+    const originAt = Date.parse(role.setAt);
+    expect(
+      await hub.deliverNotice({
+        ...answer,
+        originAt,
+        notBefore: Date.now() + 60_000,
+      }),
+    ).toBe("held");
+    d.send({ v: 1, id: "close", type: "agent_down", agent_ref: "a" });
+    d.send({ v: 1, id: "barrier", type: "list", from_ref: "waiting" });
+    await waitFor(d, "roster");
+    expect(
+      await hub.actOnAwayRole({
+        roleId: role.id,
+        holderId: agentId,
+        targetId: null,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await runInDurableObject(hub, (_, state) =>
+        state.storage.sql
+          .exec("select ckey from notices where ckey = ?", answer.coalesceKey)
+          .toArray(),
+      ),
+    ).toEqual([]);
+    d.send(up("reuse", "unrelated", name, namespace));
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+    expect(await hub.deliverNotice({ ...answer, originAt })).toBe("dropped");
+    expect(await hub.deliverNotice(answer)).toBe("dropped");
+    expect(
+      await hub.deliverNotice({
+        ...answer,
+        kind: "comment",
+        text: "New mention",
+      }),
+    ).toBe("delivered");
+    const received = await waitFor(d, "deliver");
+    expect(received).toMatchObject({
+      to_ref: "unrelated",
+      body: "New mention",
     });
     d.close();
   });

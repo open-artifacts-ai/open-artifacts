@@ -72,6 +72,110 @@ const settingsTabs = () =>
 
 // ---------------------------------------------------------------- units
 
+describe("away names on Agents", () => {
+  it.each(["move", "free"])("offers %s on the held role", async (operation) => {
+    withBus();
+    const role = {
+      ...fixtures.busRoles[0]!,
+      awayHolder: true,
+      vacant: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
+    const target = A.find(
+      (a) =>
+        a.state === "live" &&
+        a.id !== role.agentId &&
+        (a.namespace === role.namespace || a.global),
+    )!;
+    let submitted: unknown;
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents:
+            operation === "free"
+              ? [
+                  {
+                    ...target,
+                    name: "OA Test-2",
+                    privateSessionName: true,
+                    pendingRole: submitted ? undefined : role.name,
+                  },
+                ]
+              : [target],
+        }),
+      ),
+      http.get(`*${R.busRoles}`, () =>
+        HttpResponse.json({
+          live: true,
+          roles: submitted ? [] : [role],
+          proposals: [],
+        }),
+      ),
+      http.post(`*${R.busRoles}`, async ({ request }) => {
+        submitted = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/agents");
+    const held = await screen.findByRole("region", {
+      name: "Names held by away sessions",
+    });
+    expect(within(held).getByText(role.name)).toBeInTheDocument();
+    expect(
+      within(held).getByText("on the laptop · away 19 h"),
+    ).toBeInTheDocument();
+    if (operation === "move") {
+      fireEvent.click(within(held).getByRole("button", { name: "Move to…" }));
+      expect(
+        within(held).getByRole("option", { name: "Codex on leo-work" }),
+      ).toHaveValue(target.id);
+      fireEvent.change(within(held).getByRole("combobox"), {
+        target: { value: target.id },
+      });
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: `Move ${role.name} here` }),
+      );
+    } else {
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+      expect(
+        within(held).getByText(
+          `Free ${role.name}? It leaves the @ list. Another session can take the name without inheriting its asks or mentions.`,
+        ),
+      ).toBeInTheDocument();
+      fireEvent.click(within(held).getByRole("button", { name: "Cancel" }));
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+      fireEvent.click(within(held).getByRole("button", { name: "Free it" }));
+      expect(
+        await screen.findByText(`${role.name} is free`),
+      ).toBeInTheDocument();
+    }
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Names held by away sessions" }),
+      ).not.toBeInTheDocument(),
+    );
+    if (operation === "free") {
+      expect(
+        screen.getByText(`Session on ${target.machineLabel}`),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("OA Test-2")).not.toBeInTheDocument();
+    }
+    expect(submitted).toEqual({
+      roleId: role.id,
+      holderId: role.agentId,
+      targetId: operation === "move" ? target.id : null,
+    });
+  });
+});
+
 describe("canUseBus", () => {
   it.each([
     [{ canConnect: true, busOn: true }, true],
