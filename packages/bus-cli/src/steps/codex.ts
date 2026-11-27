@@ -1,7 +1,17 @@
-import { lstatSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { codexAppBin, resolveCodexBin } from "@oa/bus-daemon";
 import { parse } from "smol-toml";
+import { writeAtomic } from "./skill.ts";
 
 /**
  * Codex (C26e). Its MCP servers live in `${CODEX_HOME:-~/.codex}/config.toml`,
@@ -34,6 +44,10 @@ export function codexHomeEnv(
 
 export const codexConfig = (home: string, env: Env): string =>
   join(codexHome(home, env), "config.toml");
+
+/** `${CODEX_HOME:-~/.codex}/hooks.json` (#3043). */
+export const codexHooks = (home: string, env: Env): string =>
+  join(codexHome(home, env), "hooks.json");
 
 /** Codex is here: on PATH, its home exists, or the app is installed. */
 export function hasCodex(o: {
@@ -503,4 +517,335 @@ export async function readCodexVersion(o: {
   } catch {
     return undefined;
   }
+}
+
+// --- #3043: Codex SessionStart hook in $CODEX_HOME/hooks.json.
+
+const HOOK_MATCHER = "startup|resume";
+const HOOK_TIMEOUT = 10;
+
+/**
+ * The one switch for the Codex SessionStart hook (#3043), pending the decision
+ * on Codex's one-time trust step. false: install and the daemon's refresh never
+ * add the hook, and remove one an earlier install added.
+ */
+export const CODEX_HOOK_ENABLED: boolean = true;
+
+export const CODEX_HOOK_TRUST_LINE =
+  "Codex: open /hooks once and trust the Open Artifacts bus hook, so each session gets the bus rules.";
+
+export const CODEX_HOOK_SHIFT_NOTE =
+  "Codex may ask you to trust the hooks listed after the Open Artifacts bus hook again.";
+
+type JsonFormat = {
+  indent: string | number;
+  trailingNewline: boolean;
+};
+
+const DEFAULT_JSON_FORMAT: JsonFormat = { indent: 2, trailingNewline: true };
+
+/** Detects indentation (tab or N spaces, default 2) and trailing newline from existing JSON text. */
+function detectJsonFormat(text: string): JsonFormat {
+  const m = /\r?\n([ \t]+)\S/.exec(text);
+  let indent: string | number = 2;
+  if (m?.[1]) {
+    const ws = m[1];
+    indent = ws.startsWith("\t") ? "\t" : ws.length;
+  }
+  return { indent, trailingNewline: text.endsWith("\n") };
+}
+
+const formatJson = (doc: unknown, fmt: JsonFormat): string =>
+  `${JSON.stringify(doc, null, fmt.indent)}${fmt.trailingNewline ? "\n" : ""}`;
+
+const shellQuote = (arg: string): string =>
+  /^[A-Za-z0-9_./:@%+=,-]+$/.test(arg)
+    ? arg
+    : `'${arg.replaceAll("'", "'\\''")}'`;
+
+/**
+ * Shell command for Codex's SessionStart hook (#3043): the same bus binary as
+ * the MCP entry, optional `--home` when OA_BUS_HOME is moved, then `rules codex-hook`.
+ */
+export function codexHookCommand(
+  busBin: string[],
+  home?: string,
+  busHome?: string,
+): string {
+  const moved =
+    home !== undefined &&
+    busHome !== undefined &&
+    resolve(busHome) !== join(home, ".oa-bus")
+      ? ["--home", resolve(busHome)]
+      : [];
+  return [...busBin, ...moved, "rules", "codex-hook"].map(shellQuote).join(" ");
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v);
+
+type HookOwner = { group: number; command: string };
+function parseOwner(value: unknown): HookOwner | undefined {
+  if (
+    isRecord(value) &&
+    typeof value.group === "number" &&
+    Number.isSafeInteger(value.group) &&
+    value.group >= 0 &&
+    typeof value.command === "string"
+  )
+    return { group: value.group, command: value.command };
+}
+function hookOwnership(
+  path: string,
+  record: string,
+): { owner?: HookOwner; staged?: string; stageId?: string } {
+  let data: unknown;
+  try {
+    if (!lstatSync(record).isFile())
+      throw new Error("Invalid Codex hook ownership record");
+    data = JSON.parse(readFileSync(record, "utf8"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw e;
+  }
+  if (!isRecord(data) || data.stage === undefined)
+    return { owner: parseOwner(data) };
+  if (typeof data.stage !== "string" || !/^[0-9a-f-]{36}$/.test(data.stage))
+    throw new Error("Invalid Codex hook transaction");
+  const staged = `${path}.oa-${data.stage}.tmp`;
+  if (data.discard === true) return { staged, stageId: data.stage };
+  try {
+    lstatSync(staged);
+    return { owner: parseOwner(data.before), staged, stageId: data.stage };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return { owner: parseOwner(data.after) };
+  }
+}
+
+// The rename both publishes the hooks and consumes the staged filename.
+// After interruption its presence tells retry/uninstall which slot is ours.
+function commitHooks(
+  path: string,
+  record: string,
+  text: string,
+  prior: ReturnType<typeof hookOwnership>,
+  after?: HookOwner,
+) {
+  const stage = randomUUID();
+  const staged = `${path}.oa-${stage}.tmp`;
+  let mode = 0o600;
+  try {
+    mode = lstatSync(path).mode & 0o777;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(staged, text, { flag: "wx", mode });
+  try {
+    writeAtomic(record, JSON.stringify({ stage, before: prior.owner, after }));
+  } catch (e) {
+    rmSync(staged, { force: true });
+    throw e;
+  }
+  if (prior.staged) rmSync(prior.staged, { force: true });
+  renameSync(staged, path);
+}
+
+const ownedHook = (command: string) => ({
+  type: "command",
+  command,
+  timeout: HOOK_TIMEOUT,
+});
+
+type HooksDoc = Record<string, unknown> & {
+  hooks?: Record<string, unknown> & {
+    SessionStart?: (Record<string, unknown> & { hooks?: unknown[] })[];
+  };
+};
+
+type ParsedHooks =
+  | { kind: "missing" }
+  | { kind: "ok"; doc: HooksDoc; format: JsonFormat }
+  | { kind: "skip"; note: string };
+
+function readHooksFile(path: string): ParsedHooks {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT")
+      return { kind: "missing" };
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: could not inspect it (${e instanceof Error ? e.message : String(e)}).`,
+    };
+  }
+  if (st.isSymbolicLink())
+    return { kind: "skip", note: `Left ${path} alone: it is a symlink.` };
+  if (!st.isFile())
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: it is not a regular file.`,
+    };
+  let text: string;
+  let raw: unknown;
+  try {
+    text = readFileSync(path, "utf8");
+    raw = JSON.parse(text);
+  } catch {
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: it is not valid JSON.`,
+    };
+  }
+  if (!isRecord(raw))
+    return {
+      kind: "skip",
+      note: `Left ${path} alone: expected a JSON object.`,
+    };
+  if (raw.hooks !== undefined) {
+    if (!isRecord(raw.hooks))
+      return {
+        kind: "skip",
+        note: `Left ${path} alone: hooks is not a JSON object.`,
+      };
+    if (raw.hooks.SessionStart !== undefined) {
+      if (
+        !Array.isArray(raw.hooks.SessionStart) ||
+        !raw.hooks.SessionStart.every(
+          (g) =>
+            isRecord(g) && (g.hooks === undefined || Array.isArray(g.hooks)),
+        )
+      )
+        return {
+          kind: "skip",
+          note: `Left ${path} alone: hooks.SessionStart has an unexpected shape.`,
+        };
+    }
+  }
+  return { kind: "ok", doc: raw as HooksDoc, format: detectJsonFormat(text) };
+}
+
+export type CodexHookResult = {
+  status: "added" | "updated" | "unchanged" | "skipped";
+  note?: string;
+};
+
+/**
+ * Installs or updates our single SessionStart entry in `$CODEX_HOME/hooks.json`
+ * (#3043). Keeps every other hook intact; refuses symlinks and malformed files.
+ */
+export function installCodexHook(
+  path: string,
+  command: string,
+  record = `${path}.oa-bus-owner`,
+): CodexHookResult {
+  const read = readHooksFile(path);
+  if (read.kind === "skip") return { status: "skipped", note: read.note };
+  const doc = read.kind === "missing" ? {} : read.doc;
+  const fmt = read.kind === "missing" ? DEFAULT_JSON_FORMAT : read.format;
+  const hooks = doc.hooks ?? {};
+  const groups = hooks.SessionStart ?? [];
+  const prior = hookOwnership(path, record);
+  const owner = prior.owner;
+  const group = owner && groups[owner.group];
+  // Codex binds trust to the group and hook positions. Only edit our recorded slot.
+  if (
+    owner &&
+    group?.matcher === HOOK_MATCHER &&
+    group.hooks &&
+    isDeepStrictEqual(group.hooks[0], ownedHook(owner.command))
+  ) {
+    if (command === owner.command) return { status: "unchanged" };
+    group.hooks[0] = ownedHook(command);
+    commitHooks(path, record, formatJson(doc, fmt), prior, {
+      ...owner,
+      command,
+    });
+    return { status: "updated" };
+  }
+  // An identical pre-existing hook already supplies the rules. Do not claim it.
+  if (
+    groups.some(
+      (g) =>
+        g.matcher === HOOK_MATCHER &&
+        g.hooks?.some((h) => isDeepStrictEqual(h, ownedHook(command))),
+    )
+  )
+    return { status: "unchanged" };
+  doc.hooks = {
+    ...hooks,
+    SessionStart: [
+      ...groups,
+      { matcher: HOOK_MATCHER, hooks: [ownedHook(command)] },
+    ],
+  };
+  commitHooks(path, record, formatJson(doc, fmt), prior, {
+    group: groups.length,
+    command,
+  });
+  return { status: "added" };
+}
+
+/**
+ * Removes only our SessionStart hook from `$CODEX_HOME/hooks.json` (#3043),
+ * plus any group/SessionStart/hooks container we emptied. Deletes the file
+ * when nothing else remains.
+ */
+export function uninstallCodexHook(
+  path: string,
+  record = `${path}.oa-bus-owner`,
+): {
+  removed: boolean;
+  note?: string;
+} {
+  const prior = hookOwnership(path, record);
+  if (!prior.owner && prior.staged) {
+    // Removing the stage normally signals a committed rename. Disarm that
+    // interpretation first so interruption leaves the user's hook unclaimed.
+    writeAtomic(
+      record,
+      JSON.stringify({ stage: prior.stageId, discard: true }),
+    );
+    rmSync(prior.staged, { force: true });
+    rmSync(record, { force: true });
+    return { removed: false };
+  }
+  const read = readHooksFile(path);
+  if (read.kind === "missing") return { removed: false };
+  if (read.kind === "skip") return { removed: false, note: read.note };
+  const doc = read.doc;
+  const hooks = doc.hooks;
+  const list = hooks?.SessionStart;
+  if (!hooks || !Array.isArray(list)) return { removed: false };
+  const owner = prior.owner;
+  if (!owner) return { removed: false };
+  const group = list[owner.group];
+  if (
+    group?.matcher !== HOOK_MATCHER ||
+    !group.hooks ||
+    !isDeepStrictEqual(group.hooks[0], ownedHook(owner.command))
+  )
+    return { removed: false };
+  const kept = group.hooks.slice(1);
+  const nextList = [...list];
+  const empty =
+    !kept.length &&
+    Object.keys(group).every((k) => k === "matcher" || k === "hooks");
+  const shifted = empty ? owner.group < list.length - 1 : kept.length > 0;
+  if (empty) nextList.splice(owner.group, 1);
+  else nextList[owner.group] = { ...group, hooks: kept };
+  if (nextList.length > 0) {
+    hooks.SessionStart = nextList;
+  } else {
+    delete hooks.SessionStart;
+    if (Object.keys(hooks).length === 0) delete doc.hooks;
+  }
+  commitHooks(path, record, formatJson(doc, read.format), prior);
+  if (Object.keys(doc).length === 0) rmSync(path, { force: true });
+  rmSync(record, { force: true });
+  return shifted
+    ? { removed: true, note: CODEX_HOOK_SHIFT_NOTE }
+    : { removed: true };
 }
