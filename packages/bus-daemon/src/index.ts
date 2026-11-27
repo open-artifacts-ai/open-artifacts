@@ -40,6 +40,7 @@ import {
 import {
   AGY_STARTING_LABEL,
   AgentRefSchema,
+  agyCallDigest,
   BRIEF_RULES,
   BUS_CMD,
   BUS_ROUTES,
@@ -508,7 +509,7 @@ export type DaemonDeps = {
     agentsFile?: string;
     /**
      * agy S2b: list running agy processes with no conversation yet as
-     * "starting". Default: OA_BUS_EXPERIMENTAL_AGY=1, in any home; only the
+     * "starting". Enabled by default in any home; only the
      * home the agy plugin routes to lists (pluginHome), so one daemon does.
      */
     discover?: boolean;
@@ -713,6 +714,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     return undefined;
   };
+  let busyChanged = () => {};
   // A timed-out request still queued is dropped: an adapter's retry must not send twice.
   const pending = new Pending(
     deps.pendingTimeoutMs,
@@ -729,6 +731,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return undefined;
     },
     deps.pendingTimer,
+    () => busyChanged(),
   );
   /** Open local connections per agent_ref; the agent is closed when the last one goes. */
   const conns = new Map<string, number>();
@@ -856,6 +859,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const m of [renameFrames, renameHeldUntil])
       for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
     for (const lane of lanes.all()) sendSessions(lane);
+    busyChanged();
   };
   /** Agents the hub refused to register (rate_limited), each with its retry timer. */
   const limited = new Map<
@@ -1169,9 +1173,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ag.procStartTtlMs === undefined ? {} : { ttlMs: ag.procStartTtlMs },
   );
   const agComm = ag.comm ?? commOf;
-  // agy S2b: behind the flag, in every home; agyRoutedHere picks the one
+  // agy S2b: enabled in every home; agyRoutedHere picks the one
   // home that lists (the plugin's), so two running daemons never both do.
-  const agDiscover = ag.discover ?? process.env.OA_BUS_EXPERIMENTAL_AGY === "1";
+  const agDiscover = ag.discover ?? true;
   const agHome = ag.home ?? home();
   const agPids = ag.pids ?? agyPids;
   const agCwd = ag.cwdOf ?? cwdOfPid;
@@ -1258,6 +1262,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
     onTaken: (id, unsent) => sendCodexAck(id, unsent),
     log,
+    onChange: () => busyChanged(),
   });
   const codex = new CodexTransport({
     resolve:
@@ -1468,6 +1473,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
+    onChange: () => busyChanged(),
   });
   const claude = new ClaudeTransport({
     socketsDir: returnDir,
@@ -2207,11 +2213,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   /** #3108: the last time each entry's link was logged; one line an hour at most. */
   const linkedLogged = new Map<string, number>();
-  /**
-   * The hub saw a /mcp call from a Codex entry that signs in itself and asks
-   * whether it is open in a thread this daemon holds for that instance. The
-   * answer is only ever yes or no; nothing from the frame is logged.
-   */
+  // One-use native hook observations. Store only digests and local process identity.
+  const agyCalls = new Map<
+    string,
+    { pid: number; start: string; ref: string; seen: number }
+  >();
   const onCodexCheck = async (
     lane: Lane,
     frame: Extract<ServerFrame, { type: "codex_call_check" }>,
@@ -2222,13 +2228,41 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         .all()
         .find(
           (a) =>
-            a.kind === "codex" &&
+            a.kind === (frame.harness ?? "codex") &&
             a.live &&
             a.ref === frame.thread_id &&
             a.pid !== undefined &&
             homedOf(a) === lane.name,
         );
-      if (rec && lane.codexCheck && !lane.revoked) {
+      if (frame.harness === "antigravity") {
+        if (
+          rec?.pid &&
+          lane.agyCheck &&
+          !lane.revoked &&
+          frame.mode.kind === "direct"
+        ) {
+          const key = await agyCallDigest(
+            instanceOrigin(lane.cfg.hub),
+            rec.ref,
+            frame.mode.call_id,
+            frame.tool,
+            frame.mode.args_sha256,
+          );
+          const witness = key && agyCalls.get(key);
+          if (
+            key &&
+            witness &&
+            witness.ref === rec.ref &&
+            witness.pid === rec.pid &&
+            performance.now() - witness.seen < 60_000 &&
+            witness.start === rec.procStart &&
+            basename((ag.comm ?? commOf)(rec.pid) ?? "") === "agy" &&
+            (ag.procStart ?? procStartOf)(rec.pid) === witness.start
+          ) {
+            ok = agyCalls.delete(key);
+          }
+        }
+      } else if (rec && lane.codexCheck && !lane.revoked) {
         const names = codexOaEntries(home(), instanceOrigin(lane.cfg.hub));
         const hit = await codexCheck.remote(frame, {
           pid: rec.pid as number,
@@ -3265,6 +3299,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // daemon checks is that a live Claude record it attested has that very pid
     // and start time; an unknown pid binds nothing.
     onLinkProof: (req) => {
+      if (req.type === "agy_call_seen") {
+        const rec = req.conversation && agents.byRef(req.conversation);
+        if (
+          !rec ||
+          !rec.live ||
+          rec.kind !== "antigravity" ||
+          rec.pid !== req.pid ||
+          !rec.procStart ||
+          (ag.procStart ?? procStartOf)(req.pid) !== rec.procStart ||
+          basename((ag.comm ?? commOf)(req.pid) ?? "") !== "agy"
+        )
+          return { bound: false };
+        agyCalls.set(req.hash, {
+          pid: req.pid,
+          start: rec.procStart,
+          ref: rec.ref,
+          seen: performance.now(),
+        });
+        if (agyCalls.size > 2048)
+          agyCalls.delete(agyCalls.keys().next().value as string);
+        return { bound: true };
+      }
       if (req.conversation !== undefined)
         return agyLinkProof(req.pid, req.conversation, req.hash, req.instance);
       const want = req.instance ?? MAIN_INSTANCE;
@@ -4940,9 +4996,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         home: home(),
         running: runVersion,
         busy: () => ({
+          // No adapter currently reports authoritative turn state over IPC.
+          unknownTurn: agents.all().some((agent) => agent.live),
           pending: pending.size,
           outbox: outbox.size,
-          codexQueue: codexTaken.size(),
+          codexQueue: codexTaken.size((ref) => {
+            const agent = agents.byRef(ref);
+            return agent?.kind === "codex" && agent.live;
+          }),
         }),
         loginActive: () => loginActive(home()),
         hubReady: () => hub.open && main.helloed,
@@ -4988,6 +5049,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       })
     : undefined;
   updaterRef = updater;
+  busyChanged = () => {
+    if (updater) void updater.onIdle();
+  };
   updater?.start();
   // Queued update reports go out on each hello and every few seconds after,
   // so a report queued by the self-check or the updater is not stranded.

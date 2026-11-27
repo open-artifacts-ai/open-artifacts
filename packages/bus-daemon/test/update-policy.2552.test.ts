@@ -10,10 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  abandonUpdate,
   accept,
   compareVersions,
+  completeUpdate,
   emptyPolicy,
   installNow,
+  installVersion,
   isBusy,
   label,
   MAX_LIST,
@@ -21,10 +24,9 @@ import {
   markNotified,
   markRefused,
   type PolicyState,
-  QUIET_MS,
-  QuietTracker,
   READY_AFTER_MS,
   readPolicy,
+  readReports,
   readyDue,
   recordAttempt,
   refusedBackoff,
@@ -86,19 +88,19 @@ describe("accept", () => {
     ],
     [
       "failed version",
-      { failed: ["1.6.0"] },
+      { startFailures: { "1.6.0": { at: T, count: 1 } } },
       { version: "1.6.0" },
       T,
       undefined,
-      no("failed"),
+      no("refused_backoff"),
     ],
     [
       "failed previous step-back",
-      { failed: ["1.4.0"] },
+      { startFailures: { "1.4.0": { at: T, count: 1 } } },
       { version: "1.4.0", stepBack: true },
       T,
       undefined,
-      no("failed"),
+      no("refused_backoff"),
     ],
     [
       "newestRun beyond current",
@@ -210,33 +212,7 @@ describe("accept", () => {
   });
 });
 
-describe("quiet", () => {
-  it("needs 30 s of continuous idle", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    expect(q.quiet(T + QUIET_MS - 1)).toBe(false);
-    expect(q.quiet(T + QUIET_MS)).toBe(true);
-  });
-  it("a busy blip restarts the wait", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    q.observe(T + 20_000, true, false);
-    q.observe(T + 21_000, false, false);
-    expect(q.quiet(T + 21_000 + QUIET_MS - 1)).toBe(false);
-    expect(q.quiet(T + 21_000 + QUIET_MS)).toBe(true);
-  });
-  it("login or approval blocks and restarts", () => {
-    const q = new QuietTracker();
-    q.observe(T, false, false);
-    q.observe(T + 40_000, false, true);
-    expect(q.quiet(T + 40_000)).toBe(false);
-    q.observe(T + 41_000, false, false);
-    expect(q.quiet(T + 50_000)).toBe(false);
-    expect(q.quiet(T + 41_000 + QUIET_MS)).toBe(true);
-  });
-  it("never quiet before the first observation", () => {
-    expect(new QuietTracker().quiet(T + 10 * QUIET_MS)).toBe(false);
-  });
+describe("idle and ready", () => {
   it("busy over pending, outbox and codex queue", () => {
     expect(isBusy({ pending: 0, outbox: 0, codexQueue: 0 })).toBe(false);
     expect(isBusy({ pending: 1, outbox: 0, codexQueue: 0 })).toBe(true);
@@ -273,16 +249,20 @@ describe("quiet", () => {
 
 describe("install now and oa-bus update", () => {
   const staged = { version: "1.6.0", readySince: T };
-  it("install now skips only the quiet wait", () => {
+  it("install now checks staged, login, off, failed and backoff", () => {
     expect(installNow(st({ staged }), T, false)).toEqual(ok);
     expect(installNow(st(), T, false)).toEqual(no("nothing_staged"));
     expect(installNow(st({ staged }), T, true)).toEqual(
       no("login_in_progress"),
     );
     expect(installNow(st({ staged, off: true }), T, false)).toEqual(no("off"));
-    expect(installNow(st({ staged, failed: ["1.6.0"] }), T, false)).toEqual(
-      no("failed"),
-    );
+    expect(
+      installNow(
+        st({ staged, startFailures: { "1.6.0": { at: T, count: 1 } } }),
+        T,
+        false,
+      ),
+    ).toEqual(no("refused_backoff"));
     expect(installNow(st({ staged, lastAt: T - 1000 }), T, false)).toEqual(
       no("rate_limited"),
     );
@@ -303,9 +283,12 @@ describe("install now and oa-bus update", () => {
     );
     expect(updateCommand(st(), tty)).toEqual(no("nothing_staged"));
     expect(updateCommand(st({ staged, off: true }), tty)).toEqual(no("off"));
-    expect(updateCommand(st({ staged, failed: ["1.6.0"] }), tty)).toEqual(
-      no("failed"),
-    );
+    expect(
+      updateCommand(
+        st({ staged, startFailures: { "1.6.0": { at: T, count: 1 } } }),
+        { ...tty, now: T },
+      ),
+    ).toEqual(no("refused_backoff"));
     expect(updateCommand(st({ staged, armed: false }), tty)).toEqual(
       no("not_armed"),
     );
@@ -332,11 +315,11 @@ describe("state file", () => {
   it("layout writes keep off, failed and the rest", () => {
     const h = home();
     setOff(h, true);
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     writeState(h, { armed: true, current: "1.5.0", previous: "1.4.0" });
     const s = readPolicy(h);
     expect(s.off).toBe(true);
-    expect(s.failed).toEqual(["1.6.0"]);
+    expect(s.startFailures["1.6.0"]).toMatchObject({ count: 1 });
     expect(s.current).toBe("1.5.0");
   });
   it("policy writes keep the layout keys", () => {
@@ -361,10 +344,10 @@ describe("state file", () => {
     const h = home();
     writeState(h, { armed: true });
     setStaged(h, "1.6.0", T);
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     const s = readPolicy(h);
     expect(s.staged).toBeUndefined();
-    expect(accept(s, { version: "1.6.0" }, T)).toEqual(no("failed"));
+    expect(accept(s, { version: "1.6.0" }, T)).toEqual(no("refused_backoff"));
   });
   it("junk in the file is ignored", () => {
     const h = home();
@@ -509,14 +492,33 @@ describe("review fixes", () => {
     expect(r.armed).toBe(true);
   });
 
-  it("failed to start is never retried; refused is retried after a growing backoff", () => {
+  it("retries a failed start after 15m, 1h, then 4h and reports the third failure once", () => {
+    const h = home();
+    writeState(h, { armed: true, current: "1.0.0" });
+    const p = { from: "1.0.0", to: "1.1.0" };
+    let now = T;
+    for (const wait of [15, 60, 240, 240]) {
+      abandonUpdate(h, p, now, "unhealthy");
+      const policy = readPolicy(h);
+      expect(accept(policy, { version: "1.2.0" }, now)).toEqual(ok);
+      expect(
+        accept(policy, { version: p.to }, now + wait * 60_000 - 1).ok,
+      ).toBe(false);
+      now += wait * 60_000;
+      expect(accept(policy, { version: p.to }, now)).toEqual(ok);
+    }
+    expect(readReports(h).filter((r) => r.event === "needs_you")).toHaveLength(
+      1,
+    );
+  });
+  it("failed starts retry after backoff; refused is retried after a growing backoff", () => {
     const h = home();
     writeState(h, { armed: true });
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     markRefused(h, "1.7.0", T);
     const s = readPolicy(h);
     const D = 24 * 3600_000;
-    expect(accept(s, { version: "1.6.0" }, T + 400 * D)).toEqual(no("failed"));
+    expect(accept(s, { version: "1.6.0" }, T + 400 * D)).toEqual(ok);
     expect(accept(s, { version: "1.7.0" }, T + D - 1)).toEqual(
       no("refused_backoff"),
     );
@@ -545,9 +547,9 @@ describe("review fixes", () => {
       markNotified(h, `3.${i}.0`, "ready");
     }
     const s = readPolicy(h);
-    expect(s.failed).toHaveLength(MAX_LIST);
-    expect(s.failed.at(-1)).toBe("1.29.0");
-    expect(s.failed[0]).toBe("1.10.0");
+    expect(Object.keys(s.startFailures)).toHaveLength(MAX_LIST);
+    expect(Object.keys(s.startFailures).at(-1)).toBe("1.29.0");
+    expect(Object.keys(s.startFailures)[0]).toBe("1.10.0");
     expect(Object.keys(s.refused)).toHaveLength(MAX_LIST);
     expect(Object.keys(s.notified)).toHaveLength(MAX_LIST);
     // a hand-edited long file is trimmed on read
@@ -559,5 +561,44 @@ describe("review fixes", () => {
       }),
     );
     expect(readPolicy(h).failed).toHaveLength(MAX_LIST);
+  });
+
+  it("a successful forward switch clears the 6 h backoff", () => {
+    const h = home();
+    const fill = (dir: string) => {
+      mkdirSync(join(dir, "dist"));
+      writeFileSync(join(dir, "dist/index.js"), "// ok\n");
+    };
+    installVersion(h, "1.0.0", fill);
+    installVersion(h, "1.1.0", fill);
+    writeState(h, { armed: true, current: "1.0.0" });
+    recordAttempt(h, T);
+    completeUpdate(h, { from: "1.0.0", to: "1.1.0" }, T + 1000);
+    const s = readPolicy(h);
+    expect(s.lastAt).toBeUndefined();
+    expect(
+      accept(s, { version: "1.2.0" }, T + 3600_000, { running: "1.1.0" }),
+    ).toEqual(ok);
+  });
+
+  it("an abandoned switch does not hold a newer release", () => {
+    const h = home();
+    const fill = (dir: string) => {
+      mkdirSync(join(dir, "dist"));
+      writeFileSync(join(dir, "dist/index.js"), "// ok\n");
+    };
+    installVersion(h, "1.0.0", fill);
+    installVersion(h, "1.1.0", fill);
+    writeState(h, { armed: true, current: "1.0.0" });
+    abandonUpdate(h, { from: "1.0.0", to: "1.1.0" }, T, "unhealthy");
+    const s = readPolicy(h);
+    expect(
+      accept(s, { version: "1.2.0" }, T + 3600_000, { running: "1.0.0" }),
+    ).toEqual(ok);
+    expect(
+      accept(s, { version: "1.2.0" }, T + SIX_HOURS_MS + 1, {
+        running: "1.0.0",
+      }),
+    ).toEqual(ok);
   });
 });

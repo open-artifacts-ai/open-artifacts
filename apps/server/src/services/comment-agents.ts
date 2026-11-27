@@ -95,7 +95,7 @@ async function rosterEntry(
       ? await roleKey(artifactId, userId, address.namespace, role.id)
       : await agentKey(artifactId, userId, address),
     name: `${role?.name ?? a?.role ?? session}${owner ? ` (${owner})` : ""}`,
-    ...(a?.role ? { session } : {}),
+    ...(a?.role && !a.privateSessionName ? { session } : {}),
     ...sessionFor(a, mine),
     owner,
     userId,
@@ -171,12 +171,21 @@ type OwnAgents = {
 };
 
 /**
- * #2311: an offline agent still on a harness default name is no mention
- * target. #3132: nor is a session that handed its role on: the @ list offers
- * the role, held by another session now.
+ * Whether the @ list leaves a session out. #3143 (Leo 2026-11-24: "away
+ * agents leave at once"): a session that is not live (closed, or open on a
+ * machine that is not connected) is gone from the list the moment it stops
+ * being live, unless it holds a role: the role is the address, and mail to it
+ * waits for the next holder (#3132). #2311: an offline agent still on a
+ * harness default name is no mention target. #3132: nor is a session that
+ * handed its role on, or one waiting to take a role over: the @ list offers
+ * the role, held by another session.
  */
 const hiddenUnnamed = (a: BusAgent): boolean =>
-  (!a.running && a.unnamed === true) || a.handedOver === true;
+  (a.state !== "live" && !a.role) ||
+  (!a.running && a.unnamed === true) ||
+  a.handedOver === true ||
+  a.pendingRole !== undefined ||
+  (a.privateSessionName === true && !a.role);
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
@@ -229,7 +238,10 @@ export async function viewerAgents(
       owner: null,
       address: { namespace: role.namespace, name: role.name },
       ...(holder
-        ? { ...sessionOf(holder, true), session: holder.name }
+        ? {
+            ...sessionOf(holder, true),
+            ...(holder.privateSessionName ? {} : { session: holder.name }),
+          }
         : { ...UNKNOWN, state: "away" as const }),
     });
   }
@@ -338,7 +350,7 @@ export async function agentRoster(
     for (const a of own.addresses) if (!have.has(addrKey(a))) list.push(a);
     if (list.length > 0) byUser.set(viewerId, list);
   }
-  const out: RosterAgent[] = [];
+  const entries = new Map<string, RosterAgent>();
   for (const [userId, addresses] of byUser) {
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
@@ -359,17 +371,21 @@ export async function agentRoster(
       if (sessions && (!a || hiddenUnnamed(a))) continue;
       // #3132: an agent holding a role is offered by the role, the address
       // the role's mail follows; its session is small print.
-      out.push(await rosterEntry(artifactId, userId, address, a, mine, owner));
+      const entry = await rosterEntry(
+        artifactId,
+        userId,
+        address,
+        a,
+        mine,
+        owner,
+      );
+      entries.set(entry.key, entry);
     }
   }
-  // Online first, then trim: the cap never costs an online agent its place.
-  // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
-  // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
-  // below the hub's maxRosterAgents; away rows count like any other.
-  return sortRoster([...out, ...(own?.unrepresentedRoles ?? [])]).slice(
-    0,
-    ROSTER_MAX,
-  );
+  // A followed holder outside the own-session cap can also appear in the role list.
+  for (const role of own?.unrepresentedRoles ?? [])
+    if (!entries.has(role.key)) entries.set(role.key, role);
+  return sortRoster([...entries.values()]).slice(0, ROSTER_MAX);
 }
 
 const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);

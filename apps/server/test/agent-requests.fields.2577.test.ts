@@ -52,6 +52,8 @@ import { login } from "./helpers.js";
 
 // #2577: the server-data gaps: held editedAt and the allow's Undo entry id
 // (both opt-in), the asker's request facts, and an agent reply's askedBy.
+// #3143: a plain away session is not in the @ list at all; the away cases here
+// use an away session that holds a role, which stays listed and reachable.
 
 // The owner's agent is a real hub identity (the stub hubs), as in the ask tests.
 const ID = (name: string, ns: string) => `id-${ns}-${name}`;
@@ -670,7 +672,7 @@ describe("askedBy on an agent's reply", () => {
    */
   const AWAY = { namespace: "ns-a", name: "Away" };
   let awayOwner: U | undefined;
-  async function awayAgent(state: "away" | "live") {
+  async function awayAgent(state: "away" | "live", role?: string) {
     awayOwner ??= await mk("fl-away", "Ann Agent");
     const ao = awayOwner;
     await E.DB.prepare("delete from bus_machines where user_id = ?")
@@ -682,6 +684,7 @@ describe("askedBy on an agent's reply", () => {
       identityId: ID("Away", "ns-a"),
       ...AWAY,
       state,
+      ...(role ? { role } : {}),
     });
     const a = await publish(
       E,
@@ -756,8 +759,17 @@ describe("askedBy on an agent's reply", () => {
     return x?.map((f) => f.status);
   };
 
-  it("a listed sender's mention of another member's away agent reads offline, and once acknowledged it names the asker", async () => {
-    const { s, answerAs } = await awayAgent("away");
+  it("a plain away agent of another member is not in the @ list (#3143)", async () => {
+    const { s } = await awayAgent("away");
+    expect(
+      (await artifactAgents(E, s.id, editor.userId)).some((x) =>
+        x.name.startsWith("Away"),
+      ),
+    ).toBe(false);
+  });
+
+  it("a listed sender's mention of another member's role-holding away agent reads offline, and once acknowledged it names the asker", async () => {
+    const { s, answerAs } = await awayAgent("away", "Away Lead");
     bus.outcome = "held";
     const t = await post(s.id, editor, "wake", s.claude);
     const c = t.comments[0]?.id as string;
@@ -778,8 +790,8 @@ describe("askedBy on an agent's reply", () => {
     expect(t.comments[0]?.requestFacts).toBeUndefined();
   });
 
-  it("a direct ask to another member's away agent: offline, no @mention, and the ack names the asker", async () => {
-    const { s, answerAs } = await awayAgent("away");
+  it("a direct ask to another member's role-holding away agent: offline, no @mention, and the ack names the asker", async () => {
+    const { s, answerAs } = await awayAgent("away", "Away Lead");
     bus.outcome = "held";
     const t = await askTo(s.id, editor, s.claude);
     const root = t.comments[0]?.id as string;

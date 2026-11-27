@@ -14,7 +14,7 @@
 // else: never a prefix, never a wildcard. Only our string is added or
 // removed; every other byte of the file stays as it was.
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   lstatSync,
   mkdirSync,
@@ -153,6 +153,106 @@ function without(text: string, rule: string, file: string): string {
     const raw = jsoncValue(out, ["permissions", "allow"]) as unknown[];
     out = removeJsoncValue(out, ["permissions", "allow", raw.indexOf(rule)]);
   }
+}
+
+const routinePageTools = [
+  "publish_artifact",
+  "add_comment",
+  "get_artifact",
+  "list_artifacts",
+  "search_artifacts",
+  "list_versions",
+  "list_comments",
+  "edit_comment",
+  "resolve_comment",
+  "withdraw_ask",
+  "get_comment_picture",
+  "create_upload",
+  "artifact_data_get",
+  "artifact_data_list",
+  "artifact_data_query",
+  "artifact_data_set",
+  "artifact_data_update",
+  "artifact_data_delete",
+  "bus_role_propose",
+  "list_spaces",
+] as const;
+
+/** Called under the agy config lock. Each generated alias shares one ownership
+ * record across bus homes. Only allow entries the installer added are removed. */
+export function setAgyPageGrants(
+  file: string,
+  name: string,
+  homeRecord: string,
+  operation: "claim" | "release" | "invalidate",
+  currentDigest: string | undefined,
+) {
+  // Names containing rule syntax cannot safely form an exact permission.
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) return;
+  const stamp =
+    file +
+    ".oa-pages-" +
+    createHash("sha256").update(name).digest("hex") +
+    ".json";
+  const data = readText(stamp);
+  const enable = operation === "claim";
+  if (!enable && data === undefined) return;
+  const record: {
+    digest?: string;
+    homes: string[];
+    tools: string[];
+    made: string[][];
+  } =
+    data === undefined ? { homes: [], tools: [], made: [] } : JSON.parse(data);
+  // A change of entry invalidates every claim tied to its old contents. A
+  // stale home must also leave a newer, independently claimed entry intact.
+  const changed =
+    record.digest !== undefined
+      ? record.digest !== currentDigest
+      : operation === "invalidate";
+  if (!enable && !changed && !record.homes.includes(homeRecord)) return;
+  const text = readText(file) ?? "";
+  let out = text;
+  let homes = changed ? [] : record.homes.filter((h) => h !== homeRecord);
+  if (enable) {
+    homes = changed
+      ? [homeRecord]
+      : [...new Set([...record.homes, homeRecord])];
+    record.digest = currentDigest;
+    const perms = lists(text, file);
+    if (!data)
+      record.made = [["permissions", "allow"], ["permissions"]].filter(
+        (p) => jsoncValue(text, p) === undefined,
+      );
+    const raw = jsoncValue(text, ["permissions", "allow"]);
+    let next = Array.isArray(raw) ? raw.length : 0;
+    for (const tool of routinePageTools) {
+      const rule = `mcp(${name}/${tool})`;
+      if (
+        perms.allow.includes(rule) ||
+        perms.ask.includes(rule) ||
+        perms.deny.includes(rule)
+      )
+        continue;
+      out = setJsoncValue(out, ["permissions", "allow", next++], rule);
+      if (!record.tools.includes(tool)) record.tools.push(tool);
+    }
+  } else if (!homes.length) {
+    for (const tool of [...routinePageTools].reverse()) {
+      if (!record.tools.includes(tool)) continue;
+      const raw = jsoncValue(out, ["permissions", "allow"]);
+      const i = Array.isArray(raw) ? raw.indexOf(`mcp(${name}/${tool})`) : -1;
+      if (i >= 0) out = removeJsoncValue(out, ["permissions", "allow", i]);
+    }
+    for (const path of record.made) out = removeIfEmpty(out, path);
+  }
+  // Journal additions before settings publication. On final removal retain
+  // the last claim until settings commit, so uninstall can be retried.
+  const nextRecord = JSON.stringify({ ...record, homes }) + "\n";
+  if (homes.length && data !== nextRecord)
+    writeAtomic(stamp, nextRecord, 0o600);
+  if (out !== text) writeAtomic(file, out, 0o600);
+  if (!homes.length) rmSync(stamp, { force: true });
 }
 
 /**

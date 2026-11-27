@@ -16,6 +16,7 @@ export const SHOWN_KINDS = [
   "comment",
   "share",
   "decision",
+  "machine_update",
   "away",
   // #2577: someone asked one of your agents; held for you.
   "request",

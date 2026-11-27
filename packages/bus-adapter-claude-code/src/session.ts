@@ -1,15 +1,16 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  ADAPTER_CAPS,
-  CLIENT_VERSION,
-  fitName,
-  Hello,
-  systemTool,
-} from "@oa/bus-ipc";
+import { ADAPTER_CAPS, CLIENT_VERSION, fitName, Hello } from "@oa/bus-ipc";
+
+import { procStartOf, psField } from "@oa/bus-ipc/process-start";
+
+export {
+  ProcStartUnknownError,
+  PS_TIMEOUT_MS,
+  procStartOf,
+} from "@oa/bus-ipc/process-start";
 
 export type ClaudeSession = {
   pid: number;
@@ -204,34 +205,6 @@ export function hasClaudeAncestor(
 export const NOT_UNDER_CLAUDE =
   "This MCP server is for Claude Code; use this harness's own bus tools.";
 
-/** `ps` did not answer in time (a loaded machine): the process may well be alive. Not "gone". */
-export class ProcStartUnknownError extends Error {
-  constructor(pid: number) {
-    super(`ps for pid ${pid} timed out`);
-  }
-}
-
-/** Bound on one `ps`, so a loaded machine cannot stall a caller for seconds. */
-export const PS_TIMEOUT_MS = 1500;
-
-const ps = (field: string, pid: number): string | null => {
-  try {
-    return (
-      execFileSync(systemTool("ps"), ["-o", `${field}=`, "-p", String(pid)], {
-        encoding: "utf8",
-        timeout: PS_TIMEOUT_MS,
-        stdio: ["ignore", "pipe", "ignore"],
-        // Claude writes procStart as `TZ=UTC LC_ALL=C ps -o lstart=`.
-        env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
-      }).trim() || null
-    );
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ETIMEDOUT")
-      throw new ProcStartUnknownError(pid);
-    return null;
-  }
-};
-
 export function ancestorChain(pid: number): number[] {
   const out: number[] = [];
   let cur = pid;
@@ -239,7 +212,7 @@ export function ancestorChain(pid: number): number[] {
     out.push(cur);
     let ppid: number;
     try {
-      ppid = Number(ps("ppid", cur));
+      ppid = Number(psField("ppid", cur));
     } catch {
       break; // ps timed out: a shorter chain, not a thrown call
     }
@@ -248,8 +221,6 @@ export function ancestorChain(pid: number): number[] {
   }
   return out;
 }
-
-export const procStartOf = (pid: number): string | null => ps("lstart", pid);
 
 /**
  * Field 22 of a /proc/<pid>/stat line, `starttime`: clock ticks since boot.

@@ -37,6 +37,8 @@ export type AgentAttr = AgentRef & {
 
 /** Why an MCP call is unlinked: the proof lookup's miss reasons (#2810, #2826), plus no_proof (none sent). */
 export type UnlinkedWhy =
+  | "refused"
+  | "rate_limited"
   | "no_proof"
   | "unbound"
   | "closed"

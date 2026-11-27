@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.271.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.0...v0.271.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* guard self-host deploys using the reviewed migration marker ([#3308](https://github.com/open-artifacts-ai/open-artifacts/issues/3308)) ([cdf5fcb](https://github.com/open-artifacts-ai/open-artifacts/commit/cdf5fcb3fbec8188d89b34911e88a58e32c93e90))
+
+## [0.271.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.270.0...v0.271.0) (2026-11-27)
+
+
+### Features
+
+* remove away sessions from the mention menu and keep their roles ([#3343](https://github.com/open-artifacts-ai/open-artifacts/issues/3343)) ([9e9c796](https://github.com/open-artifacts-ai/open-artifacts/commit/9e9c796756272ce9bbcd5e14cd7de40f81f9434e))
+
+## [0.270.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.269.0...v0.270.0) (2026-11-27)
+
+
+### Features
+
+* **agents:** move or free names held by away sessions ([#3321](https://github.com/open-artifacts-ai/open-artifacts/issues/3321)) ([#3323](https://github.com/open-artifacts-ai/open-artifacts/issues/3323)) ([01eb0cf](https://github.com/open-artifacts-ai/open-artifacts/commit/01eb0cf2631f666f362b2c90fe31df5fee73887a))
+
+## [0.269.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.1...v0.269.0) (2026-11-27)
+
+
+### Features
+
+* **bus:** the name is the role; a second session asks, never -2 ([#3132](https://github.com/open-artifacts-ai/open-artifacts/issues/3132)) ([#3252](https://github.com/open-artifacts-ai/open-artifacts/issues/3252)) ([a8ededa](https://github.com/open-artifacts-ai/open-artifacts/commit/a8ededac181197ac50c0884bdcfd65a5a138ea99))
+
+## [0.268.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.0...v0.268.1) (2026-11-27)
+
+
+### Bug Fixes
+
+* **bus:** releases reach machines by event, not clock ([#3218](https://github.com/open-artifacts-ai/open-artifacts/issues/3218)) ([#3265](https://github.com/open-artifacts-ai/open-artifacts/issues/3265)) ([a562e14](https://github.com/open-artifacts-ai/open-artifacts/commit/a562e149fde9ed5e844f0bd0841e86ce7162f5b9))
+
 ## [0.268.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.267.0...v0.268.0) (2026-11-27)
 
 
