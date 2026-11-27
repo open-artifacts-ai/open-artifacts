@@ -98,8 +98,9 @@ import {
   type AgentFaceRow,
   agentFacesOf,
   agentIdentityOf,
-  agentNamesOf,
   busHub,
+  type RoleFaceRow,
+  roleFacesOf,
   roleHolderFor,
 } from "./bus.js";
 import {
@@ -435,6 +436,30 @@ type Ctx = {
   names: Map<string, string>;
   /** #3132: holding intervals by identity, with the current holder of each moved role. */
   roles: Map<string, NonNullable<AgentFaceRow["intervals"]>>;
+  /** #3335: `${owner}\n${roleId}` to the role's current name and holder, from its owner's hub. */
+  roleFaces: Map<string, RoleFaceRow>;
+};
+
+const intervalAt = (
+  identityId: string | undefined,
+  at: string | null | undefined,
+  ctx: Pick<Ctx, "roles">,
+) => {
+  if (!identityId) return undefined;
+  const parsed = at ? Date.parse(at) : Number.NaN;
+  const time = Number.isFinite(parsed) ? parsed : Date.now();
+  return ctx.roles
+    .get(identityId)
+    ?.find((r) => r.since <= time && (r.until === null || time < r.until));
+};
+
+const roleFaceOf = (
+  p: { key?: string; owner?: string },
+  ctx: Pick<Ctx, "roleFaces">,
+): RoleFaceRow | undefined => {
+  const roleId = p.key ? roleIdFromKey(p.key) : undefined;
+  if (!roleId || !p.owner) return undefined;
+  return ctx.roleFaces.get(`${p.owner}\n${roleId}`);
 };
 
 /**
@@ -453,10 +478,7 @@ const withRole = (
 ): CommentAuthor => {
   if (!identityId || outsider(viewer) || viewer.userId === null) return author;
   if (faceViewer(viewer).guest && viewer.userId !== owner) return author;
-  const time = at ? Date.parse(at) : Date.now();
-  const interval = ctx.roles
-    .get(identityId)
-    ?.find((r) => r.since <= time && (r.until === null || time < r.until));
+  const interval = intervalAt(identityId, at, ctx);
   if (!interval) return author;
   const role = {
     name: interval.role,
@@ -476,12 +498,20 @@ const withRole = (
   return { ...author, name: role.name, session: author.name, role };
 };
 
-/** A party's name today: its linked agent's current bus name, else the one stored with it. */
+/** A party's name today: its role's current name, its linked agent's current bus name, else the one stored with it. */
 const currentName = (
-  p: { name: string; identity?: { identityId: string } },
-  { names }: Ctx,
-): string =>
-  p.identity ? (names.get(p.identity.identityId) ?? p.name) : p.name;
+  p: {
+    key?: string;
+    owner?: string;
+    name: string;
+    identity?: { identityId: string };
+  },
+  ctx: Pick<Ctx, "names" | "roleFaces">,
+): string => {
+  const rf = roleFaceOf(p, ctx);
+  if (rf) return rf.name;
+  return p.identity ? (ctx.names.get(p.identity.identityId) ?? p.name) : p.name;
+};
 
 const authorView = (
   a: StoredActor,
@@ -553,6 +583,7 @@ let clashCache: { at: number; map: NameClashes } | null = null;
 export const resetNameClashCache = (): void => {
   clashCache = null;
   namesCache.clear();
+  rolesCache.clear();
 };
 
 /** #1889: most distinct owners one view reads current names for; the rest keep stored names. */
@@ -561,6 +592,7 @@ export const NAMES_OWNERS_MAX = 25;
 export const NAMES_TTL_MS = 30_000;
 const NAMES_CACHE_MAX = 2000;
 const namesCache = new Map<string, { face: AgentFaceRow; at: number }>();
+const rolesCache = new Map<string, { face: RoleFaceRow; at: number }>();
 
 /** Every member's name, removed ones too (their names stay reserved), cached. */
 export async function allClashes(env: Env): Promise<NameClashes> {
@@ -600,17 +632,20 @@ async function ctxFor(
   shown: {
     comments: StoredComment[];
     actors?: (StoredActor | null)[];
-    agents?: { owner: string; identity?: StoredIdentity }[];
+    agents?: { key?: string; owner: string; identity?: StoredIdentity }[];
   } = {
     comments: [],
   },
 ): Promise<Ctx> {
-  const [users, clash, faces] = await Promise.all([
+  const [users, clash, faces, roleFaces] = await Promise.all([
     usersById(env, ids),
     agents ? allClashes(env) : Promise.resolve(new Map() as NameClashes),
     agents
       ? currentNames(env, shown)
       : Promise.resolve(new Map<string, AgentFaceRow>()),
+    agents
+      ? currentRoleFaces(env, shown)
+      : Promise.resolve(new Map<string, RoleFaceRow>()),
   ]);
   const names = new Map<string, string>();
   const roles: Ctx["roles"] = new Map();
@@ -618,7 +653,58 @@ async function ctxFor(
     if (f.name) names.set(id, f.name);
     if (f.intervals) roles.set(id, f.intervals);
   }
-  return { users, clash, names, roles };
+  return { users, clash, names, roles, roleFaces };
+}
+
+/**
+ * #3335: the current name and holder of each role-keyed party in a view
+ * (participants, mentions, notified, ask addressees), batched per owner with
+ * the same cache and cap as `currentNames`.
+ */
+async function currentRoleFaces(
+  env: Env,
+  s: {
+    comments: StoredComment[];
+    agents?: { key?: string; owner: string }[];
+  },
+): Promise<Map<string, RoleFaceRow>> {
+  const byOwner = new Map<string, Set<string>>();
+  const add = (owner: string | undefined, key: string | undefined) => {
+    const roleId = key ? roleIdFromKey(key) : undefined;
+    if (!owner || !roleId) return;
+    const set = byOwner.get(owner) ?? new Set<string>();
+    set.add(roleId);
+    byOwner.set(owner, set);
+  };
+  for (const a of s.agents ?? []) add(a.owner, a.key);
+  for (const c of s.comments) {
+    for (const m of c.mentions ?? []) add(m.owner, m.key);
+    for (const m of c.notified ?? []) add(m.owner, m.key);
+    for (const p of c.ask?.to ?? [])
+      if (p.kind === "agent") add(p.owner, p.key);
+  }
+  const out = new Map<string, RoleFaceRow>();
+  if (byOwner.size === 0) return out;
+  const now = Date.now();
+  const need = new Map<string, string[]>();
+  for (const [owner, ids] of byOwner)
+    for (const id of ids) {
+      const k = `${owner}\n${id}`;
+      const hit = rolesCache.get(k);
+      if (hit && now - hit.at < NAMES_TTL_MS) out.set(k, hit.face);
+      else need.set(owner, [...(need.get(owner) ?? []), id]);
+    }
+  await Promise.all(
+    [...need].slice(0, NAMES_OWNERS_MAX).map(async ([owner, ids]) => {
+      for (const [id, face] of await roleFacesOf(env, owner, ids)) {
+        const k = `${owner}\n${id}`;
+        out.set(k, face);
+        if (rolesCache.size >= NAMES_CACHE_MAX) rolesCache.clear();
+        rolesCache.set(k, { face, at: now });
+      }
+    }),
+  );
+  return out;
 }
 
 /**
@@ -677,24 +763,123 @@ export async function currentNames(
   return out;
 }
 
+/**
+ * #3335: a stored session-keyed participant that belongs to a role-keyed
+ * participant of the same owner in the same thread (either a pre-fix row
+ * written while that session held the role, or a session currently holding
+ * that role). Never shown or notified as a second agent alongside the role.
+ */
+function shadowedByRole<T extends StoredParticipant>(
+  p: T,
+  all: readonly T[],
+  ctx: Pick<Ctx, "roles" | "roleFaces">,
+): T | undefined {
+  if (roleIdFromKey(p.key) || !p.identity) return undefined;
+  const iv = intervalAt(p.identity.identityId, p.joinedAt, ctx);
+  return all.find((r) => {
+    if (r.owner !== p.owner) return false;
+    const roleId = roleIdFromKey(r.key);
+    if (!roleId) return false;
+    if (iv?.roleId === roleId) return true;
+    return (
+      ctx.roleFaces.get(`${r.owner}\n${roleId}`)?.holderIdentityId ===
+      p.identity?.identityId
+    );
+  });
+}
+
+/**
+ * #3335: fresh role context for deduplicating legacy session+role rows in a
+ * thread. Runs hub lookups only when the same owner has both a role participant
+ * and a session participant in `ps` (zero RPCs in the normal case).
+ */
+async function legacyRoleCtx(
+  env: Env,
+  ps: readonly StoredParticipant[],
+): Promise<Pick<Ctx, "roles" | "roleFaces">> {
+  const roles: Ctx["roles"] = new Map();
+  const roleFaces: Ctx["roleFaces"] = new Map();
+  const roleOwners = new Map<string, Set<string>>();
+  for (const p of ps) {
+    const rid = roleIdFromKey(p.key);
+    if (!rid) continue;
+    const set = roleOwners.get(p.owner) ?? new Set<string>();
+    set.add(rid);
+    roleOwners.set(p.owner, set);
+  }
+  if (roleOwners.size === 0) return { roles, roleFaces };
+  const idOwners = new Map<string, Set<string>>();
+  for (const p of ps) {
+    if (roleIdFromKey(p.key) || !p.identity || !roleOwners.has(p.owner))
+      continue;
+    const set = idOwners.get(p.owner) ?? new Set<string>();
+    set.add(p.identity.identityId);
+    idOwners.set(p.owner, set);
+  }
+  if (idOwners.size === 0) return { roles, roleFaces };
+  await Promise.all([
+    ...[...idOwners].map(async ([owner, ids]) => {
+      for (const [id, f] of await agentFacesOf(env, owner, [...ids]))
+        if (f.intervals) roles.set(id, f.intervals);
+    }),
+    ...[...idOwners.keys()].map(async (owner) => {
+      const rids = [...(roleOwners.get(owner) ?? [])];
+      for (const [rid, f] of await roleFacesOf(env, owner, rids))
+        roleFaces.set(`${owner}\n${rid}`, f);
+    }),
+  ]);
+  return { roles, roleFaces };
+}
+
 /** #2035: an agent a thread's replies reach, as a member sees it. */
 const threadAgentView = (
   p: ParticipantRow,
   viewer: CommentViewer,
   users: Ctx,
-): ThreadAgent => ({
-  key: p.key,
-  name: agentName(
-    roleIdFromKey(p.key) ? p.name : currentName(p, users),
-    users.users.get(p.owner),
-    viewer,
-    users.clash,
-  ),
-  for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
-  ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
-  canRemove: viewer.owner === true || viewer.userId === p.owner,
-  ...(p.removed ? { removed: true } : {}),
-});
+): ThreadAgent => {
+  const isOwner = viewer.userId !== null && viewer.userId === p.owner;
+  const masked = faceViewer(viewer).guest && !isOwner;
+  const rf = roleFaceOf(p, users);
+  const iv = !roleIdFromKey(p.key)
+    ? intervalAt(p.identity?.identityId, p.joinedAt, users)
+    : undefined;
+  const rawName = rf?.name ?? iv?.role ?? currentName(p, users);
+  const holder = rf
+    ? rf.holder
+    : iv
+      ? (iv.holder ?? currentName(p, users))
+      : undefined;
+  const holderKind = rf
+    ? rf.holderKind
+    : iv
+      ? (iv.holderKind ?? p.identity?.kind)
+      : undefined;
+  const holderMachine = rf
+    ? rf.holderMachine
+    : iv
+      ? iv.holder
+        ? iv.holderMachine
+        : iv.machine
+      : undefined;
+  const session =
+    holder && !masked
+      ? plainAgentName(holder, holderKind ? productOf(holderKind) : undefined)
+      : undefined;
+  const machine =
+    holderMachine && isOwner
+      ? (shortMachine(holderMachine) ?? undefined)
+      : undefined;
+  return {
+    key: p.key,
+    name: agentName(rawName, users.users.get(p.owner), viewer, users.clash),
+    for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
+    ...identityFace({ ...p, name: rawName }, viewer, users),
+    ...(session ? { session } : {}),
+    ...(machine ? { machine } : {}),
+    canRemove: viewer.owner === true || viewer.userId === p.owner,
+    ...(p.removed ? { removed: true } : {}),
+  };
+};
 
 async function threadViews(
   env: Env,
@@ -747,7 +932,11 @@ async function threadViews(
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
     ...(rows(t).length
-      ? { agents: rows(t).map((p) => threadAgentView(p, viewer, users)) }
+      ? {
+          agents: rows(t)
+            .filter((p) => !shadowedByRole(p, rows(t), users))
+            .map((p) => threadAgentView(p, viewer, users)),
+        }
       : {}),
   }));
   await fillReplacedTitles(
@@ -1030,9 +1219,10 @@ const partyView = (
         at,
       );
 
-/** The identity fields of a named agent, from its stored identity; none without one. */
+/** The identity fields of a named agent, from its stored identity (or role's current holder); none without one. */
 const identityFace = (
   p: {
+    key?: string;
     name: string;
     owner?: string;
     identity?: StoredIdentity;
@@ -1040,10 +1230,17 @@ const identityFace = (
   viewer: CommentViewer,
   users: Ctx,
 ): Pick<CommentAuthor, "linked" | "product" | "animal"> => {
-  if (!p.identity || !p.owner || outsider(viewer) || viewer.userId === null)
-    return {};
+  if (!p.owner || outsider(viewer) || viewer.userId === null) return {};
+  const rf = roleFaceOf(p, users);
+  const id =
+    p.key && roleIdFromKey(p.key)
+      ? rf?.holderIdentityId && rf.holderKind
+        ? { identityId: rf.holderIdentityId, kind: rf.holderKind }
+        : undefined
+      : p.identity;
+  if (!id) return {};
   const f = partyIdentityFace(
-    { name: p.name, owner: p.owner, identity: p.identity },
+    { name: p.name, owner: p.owner, identity: id },
     faceViewer(viewer),
     users.users.get(p.owner),
     users.clash,
@@ -1483,13 +1680,19 @@ const askedByCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
   return askedByViewer(c, viewer);
 };
 
-/** #2688: this comment @mentions the viewer: their agent (same identity; the same name when either has none), or them. */
-const mentionsCaller = (c: StoredComment, viewer: CommentViewer): boolean => {
+/** #2688: this comment @mentions the viewer: their agent (same identity, held role, or name when unlinked), or them. */
+const mentionsCaller = (
+  c: StoredComment,
+  viewer: CommentViewer,
+  callerRoleIds?: ReadonlySet<string>,
+): boolean => {
   if (viewer.userId === null) return false;
   const a = viewer.agent;
   if (!a) return c.people?.includes(viewer.userId) === true;
   return (c.mentions ?? []).some((m) => {
     if (m.owner !== viewer.userId) return false;
+    const roleId = roleIdFromKey(m.key);
+    if (roleId && callerRoleIds?.has(roleId)) return true;
     if (m.identity && a.identity)
       return m.identity.identityId === a.identity.identityId;
     // A mention stored before its agent was linked has no identity: same owner and name.
@@ -1510,7 +1713,9 @@ const mentionHit = (
   c: StoredComment,
   viewer: CommentViewer,
   since: string,
-): boolean => after(c.createdAt, since) && mentionsCaller(c, viewer);
+  callerRoleIds?: ReadonlySet<string>,
+): boolean =>
+  after(c.createdAt, since) && mentionsCaller(c, viewer, callerRoleIds);
 
 /**
  * #3139: one thread, the one a comment notice names, so an agent never reads
@@ -1628,9 +1833,19 @@ export async function listComments(
       truncated: r.truncated,
       ...cursor,
     };
+  let callerRoleIds: Set<string> | undefined;
+  if (m !== undefined && viewer.userId && viewer.agent?.identity) {
+    const face = (
+      await agentFacesOf(env, viewer.userId, [viewer.agent.identity.identityId])
+    ).get(viewer.agent.identity.identityId);
+    const held = (face?.intervals ?? [])
+      .filter((iv) => iv.until === null)
+      .map((iv) => iv.roleId);
+    if (held.length > 0) callerRoleIds = new Set(held);
+  }
   const hit = (c: StoredComment): boolean =>
     (a !== undefined && answeredHit(c, viewer, a)) ||
-    (m !== undefined && mentionHit(c, viewer, m));
+    (m !== undefined && mentionHit(c, viewer, m, callerRoleIds));
   const threads = r.threads.filter((t) => t.comments.some(hit));
   const views = await threadViews(env, artifactId, threads, viewer);
   if (!since?.compact)
@@ -1664,7 +1879,7 @@ export async function listComments(
           by: ans.by.name,
           yes: ans.yes === true,
         });
-      if (m !== undefined && mentionHit(c, viewer, m))
+      if (m !== undefined && mentionHit(c, viewer, m, callerRoleIds))
         mentions.push({
           threadId: t.id,
           commentId: c.id,
@@ -1881,21 +2096,31 @@ async function authorParticipant(
 ): Promise<StoredParticipant[]> {
   const id = who.kind === "user" ? who.agent?.identity : undefined;
   if (who.kind !== "user" || !id) return [];
-  const address = { namespace: id.namespace, name: id.name };
-  if (!BusAddressSchema.safeParse(address).success) return [];
   const face = (await agentFacesOf(env, who.id, [id.identityId])).get(
     id.identityId,
   );
-  const role = face?.intervals?.find(
-    (r) => r.until === null && r.namespace === id.namespace && r.roleId,
-  );
+  const held = face?.intervals?.filter((r) => r.until === null) ?? [];
+  const role = held.find((r) => r.namespace === id.namespace) ?? held[0];
+  if (role) {
+    const address = { namespace: role.namespace, name: role.role };
+    if (!BusAddressSchema.safeParse(address).success) return [];
+    return [
+      {
+        kind: "agent",
+        key: await roleKey(artifactId, who.id, role.namespace, role.roleId),
+        name: role.role,
+        owner: who.id,
+        namespace: role.namespace,
+      },
+    ];
+  }
+  const address = { namespace: id.namespace, name: id.name };
+  if (!BusAddressSchema.safeParse(address).success) return [];
   return [
     {
       kind: "agent",
-      key: role
-        ? await roleKey(artifactId, who.id, role.namespace, role.roleId)
-        : await agentKey(artifactId, who.id, address),
-      name: role?.role ?? id.name,
+      key: await agentKey(artifactId, who.id, address),
+      name: id.name,
       owner: who.id,
       namespace: id.namespace,
       identity: { identityId: id.identityId, kind: id.kind },
@@ -1918,10 +2143,10 @@ async function pagePublisher(
 ): Promise<RosterAgent | null> {
   const row = await stmt(
     env.DB,
-    "select agent_identity as identity, created_by as userId from versions where artifact_id = ? and version = ?",
+    "select agent_identity as identity, created_by as userId, created_at as createdAt from versions where artifact_id = ? and version = ?",
   )
     .bind(a.id, a.currentVersion)
-    .first<{ identity: string | null; userId: string }>();
+    .first<{ identity: string | null; userId: string; createdAt: number }>();
   if (!row?.identity) return null;
   let id: { identityId?: unknown; namespace?: unknown; name?: unknown };
   try {
@@ -1943,6 +2168,36 @@ async function pagePublisher(
     !(await accessLevel(env, callerOf(user), a.id))
   )
     return null;
+  if (typeof id.identityId === "string") {
+    const face = (await agentFacesOf(env, row.userId, [id.identityId])).get(
+      id.identityId,
+    );
+    const role = face?.intervals?.find(
+      (r) =>
+        r.since <= row.createdAt &&
+        (r.until === null || row.createdAt < r.until),
+    );
+    if (role) {
+      if (
+        who.kind === "user" &&
+        who.id === row.userId &&
+        who.agent?.identity &&
+        (await agentFacesOf(env, who.id, [who.agent.identity.identityId]))
+          .get(who.agent.identity.identityId)
+          ?.intervals?.some((r) => r.until === null && r.roleId === role.roleId)
+      )
+        return null;
+      const roleAddr = { namespace: role.namespace, name: role.role };
+      if (BusAddressSchema.safeParse(roleAddr).success)
+        return {
+          key: await roleKey(a.id, row.userId, role.namespace, role.roleId),
+          name: role.role,
+          online: false,
+          userId: row.userId,
+          address: roleAddr,
+        };
+    }
+  }
   return {
     key: await agentKey(a.id, row.userId, address.data),
     name: address.data.name,
@@ -2616,40 +2871,60 @@ export async function askingAddress(
   const rows = await call(() =>
     stub(env, artifactId).commentsParticipants({ threadIds: [threadId] }),
   );
-  const row = rows
-    .flatMap(([, ps]) => ps)
-    .find(
-      (p) => p.owner === author.ref && p.identity?.identityId === id.identityId,
-    );
-  if (!row) return null;
+  const participants = rows.flatMap(([, ps]) => ps);
+  const direct = participants.find(
+    (p) => p.owner === author.ref && p.identity?.identityId === id.identityId,
+  );
   // Fail closed: a fresh, uncached read of the owner's own hub must give the
-  // identity's current name, and that name must still be this identity's. A
-  // miss, a timeout, an error or another agent holding the name sends nothing.
+  // identity's current name (or the role it held when posting this ask), and a
+  // miss, timeout, error or another agent holding the name sends nothing.
   const none = (reason: string): null => {
     logInfo("ask_asker_unresolved", { artifactId, threadId, reason });
     return null;
   };
   const origin = askedAt ? Date.parse(askedAt) : Number.NaN;
   const originAt = Number.isFinite(origin) ? { originAt: origin } : {};
-  const current = (await agentNamesOf(env, row.owner, [id.identityId])).get(
+  const face = (await agentFacesOf(env, author.ref, [id.identityId])).get(
     id.identityId,
   );
+  if (!direct) {
+    const time = Number.isFinite(origin) ? origin : Date.now();
+    const interval = face?.intervals?.find(
+      (r) => r.since <= time && (r.until === null || time < r.until),
+    );
+    if (!interval) return null;
+    const rKey = await roleKey(
+      artifactId,
+      author.ref,
+      interval.namespace,
+      interval.roleId,
+    );
+    const roleRow = participants.find(
+      (p) => p.owner === author.ref && p.key === rKey,
+    );
+    if (!roleRow) return null;
+    const address = { namespace: roleRow.namespace, name: interval.role };
+    if (!BusAddressSchema.safeParse(address).success)
+      return none("bad_address");
+    return { ...address, roleId: interval.roleId, ...originAt };
+  }
+  const current = face?.name;
   if (!current) {
     // #3132: the session is gone from its hub. If it handed its role on and
     // posted this ask while it held it, the role's live holder is the asker
     // now, as the hub answers it (roleForward); otherwise nothing is sent.
     const holder = await roleHolderFor(
       env,
-      row.owner,
+      direct.owner,
       id.identityId,
       Number.isFinite(origin) ? origin : Date.now(),
     );
     if (!holder) return none("no_current_name");
     return { ...holder, ...originAt };
   }
-  const address = { namespace: row.namespace, name: current };
+  const address = { namespace: direct.namespace, name: current };
   if (!BusAddressSchema.safeParse(address).success) return none("bad_address");
-  const at = await agentIdentityOf(env, row.owner, address);
+  const at = await agentIdentityOf(env, direct.owner, address);
   if (at?.identityId !== id.identityId) return none("name_not_theirs");
   return { ...address, identityId: id.identityId, ...originAt };
 }
@@ -2715,6 +2990,7 @@ async function threadReply(
       }),
     );
     if (due.length === 0) return c;
+    const lctx = await legacyRoleCtx(env, due);
     const reached: RosterAgent[] = [];
     const heldNow: { agent: HeldAgent; way: string }[] = [];
     const users = new Map<string, boolean>();
@@ -2723,6 +2999,7 @@ async function threadReply(
     let senderGate: MentionGate | undefined;
     let outside: boolean | undefined;
     for (const p of due) {
+      if (shadowedByRole(p, due, lctx)) continue;
       if (p.owner !== c.author.ref) {
         if (!typed) continue;
         // Another person's agent: not for an outside member, and under the mention limits.
@@ -2925,6 +3202,21 @@ async function addReplyInner(
     );
   const [me] = await authorParticipant(env, artifactId, who);
   const participants = [...r.participants, ...(me ? [me] : [])];
+  // #3335: when a role holder answers an earlier session-keyed request (#2577),
+  // carry its session roster key so askedByOf still verifies the original target.
+  let sessionKey: string | undefined;
+  if (
+    me &&
+    extras.requestCommentId &&
+    roleIdFromKey(me.key) &&
+    who.kind === "user" &&
+    who.agent?.identity
+  ) {
+    const id = who.agent.identity;
+    const addr = { namespace: id.namespace, name: id.name };
+    if (BusAddressSchema.safeParse(addr).success)
+      sessionKey = await agentKey(artifactId, who.id, addr);
+  }
   // #2508: claimed before the write, given back if it never happens.
   const claim =
     pics.length > 0 && who.kind === "user"
@@ -2943,7 +3235,13 @@ async function addReplyInner(
         ...(participants.length ? { participants } : {}),
         // #2577: proved in the DO write (askedByOf); a reply with no verified agent carries none.
         ...(me && extras.requestCommentId
-          ? { request: { commentId: extras.requestCommentId, key: me.key } }
+          ? {
+              request: {
+                commentId: extras.requestCommentId,
+                key: me.key,
+                ...(sessionKey ? { sessionKey } : {}),
+              },
+            }
           : {}),
       }),
     );
@@ -3546,18 +3844,32 @@ export async function setThreadAgent(
       stub(env, artifactId).commentsParticipants({ threadIds: [threadId] }),
     ),
   );
-  const p = rows.get(threadId)?.find((x) => x.key === key);
+  const threadRows = rows.get(threadId) ?? [];
+  const p = threadRows.find((x) => x.key === key);
   if (!p) throw new ApiError("not_found", "Not found");
   if (!(viewer.owner === true || viewer.userId === p.owner))
     throw new ApiError(
       "forbidden",
       "Only the person whose agent it is, or the artifact's owner, can change this",
     );
-  await call(() =>
-    stub(env, artifactId).commentsParticipantSet({ threadId, key, removed }),
-  );
+  const targets = [p];
+  if (removed && roleIdFromKey(p.key)) {
+    const lctx = await legacyRoleCtx(env, threadRows);
+    for (const s of threadRows)
+      if (s.key !== p.key && shadowedByRole(s, [p], lctx)) targets.push(s);
+  }
+  for (const t of targets)
+    await call(() =>
+      stub(env, artifactId).commentsParticipantSet({
+        threadId,
+        key: t.key,
+        removed,
+      }),
+    );
   if (!removed) return;
-  const w = withdrawHeldFor(env, artifactId, threadId, p);
+  const w = Promise.all(
+    targets.map((t) => withdrawHeldFor(env, artifactId, threadId, t)),
+  ).then(() => undefined);
   if (ctx) ctx.waitUntil(w);
   else await w;
 }
@@ -3608,12 +3920,43 @@ async function withdrawHeldFor(
     );
     // #2240: asks the removed agent authored, so the hub also drops their held ask_answered notices.
     // A failed read costs only the ask ids: the held targets still go.
+    const roleId = roleIdFromKey(p.key);
     const own = await call(() =>
       stub(env, artifactId).commentsAskAuthors({ threadId }),
     )
-      .then((asks) =>
-        asks.filter((a) => isAuthoredBy(a.author, p)).map((a) => a.commentId),
-      )
+      .then(async (asks) => {
+        if (!roleId)
+          return asks
+            .filter((a) => isAuthoredBy(a.author, p))
+            .map((a) => a.commentId);
+        const ids = asks
+          .map((a) =>
+            a.author.kind === "user" && a.author.ref === p.owner
+              ? a.author.agent?.identity?.identityId
+              : undefined,
+          )
+          .filter((x): x is string => Boolean(x));
+        const faces = ids.length
+          ? await agentFacesOf(env, p.owner, ids)
+          : new Map();
+        return asks
+          .filter((a) => {
+            if (isAuthoredBy(a.author, p)) return true;
+            const id =
+              a.author.kind === "user" && a.author.ref === p.owner
+                ? a.author.agent?.identity?.identityId
+                : undefined;
+            return (
+              !!id &&
+              faces
+                .get(id)
+                ?.intervals?.some(
+                  (iv: { roleId: string }) => iv.roleId === roleId,
+                ) === true
+            );
+          })
+          .map((a) => a.commentId);
+      })
       .catch((e) => {
         logError("comment_withdraw_asks_read_failed", e);
         return [] as string[];
@@ -3879,13 +4222,25 @@ async function noteMentionActivity(
       const { comments } = await call(() =>
         stub(env, artifactId).commentsGet(threadId),
       );
+      const face = (await agentFacesOf(env, who.id, [me])).get(me);
+      const roleIds = new Set(
+        (face?.intervals ?? [])
+          .filter((iv) => iv.until === null)
+          .map((iv) => iv.roleId),
+      );
       const asked = comments
         .slice(0, -1)
         .some(
           (c) =>
             isTyped(c.author) &&
             c.author.ref === who.id &&
-            c.mentions?.some((m) => own(m) && m.identity?.identityId === me),
+            c.mentions?.some(
+              (m) =>
+                own(m) &&
+                (m.identity?.identityId === me ||
+                  (roleIdFromKey(m.key) !== undefined &&
+                    roleIds.has(roleIdFromKey(m.key) as string))),
+            ),
         );
       if (asked && (await noteMentionReplied(env, who.id)))
         await noteMemberFirst(

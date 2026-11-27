@@ -501,6 +501,8 @@ export function commentNoticeText(
 /** #2238: an asking agent's bus address and the identity it was verified as. */
 export type AskerAddress = BusAddress & {
   identityId?: string;
+  /** #3335: a role-attributed ask follows the role's current holder across moves. */
+  roleId?: string;
   /** #3132: when the ask was posted (ms), for a moved role (BusNotice.originAt). */
   originAt?: number;
 };
@@ -635,7 +637,11 @@ export async function notifyAnswered(
       version,
       url,
       to: { namespace: to.namespace, name: to.name },
-      ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      ...(to.roleId
+        ? { toRoleId: to.roleId }
+        : to.identityId
+          ? { toIdentity: to.identityId }
+          : {}),
       ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
       text: commentNoticeText(
         "answered",
@@ -685,7 +691,11 @@ export async function notifyAskLater(
       version,
       url,
       to: { namespace: to.namespace, name: to.name },
-      ...(to.identityId ? { toIdentity: to.identityId } : {}),
+      ...(to.roleId
+        ? { toRoleId: to.roleId }
+        : to.identityId
+          ? { toIdentity: to.identityId }
+          : {}),
       ...(to.originAt !== undefined ? { originAt: to.originAt } : {}),
       // Fixed words and the time only: no name, nothing a person typed.
       text: [

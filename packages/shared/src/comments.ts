@@ -389,6 +389,10 @@ export const ThreadAgentSchema = z.object({
   ...partyFace,
   /** The person the agent acts for. */
   for: z.string().optional(),
+  /** #3335: for a role participant, the session holding it now (members only, never guests/outsiders). */
+  session: z.string().optional(),
+  /** #3335: for a role participant, the holding session's short machine name (owner only). */
+  machine: z.string().optional(),
   canRemove: z.boolean(),
   /** #2174: a person took it out of this thread; it gets no replies until an @-mention or Undo. Absent when it is notified. */
   removed: z.boolean().optional(),

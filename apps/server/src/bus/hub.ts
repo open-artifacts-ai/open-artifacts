@@ -154,9 +154,11 @@ import {
   type PutRoleResult,
   pendingMoveAudits,
   putRole,
+  type RoleFaceRow,
   type RoleMove,
   resolveRoleAnywhere,
   resolveRoleIn,
+  roleFaces,
   roleForward,
   roleIntervals,
   roleTakenSql,
@@ -5294,6 +5296,19 @@ export class BusHub extends DurableObject<Env> {
         });
     }
     return out;
+  }
+
+  /**
+   * #3335: the current name and holder of each role id in `roleIds`, from this
+   * member's own hub only. At most NAMES_OF_MAX ids are read. Worker only.
+   */
+  async rolesOf(roleIds: string[]): Promise<RoleFaceRow[]> {
+    if (!Array.isArray(roleIds)) return [];
+    const ids = [
+      ...new Set(roleIds.filter((x) => typeof x === "string" && x !== "")),
+    ].slice(0, NAMES_OF_MAX);
+    if (ids.length === 0) return [];
+    return roleFaces(this.ctx.storage.sql, OWNER_ORG_ID, ids);
   }
 
   /**

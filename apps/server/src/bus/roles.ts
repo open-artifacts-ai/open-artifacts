@@ -543,6 +543,53 @@ export function roleIntervals(
   );
 }
 
+/** #3335: a role's current name and holder, for comment views keyed by role id. */
+export type RoleFaceRow = {
+  roleId: string;
+  namespace: string;
+  name: string;
+  holder?: string;
+  holderIdentityId?: string;
+  holderKind?: string;
+  holderMachine?: string;
+};
+
+export function roleFaces(
+  sql: SqlStorage,
+  orgId: string,
+  roleIds: string[],
+): RoleFaceRow[] {
+  if (roleIds.length === 0) return [];
+  return all<{
+    roleId: string;
+    namespace: string;
+    name: string;
+    holder: string | null;
+    holderIdentityId: string | null;
+    holderKind: string | null;
+    holderMachine: string | null;
+  }>(
+    sql,
+    `select r.id as roleId, r.namespace, r.name,
+            a.name as holder, a.identity_id as holderIdentityId,
+            a.kind as holderKind, m.label as holderMachine
+       from roles r
+       left join agents a on a.id = r.agent_id
+       left join machines m on m.id = a.machine_id
+      where r.org_id = ? and r.id in (${roleIds.map(() => "?").join(",")})`,
+    orgId,
+    ...roleIds,
+  ).map((r) => ({
+    roleId: r.roleId,
+    namespace: r.namespace,
+    name: r.name,
+    ...(r.holder ? { holder: r.holder } : {}),
+    ...(r.holderIdentityId ? { holderIdentityId: r.holderIdentityId } : {}),
+    ...(r.holderKind ? { holderKind: r.holderKind } : {}),
+    ...(r.holderMachine ? { holderMachine: r.holderMachine } : {}),
+  }));
+}
+
 /**
  * #3132: where a notice for a session that handed its role on goes now: the
  * role's live holder. Approved design: what a session does "while it holds a
