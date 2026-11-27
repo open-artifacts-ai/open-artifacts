@@ -523,7 +523,16 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
   let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
   let busRoleProposals: BusRoleProposal[] = opts.bus
-    ? f.busRoleProposals.map(at)
+    ? f.busRoleProposals.map((p) => ({
+        ...at(p),
+        ...(opts.forYou === "handover"
+          ? {
+              targetMachine: "workstation",
+              priorMachine: "laptop",
+              awaySince: new Date(Date.now() - 40 * 60_000).toISOString(),
+            }
+          : {}),
+      }))
     : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();

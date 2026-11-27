@@ -2034,6 +2034,8 @@ export async function pendingRoleCards(
             namespace: p.namespace,
             agentName: p.agentName,
             priorHolderName: p.priorHolderName,
+            targetMachine: p.targetMachine,
+            priorMachine: p.priorMachine,
             holder: h
               ? {
                   state: h.live ? ("live" as const) : ("away" as const),

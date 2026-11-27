@@ -903,7 +903,7 @@ describe("the handover card in For you (#3132)", () => {
     const row = within(needs).getByRole("listitem");
     expect(row.getAttribute("data-for-you-item")).toBe("role:BpA1nPqRsTu4vWxY");
     expect(row).toHaveTextContent(
-      "oa-design wants to take over manager from oa-manager (away 40 min).",
+      "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
     );
     expect(within(row).getByRole("button", { name: "No" })).toBeInTheDocument();
     expect(

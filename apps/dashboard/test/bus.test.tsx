@@ -1331,7 +1331,7 @@ describe("Agents › Roles and access", () => {
       screen.queryByRole("region", { name: "Waiting for you" }),
     ).toBeNull();
     const card = await within(t).findByText(
-      "oa-design wants to take over manager from oa-manager (away 40 min).",
+      "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
     );
     expect(card.closest("[data-role-card]")).not.toBeNull();
     expect(within(t).getByRole("button", { name: "No" })).toBeInTheDocument();
@@ -1396,7 +1396,7 @@ describe("Agents › Roles and access", () => {
     const t = await screen.findByRole("table", { name: "Roles" });
     expect(
       await within(t).findByText(
-        "oa-design wants to take over manager from oa-manager (away 40 min).",
+        "A new session on the workstation wants to take over manager from the laptop session (away 40 min).",
       ),
     ).toBeInTheDocument();
     fireEvent.click(

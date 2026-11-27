@@ -75,12 +75,17 @@ export function cardOf(p: BusRoleProposal, agents: BusAgent[]): RoleCardData {
     namespace: p.namespace,
     agentName: p.agentName,
     priorHolderName: p.priorHolderName,
-    holder: prior
-      ? {
-          state: prior.state === "live" ? "live" : "away",
-          since: prior.state === "live" ? null : prior.since,
-        }
-      : null,
+    targetMachine:
+      p.targetMachine ?? agents.find((a) => a.id === p.agentId)?.machineLabel,
+    priorMachine: p.priorMachine ?? prior?.machineLabel,
+    holder: p.awaySince
+      ? { state: "away", since: p.awaySince }
+      : prior
+        ? {
+            state: prior.state === "live" ? "live" : "away",
+            since: prior.state === "live" ? null : prior.since,
+          }
+        : null,
     expiresAt: p.expiresAt,
   };
 }

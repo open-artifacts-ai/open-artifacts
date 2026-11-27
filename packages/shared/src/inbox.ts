@@ -43,6 +43,8 @@ export const RoleCardSchema = z.object({
   /** The agent that would hold it (null for a clear). */
   agentName: z.string().nullable(),
   priorHolderName: z.string().nullable(),
+  targetMachine: z.string().optional(),
+  priorMachine: z.string().optional(),
   holder: z
     .object({ state: z.enum(["live", "away"]), since: Iso.nullable() })
     .nullable(),
@@ -67,8 +69,7 @@ export function roleCardText(c: RoleCard, now = Date.now()): string {
   if (c.action === "clear")
     return `An agent asks to remove the role ${c.name}.`;
   const who = c.agentName ?? "An agent";
-  if (c.action === "set" || c.priorHolderName === null)
-    return `${who} asks for the role ${c.name}.`;
+  if (c.action === "set") return `${who} asks for the role ${c.name}.`;
   const state =
     c.holder === null
       ? ""
@@ -77,7 +78,13 @@ export function roleCardText(c: RoleCard, now = Date.now()): string {
         : c.holder.since
           ? ` (away ${roleMinutes(c.holder.since, now)})`
           : " (away)";
-  return `${who} wants to take over ${c.name} from ${c.priorHolderName}${state}.`;
+  const target = c.targetMachine
+    ? `A new session on the ${c.targetMachine}`
+    : "A new session";
+  const prior = c.priorMachine
+    ? `the ${c.priorMachine} session`
+    : "the previous session";
+  return `${target} wants to take over ${c.name} from ${prior}${state}.`;
 }
 
 export const InboxItemSchema = z

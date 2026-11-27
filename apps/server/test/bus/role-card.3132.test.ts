@@ -169,7 +169,9 @@ describe("the handover card (#3132)", () => {
         holder: { state: "away", since: new Date(t).toISOString() },
         expiresAt: proposal.expiresAt,
       },
-      text: expect.stringContaining("(away"),
+      text: expect.stringContaining(
+        "A new session on the Laptop wants to take over platform from the Laptop session (away",
+      ),
     });
     expect(box.counts.needsYou).toBe(1);
     expect(

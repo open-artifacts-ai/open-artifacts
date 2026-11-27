@@ -293,6 +293,9 @@ export const BusRoleProposalSchema = z.strictObject({
   agentName: z.string().nullable(),
   priorAgentId: z.string().nullable(),
   priorHolderName: z.string().nullable(),
+  targetMachine: z.string().optional(),
+  priorMachine: z.string().optional(),
+  awaySince: z.string().optional(),
   status: BusRoleProposalStatusSchema,
   /** Why it was refused: `rejected` (the member said no), `changed` (the role moved since), or a PUT R.busRoles refusal reason. */
   reason: z.string().nullable(),

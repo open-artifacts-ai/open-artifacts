@@ -5633,25 +5633,52 @@ export class BusHub extends DurableObject<Env> {
     const ids = [
       ...new Set(
         proposals.flatMap((p) =>
-          p.status === "pending" && p.priorAgentId ? [p.priorAgentId] : [],
+          p.status === "pending"
+            ? [p.priorAgentId, p.agentId].filter(
+                (id): id is string => id !== null,
+              )
+            : [],
         ),
       ),
     ];
     const holders: Record<string, { live: boolean; since: number | null }> = {};
+    const labels = new Map<string, string>();
     for (const a of ids.length
       ? sql
-          .exec<{ id: string; live: number; since: number | null }>(
-            "select id, live, coalesce(away_since, updated_at) as since from agents where org_id = ? and id in (select value from json_each(?))",
+          .exec<{
+            id: string;
+            live: number;
+            since: number | null;
+            label: string | null;
+          }>(
+            "select a.id, a.live, coalesce(a.away_since, a.updated_at) as since, m.label from agents a left join machines m on m.id = a.machine_id and m.org_id = a.org_id where a.org_id = ? and a.id in (select value from json_each(?))",
             OWNER_ORG_ID,
             JSON.stringify(ids),
           )
           .toArray()
-      : [])
+      : []) {
+      if (a.label) labels.set(a.id, a.label);
       holders[a.id] = {
         live: a.live === 1,
         since: a.live === 1 ? null : a.since,
       };
-    return { proposals, expired, holders };
+    }
+    return {
+      proposals: proposals.map((p) => {
+        if (p.status !== "pending" || p.action !== "repoint") return p;
+        const since = p.priorAgentId ? holders[p.priorAgentId]?.since : null;
+        return {
+          ...p,
+          targetMachine: labels.get(p.agentId ?? ""),
+          priorMachine: labels.get(p.priorAgentId ?? ""),
+          ...(since != null
+            ? { awaySince: new Date(since).toISOString() }
+            : {}),
+        };
+      }),
+      expired,
+      holders,
+    };
   }
 
   /** When the last closeAll started (ms), or null. */
