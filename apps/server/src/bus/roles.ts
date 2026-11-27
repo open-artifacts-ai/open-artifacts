@@ -500,6 +500,8 @@ function recordMove(
 
 /** Holding intervals use the same half-open bounds as roleForward. */
 export type RoleInterval = {
+  roleId: string;
+  namespace: string;
   role: string;
   holder: string | null;
   machine: string | null;
@@ -522,12 +524,12 @@ export function roleIntervals(
 ) {
   return all<RoleInterval>(
     sql,
-    `select r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
+    `select r.id as roleId, r.namespace as namespace, r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
        from roles r join agents a on a.id = r.agent_id
        left join machines machine on machine.id = a.machine_id
        where r.org_id = ? and a.identity_id = ?
      union all
-     select r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
+     select r.id, r.namespace, r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
        from role_moves m indexed by role_moves_identity
        join roles r on r.id = m.role_id
        left join agents h on h.id = r.agent_id

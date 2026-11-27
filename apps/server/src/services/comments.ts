@@ -113,6 +113,7 @@ import {
   observedAway,
   type RosterAgent,
   roleIdFromKey,
+  roleKey,
   shortMachine,
   storedAgent,
   viewerRosterAgents,
@@ -684,7 +685,7 @@ const threadAgentView = (
 ): ThreadAgent => ({
   key: p.key,
   name: agentName(
-    currentName(p, users),
+    roleIdFromKey(p.key) ? p.name : currentName(p, users),
     users.users.get(p.owner),
     viewer,
     users.clash,
@@ -1874,6 +1875,7 @@ const participantOf = (a: RosterAgent): StoredParticipant => ({
  * member's other agents, so it does not join by commenting.
  */
 async function authorParticipant(
+  env: Env,
   artifactId: string,
   who: CommentWho,
 ): Promise<StoredParticipant[]> {
@@ -1881,11 +1883,19 @@ async function authorParticipant(
   if (who.kind !== "user" || !id) return [];
   const address = { namespace: id.namespace, name: id.name };
   if (!BusAddressSchema.safeParse(address).success) return [];
+  const face = (await agentFacesOf(env, who.id, [id.identityId])).get(
+    id.identityId,
+  );
+  const role = face?.intervals?.find(
+    (r) => r.until === null && r.namespace === id.namespace && r.roleId,
+  );
   return [
     {
       kind: "agent",
-      key: await agentKey(artifactId, who.id, address),
-      name: id.name,
+      key: role
+        ? await roleKey(artifactId, who.id, role.namespace, role.roleId)
+        : await agentKey(artifactId, who.id, address),
+      name: role?.role ?? id.name,
       owner: who.id,
       namespace: id.namespace,
       identity: { identityId: id.identityId, kind: id.kind },
@@ -2515,7 +2525,7 @@ async function addThreadInner(
           },
         ]
       : []),
-    ...(await authorParticipant(a.id, who)),
+    ...(await authorParticipant(env, a.id, who)),
   ];
   // #2508: the pictures are claimed (yours, uploaded, unused, this page)
   // before the comment is written, and given back if it never is.
@@ -2913,7 +2923,7 @@ async function addReplyInner(
       "bad_request",
       "A comment that mentions an agent needs text",
     );
-  const [me] = await authorParticipant(artifactId, who);
+  const [me] = await authorParticipant(env, artifactId, who);
   const participants = [...r.participants, ...(me ? [me] : [])];
   // #2508: claimed before the write, given back if it never happens.
   const claim =
