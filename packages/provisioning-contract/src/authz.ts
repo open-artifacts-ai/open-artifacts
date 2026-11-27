@@ -217,7 +217,7 @@ export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
 export const TEST_INSTALL = {
   slugPrefix: "t-",
   actorSuffix: ":test-install",
-  routes: ["R2", "R3", "R4", "R9", "R15", "R26"] as readonly RouteId[],
+  routes: ["R2", "R3", "R4", "R9", "R11", "R15", "R26"] as readonly RouteId[],
 } as const;
 export const testInstallOwns = (i: { slug: string; testHooks: boolean }) =>
   i.slug.startsWith(TEST_INSTALL.slugPrefix) && i.testHooks === true;

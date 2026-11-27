@@ -182,7 +182,7 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
 
   it("isolates fixture operations from production and the rl-agents principal", () => {
     const principal = { kind: "oidc", oidcWorkflow: "test-install" } as const;
-    const allowed = ["R2", "R3", "R4", "R9", "R15", "R26"];
+    const allowed = ["R2", "R3", "R4", "R9", "R11", "R15", "R26"];
     expect(TEST_INSTALL.routes).toEqual(allowed);
     for (const route of ROUTE_IDS) {
       expect(authorize(route, principal, "staging").ok).toBe(
