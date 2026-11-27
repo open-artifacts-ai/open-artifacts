@@ -187,7 +187,13 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return undefined;
     }
     case "status":
-      return status(ctx);
+      return status(ctx, {
+        ...(cmd.agents ? { agents: true } : {}),
+        ...(cmd.messages ? { messages: true } : {}),
+        ...(cmd.instances ? { instances: true } : {}),
+        ...(cmd.links ? { links: true } : {}),
+        ...(cmd.json ? { json: true } : {}),
+      });
     case "logs":
       return logs(ctx);
     case "doctor":

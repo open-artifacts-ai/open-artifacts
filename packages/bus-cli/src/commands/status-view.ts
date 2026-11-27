@@ -1,6 +1,6 @@
 import { displayKind, stripTerminalControls } from "@oa/bus-ipc";
 import type { Ctx } from "../context.ts";
-import { cols, cutCols, cutMiddle } from "../copy.ts";
+import { ago, cols, cutCols, cutMiddle } from "../copy.ts";
 import { bold, glyph, paint, type Style } from "../term.ts";
 
 // Control, format and line-separator characters: never shown.
@@ -436,5 +436,203 @@ export function renderStatusScreen(
     }
   }
 
+  return lines;
+}
+
+export type StatusNamespaceBlock = {
+  namespace: string;
+  current: boolean;
+  agents: StatusAgent[];
+};
+
+/** `--agents`: all agents across projects, with full untruncated status text (#3328 S3). */
+export function renderAgentsDetail(
+  style: Style,
+  blocks: StatusNamespaceBlock[],
+  now: number,
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  const sep = g("sep");
+  if (blocks.length === 0 || blocks.every((b) => b.agents.length === 0)) {
+    return [p("muted", "No agents on the bus.")];
+  }
+  const lines: string[] = [];
+  for (const block of blocks) {
+    if (block.agents.length === 0) continue;
+    if (lines.length > 0) lines.push("");
+    const tag = block.current
+      ? "this project"
+      : shortNamespace(block.namespace);
+    lines.push(
+      `${bold(style, "Agents")}  ${p("muted", `${block.agents.length} total ${sep} ${tag} (${cleanText(block.namespace)})`)}`,
+    );
+    const needsYou: StatusAgent[] = [];
+    const working: StatusAgent[] = [];
+    const idle: StatusAgent[] = [];
+    for (const a of block.agents) {
+      const grp = classifyAgent(a, now);
+      if (grp === "needs_you") needsYou.push(a);
+      else if (grp === "working") working.push(a);
+      else idle.push(a);
+    }
+    needsYou.sort(byRecent);
+    working.sort(byRecent);
+    idle.sort((a, b) => a.name.localeCompare(b.name));
+
+    const emitGroup = (
+      title: string,
+      tone: Parameters<typeof paint>[1],
+      list: StatusAgent[],
+    ) => {
+      if (list.length === 0) return;
+      lines.push(p(tone, title));
+      for (const a of list) {
+        const name = bold(style, cleanText(a.name));
+        const app = shortApp(a.kind);
+        const machine = shortMachine(a.machine);
+        const age = shortAge(a.status_at, now);
+        const meta = [app, machine, age].filter(Boolean).join(` ${sep} `);
+        const label = a.status_label ? cleanText(a.status_label) : "";
+        const statusText = label
+          ? `"${label}"`
+          : a.status
+            ? a.status.replace(/_/g, " ")
+            : "";
+        lines.push(
+          `  ${name}  ${p("muted", meta)}${statusText ? `  ${statusText}` : ""}`,
+        );
+      }
+    };
+    emitGroup("NEEDS YOU", "warning", needsYou);
+    emitGroup("WORKING", "success", working);
+    emitGroup("IDLE", "muted", idle);
+  }
+  return lines;
+}
+
+export type LateMessageView = {
+  from: string;
+  to: string;
+  excerpt?: string | undefined;
+  at: number;
+  delay_ms?: number | undefined;
+};
+
+const shortDelay = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+};
+
+/** `--messages`: today's late deliveries, newest first (#3328 S3). */
+export function renderMessagesDetail(
+  style: Style,
+  messages: LateMessageView[],
+  now: number,
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  if (messages.length === 0) return [p("muted", "No late messages.")];
+  const sorted = [...messages].sort((a, b) => b.at - a.at);
+  const lines: string[] = [
+    `${bold(style, "Late messages")}  ${p("muted", `${sorted.length} ${sorted.length === 1 ? "message" : "messages"}`)}`,
+  ];
+  for (const m of sorted) {
+    const when = ago(m.at, now);
+    const delay =
+      m.delay_ms !== undefined ? ` (${shortDelay(m.delay_ms)} delay)` : "";
+    lines.push(
+      `  ${cleanText(m.from)} ${g("step")} ${cleanText(m.to)}  ${p("muted", `${when}${delay}`)}`,
+    );
+    if (m.excerpt) {
+      lines.push(`    "${cleanText(m.excerpt)}"`);
+    }
+  }
+  return lines;
+}
+
+export type InstanceDetailRow = {
+  name: string;
+  url: string;
+  main: boolean;
+  connected: boolean;
+  revoked: boolean;
+  agents: number;
+  guests: string[];
+};
+
+/** `--instances`: configured instances and folder mappings (#3328 S3). */
+export function renderInstancesDetail(
+  style: Style,
+  instances: InstanceDetailRow[],
+  folders: [string, string][],
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  const lines: string[] = [bold(style, "Instances")];
+  for (const i of instances) {
+    const badge = i.revoked
+      ? p("danger", `${g("cross")} revoked`)
+      : i.connected
+        ? p("success", `${g("done")} connected`)
+        : p("danger", `${g("cross")} not connected`);
+    const count = `${i.agents} ${i.agents === 1 ? "agent" : "agents"}`;
+    lines.push(
+      `  ${bold(style, cleanText(i.name))}${i.main ? p("muted", " (main)") : ""}  ${cleanText(i.url)}  ${badge}  ${p("muted", count)}`,
+    );
+    for (const guest of i.guests) {
+      lines.push(`    ${p("muted", `guest session: ${cleanText(guest)}`)}`);
+    }
+  }
+  if (folders.length > 0) {
+    lines.push("", bold(style, "Folders"));
+    for (const [dir, inst] of folders) {
+      lines.push(`  ${cleanText(dir)} ${g("step")} ${cleanText(inst)}`);
+    }
+  }
+  return lines;
+}
+
+export type LinkSessionView = {
+  name: string;
+  cwd: string;
+  state: string;
+  cause?: string | undefined;
+};
+
+/** `--links`: live Claude sessions and whether each is linked (#3328 S3). */
+export function renderLinksDetail(
+  style: Style,
+  sessions: LinkSessionView[],
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  if (sessions.length === 0) return [p("muted", "No live Claude sessions.")];
+  const lines: string[] = [bold(style, "Session links")];
+  let hasUnlinked = false;
+  for (const s of sessions) {
+    const isLinked = s.state === "linked";
+    const isStarting = s.state === "starting";
+    if (!isLinked && !isStarting) hasUnlinked = true;
+    const badge = isLinked
+      ? p("success", `${g("done")} linked`)
+      : isStarting
+        ? p("muted", `${g("queued")} starting`)
+        : p("danger", `${g("cross")} unlinked`);
+    const cause = s.cause ? p("muted", ` (${cleanText(s.cause)})`) : "";
+    lines.push(
+      `  ${badge}  ${bold(style, cleanText(s.name))}  ${p("muted", cleanText(s.cwd))}${cause}`,
+    );
+  }
+  if (hasUnlinked) {
+    lines.push("", `  ${p("muted", "Fix:")} run /mcp in any unlinked session`);
+  }
   return lines;
 }

@@ -22,14 +22,87 @@ import type { Harness } from "../steps/adapters.ts";
 import { savedSkill, skillVersion } from "../steps/skill.ts";
 import {
   type AttentionItem,
+  classifyAgent,
   cleanText,
+  type InstanceDetailRow,
   type InstanceView,
+  isUnnamedHidden,
+  type LateMessageView,
+  type LinkSessionView,
   type OtherProject,
+  renderAgentsDetail,
+  renderInstancesDetail,
+  renderLinksDetail,
+  renderMessagesDetail,
   renderStatusScreen,
   type StatusAgent,
+  type StatusNamespaceBlock,
+  shortNamespace,
   terminalWidth,
   type Verdict,
 } from "./status-view.ts";
+
+export type StatusOpts = {
+  agents?: boolean;
+  messages?: boolean;
+  instances?: boolean;
+  links?: boolean;
+  json?: boolean;
+};
+
+/**
+ * Stable, documented JSON shape for `oa-bus status --json` (#3328 S3).
+ */
+export type StatusJson = {
+  v: 1;
+  version: string;
+  verdict: Verdict;
+  machine: string | null;
+  daemon: "up" | "down" | "stalled" | "unregistered" | "revoked";
+  instances: {
+    name: string;
+    host: string;
+    url: string;
+    main: boolean;
+    connected: boolean;
+    revoked: boolean;
+    agents: number;
+    guests: string[];
+  }[];
+  folders: Record<string, string>;
+  attention: { problem: string; fix: string }[];
+  project: {
+    namespace: string | null;
+    named: number;
+    unnamed_hidden: number;
+    agents: {
+      name: string;
+      kind: string;
+      machine: string;
+      state: "live" | "queued";
+      group: "needs_you" | "working" | "idle_old";
+      unnamed: boolean;
+      status: string | null;
+      status_label: string | null;
+      status_at: string | null;
+    }[];
+  };
+  other_projects: { namespace: string; name: string; count: number }[];
+  messages: {
+    from: string;
+    to: string;
+    excerpt: string | null;
+    at: string;
+    delay_ms: number | null;
+  }[];
+  links: {
+    name: string;
+    cwd: string;
+    state: string;
+    cause: string | null;
+  }[];
+  agents_page_url: string | null;
+};
 
 export const hostOf = (hub: string) => {
   try {
@@ -242,35 +315,6 @@ function currentNamespace(ctx: Ctx, st: StatusReply): string | undefined {
   return st.namespaces[0]?.namespace;
 }
 
-function partitionNamespaces(
-  ctx: Ctx,
-  st: StatusReply,
-): { agents: StatusAgent[]; others: OtherProject[] } {
-  const cur = currentNamespace(ctx, st);
-  const byNs = new Map<string, StatusAgent[]>();
-  for (const block of st.namespaces) {
-    const list = byNs.get(block.namespace) ?? [];
-    for (const a of block.agents) {
-      if (
-        !list.some(
-          (x) =>
-            x.name === a.name && x.kind === a.kind && x.machine === a.machine,
-        )
-      ) {
-        list.push(a);
-      }
-    }
-    byNs.set(block.namespace, list);
-  }
-  const agents = cur ? (byNs.get(cur) ?? []) : [];
-  const others: OtherProject[] = [];
-  for (const [namespace, list] of byNs) {
-    if (namespace === cur || list.length === 0) continue;
-    others.push({ namespace, count: list.length });
-  }
-  return { agents, others };
-}
-
 const SKILL_HARNESSES: readonly Harness[] = [
   "claude",
   "codex",
@@ -364,15 +408,207 @@ function collectAttention(
   return items;
 }
 
+function buildInstanceDetails(
+  ctx: Ctx,
+  mainHub: string,
+  mainRevoked: boolean,
+  st?: StatusReply,
+): InstanceDetailRow[] {
+  const configured = listInstances(ctx.home);
+  if (configured.length < 2) {
+    const url = canonicalAddress(mainHub) ?? mainHub;
+    const totalAgents =
+      st?.namespaces.reduce((n, ns) => n + ns.agents.length, 0) ?? 0;
+    return [
+      {
+        name: "main",
+        url,
+        main: true,
+        connected: !mainRevoked && st?.hub === "connected",
+        revoked: mainRevoked,
+        agents: totalAgents,
+        guests: [],
+      },
+    ];
+  }
+  const rows = st?.instances ?? [];
+  return configured.map((inst) => {
+    const r = rows.find((x) => x.name === inst.name);
+    const revoked = Boolean(r?.revoked || (inst.main && mainRevoked));
+    const connected =
+      !revoked &&
+      (r
+        ? r.link === "connected"
+        : Boolean(inst.main && st?.hub === "connected"));
+    return {
+      name: inst.name,
+      url: canonicalAddress(inst.hub) ?? inst.hub,
+      main: Boolean(inst.main),
+      connected,
+      revoked,
+      agents: r?.agents ?? 0,
+      guests: (r?.guests ?? []).map((g) => g.name),
+    };
+  });
+}
+
+function buildAllNamespaces(
+  ctx: Ctx,
+  st: StatusReply,
+): {
+  current: string | undefined;
+  blocks: StatusNamespaceBlock[];
+  agents: StatusAgent[];
+  others: OtherProject[];
+} {
+  const cur = currentNamespace(ctx, st);
+  const byNs = new Map<string, StatusAgent[]>();
+  for (const block of st.namespaces) {
+    const list = byNs.get(block.namespace) ?? [];
+    for (const a of block.agents) {
+      if (
+        !list.some(
+          (x) =>
+            x.name === a.name && x.kind === a.kind && x.machine === a.machine,
+        )
+      ) {
+        list.push(a);
+      }
+    }
+    byNs.set(block.namespace, list);
+  }
+  const agents = cur ? (byNs.get(cur) ?? []) : [];
+  const others: OtherProject[] = [];
+  const blocks: StatusNamespaceBlock[] = [];
+  if (cur && agents.length > 0) {
+    blocks.push({ namespace: cur, current: true, agents });
+  }
+  for (const [namespace, list] of byNs) {
+    if (namespace === cur || list.length === 0) continue;
+    others.push({ namespace, count: list.length });
+    blocks.push({ namespace, current: false, agents: list });
+  }
+  return { current: cur, blocks, agents, others };
+}
+
+function makeJson(opts: {
+  ctx: Ctx;
+  verdict: Verdict;
+  machine: string | null;
+  daemon: StatusJson["daemon"];
+  instanceDetails: InstanceDetailRow[];
+  folders: Record<string, string>;
+  attention: AttentionItem[];
+  currentNs: string | null;
+  projectAgents: StatusAgent[];
+  others: OtherProject[];
+  messages: LateMessageView[];
+  links: LinkSessionView[];
+  agentsPageUrl: string | null;
+}): StatusJson {
+  const now = opts.ctx.now();
+  const mappedAgents = opts.projectAgents.map((a) => ({
+    name: a.name,
+    kind: a.kind,
+    machine: a.machine,
+    state: a.state,
+    group: classifyAgent(a, now),
+    unnamed: isUnnamedHidden(a),
+    status: a.status ?? null,
+    status_label: a.status_label ?? null,
+    status_at: a.status_at ?? null,
+  }));
+  const unnamedHidden = mappedAgents.filter((a) => a.unnamed).length;
+  return {
+    v: 1,
+    version: opts.ctx.version,
+    verdict: opts.verdict,
+    machine: opts.machine,
+    daemon: opts.daemon,
+    instances: opts.instanceDetails.map((i) => ({
+      name: i.name,
+      host: hostOf(i.url),
+      url: i.url,
+      main: i.main,
+      connected: i.connected,
+      revoked: i.revoked,
+      agents: i.agents,
+      guests: i.guests,
+    })),
+    folders: opts.folders,
+    attention: opts.attention.map((a) => ({ problem: a.problem, fix: a.fix })),
+    project: {
+      namespace: opts.currentNs,
+      named: mappedAgents.length - unnamedHidden,
+      unnamed_hidden: unnamedHidden,
+      agents: mappedAgents,
+    },
+    other_projects: opts.others.map((o) => ({
+      namespace: o.namespace,
+      name: shortNamespace(o.namespace),
+      count: o.count,
+    })),
+    messages: [...opts.messages]
+      .sort((a, b) => b.at - a.at)
+      .map((m) => ({
+        from: m.from,
+        to: m.to,
+        excerpt: m.excerpt ?? null,
+        at: new Date(m.at).toISOString(),
+        delay_ms: m.delay_ms ?? null,
+      })),
+    links: opts.links.map((l) => ({
+      name: l.name,
+      cwd: l.cwd,
+      state: l.state,
+      cause: l.cause ?? null,
+    })),
+    agents_page_url: opts.agentsPageUrl,
+  };
+}
+
 /**
- * Default `oa-bus status` screen (#3328 S1/S2). Read-only; never prints the token.
+ * `oa-bus status` (#3328 S1/S2/S3). Read-only; never prints the token.
  * Exit 0 only when working (daemon up, all instances connected, no attention items).
  */
-export async function status(ctx: Ctx): Promise<number> {
+export async function status(ctx: Ctx, opts: StatusOpts = {}): Promise<number> {
   const c = ctx.copy;
   const width = terminalWidth(ctx);
+  const foldersMap = readFolders(ctx.home).map;
+  const sortedFolders = Object.entries(foldersMap)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([dir, name]): [string, string] => [tilde(ctx, dir), name]);
   const m = readMachine(ctx.home);
   if (m.state !== "ok") {
+    const attention: AttentionItem[] = [
+      {
+        problem: "This computer is not connected to a bus.",
+        fix: `run ${ctx.busCmd} to approve it`,
+      },
+    ];
+    if (opts.json) {
+      say(
+        ctx,
+        JSON.stringify(
+          makeJson({
+            ctx,
+            verdict: "down",
+            machine: null,
+            daemon: "unregistered",
+            instanceDetails: [],
+            folders: foldersMap,
+            attention,
+            currentNs: null,
+            projectAgents: [],
+            others: [],
+            messages: [],
+            links: [],
+            agentsPageUrl: null,
+          }),
+        ),
+      );
+      return 1;
+    }
     say(
       ctx,
       renderStatusScreen(ctx.style, {
@@ -387,8 +623,39 @@ export async function status(ctx: Ctx): Promise<number> {
     sayErr(ctx, c.notRegistered());
     return 1;
   }
+  const agentsPageUrl = `${originOf(m.hub)}/settings/agents`;
   if (m.revoked) {
     const instances = buildInstances(ctx, m.hub, true);
+    const instanceDetails = buildInstanceDetails(ctx, m.hub, true);
+    const attention: AttentionItem[] = [
+      {
+        problem: `${hostOf(m.hub)} revoked this machine.`,
+        fix: `run ${ctx.busCmd} install to approve it again`,
+      },
+    ];
+    if (opts.json) {
+      say(
+        ctx,
+        JSON.stringify(
+          makeJson({
+            ctx,
+            verdict: "down",
+            machine: m.label,
+            daemon: "revoked",
+            instanceDetails,
+            folders: foldersMap,
+            attention,
+            currentNs: null,
+            projectAgents: [],
+            others: [],
+            messages: [],
+            links: [],
+            agentsPageUrl,
+          }),
+        ),
+      );
+      return 1;
+    }
     say(
       ctx,
       renderStatusScreen(ctx.style, {
@@ -396,12 +663,7 @@ export async function status(ctx: Ctx): Promise<number> {
         verdict: "down",
         machine: m.label,
         instances,
-        attention: [
-          {
-            problem: `${hostOf(m.hub)} revoked this machine.`,
-            fix: `run ${ctx.busCmd} install to approve it again`,
-          },
-        ],
+        attention,
         busCmd: ctx.busCmd,
         now: ctx.now(),
         width,
@@ -428,6 +690,37 @@ export async function status(ctx: Ctx): Promise<number> {
             fix: `run ${startCmd}`,
           },
     ];
+    const instanceDetails = buildInstanceDetails(ctx, m.hub, false);
+    if (opts.json) {
+      say(
+        ctx,
+        JSON.stringify(
+          makeJson({
+            ctx,
+            verdict: "down",
+            machine: m.label,
+            daemon: probe.state,
+            instanceDetails,
+            folders: foldersMap,
+            attention,
+            currentNs: null,
+            projectAgents: [],
+            others: [],
+            messages: [],
+            links: [],
+            agentsPageUrl,
+          }),
+        ),
+      );
+      return 1;
+    }
+    if (opts.instances) {
+      say(
+        ctx,
+        renderInstancesDetail(ctx.style, instanceDetails, sortedFolders),
+      );
+      return 1;
+    }
     say(
       ctx,
       renderStatusScreen(ctx.style, {
@@ -452,6 +745,7 @@ export async function status(ctx: Ctx): Promise<number> {
   const st = probe.st;
   const hz = await health;
   const instances = buildInstances(ctx, m.hub, false, st);
+  const instanceDetails = buildInstanceDetails(ctx, m.hub, false, st);
   const attention = collectAttention(ctx, {
     mainHub: m.hub,
     instances,
@@ -464,7 +758,65 @@ export async function status(ctx: Ctx): Promise<number> {
     : attention.length > 0
       ? "degraded"
       : "working";
-  const agentsPageUrl = `${originOf(m.hub)}/settings/agents`;
+  const nsData = anyUp
+    ? buildAllNamespaces(ctx, st)
+    : { current: undefined, blocks: [], agents: [], others: [] };
+  const messages: LateMessageView[] = st.late ?? [];
+  const links: LinkSessionView[] = (st.claude_sessions ?? []).map((s) => ({
+    name: s.name,
+    cwd: tilde(ctx, s.cwd),
+    state: s.state,
+    ...(s.cause ? { cause: s.cause } : {}),
+  }));
+
+  if (opts.json) {
+    say(
+      ctx,
+      JSON.stringify(
+        makeJson({
+          ctx,
+          verdict,
+          machine: m.label || st.label,
+          daemon: "up",
+          instanceDetails,
+          folders: foldersMap,
+          attention,
+          currentNs: nsData.current ?? null,
+          projectAgents: nsData.agents,
+          others: nsData.others,
+          messages,
+          links,
+          agentsPageUrl,
+        }),
+      ),
+    );
+    return verdict === "working" ? 0 : 1;
+  }
+
+  const anyDetail =
+    opts.agents || opts.messages || opts.instances || opts.links;
+  if (anyDetail) {
+    const sections: string[][] = [];
+    if (opts.agents) {
+      sections.push(renderAgentsDetail(ctx.style, nsData.blocks, ctx.now()));
+    }
+    if (opts.messages) {
+      sections.push(renderMessagesDetail(ctx.style, messages, ctx.now()));
+    }
+    if (opts.instances) {
+      sections.push(
+        renderInstancesDetail(ctx.style, instanceDetails, sortedFolders),
+      );
+    }
+    if (opts.links) {
+      sections.push(renderLinksDetail(ctx.style, links));
+    }
+    for (let i = 0; i < sections.length; i++) {
+      if (i > 0) say(ctx, "");
+      say(ctx, sections[i] as string[]);
+    }
+    return verdict === "working" ? 0 : 1;
+  }
 
   say(
     ctx,
@@ -474,7 +826,9 @@ export async function status(ctx: Ctx): Promise<number> {
       machine: m.label || st.label,
       instances,
       attention,
-      ...(anyUp ? { project: partitionNamespaces(ctx, st) } : {}),
+      ...(anyUp
+        ? { project: { agents: nsData.agents, others: nsData.others } }
+        : {}),
       agentsPageUrl,
       busCmd: ctx.busCmd,
       now: ctx.now(),

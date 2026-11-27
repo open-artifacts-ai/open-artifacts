@@ -41,7 +41,14 @@ export type Command = (
       /** agy S5: an added instance's local name (#2793 S4); absent is main. */
       name?: string;
     }
-  | { cmd: "status" }
+  | {
+      cmd: "status";
+      agents?: boolean;
+      messages?: boolean;
+      instances?: boolean;
+      links?: boolean;
+      json?: boolean;
+    }
   | { cmd: "logs" }
   | { cmd: "doctor" }
   | { cmd: "uninstall"; purge: boolean }
@@ -118,6 +125,7 @@ const FLAGS: Record<string, string[]> = {
   add: ["name", "no-open"],
   use: ["none"],
   skill: ["instance", "check", "json", "refresh"],
+  status: ["agents", "messages", "instances", "links", "json"],
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file", "instance"],
@@ -156,6 +164,10 @@ export function parse(argv: string[]): Command {
       habits: { type: "boolean", default: false },
       "no-habits": { type: "boolean", default: false },
       "show-habits": { type: "boolean", default: false },
+      agents: { type: "boolean", default: false },
+      messages: { type: "boolean", default: false },
+      instances: { type: "boolean", default: false },
+      links: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
       "allow-failed": { type: "boolean", default: false },
@@ -315,6 +327,10 @@ type Values = {
   habits: boolean;
   "no-habits": boolean;
   "show-habits": boolean;
+  agents: boolean;
+  messages: boolean;
+  instances: boolean;
+  links: boolean;
   json: boolean;
   purge: boolean;
   "allow-failed": boolean;
@@ -413,6 +429,14 @@ function route(cmd: string, values: Values, positionals: string[]) {
         ...(values.json ? { json: true } : {}),
       };
     case "status":
+      return {
+        cmd,
+        ...(values.agents ? { agents: true } : {}),
+        ...(values.messages ? { messages: true } : {}),
+        ...(values.instances ? { instances: true } : {}),
+        ...(values.links ? { links: true } : {}),
+        ...(values.json ? { json: true } : {}),
+      };
     case "logs":
     case "doctor":
     case "update":
