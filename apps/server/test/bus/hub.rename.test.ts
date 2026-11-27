@@ -2371,7 +2371,7 @@ describe("#1448: revoking a machine frees every name its agents held or reserved
 describe("#3028: a session the daemon reports closed is away, not gone", () => {
   it("a rename to its name asks for it (#3132): the live session keeps its suffix, mail never reaches the asker", async () => {
     const n = ns("3028");
-    const d = await at();
+    const d = await at(true, (await member()).userId);
     // A session named "OA Manager L" while another session of the machine
     // already held that name, so the hub answered "OA Manager L-2".
     expect(await reg(d, "ref-a", "OA Manager L", n)).toBe("OA Manager L");
@@ -2390,8 +2390,8 @@ describe("#3028: a session the daemon reports closed is away, not gone", () => {
     });
     const r = await renamed(d, "ref-b", "OA Manager L");
     expect(r.bus_name).toBe("OA Manager L-2");
-    // The old sender can still queue mail to the same away holder.
+    // A legacy sender sees the away role as unknown.
     const rc = await send(d, "ref-c", "OA Manager L");
-    expect(rc.state).toBe("pending");
+    expect(rc).toMatchObject({ state: "refused", reason: "unknown_agent" });
   });
 });
