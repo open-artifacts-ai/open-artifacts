@@ -245,6 +245,21 @@ export function expireProposals(
   return gone;
 }
 
+/** Freeing a name settles every pending proposal for its deleted role ID. */
+export function refuseFreedRoleProposals(
+  sql: SqlStorage,
+  orgId: string,
+  roleId: string,
+  now: number,
+): void {
+  sql.exec(
+    "update role_proposals set status = 'refused', reason = 'no_role', decided_at = ? where org_id = ? and role_id = ? and status = 'pending'",
+    now,
+    orgId,
+    roleId,
+  );
+}
+
 /**
  * #1403: expires every pending proposal `credential` (`t:<id>` or `g:<id>`)
  * made, at once, for the revoke of that PAT or grant. Decided proposals,

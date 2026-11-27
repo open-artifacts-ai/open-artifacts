@@ -138,6 +138,7 @@ import {
   type ProposeInput,
   type ProposeResult,
   propose,
+  refuseFreedRoleProposals,
   type ViewResult,
   viewProposal,
 } from "./role-proposals.js";
@@ -4715,12 +4716,7 @@ export class BusHub extends DurableObject<Env> {
         role.lname,
         action.roleId,
       );
-      sql.exec(
-        "update role_proposals set status = 'refused', reason = 'no_role', decided_at = ? where org_id = ? and role_id = ? and status = 'pending'",
-        this.#now(),
-        OWNER_ORG_ID,
-        action.roleId,
-      );
+      refuseFreedRoleProposals(sql, OWNER_ORG_ID, action.roleId, this.#now());
       sql.exec(
         "insert into freed_role_names (namespace, lname, freed_at) values (?, ?, ?) on conflict (namespace, lname) do update set freed_at = excluded.freed_at",
         role.namespace,
