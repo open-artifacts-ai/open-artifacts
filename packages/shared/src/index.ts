@@ -17,6 +17,7 @@ export * from "./meta.js";
 export * from "./nonce.js";
 export * from "./passkeys.js";
 export * from "./paths.js";
+export * from "./person-handle.js";
 export * from "./protocol.js";
 export * from "./released.js";
 export * from "./routes.js";

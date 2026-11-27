@@ -378,7 +378,12 @@ export async function checkAnchor(
 
 // ------------------------------------------------------------------- views
 
-type UserLite = { id: string; name: string | null; email: string };
+type UserLite = {
+  handle?: string;
+  id: string;
+  name: string | null;
+  email: string;
+};
 
 export async function usersById(
   env: Env,
@@ -390,7 +395,7 @@ export async function usersById(
   for (let i = 0; i < list.length; i += 50) {
     const part = list.slice(i, i + 50);
     const { results } = await env.DB.prepare(
-      `select id, email, name, display_name as displayName from users where id in (${part.map(() => "?").join(",")})`,
+      `select id, email, name, handle, display_name as displayName from users where id in (${part.map(() => "?").join(",")})`,
     )
       .bind(...part)
       .all<{
@@ -398,12 +403,14 @@ export async function usersById(
         email: string;
         name: string;
         displayName: string | null;
+        handle: string | null;
       }>();
     for (const r of results)
       out.set(r.id, {
         id: r.id,
         email: r.email,
         name: shownEffectiveName(r),
+        ...(r.handle ? { handle: r.handle } : {}),
       });
   }
   return out;
@@ -461,7 +468,13 @@ const authorView = (
       clash,
     );
   const me = viewer.userId !== null && viewer.userId === a.ref;
-  return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
+  return {
+    kind: "user",
+    id: a.ref,
+    ...(u?.handle ? { handle: u.handle } : {}),
+    name: u ? shownName(u) : "Member",
+    me,
+  };
 };
 
 /** #2577: the asker's public name (the one an author shows: never an email); nothing when the member is gone. */
@@ -1248,9 +1261,12 @@ const commentOfRaw = (
       : {}),
     ...(c.people?.length
       ? {
-          people: c.people.map((id) =>
-            authorView({ kind: "user", ref: id }, viewer, users),
-          ),
+          people: c.people.map((id) => ({
+            ...authorView({ kind: "user", ref: id }, viewer, users),
+            ...(c.personLabels?.[id]
+              ? { mentionedAs: c.personLabels[id] }
+              : {}),
+          })),
         }
       : {}),
     // #2577: members only, by the same public name an author shows (never an email).
@@ -1694,6 +1710,7 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   /** #2770: people to @mention, by user id. */
   people?: string[];
+  personLabels?: Record<string, string>;
   ask?: AskInput;
   /** #2508: pictures to attach (reserved with R.commentPictures): the caller's own, uploaded, unattached, on this artifact. */
   pictures?: CommentPictureRef[];
@@ -1919,6 +1936,7 @@ async function resolveExtras(
   // anyone else (unknown, removed, no access) is the same refusal, so the
   // answer never says whether they exist.
   const people: string[] = [];
+  let personLabels = x.personLabels;
   if (wantsPeople) {
     if (
       viewerId &&
@@ -1938,6 +1956,17 @@ async function resolveExtras(
       )
         throw unknownKey(id);
       people.push(user.id);
+    }
+    if (!personLabels) {
+      const { results } = await stmt(
+        env.DB,
+        "select id, handle from users where id in (select value from json_each(?)) and handle is not null",
+      )
+        .bind(JSON.stringify(people))
+        .all<{ id: string; handle: string }>();
+      personLabels = Object.fromEntries(
+        results.map((row) => [row.id, row.handle]),
+      );
     }
   }
   let ask: NewExtras["ask"];
@@ -2097,7 +2126,7 @@ async function resolveExtras(
               .map((a) => storedAgent(a)),
           }
         : {}),
-      ...(people.length ? { people } : {}),
+      ...(people.length ? { people, personLabels } : {}),
       ...(held.length ? { held } : {}),
     },
     held,

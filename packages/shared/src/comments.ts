@@ -23,6 +23,8 @@ export const CommentAuthorSchema = z.object({
   id: z.string().optional(),
   /** An agent's own name (never the person's), a guest's name, or a user's name. */
   name: z.string(),
+  handle: z.string().optional(),
+  mentionedAs: z.string().optional(),
   /** An agent only: the person it acts for, by public name (never an email). */
   for: z.string().optional(),
   /** An agent only: a bus-linked agent (#1822). False for a connection the server cannot tell apart. */

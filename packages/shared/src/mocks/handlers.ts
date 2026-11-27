@@ -816,9 +816,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const inbox = forYouMock.counts();
       return HttpResponse.json(inbox ? { ...me, inbox } : me);
     }),
+    http.get(`*${R.meHandle}`, () =>
+      HttpResponse.json({ available: true, suggestion: null }),
+    ),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
       if (r.error) return r.error;
+      if (r.data.handle !== undefined) me.handle = r.data.handle;
       if (r.data.displayName !== undefined) {
         me.displayName = r.data.displayName;
         me.needsDisplayName = false;

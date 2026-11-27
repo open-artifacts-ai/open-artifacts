@@ -104,6 +104,7 @@ export function AuthorFace({
     return (
       <span
         aria-hidden="true"
+        title={a.handle ? `${a.name} @${a.handle}` : undefined}
         data-avatar=""
         className={`flex ${small ? "size-4 text-[8px]" : "size-6 text-[length:var(--oa-text-xs)]"} shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-medium text-foreground`}
       >

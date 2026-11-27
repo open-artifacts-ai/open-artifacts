@@ -133,6 +133,43 @@ beforeAll(async () => {
 });
 
 describe("comment tools over MCP", () => {
+  it("notifies the readable person by handle and keeps their id across a rename", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const handle = `reader-${tag}`;
+    await api(app, R.me, reader.cookie, { method: "PATCH", body: { handle } });
+    const added = sc<{
+      threadId: string;
+      commentId: string;
+      mentions: { id: string }[];
+    }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: `Please review @${handle}.`,
+      }),
+    );
+    expect(added.mentions).toMatchObject([{ id: reader.userId }]);
+    await settle(owner.client);
+    const item = await E.DB.prepare(
+      "select kind from inbox_items where artifact_id=? and user_id=? and comment_id=?",
+    )
+      .bind(id, reader.userId, added.commentId)
+      .first();
+    expect(item).toMatchObject({ kind: "mention" });
+    await api(app, R.me, reader.cookie, {
+      method: "PATCH",
+      body: { handle: handle + "-new" },
+    });
+    const list = sc<CommentList>(
+      await tool(owner.client, "list_comments", { id }),
+    );
+    expect(list.threads[0]?.comments[0]?.mentions).toMatchObject([
+      { id: reader.userId, handle: handle + "-new", mentionedAs: handle },
+    ]);
+  });
   it("add, list, reply, resolve and reopen", async () => {
     const id = await pub();
     await putShare(E, owner.member, id, {

@@ -8,6 +8,7 @@ import {
   type Member,
   MePatchSchema,
   type NoticeId,
+  PersonHandleSchema,
   parseTier,
   planOf,
   R,
@@ -55,6 +56,7 @@ import {
   instanceOwnerName,
   markListensAsked,
 } from "../services/onboarding.js";
+import { handleAvailability } from "../services/person-handles.js";
 import { instanceUpdate, RELEASE_KEY } from "../services/release.js";
 import { directoryMode, mySharedSpaces, spacesOn } from "../services/spaces.js";
 import { listTeammates } from "../services/teammates.js";
@@ -394,6 +396,12 @@ export function mountMe(app: AppType): void {
   });
 
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.
+  app.get(R.meHandle, async (c) => {
+    const user = requireUser(c);
+    const parsed = PersonHandleSchema.safeParse(c.req.query("handle"));
+    if (!parsed.success) throw new ApiError("bad_request", "Invalid handle");
+    return c.json(await handleAvailability(c.env, user.id, parsed.data));
+  });
   app.patch(R.me, async (c) => {
     const user = requireUser(c);
     const patch = await jsonBody(c, MePatchSchema);
