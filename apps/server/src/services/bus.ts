@@ -1052,7 +1052,7 @@ async function nativeCallLink(
   bodyText: string | undefined,
   agy?: ReturnType<typeof agyWireCall>,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<AgentIdentity | undefined> {
+): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
   let verdict = agy?.verdict ?? "miss";
   try {
     const e = agy?.evidence;
@@ -1067,10 +1067,10 @@ async function nativeCallLink(
           }
         : null
       : await codexCheckOf(bodyText);
-    if (!check) return undefined;
+    if (!check) return { why: "no_proof" };
     verdict = "miss";
     const hub = busHub(env, userId);
-    if (!hub) return undefined;
+    if (!hub) return { why: agy ? "no_proof" : "no_hub" };
     const decision = await within(
       (async () => {
         if (!(await hasConnectedMachine(env, userId)))
@@ -1094,11 +1094,26 @@ async function nativeCallLink(
         .catch((e) => logError("bus_codex_verdict_failed", e));
       ctx?.waitUntil(report);
     }
-    return decision?.identity ?? undefined;
+    if (decision?.identity) return { identity: decision.identity };
+    if (agy) return { why: "no_proof" };
+    switch (decision?.reason) {
+      case undefined:
+      case "lookup_timeout":
+        return { why: "timeout" };
+      case "no_daemon":
+        return { why: "no_hub" };
+      case "lookup_error":
+        return { why: "error" };
+      case "hub_rate_limit":
+      case "item_limit":
+        return { why: "rate_limited" };
+      default:
+        return { why: "refused" };
+    }
   } catch (e) {
     verdict = "error";
     logError("bus_codex_link_failed", e);
-    return undefined;
+    return { why: agy ? "no_proof" : "error" };
   } finally {
     if (agy)
       logInfo("bus_agy_call_check", {
@@ -1167,16 +1182,15 @@ export async function linkRequest(
   if (poisoned)
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
-  // No proof at all: nothing was looked up, so nothing is logged; the note says so.
   if (proof === undefined) {
-    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
-    const identity = busOn(env)
-      ? await nativeCallLink(env, userId, bodyText, agy, ctx)
-      : undefined;
-    if (agy && !busOn(env))
+    if (busOn(env))
+      return {
+        req: out,
+        ...(await nativeCallLink(env, userId, bodyText, agy, ctx)),
+      };
+    if (agy)
       logInfo("bus_agy_call_check", { ...agy.fields, verdict: "bus_off" });
-    if (identity) return { req: out, identity };
-    return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+    return { req: out };
   }
   const r = await lookupProof(
     env,

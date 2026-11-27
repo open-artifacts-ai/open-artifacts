@@ -223,6 +223,7 @@ describe("a Codex call with no proof (#3108)", () => {
     const meta = codeMeta(thread, { "x-codex-turn-metadata": turn(uuid()) });
     const r = await run(m.userId, d, body("ping", meta), null);
     expect(r.identity).toBeUndefined();
+    expect(r.why).toBe("no_proof");
     expect(checksOf(d)).toEqual([]);
   });
 
@@ -288,6 +289,7 @@ describe("a Codex call with no proof (#3108)", () => {
     const { m, d, thread } = await scene();
     const r = await run(m.userId, d, body("ping", codeMeta(thread)), false);
     expect(r.identity).toBeUndefined();
+    expect(r.why).toBe("refused");
   });
 
   it("is unlinked when the daemon says yes but holds no live codex session for the thread", async () => {
