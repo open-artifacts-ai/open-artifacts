@@ -1,5 +1,6 @@
 import type { ArtifactSummary } from "@oa/shared";
 import { FormatIcon } from "@oa/ui";
+import type { ReactNode } from "react";
 import { LibraryAsks } from "../foryou/waiting";
 import { UserAvatar } from "../layout/UserAvatar";
 import { SpaceMarker, VisibilityWithHint } from "../spaces/SpaceMarker";
@@ -9,6 +10,7 @@ import { META, STRETCH, TITLE_LINK } from "./ui";
 
 export type CardProps = {
   artifact: ArtifactSummary;
+  controls?: ReactNode;
   meId?: string;
   /** The cross-space Library: show which space each artifact is in. */
   showSpace?: boolean;
@@ -73,6 +75,9 @@ export function ArtifactCard(p: CardProps) {
         </AppLink>
       </h3>
       <Meta {...p} />
+      {p.controls && (
+        <div className="absolute top-2 right-2 z-[1]">{p.controls}</div>
+      )}
     </article>
   );
 }
