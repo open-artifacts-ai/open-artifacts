@@ -96,6 +96,8 @@ export const BUS_HUB_TIMEOUT_MS = 2000;
 /** Active (unrevoked) machines per member; equal to the list cap so every active one is listed. */
 export const MAX_ACTIVE_MACHINES = 100;
 const MAX_LISTED = 100;
+/** #3123: how long a revoked machine stays in the list (greyed) before leaving. */
+export const REVOKED_MACHINE_VISIBLE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * #1350: what a closeAll means for the member's machines. "access": a
@@ -350,8 +352,9 @@ type MachineDbRow = {
 };
 
 const MACHINES_OF = `select id, label, created_at as createdAt, last_used_at as lastUsedAt,
-    revoked_at as revokedAt from bus_machines where user_id = ?1
-  order by (revoked_at is null) desc, created_at desc, rowid desc limit ?2`;
+    revoked_at as revokedAt from bus_machines
+  where user_id = ?1 and (revoked_at is null or revoked_at > ?2)
+  order by (revoked_at is null) desc, created_at desc, rowid desc limit ?3`;
 
 const iso = (ms: number) => new Date(ms).toISOString();
 
@@ -405,7 +408,7 @@ export async function busView(
   opts: { away?: boolean } = {},
 ): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
-    .bind(userId, MAX_LISTED)
+    .bind(userId, Date.now() - REVOKED_MACHINE_VISIBLE_MS, MAX_LISTED)
     .all<MachineDbRow>();
   const snap = await hubSnapshot(
     env,

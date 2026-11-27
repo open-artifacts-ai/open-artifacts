@@ -47,3 +47,43 @@ test("#766: delete from the viewer, find it in Trash, Restore", {
   expect(back.status).toBe(200);
   expect(((await back.json()) as ArtifactSummary).deletedAt).toBeNull();
 });
+
+test("bulk Delete identifies public links and moves both selections to Trash", async ({
+  page,
+  member,
+}) => {
+  const titles = [`Private ${uniq()}`, `Public ${uniq()}`];
+  const pages = await Promise.all(
+    titles.map((title, i) =>
+      publishViaApi(member.pat, {
+        title,
+        format: "markdown",
+        content: "# Test",
+        visibility: i === 0 ? "private" : "public",
+      }),
+    ),
+  );
+  await page.goto("/mine?view=list");
+  await page.getByRole("button", { name: "Select", exact: true }).click();
+  for (const title of titles)
+    await page
+      .getByRole("checkbox", { name: `Select ${title}`, exact: true })
+      .check();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Delete 2 artifacts?" });
+  await expect(dialog).toContainText("1 public link stops working");
+  await expect(dialog).toContainText(`/a/${pages[1]?.id}`);
+  await dialog.getByRole("button", { name: "Delete 2" }).click();
+  await expect(
+    page.getByText("2 artifacts moved to Trash.", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("navigation", { name: "Trash" })
+    .getByRole("link")
+    .click();
+  const trash = page.getByRole("list", { name: "Deleted artifacts" });
+  for (const title of titles)
+    await expect(
+      trash.getByRole("button", { name: `Restore ${title}`, exact: true }),
+    ).toBeVisible();
+});

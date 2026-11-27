@@ -25,6 +25,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { TOOLS } from "@oa/bus-adapter-claude-code";
 import {
   jsoncValue,
   parseJsonc,
@@ -44,6 +45,22 @@ const reEscape = (s: string) => s.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 /** The rule for exactly this command line: anchored, every character literal. */
 export const agyWatchRule = (line: string): string =>
   `command(regex:^${reEscape(line)}$)`;
+
+// Only these approved tools from the agy MCP server receive grants. New tools
+// require their own decision before an installer can grant them.
+const approvedTools = new Set([
+  "fetch",
+  "follow",
+  "following",
+  "list_agents",
+  "self",
+  "send_message",
+  "set_status",
+  "unfollow",
+]);
+const toolRules = TOOLS.filter(({ name }) => approvedTools.has(name)).map(
+  ({ name }) => `mcp(oa_bus/${name})`,
+);
 
 type Lists = { allow: string[]; ask: string[]; deny: string[] };
 
@@ -79,7 +96,13 @@ function lists(text: string, file: string): Lists {
   };
 }
 
-type Recorded = { file: string; rule: string; made: string[][] };
+type Recorded = {
+  file: string;
+  rule: string;
+  previousRules?: string[];
+  toolRules: string[];
+  made: string[][];
+};
 
 function readRecorded(busDir: string): Recorded | undefined {
   try {
@@ -90,6 +113,8 @@ function readRecorded(busDir: string): Recorded | undefined {
       return {
         file: v.file,
         rule: v.rule,
+        previousRules: v.previousRules && strings(v.previousRules),
+        toolRules: strings(v.toolRules).filter((r) => toolRules.includes(r)),
         made: Array.isArray(v.made) ? v.made : [],
       };
   } catch {}
@@ -144,8 +169,16 @@ export function installAgyRule(
   const text = readText(file) ?? "";
   const old = readRecorded(busDir);
   let out = text;
-  if (old && old.file === file && old.rule !== rule)
-    out = without(out, old.rule, file);
+  const previousRules = new Set<string>();
+  if (old?.file === file) {
+    const allowed = lists(text, file).allow;
+    for (const previous of [old.rule, ...(old.previousRules ?? [])]) {
+      if (previous !== rule && allowed.includes(previous)) {
+        previousRules.add(previous);
+        out = without(out, previous, file);
+      }
+    }
+  }
   const made =
     old?.file === file
       ? old.made
@@ -157,11 +190,26 @@ export function installAgyRule(
     const n = Array.isArray(raw) ? raw.length : 0;
     out = setJsoncValue(out, ["permissions", "allow", n], rule);
   }
-  if (out !== text) writeAtomic(file, out, 0o600);
+  const owned = new Set(old?.file === file ? old.toolRules : []);
+  const allow = jsoncValue(out, ["permissions", "allow"]) as unknown[];
+  let next = allow.length;
+  for (const grant of toolRules) {
+    if (allow.includes(grant)) continue;
+    out = setJsoncValue(out, ["permissions", "allow", next++], grant);
+    owned.add(grant);
+  }
   mkdirSync(busDir, { recursive: true });
-  const rec: Recorded = { file, rule, made };
-  if (JSON.stringify(old) !== JSON.stringify(rec))
-    writeAtomic(agyRuleRecord(busDir), `${JSON.stringify(rec)}\n`, 0o600);
+  const rec: Recorded = { file, rule, toolRules: [...owned], made };
+  // Until settings are atomically replaced, either watcher's rule may be on disk.
+  const pending = previousRules.size
+    ? { ...rec, previousRules: [...previousRules] }
+    : rec;
+  const recordFile = agyRuleRecord(busDir);
+  if (JSON.stringify(old) !== JSON.stringify(pending))
+    writeAtomic(recordFile, `${JSON.stringify(pending)}\n`, 0o600);
+  if (out !== text) writeAtomic(file, out, 0o600);
+  if (previousRules.size)
+    writeAtomic(recordFile, `${JSON.stringify(rec)}\n`, 0o600);
   return out !== text;
 }
 
@@ -178,11 +226,22 @@ export function uninstallAgyRule(
   const file = agySettingsFile(home);
   const rec = readRecorded(busDir);
   const rules = new Set<string>();
-  if (rec?.file === file) rules.add(rec.rule);
+  if (rec?.file === file) {
+    rules.add(rec.rule);
+    for (const previous of rec.previousRules ?? []) rules.add(previous);
+  }
   if (line !== undefined) rules.add(agyWatchRule(line));
   const text = readText(file);
   let out = text;
   if (text !== undefined) {
+    if (rec?.file === file) {
+      for (const grant of [...rec.toolRules].reverse()) {
+        const allow = jsoncValue(out as string, ["permissions", "allow"]);
+        const i = Array.isArray(allow) ? allow.indexOf(grant) : -1;
+        if (i >= 0)
+          out = removeJsoncValue(out as string, ["permissions", "allow", i]);
+      }
+    }
     for (const r of rules) out = without(out as string, r, file);
     if (out !== text)
       for (const p of [...(rec?.made ?? [])].sort(
@@ -206,14 +265,17 @@ export function agyRuleState(
   home: string,
   busDir: string,
   line: string | undefined,
-): { state: AgyRuleState; file: string } {
+): { state: AgyRuleState; file: string; missingTools: string[] } {
   const file = agySettingsFile(home);
   let l: Lists;
   try {
     l = lists(readText(file) ?? "", file);
   } catch {
-    return { state: "altered", file };
+    return { state: "altered", file, missingTools: [...toolRules] };
   }
+  const missingTools = toolRules.filter(
+    (r) => !l.allow.includes(r) || l.ask.includes(r) || l.deny.includes(r),
+  );
   const rec = readRecorded(busDir);
   const want = line === undefined ? rec?.rule : agyWatchRule(line);
   const watcherRule = (r: string) => /agy-watch/.test(r);
@@ -221,7 +283,15 @@ export function agyRuleState(
   if (want !== undefined && l.allow.includes(want)) {
     const elsewhere = l.ask.includes(want) || l.deny.includes(want);
     const others = all.filter((r) => watcherRule(r) && r !== want);
-    return { state: elsewhere || others.length ? "altered" : "present", file };
+    return {
+      state: elsewhere || others.length ? "altered" : "present",
+      file,
+      missingTools,
+    };
   }
-  return { state: all.some(watcherRule) ? "altered" : "missing", file };
+  return {
+    state: all.some(watcherRule) ? "altered" : "missing",
+    file,
+    missingTools,
+  };
 }

@@ -113,7 +113,7 @@ const listed = async (s: S, ref: string) =>
 /** The hub's own role texts (#3132): a move, a takeover ask. */
 const isRoleText = (f: ServerFrame) =>
   f.type === "deliver" &&
-  /^Your role "|asks to take over your role/.test(f.body ?? "");
+  /^(Your role "|A proposal would move your role ")/.test(f.body ?? "");
 /** The next deliver frame that is a page notice, past the hub's role texts. */
 async function pageNotice(s: S): Promise<Reply<"deliver">> {
   for (;;) {
@@ -680,7 +680,7 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     );
   });
 
-  it("a live holder hears that another session asks for its role, and how to hand it over", async () => {
+  it("an unlinked proposal names the intended holder without attributing the request to it", async () => {
     const s = await setup();
     const old = await s.reg(uniq("plat-l"));
     const next = await s.reg(uniq("plat-w"));
@@ -698,10 +698,9 @@ describe("a moved role takes the old session's notices along (#3132)", () => {
     );
     expect(p.ok).toBe(true);
     const text = await roleText(s, old.ref);
-    expect(text).toContain(
-      `${next.name} asks to take over your role "${role}"`,
+    expect(text).toBe(
+      `A proposal would move your role "${role}" in ${s.namespace} to ${next.name}. To hand it over now, with its open asks, mentions and followed pages, call bus_role_propose with action "set", namespace "${s.namespace}", name "${role}" and agent "${next.name}".`,
     );
-    expect(text).toContain(`agent "${next.name}"`);
     // Nothing moved: only the person's confirm, or the holder, moves it.
     const [r] = (await s.hub.listRoles()).filter((x) => x.name === role);
     expect(r?.holderName).toBe(old.name);

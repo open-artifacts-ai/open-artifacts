@@ -47,6 +47,8 @@ export async function mentionCandidates(
     `select id from users
       where status = 'active' and id <> ?1
         and (lower(name) like ?2 escape '\\' or lower(name) like '% ' || ?2 escape '\\'
+             or lower(display_name) like ?2 escape '\\'
+             or lower(display_name) like '% ' || ?2 escape '\\'
              or lower(email) = ?4)
       order by name, id limit ?3`,
   )

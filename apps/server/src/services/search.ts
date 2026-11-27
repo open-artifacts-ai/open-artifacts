@@ -17,12 +17,12 @@ import {
 } from "../auth/authz.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
+import { shareRoleSql } from "../db/share-role.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import {
   agentViaSql,
   decorate,
-  decorates,
   lastPublisherSql,
   redact,
   shownLastAgent,
@@ -536,9 +536,9 @@ export function searchQuery(
       ownerName: users.name,
       ownerDisplayName: users.displayName,
       level: levelSql(caller),
-      commenter: sql<number>`(case when ${shares.role} = 'viewer' and ${shares.canComment} = 1 then 1 else 0 end)`,
+      shareRole: shareRoleSql(),
       // The joined space, for `space` and `can` (withSpace).
-      space: spaceCols(caller, decorates(env, caller)),
+      space: spaceCols(caller),
       sb: snip(3),
       sd: snip(2),
       st: snip(1),
@@ -634,7 +634,7 @@ export async function search(
             level,
             r.a.spaceId,
             r.space,
-            r.commenter === 1,
+            r.shareRole,
           ),
           snippet: pickSnippet(r.sb ?? "", r.sd ?? "", r.st ?? ""),
         },

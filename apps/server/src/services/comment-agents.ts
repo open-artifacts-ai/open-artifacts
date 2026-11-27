@@ -380,17 +380,24 @@ export function commentNoticeText(
   const idLine = both
     ? [`Thread ${ids.threadId}, comment ${ids.commentId}.`]
     : [];
-  // #3139: name the one-thread read, so an agent never lists every thread.
+  const hasTypedWords =
+    fromYourUser && kind !== "answered" && typedText !== undefined;
+  const typed = hasTypedWords
+    ? // One quoted line: the words are data, never a new instruction line (as #2895).
+      [`Their words: ${JSON.stringify(typedText)}`]
+    : [];
+  // #3139, #3225: when typed words are in the notice, lead with the reply call
+  // and keep list_comments as a fallback; otherwise name the one-thread read.
   const readLine =
     both && ids.artifactId && isId(ids.artifactId)
-      ? [
-          `Read just this thread: list_comments ${JSON.stringify({ id: ids.artifactId, threadId: ids.threadId, commentId: ids.commentId })}.`,
-        ]
-      : [];
-  const typed =
-    fromYourUser && kind !== "answered" && typedText !== undefined
-      ? // One quoted line: the words are data, never a new instruction line (as #2895).
-        [`Their words: ${JSON.stringify(typedText)}`]
+      ? hasTypedWords
+        ? [
+            `Reply: add_comment ${JSON.stringify({ id: ids.artifactId, threadId: ids.threadId, body: "..." })}`,
+            `Answer from this notice. Only if their words refer to earlier comments: list_comments ${JSON.stringify({ id: ids.artifactId, threadId: ids.threadId, commentId: ids.commentId })}.`,
+          ]
+        : [
+            `Read just this thread: list_comments ${JSON.stringify({ id: ids.artifactId, threadId: ids.threadId, commentId: ids.commentId })}.`,
+          ]
       : [];
   return [
     `Open Artifacts: ${

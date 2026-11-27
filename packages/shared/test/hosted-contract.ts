@@ -954,9 +954,9 @@ export function hostedContract(d: ContractDriver): ContractCases {
         .array()
         .parse(await json(await d.call("GET", R.shares(id))));
       const of = (e: string) => rows.find((r) => r.email === e);
-      // An outsider is never stored as editor (#2590).
+      // The guest cap affects effective access; the stored Editor grant survives joining.
       expect(of("outside@elsewhere.test")).toMatchObject({
-        role: "commenter",
+        role: "editor",
         guest: true,
       });
       for (const e of ["newhire@example.com", "bob@example.com"]) {
