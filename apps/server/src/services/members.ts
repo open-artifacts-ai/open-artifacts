@@ -373,7 +373,10 @@ export async function inviteMemberOutcome(
   const [updated] = await getDb(env).batch([
     getDb(env)
       .update(users)
-      .set({ invitedAt: Date.now() })
+      .set({
+        invitedAt: Date.now(),
+        ...(input.name ? { displayName: input.name } : {}),
+      })
       .where(
         and(
           eq(users.email, email),
@@ -409,6 +412,7 @@ export async function inviteMemberOutcome(
       insertUser(env, {
         email,
         name: "",
+        displayName: input.name,
         role: input.role,
         createdAt: Date.now(),
         invitedAt: Date.now(),

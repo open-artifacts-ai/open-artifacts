@@ -33,6 +33,10 @@ export function idpName(name: string | null, email: string): string | null {
   return n && n.toLowerCase() !== localPart(email).toLowerCase() ? n : null;
 }
 
+/** Only a usable provider name can replace the name an inviter supplied. */
+export const inviteLoginName = (name: string | null, email: string) =>
+  publicName({ name: idpName(name, email) });
+
 /** The name to render: display name, else a real IdP name, else the full email. Never the bare local part. */
 export function effectiveName(u: NameFields): string {
   return u.displayName || idpName(u.name, u.email) || u.email;
@@ -120,6 +124,7 @@ export function insertUser(
     createdAt: number;
     lastSeenAt?: number;
     invitedAt?: number;
+    displayName?: string;
   },
 ) {
   return getDb(env)
@@ -151,8 +156,18 @@ export function googleLinkStmts(
       // One owner: an 'owner' insert while an owner row exists becomes a member.
       `insert into users (id, email, name, role, created_at, last_seen_at) values (?1, ?2, ?3,
          case when ?4 = 'owner' and exists (select 1 from users where role = 'owner') then 'member' else ?4 end, ?5, ?5)
-       on conflict(email) do update set last_seen_at = excluded.last_seen_at where users.status = 'active'`,
-    ).bind(newId(), p.email, p.name ?? defaultName(p.email), p.role, p.now),
+       on conflict(email) do update set last_seen_at = excluded.last_seen_at,
+         name = case when users.invited_at is not null and users.last_seen_at is null and ?6 is not null then excluded.name else users.name end,
+         display_name = case when users.invited_at is not null and users.last_seen_at is null and ?6 is not null then null else users.display_name end
+         where users.status = 'active'`,
+    ).bind(
+      newId(),
+      p.email,
+      p.name ?? defaultName(p.email),
+      p.role,
+      p.now,
+      inviteLoginName(p.name, p.email),
+    ),
     stmt(
       env.DB,
       `insert into identities (provider, subject, tenant, user_id, created_at)
@@ -256,7 +271,14 @@ export async function upsertOnLogin(
     if (name !== null) set.name = name;
     const update = db
       .update(users)
-      .set(set)
+      .set({
+        ...set,
+        ...(inviteLoginName(name, e)
+          ? {
+              displayName: sql`case when ${users.invitedAt} is not null and ${users.lastSeenAt} is null then null else ${users.displayName} end`,
+            }
+          : {}),
+      })
       .where(eq(users.id, existing.id))
       .returning();
     // A never-seen row may be an invite: invite.accept goes first, while
