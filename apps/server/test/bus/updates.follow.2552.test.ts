@@ -299,6 +299,36 @@ describe("pause (#2552)", () => {
     ).toHaveLength(1);
   });
 
+  it("clears only resolved offline lag notices on instance rollback, without a hello", async () => {
+    const who = await member();
+    const recovered = await machine("Recovered laptop", who.userId);
+    const stillBehind = await machine("Older laptop", who.userId);
+    await noteMachineVersion(e, recovered.id, "1.1.0");
+    await noteMachineVersion(e, stillBehind.id, "1.0.0");
+    const hub = await hubOf("~release-lag");
+    const observe = async (v: string, previous: string) => {
+      await runInDurableObject(hub, (i) => {
+        BusHub.setTestClock(i as unknown as BusHub, NOW);
+        BusHub.setTestServerVersion(i as unknown as BusHub, v, previous);
+      });
+      await hub.observeRelease();
+    };
+    await observe("1.3.0", "1.2.0");
+    await refreshMachineLag(e, who.userId, "1.2.0", Date.now() - 3601000);
+    const notices = async () => {
+      const data = (await (await api(app, R.meInbox, who.cookie)).json()) as {
+        needsYou: { id: string; text: string }[];
+      };
+      return data.needsYou;
+    };
+    const before = await notices();
+    expect(before).toHaveLength(2);
+    await observe("1.2.0", "1.1.0");
+    expect(await notices()).toEqual([
+      before.find((item) => item.text.includes("Older laptop")),
+    ]);
+  });
+
   it("keeps one lag episode across releases, isolated to the machine owner", async () => {
     const who = await member();
     const other = await member();

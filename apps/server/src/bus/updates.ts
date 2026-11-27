@@ -181,9 +181,10 @@ export async function firstReleaseObservation(
 }
 
 /** One release deadline covers all members, including those with no connected machines. */
-export async function markReleaseLag(
+export async function reconcileReleaseLag(
   env: Pick<Env, "DB">,
   deadline: ReleaseDeadline,
+  mode: "mark-overdue" | "clear-resolved",
 ) {
   let after = "";
   for (;;) {
@@ -194,19 +195,27 @@ export async function markReleaseLag(
     )
       .bind(after)
       .all<{ version: string }>();
-    const changes = results
-      .filter(
-        ({ version }) =>
-          semverGte(deadline.previous, version) &&
-          !semverGte(version, deadline.previous),
-      )
-      .map(({ version }) =>
+    const changes = results.flatMap(({ version }) => {
+      const behind =
+        semverGte(deadline.previous, version) &&
+        !semverGte(version, deadline.previous);
+      if (mode === "clear-resolved") {
+        if (behind) return [];
+        return [
+          stmt(
+            env.DB,
+            `update bus_machines set lag_since=null where revoked_at is null and bus_version=? and lag_since is not null`,
+          ).bind(version),
+        ];
+      }
+      if (!behind) return [];
+      return [
         stmt(
           env.DB,
-          `update bus_machines set lag_since=?1 where revoked_at is null and bus_version=?2
-        and (lag_since is null or lag_since > ?1)`,
+          `update bus_machines set lag_since=?1 where revoked_at is null and bus_version=?2 and (lag_since is null or lag_since > ?1)`,
         ).bind(deadline.since, version),
-      );
+      ];
+    });
     if (changes.length) await env.DB.batch(changes);
     if (results.length < 64) return;
     after = results[results.length - 1].version;

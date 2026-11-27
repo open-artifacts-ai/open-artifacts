@@ -178,13 +178,13 @@ import {
 import {
   firstReleaseObservation,
   LAG_NOTICE_MS,
-  markReleaseLag,
   markStopped,
   noteHello,
   noteMachineVersion,
   RELEASE_LAG_HUB,
   type ReleaseDeadline,
   readUpdateState,
+  reconcileReleaseLag,
   recordReport,
   refreshMachineLag,
   releaseOf,
@@ -6862,19 +6862,23 @@ export class BusHub extends DurableObject<Env> {
     if (this.ctx.id.name !== RELEASE_LAG_HUB || !version || !previous) return;
     await this.ctx.blockConcurrencyWhile(async () => {
       const storage = this.ctx.storage;
-      if ((await storage.get<string>("observedRelease")) === version) return;
+      const observed = await storage.get<string>("observedRelease");
+      if (observed === version) return;
       const since = await firstReleaseObservation(
         this.env,
         version,
         this.#now(),
       );
+      const release = { version, previous, since };
+      if (observed && semverGte(observed, version))
+        await reconcileReleaseLag(this.env, release, "clear-resolved");
       await storage.transaction(async (tx) => {
         const pending = (await tx.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
         // On rollback, a superseded newer release must never report lag.
         const deadlines = pending.filter(
           (d) => d.version !== version && semverGte(version, d.version),
         );
-        deadlines.push({ version, previous, since });
+        deadlines.push(release);
         await tx.put("lagDeadlines", deadlines);
         await tx.put("observedRelease", version);
         await tx.setAlarm(
@@ -6889,7 +6893,7 @@ export class BusHub extends DurableObject<Env> {
     const pending =
       (await this.ctx.storage.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
     const due = pending.filter((d) => d.since + LAG_NOTICE_MS <= now);
-    for (const d of due) await markReleaseLag(this.env, d);
+    for (const d of due) await reconcileReleaseLag(this.env, d, "mark-overdue");
     await this.ctx.storage.transaction(async (tx) => {
       const current = (await tx.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
       const remaining = current.filter(
@@ -9502,7 +9506,8 @@ export class BusHub extends DurableObject<Env> {
    * the earliest remaining deadline, or now + 1 if any batch was full.
    */
   override async alarm(): Promise<void> {
-    if (this.ctx.id.name === RELEASE_LAG_HUB) return this.#releaseLagAlarm();
+    if (this.ctx.id.name === RELEASE_LAG_HUB)
+      return this.ctx.blockConcurrencyWhile(() => this.#releaseLagAlarm());
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     let more = false;
