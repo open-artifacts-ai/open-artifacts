@@ -82,13 +82,26 @@ case "${1:-}" in
       echo "the database is $size bytes: a rebuild may need twice that, over the $limit-byte limit; not migrating" >&2
       exit 1
     fi
-    version="$(wr deployments list --name "$PROD_NAME" --json |
-      node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const v=d.at(-1)?.versions??[];if(v.length!==1||v[0].percentage!==100)process.exit(3);console.log(v[0].version_id)')" || {
-      echo "could not record the live Worker version (not exactly one version at 100%)" >&2
+    restore_id() {
+      node -e '
+        const data = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        let id;
+        if (process.argv[1] === "worker") {
+          const versions = data.at(-1)?.versions;
+          if (!Array.isArray(versions) || versions.length !== 1 || versions[0]?.percentage !== 100) process.exit(3);
+          id = versions[0].version_id;
+        } else {
+          id = data?.bookmark;
+        }
+        if (typeof id !== "string" || !id.trim() || /[\r\n\x00]/.test(id)) process.exit(3);
+        process.stdout.write(id);
+      ' "$1"
+    }
+    version="$(wr deployments list --name "$PROD_NAME" --json | restore_id worker)" || {
+      echo "could not record a live Worker version ID at 100%" >&2
       exit 1
     }
-    bookmark="$(wr d1 time-travel info "$PROD_NAME" --json |
-      node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8")).bookmark;if(!b)process.exit(3);console.log(b)')" || {
+    bookmark="$(wr d1 time-travel info "$PROD_NAME" --json | restore_id bookmark)" || {
       echo "could not record a D1 Time Travel bookmark" >&2
       exit 1
     }

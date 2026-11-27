@@ -60,8 +60,8 @@ function repo() {
 echo "wrangler $*" >> "${log}"
 case "$1 $2" in
   "d1 execute") echo '[{"success":true,"results":[{"name":"'"\${APPLIED:-0001_init.sql}"'"}]}]' ;;
-  "deployments list") echo '[{"versions":[{"version_id":"old-1","percentage":100}]},{"versions":[{"version_id":"live-2","percentage":100}]}]' ;;
-  "d1 time-travel") [ "$3" = info ] && echo '{"bookmark":"bm-123"}' ;;
+  "deployments list") printf '%s' "$DEPLOYMENTS" ;;
+  "d1 time-travel") [ "$3" = info ] && printf '%s' "$TIME_TRAVEL" ;;
   "d1 info") echo '{"database_size":'"\${DB_SIZE:-1000}"'}' ;;
 esac
 exit 0
@@ -82,6 +82,12 @@ exit 0
         env: {
           PATH: process.env.PATH,
           HOME: process.env.HOME,
+          DEPLOYMENTS: JSON.stringify(
+            ["old-1", "live-2"].map((version_id) => ({
+              versions: [{ version_id, percentage: 100 }],
+            })),
+          ),
+          TIME_TRAVEL: JSON.stringify({ bookmark: "bm-123" }),
           WRANGLER: join(bin, "wrangler"),
           GITHUB_OUTPUT: out,
           GITHUB_STEP_SUMMARY: summary,
@@ -281,6 +287,25 @@ describe("prod-migration-guard.sh record and verify", () => {
     ]);
     expect(d.summary).toContain("`bm-123`");
   });
+  it.each([undefined, null, 42, "", " \t ", "id\nextra", "id\u0000x"])(
+    "refuses invalid restore identifiers (%j) before writing either output",
+    (value) => {
+      const r = repo();
+      for (const env of [
+        {
+          DEPLOYMENTS: JSON.stringify([
+            { versions: [{ percentage: 100, version_id: value }] },
+          ]),
+        },
+        { TIME_TRAVEL: JSON.stringify({ bookmark: value }) },
+      ] as Record<string, string>[]) {
+        const result = r.run("record", env);
+        expect(result.code).toBe(1);
+        expect(result.out).toBe("");
+        expect(result.summary).toBe("");
+      }
+    },
+  );
   it("record refuses when a rebuild could double the database past its limit", () => {
     const r = repo();
     const ok = r.run("record", { DB_SIZE: "5000", D1_LIMIT_BYTES: "10000" });
