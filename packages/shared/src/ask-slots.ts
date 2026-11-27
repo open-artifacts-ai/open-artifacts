@@ -35,8 +35,8 @@ export const AskSlotSchema = z.object({
   note: z.string().max(ASK_SLOT_NOTE_MAX).optional(),
   placer: z
     .object({
-      /** The person whose agent placed it, when known. */
-      id: z.string().optional(),
+      /** Display name for the placer (agent name, else user display name). Never a raw user id. */
+      name: z.string(),
       /** The agent that placed it, as it named itself. */
       agent: z.string().optional(),
     })

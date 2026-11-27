@@ -1025,6 +1025,8 @@ const ERASE_WIPES = [
   // cascade).
   `delete from follows where user_id = ?1 and ${ERASABLE}`,
   `delete from share_notice_agents where user_id = ?1 and ${ERASABLE}`,
+  // #2536: drop ask-slot rows placed by the erased user so no user id lingers.
+  `delete from artifact_ask_slots where placed_by = ?1 and ${ERASABLE}`,
   // The users_personal_space trigger copied their name or address into it.
   `update spaces set name = '' where id = ?1 and kind = 'personal'
     and ${ERASABLE}`,
