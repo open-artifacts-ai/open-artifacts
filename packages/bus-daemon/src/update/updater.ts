@@ -31,6 +31,7 @@ import {
   parseVersion,
   type Refusal,
   readyDue,
+  startupRetryAt,
 } from "./policy.ts";
 import { queueReport } from "./reports.ts";
 import {
@@ -55,6 +56,8 @@ import { type VerifiedRelease, verifyRelease } from "./verify.ts";
  * not-off install ever runs it.
  */
 export const UPDATER_LOOP_ENABLED: boolean = true;
+
+const IDLE_DEADLINE_MS = 30 * 60_000;
 
 export const TICK_MS = 5000;
 /** A fetch that failed for the network: tried again after this long. */
@@ -132,7 +135,10 @@ export class Updater {
   private working = false;
   private loginWas = false;
   private loginWatch?: FSWatcher;
-  private loginCleared = false;
+  private activeFlagWatch?: FSWatcher;
+  private idleCheckPending = false;
+  private retry?: ReturnType<typeof setTimeout>;
+  private deadline?: ReturnType<typeof setTimeout>;
   /** One swap at a time: every switchTo caller goes through this. */
   private switching = false;
   private wanted: { i: Instruction; at: number } | undefined;
@@ -168,7 +174,7 @@ export class Updater {
         this.loginWas &&
         !this.d.loginActive()
       ) {
-        this.loginCleared = true;
+        this.idleCheckPending = true;
         if (!this.working) void this.onIdle();
       }
     });
@@ -181,8 +187,11 @@ export class Updater {
     );
   }
   stop(): void {
+    clearTimeout(this.retry);
+    clearTimeout(this.deadline);
     this.loginWatch?.close();
-    this.loginCleared = false;
+    this.activeFlagWatch?.close();
+    this.idleCheckPending = false;
     this.stopTick();
   }
 
@@ -195,6 +204,7 @@ export class Updater {
    */
   async instructFromInstance(version: string): Promise<UpdateOutcome> {
     if (parseVersion(version) === undefined) return this.instruct({ version });
+    clearTimeout(this.retry);
     this.named = version;
     const { running } = this.d;
     if (running === undefined) return { kind: "disabled" };
@@ -219,6 +229,8 @@ export class Updater {
    * still works.
    */
   clearNamed(): void {
+    clearTimeout(this.retry);
+    clearTimeout(this.deadline);
     this.named = undefined;
   }
 
@@ -248,6 +260,24 @@ export class Updater {
     const server = this.d.serverVersion();
     const dec = accept(s, i, now, { running, ...(server ? { server } : {}) });
     if (!dec.ok) {
+      const delay = startupRetryAt(s, i.version) - now;
+      if (
+        dec.reason === "refused_backoff" &&
+        delay > 0 &&
+        this.named === i.version
+      ) {
+        clearTimeout(this.retry);
+        this.retry = setTimeout(
+          () => {
+            if (this.named === i.version)
+              void this.instructFromInstance(i.version).catch((err) =>
+                this.d.log(`update retry: ${err}`),
+              );
+          },
+          Math.min(delay, 2_147_483_647),
+        );
+        this.retry.unref();
+      }
       this.refuse(running, i.version, dec);
       return { kind: "refused", reason: dec.reason };
     }
@@ -446,26 +476,59 @@ export class Updater {
     if (!this.enabled || this.working) return;
     this.working = true;
     try {
-      this.loginCleared = false;
+      this.idleCheckPending = false;
       await this.installIfIdle(this.now());
     } catch (e) {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.working = false;
-      if (this.loginCleared) void this.onIdle();
+      if (this.idleCheckPending) void this.onIdle();
     }
   }
 
   private async installIfIdle(now: number): Promise<void> {
     const login = this.d.loginActive();
     this.loginWas = login;
-    if (isBusy(this.d.busy()) || login) return;
+    clearTimeout(this.deadline);
+    if (login) {
+      if (this.loginWatch && !this.activeFlagWatch) {
+        try {
+          this.activeFlagWatch = watch(
+            loginFlagFile(this.d.home),
+            { persistent: false },
+            () => {
+              if (this.d.loginActive()) return;
+              this.idleCheckPending = true;
+              if (!this.working) void this.onIdle();
+            },
+          );
+          this.activeFlagWatch.on("error", (error) =>
+            this.d.log(error.message),
+          );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (!this.d.loginActive()) this.idleCheckPending = true;
+      }
+      return;
+    }
+    this.activeFlagWatch?.close();
+    this.activeFlagWatch = undefined;
     const s = readPolicy(this.d.home);
     if (s.unreadable || !s.armed || s.off) return;
     const st = s.staged;
     // #2719: only the version the instance names now (cleared: none).
     if (!st || this.named !== st.version) return;
     if (!installNow(s, now, login).ok) return;
+    const remaining = st.readySince + IDLE_DEADLINE_MS - now;
+    if (remaining > 0 && isBusy(this.d.busy())) {
+      this.deadline = setTimeout(() => {
+        this.idleCheckPending = true;
+        if (!this.working) void this.onIdle();
+      }, remaining);
+      this.deadline.unref();
+      return;
+    }
     await this.switchTo(st.version, true);
   }
 
@@ -519,7 +582,7 @@ export class Updater {
       this.d.log(`update: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       this.working = false;
-      if (this.loginCleared) void this.onIdle();
+      if (this.idleCheckPending) void this.onIdle();
     }
   }
 

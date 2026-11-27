@@ -3,6 +3,7 @@ import { viewerPath } from "@oa/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { type Caller, capOfCaller, listFilterSql } from "../auth/authz.js";
 import { capsReads, isGuestRole } from "../auth/policy.js";
+import { machineUpdateNotices, readUpdateState } from "../bus/updates.js";
 import { getDb } from "../db/client.js";
 import { artifactAsks, artifacts, inboxItems } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -12,6 +13,7 @@ import type { StoredActor } from "../runtime/comments-store.js";
 import { runtimeStub } from "../runtime/do.js";
 import { receiverCanOpen } from "./agent-requests.js";
 import { ownAgentId, waitingAgents, waitingSince } from "./ask-waiting.js";
+import { listBusMachines } from "./bus.js";
 import { notifyAskLater } from "./comment-agents.js";
 import {
   askerFaces,
@@ -56,6 +58,48 @@ const forMe = (caller: Me) =>
     sql`${artifacts.deletedAt} is null and ${artifacts.comments} = 1`,
   );
 
+function machineItemId(row: {
+  id: string;
+  failureAt: number | null;
+  since: number | null;
+}) {
+  return `machine:${row.id}:${row.failureAt ?? row.since}`;
+}
+async function machineItems(env: Env, caller: Me): Promise<InboxItem[]> {
+  const rows = await machineUpdateNotices(env, caller.user.id, Date.now());
+  if (!rows.length) return [];
+  const [policy, machines] = await Promise.all([
+    readUpdateState(env),
+    listBusMachines(env, caller.user.id),
+  ]);
+  return rows.map((row) => {
+    const connected = machines.find((m) => m.id === row.id)?.connected;
+    const reason = row.failed
+      ? `failed the self-check for ${row.failed}`
+      : policy.paused
+        ? "updates are paused"
+        : policy.named
+          ? `updates are pinned to ${policy.named}`
+          : connected === false
+            ? "machine offline"
+            : "update pending";
+    return {
+      id: machineItemId(row),
+      level: "needs_you",
+      kind: "machine_update",
+      urgency: "plain",
+      artifact: null,
+      actor: null,
+      text: `${row.label} · ${reason}`,
+      href: "/agents",
+      createdAt: new Date(
+        row.failureAt ?? (row.since ?? 0) + 3600000,
+      ).toISOString(),
+      readAt: null,
+    };
+  });
+}
+
 /** How many open asks wait for the caller (the /me badge): one indexed query. */
 export async function needsYouCount(env: Env, caller: Me): Promise<number> {
   const now = Date.now();
@@ -90,8 +134,11 @@ export async function needsYouCount(env: Env, caller: Me): Promise<number> {
         sql`not exists (select 1 from inbox_later l where l.user_id = ${caller.user.id} and l.item_id = 'mention:' || ${inboxItems.id} and l.until > ${now})`,
       ),
     );
+  const machines = (
+    await machineUpdateNotices(env, caller.user.id, now)
+  ).filter((row) => (away.get(machineItemId(row)) ?? 0) <= now);
   return Math.min(
-    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0),
+    (r[0]?.n ?? 0) + shown.length + (m[0]?.n ?? 0) + machines.length,
     NEEDS_YOU_MAX,
   );
 }
@@ -467,6 +514,7 @@ export async function inboxOf(
         (i) => i.urgency !== "waiting" && i.urgency !== "approval",
       ),
       ...mentions,
+      ...(await machineItems(env, caller)),
     ].sort(byAge),
   ];
   // #2762: put-off items sit in Later until their time, then return on top,
@@ -539,7 +587,12 @@ export async function deferItem(
   const mentions = (await itemsOf(env, caller, mentionRows)).map(
     (i): InboxItem => ({ ...i, level: "needs_you", urgency: "plain" }),
   );
-  const item = [...asks, ...requests, ...mentions].find((i) => i.id === id);
+  const item = [
+    ...asks,
+    ...requests,
+    ...mentions,
+    ...(await machineItems(env, caller)),
+  ].find((i) => i.id === id);
   if (!item) throw new ApiError("not_found", "Not found");
   const key = laterKey(item);
   if (away.has(key))

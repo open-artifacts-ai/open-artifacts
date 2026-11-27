@@ -20,8 +20,9 @@ export type PolicyState = {
   previous?: string;
   /** The version running now (the layout's `current`). */
   current?: string;
-  /** Versions that failed to start; never tried again (last MAX_LIST). */
+  /** Legacy rescue-shim records, migrated on the next policy write. */
   failed: string[];
+  startFailures: Record<string, { at: number; count: number }>;
   /** Versions whose proof was refused: retried later with a long backoff. */
   refused: Record<string, { at: number; count: number }>;
   /** When the last attempt began (ms). Cleared by a successful forward update; stays after a failure, step-back, or unconfirmed switch for the 6 h backoff. */
@@ -58,11 +59,20 @@ export const refusedBackoff = (count: number): number =>
     REFUSED_BACKOFF_MAX_MS,
   );
 
+/** The retry deadline belongs to a release, so a newer release can proceed. */
+export function startupRetryAt(s: PolicyState, version: string): number {
+  const failure = s.startFailures[version];
+  if (!failure) return 0;
+  const minutes = failure.count === 1 ? 15 : failure.count === 2 ? 60 : 240;
+  return failure.at + minutes * 60_000;
+}
+
 export const emptyPolicy = (): PolicyState => ({
   armed: false,
   unreadable: false,
   off: false,
   failed: [],
+  startFailures: {},
   refused: {},
   notified: {},
   introShown: false,
@@ -147,7 +157,7 @@ export type Instruction = {
 
 /**
  * May the bus act on an instruction naming `version`? Forward only, except an
- * explicit step-back to the kept previous; never a failed version; never ahead
+ * explicit step-back to the kept previous; never ahead
  * of the instance; 6 h backoff after an attempt that did not succeed (failed,
  * stepped back, or never confirmed; a successful forward update clears it; a
  * step-back is exempt, and keeps the backoff for the next forward attempt).
@@ -164,7 +174,7 @@ export function accept(
   if (s.unreadable) return no("unreadable");
   if (!s.armed) return no("not_armed");
   if (s.off) return no("off");
-  if (s.failed.includes(i.version)) return no("failed");
+  if (startupRetryAt(s, i.version) > now) return no("refused_backoff");
   const ref = s.refused[i.version];
   if (ref && Math.max(now, ref.at) - ref.at < refusedBackoff(ref.count))
     return no("refused_backoff");
@@ -210,7 +220,7 @@ export function readyDue(s: PolicyState, now: number): boolean {
  * "Install now" from Settings, and the same rule as the idle install (there is
  * no quiet wait). Never during login or approval; the 6 h backoff (after an
  * attempt that did not succeed; cleared by a successful forward update),
- * failed memory and off all still apply.
+ * per-version backoff and off still apply.
  */
 export function installNow(
   s: PolicyState,
@@ -222,7 +232,7 @@ export function installNow(
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
-  if (s.failed.includes(st.version)) return no("failed");
+  if (startupRetryAt(s, st.version) > now) return no("refused_backoff");
   if (loginOrApproval) return no("login_in_progress");
   if (rateLimited(s, now)) return no("rate_limited");
   return yes;
@@ -237,7 +247,7 @@ export function installNow(
  */
 export function updateCommand(
   s: PolicyState,
-  o: { stdinTTY: boolean; stdoutTTY: boolean },
+  o: { stdinTTY: boolean; stdoutTTY: boolean; now?: number },
 ): Decision {
   if (s.unreadable || !s.armed)
     return no(s.unreadable ? "unreadable" : "not_armed");
@@ -245,7 +255,9 @@ export function updateCommand(
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
-  if (s.failed.includes(st.version)) return no("failed");
+
+  if (startupRetryAt(s, st.version) > (o.now ?? Date.now()))
+    return no("refused_backoff");
   return yes;
 }
 

@@ -587,6 +587,7 @@ export const AUDIT_WINDOW_HEADER = "X-OA-Audit-Window-Days";
  * `updatesPaused` sends `1` and gets it; a build from before #2552 parses this
  * read with a strict schema, so the field must stay absent from its answer.
  */
+export const BUS_MACHINES_VERSIONS_HEADER = "X-OA-Wants-Bus-Versions";
 export const BUS_MACHINES_PAUSED_HEADER = "X-OA-Wants-Updates-Paused";
 
 export const AUTH = {

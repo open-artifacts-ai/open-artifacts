@@ -8,7 +8,14 @@ import { BUS_MACHINES_PAUSED_HEADER, R } from "@oa/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { BusHub } from "../../src/bus/hub.js";
-import { RUN_VERSION_KEY, UPDATES_PAUSED_KEY } from "../../src/bus/updates.js";
+import {
+  machineUpdateNotices,
+  noteMachineVersion,
+  RUN_VERSION_KEY,
+  recordReport,
+  refreshMachineLag,
+  UPDATES_PAUSED_KEY,
+} from "../../src/bus/updates.js";
 import {
   RUN_VERSION_FANOUT_KEY,
   setBusUpdatesPaused,
@@ -227,6 +234,79 @@ describe("pause (#2552)", () => {
     ).results;
     expect(rows.map((r) => JSON.parse(r.detail).paused)).toEqual([true, false]);
     expect(rows[0]?.actor_id).toBe(owner.userId);
+  });
+
+  it("keeps one lag episode across releases, isolated to the machine owner", async () => {
+    const who = await member();
+    const other = await member();
+    const m = await machine("MacBook", who.userId);
+    await noteMachineVersion(e, m.id, "1.1.9");
+    await refreshMachineLag(e, who.userId, "1.1.9", NOW);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600000),
+    ).toHaveLength(0);
+    await refreshMachineLag(e, who.userId, "1.2.0", NOW);
+    await refreshMachineLag(e, who.userId, "1.3.0", NOW + 1000);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3599999),
+    ).toHaveLength(0);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600000),
+    ).toHaveLength(1);
+    expect(
+      await machineUpdateNotices(e, other.userId, NOW + 3600000),
+    ).toHaveLength(0);
+    await noteMachineVersion(e, m.id, "1.3.0");
+    await refreshMachineLag(e, who.userId, "1.3.0", NOW + 3600001);
+    expect(
+      await machineUpdateNotices(e, who.userId, NOW + 3600001),
+    ).toHaveLength(0);
+  });
+
+  it("keeps the third-failure notice through a retry and clears it on recovery", async () => {
+    const who = await member();
+    const m = await machine("MacBook", who.userId);
+    const report = (event: string) =>
+      recordReport(
+        e,
+        m.id,
+        sw({ event, reason: "unhealthy" }) as Extract<
+          ClientFrame,
+          { type: "update_report" }
+        >,
+        NOW,
+      );
+    await report("needs_you");
+    await report("switching");
+    const response = await (await api(app, R.meInbox, who.cookie)).json();
+    expect(response).toMatchObject({
+      needsYou: [
+        expect.objectContaining({
+          kind: "machine_update",
+          text: expect.stringContaining("MacBook"),
+        }),
+      ],
+    });
+    await report("updated");
+    expect(await machineUpdateNotices(e, who.userId, NOW)).toHaveLength(0);
+  });
+
+  it("keeps the last hello version after disconnect and preserves legacy responses", async () => {
+    const { who, d } = await open("1.2.0", "1.0.9");
+    d.close();
+    const legacy = (await (
+      await api(app, R.busMachines, who.cookie)
+    ).json()) as { machines: object[] };
+    expect(legacy.machines[0]).not.toHaveProperty("busVersion");
+    const versions = await (
+      await api(app, R.busMachines, who.cookie, {
+        headers: { "X-OA-Wants-Bus-Versions": "1" },
+      })
+    ).json();
+    expect(versions).toMatchObject({
+      instanceVersion: expect.any(String),
+      machines: [{ label: "MacBook", busVersion: "1.0.9" }],
+    });
   });
 
   it("GET R.busMachines tells the owner the pause state when asked, and no one else", async () => {

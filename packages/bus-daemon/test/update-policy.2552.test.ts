@@ -26,6 +26,7 @@ import {
   type PolicyState,
   READY_AFTER_MS,
   readPolicy,
+  readReports,
   readyDue,
   recordAttempt,
   refusedBackoff,
@@ -87,19 +88,19 @@ describe("accept", () => {
     ],
     [
       "failed version",
-      { failed: ["1.6.0"] },
+      { startFailures: { "1.6.0": { at: T, count: 1 } } },
       { version: "1.6.0" },
       T,
       undefined,
-      no("failed"),
+      no("refused_backoff"),
     ],
     [
       "failed previous step-back",
-      { failed: ["1.4.0"] },
+      { startFailures: { "1.4.0": { at: T, count: 1 } } },
       { version: "1.4.0", stepBack: true },
       T,
       undefined,
-      no("failed"),
+      no("refused_backoff"),
     ],
     [
       "newestRun beyond current",
@@ -255,9 +256,13 @@ describe("install now and oa-bus update", () => {
       no("login_in_progress"),
     );
     expect(installNow(st({ staged, off: true }), T, false)).toEqual(no("off"));
-    expect(installNow(st({ staged, failed: ["1.6.0"] }), T, false)).toEqual(
-      no("failed"),
-    );
+    expect(
+      installNow(
+        st({ staged, startFailures: { "1.6.0": { at: T, count: 1 } } }),
+        T,
+        false,
+      ),
+    ).toEqual(no("refused_backoff"));
     expect(installNow(st({ staged, lastAt: T - 1000 }), T, false)).toEqual(
       no("rate_limited"),
     );
@@ -278,9 +283,12 @@ describe("install now and oa-bus update", () => {
     );
     expect(updateCommand(st(), tty)).toEqual(no("nothing_staged"));
     expect(updateCommand(st({ staged, off: true }), tty)).toEqual(no("off"));
-    expect(updateCommand(st({ staged, failed: ["1.6.0"] }), tty)).toEqual(
-      no("failed"),
-    );
+    expect(
+      updateCommand(
+        st({ staged, startFailures: { "1.6.0": { at: T, count: 1 } } }),
+        { ...tty, now: T },
+      ),
+    ).toEqual(no("refused_backoff"));
     expect(updateCommand(st({ staged, armed: false }), tty)).toEqual(
       no("not_armed"),
     );
@@ -307,11 +315,11 @@ describe("state file", () => {
   it("layout writes keep off, failed and the rest", () => {
     const h = home();
     setOff(h, true);
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     writeState(h, { armed: true, current: "1.5.0", previous: "1.4.0" });
     const s = readPolicy(h);
     expect(s.off).toBe(true);
-    expect(s.failed).toEqual(["1.6.0"]);
+    expect(s.startFailures["1.6.0"]).toMatchObject({ count: 1 });
     expect(s.current).toBe("1.5.0");
   });
   it("policy writes keep the layout keys", () => {
@@ -336,10 +344,10 @@ describe("state file", () => {
     const h = home();
     writeState(h, { armed: true });
     setStaged(h, "1.6.0", T);
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     const s = readPolicy(h);
     expect(s.staged).toBeUndefined();
-    expect(accept(s, { version: "1.6.0" }, T)).toEqual(no("failed"));
+    expect(accept(s, { version: "1.6.0" }, T)).toEqual(no("refused_backoff"));
   });
   it("junk in the file is ignored", () => {
     const h = home();
@@ -484,14 +492,33 @@ describe("review fixes", () => {
     expect(r.armed).toBe(true);
   });
 
-  it("failed to start is never retried; refused is retried after a growing backoff", () => {
+  it("retries a failed start after 15m, 1h, then 4h and reports the third failure once", () => {
+    const h = home();
+    writeState(h, { armed: true, current: "1.0.0" });
+    const p = { from: "1.0.0", to: "1.1.0" };
+    let now = T;
+    for (const wait of [15, 60, 240, 240]) {
+      abandonUpdate(h, p, now, "unhealthy");
+      const policy = readPolicy(h);
+      expect(accept(policy, { version: "1.2.0" }, now)).toEqual(ok);
+      expect(
+        accept(policy, { version: p.to }, now + wait * 60_000 - 1).ok,
+      ).toBe(false);
+      now += wait * 60_000;
+      expect(accept(policy, { version: p.to }, now)).toEqual(ok);
+    }
+    expect(readReports(h).filter((r) => r.event === "needs_you")).toHaveLength(
+      1,
+    );
+  });
+  it("failed starts retry after backoff; refused is retried after a growing backoff", () => {
     const h = home();
     writeState(h, { armed: true });
-    markFailed(h, "1.6.0");
+    markFailed(h, "1.6.0", T);
     markRefused(h, "1.7.0", T);
     const s = readPolicy(h);
     const D = 24 * 3600_000;
-    expect(accept(s, { version: "1.6.0" }, T + 400 * D)).toEqual(no("failed"));
+    expect(accept(s, { version: "1.6.0" }, T + 400 * D)).toEqual(ok);
     expect(accept(s, { version: "1.7.0" }, T + D - 1)).toEqual(
       no("refused_backoff"),
     );
@@ -520,9 +547,9 @@ describe("review fixes", () => {
       markNotified(h, `3.${i}.0`, "ready");
     }
     const s = readPolicy(h);
-    expect(s.failed).toHaveLength(MAX_LIST);
-    expect(s.failed.at(-1)).toBe("1.29.0");
-    expect(s.failed[0]).toBe("1.10.0");
+    expect(Object.keys(s.startFailures)).toHaveLength(MAX_LIST);
+    expect(Object.keys(s.startFailures).at(-1)).toBe("1.29.0");
+    expect(Object.keys(s.startFailures)[0]).toBe("1.10.0");
     expect(Object.keys(s.refused)).toHaveLength(MAX_LIST);
     expect(Object.keys(s.notified)).toHaveLength(MAX_LIST);
     // a hand-edited long file is trimmed on read
@@ -554,7 +581,7 @@ describe("review fixes", () => {
     ).toEqual(ok);
   });
 
-  it("an abandoned switch keeps the 6 h backoff until it expires", () => {
+  it("an abandoned switch does not hold a newer release", () => {
     const h = home();
     const fill = (dir: string) => {
       mkdirSync(join(dir, "dist"));
@@ -563,11 +590,11 @@ describe("review fixes", () => {
     installVersion(h, "1.0.0", fill);
     installVersion(h, "1.1.0", fill);
     writeState(h, { armed: true, current: "1.0.0" });
-    abandonUpdate(h, { from: "1.0.0", to: "1.1.0" }, T, "unhealthy", "failed");
+    abandonUpdate(h, { from: "1.0.0", to: "1.1.0" }, T, "unhealthy");
     const s = readPolicy(h);
     expect(
       accept(s, { version: "1.2.0" }, T + 3600_000, { running: "1.0.0" }),
-    ).toEqual(no("rate_limited"));
+    ).toEqual(ok);
     expect(
       accept(s, { version: "1.2.0" }, T + SIX_HOURS_MS + 1, {
         running: "1.0.0",

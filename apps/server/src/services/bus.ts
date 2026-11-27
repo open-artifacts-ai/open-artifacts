@@ -345,6 +345,7 @@ async function within<T>(p: Promise<T>, ms: number): Promise<T | null> {
 }
 
 type MachineDbRow = {
+  busVersion?: string | null;
   id: string;
   label: string;
   createdAt: number;
@@ -352,7 +353,7 @@ type MachineDbRow = {
   revokedAt: number | null;
 };
 
-const MACHINES_OF = `select id, label, created_at as createdAt, last_used_at as lastUsedAt,
+const MACHINES_OF = `select id, label, bus_version as busVersion, created_at as createdAt, last_used_at as lastUsedAt,
     revoked_at as revokedAt from bus_machines
   where user_id = ?1 and (revoked_at is null or revoked_at > ?2)
   order by (revoked_at is null) desc, created_at desc, rowid desc limit ?3`;
@@ -406,7 +407,7 @@ export async function busView(
   env: Env,
   userId: string,
   /** Also the agents away (closed, name kept): the @ menu lists them as away. */
-  opts: { away?: boolean } = {},
+  opts: { away?: boolean; versions?: boolean } = {},
 ): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
     .bind(userId, Date.now() - REVOKED_MACHINE_VISIBLE_MS, MAX_LISTED)
@@ -417,7 +418,10 @@ export async function busView(
     results.some((m) => m.lastUsedAt !== null),
     opts.away === true,
   );
-  const machines = results.map((m) => machineOf(m, snap?.connected ?? null));
+  const machines = results.map((m) => ({
+    ...machineOf(m, snap?.connected ?? null),
+    ...(opts.versions ? { busVersion: m.busVersion ?? null } : {}),
+  }));
   // Every active machine is listed (MAX_ACTIVE_MACHINES == MAX_LISTED).
   const mayBeLive = results.some(
     (m) => m.revokedAt === null && m.lastUsedAt !== null,
@@ -472,8 +476,9 @@ export async function busMachine(
 export async function listBusMachines(
   env: Env,
   userId: string,
+  versions = false,
 ): Promise<BusMachine[]> {
-  return (await busView(env, userId)).machines;
+  return (await busView(env, userId, { versions })).machines;
 }
 
 /** The member's open agents, or [] (with live false) when the hub can't be read. */

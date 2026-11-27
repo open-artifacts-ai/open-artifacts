@@ -86,7 +86,7 @@ import {
   namedRecorded,
   noteAgentNamed,
 } from "../services/onboarding-firsts.js";
-import { VERSION } from "../version.gen.js";
+import { PREVIOUS_RELEASE, VERSION } from "../version.gen.js";
 import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -178,8 +178,10 @@ import {
 import {
   markStopped,
   noteHello,
+  noteMachineVersion,
   readUpdateState,
   recordReport,
+  refreshMachineLag,
   STOPPED_AFTER_MS,
   targetFor,
   type UpdateState,
@@ -6236,7 +6238,7 @@ export class BusHub extends DurableObject<Env> {
         {
           const updates = hasCap(f, BUS_CAPS.runVersion)
             ? this.#helloUpdates(ws, f.id, machineId)
-            : undefined;
+            : noteMachineVersion(this.env, machineId, f.client_version);
           if (!hasCap(f, BUS_CAPS.ownerAway)) return updates;
           const away = this.#helloOwnerAway(ws, awayUntil !== undefined);
           return updates === undefined
@@ -6692,9 +6694,19 @@ export class BusHub extends DurableObject<Env> {
       const fresh = this.#runVersionFresh();
       const sent = fresh ? this.#targetFor(ws) : undefined;
       await Promise.race([
-        noteHello(this.env, machineId, this.#now()),
+        Promise.all([
+          noteHello(this.env, machineId, this.#now()),
+          noteMachineVersion(
+            this.env,
+            machineId,
+            attachmentOf(ws)?.clientVersion,
+          ),
+        ]),
         new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
       ]).catch((e) => logError("bus_update_hello_failed", e));
+      const owner = this.#userId();
+      if (owner && PREVIOUS_RELEASE)
+        await refreshMachineLag(this.env, owner, PREVIOUS_RELEASE, this.#now());
       // #2719: a failed read leaves the cache stale; push nothing then.
       if (!fresh && !(await this.#refreshRunVersion())) return;
       if (this.#targetFor(ws) !== sent) this.#pushRunVersion(ws);
@@ -6823,6 +6835,9 @@ export class BusHub extends DurableObject<Env> {
   async runVersionChanged(): Promise<void> {
     this.#runVersionAt = -Infinity;
     await this.#refreshRunVersion();
+    const owner = this.#userId();
+    if (owner && PREVIOUS_RELEASE)
+      await refreshMachineLag(this.env, owner, PREVIOUS_RELEASE, this.#now());
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
       this.#pushRunVersion(ws);
     await this.#commitArm();

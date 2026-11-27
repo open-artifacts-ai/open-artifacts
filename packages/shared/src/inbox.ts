@@ -43,6 +43,7 @@ export const InboxItemSchema = z
       "proposal",
       "away",
       "member_set_up",
+      "machine_update",
       // #2577: someone asked one of your agents and it is held for you.
       "request",
       // #2577: someone asked one of your agents and it is held for you.
@@ -83,6 +84,7 @@ export const InboxItemSchema = z
       item.artifact === null &&
       item.kind !== "proposal" &&
       item.kind !== "away" &&
+      item.kind !== "machine_update" &&
       item.kind !== "member_set_up"
     )
       ctx.addIssue({

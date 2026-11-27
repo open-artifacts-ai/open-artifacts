@@ -84,7 +84,7 @@ describe("the daemon's self-check after a switch (#2552)", () => {
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
     expect(currentVersion(w.home)).toBe("1.0.0");
     expect(readPolicy(w.home).failed).toEqual([]);
-    expect(readPolicy(w.home).refused["1.1.0"]).toBeDefined();
+    expect(readPolicy(w.home).startFailures["1.1.0"]).toBeDefined();
     expect(readReports(w.home)).toMatchObject([{ event: "stepped_back" }]);
   });
 

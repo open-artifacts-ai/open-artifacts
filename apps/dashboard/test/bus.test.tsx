@@ -1046,6 +1046,37 @@ describe("Agents › Agents (the roster)", () => {
     ).toHaveAttribute("href", "/settings/machines");
   });
 
+  it("shows the instance and last reported bus version with no agents online", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: false }),
+      ),
+      http.get(`*${R.busMachines}`, ({ request }) =>
+        HttpResponse.json(
+          request.headers.get("X-OA-Wants-Bus-Versions") === "1"
+            ? {
+                instanceVersion: "1.3.0",
+                machines: [
+                  {
+                    ...M[0],
+                    label: "Proof laptop",
+                    connected: false,
+                    revokedAt: null,
+                    busVersion: "1.1.9",
+                  },
+                ],
+              }
+            : { machines: [] },
+        ),
+      ),
+    );
+    mount("/agents");
+    expect(await screen.findByText("Instance 1.3.0")).toBeInTheDocument();
+    expect(screen.getByText("Proof laptop")).toBeInTheDocument();
+    expect(screen.getByText("1.1.9")).toBeInTheDocument();
+  });
+
   it("machines but nothing running: No agents running", async () => {
     withBus();
     server.use(

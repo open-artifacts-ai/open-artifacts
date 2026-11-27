@@ -26,6 +26,7 @@ export async function update(
   const c = ctx.copy;
   const s = readPolicy(ctx.home);
   const d = updateCommand(s, {
+    now: ctx.now(),
     stdinTTY: ctx.stdinIsTTY === true,
     stdoutTTY: ctx.stdout.isTTY === true,
   });
@@ -37,7 +38,7 @@ export async function update(
       case "off":
         sayErr(ctx, c.updateOff());
         return 1;
-      case "failed":
+      case "refused_backoff":
         sayErr(ctx, c.updateFailedVersion(s.staged?.version ?? ""));
         return 1;
       default:
@@ -86,11 +87,12 @@ export async function installViaDaemon(
     sayErr(ctx, c.updateBusy());
     return false;
   }
+  const priorFailures = readPolicy(ctx.home).startFailures[version]?.count ?? 0;
   requestInstall(ctx.home, version, ctx.now());
   for (let waited = 0; waited <= waitMs; waited += POLL_MS) {
     const s = readPolicy(ctx.home);
     if (s.current === version && !s.pending) return true;
-    if (s.failed.includes(version)) break;
+    if ((s.startFailures[version]?.count ?? 0) > priorFailures) break;
     await ctx.sleep(POLL_MS);
   }
   clearInstallRequest(ctx.home);

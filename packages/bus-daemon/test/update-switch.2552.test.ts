@@ -15,6 +15,7 @@ import {
   currentVersion,
   installVersion,
   loginActive,
+  markFailed,
   markLoginActive,
   queueReport,
   readInstallRequest,
@@ -173,8 +174,8 @@ describe("the self-check after a switch", () => {
     const p = readPolicy(home);
     // Nobody answered: stepped back, but the version is not banned.
     expect(p.failed).toEqual([]);
-    expect(p.refused["1.1.0"]).toBeDefined();
-    expect(p.lastAt).toBe(clock);
+    expect(p.startFailures["1.1.0"]).toBeDefined();
+    expect(p.startFailures["1.1.0"]?.at).toBe(clock);
     expect(p.pending).toBeUndefined();
     expect(readState(home).current).toBe("1.0.0");
     expect(readReports(home)).toMatchObject([
@@ -471,6 +472,38 @@ describe("the updater loop (enabled by a test only)", () => {
     // update.json keeps armed/off as they were.
     expect(p.armed).toBe(true);
     expect(p.off).toBe(false);
+  });
+
+  it("retries the named release on backoff expiry without a new hub frame", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const w = make({});
+    try {
+      markFailed(w.home, "1.1.0", T);
+      expect((await w.u.instructFromInstance("1.1.0")).kind).toBe("refused");
+      w.advance(15 * 60_000);
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      expect(w.exit).toHaveBeenCalledOnce();
+    } finally {
+      w.u.stop();
+      vi.useRealTimers();
+    }
+  });
+  it("switches a still-busy machine at its 30-minute deadline without a tick", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const w = make({ busy: () => true });
+    try {
+      await w.u.instructFromInstance("1.1.0");
+      w.advance(30 * 60_000 - 1);
+      await vi.advanceTimersByTimeAsync(30 * 60_000 - 1);
+      expect(w.exit).not.toHaveBeenCalled();
+      w.advance(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(currentVersion(w.home)).toBe("1.1.0");
+      expect(w.exit).toHaveBeenCalledOnce();
+    } finally {
+      w.u.stop();
+      vi.useRealTimers();
+    }
   });
 
   it("busy blocks the install; login holds it until cleared", async () => {
@@ -897,7 +930,7 @@ describe("review fixes (#2552)", () => {
     expect(currentVersion(home)).toBe("1.0.0");
     const p = readPolicy(home);
     expect(p.failed).toEqual([]);
-    expect(p.refused["1.1.0"]).toMatchObject({ count: 1, at });
+    expect(p.startFailures["1.1.0"]).toMatchObject({ count: 1, at });
     expect(readReports(home)).toMatchObject([
       { event: "stepped_back", reason: "hub_unreachable" },
     ]);
@@ -908,18 +941,20 @@ describe("review fixes (#2552)", () => {
       ok: false,
       reason: "refused_backoff",
     });
-    // (6 h limit passed too)
+    // A retry is available after the startup backoff.
     expect(
       accept(p, { version: "1.1.0" }, at + 25 * 3600_000, { running: "1.0.0" }),
     ).toEqual({ ok: true });
   });
 
-  it("a broken daemon is failed for good, with the hub up or down", () => {
+  it("a broken daemon records a retry, with the hub up or down", () => {
     for (const hub of [true, false]) {
       const home = switchedWorld();
       const { exit } = check(home, hub, false);
       expect(exit).toHaveBeenCalledWith(1);
-      expect(readPolicy(home).failed).toEqual(["1.1.0"]);
+      expect(readPolicy(home).startFailures["1.1.0"]).toMatchObject({
+        count: 1,
+      });
       expect(readPolicy(home).refused).toEqual({});
     }
   });

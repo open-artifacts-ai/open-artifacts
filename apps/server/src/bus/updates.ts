@@ -107,7 +107,7 @@ export async function recordReport(
   f: UpdateReportFrame,
   now: number,
 ): Promise<void> {
-  await stmt(
+  const report = stmt(
     env.DB,
     `insert into bus_machine_updates
        (machine_id, event, from_version, to_version, reason, detail, rescue_version, reported_at, switching_at, last_hello_at, stopped_at)
@@ -118,18 +118,103 @@ export async function recordReport(
        detail = excluded.detail, rescue_version = excluded.rescue_version,
        reported_at = excluded.reported_at, switching_at = excluded.switching_at,
        last_hello_at = excluded.last_hello_at, stopped_at = null`,
+  ).bind(
+    machineId,
+    f.event,
+    f.from,
+    f.to,
+    f.reason,
+    f.detail ?? null,
+    f.rescue_version,
+    now,
+    f.event === "switching" ? now : null,
+  );
+  const statements = [report];
+  if (
+    f.event === "needs_you" &&
+    ["unhealthy", "hub_unreachable"].includes(f.reason)
+  ) {
+    statements.push(
+      stmt(
+        env.DB,
+        `update bus_machines set failure_at = case when failure_version = ?1 then failure_at else ?2 end, failure_version = ?1 where id = ?3`,
+      ).bind(f.to, now, machineId),
+    );
+  } else if (f.event === "updated") {
+    statements.push(
+      stmt(
+        env.DB,
+        "update bus_machines set failure_at = null, failure_version = null where id = ?",
+      ).bind(machineId),
+    );
+  }
+  await env.DB.batch(statements);
+}
+
+const LAG_NOTICE_MS = 60 * 60_000;
+
+/** Compare against the actual preceding release, preserving an ongoing lag episode. */
+export async function refreshMachineLag(
+  env: Pick<Env, "DB">,
+  userId: string,
+  previousRelease: string | null,
+  now: number,
+): Promise<void> {
+  if (!previousRelease) return;
+  const rows = await stmt(
+    env.DB,
+    "select id, bus_version as version, lag_since as since from bus_machines where user_id = ? and revoked_at is null and bus_version is not null",
   )
-    .bind(
-      machineId,
-      f.event,
-      f.from,
-      f.to,
-      f.reason,
-      f.detail ?? null,
-      f.rescue_version,
-      now,
-      f.event === "switching" ? now : null,
-    )
+    .bind(userId)
+    .all<{ id: string; version: string; since: number | null }>();
+  const changes = rows.results.flatMap((row) => {
+    const behind =
+      semverGte(previousRelease, row.version) &&
+      !semverGte(row.version, previousRelease);
+    if (behind === (row.since !== null)) return [];
+    return [
+      stmt(
+        env.DB,
+        "update bus_machines set lag_since = ? where id = ? and bus_version = ? and lag_since is ?",
+      ).bind(behind ? now : null, row.id, row.version, row.since),
+    ];
+  });
+  if (changes.length) await env.DB.batch(changes);
+}
+
+export async function machineUpdateNotices(
+  env: Pick<Env, "DB">,
+  userId: string,
+  now: number,
+) {
+  const { results } = await stmt(
+    env.DB,
+    `select id,label,bus_version as version,lag_since as since,failure_at as failureAt,failure_version as failed
+    from bus_machines where user_id = ? and revoked_at is null and (lag_since <= ? or failure_at is not null) order by id`,
+  )
+    .bind(userId, now - LAG_NOTICE_MS)
+    .all<{
+      id: string;
+      label: string;
+      version: string | null;
+      since: number | null;
+      failureAt: number | null;
+      failed: string | null;
+    }>();
+  return results;
+}
+
+export async function noteMachineVersion(
+  env: Pick<Env, "DB">,
+  machineId: string,
+  version?: string,
+): Promise<void> {
+  if (!version) return;
+  await stmt(
+    env.DB,
+    "update bus_machines set bus_version = ?1 where id = ?2 and bus_version is not ?1",
+  )
+    .bind(version, machineId)
     .run();
 }
 
