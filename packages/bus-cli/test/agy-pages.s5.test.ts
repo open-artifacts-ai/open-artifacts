@@ -115,16 +115,20 @@ describe("Antigravity pages entry (agy S5)", () => {
     );
     put(join(h, ".open-artifacts/artifacts-example-com-pat-token"), PAT);
     const r = await installAdapters(deps);
-    expect(entry(read(file))).toBeUndefined();
-    expect(entry(read(file), "open-artifacts-other")).toBeUndefined();
-    expect(r.notes.join("\n")).toContain(other);
+    expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
+    expect(entry(read(file), "open-artifacts-other")).toEqual({
+      serverUrl: `${other}/mcp`,
+    });
     expect(r.notes.join("\n")).not.toContain(PAT);
-    const bound = join(h, ".open-artifacts/pats", encodeURIComponent(other));
-    put(bound, "dummy-other-credential");
+    const before = read(file);
+    put(
+      join(h, ".open-artifacts/pats", encodeURIComponent(other)),
+      "dummy-other-credential",
+    );
     await installAdapters(deps);
+    expect(read(file)).toBe(before);
+    await uninstallAdapters(deps);
     expect(entry(read(file))).toBeUndefined();
-    expect(entry(read(file), "open-artifacts-other").args).toContain(bound);
-    expect(read(file)).not.toContain("dummy-other-credential");
   });
   it("installs and removes the main pages proxy on a fresh machine", async () => {
     const { deps, file, h } = setup();
@@ -200,24 +204,15 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(read(file)).toBe(THEIRS());
   });
 
-  it("an entry with no header uses the PAT file when there is one, else stays with a note", async () => {
-    const a = setup();
-    put(a.file, THEIRS(`${HUB}/mcp`, ""));
-    const r = await installAdapters(a.deps);
-    expect(entry(read(a.file)).serverUrl).toBe(`${HUB}/mcp`);
-    expect(r.notes.join("\n")).toMatch(
-      /no PAT at .*pats\/https%3A%2F%2Fartifacts\.example\.com/,
-    );
-    const b = setup();
-    put(b.file, THEIRS(`${HUB}/mcp`, ""));
-    const pat = join(b.h, ".open-artifacts/pats", encodeURIComponent(HUB));
-    put(pat, PAT);
-    await installAdapters(b.deps);
-    const e = entry(read(b.file));
-    expect(e.args).toEqual([...PROXY_ARGS.slice(0, -2), "--token-file", pat]);
-    expect(e).not.toHaveProperty("env");
-    await uninstallAdapters(b.deps);
-    expect(read(b.file)).toBe(THEIRS(`${HUB}/mcp`, ""));
+  it("preserves existing native OAuth entries even with a PAT available", async () => {
+    const { deps, file, h } = setup();
+    const original = THEIRS(`${HUB}/mcp`, "");
+    put(file, original);
+    put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
+    await installAdapters(deps);
+    expect(entry(read(file))).toEqual(entry(original));
+    await uninstallAdapters(deps);
+    expect(read(file)).toBe(original);
   });
 
   it("leaves an entry with other headers, another address, or turned off", async () => {

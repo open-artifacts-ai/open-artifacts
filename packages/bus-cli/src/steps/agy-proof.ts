@@ -7,10 +7,10 @@ import {
   agyEntryAt,
   agyEntryText,
   type Doc,
+  insertAgyEntry,
   parseAgyMcp,
   removeAgyMcp,
   setAgyEntryText,
-  upsertAgyMcp,
 } from "@oa/bus-adapter-mcp-json";
 import { BUS_CMD } from "@oa/bus-protocol";
 
@@ -348,20 +348,15 @@ function plans(io: AgyEntryIo, doc: Doc, t: AgyTarget): Plan[] {
       });
       continue;
     }
-    const pat = io.patFile?.(t.origin);
-    if (token === null && pat !== undefined && existsSync(pat)) {
-      out.push({ kind: "swap", name, entry: e, cred: { tokenFile: pat } });
+    if (token === null) {
+      out.push({
+        kind: "left",
+        name,
+        note: `Antigravity uses its own sign-in for ${name} at ${t.origin}.`,
+      });
       continue;
     }
-    out.push(
-      left(
-        name,
-        io.file,
-        token === undefined
-          ? "it sends headers oa-bus can't pass on (only one `Authorization: Bearer` header is)."
-          : `it has no token, and there is no PAT at ${pat ?? "the connect guide's path"} for the proxy to use. Use an origin-bound credential and run ${BUS_CMD} install again.`,
-      ),
-    );
+    out.push(left(name, io.file, "it sends headers oa-bus cannot pass on."));
   }
   return out;
 }
@@ -408,12 +403,6 @@ export function installAgyEntries(
       )
     ) {
       const pat = io.patFile?.(t.origin);
-      if (!pat || !existsSync(pat)) {
-        out.notes.push(
-          `Antigravity page tools for ${t.origin} were not configured: no origin-bound credential is available.`,
-        );
-        continue;
-      }
       try {
         mcpUrl(t.origin);
       } catch {
@@ -426,8 +415,11 @@ export function installAgyEntries(
       let name = base;
       for (let suffix = 2; Object.hasOwn(entries, name); suffix++)
         name = `${base}-${suffix}`;
-      const want = proxyEntry(io, {}, t, { tokenFile: pat }, undefined);
-      text = upsertAgyMcp(text, name, want, io.busHome);
+      const want =
+        pat && existsSync(pat)
+          ? proxyEntry(io, {}, t, { tokenFile: pat }, undefined)
+          : { serverUrl: mcpUrl(t.origin).href };
+      text = insertAgyEntry(text, name, want);
       keep = keep.filter((m) => m.name !== name);
       keep.push({
         name,
@@ -546,7 +538,18 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     const doc = text.trim() === "" ? {} : parseAgyMcp(text, io.file);
     const cur = servers(doc)[m.name];
     const ours = isRecord(cur) ? ourAgyEntry(cur, m.origin) : undefined;
-    if (!ours) continue;
+    if (!ours) {
+      if (
+        m.original === null &&
+        isRecord(cur) &&
+        isAgyInstanceEntry(cur, m.origin) &&
+        digest(cur) === m.createdDigest
+      ) {
+        text = removeAgyMcp(text, m.name);
+        res.restored.push(m.name);
+      }
+      continue;
+    }
     if (ours.owner !== io.busHome) {
       // Another bus took the entry over (#3075): keep the original, so it is
       // not lost while that bus holds the entry.

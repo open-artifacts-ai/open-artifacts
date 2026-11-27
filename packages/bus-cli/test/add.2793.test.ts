@@ -380,9 +380,13 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
       ),
     ).toBe(0);
     expect(
-      existsSync(join(ctx.userHome, ".gemini/config/mcp_config.json")),
-    ).toBe(false);
-    expect(ctx.all().join("\n")).toContain("origin-bound");
+      JSON.parse(
+        readFileSync(
+          join(ctx.userHome, ".gemini/config/mcp_config.json"),
+          "utf8",
+        ),
+      ).mcpServers["open-artifacts-work"],
+    ).toEqual({ serverUrl: "https://a.example.com/mcp" });
     expect(ctx.all().join("\n")).not.toContain(PAT);
   });
   it("creates a named pages proxy when add finds no agy config", async () => {
