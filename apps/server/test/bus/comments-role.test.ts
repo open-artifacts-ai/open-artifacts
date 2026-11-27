@@ -45,10 +45,15 @@ describe("a role on a page (#3132)", () => {
     await waitFor(d, "hello_ok");
     const space = ns("face");
     const proof = proofOf();
+    const workstation = await machine("Workstation", m.userId);
+    const next = await daemon(workstation.token);
+    next.send(hello("h2"));
+    await waitFor(next, "hello_ok");
     const names: string[] = [];
     for (const [i, n] of [uniq("PlatL"), uniq("PlatW")].entries()) {
-      d.send(up(`u${i}`, `ref${i}`, n, space));
-      names.push((await waitFor(d, "agent_ok")).bus_name);
+      const socket = i === 0 ? d : next;
+      socket.send(up(`u${i}`, `ref${i}`, n, space));
+      names.push((await waitFor(socket, "agent_ok")).bus_name);
     }
     d.send({
       v: 1,
@@ -105,7 +110,7 @@ describe("a role on a page (#3132)", () => {
       kind: "agent",
       name: role,
       session: names[0],
-      role: { name: role },
+      role: { name: role, machine: "Laptop" },
     });
     expect((await author())?.role).not.toHaveProperty("holder");
 
@@ -121,7 +126,12 @@ describe("a role on a page (#3132)", () => {
     expect(await author()).toMatchObject({
       name: role,
       session: names[0],
-      role: { name: role, holder: names[1] },
+      role: {
+        name: role,
+        holder: names[1],
+        machine: "Laptop",
+        holderMachine: "Workstation",
+      },
     });
   });
 });

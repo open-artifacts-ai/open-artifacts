@@ -66,6 +66,7 @@ import {
   nameClashes,
   partyIdentityFace,
   plainAgentName,
+  productOf,
   shownName,
 } from "./agent-display.js";
 import {
@@ -111,6 +112,7 @@ import {
   notifyAnswered,
   observedAway,
   type RosterAgent,
+  shortMachine,
   storedAgent,
   viewerRosterAgents,
 } from "./comment-agents.js";
@@ -449,6 +451,17 @@ const withRole = (
   if (!interval) return author;
   const role = {
     name: interval.role,
+    ...(viewer.userId === owner &&
+      interval.machine && {
+        machine: shortMachine(interval.machine) ?? undefined,
+      }),
+    ...(viewer.userId === owner &&
+      interval.holder &&
+      interval.holderMachine && {
+        holderMachine: shortMachine(interval.holderMachine) ?? undefined,
+      }),
+    ...(interval.holder &&
+      interval.holderKind && { holderProduct: productOf(interval.holderKind) }),
     ...(interval.holder && { holder: interval.holder }),
   };
   return { ...author, name: role.name, session: author.name, role };
