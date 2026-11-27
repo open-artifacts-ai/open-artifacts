@@ -122,6 +122,7 @@ import {
   pendingEntry,
   restoreEntry,
 } from "./pi-proof.ts";
+import { readInstallFile } from "./step.ts";
 
 export { OMP_ORIGIN_FILE };
 
@@ -238,8 +239,17 @@ const HARNESSES: Harness[] = [
  * entry and our plugin folder.
  */
 export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
-export const agyOn = (env: Record<string, string | undefined> | undefined) =>
-  env?.[AGY_FLAG] === "1";
+/** An explicit shell setting wins over the opt-in saved for this bus home. */
+export function agyOn(
+  env: Record<string, string | undefined> | undefined,
+  busDir: string,
+): boolean {
+  if (env?.[AGY_FLAG] !== undefined) return env[AGY_FLAG] === "1";
+  const service = readInstallFile(join(busDir, "install.json")).service as
+    | { env?: Record<string, unknown> }
+    | undefined;
+  return service?.env?.[AGY_FLAG] === "1";
+}
 
 /** agy is on PATH, or its folders are under ~/.gemini. */
 const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
@@ -1140,8 +1150,8 @@ const install: Record<Harness, Step> = {
   // agy's mcp_config.json is JSONC: only our entry is edited, the rest stays
   // byte for byte. `agy mcp add` would rewrite the whole file.
   async antigravity(deps, notes) {
-    if (!agyOn(deps.env) || !hasAgy(deps)) return "absent";
     const p = paths(deps);
+    if (!hasAgy(deps) || !agyOn(deps.env, p.busDir)) return "absent";
     const text = readAgy(p.agyMcp);
     const server = agyServer(deps.busBin);
     // agy S2b: pinned like the hook, default home too, so the oa_bus tools
@@ -1509,7 +1519,7 @@ export function checkAdapters(
           ? // Plugin commands are off in Nix mode: nothing here to wire.
             deps.which(h) && !openclawNix(deps.env)
           : h === "antigravity"
-            ? agyOn(deps.env) && hasAgy(deps)
+            ? hasAgy(deps) && agyOn(deps.env, p.busDir)
             : deps.which(h))
       ? "absent"
       : safely(ok)

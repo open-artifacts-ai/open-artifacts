@@ -624,7 +624,7 @@ export function systemService(d: ServiceDeps): Service {
           ...codexHomeEnv(d.userHome, d.env),
           // agy S2b: the daemon lists running agy processes only when the
           // install that wired agy (the flag) is the one it runs under.
-          ...(agyOn(d.env) ? { [AGY_FLAG]: "1" } : {}),
+          ...(agyOn(d.env, h) ? { [AGY_FLAG]: "1" } : {}),
         },
         // One file: the daemon logs to stderr, and `oa-bus logs` tails it.
         out: join(logs, "daemon.log"),
@@ -689,7 +689,11 @@ export function systemService(d: ServiceDeps): Service {
         err: u.err,
       });
       updateInstallFile(installFile(), {
-        service: { fallback: true, pid } satisfies Record_,
+        service: {
+          fallback: true,
+          pid,
+          ...(u.env[AGY_FLAG] === "1" ? { env: { [AGY_FLAG]: "1" } } : {}),
+        } satisfies Record_,
       });
       return skipped ? { skipped } : {};
     },
