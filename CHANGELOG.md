@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.270.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.269.0...v0.270.0) (2026-11-27)
+
+
+### Features
+
+* **agents:** move or free names held by away sessions ([#3321](https://github.com/open-artifacts-ai/open-artifacts/issues/3321)) ([#3323](https://github.com/open-artifacts-ai/open-artifacts/issues/3323)) ([01eb0cf](https://github.com/open-artifacts-ai/open-artifacts/commit/01eb0cf2631f666f362b2c90fe31df5fee73887a))
+
 ## [0.269.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.268.1...v0.269.0) (2026-11-27)
 
 
