@@ -398,8 +398,9 @@ Move the user's existing artifacts into ${T("host")} directly from their chat hi
 - Unless the user already asked to move all of them or named exact ones, show a short list first: title, chat/date, type (HTML, React, Markdown, code, SVG, Mermaid), and how many versions are visible. Ask which ones to move.
 - Keep track of any chats you could not reach or where search did not return the full code. List them at the end with the fallback: open that chat and say "move this artifact to Open Artifacts".
 
-### 2. Publish private, preserving versions
+### 2. Skip duplicates and publish private, preserving versions
 
+- Avoid duplicates on re-runs: give each imported artifact a \`description\` of \`"Moved from your chat '<chat title>'"\`. Before publishing an artifact, call \`search_artifacts\` for its title and skip it if a match already carries that description (unless the user explicitly asked to update or republish it).
 - Always publish with \`visibility: "private"\`. Never share or make an imported artifact public unless the user explicitly asks.${
         spaces
           ? "\n- Default to the user's personal space. Only pass `spaceId` (from `list_spaces`) if the user asks for a shared space."
@@ -429,7 +430,8 @@ Move the user's existing artifacts into ${T("host")} directly from their chat hi
 ### 4. Report back
 
 - For every imported artifact, list its title, view URL (\`${T("origin")}/a/<id>\`), format, version count, visibility ("private"), and any fidelity notes (wrapped React page, storage adapted, live AI calls disabled, or latest version only).
-- List any skipped or unreachable chats with the fallback: open that chat and say "move this artifact to Open Artifacts".
+- List any skipped duplicates as "already moved" (with their existing view URL).
+- List any unreachable chats with the fallback: open that chat and say "move this artifact to Open Artifacts".
 `;
   }
 }

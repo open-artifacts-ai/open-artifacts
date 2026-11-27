@@ -1140,9 +1140,12 @@ describe("core size, short instructions, and on-demand parts (#3169)", () => {
 });
 
 describe("import skill part and MCP resource (#1627)", () => {
-  it("covers past-chat discovery, private publishing, versions, unreachable fallback and React working pages", async () => {
+  it("covers past-chat discovery, dedupe skip, private publishing, versions, unreachable fallback and React working pages", async () => {
     const md = await skillPart("import");
     expect(md).toContain("past-chat search");
+    expect(md).toContain("search_artifacts");
+    expect(md).toContain("Moved from your chat");
+    expect(md).toContain("already moved");
     expect(md).toContain('visibility: "private"');
     expect(md).toContain("oldest version first");
     expect(md).toContain("only the latest version was available");
