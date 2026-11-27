@@ -822,9 +822,7 @@ export function copy(
       warn(
         `Antigravity's ${clip(name, 32)} entry doesn't show pages as the session yet`,
       ),
-      next(
-        `Run ${bus} with OA_BUS_EXPERIMENTAL_AGY=1, then start a new agy session.`,
-      ),
+      next(`Run ${bus}, then start a new agy session.`),
     ],
     // agy S5, doctor: install leaves that entry as it is; the note says why and the fix.
     agyPagesLeft: (note: string) => [

@@ -1,4 +1,4 @@
-// agy S5: `oa-bus install` (behind OA_BUS_EXPERIMENTAL_AGY=1) points
+// agy S5: `oa-bus install` points
 // Antigravity's Open Artifacts entry at the local proxy, which adds each
 // conversation's link proof; added instances get the `--name` form; doctor
 // reports each entry; uninstall puts the user's entry back byte for byte.
@@ -43,13 +43,12 @@ const HUB = "https://artifacts.example.com";
 const MIT = "https://mit-ai.example.com";
 const PAT = `oa_pat_${"b".repeat(40)}`;
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 
 function setup(opts: { env?: Record<string, string>; busHome?: string } = {}) {
   const h = mkdtempSync(join(tmpdir(), "ob-agy5-"));
   const deps: AdapterDeps = {
     home: h,
-    env: opts.env ?? ON,
+    env: opts.env ?? {},
     busBin: BIN,
     hub: HUB,
     ...(opts.busHome ? { busHome: opts.busHome } : {}),
@@ -373,10 +372,10 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(entry(read(file))).toEqual(other);
   });
 
-  it("is left alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
+  it("is left alone when agy is absent", async () => {
     const { deps, file } = setup({ env: {} });
     put(file, THEIRS());
-    await installAdapters(deps);
+    await installAdapters({ ...deps, which: () => false });
     expect(read(file)).toBe(THEIRS());
   });
 
