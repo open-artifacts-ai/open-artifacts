@@ -880,7 +880,8 @@ export function askedByOf(
       )
       .toArray();
     const roleKey =
-      allowRole && /^role:[1-9A-HJ-NP-Za-km-z]{16}:[0-9a-f]{32}$/.test(targetKey);
+      allowRole &&
+      /^role:[1-9A-HJ-NP-Za-km-z]{16}:[0-9a-f]{32}$/.test(targetKey);
     const mine = (r: (typeof rows)[number]) =>
       r.owner === actor.ref &&
       (roleKey ||
@@ -897,9 +898,7 @@ export function askedByOf(
     return released || delivered;
   };
   return check(key, true) ||
-    (sessionKey !== undefined &&
-      sessionKey !== key &&
-      check(sessionKey, false))
+    (sessionKey !== undefined && sessionKey !== key && check(sessionKey, false))
     ? { commentId: requestId, userId: by.ref }
     : undefined;
 }

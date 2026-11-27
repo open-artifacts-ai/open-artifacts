@@ -605,7 +605,10 @@ describe("a role is one thread participant (#3335)", () => {
       body: "Answering legacy request.",
       requestCommentId: legacyRootId,
     });
-    expect(replyLegacy.isError, JSON.stringify(replyLegacy.content)).toBeFalsy();
+    expect(
+      replyLegacy.isError,
+      JSON.stringify(replyLegacy.content),
+    ).toBeFalsy();
     const legacyView = await s.readThread(plainThread.id);
     expect(legacyView.comments[1]?.askedBy).toBeDefined();
 
