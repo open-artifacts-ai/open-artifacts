@@ -164,7 +164,9 @@ describe("offline reap (open-bus #422)", () => {
     const a = await connect(away.token);
     const w = await connect(watch.token);
     const o = await connect(other.token);
-    const gone = await reg(a, "ga", uniq("Gone"), n);
+    const gone = uniq("Gone");
+    a.send(plainUp(id("u"), "ga", gone, n));
+    expect((await waitFor(a, "agent_ok")).bus_name).toBe(gone);
     await reg(w, "wa", uniq("Watch"), n);
     const stay = await reg(o, "oa", uniq("Stay"), n2);
 

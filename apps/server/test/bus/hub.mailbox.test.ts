@@ -541,8 +541,10 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     const l = await connect(lm.token);
     const LEADS = 7;
     const leads: string[] = [];
-    for (let k = 0; k < LEADS; k++)
-      leads.push(await reg(l, `lead${k}`, uniq("Lead"), n));
+    for (let k = 0; k < LEADS; k++) {
+      l.send(plainUp(id("u"), `lead${k}`, uniq("Lead"), n));
+      leads.push((await waitFor(l, "agent_ok")).bus_name);
+    }
     const live = await reg(r, "keeper", uniq("Keeper"), n);
     for (let k = 0; k < LEADS; k++) await close(l, `lead${k}`);
     const bystander = await reg(l, "bystander", uniq("By"), n);
