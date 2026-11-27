@@ -203,13 +203,27 @@ describe("the notice template carries no authored text", () => {
       expect(got.map((n) => n.kind)).toEqual(["shared", "changed"]);
       const url = `${appOrigin(E)}/a/${id}`;
       for (const n of got) {
+        // #3297: exclude originAt (ms timestamp) and random-id fields from the
+        // substring regex so a timestamp or id containing "999" can't flake;
+        // exact assertions below still pin every excluded field.
+        const {
+          originAt: _originAt,
+          id: _id,
+          artifactId: _artifactId,
+          coalesceKey: _coalesceKey,
+          url: _url,
+          ...textFields
+        } = n;
         const wire = JSON.stringify(n);
         expect(wire).not.toContain(marker);
         expect(wire).not.toContain(raw);
-        expect(wire.toLowerCase()).not.toMatch(
+        expect(
+          JSON.stringify(textFields).replaceAll(id, "<id>").toLowerCase(),
+        ).not.toMatch(
           /ignore|system|human|assistant|evil|rm -rf|process|secret|999/,
         );
         expect(wire).not.toContain(owner.email);
+        expect(n.artifactId).toBe(id);
         expect(n.from).toBe(NOTICE_SENDER);
         expect(n.url).toBe(url);
         expect(n.text).toBe(noticeText(n.kind, n.version, url));
