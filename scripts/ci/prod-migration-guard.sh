@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # The prod deploy's guard for a non-additive D1 migration (a table rebuild).
-# A migration whose first line is `-- oa:non-additive` holds the automatic
-# deploy of its release; a manual run (workflow_dispatch) deploys it guarded:
+# Reviewed non-additive migrations deploy automatically under the guard:
 # record the live Worker version and a D1 Time Travel bookmark, capture the
 # database, upgrade, verify; on failure (if the run allows it) roll the Worker
 # back, restore D1 to the bookmark and compare against the capture.
@@ -70,6 +69,9 @@ case "${1:-}" in
       names="$(printf '%s' "$changed" | tr '\n' ' ')"
       hold "$TAG modifies, deletes or renames an already-deployed server migration (${names% }); add a new migration instead"
     fi
+    # Validate the released files against the same policy that reviewed the PR.
+    validation="$(python3 "$root/scripts/ci/check-migration-marker.py" "$root" "$prev" apps/server/migrations "$TAG" 2>&1)" ||
+      hold "migration review check failed for $TAG: $validation"
     marked=()
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -84,9 +86,6 @@ case "${1:-}" in
       exit 0
     fi
     echo "non-additive migration(s) in $TAG: ${marked[*]}"
-    if [ "${EVENT:-}" != workflow_dispatch ]; then
-      hold "$TAG adds a non-additive migration (${marked[*]}); deploy it by hand (workflow_dispatch, tag $TAG) with the guard watching"
-    fi
     echo "hold=false" >> "$out"
     echo "guarded=true" >> "$out"
     ;;

@@ -46,13 +46,13 @@ def needs_non_additive_marker(sql, reviewed):
     return False
 
 
-def main(root, tag, directory):
+def main(root, tag, directory, target="HEAD"):
     diff = subprocess.check_output([
         "git", "-C", root, "diff", "--name-only", "-z", "--no-renames",
-        "--diff-filter=A", tag, "HEAD", "--", directory + "/*.sql",
+        "--diff-filter=A", tag, target, "--", directory + "/*.sql",
     ])
     for path in filter(None, diff.decode().split("\0")):
-        sql = subprocess.check_output(["git", "-C", root, "show", "HEAD:" + path]).decode()
+        sql = subprocess.check_output(["git", "-C", root, "show", target + ":" + path]).decode()
         marker = sql.partition("\n")[0]
         reviewed = marker == "-- oa:additive-reviewed"
         if reviewed or marker == "-- oa:non-additive":

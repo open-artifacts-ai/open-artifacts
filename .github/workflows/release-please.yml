@@ -250,8 +250,8 @@ jobs:
       - if: steps.guard.outputs.deploy == 'true'
         run: pnpm install --frozen-lockfile
       # A release that adds a non-additive migration (first line
-      # `-- oa:non-additive`, e.g. a table rebuild) is held: only a manual run
-      # deploys it, guarded (record, upgrade, verify, restore on failure). Any
+      # `-- oa:non-additive` with a verification note) runs guarded:
+      # record, upgrade and verify. Restore requires an explicit pick. Any
       # doubt holds; every later step needs hold == 'false', so a guard that
       # didn't run deploys nothing.
       - id: migration

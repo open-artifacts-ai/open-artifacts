@@ -32,6 +32,10 @@ function repo() {
     script("prod-migration-guard.sh"),
     join(dir, "scripts/ci/prod-migration-guard.sh"),
   );
+  copyFileSync(
+    script("check-migration-marker.py"),
+    join(dir, "scripts/ci/check-migration-marker.py"),
+  );
   const write = (p: string, s: string) => writeFileSync(join(dir, p), s);
   write("apps/server/migrations/0001_init.sql", "create table a (x);\n");
   git("add", "-A");
@@ -120,10 +124,10 @@ describe("prod-migration-guard.sh detect", () => {
     expect(d.code).toBe(0);
     expect(d.out).toBe("hold=false\nguarded=false\n");
   });
-  it("a non-additive migration holds the automatic deploy, and a manual run deploys it guarded", () => {
+  it("a reviewed destructive migration deploys guarded on push and manual dispatch", () => {
     const r = repo();
     r.release("v1.1.0", {
-      "apps/server/migrations/0002_rebuild.sql": `${MARK}\ncreate table a2 (x);\n`,
+      "apps/server/migrations/0002_rebuild.sql": `${MARK}\n-- oa:verify Compare surviving records.\nDELETE FROM a;\n`,
     });
     const auto = r.run("detect", {
       TAG: "v1.1.0",
@@ -131,16 +135,23 @@ describe("prod-migration-guard.sh detect", () => {
       PROD_VERSION: "1.0.0",
     });
     expect(auto.code).toBe(0);
-    expect(auto.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
-    expect(auto.stdout).toContain("::warning title=Prod deploy held::");
-    expect(auto.out).toContain("reason=v1.1.0 adds a non-additive migration");
-    expect(auto.summary).toContain("0002_rebuild.sql");
+    expect(auto.out).toBe("hold=false\nguarded=true\n");
     const manual = r.run("detect", {
       TAG: "v1.1.0",
       EVENT: "workflow_dispatch",
       PROD_VERSION: "1.0.0",
     });
     expect(manual.out).toBe("hold=false\nguarded=true\n");
+  });
+  it("holds an unmarked deletion even beside a reviewed migration", () => {
+    const r = repo();
+    r.release("v1.1.0", {
+      "apps/server/migrations/0002_marked.sql": `${MARK}\n-- oa:verify Count survivors.\nDELETE FROM a WHERE x = 1;`,
+      "apps/server/migrations/0003_unmarked.sql": "DELETE FROM a WHERE x = 2;",
+    });
+    expect(
+      r.run("detect", { TAG: "v1.1.0", PROD_VERSION: "1.0.0" }).out,
+    ).toContain("hold=true\n");
   });
   it("only migrations added since the version prod runs count; the marker must be the first line", () => {
     const r = repo();
@@ -176,14 +187,14 @@ describe("prod-migration-guard.sh detect", () => {
     });
     expect(d.out).toMatch(/^hold=true\nguarded=false\nreason=[^\n]+\n$/);
     expect(d.summary).toContain("0017_image_format.sql");
-    // Its guarded dispatch deploys it guarded.
+    // A manual dispatch also needs the verification note.
     expect(
       r.run("detect", {
         TAG: "v0.73.0",
         EVENT: "workflow_dispatch",
         PROD_VERSION: "0.71.0",
       }).out,
-    ).toBe("hold=false\nguarded=true\n");
+    ).toContain("hold=true\n");
   });
   describe("an already-deployed migration changes", () => {
     const detect = (r: ReturnType<typeof repo>, event = "push") =>
