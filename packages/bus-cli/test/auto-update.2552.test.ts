@@ -128,7 +128,7 @@ describe("oa-bus update", () => {
       );
     }
   });
-  it("refuses a failed version, and off", async () => {
+  it("defers a failed version during backoff, and respects off", async () => {
     const c = world();
     setStaged(c.home, "1.6.0", 1);
     writeFileSync(
@@ -137,11 +137,12 @@ describe("oa-bus update", () => {
         armed: true,
         staged: { version: "1.6.0", readySince: 1 },
         failed: ["1.6.0"],
+        lastAt: c.now(),
       }),
     );
     expect(await update(c, vi.fn())).toBe(1);
     expect(c.err()).toContain(
-      "1.6.0 failed on this machine before, so it won't be installed. The next version will be.",
+      "1.6.0 failed its last check. The bus will retry automatically.",
     );
     const d = world();
     setStaged(d.home, "1.6.0", 1);

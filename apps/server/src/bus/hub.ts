@@ -89,7 +89,7 @@ import {
   namedRecorded,
   noteAgentNamed,
 } from "../services/onboarding-firsts.js";
-import { VERSION } from "../version.gen.js";
+import { PREVIOUS_RELEASE, VERSION } from "../version.gen.js";
 import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -182,12 +182,20 @@ import {
   statusWire,
 } from "./status.js";
 import {
+  firstReleaseObservation,
+  LAG_NOTICE_MS,
   markStopped,
   noteHello,
+  noteMachineVersion,
+  RELEASE_LAG_HUB,
+  type ReleaseDeadline,
   readUpdateState,
+  reconcileReleaseLag,
   recordReport,
+  refreshMachineLag,
+  releaseOf,
+  releaseOfferOwners,
   STOPPED_AFTER_MS,
-  soakEnds,
   targetFor,
   type UpdateState,
 } from "./updates.js";
@@ -246,8 +254,6 @@ const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 const REVOKED_AT_KEY = "revoked_at";
 /** meta key: when the earliest `switching` report's 5 minutes end (ms); absent: none waits (#2552). */
 const UPDATE_DUE_KEY = "update_due";
-/** meta: when the default release's 24 h soak ends (#2552): the alarm then re-tells the sockets. */
-const SOAK_DUE_KEY = "update_soak_due";
 /**
  * Latest alarm time ever asked of workerd, which throws past year 2189. A
  * later deadline is clamped here (and re-checked when this alarm fires).
@@ -6440,7 +6446,7 @@ export class BusHub extends DurableObject<Env> {
           type: "hello_ok",
           machine_id: machine.id,
           machine_label: machine.label,
-          server_version: VERSION,
+          server_version: this.#serverVersion,
           // Only to a hello that listed ids: any other client decodes hello_ok
           // strictly, a rename-only one included.
           ...(hasCap(f, BUS_CAPS.ids) ||
@@ -6498,7 +6504,7 @@ export class BusHub extends DurableObject<Env> {
         {
           const updates = hasCap(f, BUS_CAPS.runVersion)
             ? this.#helloUpdates(ws, f.id, machineId)
-            : undefined;
+            : noteMachineVersion(this.env, machineId, f.client_version);
           if (!hasCap(f, BUS_CAPS.ownerAway)) return updates;
           const away = this.#helloOwnerAway(ws, awayUntil !== undefined);
           return updates === undefined
@@ -6906,19 +6912,25 @@ export class BusHub extends DurableObject<Env> {
   // ----------------------------------------------------- #2552 updates
 
   /** The update settings as last read. Stale after RUN_VERSION_TTL_MS. */
-  #updState: UpdateState = { named: null, paused: false, since: null };
+  #updState: UpdateState = { named: null, paused: false };
   #runVersionAt = -Infinity;
   /** The release this hub vouches for as the default; tests swap it. */
   #serverVersion: string = VERSION;
+  #previousRelease: string | null = PREVIOUS_RELEASE;
 
   /** Tests only, inside `runInDurableObject`: the server's own VERSION (null: the built-in). */
-  static setTestServerVersion(hub: BusHub, v: string | null): void {
+  static setTestServerVersion(
+    hub: BusHub,
+    v: string | null,
+    previous: string | null = PREVIOUS_RELEASE,
+  ): void {
+    hub.#previousRelease = previous;
     hub.#serverVersion = v ?? VERSION;
   }
 
   /**
    * What `ws` is told (#2552): paused or nothing to follow: null (clear);
-   * the named version; else the soaked default if newer than the machine.
+   * the named version; else the server's release if newer than the machine.
    * null is what a cleared setting always sent, and the daemon treats it as
    * "nothing the instance names": it drops the version it last heard and
    * swaps nothing in. It never moves a machine; "send nothing" would instead
@@ -6929,7 +6941,6 @@ export class BusHub extends DurableObject<Env> {
       this.#updState,
       this.#serverVersion,
       attachmentOf(ws)?.clientVersion,
-      this.#now(),
     );
   }
   #runVersionFresh(): boolean {
@@ -6955,14 +6966,22 @@ export class BusHub extends DurableObject<Env> {
       const fresh = this.#runVersionFresh();
       const sent = fresh ? this.#targetFor(ws) : undefined;
       await Promise.race([
-        noteHello(this.env, machineId, this.#now()),
+        Promise.all([
+          noteHello(this.env, machineId, this.#now()),
+          noteMachineVersion(
+            this.env,
+            machineId,
+            attachmentOf(ws)?.clientVersion,
+          ),
+        ]),
         new Promise((r) => setTimeout(r, REPORT_WRITE_MS)),
       ]).catch((e) => logError("bus_update_hello_failed", e));
+      const owner = this.#userId();
+      if (owner && PREVIOUS_RELEASE)
+        await refreshMachineLag(this.env, owner, PREVIOUS_RELEASE, this.#now());
       // #2719: a failed read leaves the cache stale; push nothing then.
       if (!fresh && !(await this.#refreshRunVersion())) return;
       if (this.#targetFor(ws) !== sent) this.#pushRunVersion(ws);
-      // The soak's alarm was armed by the read above, after this turn's commit.
-      await this.#commitArm();
     } finally {
       this.indexInFlight--;
     }
@@ -6970,13 +6989,8 @@ export class BusHub extends DurableObject<Env> {
 
   async #refreshRunVersion(): Promise<boolean> {
     try {
-      this.#updState = await readUpdateState(
-        this.env,
-        this.#serverVersion,
-        this.#now(),
-      );
+      this.#updState = await readUpdateState(this.env);
       this.#runVersionAt = this.#now();
-      this.#armSoak();
       return true;
     } catch (e) {
       // Keep what we had; a later hello asks again.
@@ -7013,7 +7027,7 @@ export class BusHub extends DurableObject<Env> {
       // Allowed: the person's own request (reason "requested"); a step back
       // (`to` below `from`, e.g. the bus's own after a failed start); else
       // only what the instance says now, read fresh: the named version, or
-      // (not paused, soaked, forward of `from`) the default. Paused refuses
+      // (not paused, forward of `from`) the default. Paused refuses
       // every instance-driven switch.
       let allowed =
         f.reason === "requested" ||
@@ -7023,16 +7037,11 @@ export class BusHub extends DurableObject<Env> {
           semverGte(f.from, f.to));
       if (!allowed) {
         try {
-          const st = await readUpdateState(
-            this.env,
-            this.#serverVersion,
-            this.#now(),
-          );
+          const st = await readUpdateState(this.env);
           this.#updState = st;
           this.#runVersionAt = this.#now();
           allowed =
-            f.to !== "" &&
-            targetFor(st, this.#serverVersion, f.from, this.#now()) === f.to;
+            f.to !== "" && targetFor(st, this.#serverVersion, f.from) === f.to;
         } catch (e) {
           logError("bus_run_version_read_failed", e);
         }
@@ -7095,56 +7104,121 @@ export class BusHub extends DurableObject<Env> {
    * this hub's connected sockets (null: none named now). The route calls this
    * on every member's hub.
    */
-  async runVersionChanged(): Promise<void> {
+  async runVersionChanged(release?: string): Promise<string | undefined> {
+    // A hibernatable socket can survive deployment. The observer names the
+    // release from the Worker probe even while an active hub is adopting code.
+    if (release !== undefined) {
+      if (releaseOf(release) !== release)
+        throw new Error("Invalid observed release");
+      this.#serverVersion = release;
+      if (!this.ctx.getWebSockets(DAEMON_TAG).some(runVersionGated))
+        return release;
+    }
     this.#runVersionAt = -Infinity;
-    await this.#refreshRunVersion();
+    if (!(await this.#refreshRunVersion()) && release !== undefined)
+      throw new Error("Could not read bus update settings");
+    const owner = this.#userId();
+    if (release === undefined && owner && PREVIOUS_RELEASE)
+      await refreshMachineLag(this.env, owner, PREVIOUS_RELEASE, this.#now());
     for (const ws of this.ctx.getWebSockets(DAEMON_TAG))
       this.#pushRunVersion(ws);
     await this.#commitArm();
+    return release;
   }
 
-  /** Remembers (meta, so an eviction forgets nothing) and arms the alarm for the end of the soak. */
-  #armSoak(): void {
-    const end = soakEnds(this.#updState, this.#serverVersion);
-    if (end === null || end <= this.#now()) return;
-    this.ctx.storage.sql.exec(
-      "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-      String(end),
+  /** The reserved instance hub receives the first request event for a release. */
+  async observeRelease(
+    running = this.#serverVersion,
+    previous = this.#previousRelease,
+  ): Promise<void> {
+    const version = releaseOf(running);
+    if (this.ctx.id.name !== RELEASE_LAG_HUB || !version || !previous) return;
+    await this.ctx.blockConcurrencyWhile(async () => {
+      const storage = this.ctx.storage;
+      const observed = await storage.get<string>("observedRelease");
+      if (observed === version) return;
+      const since = await firstReleaseObservation(
+        this.env,
+        version,
+        this.#now(),
+      );
+      const release = { version, previous, since };
+      if (observed && semverGte(observed, version))
+        await reconcileReleaseLag(this.env, release, "clear-resolved");
+      await storage.transaction(async (tx) => {
+        const pending = (await tx.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
+        // On rollback, a superseded newer release must never report lag.
+        const deadlines = pending.filter(
+          (d) => d.version !== version && semverGte(version, d.version),
+        );
+        deadlines.push(release);
+        await tx.put("lagDeadlines", deadlines);
+        await tx.put("observedRelease", version);
+        // Journal delivery before the first send. The alarm resumes it if this RPC stops.
+        await tx.put("releaseOffers", { version, after: "" });
+        await tx.setAlarm(this.#now());
+      });
+      await this.#releaseLagAlarm();
+    });
+  }
+
+  /** One bounded page per event. Advance only after every member acknowledged the release. */
+  async #offerReleasePage() {
+    const storage = this.ctx.storage;
+    const page = await storage.get<{ version: string; after: string }>(
+      "releaseOffers",
     );
-    this.#arm(end);
-  }
-
-  #soakDue(): number | null {
-    const v = one<{ value: string }>(
-      this.ctx.storage.sql,
-      "select value from meta where org_id = ? and key = ?",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-    )?.value;
-    const n = v === undefined ? Number.NaN : Number(v);
-    return Number.isSafeInteger(n) ? n : null;
-  }
-
-  /** The alarm's part: the soak ended, so every connected machine is told its target again. */
-  async #soakEdge(now: number): Promise<void> {
-    const due = this.#soakDue();
-    if (due === null) return;
-    if (due > now) {
-      this.#arm(due);
-      return;
+    if (!page) return false;
+    const ns = this.env.BUS_HUB;
+    if (!ns) throw new Error("Bus hub binding unavailable");
+    const limit = 32;
+    const owners = await releaseOfferOwners(this.env, page.after, limit + 1);
+    await Promise.all(
+      owners.slice(0, limit).map(async (owner) => {
+        const hub = ns.get(ns.idFromName(busHubName(owner)));
+        if ((await hub.runVersionChanged(page.version)) !== page.version)
+          throw new Error("Member hub has not adopted release offers yet");
+      }),
+    );
+    if (owners.length > limit) {
+      await storage.put("releaseOffers", {
+        version: page.version,
+        after: owners[limit - 1],
+      });
+      return true;
     }
-    this.ctx.storage.sql.exec(
-      "delete from meta where org_id = ? and key = ?",
-      OWNER_ORG_ID,
-      SOAK_DUE_KEY,
-    );
+    await storage.delete("releaseOffers");
+    return false;
+  }
+
+  async #releaseLagAlarm() {
+    const now = this.#now();
+    const pending =
+      (await this.ctx.storage.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
+    const due = pending.filter((d) => d.since + LAG_NOTICE_MS <= now);
+    for (const d of due) await reconcileReleaseLag(this.env, d, "mark-overdue");
+    let nextOfferAt = Infinity;
     try {
-      await this.runVersionChanged();
-    } catch (e) {
-      logError("bus_update_soak_failed", e);
+      if (await this.#offerReleasePage()) nextOfferAt = now;
+    } catch (error) {
+      logError("bus_release_offer_retry", error);
+      nextOfferAt = now + 30_000;
     }
+    await this.ctx.storage.transaction(async (tx) => {
+      const current = (await tx.get<ReleaseDeadline[]>("lagDeadlines")) ?? [];
+      const remaining = current.filter(
+        (d) =>
+          !due.some(
+            (done) => done.version === d.version && done.since === d.since,
+          ),
+      );
+      await tx.put("lagDeadlines", remaining);
+      const next = Math.min(
+        nextOfferAt,
+        ...remaining.map((d) => d.since + LAG_NOTICE_MS),
+      );
+      if (Number.isFinite(next)) await tx.setAlarm(next);
+    });
   }
 
   #updateDue(): number | null {
@@ -9771,6 +9845,8 @@ export class BusHub extends DurableObject<Env> {
    * the earliest remaining deadline, or now + 1 if any batch was full.
    */
   override async alarm(): Promise<void> {
+    if (this.ctx.id.name === RELEASE_LAG_HUB)
+      return this.ctx.blockConcurrencyWhile(() => this.#releaseLagAlarm());
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     let more = false;
@@ -9912,7 +9988,6 @@ export class BusHub extends DurableObject<Env> {
 
     // 7. #2552: a machine that reported `switching` and never said hello again.
     await this.#stoppedMachines(now);
-    await this.#soakEdge(now);
     // 8. #2759: the owner's quiet hours began or ended.
     await this.#ownerAwayEdge(now);
 
@@ -9942,7 +10017,6 @@ export class BusHub extends DurableObject<Env> {
     const ts = [
       want,
       this.#ownerAwayDue(),
-      this.#soakDue(),
       heldNext === null ? null : heldNext + LIMITS.ackTimeoutMs,
       one(
         sql,
