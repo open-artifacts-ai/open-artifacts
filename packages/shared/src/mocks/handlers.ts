@@ -165,6 +165,8 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  /** #3252: Agents after a confirmed handover, with another session waiting. */
+  handoverAfter?: boolean;
   /**
    * #2287: the Welcome artifact is seeded for the owner, first in the
    * Library, and R.onboarding names it. The flags set how far the checklist
@@ -534,6 +536,49 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           : {}),
       }))
     : [];
+
+  if (opts.handoverAfter && busRoleProposals[0]) {
+    const proposal = busRoleProposals[0];
+    const role = busRoles.find((r) => r.id === proposal.roleId);
+    const successor = busAgents.find((a) => a.id === proposal.agentId);
+    const previous = busAgents.find((a) => a.id === proposal.priorAgentId);
+    const waiting = busAgents.find(
+      (a) =>
+        a.namespace === role?.namespace && a !== successor && a !== previous,
+    );
+    if (role && successor && previous && waiting) {
+      const route = `${role.name}-2`;
+      busAgents = [
+        {
+          ...successor,
+          name: route,
+          role: role.name,
+          roleId: role.id,
+          privateSessionName: true,
+        },
+        { ...previous, handedOver: true },
+        {
+          ...waiting,
+          name: `${role.name}-3`,
+          state: "live",
+          pendingRole: role.name,
+          privateSessionName: true,
+        },
+      ];
+      busRoles = [
+        { ...role, agentId: successor.id, holderName: route, vacant: false },
+      ];
+      busRoleProposals = [
+        {
+          ...proposal,
+          priorAgentId: successor.id,
+          priorHolderName: route,
+          agentId: waiting.id,
+          agentName: `${role.name}-3`,
+        },
+      ];
+    }
+  }
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
   for (const d of f.data) {
