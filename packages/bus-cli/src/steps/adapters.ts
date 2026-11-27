@@ -54,7 +54,11 @@ import {
   installAgyEntries,
   restoreAgyEntries,
 } from "./agy-proof.ts";
-import { installAgyRule, uninstallAgyRule } from "./agy-rule.ts";
+import {
+  agySettingsFile,
+  installAgyRule,
+  uninstallAgyRule,
+} from "./agy-rule.ts";
 import {
   agyPluginFiles,
   agyPluginState,
@@ -636,6 +640,7 @@ export const agyEntryIo = (
   const p = paths(deps as AdapterDeps);
   return {
     file: p.agyMcp,
+    settings: agySettingsFile(deps.home),
     moved: p.agyPages,
     write: (text) => {
       target(p.agyMcp);
@@ -1398,17 +1403,6 @@ const uninstall: Record<Harness, Step> = {
     return withAgyConfigLock(deps.home, (): "done" | "none" => {
       // Only our marked folder goes; a folder not ours stays as it is.
       const folder = uninstallAgyPlugin(deps.home);
-      // agy S3: our rule, and only ours, leaves agy's settings.
-      const rule = uninstallAgyRule(
-        deps.home,
-        p.busDir,
-        agyWatchCommand(deps.busBin, agyHookHome(deps)),
-      );
-      const plugin = folder || rule;
-      if (!present(p.agyMcp)) {
-        if (present(p.agyPages)) restoreAgyEntries(agyEntryIo(deps));
-        return plugin ? "done" : "none";
-      }
       // agy S5: the user's pages entries go back first, byte for byte.
       let put = false;
       try {
@@ -1420,6 +1414,14 @@ const uninstall: Record<Harness, Step> = {
           `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
+      // agy S3: our rule, and only ours, leaves agy's settings.
+      const rule = uninstallAgyRule(
+        deps.home,
+        p.busDir,
+        agyWatchCommand(deps.busBin, agyHookHome(deps)),
+      );
+      const plugin = folder || rule;
+      if (!present(p.agyMcp)) return plugin || put ? "done" : "none";
       const before = readAgy(p.agyMcp);
       const record = readRecord(p.record);
       const next = (record[p.agyMcp] ?? []).reduce(

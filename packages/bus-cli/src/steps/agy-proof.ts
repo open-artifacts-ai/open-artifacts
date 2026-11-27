@@ -21,6 +21,7 @@ import {
   setAgyEntryText,
 } from "@oa/bus-adapter-mcp-json";
 import { BUS_CMD } from "@oa/bus-protocol";
+import { setAgyPageGrants } from "./agy-rule.ts";
 
 /**
  * agy S5: Antigravity's http MCP entries take static headers only, so the
@@ -49,6 +50,7 @@ export type AgyTarget = { origin: string; name?: string };
 export type AgyEntryIo = {
   /** agy's mcp_config.json. */
   file: string;
+  settings?: string;
   /** Where the user's entries are kept (0600, in the bus home). */
   moved: string;
   write: (text: string) => void;
@@ -527,7 +529,15 @@ export function installAgyEntries(
       )
         continue;
       const want = proxyEntry(io, p.entry, t, p.cred, p.token);
-      if (p.kind === "ours" && isDeepStrictEqual(p.entry, want)) continue;
+      if (p.kind === "ours" && isDeepStrictEqual(p.entry, want)) {
+        if (prior && !prior.createdDigest)
+          keep = keep.map((m) =>
+            m === prior
+              ? { ...m, createdDigest: entryDigest(text, p.name) }
+              : m,
+          );
+        continue;
+      }
       const raw = render(text, p.name, want);
       let original: string | null | undefined;
       if (p.kind === "swap") {
@@ -578,7 +588,7 @@ export function installAgyEntries(
         origin: t.origin,
         ...(t.name === undefined ? {} : { instance: t.name }),
         original: source,
-        ...(source === null ? { createdDigest: digest(raw) } : {}),
+        createdDigest: digest(raw),
       });
       out.changed.push(p.name);
       if (p.kind === "swap")
@@ -602,6 +612,15 @@ export function installAgyEntries(
       nativeClaim(io, m.name, m.createdDigest).add();
   }
   if (text !== before) io.write(text);
+  if (io.settings) {
+    for (const m of keep)
+      setAgyPageGrants(
+        io.settings,
+        m.name,
+        io.moved,
+        !!m.createdDigest && entryDigest(text, m.name) === m.createdDigest,
+      );
+  }
   return out;
 }
 
@@ -679,6 +698,9 @@ export function restoreAgyEntries(io: AgyEntryIo): {
     text = setAgyEntryText(text, m.name, raw, want);
     res.restored.push(m.name);
   }
+  if (io.settings)
+    for (const m of moved)
+      setAgyPageGrants(io.settings, m.name, io.moved, false);
   if (text !== before) io.write(text);
   for (const m of moved) {
     if (m.native && m.createdDigest && !stay.includes(m))
