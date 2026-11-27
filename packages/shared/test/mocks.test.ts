@@ -442,6 +442,29 @@ describe("bus option (#1293)", () => {
       (await call("POST", R.busRoles, { ...move, targetId: null })).status,
     ).toBe(409);
   });
+  it("shows the successor, predecessor and waiting session after a handover", async () => {
+    fresh({ bus: true, handoverAfter: true });
+    const { agents } = BusAgentsSchema.parse(
+      await json(await call("GET", R.busAgents)),
+    );
+    expect(agents).toHaveLength(3);
+    expect(agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "manager",
+          name: "manager-2",
+          privateSessionName: true,
+        }),
+        expect.objectContaining({ handedOver: true }),
+        expect.objectContaining({
+          pendingRole: "manager",
+          name: "manager-3",
+          privateSessionName: true,
+        }),
+      ]),
+    );
+  });
+
   it("offers the handover when the holder is away", async () => {
     fresh({ bus: true, forYou: "handover" });
     const got = BusRolesSchema.parse(await json(await call("GET", R.busRoles)));
