@@ -567,7 +567,7 @@ describe("@ menu: per-session state, last active and machine", () => {
       true,
       true,
     );
-    expect(asked).toEqual({ away: true });
+    expect(asked).toEqual({ away: true, roles: true });
   });
 });
 
