@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.271.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.1...v0.271.2) (2026-11-28)
+
+
+### Bug Fixes
+
+* find invited people in mentions before their first sign-in ([#3349](https://github.com/open-artifacts-ai/open-artifacts/issues/3349)) ([8451162](https://github.com/open-artifacts-ai/open-artifacts/commit/845116290ee3923a778423fa1eedfcde71946758))
+
 ## [0.271.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.0...v0.271.1) (2026-11-27)
 
 
