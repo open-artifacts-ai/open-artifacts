@@ -10,6 +10,7 @@ import {
   MentionCandidatesBodySchema,
   NewThreadBodySchema,
   OWN_WORDS_MAX,
+  PlaceAskBodySchema,
   ReplyBodySchema,
   TakeBackBodySchema,
   WithdrawBodySchema,
@@ -41,6 +42,8 @@ import { ipKey } from "../runtime/routes.js";
 import type { AgentAttr } from "../services/agent-usage.js";
 import {
   pageTitles,
+  placeAskSlot,
+  removeAskSlot,
   slotsOfPage,
   userDisplayNames,
 } from "../services/ask-slots.js";
@@ -466,6 +469,33 @@ export function mountComments(app: AppType): void {
     // Key order, so a page's slots read the same way every time.
     out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return c.json(out);
+  });
+
+  // #2536: place an existing ask into a page's [data-oa-ask="<key>"] slot.
+  app.put(`${ASK_SLOTS}/:key`, async (c) => {
+    const user = c.var.user;
+    if (!user) throw new ApiError("unauthorized", "Log in to save changes");
+    const id = idParam(c, "id");
+    const key = c.req.param("key") ?? "";
+    const raw = PlaceAskBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    const placed = await placeAskSlot(
+      c.env,
+      caller(c),
+      { id, key, ...raw.data },
+      { userId: user.id, agent: c.var.tokenLabel ?? null },
+    );
+    return c.json(placed, 200);
+  });
+
+  // #2536: remove a placed ask slot from a page.
+  app.delete(`${ASK_SLOTS}/:key`, async (c) => {
+    if (!c.var.user)
+      throw new ApiError("unauthorized", "Log in to save changes");
+    const id = idParam(c, "id");
+    const key = c.req.param("key") ?? "";
+    await removeAskSlot(c.env, caller(c), id, key);
+    return c.body(null, 204);
   });
 
   app.post(COMMENTS, async (c) => {

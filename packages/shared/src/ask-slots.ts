@@ -47,3 +47,26 @@ export type AskSlot = z.infer<typeof AskSlotSchema>;
 /** GET /artifacts/:id/ask-slots: the slots this viewer may see, [] when none. */
 export const AskSlotListSchema = z.array(AskSlotSchema);
 export type AskSlotList = z.infer<typeof AskSlotListSchema>;
+
+/** PUT /artifacts/:id/ask-slots/:key body (#2536): place an existing ask in a page's slot. */
+export const PlaceAskBodySchema = z.object({
+  homeArtifactId: z.string().min(1),
+  threadId: z.string().min(1),
+  commentId: z.string().min(1),
+  note: z.string().trim().max(ASK_SLOT_NOTE_MAX).optional(),
+});
+export type PlaceAskBody = z.infer<typeof PlaceAskBodySchema>;
+
+/** MCP place_ask (#2536): place an existing ask into a page's [data-oa-ask] slot. */
+export const PlaceAskInputSchema = PlaceAskBodySchema.extend({
+  id: z.string().min(1),
+  key: AskSlotKeySchema,
+});
+export type PlaceAskInput = z.infer<typeof PlaceAskInputSchema>;
+
+/** MCP remove_ask_slot (#2536): remove a placed ask from a page's slot. */
+export const RemoveAskSlotInputSchema = z.object({
+  id: z.string().min(1),
+  key: AskSlotKeySchema,
+});
+export type RemoveAskSlotInput = z.infer<typeof RemoveAskSlotInputSchema>;

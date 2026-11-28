@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.274.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.273.0...v0.274.0) (2026-11-28)
+
+
+### Features
+
+* **ask-slots:** cross-page place_ask and remove_ask_slot (REST + MCP) ([#2536](https://github.com/open-artifacts-ai/open-artifacts/issues/2536)) ([#3351](https://github.com/open-artifacts-ai/open-artifacts/issues/3351)) ([b41c177](https://github.com/open-artifacts-ai/open-artifacts/commit/b41c177380949dcaba16d17c843d2d5ef1a7ec36))
+* **bus-cli:** add --agents, --messages, --instances, --links, --json flags to oa-bus status ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S3) ([#3332](https://github.com/open-artifacts-ai/open-artifacts/issues/3332)) ([13b75bf](https://github.com/open-artifacts-ai/open-artifacts/commit/13b75bfeb326118e104102761b66cb79932d009d))
+
+## [0.273.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.272.1...v0.273.0) (2026-11-28)
+
+
+### Features
+
+* **bus-cli:** add Needs attention section to oa-bus status ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S2) ([#3331](https://github.com/open-artifacts-ai/open-artifacts/issues/3331)) ([4c3d394](https://github.com/open-artifacts-ai/open-artifacts/commit/4c3d3942d6d9812d3ec31725200b7f6337dccc20))
+
 ## [0.272.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.272.0...v0.272.1) (2026-11-28)
 
 

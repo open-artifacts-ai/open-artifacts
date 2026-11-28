@@ -64,7 +64,7 @@ describe("MCP auth: PAT", () => {
     const { id, token } = await createPat(env, u.userId, "rev");
     const c = await connect(token);
     // 21 plus the bus's bus_role_propose: the test pool binds BUS_HUB (#1372).
-    expect((await c.listTools()).tools.length).toBe(25);
+    expect((await c.listTools()).tools.length).toBe(27);
     await c.close();
     await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
       .bind(Date.now(), id)
@@ -343,7 +343,7 @@ describe("MCP auth: OAuth", () => {
       modern: true,
       clientInfo: { name: "self-reported", version: "4.5.6" },
     });
-    expect((await c.listTools()).tools).toHaveLength(25);
+    expect((await c.listTools()).tools).toHaveLength(27);
     const pub = (
       await tool(c, "publish_artifact", {
         title: "oauth",

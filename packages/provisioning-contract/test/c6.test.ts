@@ -90,15 +90,47 @@ describe("RedlineCreds: mint or revoke (R26)", () => {
     expect(redlineCredsJobArgs(rev)).toEqual({ revoke: true });
   });
 
-  it("the body hash covers revoke: same requestId, mint vs revoke, differs (409)", async () => {
+  it("hookKeyOnly: true parses as a hook-key-only variant with no PAT mint", () => {
+    const p = RedlineCredsSchema.parse({
+      requestId: rid,
+      hookKeyOnly: true,
+      recipientKey: key,
+    });
+    expect(p).toEqual({
+      requestId: rid,
+      revoke: false,
+      hookKeyOnly: true,
+      recipientKey: key,
+    });
+    expect(redlineCredsJobArgs(p)).toEqual({
+      revoke: false,
+      hookKeyOnly: true,
+      recipientKey: key,
+    });
+    expect(ok({ requestId: rid, hookKeyOnly: false, recipientKey: key })).toBe(
+      false,
+    );
+    expect(ok({ requestId: rid, hookKeyOnly: true, revoke: true })).toBe(false);
+    expect(ok({ requestId: rid, hookKeyOnly: true })).toBe(false);
+  });
+
+  it("the body hash covers revoke and hookKeyOnly: same requestId across variants differs (409)", async () => {
     const inst = "ileoabcdefg2";
     const mint = RedlineCredsSchema.parse({
       requestId: rid,
       recipientKey: key,
     });
+    const hook = RedlineCredsSchema.parse({
+      requestId: rid,
+      hookKeyOnly: true,
+      recipientKey: key,
+    });
     const rev = RedlineCredsSchema.parse({ requestId: rid, revoke: true });
     expect(await bodyHash("R26", inst, mint)).not.toBe(
       await bodyHash("R26", inst, rev),
+    );
+    expect(await bodyHash("R26", inst, mint)).not.toBe(
+      await bodyHash("R26", inst, hook),
     );
     // A mint sent with and without revoke: false is one request (a replay).
     const explicit = RedlineCredsSchema.parse({
@@ -113,14 +145,24 @@ describe("RedlineCreds: mint or revoke (R26)", () => {
 });
 
 describe("JOB_STEPS for redline_creds", () => {
-  it("revoke is its own step list under the one job kind", () => {
+  it("revoke and hookKeyOnly are their own step lists under the one job kind", () => {
     expect([...JOB_STEPS.redline_creds_revoke]).toEqual([
       "recheck",
       "revoke",
       "done",
     ]);
+    expect([...JOB_STEPS.redline_creds_hook_key]).toEqual([
+      "recheck",
+      "rotate_hook_key",
+      "seal",
+      "done",
+    ]);
+    expect(JOB_STEPS.redline_creds_hook_key).not.toContain("mint");
     expect(jobStepsFor("redline_creds", { revoke: true })).toBe(
       JOB_STEPS.redline_creds_revoke,
+    );
+    expect(jobStepsFor("redline_creds", { hookKeyOnly: true })).toBe(
+      JOB_STEPS.redline_creds_hook_key,
     );
     for (const args of [{ revoke: false }, {}, undefined, { revoke: "true" }])
       expect(jobStepsFor("redline_creds", args)).toBe(JOB_STEPS.redline_creds);

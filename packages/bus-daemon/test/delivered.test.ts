@@ -398,6 +398,7 @@ describe("late deliveries are shown (C17 part 2)", () => {
         to: "peer",
         excerpt: "hi",
         at: expect.any(Number),
+        delay_ms: expect.any(Number),
       },
     ]);
     // Status did not mark it shown.

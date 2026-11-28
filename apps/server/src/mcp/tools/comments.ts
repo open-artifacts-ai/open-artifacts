@@ -4,6 +4,7 @@ import type { CommentThread, Comment as CommentView } from "@oa/shared";
 import { authorize, canCtx, capOfCaller } from "../../auth/authz.js";
 import { can, capsReads, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
+import { placeAskSlot, removeAskSlot } from "../../services/ask-slots.js";
 import {
   getPicture,
   previewForAgent,
@@ -403,6 +404,31 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
                 : {}),
               status: thread.status,
             },
+      );
+    }),
+  );
+
+  server.registerTool("place_ask", toolConfig("place_ask"), (i) =>
+    guard(async () => {
+      const slot = await placeAskSlot(env, caller, i, {
+        userId: t.user.id,
+        agent: t.agentNow()?.name ?? null,
+      });
+      return ok(
+        `Placed ask ${slot.commentId} (from ${slot.homeArtifactId}) in slot "${slot.key}" on ${slot.id}.`,
+        slot,
+      );
+    }),
+  );
+
+  server.registerTool("remove_ask_slot", toolConfig("remove_ask_slot"), (i) =>
+    guard(async () => {
+      const out = await removeAskSlot(env, caller, i.id, i.key);
+      return ok(
+        out.removed
+          ? `Removed ask slot "${out.key}" from ${out.id}.`
+          : `No ask slot "${out.key}" on ${out.id}.`,
+        out,
       );
     }),
   );

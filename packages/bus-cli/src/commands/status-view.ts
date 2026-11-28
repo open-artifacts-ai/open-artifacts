@@ -1,6 +1,6 @@
 import { displayKind, stripTerminalControls } from "@oa/bus-ipc";
 import type { Ctx } from "../context.ts";
-import { cols, cutCols, cutMiddle } from "../copy.ts";
+import { ago, cols, cutCols, cutMiddle } from "../copy.ts";
 import { bold, glyph, paint, type Style } from "../term.ts";
 
 // Control, format and line-separator characters: never shown.
@@ -33,11 +33,18 @@ export type OtherProject = {
   count: number;
 };
 
+export type AttentionItem = {
+  problem: string;
+  fix: string;
+};
+
 export type StatusScreen = {
   version: string;
   verdict: Verdict;
   machine?: string | undefined;
   instances: InstanceView[];
+  /** Printed between instances and Agents only when non-empty (#3328 S2). */
+  attention?: AttentionItem[];
   /** Omitted when the daemon or all instances are down. */
   project?: {
     agents: StatusAgent[];
@@ -159,6 +166,40 @@ const byRecent = (a: StatusAgent, b: StatusAgent): number => {
   return a.name.localeCompare(b.name);
 };
 
+const wrapWithPrefix = (
+  firstPrefix: string,
+  firstPrefixCols: number,
+  contPrefix: string,
+  contPrefixCols: number,
+  text: string,
+  width: number,
+  more: string,
+): string[] => {
+  const cleaned = cleanText(text);
+  const firstRoom = Math.max(8, width - firstPrefixCols);
+  if (cols(cleaned) <= firstRoom) return [`${firstPrefix}${cleaned}`];
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  let cur = "";
+  let room = firstRoom;
+  let prefix = firstPrefix;
+  for (const w of words) {
+    const piece = cols(w) > room ? cutCols(w, room, more) : w;
+    if (!cur) {
+      cur = piece;
+    } else if (cols(cur) + 1 + cols(piece) <= room) {
+      cur = `${cur} ${piece}`;
+    } else {
+      out.push(`${prefix}${cur}`);
+      prefix = contPrefix;
+      room = Math.max(8, width - contPrefixCols);
+      cur = cols(w) > room ? cutCols(w, room, more) : w;
+    }
+  }
+  if (cur) out.push(`${prefix}${cur}`);
+  return out;
+};
+
 /** Renders the default `oa-bus status` screen within `screen.width` columns. */
 export function renderStatusScreen(
   style: Style,
@@ -236,6 +277,37 @@ export function renderStatusScreen(
       for (const inst of screen.instances) {
         lines.push(`  ${renderOne(inst, width - 2)}`);
       }
+    }
+  }
+
+  // 2b. Needs attention (#3328 S2) — only when something is wrong
+  const attention = screen.attention ?? [];
+  if (attention.length > 0) {
+    lines.push("");
+    lines.push(p("warning", `Needs attention (${attention.length})`));
+    for (const item of attention) {
+      lines.push(
+        ...wrapWithPrefix(
+          `  ${p("warning", "!")} `,
+          4,
+          "    ",
+          4,
+          item.problem,
+          width,
+          more,
+        ),
+      );
+      lines.push(
+        ...wrapWithPrefix(
+          `    ${p("muted", "Fix:")} `,
+          9,
+          "    ",
+          4,
+          item.fix,
+          width,
+          more,
+        ),
+      );
     }
   }
 
@@ -364,5 +436,236 @@ export function renderStatusScreen(
     }
   }
 
+  return lines;
+}
+
+export type StatusNamespaceBlock = {
+  namespace: string;
+  current: boolean;
+  agents: StatusAgent[];
+};
+
+/** `--agents`: all agents across projects, aligned like S1 with full untruncated status text (#3328 S3). */
+export function renderAgentsDetail(
+  style: Style,
+  blocks: StatusNamespaceBlock[],
+  now: number,
+  width = 120,
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  const sep = g("sep");
+  const more = g("more");
+  if (blocks.length === 0 || blocks.every((b) => b.agents.length === 0)) {
+    return [p("muted", "No agents on the bus.")];
+  }
+  const allAgents = blocks.flatMap((b) => b.agents);
+  const maxName = Math.max(0, ...allAgents.map((a) => cols(cleanText(a.name))));
+  const nameW = Math.min(28, Math.max(20, maxName));
+  const appW = 8;
+  const machineW = 12;
+  const ageW = Math.max(
+    3,
+    ...allAgents.map((a) => cols(shortAge(a.status_at, now))),
+  );
+  const minStatusW = Math.max(
+    40,
+    width - 2 - (nameW + 1) - appW - machineW - (ageW + 1),
+  );
+
+  const lines: string[] = [];
+  for (const block of blocks) {
+    if (block.agents.length === 0) continue;
+    if (lines.length > 0) lines.push("");
+    const tag = block.current
+      ? "this project"
+      : shortNamespace(block.namespace);
+    lines.push(
+      `${bold(style, "Agents")}  ${p("muted", `${block.agents.length} total ${sep} ${tag} (${cleanText(block.namespace)})`)}`,
+    );
+    const needsYou: StatusAgent[] = [];
+    const working: StatusAgent[] = [];
+    const idle: StatusAgent[] = [];
+    for (const a of block.agents) {
+      const grp = classifyAgent(a, now);
+      if (grp === "needs_you") needsYou.push(a);
+      else if (grp === "working") working.push(a);
+      else idle.push(a);
+    }
+    needsYou.sort(byRecent);
+    working.sort(byRecent);
+    idle.sort((a, b) => a.name.localeCompare(b.name));
+
+    const emitGroup = (
+      title: string,
+      tone: Parameters<typeof paint>[1],
+      list: StatusAgent[],
+    ) => {
+      if (list.length === 0) return;
+      lines.push(p(tone, title));
+      for (const a of list) {
+        const nameStr = padRight(
+          cutCols(cleanText(a.name), nameW, more),
+          nameW,
+        );
+        const appStr = padRight(
+          cutCols(shortApp(a.kind), appW - 1, more),
+          appW,
+        );
+        const machStr = padRight(
+          cutCols(shortMachine(a.machine), machineW - 1, more),
+          machineW,
+        );
+        const label = a.status_label ? cleanText(a.status_label) : "";
+        const statusStr = label
+          ? `"${label}"`
+          : a.status
+            ? a.status.replace(/_/g, " ")
+            : "";
+        const age = shortAge(a.status_at, now);
+        const left = `  ${bold(style, nameStr)} ${p("muted", appStr)}${p("muted", machStr)}`;
+        if (!age) {
+          lines.push(`${left}${statusStr}`.trimEnd());
+        } else {
+          const statusPadded =
+            cols(statusStr) < minStatusW
+              ? padRight(statusStr, minStatusW)
+              : statusStr;
+          lines.push(
+            `${left}${statusPadded} ${p("muted", age.padStart(ageW))}`,
+          );
+        }
+      }
+    };
+    emitGroup("NEEDS YOU", "warning", needsYou);
+    emitGroup("WORKING", "success", working);
+    emitGroup("IDLE", "muted", idle);
+  }
+  return lines;
+}
+
+export type LateMessageView = {
+  from: string;
+  to: string;
+  excerpt?: string | undefined;
+  at: number;
+  delay_ms?: number | undefined;
+};
+
+const shortDelay = (ms: number): string => {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem === 0 ? `${m}m` : `${m}m ${rem}s`;
+};
+
+/** `--messages`: today's late deliveries, newest first (#3328 S3). */
+export function renderMessagesDetail(
+  style: Style,
+  messages: LateMessageView[],
+  now: number,
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  if (messages.length === 0) return [p("muted", "No late messages.")];
+  const sorted = [...messages].sort((a, b) => b.at - a.at);
+  const lines: string[] = [
+    `${bold(style, "Late messages")}  ${p("muted", `${sorted.length} ${sorted.length === 1 ? "message" : "messages"}`)}`,
+  ];
+  for (const m of sorted) {
+    const when = ago(m.at, now);
+    const delay =
+      m.delay_ms !== undefined ? ` (${shortDelay(m.delay_ms)} delay)` : "";
+    lines.push(
+      `  ${cleanText(m.from)} ${g("step")} ${cleanText(m.to)}  ${p("muted", `${when}${delay}`)}`,
+    );
+    if (m.excerpt) {
+      lines.push(`    "${cleanText(m.excerpt)}"`);
+    }
+  }
+  return lines;
+}
+
+export type InstanceDetailRow = {
+  name: string;
+  url: string;
+  main: boolean;
+  connected: boolean;
+  revoked: boolean;
+  agents: number;
+  guests: string[];
+};
+
+/** `--instances`: configured instances and folder mappings (#3328 S3). */
+export function renderInstancesDetail(
+  style: Style,
+  instances: InstanceDetailRow[],
+  folders: [string, string][],
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  const lines: string[] = [bold(style, "Instances")];
+  for (const i of instances) {
+    const badge = i.revoked
+      ? p("danger", `${g("cross")} revoked`)
+      : i.connected
+        ? p("success", `${g("done")} connected`)
+        : p("danger", `${g("cross")} not connected`);
+    const count = `${i.agents} ${i.agents === 1 ? "agent" : "agents"}`;
+    lines.push(
+      `  ${bold(style, cleanText(i.name))}${i.main ? p("muted", " (main)") : ""}  ${cleanText(i.url)}  ${badge}  ${p("muted", count)}`,
+    );
+    for (const guest of i.guests) {
+      lines.push(`    ${p("muted", `guest session: ${cleanText(guest)}`)}`);
+    }
+  }
+  if (folders.length > 0) {
+    lines.push("", bold(style, "Folders"));
+    for (const [dir, inst] of folders) {
+      lines.push(`  ${cleanText(dir)} ${g("step")} ${cleanText(inst)}`);
+    }
+  }
+  return lines;
+}
+
+export type LinkSessionView = {
+  name: string;
+  cwd: string;
+  state: string;
+  cause?: string | undefined;
+};
+
+/** `--links`: live Claude sessions and whether each is linked (#3328 S3). */
+export function renderLinksDetail(
+  style: Style,
+  sessions: LinkSessionView[],
+): string[] {
+  const p = (tone: Parameters<typeof paint>[1], s: string) =>
+    paint(style, tone, s);
+  const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
+  if (sessions.length === 0) return [p("muted", "No live Claude sessions.")];
+  const lines: string[] = [bold(style, "Session links")];
+  let hasUnlinked = false;
+  for (const s of sessions) {
+    const isLinked = s.state === "linked";
+    const isStarting = s.state === "starting";
+    if (!isLinked && !isStarting) hasUnlinked = true;
+    const badge = isLinked
+      ? p("success", `${g("done")} linked`)
+      : isStarting
+        ? p("muted", `${g("queued")} starting`)
+        : p("danger", `${g("cross")} unlinked`);
+    const cause = s.cause ? p("muted", ` (${cleanText(s.cause)})`) : "";
+    lines.push(
+      `  ${badge}  ${bold(style, cleanText(s.name))}  ${p("muted", cleanText(s.cwd))}${cause}`,
+    );
+  }
+  if (hasUnlinked) {
+    lines.push("", `  ${p("muted", "Fix:")} run /mcp in any unlinked session`);
+  }
   return lines;
 }

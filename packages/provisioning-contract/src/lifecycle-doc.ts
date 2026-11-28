@@ -93,12 +93,14 @@ export function lifecycleDoc(): string {
     table(
       ["Job", "Steps"],
       Object.entries(JOB_STEPS).map(([k, s]) => [
-        // Not job kinds: R26's revoke, R30's copy (args variants).
+        // Not job kinds: R26's revoke and hookKeyOnly, R30's copy (args variants).
         k === "redline_creds_revoke"
           ? "redline_creds (revoke: true)"
-          : k === "oauth_copy"
-            ? "update (oauthCopy: true)"
-            : k,
+          : k === "redline_creds_hook_key"
+            ? "redline_creds (hookKeyOnly: true)"
+            : k === "oauth_copy"
+              ? "update (oauthCopy: true)"
+              : k,
         s.join(" > "),
       ]),
     ),

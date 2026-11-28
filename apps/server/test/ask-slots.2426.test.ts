@@ -4,6 +4,7 @@
 import { env } from "cloudflare:workers";
 import {
   ASK_SLOT_HOMES_MAX,
+  ASK_SLOTS_MAX,
   type AskSlot,
   type Member,
   R,
@@ -11,12 +12,14 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
+import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { publish, purgeNow } from "../src/services/artifacts.js";
 import { addThread } from "../src/services/comments.js";
 import { eraseMember, SYSTEM_ACTOR } from "../src/services/members.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
+import { connect, E as mcpEnv } from "./mcp-helpers.js";
 
 const E = env as unknown as Env;
 const app = createApp();
@@ -421,5 +424,234 @@ describe("ask slots: the read route", () => {
       .run();
     await eraseMember(E, doomed.userId, SYSTEM_ACTOR);
     expect(await count("placed_by = ?", doomed.userId)).toBe(0);
+  });
+
+  it("places and removes ask slots over REST with access, state, and cap checks (#2536)", async () => {
+    const home = await page(owner, "REST Home");
+    const privateHome = await page(outsider, "Outsider Secret Home");
+    const shown = await page(owner, "REST Board", "public");
+    const a = await ask(owner, home);
+    const secretAsk = await ask(outsider, privateHome);
+
+    // Owner places cross-page ask with note.
+    const put1 = await api(app, R.askSlot(shown, "launch"), owner.cookie, {
+      method: "PUT",
+      body: {
+        homeArtifactId: home,
+        threadId: a.threadId,
+        commentId: a.commentId,
+        note: "Key launch decision",
+      },
+    });
+    expect(put1.status, await put1.text()).toBe(200);
+
+    // Owner sees it; outsider (cannot read home) sees [] (Rule 1).
+    const ownerSlots = (await (await slots(shown, owner)).json()) as AskSlot[];
+    expect(ownerSlots).toHaveLength(1);
+    expect(ownerSlots[0]?.key).toBe("launch");
+    expect(ownerSlots[0]?.note).toBe("Key launch decision");
+    const outsiderSlots = (await (
+      await slots(shown, outsider)
+    ).json()) as AskSlot[];
+    expect(outsiderSlots).toEqual([]);
+
+    // Viewer of target page cannot place or remove a slot.
+    await api(app, R.shares(shown), owner.cookie, {
+      method: "PUT",
+      body: { email: viewer.email, role: "viewer" },
+    });
+    const viewerPut = await api(
+      app,
+      R.askSlot(shown, "viewer-try"),
+      viewer.cookie,
+      {
+        method: "PUT",
+        body: {
+          homeArtifactId: home,
+          threadId: a.threadId,
+          commentId: a.commentId,
+        },
+      },
+    );
+    expect(viewerPut.status).toBe(404);
+    const viewerDel = await api(
+      app,
+      R.askSlot(shown, "launch"),
+      viewer.cookie,
+      {
+        method: "DELETE",
+      },
+    );
+    expect(viewerDel.status).toBe(404);
+
+    // Rule 5: owner of target page cannot place an ask from an unreadable home.
+    const rule5 = await api(app, R.askSlot(shown, "stolen"), owner.cookie, {
+      method: "PUT",
+      body: {
+        homeArtifactId: privateHome,
+        threadId: secretAsk.threadId,
+        commentId: secretAsk.commentId,
+      },
+    });
+    expect(rule5.status).toBe(404);
+
+    // Refuses withdrawn asks.
+    const aWithdrawn = await ask(owner, home);
+    const wRes = await api(
+      app,
+      R.commentWithdraw(home, aWithdrawn.threadId, aWithdrawn.commentId),
+      owner.cookie,
+      { method: "POST", body: {} },
+    );
+    expect(wRes.status).toBeLessThan(300);
+    const putWithdrawn = await api(
+      app,
+      R.askSlot(shown, "dead"),
+      owner.cookie,
+      {
+        method: "PUT",
+        body: {
+          homeArtifactId: home,
+          threadId: aWithdrawn.threadId,
+          commentId: aWithdrawn.commentId,
+        },
+      },
+    );
+    expect(putWithdrawn.status).toBe(409);
+    expect(
+      ((await putWithdrawn.json()) as { error: { code: string } }).error.code,
+    ).toBe("withdrawn");
+
+    // Refuses replaced asks.
+    const aOld = await ask(owner, home);
+    await addThread(
+      E,
+      { id: home, format: "html", currentVersion: 1 } as never,
+      { kind: "user", id: owner.userId, typed: true },
+      { userId: owner.userId, short: "v1", owner: true, moderator: true },
+      {
+        anchor: NOTE,
+        body: "Newer",
+        ask: {
+          question: "Newer?",
+          options: OPTS,
+          to: [{ key: owner.userId }],
+          replaces: aOld.commentId,
+        },
+      },
+      { moderator: true },
+    );
+    const putReplaced = await api(app, R.askSlot(shown, "old"), owner.cookie, {
+      method: "PUT",
+      body: {
+        homeArtifactId: home,
+        threadId: aOld.threadId,
+        commentId: aOld.commentId,
+      },
+    });
+    expect(putReplaced.status).toBe(409);
+    expect(
+      ((await putReplaced.json()) as { error: { code: string } }).error.code,
+    ).toBe("already_replaced");
+
+    // Enforces ASK_SLOTS_MAX (20) on new keys, while updating an existing key works.
+    const capped = await page(owner, "Capped Board");
+    for (let i = 1; i <= ASK_SLOTS_MAX; i++) {
+      const r = await api(app, R.askSlot(capped, `k${i}`), owner.cookie, {
+        method: "PUT",
+        body: {
+          homeArtifactId: home,
+          threadId: a.threadId,
+          commentId: a.commentId,
+        },
+      });
+      expect(r.status).toBe(200);
+    }
+    const over = await api(app, R.askSlot(capped, "k21"), owner.cookie, {
+      method: "PUT",
+      body: {
+        homeArtifactId: home,
+        threadId: a.threadId,
+        commentId: a.commentId,
+      },
+    });
+    expect(over.status).toBe(409);
+    const updateExisting = await api(
+      app,
+      R.askSlot(capped, "k1"),
+      owner.cookie,
+      {
+        method: "PUT",
+        body: {
+          homeArtifactId: home,
+          threadId: a.threadId,
+          commentId: a.commentId,
+          note: "Updated at cap",
+        },
+      },
+    );
+    expect(updateExisting.status).toBe(200);
+
+    // Removing the slot removes it from the board without touching the home ask.
+    const del = await api(app, R.askSlot(shown, "launch"), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(204);
+    const afterDel = (await (await slots(shown, owner)).json()) as AskSlot[];
+    expect(afterDel).toEqual([]);
+  });
+
+  it("places and removes ask slots over MCP (#2536)", async () => {
+    const home = await page(owner, "MCP Home");
+    const secretHome = await page(outsider, "MCP Secret Home");
+    const shown = await page(owner, "MCP Board");
+    const a = await ask(owner, home);
+    const secretAsk = await ask(outsider, secretHome);
+
+    const pat = await createPat(E, owner.userId, "mcp-slot-test");
+    const client = await connect(pat.token, { env: mcpEnv() });
+    try {
+      const placed = await client.callTool({
+        name: "place_ask",
+        arguments: {
+          id: shown,
+          key: "mcp-slot",
+          homeArtifactId: home,
+          threadId: a.threadId,
+          commentId: a.commentId,
+          note: "From MCP",
+        },
+      });
+      expect(placed.isError).not.toBe(true);
+
+      const list1 = (await (await slots(shown, owner)).json()) as AskSlot[];
+      expect(list1).toHaveLength(1);
+      expect(list1[0]?.key).toBe("mcp-slot");
+      expect(list1[0]?.note).toBe("From MCP");
+
+      // Rule 5 over MCP: unreadable home artifact is refused.
+      const denied = await client.callTool({
+        name: "place_ask",
+        arguments: {
+          id: shown,
+          key: "bad-slot",
+          homeArtifactId: secretHome,
+          threadId: secretAsk.threadId,
+          commentId: secretAsk.commentId,
+        },
+      });
+      expect(denied.isError).toBe(true);
+
+      const removed = await client.callTool({
+        name: "remove_ask_slot",
+        arguments: { id: shown, key: "mcp-slot" },
+      });
+      expect(removed.isError).not.toBe(true);
+
+      const list2 = (await (await slots(shown, owner)).json()) as AskSlot[];
+      expect(list2).toEqual([]);
+    } finally {
+      await client.close();
+    }
   });
 });

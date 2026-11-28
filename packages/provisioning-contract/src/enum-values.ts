@@ -115,6 +115,11 @@ export const JOB_STEPS = {
    */
   redline_creds_revoke: ["recheck", "revoke", "done"],
   /**
+   * R26 with `hookKeyOnly: true`: disposable staging fixtures rotate only
+   * TEST_HOOK_KEY and seal `{ hookKey }`; no admin PAT is ever minted.
+   */
+  redline_creds_hook_key: ["recheck", "rotate_hook_key", "seal", "done"],
+  /**
    * R30 (#1008): the update kind with `args.oauthCopy === true`, not a
    * JobKind, for the same reason: 0008's CHECK is unchanged.
    */
@@ -129,22 +134,29 @@ export const JOB_STEPS = {
     "done",
   ],
 } as const satisfies Record<
-  JobKind | "redline_creds_revoke" | "oauth_copy",
+  JobKind | "redline_creds_revoke" | "redline_creds_hook_key" | "oauth_copy",
   readonly string[]
 >;
 
 /**
  * A job's steps from its kind and `jobs.args`: `redline_creds` with
- * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke, `update` with
- * `args.oauthCopy === true` runs JOB_STEPS.oauth_copy; every other case is
- * JOB_STEPS[kind].
+ * `args.revoke === true` runs JOB_STEPS.redline_creds_revoke, with
+ * `args.hookKeyOnly === true` runs JOB_STEPS.redline_creds_hook_key, `update`
+ * with `args.oauthCopy === true` runs JOB_STEPS.oauth_copy; every other case
+ * is JOB_STEPS[kind].
  */
 export function jobStepsFor(
   kind: JobKind,
-  args?: { readonly revoke?: unknown; readonly oauthCopy?: unknown } | null,
+  args?: {
+    readonly revoke?: unknown;
+    readonly hookKeyOnly?: unknown;
+    readonly oauthCopy?: unknown;
+  } | null,
 ): readonly string[] {
   if (kind === "redline_creds" && args?.revoke === true)
     return JOB_STEPS.redline_creds_revoke;
+  if (kind === "redline_creds" && args?.hookKeyOnly === true)
+    return JOB_STEPS.redline_creds_hook_key;
   if (kind === "update" && args?.oauthCopy === true)
     return JOB_STEPS.oauth_copy;
   return JOB_STEPS[kind];
