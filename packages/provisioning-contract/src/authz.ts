@@ -185,8 +185,11 @@ export type AuthzPrincipal = {
    * OIDC only: which pinned workflow minted the JWT. "test-admin" may call
    * R28 and nothing else; any other OIDC caller never calls R28 (#1053).
    * "test-member" may call only TEST_MEMBER.routes, on TEST_MEMBER.slug.
+   * "test-install" uses `testInstallMode` ("create" by default; "delete" for
+   * a signed later cleanup run, which never reaches R4 or R26).
    */
   oidcWorkflow?: OidcWorkflow;
+  testInstallMode?: "create" | "delete";
 } | null;
 /** The pinned workflows an OIDC JWT may come from (authorize). */
 export type OidcWorkflow =
@@ -216,47 +219,230 @@ export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
 /**
  * A separate pinned staging workflow (staging-test-install.yml) uses the same
  * OIDC mechanism to manage disposable test installs. Its jobs never have reach
- * over rl-agents. R4 creates one fixture; every later read, hook-key rotation
- * (R26 with `hookKeyOnly: true` only), soft delete (R9) and purge (R11) binds
- * to that exact install ID via `installIdHeader` and its actorKey suffix.
+ * over rl-agents or over another fixture in the same repository.
+ *
+ * Ownership is authenticated independently of any caller-supplied target ID:
+ * - On create (`mode: "create"`), `actorKey` binds GitHub-signed `repository_id`
+ *   and `run_id` plus `ownerKeyId = sha256(ownerPublicKey)` (raw 32-byte
+ *   Ed25519 public key from `ownerKeyHeader`). Every follow-up call during the
+ *   create run (R3, R15, R26, R9, R11) matches `install.createdBy === actorKey`.
+ * - On later cleanup (`mode: "delete"`), the caller proves possession of the
+ *   fixture's Ed25519 private key via a short-lived signature in
+ *   `deleteProofHeader` over `(domain, repositoryId, installId, expiresAt)`.
+ *   Verified cleanup callers may call only `deleteRoutes` (never R4 or R26)
+ *   and match only installs created by that same `(repositoryId, ownerKeyId)`
+ *   and exact signed `installId`.
  */
 export const TEST_INSTALL = {
   slugPrefix: "t-",
   actorSuffix: ":test-install",
-  installIdHeader: "x-oa-fixture-install-id",
+  deleteActorSuffix: ":test-install-delete",
+  ownerKeyHeader: "x-oa-fixture-owner-key",
+  deleteProofHeader: "x-oa-fixture-delete-proof",
+  deleteProofDomain: "oa-fixture-delete-v1",
+  deleteProofMaxTtlMs: 30 * 60_000,
   routes: ["R3", "R4", "R9", "R11", "R15", "R26"] as readonly RouteId[],
+  deleteRoutes: ["R3", "R9", "R11", "R15"] as readonly RouteId[],
 } as const;
-export const testInstallActorKey = (
+
+const NUMERIC_ID_RE = /^\d{1,32}$/;
+const FIXTURE_KEY_B64U_RE = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
+const FIXTURE_SIG_B64U_RE = /^[A-Za-z0-9_-]{85}[AQgw]$/;
+const FIXTURE_CREATE_KEY_RE =
+  /^oidc:(\d{1,32}):test-install:(\d{1,32}):([A-Za-z0-9_-]{42}[AEIMQUYcgkosw048])$/;
+const FIXTURE_DELETE_KEY_RE =
+  /^oidc:(\d{1,32}):test-install-delete:([A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]):(i[a-z0-9]{11})$/;
+
+function b64uToBytes(s: string): Uint8Array<ArrayBuffer> {
+  const pad = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(pad + "=".repeat((4 - (pad.length % 4)) % 4));
+  const out = new Uint8Array(new ArrayBuffer(bin.length));
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToB64u(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+export const isFixtureOwnerPublicKey = (v: unknown): v is string =>
+  typeof v === "string" && FIXTURE_KEY_B64U_RE.test(v);
+
+/** Base64url SHA-256 fingerprint of a raw 32-byte Ed25519 owner public key. */
+export async function fixtureOwnerKeyId(
+  ownerPublicKey: string,
+): Promise<string> {
+  if (!isFixtureOwnerPublicKey(ownerPublicKey))
+    throw new Error("invalid fixture owner public key");
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", b64uToBytes(ownerPublicKey)),
+  );
+  return bytesToB64u(digest);
+}
+
+export function fixtureDeleteProofPayload(input: {
+  repositoryId: string;
+  installId: string;
+  expiresAt: number;
+}): string {
+  if (!NUMERIC_ID_RE.test(input.repositoryId))
+    throw new Error("invalid repositoryId");
+  if (!INSTALL_ID_RE.test(input.installId))
+    throw new Error("invalid installId");
+  if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= 0)
+    throw new Error("invalid expiresAt");
+  return `${TEST_INSTALL.deleteProofDomain}\n${input.repositoryId}\n${input.installId}\n${input.expiresAt}`;
+}
+
+export async function signFixtureDeleteProof(
+  privateKey: CryptoKey,
+  input: { repositoryId: string; installId: string; expiresAt: number },
+): Promise<string> {
+  const payload = new TextEncoder().encode(fixtureDeleteProofPayload(input));
+  const sig = new Uint8Array(
+    await crypto.subtle.sign({ name: "Ed25519" }, privateKey, payload),
+  );
+  return `${input.installId}.${input.expiresAt}.${bytesToB64u(sig)}`;
+}
+
+export async function verifyFixtureDeleteProof(input: {
+  ownerPublicKey: string;
+  proof: string;
+  repositoryId: string;
+  now?: number;
+}): Promise<{
+  installId: string;
+  expiresAt: number;
+  ownerKeyId: string;
+} | null> {
+  if (
+    !isFixtureOwnerPublicKey(input.ownerPublicKey) ||
+    !NUMERIC_ID_RE.test(input.repositoryId) ||
+    typeof input.proof !== "string"
+  )
+    return null;
+  const parts = input.proof.split(".");
+  if (parts.length !== 3) return null;
+  const [installId, rawExp, sigB64] = parts as [string, string, string];
+  if (
+    !INSTALL_ID_RE.test(installId) ||
+    !/^\d{1,16}$/.test(rawExp) ||
+    !FIXTURE_SIG_B64U_RE.test(sigB64)
+  )
+    return null;
+  const expiresAt = Number(rawExp);
+  const now = input.now ?? Date.now();
+  if (
+    !Number.isSafeInteger(expiresAt) ||
+    expiresAt < now ||
+    expiresAt - now > TEST_INSTALL.deleteProofMaxTtlMs
+  )
+    return null;
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      b64uToBytes(input.ownerPublicKey),
+      { name: "Ed25519" },
+      false,
+      ["verify"],
+    );
+    const payload = new TextEncoder().encode(
+      fixtureDeleteProofPayload({
+        repositoryId: input.repositoryId,
+        installId,
+        expiresAt,
+      }),
+    );
+    const ok = await crypto.subtle.verify(
+      { name: "Ed25519" },
+      key,
+      b64uToBytes(sigB64),
+      payload,
+    );
+    if (!ok) return null;
+    return {
+      installId,
+      expiresAt,
+      ownerKeyId: await fixtureOwnerKeyId(input.ownerPublicKey),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function testInstallActorKey(
   repositoryId: string,
-  installId?: string | null,
-): string =>
-  installId
-    ? `oidc:${repositoryId}${TEST_INSTALL.actorSuffix}:${installId}`
-    : `oidc:${repositoryId}${TEST_INSTALL.actorSuffix}`;
-export type TestInstallActorScope = {
-  creatorKey: string;
-  installId: string | null;
-};
+  runId: string,
+  ownerKeyId: string,
+): string {
+  if (
+    !NUMERIC_ID_RE.test(repositoryId) ||
+    !NUMERIC_ID_RE.test(runId) ||
+    !FIXTURE_KEY_B64U_RE.test(ownerKeyId)
+  )
+    throw new Error("invalid fixture create actor key parts");
+  return `oidc:${repositoryId}${TEST_INSTALL.actorSuffix}:${runId}:${ownerKeyId}`;
+}
+
+export function testInstallDeleteActorKey(
+  repositoryId: string,
+  ownerKeyId: string,
+  installId: string,
+): string {
+  if (
+    !NUMERIC_ID_RE.test(repositoryId) ||
+    !FIXTURE_KEY_B64U_RE.test(ownerKeyId) ||
+    !INSTALL_ID_RE.test(installId)
+  )
+    throw new Error("invalid fixture delete actor key parts");
+  return `oidc:${repositoryId}${TEST_INSTALL.deleteActorSuffix}:${ownerKeyId}:${installId}`;
+}
+
+export type TestInstallActorScope =
+  | {
+      mode: "create";
+      actorKey: string;
+      repositoryId: string;
+      runId: string;
+      ownerKeyId: string;
+    }
+  | {
+      mode: "delete";
+      actorKey: string;
+      repositoryId: string;
+      ownerKeyId: string;
+      installId: string;
+    };
+
 export function parseTestInstallActorKey(
   actorKey: string,
 ): TestInstallActorScope | null {
-  const prefix = "oidc:";
-  if (!actorKey.startsWith(prefix)) return null;
-  const rest = actorKey.slice(prefix.length);
-  const marker = TEST_INSTALL.actorSuffix;
-  const at = rest.indexOf(marker);
-  if (at <= 0) return null;
-  const repoId = rest.slice(0, at);
-  if (repoId.includes(":")) return null;
-  const tail = rest.slice(at + marker.length);
-  const creatorKey = `${prefix}${repoId}${marker}`;
-  if (tail === "") return { creatorKey, installId: null };
-  if (!tail.startsWith(":")) return null;
-  const installId = tail.slice(1);
-  if (!INSTALL_ID_RE.test(installId)) return null;
-  return { creatorKey, installId };
+  const c = FIXTURE_CREATE_KEY_RE.exec(actorKey);
+  if (c) {
+    const [, repositoryId, runId, ownerKeyId] = c as unknown as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    return { mode: "create", actorKey, repositoryId, runId, ownerKeyId };
+  }
+  const d = FIXTURE_DELETE_KEY_RE.exec(actorKey);
+  if (d) {
+    const [, repositoryId, ownerKeyId, installId] = d as unknown as [
+      string,
+      string,
+      string,
+      string,
+    ];
+    return { mode: "delete", actorKey, repositoryId, ownerKeyId, installId };
+  }
+  return null;
 }
-export const testInstallOwns = (
+
+export function testInstallOwns(
   i: {
     id: string;
     slug: string;
@@ -264,28 +450,41 @@ export const testInstallOwns = (
     createdBy?: string | null;
   },
   scope: TestInstallActorScope,
-): boolean =>
-  scope.installId !== null &&
-  INSTALL_ID_RE.test(scope.installId) &&
-  i.id === scope.installId &&
-  i.slug.startsWith(TEST_INSTALL.slugPrefix) &&
-  i.testHooks === true &&
-  i.createdBy === scope.creatorKey;
+): boolean {
+  if (
+    !i.slug.startsWith(TEST_INSTALL.slugPrefix) ||
+    i.testHooks !== true ||
+    typeof i.createdBy !== "string"
+  )
+    return false;
+  const created = parseTestInstallActorKey(i.createdBy);
+  if (created?.mode !== "create") return false;
+  if (scope.mode === "create") return i.createdBy === scope.actorKey;
+  return (
+    created.repositoryId === scope.repositoryId &&
+    created.ownerKeyId === scope.ownerKeyId &&
+    i.id === scope.installId
+  );
+}
 
 export type RedlineCredsRefusal = {
   field: "hookKeyOnly" | "revoke";
   code: "forbidden";
 };
 /**
- * R26 policy per OIDC workflow: disposable fixtures (`test-install`) may only
- * rotate and seal TEST_HOOK_KEY (`hookKeyOnly: true`), never mint an admin PAT
- * or run redline revoke. Other workflows cannot pass `hookKeyOnly: true`.
+ * R26 policy per OIDC workflow: disposable fixtures (`test-install`, create
+ * mode only) may only rotate and seal TEST_HOOK_KEY (`hookKeyOnly: true`),
+ * never mint an admin PAT or run redline revoke. Cleanup callers and other
+ * workflows cannot pass `hookKeyOnly: true`.
  */
 export function checkRedlineCreds(
   body: { revoke?: boolean; hookKeyOnly?: boolean },
   workflow?: OidcWorkflow,
+  testInstallMode?: "create" | "delete",
 ): RedlineCredsRefusal | null {
   if (workflow === "test-install") {
+    if (testInstallMode === "delete")
+      return { field: "hookKeyOnly", code: "forbidden" };
     if (body.revoke === true) return { field: "revoke", code: "forbidden" };
     if (body.hookKeyOnly !== true)
       return { field: "hookKeyOnly", code: "forbidden" };
@@ -325,11 +524,13 @@ export function authorize(
       !TEST_MEMBER.routes.includes(route)
     )
       return { ok: false, code: "forbidden" };
-    if (
-      principal.oidcWorkflow === "test-install" &&
-      !TEST_INSTALL.routes.includes(route)
-    )
-      return { ok: false, code: "forbidden" };
+    if (principal.oidcWorkflow === "test-install") {
+      const allowed =
+        principal.testInstallMode === "delete"
+          ? TEST_INSTALL.deleteRoutes
+          : TEST_INSTALL.routes;
+      if (!allowed.includes(route)) return { ok: false, code: "forbidden" };
+    }
   }
   const rule = AUTHZ[route][principal ? principal.kind : "none"];
   if (!rule.allow) return { ok: false, code: rule.code };
