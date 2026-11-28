@@ -274,7 +274,12 @@ describe("enums and JOB_STEPS", () => {
     }
     expect(JOB_STEPS.retry).toEqual(JOB_STEPS.create);
     expect(Object.keys(JOB_STEPS).sort()).toEqual(
-      [...JobKindSchema.options, "redline_creds_revoke", "oauth_copy"].sort(),
+      [
+        ...JobKindSchema.options,
+        "redline_creds_revoke",
+        "redline_creds_hook_key",
+        "oauth_copy",
+      ].sort(),
     );
   });
 

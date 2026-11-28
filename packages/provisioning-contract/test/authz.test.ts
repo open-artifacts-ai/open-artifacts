@@ -7,22 +7,33 @@ import {
   canTransition,
   checkCreateFields,
   checkPurgeFields,
+  checkRedlineCreds,
   createFieldRule,
   fieldRulesOf,
+  fixtureDeleteProofPayload,
+  fixtureOwnerKeyId,
   InstallStateSchema,
+  isFixtureOwnerPublicKey,
   JobKindSchema,
   OIDC_LIMITS,
   oidcMayCreate,
   oidcOwns,
   PROTOCOL_ROUTES,
   PURGE_FIELD_RULES,
+  parseTestInstallActorKey,
   ROUTE_IDS,
   ROUTES,
+  signFixtureDeleteProof,
+  TEST_INSTALL,
   TEST_MEMBER,
   TOKEN_DELETING_PURGE,
   TokenScopeSchema,
   TRANSITIONS,
+  testInstallActorKey,
+  testInstallDeleteActorKey,
+  testInstallOwns,
   testMemberOwns,
+  verifyFixtureDeleteProof,
 } from "../src/index.js";
 
 const ALL_SCOPES = TokenScopeSchema.options;
@@ -178,6 +189,270 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
     }
   });
 
+  it("isolates fixture operations from production, rl-agents, and other same-repo fixtures across create and later cleanup", async () => {
+    const createPrincipal = {
+      kind: "oidc",
+      oidcWorkflow: "test-install",
+    } as const;
+    const deletePrincipal = {
+      kind: "oidc",
+      oidcWorkflow: "test-install",
+      testInstallMode: "delete",
+    } as const;
+    const allowed = ["R3", "R4", "R9", "R11", "R15", "R26"];
+    const deleteAllowed = ["R3", "R9", "R11", "R15"];
+    expect(TEST_INSTALL.routes).toEqual(allowed);
+    expect(TEST_INSTALL.deleteRoutes).toEqual(deleteAllowed);
+    for (const route of ROUTE_IDS) {
+      expect(authorize(route, createPrincipal, "staging").ok, route).toBe(
+        allowed.includes(route),
+      );
+      expect(authorize(route, deletePrincipal, "staging").ok, route).toBe(
+        deleteAllowed.includes(route),
+      );
+      expect(authorize(route, createPrincipal, "prod").ok, route).toBe(false);
+      expect(authorize(route, deletePrincipal, "prod").ok, route).toBe(false);
+    }
+
+    const mkOwnerKey = async () => {
+      const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, [
+        "sign",
+        "verify",
+      ])) as CryptoKeyPair;
+      const raw = new Uint8Array(
+        (await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer,
+      );
+      const pub = Buffer.from(raw).toString("base64url");
+      expect(isFixtureOwnerPublicKey(pub)).toBe(true);
+      return {
+        pub,
+        privateKey: pair.privateKey,
+        keyId: await fixtureOwnerKeyId(pub),
+      };
+    };
+
+    // Two independent fixtures created from the same repository (42).
+    const ownerA = await mkOwnerKey();
+    const ownerB = await mkOwnerKey();
+    const actorA = testInstallActorKey("42", "1001", ownerA.keyId);
+    const actorB = testInstallActorKey("42", "1002", ownerB.keyId);
+    expect(actorA).not.toBe(actorB);
+
+    const scopeA = parseTestInstallActorKey(actorA);
+    const scopeB = parseTestInstallActorKey(actorB);
+    expect(scopeA).toEqual({
+      mode: "create",
+      actorKey: actorA,
+      repositoryId: "42",
+      runId: "1001",
+      ownerKeyId: ownerA.keyId,
+    });
+    expect(scopeB).toEqual({
+      mode: "create",
+      actorKey: actorB,
+      repositoryId: "42",
+      runId: "1002",
+      ownerKeyId: ownerB.keyId,
+    });
+    if (!scopeA || !scopeB) throw new Error("expected parsed create scopes");
+
+    expect(parseTestInstallActorKey("oidc:42:test-member")).toBeNull();
+    expect(parseTestInstallActorKey("oidc:42:test-install")).toBeNull();
+    expect(parseTestInstallActorKey("oidc:42:test-install:bad")).toBeNull();
+    expect(
+      parseTestInstallActorKey("oidc:42:test-install:i0123456789a"),
+    ).toBeNull();
+
+    const fixtureA = {
+      id: "i0123456789a",
+      slug: "t-alpha",
+      testHooks: true,
+      createdBy: actorA,
+    };
+    const fixtureB = {
+      id: "i0123456789b",
+      slug: "t-beta",
+      testHooks: true,
+      createdBy: actorB,
+    };
+
+    // Create-run isolation: each owns only its own create, never the other's.
+    expect(testInstallOwns(fixtureA, scopeA)).toBe(true);
+    expect(testInstallOwns(fixtureB, scopeB)).toBe(true);
+    expect(testInstallOwns(fixtureA, scopeB)).toBe(false);
+    expect(testInstallOwns(fixtureB, scopeA)).toBe(false);
+    expect(testInstallOwns({ ...fixtureA, createdBy: "token:1" }, scopeA)).toBe(
+      false,
+    );
+    expect(
+      testInstallOwns(
+        {
+          ...fixtureA,
+          createdBy: testInstallActorKey("99", "1001", ownerA.keyId),
+        },
+        scopeA,
+      ),
+    ).toBe(false);
+    for (const slug of ["rl-agents", "rl-a", "acme"])
+      expect(testInstallOwns({ ...fixtureA, slug }, scopeA)).toBe(false);
+    expect(testInstallOwns({ ...fixtureA, testHooks: false }, scopeA)).toBe(
+      false,
+    );
+
+    // Later cleanup (new workflow run): authenticated Ed25519 delete proof
+    // binds the caller to the original fixture owner key and target install.
+    const now = Date.UTC(2026, 10, 28, 12, 0, 0);
+    const expiresAt = now + 10 * 60_000;
+    expect(
+      fixtureDeleteProofPayload({
+        repositoryId: "42",
+        installId: fixtureA.id,
+        expiresAt,
+      }),
+    ).toBe(
+      `${TEST_INSTALL.deleteProofDomain}\n42\n${fixtureA.id}\n${expiresAt}`,
+    );
+
+    const proofA = await signFixtureDeleteProof(ownerA.privateKey, {
+      repositoryId: "42",
+      installId: fixtureA.id,
+      expiresAt,
+    });
+    const verifiedA = await verifyFixtureDeleteProof({
+      ownerPublicKey: ownerA.pub,
+      proof: proofA,
+      repositoryId: "42",
+      now,
+    });
+    expect(verifiedA).toEqual({
+      installId: fixtureA.id,
+      expiresAt,
+      ownerKeyId: ownerA.keyId,
+    });
+
+    // Wrong key, wrong repo, expired, over-TTL, or tampered proof all fail closed.
+    expect(
+      await verifyFixtureDeleteProof({
+        ownerPublicKey: ownerB.pub,
+        proof: proofA,
+        repositoryId: "42",
+        now,
+      }),
+    ).toBeNull();
+    expect(
+      await verifyFixtureDeleteProof({
+        ownerPublicKey: ownerA.pub,
+        proof: proofA,
+        repositoryId: "99",
+        now,
+      }),
+    ).toBeNull();
+    expect(
+      await verifyFixtureDeleteProof({
+        ownerPublicKey: ownerA.pub,
+        proof: proofA,
+        repositoryId: "42",
+        now: expiresAt + 1,
+      }),
+    ).toBeNull();
+    const overTtl = await signFixtureDeleteProof(ownerA.privateKey, {
+      repositoryId: "42",
+      installId: fixtureA.id,
+      expiresAt: now + TEST_INSTALL.deleteProofMaxTtlMs + 1,
+    });
+    expect(
+      await verifyFixtureDeleteProof({
+        ownerPublicKey: ownerA.pub,
+        proof: overTtl,
+        repositoryId: "42",
+        now,
+      }),
+    ).toBeNull();
+    expect(
+      await verifyFixtureDeleteProof({
+        ownerPublicKey: ownerA.pub,
+        proof: proofA.replace(fixtureA.id, fixtureB.id),
+        repositoryId: "42",
+        now,
+      }),
+    ).toBeNull();
+
+    // Verified cleanup scope owns ONLY fixtureA, never fixtureB.
+    const delKeyA = testInstallDeleteActorKey("42", ownerA.keyId, fixtureA.id);
+    const delScopeA = parseTestInstallActorKey(delKeyA);
+    expect(delScopeA).toEqual({
+      mode: "delete",
+      actorKey: delKeyA,
+      repositoryId: "42",
+      ownerKeyId: ownerA.keyId,
+      installId: fixtureA.id,
+    });
+    if (!delScopeA) throw new Error("expected delete scope");
+    expect(testInstallOwns(fixtureA, delScopeA)).toBe(true);
+    expect(testInstallOwns(fixtureB, delScopeA)).toBe(false);
+
+    // Owner B signing fixtureA's install ID gets a valid proof for key B,
+    // which still fails testInstallOwns against fixtureA (owned by key A).
+    const crossProof = await signFixtureDeleteProof(ownerB.privateKey, {
+      repositoryId: "42",
+      installId: fixtureA.id,
+      expiresAt,
+    });
+    const verifiedCross = await verifyFixtureDeleteProof({
+      ownerPublicKey: ownerB.pub,
+      proof: crossProof,
+      repositoryId: "42",
+      now,
+    });
+    expect(verifiedCross?.ownerKeyId).toBe(ownerB.keyId);
+    const crossScope = parseTestInstallActorKey(
+      testInstallDeleteActorKey("42", ownerB.keyId, fixtureA.id),
+    );
+    if (!crossScope) throw new Error("expected cross scope");
+    expect(testInstallOwns(fixtureA, crossScope)).toBe(false);
+    expect(testInstallOwns(fixtureB, crossScope)).toBe(false);
+  });
+
+  it("restricts test-install R26 to hookKeyOnly in create mode (no admin PAT mint, revoke, or delete-mode creds)", () => {
+    expect(
+      checkRedlineCreds({ revoke: false, hookKeyOnly: true }, "test-install"),
+    ).toBeNull();
+    expect(
+      checkRedlineCreds(
+        { revoke: false, hookKeyOnly: true },
+        "test-install",
+        "create",
+      ),
+    ).toBeNull();
+    expect(
+      checkRedlineCreds(
+        { revoke: false, hookKeyOnly: true },
+        "test-install",
+        "delete",
+      ),
+    ).toEqual({
+      field: "hookKeyOnly",
+      code: "forbidden",
+    });
+    expect(checkRedlineCreds({ revoke: false }, "test-install")).toEqual({
+      field: "hookKeyOnly",
+      code: "forbidden",
+    });
+    expect(checkRedlineCreds({ revoke: true }, "test-install")).toEqual({
+      field: "revoke",
+      code: "forbidden",
+    });
+    for (const wf of ["redline", "test-member", undefined] as const) {
+      expect(checkRedlineCreds({ revoke: false }, wf)).toBeNull();
+      expect(checkRedlineCreds({ revoke: true }, wf)).toBeNull();
+      expect(
+        checkRedlineCreds({ revoke: false, hookKeyOnly: true }, wf),
+      ).toEqual({
+        field: "hookKeyOnly",
+        code: "forbidden",
+      });
+    }
+  });
   it("the test member's reach is exactly rl-agents with test hooks", () => {
     expect(TEST_MEMBER.slug).toBe("rl-agents");
     expect(testMemberOwns({ slug: "rl-agents", testHooks: true })).toBe(true);
@@ -300,6 +575,38 @@ describe("R4 field rules (3.3)", () => {
   const D = "test.example";
   const auth = { providers: ["google"], domains: ["acme.com"] };
   const full = { ownerEmail: "o@acme.com", tier: "team", auth };
+  it("creates only isolated email-code fixtures in the staging test domain", () => {
+    const fixture = {
+      ...full,
+      slug: "t-alpha",
+      ownerEmail: `owner@${D}`,
+      testHooks: true,
+      auth: { providers: ["email"], domains: [D], domainCodes: true },
+    };
+    const check = (body: Partial<typeof fixture> & { sendWelcome?: boolean }) =>
+      checkCreateFields(body, "oidc", "staging", D, "test-install");
+    expect(check(fixture)).toBeNull();
+    // Missing required fields still answer 400 invalid_input before fixture value checks.
+    const { auth: _omitAuth, ...noAuth } = fixture;
+    expect(check(noAuth)).toEqual({ field: "auth", code: "invalid_input" });
+    expect(check({ ...noAuth, sendWelcome: true })).toEqual({
+      field: "sendWelcome",
+      code: "forbidden",
+    });
+    for (const body of [
+      { ...fixture, slug: "rl-agents" },
+      { ...fixture, slug: "customer" },
+      { ...fixture, testHooks: false },
+      { ...fixture, auth: { ...fixture.auth, domains: ["other.example"] } },
+      { ...fixture, auth: { ...fixture.auth, providers: ["google", "email"] } },
+      { ...fixture, auth: { ...fixture.auth, domainCodes: false } },
+      { ...fixture, ownerEmail: "owner@other.example" },
+    ])
+      expect(check(body)?.code).toBe("forbidden");
+    expect(
+      checkCreateFields(fixture, "oidc", "staging", D, "redline")?.code,
+    ).toBe("forbidden");
+  });
 
   it("admin testHooks: staging allowed, prod 403 forbidden", () => {
     expect(createFieldRule("testHooks", "admin", "staging")).toBe("optional");

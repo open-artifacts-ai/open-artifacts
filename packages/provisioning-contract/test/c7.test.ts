@@ -16,12 +16,31 @@ const key = Buffer.alloc(32, 7).toString("base64url");
 
 describe("redlineCredsJobArgs (R26 jobs.args)", () => {
   const mint = RedlineCredsSchema.parse({ requestId: rid, recipientKey: key });
+  const hook = RedlineCredsSchema.parse({
+    requestId: rid,
+    hookKeyOnly: true,
+    recipientKey: key,
+  });
   const rev = RedlineCredsSchema.parse({ requestId: rid, revoke: true });
 
   it("a mint is exactly { revoke: false, recipientKey }", () => {
     const a = redlineCredsJobArgs(mint);
     expect(a).toStrictEqual({ revoke: false, recipientKey: key });
     expect(Object.keys(a).sort()).toEqual(["recipientKey", "revoke"]);
+  });
+
+  it("hookKeyOnly is exactly { revoke: false, hookKeyOnly: true, recipientKey }", () => {
+    const a = redlineCredsJobArgs(hook);
+    expect(a).toStrictEqual({
+      revoke: false,
+      hookKeyOnly: true,
+      recipientKey: key,
+    });
+    expect(Object.keys(a).sort()).toEqual([
+      "hookKeyOnly",
+      "recipientKey",
+      "revoke",
+    ]);
   });
 
   it("a revoke is exactly { revoke: true }", () => {
@@ -31,7 +50,7 @@ describe("redlineCredsJobArgs (R26 jobs.args)", () => {
   });
 
   it("round-trips through RedlineCredsSchema with the row's request_id", () => {
-    for (const b of [mint, rev]) {
+    for (const b of [mint, hook, rev]) {
       // A jobs row stores args as JSON next to request_id.
       const row = {
         request_id: b.requestId,

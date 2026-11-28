@@ -222,32 +222,38 @@ export const CancelJobSchema = z.object({
   requestId,
   confirmSlug: SlugInputSchema,
 });
+/** A raw X25519 public key, base64url without padding (R26, R28). */
+const X25519_PUBLIC_KEY = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 /**
  * R26 (10.1): mint (revoke absent or false; recipientKey is a 32-byte X25519
- * public key, base64url without padding, max 200 chars as approved) or
- * revoke (`revoke: true`, no key). Mint parses to `revoke: false`, so the
- * body hash covers the variant: a mint and a revoke with one requestId are
- * 409 idempotency_conflict, and a mint with or without `revoke: false` is
- * one request. Both act on the target install's redline-* PATs only
- * (redlinePatsToRevoke).
+ * public key, base64url without padding, max 200 chars as approved),
+ * hook-key-only mint (`hookKeyOnly: true`, for disposable staging fixtures:
+ * rotates TEST_HOOK_KEY and seals only `{ hookKey }`, never mints an admin
+ * PAT), or revoke (`revoke: true`, no key). Mint parses to `revoke: false`, so
+ * the body hash covers the variant: a mint and a revoke with one requestId are
+ * 409 idempotency_conflict, and a mint with or without `revoke: false` is one
+ * request. Both redline variants act on the target install's redline-* PATs
+ * only (redlinePatsToRevoke).
  */
 export const RedlineCredsSchema = z.union([
   z
     .object({
       requestId,
       revoke: z.literal(false).default(false),
-      recipientKey: z
-        .string()
-        .min(1)
-        .max(200)
-        .regex(/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/),
+      recipientKey: z.string().min(1).max(200).regex(X25519_PUBLIC_KEY),
+    })
+    .strict(),
+  z
+    .object({
+      requestId,
+      revoke: z.literal(false).default(false),
+      hookKeyOnly: z.literal(true),
+      recipientKey: z.string().min(1).max(200).regex(X25519_PUBLIC_KEY),
     })
     .strict(),
   z.object({ requestId, revoke: z.literal(true) }).strict(),
 ]);
 export type RedlineCreds = z.infer<typeof RedlineCredsSchema>;
-/** A raw X25519 public key, base64url without padding (R26, R28). */
-const X25519_PUBLIC_KEY = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/;
 /** R28 (#1053): the caller's key; the session sid is sealed to it. */
 export const TestAdminSessionSchema = z
   .object({ recipientKey: z.string().regex(X25519_PUBLIC_KEY) })
@@ -258,16 +264,19 @@ export const TestAdminSessionResultSchema = z
   .strict();
 /**
  * `jobs.args` of an R26 job. A mint carries the recipientKey (a public key,
- * which the Workflow seals the PAT to); a revoke carries only the variant.
- * With the row's request_id as requestId, the args parse back to the body.
+ * which the Workflow seals the PAT or hook key to); a fixture mint carries
+ * `hookKeyOnly: true`; a revoke carries only the variant. With the row's
+ * request_id as requestId, the args parse back to the body.
  */
 export type RedlineCredsJobArgs =
-  | { revoke: false; recipientKey: string }
+  | { revoke: false; recipientKey: string; hookKeyOnly?: true }
   | { revoke: true };
 export const redlineCredsJobArgs = (b: RedlineCreds): RedlineCredsJobArgs =>
   b.revoke === true
     ? { revoke: true }
-    : { revoke: false, recipientKey: b.recipientKey };
+    : "hookKeyOnly" in b && b.hookKeyOnly === true
+      ? { revoke: false, hookKeyOnly: true, recipientKey: b.recipientKey }
+      : { revoke: false, recipientKey: b.recipientKey };
 
 /**
  * R29 (#1008): OAUTH_STORE, DOCS_PREVIEW (open-artifacts#2641: "1" on,
