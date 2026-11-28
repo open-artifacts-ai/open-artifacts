@@ -145,6 +145,14 @@ describe("enforcement", () => {
         commentId: "AAAAAAAAAAAAAAAA",
         ...(name === "edit_comment" ? { body: "hi" } : {}),
       });
+    if (name === "place_ask")
+      Object.assign(args, {
+        key: "probe",
+        homeArtifactId: "AAAAAAAAAAAAAAAA",
+        threadId: "AAAAAAAAAAAAAAAA",
+        commentId: "AAAAAAAAAAAAAAAA",
+      });
+    if (name === "remove_ask_slot") args.key = "probe";
     if (name.startsWith("artifact_data_"))
       Object.assign(args, { collection: "c" });
     if (
