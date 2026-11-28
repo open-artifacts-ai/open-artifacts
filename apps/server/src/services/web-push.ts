@@ -214,6 +214,12 @@ export async function encryptPayload(
 
 const jwtPart = (o: unknown) => b64u(enc.encode(JSON.stringify(o)));
 
+const VAPID_REUSE_MS = 60 * 60_000;
+const MAX_VAPID_AUDIENCES = 64;
+type CachedHeader = { created: number; value: Promise<string> };
+// Rotating SESSION_SECRET yields a new signing key and therefore a fresh cache.
+const headersByKey = new WeakMap<CryptoKey, Map<string, CachedHeader>>();
+
 /**
  * The VAPID Authorization header value for a push to `endpoint` (RFC 8292):
  * a JWT valid 12 hours for the push service's origin, signed ES256 with the
@@ -225,10 +231,42 @@ export async function vapidHeader(
   now = Date.now(),
 ): Promise<string> {
   const { publicKey, signKey: key } = await vapidKeys(env);
+  const audience = new URL(endpoint).origin;
+  const subject = `https://${env.APP_HOST}`;
+  const cacheKey = JSON.stringify([audience, subject]);
+  let cache = headersByKey.get(key);
+  if (!cache) {
+    cache = new Map();
+    headersByKey.set(key, cache);
+  }
+  const cached = cache.get(cacheKey);
+  if (cached && now >= cached.created && now - cached.created < VAPID_REUSE_MS)
+    return cached.value;
+  if (!cached && cache.size >= MAX_VAPID_AUDIENCES) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+  const value = signVapidHeader(key, publicKey, audience, subject, now);
+  cache.set(cacheKey, { created: now, value });
+  try {
+    return await value;
+  } catch (error) {
+    if (cache.get(cacheKey)?.value === value) cache.delete(cacheKey);
+    throw error;
+  }
+}
+
+async function signVapidHeader(
+  key: CryptoKey,
+  publicKey: string,
+  audience: string,
+  subject: string,
+  now: number,
+) {
   const input = `${jwtPart({ typ: "JWT", alg: "ES256" })}.${jwtPart({
-    aud: new URL(endpoint).origin,
+    aud: audience,
     exp: Math.floor(now / 1000) + 12 * 3600,
-    sub: `https://${env.APP_HOST}`,
+    sub: subject,
   })}`;
   const sig = new Uint8Array(
     await crypto.subtle.sign(
@@ -240,16 +278,68 @@ export async function vapidHeader(
   return `vapid t=${input}.${b64u(sig)}, k=${publicKey}`;
 }
 
-export type PushResult = "sent" | "gone" | "failed" | "unusable";
+export type PushResult =
+  | "sent"
+  | "failed"
+  | "unusable"
+  | { status: number; providerBody: string };
+
+// Providers can echo opaque credentials, registration URLs and recipient data in arbitrary
+// fields or plain text. Retain public diagnostic words only, even for malformed/truncated JSON.
+const diagnosticWords = new Set(
+  (
+    "reason error code message status errno detail details " +
+    "BadAuthorizationHeader BadJwtToken BadVapidPublicKey BadTtl BadUrgency BadTopic BadPath " +
+    "BadRequest BadWebPushRequest BadWebPushTopic DeviceTokenNotForTopic Unregistered " +
+    "BadDeviceToken ExpiredProviderToken InvalidProviderToken TooManyProviderTokenUpdates " +
+    "TooManyRequests PayloadTooLarge MethodNotAllowed IdleTimeout InternalServerError ServiceUnavailable Shutdown " +
+    "InvalidRegistration NotRegistered UNREGISTERED INVALID_ARGUMENT UNAUTHENTICATED PERMISSION_DENIED " +
+    "THIRD_PARTY_AUTH_ERROR SENDER_ID_MISMATCH QUOTA_EXCEEDED UNAVAILABLE INTERNAL " +
+    "UnauthorizedRegistration Unauthorized Forbidden Gone Not Found invalid expired subscription " +
+    "VAPID JWT authorization authentication header public key audience subject token endpoint " +
+    "push request payload is has been no longer valid missing mismatch does not match too many requests"
+  )
+    .toLowerCase()
+    .split(/\s+/),
+);
+
+async function providerErrorPreview(response: Response): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  // 200 Unicode code points occupy at most 800 UTF-8 bytes.
+  const bytes = new Uint8Array(800);
+  let length = 0;
+  try {
+    while (length < bytes.length) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const prefix = value.subarray(0, bytes.length - length);
+      bytes.set(prefix, length);
+      length += prefix.length;
+    }
+  } catch {
+    return "";
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+  const prefix = Array.from(new TextDecoder().decode(bytes.subarray(0, length)))
+    .slice(0, 200)
+    .join("");
+  return prefix
+    .replace(/[^\s"{}[\],:]+/gu, (word) =>
+      diagnosticWords.has(word.toLowerCase()) ? word : "[redacted]",
+    )
+    .replace(/\s+/gu, " ")
+    .slice(0, 200);
+}
 
 /** How long the push service may hold a message for an offline browser. */
 const TTL_SECONDS = 4 * 3600;
 const SEND_TIMEOUT_MS = 8000;
 
 /**
- * Sends one encrypted message. A 404 or 410 is "gone" (the caller deletes the
- * subscription); any other refusal or error is "failed" (logged by the caller,
- * not retried). Refuses an endpoint that is not a known push service.
+ * Sends one encrypted message. HTTP errors include a redacted provider diagnostic.
+ * The caller removes subscriptions with unusable keys or a 404/410 response.
  */
 export async function sendPush(
   env: Env,
@@ -281,14 +371,14 @@ export async function sendPush(
         "content-encoding": "aes128gcm",
         "content-type": "application/octet-stream",
         ttl: String(TTL_SECONDS),
-        urgency: "normal",
+        urgency: "high",
         // By kind, so an Updates push can't replace a waiting Needs-you one.
         topic: payload.tag,
       },
       body,
     });
-    if (r.status === 404 || r.status === 410) return "gone";
-    return r.status >= 200 && r.status < 300 ? "sent" : "failed";
+    if (r.ok) return "sent";
+    return { status: r.status, providerBody: await providerErrorPreview(r) };
   } catch {
     return "failed";
   } finally {
