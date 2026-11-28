@@ -25,7 +25,11 @@ import {
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
-import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
+import {
+  type AgentAttr,
+  clientVersionOf,
+  lateVersion,
+} from "../services/agent-usage.js";
 import { hasConnectedMachine } from "../services/bus.js";
 import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
@@ -386,7 +390,7 @@ function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
         return guard(() => Promise.reject(e));
       }
       return withUnlinkedNote(name, t, run(tool, args, ctx));
-    });
+    }).finally(() => t.agent?.[lateVersion]?.settle(null));
   };
 }
 

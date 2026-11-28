@@ -368,6 +368,7 @@ export const CodexToolNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 const CodexCallCheck = z.strictObject({
   ...base,
   type: z.literal("codex_call_check"),
+  harness: z.literal("antigravity").optional(),
   thread_id: CodexThreadIdSchema,
   tool: CodexToolNameSchema,
   mode: z.discriminatedUnion("kind", [
@@ -382,6 +383,29 @@ const CodexCallCheck = z.strictObject({
       item_id: CodexItemIdSchema,
     }),
   ]),
+});
+
+export const CodexLinkReasonSchema = z.enum([
+  "attested",
+  "daemon_refused",
+  "lookup_timeout",
+  "hub_rate_limit",
+  "item_limit",
+  "already_used",
+  "in_flight",
+  "cached_miss",
+  "no_daemon",
+  "no_agent",
+  "invalid_check",
+  "lookup_error",
+]);
+export type CodexLinkReason = z.infer<typeof CodexLinkReasonSchema>;
+
+const CodexCallVerdict = z.strictObject({
+  ...base,
+  type: z.literal("codex_call_verdict"),
+  name: BusNameSchema,
+  reason: CodexLinkReasonSchema,
 });
 
 /** The daemon's answer: `ok` only when the call is attested. */
@@ -819,6 +843,7 @@ export const SERVER_FRAMES = [
   "owner_away",
   "proof_seen",
   "codex_call_check",
+  "codex_call_verdict",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -866,6 +891,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   OwnerAwayPush,
   ProofSeen,
   CodexCallCheck,
+  CodexCallVerdict,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -910,6 +936,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   OwnerAwayPush,
   ProofSeen,
   CodexCallCheck,
+  CodexCallVerdict,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

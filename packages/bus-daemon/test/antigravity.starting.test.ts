@@ -85,8 +85,8 @@ const byFolder = (cwd: string) =>
 
 async function setup(
   over: Partial<DaemonDeps> & {
-    /** "flag": the daemon's own default, from OA_BUS_EXPERIMENTAL_AGY. */
-    discover?: boolean | "flag";
+    /** "default": the daemon's own default. */
+    discover?: boolean | "default";
     agentsFile?: string;
     pids?: () => Promise<AgyProc[] | null>;
     /** This daemon's bus home, and where it reads the plugin's route. */
@@ -144,8 +144,8 @@ async function setup(
         os.alive.has(pid) ? (os.start.get(pid) ?? null) : null,
       comm: (pid) => os.comm.get(pid) ?? null,
       procStartTtlMs: 0,
-      // "flag": undefined overrides the harness's off, so the default runs.
-      discover: discover === "flag" ? undefined : discover,
+      // "default": undefined overrides the harness's off, so the default runs.
+      discover: discover === "default" ? undefined : discover,
       pluginHome:
         pluginHome ??
         (() =>
@@ -1058,12 +1058,11 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
   it("a moved home owns it when the plugin is pinned there, whatever the agy's own environment says", async () => {
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     p.write(MOVED);
-    // The stock default: the flag turns discovery on in a moved home too.
-    vi.stubEnv("OA_BUS_EXPERIMENTAL_AGY", "1");
+    // The stock default: discovery also runs in a moved home.
     const { h } = await setup({
       home: MOVED,
       pluginHome: p.route,
-      discover: "flag",
+      discover: "default",
     });
     h.daemon.syncNow();
     await upFor(h, S0);
@@ -1100,14 +1099,13 @@ describe("exactly one daemon lists agy at launch: the home the plugin routes to 
   it("two daemons running at once on one plugin: only the owner lists, and ownership follows the plugin", async () => {
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     p.write(MOVED);
-    vi.stubEnv("OA_BUS_EXPERIMENTAL_AGY", "1");
     const def = await setup({
       home: DEFAULT,
       pluginHome: p.route,
-      discover: "flag",
+      discover: "default",
     });
     const moved = await setup(
-      { home: MOVED, pluginHome: p.route, discover: "flag" },
+      { home: MOVED, pluginHome: p.route, discover: "default" },
       false,
     );
     def.h.daemon.syncNow();
@@ -1147,17 +1145,16 @@ describe("launch and join always target the same home (agy S2b)", () => {
   const run = async (plugin: string | undefined, mac: boolean) => {
     const p = pluginAt(mkdtempSync(join(tmpdir(), "ob-agyp-")));
     p.write(plugin);
-    vi.stubEnv("OA_BUS_EXPERIMENTAL_AGY", "1");
     // No route until the process table is set up: no tick lists before.
     let ready = false;
     const route = () => (ready ? p.route() : null);
     const def = await setup({
       home: DEFAULT,
       pluginHome: route,
-      discover: "flag",
+      discover: "default",
     });
     const alt = await setup(
-      { home: ALT, pluginHome: route, discover: "flag" },
+      { home: ALT, pluginHome: route, discover: "default" },
       false,
     );
     os.home.set(AGY, ALT);

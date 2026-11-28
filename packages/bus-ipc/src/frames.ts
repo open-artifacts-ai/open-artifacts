@@ -322,7 +322,7 @@ export type StatusRequest = z.infer<typeof StatusRequest>;
  */
 export const LinkProofRequest = z.object({
   ...base,
-  type: z.literal("link_proof"),
+  type: z.enum(["link_proof", "agy_call_seen"]),
   pid: z.number().int().positive(),
   hash: LinkProofHashSchema,
   /**

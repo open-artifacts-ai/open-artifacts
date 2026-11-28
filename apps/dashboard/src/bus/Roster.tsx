@@ -1,5 +1,5 @@
 // #1293: Agents › Agents: the namespace rail and the roster.
-import { type BusAgent, busAgentStarting } from "@oa/shared";
+import { type BusAgent, type BusRole, busAgentStarting } from "@oa/shared";
 import {
   Button,
   cn,
@@ -15,12 +15,17 @@ import {
   useIsMobile,
 } from "@oa/ui/shadcn";
 import { useState } from "react";
-import { useBusAgents, useBusMachines } from "../api/queries";
+import {
+  useAwayRoleAction,
+  useBusAgents,
+  useBusMachines,
+  useBusRoles,
+} from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
 import { muted } from "../settings/ui";
-import { AgentApp } from "./AgentApp";
+import { AgentApp, agentLocation, appName } from "./AgentApp";
 import {
   buildRail,
   type Count,
@@ -38,6 +43,11 @@ import { BusLink } from "./nav";
 import { LIVE_DOWN, QUEUE_LEGEND, StatusBadge } from "./ui";
 
 type Filter = "all" | "live" | "queued";
+
+const agentLabel = (a: BusAgent) =>
+  a.pendingRole || a.handedOver || (a.privateSessionName && !a.role)
+    ? `Session on ${a.machineLabel}`
+    : (a.role ?? a.name);
 
 const ROW =
   "flex min-h-[30px] min-w-0 items-center gap-[6px] rounded-md px-[8px] text-[length:var(--oa-text-sm)] no-underline text-foreground hover:bg-accent aria-[current=true]:bg-accent aria-[current=true]:font-medium";
@@ -216,6 +226,138 @@ function heading(scope: Scope, agents: BusAgent[], all: string[]) {
   }
 }
 
+function awayAge(since?: string) {
+  const minutes = since
+    ? Math.floor((Date.now() - Date.parse(since)) / 60000)
+    : NaN;
+  if (!Number.isFinite(minutes)) return "away";
+  if (minutes < 60) return `away ${Math.max(0, minutes)} min`;
+  if (minutes < 1440) return `away ${Math.floor(minutes / 60)} h`;
+  return `away ${Math.floor(minutes / 1440)} d`;
+}
+
+function AwayName({
+  role,
+  agents,
+  onFreed,
+}: {
+  role: BusRole;
+  agents: BusAgent[];
+  onFreed: (name: string) => void;
+}) {
+  const action = useAwayRoleAction();
+  const [mode, setMode] = useState<"move" | "free" | null>(null);
+  const [targetId, setTargetId] = useState("");
+  const targets = agents.filter(
+    (a) => a.state === "live" && (a.global || a.namespace === role.namespace),
+  );
+  const submit = async (id: string | null) => {
+    if (!role.agentId || action.isPending) return;
+    try {
+      await action.mutateAsync({
+        roleId: role.id,
+        holderId: role.agentId,
+        targetId: id,
+      });
+      if (id === null) onFreed(role.name);
+    } catch {
+      /* The mutation shows the failure and refreshes stale rows. */
+    }
+  };
+  const cancel = (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={action.isPending}
+      onClick={() => {
+        setMode(null);
+        setTargetId("");
+      }}
+    >
+      Cancel
+    </Button>
+  );
+  return (
+    <li className="flex flex-wrap items-center gap-2 py-2">
+      <div className="mr-auto">
+        <b>{role.name}</b>
+        <div className={muted}>
+          {[
+            role.awayMachine &&
+              `on ${agentLocation(role.awayMachine.split(".")[0])}`,
+            awayAge(role.awaySince),
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      </div>
+      {mode === null && (
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!targets.length}
+            onClick={() => setMode("move")}
+          >
+            Move to…
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setMode("free")}>
+            Free this name
+          </Button>
+        </>
+      )}
+      {mode === "move" && (
+        <div className="flex basis-full flex-wrap items-center gap-2">
+          <select
+            aria-label={`Move ${role.name} to`}
+            value={targetId}
+            disabled={action.isPending}
+            onChange={(e) => setTargetId(e.target.value)}
+          >
+            <option disabled value="">
+              Choose a live session
+            </option>
+            {targets.map((a) => (
+              <option key={a.id} value={a.id}>
+                {appName(a)} on {agentLocation(a.machineLabel.split(".")[0])}
+              </option>
+            ))}
+          </select>
+          <Button
+            size="sm"
+            disabled={
+              action.isPending || !targets.some((a) => a.id === targetId)
+            }
+            onClick={() => void submit(targetId)}
+          >
+            Move {role.name} here
+          </Button>
+          {cancel}
+          <p className={`m-0 basis-full ${muted}`}>
+            Its open asks, mentions and follows move too.
+          </p>
+        </div>
+      )}
+      {mode === "free" && (
+        <div className="flex basis-full flex-wrap items-center gap-2">
+          <p className="m-0 basis-full">
+            Free {role.name}? It leaves the @ list. Another session can take the
+            name without inheriting its asks or mentions.
+          </p>
+          <Button
+            size="sm"
+            disabled={action.isPending}
+            onClick={() => void submit(null)}
+          >
+            Free it
+          </Button>
+          {cancel}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   const stacked = useIsMobile();
   // agy S2b: a starting session's label is the bus's, shown as its status.
@@ -247,7 +389,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
             className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
           >
             <span className="min-w-0 truncate">
-              <span className="font-medium">{a.name}</span>{" "}
+              <span className="font-medium">{agentLabel(a)}</span>{" "}
               <span className="text-muted-foreground">
                 · {shortName(a.namespace, all)}
               </span>
@@ -289,7 +431,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
           {agents.map((a) => (
             <TableRow key={a.id}>
               <TableCell className="max-w-[220px] whitespace-normal @min-[840px]/roster:max-w-none @min-[840px]/roster:whitespace-nowrap">
-                <span className="font-medium">{a.name}</span>{" "}
+                <span className="font-medium">{agentLabel(a)}</span>{" "}
                 <span className="text-muted-foreground" title={a.namespace}>
                   · {shortName(a.namespace, all)}
                 </span>
@@ -318,12 +460,45 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   );
 }
 
-export function Roster({ scope: raw }: { scope?: string }) {
+export function Roster({ scope }: { scope?: string }) {
+  const { data } = useBusMachines();
+  return (
+    <div className="grid gap-4">
+      <AgentRoster scope={scope} />
+      {data?.instanceVersion && (
+        <section aria-label="Bus versions">
+          <h2 className="font-medium">Bus versions</h2>
+          <p>Instance {data.instanceVersion}</p>
+          <dl>
+            {data.machines
+              .filter((m) => m.revokedAt === null)
+              .map((m) => (
+                <div key={m.id} className="flex gap-2">
+                  <dt>{m.label}</dt>
+                  <dd>{m.busVersion ?? "Version unknown"}</dd>
+                </div>
+              ))}
+          </dl>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function AgentRoster({ scope: raw }: { scope?: string }) {
   const agents = useBusAgents();
   const machines = useBusMachines();
+  const roles = useBusRoles();
+  const [freed, setFreed] = useState<string | null>(null);
+  const confirmation = freed && (
+    <p role="status" className={`m-0 ${muted}`}>
+      {freed} is free
+    </p>
+  );
   const [filter, setFilter] = useState<Filter>("all");
   const scope = parseScope(raw);
-  if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
+  if (agents.isPending || roles.isPending)
+    return <p className={`m-0 ${muted}`}>Loading…</p>;
   if (agents.isError)
     return (
       <LoadError
@@ -333,9 +508,24 @@ export function Roster({ scope: raw }: { scope?: string }) {
         onRetry={() => void agents.refetch()}
       />
     );
+  if (roles.isError)
+    return (
+      <LoadError
+        title="Couldn't load held names."
+        error={roles.error}
+        busy={roles.isFetching}
+        onRetry={() => void roles.refetch()}
+      />
+    );
   const list = agents.data.agents;
   if (!agents.data.live) return <Notice tone="warning">{LIVE_DOWN}</Notice>;
-  if (list.length === 0) {
+  const away = roles.data.roles.filter(
+    (r) =>
+      r.awayHolder &&
+      r.agentId &&
+      inScope({ namespace: r.namespace, global: false }, scope),
+  );
+  if (list.length === 0 && away.length === 0) {
     const noMachine =
       machines.data !== undefined &&
       !machines.data.machines.some((m) => m.revokedAt === null);
@@ -349,6 +539,7 @@ export function Roster({ scope: raw }: { scope?: string }) {
             ? "Connect a machine first."
             : "Agents appear here while a session on one of your machines is running."}
         </p>
+        {confirmation}
         {noMachine && (
           <Button asChild variant="outline" size="sm">
             <BusLink to="/settings/machines">Go to Machines</BusLink>
@@ -400,6 +591,24 @@ export function Roster({ scope: raw }: { scope?: string }) {
         ) : (
           <RosterTable agents={shown} all={all} />
         )}
+        {away.length > 0 && filter === "all" && (
+          <section aria-label="Names held by away sessions">
+            <h3 className={`m-0 font-semibold ${LABEL}`}>
+              Names held by away sessions
+            </h3>
+            <ul className="m-0 list-none divide-y p-0">
+              {away.map((role) => (
+                <AwayName
+                  key={role.id}
+                  role={role}
+                  agents={list}
+                  onFreed={setFreed}
+                />
+              ))}
+            </ul>
+          </section>
+        )}
+        {confirmation}
         {scope.kind === "ns" && globalsFrom(list, scope.ns) > 0 && (
           <p className={`m-0 ${muted}`}>
             {globalsLine(globalsFrom(list, scope.ns))}

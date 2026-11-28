@@ -320,7 +320,7 @@ describe("oa-bus add (#2793 S1)", () => {
   });
 });
 
-// agy S5: with OA_BUS_EXPERIMENTAL_AGY=1, add gives Antigravity's entry at the
+// agy S5: add gives Antigravity's entry at the
 // new instance's address the --name form; without it the file stays as it is.
 // A scratch HOME and a hand-written agy config only: no real agy runs.
 describe("oa-bus add: Antigravity's entry (agy S5)", () => {
@@ -334,15 +334,27 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
   }
 }
 `;
-  const run = async (env: Record<string, string>) => {
+  const run = async (present: boolean, config = agyConfig) => {
     const ctx = fakeCtx(
-      { fetch: approvalServer("https://a.example.com"), stdinIsTTY: true, env },
+      {
+        fetch: approvalServer("https://a.example.com"),
+        stdinIsTTY: true,
+        which: (c) => present && c === "agy",
+      },
       true,
     );
     writeMain(ctx.home);
     const file = join(ctx.userHome, ".gemini", "config", "mcp_config.json");
     mkdirSync(join(file, ".."), { recursive: true });
-    writeFileSync(file, agyConfig);
+    if (config) writeFileSync(file, config);
+    else {
+      const dir = join(ctx.userHome, ".open-artifacts/pats");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, encodeURIComponent("https://a.example.com")),
+        PAT,
+      );
+    }
     expect(
       await add(
         { address: "https://a.example.com/", name: "work", noOpen: true },
@@ -352,9 +364,52 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
     return readFileSync(file, "utf8");
   };
 
+  it("does not bind the main origin's slug-only PAT on add", async () => {
+    const ctx = fakeCtx(
+      {
+        fetch: approvalServer("https://a.example.com"),
+        stdinIsTTY: true,
+        which: (c) => c === "agy",
+      },
+      true,
+    );
+    writeMain(ctx.home, "https://a-example.com");
+    const dir = join(ctx.userHome, ".open-artifacts");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a-example-com-pat-token"), PAT);
+    expect(
+      await add(
+        { address: "https://a.example.com", name: "work", noOpen: true },
+        ctx,
+      ),
+    ).toBe(0);
+    expect(
+      JSON.parse(
+        readFileSync(
+          join(ctx.userHome, ".gemini/config/mcp_config.json"),
+          "utf8",
+        ),
+      ).mcpServers["open-artifacts-work"],
+    ).toEqual({ serverUrl: "https://a.example.com/mcp" });
+    expect(ctx.all().join("\n")).not.toContain(PAT);
+  });
+  it("creates a named pages proxy when add finds no agy config", async () => {
+    const config = JSON.parse(await run(true, ""));
+    const args = config.mcpServers["open-artifacts-work"].args;
+    expect(args.slice(args.indexOf("mcp-proxy"))).toEqual([
+      "mcp-proxy",
+      "--instance",
+      "https://a.example.com",
+      "--for",
+      "antigravity",
+      "--name",
+      "work",
+      "--token-file",
+      expect.stringContaining("/pats/https%3A%2F%2Fa.example.com"),
+    ]);
+  });
   it("gives the new instance's entry the proxy with --name <instance>", async () => {
-    const e = JSON.parse(await run({ OA_BUS_EXPERIMENTAL_AGY: "1" }))
-      .mcpServers["oa-work"];
+    const e = JSON.parse(await run(true)).mcpServers["oa-work"];
     const args = e.args as string[];
     const i = args.indexOf("mcp-proxy");
     expect(args.slice(i)).toEqual([
@@ -372,7 +427,7 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
     expect(JSON.stringify(args)).not.toContain(PAT);
   });
 
-  it("leaves the entry alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
-    expect(await run({})).toBe(agyConfig);
+  it("leaves the entry alone when agy is absent", async () => {
+    expect(await run(false)).toBe(agyConfig);
   });
 });

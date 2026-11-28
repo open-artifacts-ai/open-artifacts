@@ -15,6 +15,8 @@ const RETRY = `It may clear on the next write. ${CHECK}`;
 
 /** reason, fix. `no_machine` is silent: that member has never connected a bus machine, so there is nothing to link. */
 const TABLE: Record<Exclude<UnlinkedWhy, "no_machine">, [string, string]> = {
+  refused: ["the bus declined the Codex link check", CHECK],
+  rate_limited: ["the Codex link check reached a bus limit", CHECK],
   no_proof: ["this connection sent no link proof", FULL_FIX],
   unbound: ["no bus session holds this connection's proof", FULL_FIX],
   malformed: ["its link proof was malformed", FULL_FIX],

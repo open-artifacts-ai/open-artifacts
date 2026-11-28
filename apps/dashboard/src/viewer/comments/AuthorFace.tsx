@@ -1,6 +1,6 @@
 import { type CommentAuthor, PRESENCE_PALETTE_SIZE } from "@oa/shared";
 import { Bot } from "lucide-react";
-import { AppMark, tidyToken } from "../../bus/AgentApp";
+import { AppMark, agentLocation, tidyToken } from "../../bus/AgentApp";
 import { AnimalIcon } from "../presence/animals";
 
 /** Up to two initials of a display name. */
@@ -129,19 +129,12 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
   const lead = isLinked ? app : "not linked";
   const rest = a.for ? `for ${a.for}` : "";
   // Machine labels are visible to the owner; other viewers get the app.
-  const location = (machine?: string, product?: string) => {
-    if (machine)
-      return /^(laptop|workstation)$/i.test(machine)
-        ? `the ${machine.toLowerCase()}`
-        : machine;
-    return product || "an agent";
-  };
   const role = a.role;
   let session = "";
   if (role) {
-    const origin = location(role.machine, app);
+    const origin = agentLocation(role.machine, app);
     session = role.holder
-      ? `was on ${origin}, now on ${location(role.holderMachine, role.holderProduct)}`
+      ? `was on ${origin}, now on ${agentLocation(role.holderMachine, role.holderProduct)}`
       : `on ${origin}`;
   }
   if (!lead && !rest && !session) return null;

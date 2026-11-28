@@ -211,6 +211,10 @@ describe("codex queue transport (C26d)", () => {
     expect(watch.size("one")).toBe(1);
     expect(watch.size("two")).toBe(1);
     expect(watch.size("three")).toBe(0);
+    const live = new Set(["two"]);
+    expect(watch.size((ref) => live.has(ref))).toBe(1);
+    live.clear();
+    expect(watch.size((ref) => live.has(ref))).toBe(0);
     expect(watch.size()).toBe(2);
   });
   it.each(["accepted", "uncertain", "fallback"] as const)(

@@ -8,7 +8,8 @@
 // share the agent-name space of their namespace (case-insensitive), both
 // ways, and never equal a reserved (chosen) former name. Only the member sets
 // roles, through the hub's RPC (the dashboard's REST, roles.rest.test.ts);
-// no frame sets or claims one.
+// no frame sets or claims one. #3132: a session's chosen name is also a role
+// once a second session asks for it; the asker gets a suffix and a proposal.
 import { runInDurableObject } from "cloudflare:test";
 import {
   BUS_CAPS,
@@ -28,6 +29,7 @@ import { BusHub, OWNER_ORG_ID } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
+  fence,
   hubOf,
   machine,
   member,
@@ -608,8 +610,8 @@ describe("a vacant role (#1296)", () => {
     });
     // #1295: the closed agent's mailbox still takes mail while it is away.
     expect((await send(d, "s", alice)).state).toBe("pending");
-    // A restarted session takes the away name back (#1742).
-    expect(await reg(d, "x", alice, n)).toBe(alice);
+    // A new session asking the away name gets a suffix and asks (#3132).
+    expect(await reg(d, "x", alice, n)).toBe(`${alice}-2`);
     d.close();
   });
 
@@ -728,32 +730,39 @@ describe("a role whose holder is away (#1349)", () => {
     d.close();
   });
 
-  it("a newcomer that reclaims the away name takes the queued mail and the plain role (#1816)", async () => {
+  it("a newcomer asking the away name gets a suffix; the queued mail and the plain role stay with the holder (#1816, #3132)", async () => {
     const { d, n, alice } = await awayWorld();
     const r = await send(d, "s", "lead");
     expect(r.queued).toBe("away");
-    expect(await reg(d, "x", alice, n)).toBe(alice);
-    expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
-    // A plain role follows the name: the next message reaches the newcomer.
+    expect(await reg(d, "x", alice, n)).toBe(`${alice}-2`);
+    // The role did not follow the name: the next message still queues for the
+    // away holder, and nothing is delivered to the newcomer.
     const r2 = await send(d, "s", "lead");
-    expect(r2).toMatchObject({ state: "pending", to_name: alice });
-    expect((await delivered(d, r2.msg_id)).to_ref).toBe("x");
+    expect(r2).toMatchObject({
+      state: "pending",
+      to_name: alice,
+      queued: "away",
+    });
+    await fence(d);
+    expect(d.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     d.close();
   });
 
-  it("a role with reach is not taken over by the newcomer: role_vacant after (#1816)", async () => {
+  it("a role with reach stays with the away holder when a newcomer asks its name (#1816, #3132)", async () => {
     const { uid, d, n, alice } = await awayWorld();
     expect((await (await hubOf(uid)).putReach(n, "lead", ns("rt"))).ok).toBe(
       true,
     );
     const r = await send(d, "s", "lead");
     expect(r.queued).toBe("away");
-    expect(await reg(d, "x", alice, n)).toBe(alice);
-    expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
+    expect(await reg(d, "x", alice, n)).toBe(`${alice}-2`);
     expect(await send(d, "s", "lead")).toMatchObject({
-      state: "refused",
-      reason: "role_vacant",
+      state: "pending",
+      to_name: alice,
+      queued: "away",
     });
+    await fence(d);
+    expect(d.raw.some((t) => t.includes('"deliver"'))).toBe(false);
     d.close();
   });
 

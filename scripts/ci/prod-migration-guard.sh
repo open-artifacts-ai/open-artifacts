@@ -1,39 +1,17 @@
 #!/usr/bin/env bash
 # The prod deploy's guard for a non-additive D1 migration (a table rebuild).
-# A migration whose first line is `-- oa:non-additive` holds the automatic
-# deploy of its release; a manual run (workflow_dispatch) deploys it guarded:
-# record the live Worker version and a D1 Time Travel bookmark, capture the
-# database, upgrade, verify; on failure (if the run allows it) roll the Worker
-# back, restore D1 to the bookmark and compare against the capture.
-#   prod-migration-guard.sh detect   -> hold=, guarded=, and reason= when held ($TAG vs the previous stable tag)
-#     (detect also holds when $TAG modifies, deletes or renames an existing server migration)
-#   prod-migration-guard.sh record  -> worker_version=, bookmark=; capture to $GUARD_DIR/before.json
-#   prod-migration-guard.sh verify   -> the migration's own verifier against the capture
-#   prod-migration-guard.sh restore  -> rollback + restore + recapture and compare
-# Env: TAG, EVENT (github.event_name), PROD_NAME (Worker and D1 name),
-#   CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID, GUARD_DIR, VERIFY_SCRIPT
-#   (the migration's verifier: capture/verify --db --out/--in), WORKER_VERSION
-#   and BOOKMARK (restore), D1_LIMIT_BYTES (the database size cap, default
-#   10 GB: a table rebuild briefly doubles a table). Never prints the token.
+# A marked migration needs a Worker version and D1 bookmark before upgrade.
+# After upgrade, compare the applied migration names to the release tag.
+# Recovery remains a separate operator decision.
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="${GITHUB_OUTPUT:-/dev/null}"
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
-dir="${GUARD_DIR:-${RUNNER_TEMP:-/tmp}/prod-migration-guard}"
-verifier="${VERIFY_SCRIPT:-apps/server/scripts/verify-migration.ts}"
 MARK="-- oa:non-additive"
 
 wr() {
   if [ -n "${WRANGLER:-}" ]; then "$WRANGLER" "$@"; else pnpm --filter @oa/server exec wrangler "$@"; fi
 }
-verifier_run() {
-  [ -f "$root/$verifier" ] || {
-    echo "the migration's verifier $verifier is missing: refusing a guarded deploy without it" >&2
-    exit 1
-  }
-  node --experimental-strip-types --no-warnings "$root/$verifier" "$@"
-}
-
 case "${1:-}" in
   detect)
     : "${TAG:?}"
@@ -64,12 +42,15 @@ case "${1:-}" in
       hold "could not list the migrations $TAG adds"
     # An already-shipped server migration must never change: installs record
     # applied migrations by name, so an edit never reaches a deployed database.
-    changed="$(git -C "$root" diff --name-only --diff-filter=MDR "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
+    changed="$(git -C "$root" diff --name-only --diff-filter=MDRT "$prev" "$TAG" -- 'apps/server/migrations/*.sql')" ||
       hold "could not list the migrations $TAG changes"
     if [ -n "$changed" ]; then
       names="$(printf '%s' "$changed" | tr '\n' ' ')"
-      hold "$TAG modifies, deletes or renames an already-deployed server migration (${names% }); add a new migration instead"
+      hold "$TAG changes an already-deployed server migration (${names% }); add a new migration instead"
     fi
+    # Validate the released files against the same policy that reviewed the PR.
+    validation="$(python3 "$root/scripts/ci/check-migration-marker.py" "$root" "$prev" apps/server/migrations "$TAG" 2>&1)" ||
+      hold "migration review check failed for $TAG: $validation"
     marked=()
     while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -84,19 +65,11 @@ case "${1:-}" in
       exit 0
     fi
     echo "non-additive migration(s) in $TAG: ${marked[*]}"
-    if [ "${EVENT:-}" != workflow_dispatch ]; then
-      hold "$TAG adds a non-additive migration (${marked[*]}); deploy it by hand (workflow_dispatch, tag $TAG) with the guard watching"
-    fi
     echo "hold=false" >> "$out"
     echo "guarded=true" >> "$out"
     ;;
   record)
-    # The bookmark and the capture are taken back to back (prod stays live):
-    # writes between them would make a post-restore recapture differ from the
-    # capture. After a restore the compare matches only because the restore
-    # also rewinds every write made after the bookmark.
     : "${PROD_NAME:?}"
-    mkdir -p "$dir"
     # A rebuild copies each rebuilt table before dropping the old one, so the
     # database briefly needs up to twice its size: refuse if that won't fit.
     limit="${D1_LIMIT_BYTES:-10737418240}"
@@ -109,17 +82,29 @@ case "${1:-}" in
       echo "the database is $size bytes: a rebuild may need twice that, over the $limit-byte limit; not migrating" >&2
       exit 1
     fi
-    version="$(wr deployments list --name "$PROD_NAME" --json |
-      node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));const v=d.at(-1)?.versions??[];if(v.length!==1||v[0].percentage!==100)process.exit(3);console.log(v[0].version_id)')" || {
-      echo "could not record the live Worker version (not exactly one version at 100%)" >&2
+    restore_id() {
+      node -e '
+        const data = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        let id;
+        if (process.argv[1] === "worker") {
+          const versions = data.at(-1)?.versions;
+          if (!Array.isArray(versions) || versions.length !== 1 || versions[0]?.percentage !== 100) process.exit(3);
+          id = versions[0].version_id;
+        } else {
+          id = data?.bookmark;
+        }
+        if (typeof id !== "string" || !id.trim() || /[\r\n\x00]/.test(id)) process.exit(3);
+        process.stdout.write(id);
+      ' "$1"
+    }
+    version="$(wr deployments list --name "$PROD_NAME" --json | restore_id worker)" || {
+      echo "could not record a live Worker version ID at 100%" >&2
       exit 1
     }
-    bookmark="$(wr d1 time-travel info "$PROD_NAME" --json |
-      node -e 'const b=JSON.parse(require("fs").readFileSync(0,"utf8")).bookmark;if(!b)process.exit(3);console.log(b)')" || {
+    bookmark="$(wr d1 time-travel info "$PROD_NAME" --json | restore_id bookmark)" || {
       echo "could not record a D1 Time Travel bookmark" >&2
       exit 1
     }
-    verifier_run capture --db "$PROD_NAME" --out "$dir/before.json"
     {
       echo "worker_version=$version"
       echo "bookmark=$bookmark"
@@ -132,28 +117,23 @@ case "${1:-}" in
     } >> "$summary"
     ;;
   verify)
-    : "${PROD_NAME:?}"
-    verifier_run verify --db "$PROD_NAME" --in "$dir/before.json"
-    ;;
-  restore)
-    : "${PROD_NAME:?}" "${WORKER_VERSION:?}" "${BOOKMARK:?}"
-    echo "::error title=Prod restore::verification failed: rolling the Worker back to $WORKER_VERSION and D1 to bookmark $BOOKMARK"
-    # The restore discards every write made since the bookmark (accepted for
-    # this release: the user's yes covers it).
-    echo "**Restoring:** this discards every write made to $PROD_NAME since bookmark \`$BOOKMARK\`." >> "$summary"
-    wr rollback "$WORKER_VERSION" --name "$PROD_NAME" --message "non-additive migration failed verification" --yes
-    wr d1 time-travel restore "$PROD_NAME" --bookmark "$BOOKMARK" --json > /dev/null
-    verifier_run capture --db "$PROD_NAME" --out "$dir/restored.json"
-    if cmp -s "$dir/before.json" "$dir/restored.json"; then
-      echo "**Restored:** Worker $WORKER_VERSION, D1 at $BOOKMARK; the database matches its pre-migration capture." >> "$summary"
-    else
-      echo "**Restored, but the database differs from its pre-migration capture.** Page the Manager." >> "$summary"
-      echo "::error title=Prod restore::the restored database differs from its pre-migration capture"
-      exit 1
-    fi
+    : "${PROD_NAME:?}" "${TAG:?}"
+    expected="$(git -C "$root" ls-tree --name-only "refs/tags/$TAG:apps/server/migrations" | LC_ALL=C sort | sed -n '/\.sql$/p')"
+    [ -n "$expected" ] || { echo "release migration list is empty" >&2; exit 1; }
+    applied="$(wr d1 execute "$PROD_NAME" --remote --json --command 'SELECT name FROM d1_migrations ORDER BY name' |
+      node -e '
+        const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        if (!Array.isArray(result) || result.length !== 1 || result[0]?.success !== true ||
+            !Array.isArray(result[0].results)) throw new Error("migration list unavailable");
+        for (const row of result[0].results) {
+          if (typeof row?.name !== "string" || /[\r\n]/.test(row.name)) throw new Error("invalid migration name");
+          console.log(row.name);
+        }
+      ')"
+    [ "$applied" = "$expected" ] || { echo "applied migration list differs from $TAG" >&2; exit 1; }
     ;;
   *)
-    echo "usage: prod-migration-guard.sh detect|record|verify|restore" >&2
+    echo "usage: prod-migration-guard.sh detect|record|verify" >&2
     exit 2
     ;;
 esac

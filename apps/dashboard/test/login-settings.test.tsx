@@ -526,11 +526,17 @@ describe("the invite dialog", () => {
     const d = await openInvite();
     list(d, "sam@globex.io ");
     expect(await within(d).findByText(WORKSPACE_ONLY_LINE)).toBeVisible();
+    fireEvent.change(
+      within(d).getByRole("textbox", { name: "Name for sam@globex.io" }),
+      { target: { value: "Sam Rivera" } },
+    );
     fireEvent.click(within(d).getByRole("button", { name: "Send 1 invite" }));
     await waitFor(() =>
       expect(
         posts.filter((c) => c.path === R.members).map((c) => c.body),
-      ).toEqual([{ email: "sam@globex.io", role: "member" }]),
+      ).toEqual([
+        { email: "sam@globex.io", role: "member", name: "Sam Rivera" },
+      ]),
     );
   });
 

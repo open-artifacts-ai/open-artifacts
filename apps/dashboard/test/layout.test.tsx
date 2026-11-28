@@ -58,18 +58,24 @@ describe("AppLayout", () => {
     expect(nav()).not.toBeNull();
   });
 
-  it("member sees Team and Settings but not Usage", async () => {
+  it("member sees Library, Trash and Settings but not Shared with me, Team or Usage", async () => {
     await mount("member");
     await screen.findAllByRole("link", { name: "Settings" });
-    expect(link("Team")).not.toBeNull();
+    expect(link("Library")).not.toBeNull();
+    expect(link("Trash")).not.toBeNull();
+    expect(link("Shared with me")).toBeNull();
+    expect(link("Team")).toBeNull();
     expect(link("Usage")).toBeNull();
+    expect(document.querySelector("[data-header-email]")).toBeNull();
   });
 
-  it("owner sees Usage", async () => {
-    await mount("owner");
+  it("owner sees Usage as a Settings tab, not in the sidebar", async () => {
+    await mount("owner", "/settings/profile");
+    await screen.findByRole("navigation", { name: "Settings sections" });
     expect(
       (await screen.findAllByRole("link", { name: "Usage" })).length,
     ).toBeGreaterThan(0);
+    expect(nav()?.textContent).not.toContain("Usage");
   });
 
   it("anonymous at / redirects to login with next=/", async () => {
@@ -97,7 +103,7 @@ describe("AppLayout", () => {
 
   it("starts each page at the top of the scrolling content", async () => {
     await mount("member");
-    await screen.findAllByRole("link", { name: "Team" });
+    await screen.findAllByRole("link", { name: "Settings" });
     const main = document.getElementById("oa-main") as HTMLElement;
     main.scrollTop = 150;
     expect(main.scrollTop).toBe(150);

@@ -1,7 +1,9 @@
 import {
   type ArtifactPatch,
   ArtifactSummarySchema,
+  type AwayRoleAction,
   BUS_MACHINES_PAUSED_HEADER,
+  BUS_MACHINES_VERSIONS_HEADER,
   type BusAddress,
   BusAgentsSchema,
   type BusLinkPut,
@@ -308,7 +310,10 @@ export const useBusMachines = (enabled = true) =>
     // the plain `{ machines }` answer it can parse.
     queryFn: ({ signal }) =>
       api.get(R.busMachines, BusMachinesSchema, signal, {
-        headers: { [BUS_MACHINES_PAUSED_HEADER]: "1" },
+        headers: {
+          [BUS_MACHINES_PAUSED_HEADER]: "1",
+          [BUS_MACHINES_VERSIONS_HEADER]: "1",
+        },
       }),
     refetchInterval: BUS_POLL_MS,
   });
@@ -397,6 +402,13 @@ export const usePutBusRole = () => {
     onSettled: () => qc.invalidateQueries({ queryKey: qk.busRoles }),
   });
 };
+export const useAwayRoleAction = () =>
+  useInvalidating(
+    (action: AwayRoleAction) => api.send("POST", R.busRoles, action),
+    () => [qk.busRoles, qk.busAgents],
+    "Couldn’t update the held name.",
+  );
+
 /** Remove a role (DELETE R.busRole(id), idempotent). */
 export const useDeleteBusRole = () =>
   useInvalidating(

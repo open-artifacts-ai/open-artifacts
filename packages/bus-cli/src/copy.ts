@@ -829,9 +829,7 @@ export function copy(
       warn(
         `Antigravity's ${clip(name, 32)} entry doesn't show pages as the session yet`,
       ),
-      next(
-        `Run ${bus} with OA_BUS_EXPERIMENTAL_AGY=1, then start a new agy session.`,
-      ),
+      next(`Run ${bus}, then start a new agy session.`),
     ],
     // agy S5, doctor: install leaves that entry as it is; the note says why and the fix.
     agyPagesLeft: (note: string) => [
@@ -1244,7 +1242,7 @@ export function copy(
     updateOff: () =>
       `Auto-update is off. Turn it on with ${bus} auto-update on.`,
     updateFailedVersion: (v: string) =>
-      `${v} failed on this machine before, so it won't be installed. The next version will be.`,
+      `${v} failed its last check. The bus will retry automatically.`,
     updatePrompt: (v: string) =>
       `Install ${v} now? The bus restarts for a few seconds. Type yes to continue: `,
     updateDeclined: () => "Nothing was installed.",

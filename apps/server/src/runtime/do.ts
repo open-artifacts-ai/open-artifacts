@@ -2406,7 +2406,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
     /** #2577: the comment this agent reply answers, and the agent's roster key (the service's verified author participant). */
-    request?: { commentId: string; key: string };
+    request?: { commentId: string; key: string; sessionKey?: string };
   }): StoredComment {
     this.checkBody(a.body, a.allowEmpty);
     this.ensureSchema();
@@ -2444,6 +2444,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
             a.request.commentId,
             a.actor,
             a.request.key,
+            a.request.sessionKey,
           )
         : undefined;
       if (askedBy) extras = { ...extras, askedBy };

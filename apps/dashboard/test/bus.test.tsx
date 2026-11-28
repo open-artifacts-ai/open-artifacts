@@ -4,7 +4,7 @@ import { type BusAgent, type Me, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiClientError } from "../src/api/client";
 import { BUS_POLL_MS, qk } from "../src/api/queries";
 import { canUseBus } from "../src/bus/access";
@@ -71,6 +71,110 @@ const settingsTabs = () =>
   screen.findByRole("navigation", { name: "Settings sections" });
 
 // ---------------------------------------------------------------- units
+
+describe("away names on Agents", () => {
+  it.each(["move", "free"])("offers %s on the held role", async (operation) => {
+    withBus();
+    const role = {
+      ...fixtures.busRoles[0]!,
+      awayHolder: true,
+      vacant: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
+    const target = A.find(
+      (a) =>
+        a.state === "live" &&
+        a.id !== role.agentId &&
+        (a.namespace === role.namespace || a.global),
+    )!;
+    let submitted: unknown;
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents:
+            operation === "free"
+              ? [
+                  {
+                    ...target,
+                    name: "OA Test-2",
+                    privateSessionName: true,
+                    pendingRole: submitted ? undefined : role.name,
+                  },
+                ]
+              : [target],
+        }),
+      ),
+      http.get(`*${R.busRoles}`, () =>
+        HttpResponse.json({
+          live: true,
+          roles: submitted ? [] : [role],
+          proposals: [],
+        }),
+      ),
+      http.post(`*${R.busRoles}`, async ({ request }) => {
+        submitted = await request.json();
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    mount("/agents");
+    const held = await screen.findByRole("region", {
+      name: "Names held by away sessions",
+    });
+    expect(within(held).getByText(role.name)).toBeInTheDocument();
+    expect(
+      within(held).getByText("on the laptop · away 19 h"),
+    ).toBeInTheDocument();
+    if (operation === "move") {
+      fireEvent.click(within(held).getByRole("button", { name: "Move to…" }));
+      expect(
+        within(held).getByRole("option", { name: "Codex on leo-work" }),
+      ).toHaveValue(target.id);
+      fireEvent.change(within(held).getByRole("combobox"), {
+        target: { value: target.id },
+      });
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: `Move ${role.name} here` }),
+      );
+    } else {
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+      expect(
+        within(held).getByText(
+          `Free ${role.name}? It leaves the @ list. Another session can take the name without inheriting its asks or mentions.`,
+        ),
+      ).toBeInTheDocument();
+      fireEvent.click(within(held).getByRole("button", { name: "Cancel" }));
+      expect(submitted).toBeUndefined();
+      fireEvent.click(
+        within(held).getByRole("button", { name: "Free this name" }),
+      );
+      fireEvent.click(within(held).getByRole("button", { name: "Free it" }));
+      expect(
+        await screen.findByText(`${role.name} is free`),
+      ).toBeInTheDocument();
+    }
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("region", { name: "Names held by away sessions" }),
+      ).not.toBeInTheDocument(),
+    );
+    if (operation === "free") {
+      expect(
+        screen.getByText(`Session on ${target.machineLabel}`),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("OA Test-2")).not.toBeInTheDocument();
+    }
+    expect(submitted).toEqual({
+      roleId: role.id,
+      holderId: role.agentId,
+      targetId: operation === "move" ? target.id : null,
+    });
+  });
+});
 
 describe("canUseBus", () => {
   it.each([
@@ -764,6 +868,26 @@ describe("Agents › Agents (the roster)", () => {
   const roster = () => screen.findByRole("table", { name: "Agents" });
   const rail = () => screen.findByRole("complementary", { name: "Namespaces" });
 
+  it("shows the role after handover and keeps the suffixed routing name private", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents: [
+            { ...A[0], name: "Lead-2", role: "Lead", privateSessionName: true },
+          ],
+        }),
+      ),
+    );
+    mount("/agents");
+    const table = await roster();
+    expect(
+      await within(table).findByText("Lead", { exact: true }),
+    ).toBeInTheDocument();
+    expect(table).not.toHaveTextContent("Lead-2");
+  });
+
   it("the rail groups by org A to Z, then Other folders (with machines), then global", async () => {
     withBus();
     mount("/agents");
@@ -1044,6 +1168,37 @@ describe("Agents › Agents (the roster)", () => {
     expect(
       screen.getByRole("link", { name: "Go to Machines" }),
     ).toHaveAttribute("href", "/settings/machines");
+  });
+
+  it("shows the instance and last reported bus version with no agents online", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [], live: false }),
+      ),
+      http.get(`*${R.busMachines}`, ({ request }) =>
+        HttpResponse.json(
+          request.headers.get("X-OA-Wants-Bus-Versions") === "1"
+            ? {
+                instanceVersion: "1.3.0",
+                machines: [
+                  {
+                    ...M[0],
+                    label: "Proof laptop",
+                    connected: false,
+                    revokedAt: null,
+                    busVersion: "1.1.9",
+                  },
+                ],
+              }
+            : { machines: [] },
+        ),
+      ),
+    );
+    mount("/agents");
+    expect(await screen.findByText("Instance 1.3.0")).toBeInTheDocument();
+    expect(screen.getByText("Proof laptop")).toBeInTheDocument();
+    expect(screen.getByText("1.1.9")).toBeInTheDocument();
   });
 
   it("machines but nothing running: No agents running", async () => {
@@ -1434,6 +1589,36 @@ describe("Agents › Roles and access", () => {
       within(w).getByRole("button", { name: "Yes, give it" }),
     ).toBeInTheDocument();
   });
+
+  it.each([
+    [1280, "table"],
+    [390, "list"],
+  ] as const)(
+    "hides handover routing aliases in Roles and its holder picker at %i px",
+    async (width, layout) => {
+      vi.stubGlobal("innerWidth", width);
+      withBus();
+      server.use(...createHandlers({ bus: true, handoverAfter: true }));
+      mount("/agents/roles?mock=bus&handover=after");
+      const table = await screen.findByRole(layout, { name: "Roles" });
+      expect(
+        await within(table).findByText("Codex on leo-work"),
+      ).toBeInTheDocument();
+      expect(table).not.toHaveTextContent("manager-2");
+      fireEvent.click(
+        within(table).getByRole("button", { name: "Change holder of manager" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Change holder of manager",
+      });
+      fireEvent.click(
+        within(dialog).getByRole("combobox", { name: "Held by" }),
+      );
+      const list = await screen.findByRole("listbox");
+      expect(list).not.toHaveTextContent(/manager-[23]/);
+      expect(list).toHaveTextContent("Antigravity on home-desktop");
+    },
+  );
 
   it("roles show holder or Vacant; Remove confirms, then DELETEs", async () => {
     withBus();

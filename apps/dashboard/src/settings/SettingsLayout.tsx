@@ -1,6 +1,7 @@
 import type { Role } from "@oa/shared";
 import { Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import { type ReactNode, useEffect } from "react";
+import { hasFeature } from "../api/contract";
 import { useLoginSettings } from "../api/loginSettings";
 import { useMe } from "../auth/useMe";
 import { useMachinesAccess } from "../bus/access";
@@ -32,6 +33,8 @@ const TABS: {
   bus?: true;
   /** #2520: only once the server answers the login settings (an older one 404s). */
   login?: true;
+  /** #3017: hidden under usage_off (hosted instances). */
+  usage?: true;
 }[] = [
   {
     to: "/settings/profile",
@@ -74,6 +77,12 @@ const TABS: {
     bus: true,
   },
   { to: "/settings/instance", label: "Instance", roles: ["owner", "admin"] },
+  {
+    to: "/settings/usage",
+    label: "Usage",
+    roles: ["owner", "admin"],
+    usage: true,
+  },
   {
     to: "/settings/plan",
     label: "Plan and billing",
@@ -124,6 +133,7 @@ export function SettingsLayout() {
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
             (!t.login || login) &&
+            (!t.usage || !hasFeature(me, "usage_off")) &&
             (t.to !== "/settings/connections" || !noAgents),
         ).map((t) => (
           <AppLink
