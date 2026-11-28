@@ -82,6 +82,13 @@ case "${1:-}" in
     ;;
   mock | real)
     suite=$1
+    if [ "$suite" = mock ]; then
+      pnpm --filter @oa/shared --filter @oa/runtime build
+      PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/$suite/shard-${E2E_SHARD%/*}.zip" \
+        pnpm --filter @oa/dashboard exec playwright test e2e/doc-version-keeps-editor.spec.ts \
+        --repeat-each=20 --retries=0 --reporter=list,blob
+      exit 0
+    fi
     args=()
     # The mock suite's pin-bubbles spec serves the built runtime in a stand-in
     # frame (#2019): build it first, as the dist integration tests do.
