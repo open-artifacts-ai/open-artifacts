@@ -40,7 +40,6 @@ const chip = (page: Page) =>
 test("in the room: a newer version keeps the editor node and the caret", async ({
   page,
 }, info) => {
-  await page.clock.install();
   await open(page, info, ["--hello", "edit"]);
   await expect
     .poll(() =>
@@ -55,19 +54,25 @@ test("in the room: a newer version keeps the editor node and the caret", async (
       ),
     )
     .toBe(1);
-  // The room has said hello (edit): the editor is live, so its content is the room's.
+  // Wait for hello (edit) AND initial sync ("saved") so initial focus placement
+  // has completed before we position the caret (#3329).
   await expect(page.getByRole("toolbar")).toBeVisible();
+  await expect(page.locator('.oa-docstate[data-state="saved"]')).toBeVisible();
   const prose = page.locator(".ProseMirror");
-  await page.getByText("We ship the new landing page").click();
-  await page.keyboard.press("Home");
-  for (let i = 0; i < 7; i++) await page.keyboard.press("ArrowRight");
+  const bold = page.getByRole("button", { name: "Bold" });
   const caret = () =>
     page.evaluate(() => {
       const s = getSelection();
       return `${s?.anchorNode?.textContent?.slice(0, 20)}@${s?.anchorOffset}`;
     });
+  // Click inside **Thursday** and wait until both ProseMirror's model selection
+  // (Bold toolbar state) and the DOM caret agree before freezing timers (#3329).
+  await page.getByText("Thursday", { exact: true }).click();
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(caret).toMatch(/^Thursday@[1-7]$/);
   const before = await caret();
   await prose.evaluate((n) => n.setAttribute("data-mark", "mine"));
+  await page.clock.install();
   await newVersion(page);
   // The original observation: 2 s after the event reaches the page.
   await page.clock.runFor(OBSERVE_MS);
@@ -77,6 +82,7 @@ test("in the room: a newer version keeps the editor node and the caret", async (
     "mine",
   );
   expect(await caret()).toBe(before);
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
 });
 
 for (const hello of ["read:room_full", "read:access"]) {
