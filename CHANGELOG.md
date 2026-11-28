@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.277.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.276.1...v0.277.0) (2026-11-28)
+
+
+### Features
+
+* **bus:** add capability-gated waiting_permission status ([#3363](https://github.com/open-artifacts-ai/open-artifacts/issues/3363) slice 1) ([#3364](https://github.com/open-artifacts-ai/open-artifacts/issues/3364)) ([80029ed](https://github.com/open-artifacts-ai/open-artifacts/commit/80029edc55dcb1922b74390a69b889c5482e6ce9))
+
 ## [0.276.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.276.0...v0.276.1) (2026-11-28)
 
 
