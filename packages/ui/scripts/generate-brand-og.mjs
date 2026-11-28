@@ -1,7 +1,10 @@
 // Regenerate the existing OG composition from the current SVG brand masters.
-// Run: pnpm --filter @oa/ui exec node scripts/generate-brand-og.mjs
+// Run: pnpm --filter @oa/ui exec node scripts/generate-brand-og.mjs ../../apps/landing/public/og.png
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { chromium } from "playwright";
+
+const outPath = resolve(process.argv[2] ?? "og.png");
 
 const logo = readFileSync(
   new URL("../src/brand/logo.svg", import.meta.url),
@@ -37,8 +40,7 @@ try {
   </style><div class="panel"></div><div class="logo">${logo}</div><div class="mark">${mark}</div><h1>Bring any agent.<br>Keep every artifact.</h1><p>open-artifacts.com</p></html>`);
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({
-    path: new URL("../../../apps/landing/public/og.png", import.meta.url)
-      .pathname,
+    path: outPath,
   });
 } finally {
   await browser.close();
