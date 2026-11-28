@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.273.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.272.1...v0.273.0) (2026-11-28)
+
+
+### Features
+
+* **bus-cli:** add Needs attention section to oa-bus status ([#3328](https://github.com/open-artifacts-ai/open-artifacts/issues/3328) S2) ([#3331](https://github.com/open-artifacts-ai/open-artifacts/issues/3331)) ([4c3d394](https://github.com/open-artifacts-ai/open-artifacts/commit/4c3d3942d6d9812d3ec31725200b7f6337dccc20))
+
 ## [0.272.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.272.0...v0.272.1) (2026-11-28)
 
 
