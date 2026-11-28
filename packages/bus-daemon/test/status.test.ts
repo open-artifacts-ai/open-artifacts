@@ -1,5 +1,5 @@
 // set_status, from the adapter through the daemon to a stub hub.
-import { daemonStatus } from "@oa/bus-ipc";
+import { daemonSetWaiting, daemonStatus } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DaemonDeps } from "../src/index.ts";
 import { STATUS_COPY } from "../src/status.ts";
@@ -233,19 +233,42 @@ describe("set_status before hello_ok", () => {
     ).toMatchObject(refused);
   });
 
-  it("waiting_permission is sent only when hello_ok listed waiting_permission (#3363)", async () => {
+  it("refuses waiting_permission via set_status and gates agent_waiting on hub cap (#3363)", async () => {
     const h = await daemonHarness({ version: GATE, statusRosterMs: 10 });
     const a = await h.adapter("A", { client_version: GATE });
     await helloOk(h); // older hub: no waiting_permission cap
+
+    // Agents cannot set waiting_permission via set_status.
     expect(
       await a.request({
         type: "set_status",
         state: "waiting_permission",
         label: "run a command",
       }),
-    ).toMatchObject({ type: "status_set" });
+    ).toMatchObject({ type: "error", code: "bad_frame" });
+
+    // Labels outside the fixed set are refused.
+    await expect(
+      daemonSetWaiting({
+        path: h.socketPath,
+        agentRef: a.welcome.agent_ref,
+        waiting: {
+          kind: "permission",
+          label: "rm -rf /" as "run a command",
+        },
+      }),
+    ).rejects.toThrow("invalid waiting state");
+
+    // Older hub without cap: daemon ignores cleanly with no errors and no frame sent.
+    expect(
+      await daemonSetWaiting({
+        path: h.socketPath,
+        agentRef: a.welcome.agent_ref,
+        waiting: { kind: "permission", label: "run a command" },
+      }),
+    ).toBe(false);
     await h.quiet();
-    expect(h.of("status")).toHaveLength(0);
+    expect(h.of("agent_waiting")).toHaveLength(0);
 
     // Reconnect to a hub that lists waiting_permission.
     const first = h.hubSock();
@@ -254,16 +277,31 @@ describe("set_status before hello_ok", () => {
     await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
     await helloOk(h, GATE, ["waiting_permission"]);
     expect(
-      await a.request({
-        type: "set_status",
-        state: "waiting_permission",
-        label: "run a command",
+      await daemonSetWaiting({
+        path: h.socketPath,
+        agentRef: a.welcome.agent_ref,
+        waiting: { kind: "permission", label: "run a command" },
       }),
-    ).toMatchObject({ type: "status_set" });
+    ).toBe(true);
     await vi.waitFor(() =>
-      expect(h.of("status").at(-1)).toMatchObject({
-        state: "waiting_permission",
-        label: "run a command",
+      expect(h.of("agent_waiting").at(-1)).toMatchObject({
+        from_ref: a.welcome.agent_ref,
+        waiting: { kind: "permission", label: "run a command" },
+      }),
+    );
+
+    // Clearing waiting sends waiting: null.
+    expect(
+      await daemonSetWaiting({
+        path: h.socketPath,
+        agentRef: a.welcome.agent_ref,
+        waiting: null,
+      }),
+    ).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.of("agent_waiting").at(-1)).toMatchObject({
+        from_ref: a.welcome.agent_ref,
+        waiting: null,
       }),
     );
   });

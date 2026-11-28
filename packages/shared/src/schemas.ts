@@ -1129,8 +1129,19 @@ export const BUS_STATUS_STATES = [
   "idle",
   "blocked",
   "waiting_on_owner",
-  "waiting_permission",
 ] as const;
+export const BUS_PERMISSION_WAIT_LABELS = [
+  "run a command",
+  "edit a file",
+  "use a tool",
+  "other",
+] as const;
+export const BusAgentWaitingSchema = z.strictObject({
+  kind: z.literal("permission"),
+  label: z.enum(BUS_PERMISSION_WAIT_LABELS).optional(),
+  since: z.string(),
+});
+export type BusAgentWaiting = z.infer<typeof BusAgentWaitingSchema>;
 
 /**
  * One agent on the caller's bus (#1291). `state`: live while its machine is
@@ -1157,6 +1168,8 @@ export const BusAgentSchema = z.strictObject({
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
   statusAt: z.string().optional(),
+  /** #3363: daemon-set waiting state (never agent-writable via set_status). */
+  waiting: BusAgentWaitingSchema.optional(),
   /** #2311: no person-chosen name or role; present only when true. */
   unnamed: z.boolean().optional(),
   /** #3132: the role it holds in its own namespace: the address to @-mention it by. */

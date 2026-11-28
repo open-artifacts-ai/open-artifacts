@@ -51,8 +51,6 @@ export class AgentStatusRelay {
       send: (f: ClientFrame, onUnsent?: () => void) => boolean;
       /** Whether the hub link is open, to tell a busy queue from a dropped link. */
       open: () => boolean;
-      /** #3363: whether the hub supports waiting_permission; false omits it cleanly. */
-      waitingPermission?: () => boolean;
       log?: (msg: string) => void;
       after?: Timer;
       statusEveryMs?: number;
@@ -71,15 +69,6 @@ export class AgentStatusRelay {
     label: string | undefined,
     reply: Reply,
   ): void {
-    // #3363: older hubs without waiting_permission ignore the new state cleanly.
-    if (
-      state === "waiting_permission" &&
-      this.opts.waitingPermission &&
-      !this.opts.waitingPermission()
-    ) {
-      reply({ type: "status_set" });
-      return;
-    }
     const update: Update = { state, ...(label === undefined ? {} : { label }) };
     const earlier = this.#earlier.get(ref);
     this.#earlier.delete(ref);

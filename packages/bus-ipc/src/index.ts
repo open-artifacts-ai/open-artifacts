@@ -5,6 +5,7 @@ export {
   DaemonSilentError,
   daemonHabits,
   daemonLinkProof,
+  daemonSetWaiting,
   daemonStatus,
   HelloRefused,
 } from "./client.ts";

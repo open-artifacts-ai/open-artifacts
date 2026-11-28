@@ -26,6 +26,13 @@ export type StatusAgent = {
   status?: string | undefined;
   status_label?: string | undefined;
   status_at?: string | undefined;
+  waiting?:
+    | {
+        kind: "permission";
+        label?: string | undefined;
+        since: string;
+      }
+    | undefined;
 };
 
 export type OtherProject = {
@@ -132,6 +139,7 @@ const DEFAULT_NAME =
  * are counted as unnamed and hidden from the default screen.
  */
 export function isUnnamedHidden(a: StatusAgent): boolean {
+  if (a.waiting?.kind === "permission") return false;
   if (!DEFAULT_NAME.test(a.name.trim())) return false;
   if (!a.status) return true;
   if (a.status === "idle") {
@@ -145,7 +153,7 @@ type Group = "needs_you" | "working" | "idle_old";
 
 export function classifyAgent(a: StatusAgent, now: number): Group {
   if (
-    a.status === "waiting_permission" ||
+    a.waiting?.kind === "permission" ||
     a.status === "waiting_on_owner" ||
     a.status === "blocked"
   )
@@ -161,13 +169,28 @@ export function classifyAgent(a: StatusAgent, now: number): Group {
 const padRight = (s: string, width: number): string =>
   s + " ".repeat(Math.max(0, width - cols(s)));
 
+const ageTimestamp = (a: StatusAgent): string | undefined =>
+  a.waiting?.kind === "permission" ? a.waiting.since : a.status_at;
+
 const byRecent = (a: StatusAgent, b: StatusAgent): number => {
-  const ta = a.status_at ? Date.parse(a.status_at) : -Infinity;
-  const tb = b.status_at ? Date.parse(b.status_at) : -Infinity;
+  const ta = ageTimestamp(a)
+    ? Date.parse(ageTimestamp(a) as string)
+    : -Infinity;
+  const tb = ageTimestamp(b)
+    ? Date.parse(ageTimestamp(b) as string)
+    : -Infinity;
   const va = Number.isFinite(ta) ? ta : -Infinity;
   const vb = Number.isFinite(tb) ? tb : -Infinity;
   if (va !== vb) return vb - va;
   return a.name.localeCompare(b.name);
+};
+
+/** #3363: permission waits rank above self-reported waiting_on_owner / blocked. */
+const byNeedsYou = (a: StatusAgent, b: StatusAgent): number => {
+  const aw = a.waiting?.kind === "permission" ? 0 : 1;
+  const bw = b.waiting?.kind === "permission" ? 0 : 1;
+  if (aw !== bw) return aw - bw;
+  return byRecent(a, b);
 };
 
 const wrapWithPrefix = (
@@ -342,7 +365,7 @@ export function renderStatusScreen(
       else if (grp === "working") working.push(a);
       else idleOld.push(a);
     }
-    needsYou.sort(byRecent);
+    needsYou.sort(byNeedsYou);
     working.sort(byRecent);
     idleOld.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -358,7 +381,7 @@ export function renderStatusScreen(
     const machineW = showMachine ? 12 : 0;
     const ageW = Math.max(
       3,
-      ...visibleRows.map((a) => cols(shortAge(a.status_at, now))),
+      ...visibleRows.map((a) => cols(shortAge(ageTimestamp(a), now))),
     );
     const statusW = Math.max(
       10,
@@ -376,9 +399,10 @@ export function renderStatusScreen(
         : "";
       const label = a.status_label ? cleanText(a.status_label) : "";
       let statusStr = "";
-      if (a.status === "waiting_permission") {
-        const text = label
-          ? `Waiting for your OK (${label})`
+      if (a.waiting?.kind === "permission") {
+        const wLabel = a.waiting.label ? cleanText(a.waiting.label) : "";
+        const text = wLabel
+          ? `Waiting for your OK (${wLabel})`
           : "Waiting for your OK";
         statusStr = cutCols(text, statusW, more);
       } else if (label) {
@@ -390,7 +414,7 @@ export function renderStatusScreen(
       } else if (a.status) {
         statusStr = cutCols(a.status.replace(/_/g, " "), statusW, more);
       }
-      const age = shortAge(a.status_at, now);
+      const age = shortAge(ageTimestamp(a), now);
       const left = `  ${bold(style, nameStr)} ${p("muted", appStr)}${showMachine ? p("muted", machStr) : ""}`;
       if (!age) return `${left}${statusStr}`.trimEnd();
       return `${left}${padRight(statusStr, statusW)} ${p("muted", age.padStart(ageW))}`;
@@ -476,7 +500,7 @@ export function renderAgentsDetail(
   const machineW = 12;
   const ageW = Math.max(
     3,
-    ...allAgents.map((a) => cols(shortAge(a.status_at, now))),
+    ...allAgents.map((a) => cols(shortAge(ageTimestamp(a), now))),
   );
   const minStatusW = Math.max(
     40,
@@ -502,7 +526,7 @@ export function renderAgentsDetail(
       else if (grp === "working") working.push(a);
       else idle.push(a);
     }
-    needsYou.sort(byRecent);
+    needsYou.sort(byNeedsYou);
     working.sort(byRecent);
     idle.sort((a, b) => a.name.localeCompare(b.name));
 
@@ -527,12 +551,18 @@ export function renderAgentsDetail(
           machineW,
         );
         const label = a.status_label ? cleanText(a.status_label) : "";
-        const statusStr = label
-          ? `"${label}"`
-          : a.status
-            ? a.status.replace(/_/g, " ")
-            : "";
-        const age = shortAge(a.status_at, now);
+        let statusStr = "";
+        if (a.waiting?.kind === "permission") {
+          const wLabel = a.waiting.label ? cleanText(a.waiting.label) : "";
+          statusStr = wLabel
+            ? `Waiting for your OK (${wLabel})`
+            : "Waiting for your OK";
+        } else if (label) {
+          statusStr = `"${label}"`;
+        } else if (a.status) {
+          statusStr = a.status.replace(/_/g, " ");
+        }
+        const age = shortAge(ageTimestamp(a), now);
         const left = `  ${bold(style, nameStr)} ${p("muted", appStr)}${p("muted", machStr)}`;
         if (!age) {
           lines.push(`${left}${statusStr}`.trimEnd());

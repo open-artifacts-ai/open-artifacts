@@ -32,7 +32,7 @@ export class Lane {
   /** #3108: this hub listed the codex check cap: codex_call_check frames come. */
   agyCheck = false;
   codexCheck = false;
-  /** #3363: this hub listed waiting_permission: daemon may send waiting_permission status frames. */
+  /** #3363: this hub listed waiting_permission: daemon may send `agent_waiting` frames. */
   waitingPermission = false;
   ever = false;
   droppedAt?: number;

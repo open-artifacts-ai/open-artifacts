@@ -48,6 +48,7 @@ describe("contract is pinned", () => {
       "list",
       "fetch",
       "status",
+      "agent_waiting",
       "rename",
       "follow",
       "unfollow",

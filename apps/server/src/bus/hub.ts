@@ -182,11 +182,13 @@ import { HUB_SCHEMA, migrateHub } from "./schema.js";
 import {
   applyDueStatus,
   applyStatus,
+  applyWaiting,
   clearStatus,
   nextStatusDue,
   STATUS_CLEAR,
   type StatusChange,
   statusWire,
+  waitingWire,
 } from "./status.js";
 import {
   firstReleaseObservation,
@@ -2634,7 +2636,8 @@ function roster(
           : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
-        ...statusWire(r, withWaitingPermission),
+        ...statusWire(r),
+        ...waitingWire(r, withWaitingPermission),
         ...(former === undefined ? {} : { former_names: former }),
       };
     }),
@@ -2788,6 +2791,7 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
+  a.waiting_kind as waitingKind, a.waiting_label as waitingLabel, a.waiting_since as waitingSince,
   a.name_chosen as nameChosen, a.takeover_route = a.name as privateSessionName,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
@@ -7348,6 +7352,9 @@ export class BusHub extends DurableObject<Env> {
       case "status":
         if (sender) this.#status(ws, f, sender);
         return;
+      case "agent_waiting":
+        if (sender) this.#waiting(ws, f, sender);
+        return;
       case "follow":
       case "unfollow":
       case "following":
@@ -8427,6 +8434,16 @@ export class BusHub extends DurableObject<Env> {
     );
     if (r.applied) this.#statusChanged([sender], ws);
     else if (r.due !== null) this.#arm(r.due);
+  }
+
+  /** #3363: daemon-set waiting state, separate from self-reported status. */
+  #waiting(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "agent_waiting" }>,
+    sender: AgentRow,
+  ): void {
+    if (applyWaiting(this.ctx.storage.sql, sender.id, f.waiting, this.#now()))
+      this.#statusChanged([sender], ws);
   }
 
   /** Applied status changes: one roster_changed per namespace. */

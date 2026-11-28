@@ -14,6 +14,8 @@ import {
 import { AgentRefSchema, MachineLabelSchema } from "./refs.ts";
 import { FormerNamesSchema, NameKindSchema } from "./rename.ts";
 import {
+  AgentWaitingInputSchema,
+  AgentWaitingSchema,
   IsoTimeSchema,
   StatusLabelSchema,
   StatusStateSchema,
@@ -213,6 +215,18 @@ const Status = z.strictObject({
   from_ref: AgentRefSchema,
   state: StatusStateSchema,
   label: StatusLabelSchema.optional(),
+});
+
+/**
+ * Daemon-set waiting state (#3363, `BUS_CAPS.waitingPermission`). Separate
+ * from self-reported `status`; never writable by an agent via `set_status`.
+ * `waiting: null` clears it. Fire and forget: no reply on success.
+ */
+const AgentWaitingFrame = z.strictObject({
+  ...base,
+  type: z.literal("agent_waiting"),
+  from_ref: AgentRefSchema,
+  waiting: AgentWaitingInputSchema.nullable(),
 });
 
 /**
@@ -666,6 +680,12 @@ const RosterAgent = z.strictObject({
   status_label: StatusLabelSchema.optional(),
   status_at: IsoTimeSchema.optional(),
   /**
+   * #3363 (`BUS_CAPS.waitingPermission`): daemon-set waiting state, separate
+   * from `status` and from `away` rows' `waiting` pending-mail count. Sent
+   * only to a socket that negotiated `BUS_CAPS.waitingPermission`.
+   */
+  waiting_permission: AgentWaitingSchema.optional(),
+  /**
    * Names the agent left that still reach it (#393). Sent only to a socket
    * whose hello listed `BUS_CAPS.rename`: a decoder older than this field
    * refuses the row, and with it the whole roster.
@@ -808,6 +828,7 @@ export const CLIENT_FRAMES = [
   "list",
   "fetch",
   "status",
+  "agent_waiting",
   "rename",
   "follow",
   "unfollow",
@@ -856,6 +877,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   List,
   Fetch,
   Status,
+  AgentWaitingFrame,
   Rename,
   Follow,
   Unfollow,
@@ -903,6 +925,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   List,
   Fetch,
   Status,
+  AgentWaitingFrame,
   Rename,
   Follow,
   Unfollow,

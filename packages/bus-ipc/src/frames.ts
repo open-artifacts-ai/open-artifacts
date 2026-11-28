@@ -2,6 +2,8 @@ import {
   type AgentKind,
   AgentKindSchema,
   AgentRefSchema,
+  AgentWaitingInputSchema,
+  AgentWaitingSchema,
   BusNameSchema,
   CODEX_SPAWNED_SOURCES,
   IsoTimeSchema,
@@ -345,6 +347,20 @@ export const LinkProofRequest = z.object({
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 
 /**
+ * #3363: harness hook or local helper telling the daemon a live agent is
+ * waiting on a permission prompt (or cleared it with `waiting: null`).
+ * No hello, like `link_proof`: the socket is the user's own (0600).
+ * Agents cannot set this via `set_status`.
+ */
+export const SetWaitingRequest = z.strictObject({
+  ...base,
+  type: z.literal("set_waiting"),
+  agent_ref: AGENT_REF,
+  waiting: AgentWaitingInputSchema.nullable(),
+});
+export type SetWaitingRequest = z.infer<typeof SetWaitingRequest>;
+
+/**
  * A harness adapter telling the daemon its root's proof hash on its own
  * hello'd link (#1856, `ADAPTER_CAPS.link`). It names no agent and no pid: the
  * daemon binds the hash to the agent this connection's hello attested, so a
@@ -435,6 +451,8 @@ export const AgentInfo = z.object({
   status: StatusStateSchema.optional(),
   status_label: StatusLabelSchema.optional(),
   status_at: IsoTimeSchema.optional(),
+  /** #3363: daemon-set waiting state, separate from `status` and from away `waiting` count. */
+  waiting_permission: AgentWaitingSchema.optional(),
   /** `self` with `row` only: config files refused or noted. Older adapters ignore it. */
   config_files: z.array(ConfigFile).optional(),
   /** `self` only (#2759): when the owner's quiet hours end, ISO UTC, while they last. */
@@ -611,6 +629,8 @@ export const StatusReply = z.object({
           status: StatusStateSchema.optional(),
           status_label: StatusLabelSchema.optional(),
           status_at: IsoTimeSchema.optional(),
+          /** #3363: daemon-set waiting state, separate from self-reported status. */
+          waiting: AgentWaitingSchema.optional(),
         }),
       ),
     }),
@@ -688,6 +708,13 @@ export const LinkProofed = z.object({
   bound: z.boolean(),
 });
 
+/** The reply to `set_waiting` (#3363): whether a live agent's waiting state was forwarded. */
+export const WaitingSet = z.object({
+  ...base,
+  type: z.literal("waiting_set"),
+  applied: z.boolean(),
+});
+
 /** The reply to `habits`: the rules, or null when this install opted out. */
 export const HabitsReply = z.object({
   ...base,
@@ -697,6 +724,7 @@ export const HabitsReply = z.object({
 
 export const DaemonFrame = z.discriminatedUnion("type", [
   LinkProofed,
+  WaitingSet,
   Welcome,
   Receipt,
   Roster,

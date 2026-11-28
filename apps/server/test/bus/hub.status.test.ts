@@ -8,6 +8,7 @@
 // the real alarm never fires on its own; runDurableObjectAlarm runs it.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import {
+  ClientFrameSchema,
   LIMITS,
   newId,
   STATUS_WINDOW_MS,
@@ -19,9 +20,12 @@ import { BusHub, OWNER_ORG_ID } from "../../src/bus/hub.js";
 import {
   applyDueStatus,
   applyStatus,
+  applyWaiting,
   cleanStatusLabel,
   clearStatus,
-  statusWire,
+  statusFields,
+  waitingFields,
+  waitingWire,
 } from "../../src/bus/status.js";
 import {
   type Daemon,
@@ -638,17 +642,119 @@ describe("status.ts", () => {
       expect(read(sql, a)).toEqual(NONE);
     }));
 
-  it("statusWire omits waiting_permission for legacy daemons without the cap (#3363)", () => {
-    const row = {
-      status: "waiting_permission",
-      statusLabel: "run a command",
-      statusAt: 1000,
-    };
-    expect(statusWire(row, true)).toEqual({
-      status: "waiting_permission",
-      status_label: "run a command",
-      status_at: new Date(1000).toISOString(),
-    });
-    expect(statusWire(row, false)).toEqual({});
+  it("refuses waiting_permission in status and free-text labels in agent_waiting (#3363)", () => {
+    expect(
+      ClientFrameSchema.safeParse({
+        v: 1,
+        id: "f1",
+        type: "status",
+        from_ref: "ref-1",
+        state: "waiting_permission",
+      }).success,
+    ).toBe(false);
+    expect(
+      ClientFrameSchema.safeParse({
+        v: 1,
+        id: "f2",
+        type: "agent_waiting",
+        from_ref: "ref-1",
+        waiting: { kind: "permission", label: "rm -rf /" },
+      }).success,
+    ).toBe(false);
+    expect(
+      ClientFrameSchema.safeParse({
+        v: 1,
+        id: "f3",
+        type: "agent_waiting",
+        from_ref: "ref-1",
+        waiting: { kind: "permission", label: "run a command" },
+      }).success,
+    ).toBe(true);
+    expect(
+      ClientFrameSchema.safeParse({
+        v: 1,
+        id: "f4",
+        type: "agent_waiting",
+        from_ref: "ref-1",
+        waiting: null,
+      }).success,
+    ).toBe(true);
   });
+
+  it("waiting coexists with self-reported status and is cap-gated on wire (#3363)", () =>
+    onRow((sql, a) => {
+      applyStatus(sql, a, { state: "working", label: "building PR" }, 1000);
+      expect(
+        applyWaiting(
+          sql,
+          a,
+          { kind: "permission", label: "run a command" },
+          2000,
+        ),
+      ).toBe(true);
+      // Repeated identical waiting is a no-op and preserves original since.
+      expect(
+        applyWaiting(
+          sql,
+          a,
+          { kind: "permission", label: "run a command" },
+          3000,
+        ),
+      ).toBe(false);
+      const row = sql
+        .exec<{
+          status: string | null;
+          statusLabel: string | null;
+          statusAt: number | null;
+          waitingKind: string | null;
+          waitingLabel: string | null;
+          waitingSince: number | null;
+        }>(
+          "select status, status_label as statusLabel, status_at as statusAt, waiting_kind as waitingKind, waiting_label as waitingLabel, waiting_since as waitingSince from agents where id = ?",
+          a,
+        )
+        .one();
+      expect(statusFields(row)).toEqual({
+        status: "working",
+        statusLabel: "building PR",
+        statusAt: new Date(1000).toISOString(),
+      });
+      expect(waitingFields(row)).toEqual({
+        waiting: {
+          kind: "permission",
+          label: "run a command",
+          since: new Date(2000).toISOString(),
+        },
+      });
+      expect(waitingWire(row, true)).toEqual({
+        waiting_permission: {
+          kind: "permission",
+          label: "run a command",
+          since: new Date(2000).toISOString(),
+        },
+      });
+      expect(waitingWire(row, false)).toEqual({});
+
+      // Clearing waiting leaves self-reported status intact.
+      expect(applyWaiting(sql, a, null, 4000)).toBe(true);
+      const afterClear = sql
+        .exec<{
+          status: string | null;
+          statusLabel: string | null;
+          statusAt: number | null;
+          waitingKind: string | null;
+          waitingLabel: string | null;
+          waitingSince: number | null;
+        }>(
+          "select status, status_label as statusLabel, status_at as statusAt, waiting_kind as waitingKind, waiting_label as waitingLabel, waiting_since as waitingSince from agents where id = ?",
+          a,
+        )
+        .one();
+      expect(statusFields(afterClear)).toEqual({
+        status: "working",
+        statusLabel: "building PR",
+        statusAt: new Date(1000).toISOString(),
+      });
+      expect(waitingFields(afterClear)).toEqual({});
+    }));
 });

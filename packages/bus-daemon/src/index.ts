@@ -3048,7 +3048,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       new AgentStatusRelay({
         send: (f, onUnsent) => sendOn(lane, f, onUnsent),
         open: () => lane.hub.open,
-        waitingPermission: () => lane.waitingPermission,
         log,
         after: deps.status?.timer,
         statusEveryMs: deps.status?.statusEveryMs,
@@ -3294,6 +3293,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // #3043: un-helloed rules query for the Codex SessionStart hook CLI.
     onHabits: () =>
       (deps.habitsOff ?? (() => habitsOff(home())))() ? null : BRIEF_RULES,
+    // #3363: harness hook reporting a live agent waiting on a permission prompt.
+    onSetWaiting: (req) => {
+      const rec = agents.byRef(req.agent_ref);
+      if (!rec || !rec.live) return { applied: false };
+      const lane = laneOfRef(rec.ref);
+      if (!lane || !lane.hub.open || !lane.waitingPermission)
+        return { applied: false };
+      const ok = sendOn(lane, {
+        v: 1,
+        id: frameId(),
+        type: "agent_waiting",
+        from_ref: rec.ref,
+        waiting: req.waiting,
+      });
+      return { applied: ok };
+    },
     // #1822: `oa-bus mcp-proof` names the Claude process it runs under. The pid
     // in the request is the caller's claim, not attested (no peer credentials):
     // any process of this OS user can bind. The owner accepted that. What the
@@ -3451,6 +3466,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                   ...(a.status_at === undefined
                     ? {}
                     : { status_at: a.status_at }),
+                  ...(a.waiting_permission === undefined
+                    ? {}
+                    : { waiting: a.waiting_permission }),
                 }))
             : local.map((a) => ({
                 name: a.busName,

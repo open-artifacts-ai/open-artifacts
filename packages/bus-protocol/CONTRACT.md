@@ -88,6 +88,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `list {from_ref}`
 - `fetch {from_ref, msg_id}`
 - `status {from_ref, state, label?}`: fire and forget.
+- `agent_waiting {from_ref, waiting}` (`BUS_CAPS.waitingPermission`, #3363): daemon-set waiting state (`{kind: "permission", label?}` or `null`), separate from self-reported `status`. `label` is a closed set (`PERMISSION_WAIT_LABELS`). Fire and forget.
 - `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 - `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
@@ -99,7 +100,7 @@ Hub to client (`SERVER_FRAMES`):
 - `hello_ok {machine_id, machine_label, server_version}`
 - `agent_ok {agent_ref, bus_name}`
 - `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
-- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
+- `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, waiting_permission?, former_names?}]}`; `kind` is any kind token. `waiting_permission` (`{kind: "permission", label?, since}`) is sent only to sockets that negotiated `BUS_CAPS.waitingPermission`.
 - `body {msg_id, body}`
 - `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`, and `follow_limit` to a socket whose hello listed `follow`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice, meta?}`; `from_id` is the sender's agent id. `meta` (#2768, `notice_meta`) is a server notice's structured fields as data: `{kind, artifact_id?, comment_id?, thread_id?, user_id?, until?}` (ids bounded `[A-Za-z0-9_.:-]`, `until` an ISO UTC time). Only from `from_name` `open-artifacts`, and only to a socket whose hello listed `notice_meta`; the hub lists it in `hello_ok.caps`.

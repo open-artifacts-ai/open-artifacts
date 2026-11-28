@@ -85,6 +85,11 @@ export type StatusJson = {
       status: string | null;
       status_label: string | null;
       status_at: string | null;
+      waiting: {
+        kind: "permission";
+        label?: string;
+        since: string;
+      } | null;
     }[];
   };
   other_projects: { namespace: string; name: string; count: number }[];
@@ -517,6 +522,13 @@ function makeJson(opts: {
     status: a.status ?? null,
     status_label: a.status_label ?? null,
     status_at: a.status_at ?? null,
+    waiting: a.waiting
+      ? {
+          kind: a.waiting.kind,
+          ...(a.waiting.label === undefined ? {} : { label: a.waiting.label }),
+          since: a.waiting.since,
+        }
+      : null,
   }));
   const unnamedHidden = mappedAgents.filter((a) => a.unnamed).length;
   return {

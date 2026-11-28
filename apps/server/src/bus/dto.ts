@@ -2,7 +2,7 @@ import { type BusAgent, BusAgentSchema } from "@oa/shared";
 import { logWarn } from "../log.js";
 import { productOf } from "../services/agent-display.js";
 import type { AgentRow } from "./rows.js";
-import { statusFields } from "./status.js";
+import { statusFields, waitingFields } from "./status.js";
 
 /**
  * Epoch ms to ISO 8601 (UTC, `Z`); null stays null. Never throws: an
@@ -63,6 +63,7 @@ export const agentDto = (a: AgentWithMachine, connected: boolean): BusAgent => {
     updatedAt: iso(a.updatedAt),
     ...(a.nameChosen === 0 && a.roleHolder === 0 ? { unnamed: true } : {}),
     ...statusFields(a),
+    ...waitingFields(a),
     ...(a.roleName ? { role: a.roleName } : {}),
     ...(a.roleId ? { roleId: a.roleId } : {}),
     ...(a.handedOver === 1 ? { handedOver: true } : {}),

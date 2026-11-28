@@ -11,17 +11,20 @@
 import {
   type AgentStatus,
   AgentStatusSchema,
+  type AgentWaiting,
+  type AgentWaitingInput,
   BAD_NS_CHARS,
   LIMITS,
+  PermissionWaitLabelSchema,
   STATUS_WINDOW_MS,
   StatusLabelSchema,
   StatusStateSchema,
 } from "@oa/bus-protocol";
 import { iso } from "./dto.js";
 
-/** SET clause clearing applied and pending status (no values). */
+/** SET clause clearing applied/pending status and daemon-set waiting state (no values). */
 export const STATUS_CLEAR =
-  "status = null, status_label = null, status_at = null, status_next = null, status_due = null";
+  "status = null, status_label = null, status_at = null, status_next = null, status_due = null, waiting_kind = null, waiting_label = null, waiting_since = null";
 
 const BAD_LABEL_CHARS = new RegExp(BAD_NS_CHARS.source, "gu");
 
@@ -190,20 +193,94 @@ export function statusFields(r: StatusCols): {
 }
 
 /** The same, as roster row (wire) fields. */
-export function statusWire(
-  r: StatusCols,
-  withWaitingPermission = true,
-): {
+export function statusWire(r: StatusCols): {
   status?: AgentStatus["state"];
   status_label?: string;
   status_at?: string;
 } {
   const f = statusFields(r);
   if (f.status === undefined || f.statusAt === undefined) return {};
-  if (f.status === "waiting_permission" && !withWaitingPermission) return {};
   return {
     status: f.status,
     ...(f.statusLabel === undefined ? {} : { status_label: f.statusLabel }),
     status_at: f.statusAt,
   };
+}
+
+/** Stored daemon-set waiting columns (#3363), as AGENT_COLS reads them. */
+export type WaitingCols = {
+  waitingKind?: string | null;
+  waitingLabel?: string | null;
+  waitingSince?: number | null;
+};
+
+/**
+ * Sets or clears an open agent's daemon-set `waiting` state (#3363) without
+ * touching its self-reported `status`. Returns true only when the row changed.
+ */
+export function applyWaiting(
+  sql: SqlStorage,
+  agentId: string,
+  waiting: AgentWaitingInput | null,
+  now: number,
+): boolean {
+  const row = sql
+    .exec<{ kind: string | null; label: string | null; since: number | null }>(
+      "select waiting_kind as kind, waiting_label as label, waiting_since as since from agents where id = ? and live = 1",
+      agentId,
+    )
+    .toArray()[0];
+  if (row === undefined) return false;
+  if (waiting === null) {
+    if (row.kind === null && row.label === null && row.since === null)
+      return false;
+    sql.exec(
+      "update agents set waiting_kind = null, waiting_label = null, waiting_since = null where id = ?",
+      agentId,
+    );
+    return true;
+  }
+  const label = waiting.label ?? null;
+  if (row.kind === waiting.kind && row.label === label && row.since !== null)
+    return false;
+  const since =
+    row.kind === waiting.kind && row.since !== null ? row.since : now;
+  sql.exec(
+    "update agents set waiting_kind = ?, waiting_label = ?, waiting_since = ? where id = ?",
+    waiting.kind,
+    label,
+    since,
+    agentId,
+  );
+  return true;
+}
+
+/** A row's daemon-set waiting state as REST fields, or {} when none or invalid. */
+export function waitingFields(r: WaitingCols): { waiting?: AgentWaiting } {
+  if (r.waitingKind !== "permission" || typeof r.waitingSince !== "number")
+    return {};
+  const since = iso(r.waitingSince);
+  if (!since) return {};
+  const label =
+    typeof r.waitingLabel === "string" &&
+    PermissionWaitLabelSchema.safeParse(r.waitingLabel).success
+      ? (r.waitingLabel as AgentWaiting["label"])
+      : undefined;
+  return {
+    waiting: {
+      kind: "permission",
+      ...(label === undefined ? {} : { label }),
+      since,
+    },
+  };
+}
+
+/** The same, as roster row (wire) fields, gated by `BUS_CAPS.waitingPermission`. */
+export function waitingWire(
+  r: WaitingCols,
+  withWaitingPermission: boolean,
+): { waiting_permission?: AgentWaiting } {
+  if (!withWaitingPermission) return {};
+  const { waiting } = waitingFields(r);
+  return waiting === undefined ? {} : { waiting_permission: waiting };
 }

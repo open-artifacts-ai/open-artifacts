@@ -361,19 +361,27 @@ function AwayName({
 function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   const stacked = useIsMobile();
   // agy S2b: a starting session's label is the bus's, shown as its status.
-  const status = (a: BusAgent) => (
-    <StatusBadge
-      status={
-        a.state === "live" && a.status === "waiting_permission"
-          ? "Waiting for your OK"
-          : busAgentStarting(a)
+  const status = (a: BusAgent) =>
+    a.state === "live" && a.waiting?.kind === "permission" ? (
+      <StatusBadge
+        status="Waiting for your OK"
+        text={
+          a.waiting.label
+            ? `Waiting for your OK (${a.waiting.label})`
+            : "Waiting for your OK"
+        }
+      />
+    ) : (
+      <StatusBadge
+        status={
+          busAgentStarting(a)
             ? "Starting"
             : a.state === "live"
               ? "Live"
               : "Queued"
-      }
-    />
-  );
+        }
+      />
+    );
   const says = (a: BusAgent) =>
     a.statusLabel && !busAgentStarting(a) ? (
       <span title={`${a.statusLabel} (reported by the agent)`}>
