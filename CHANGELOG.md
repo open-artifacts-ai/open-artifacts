@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.272.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.2...v0.272.0) (2026-11-28)
+
+
+### Features
+
+* **nav:** trim sidebar, move Usage to Settings tab, drop header email ([#3017](https://github.com/open-artifacts-ai/open-artifacts/issues/3017)) ([#3303](https://github.com/open-artifacts-ai/open-artifacts/issues/3303)) ([bd567f9](https://github.com/open-artifacts-ai/open-artifacts/commit/bd567f98c7af871bb2f765fd807f06e17c013ef7))
+
+
+### Bug Fixes
+
+* **mcp:** attribute saved versions on late Codex proof ([#3350](https://github.com/open-artifacts-ai/open-artifacts/issues/3350)) ([693fb4a](https://github.com/open-artifacts-ai/open-artifacts/commit/693fb4a5924d9c8623920866ee213160e82e756a))
+
 ## [0.271.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.1...v0.271.2) (2026-11-28)
 
 
