@@ -355,6 +355,7 @@ describe("R4 field rules (3.3)", () => {
         "token",
         "staging",
         D,
+        undefined,
         ["m2-walk"],
       ),
     ).toBeNull();
@@ -364,6 +365,7 @@ describe("R4 field rules (3.3)", () => {
         "token",
         "staging",
         D,
+        undefined,
         ["rl-agents"],
       ),
     ).toEqual({ field: "slug", code: "forbidden" });
@@ -373,6 +375,7 @@ describe("R4 field rules (3.3)", () => {
         "token",
         "prod",
         D,
+        undefined,
         ["m2-walk"],
       ),
     ).toEqual({ field: "testHooks", code: "forbidden" });

@@ -447,6 +447,7 @@ export function checkCreateFields(
   principal: CreatePrincipal,
   env: ProvisioningEnv,
   stagingTestDomain: string,
+  _workflow?: OidcWorkflow,
   tokenTestHookSlugs?: readonly string[],
 ): CreateFieldRefusal | null {
   const rules = CREATE_FIELDS.map(
