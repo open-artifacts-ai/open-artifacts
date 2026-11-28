@@ -1129,6 +1129,7 @@ export const BUS_STATUS_STATES = [
   "idle",
   "blocked",
   "waiting_on_owner",
+  "waiting_permission",
 ] as const;
 
 /**

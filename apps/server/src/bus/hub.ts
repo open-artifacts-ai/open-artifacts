@@ -48,6 +48,7 @@ import {
   semverGte,
   suffixName,
   utf8Bytes,
+  WAITING_PERMISSION_HEADER,
 } from "@oa/bus-protocol";
 import {
   type AwayRoleAction,
@@ -347,6 +348,7 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
  */
 type Attachment = {
   agyCheck?: true;
+  waitingPermission?: true;
   machineId: string;
   codexVerdicts?: true;
   replaced?: true;
@@ -415,7 +417,18 @@ const HUB_CAPS = [
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
   BUS_CAPS.agyCheck,
+  BUS_CAPS.waitingPermission,
 ];
+
+/** #3363: waiting_permission status goes to sockets that advertised the upgrade header or hello cap. */
+const waitingPermissionGated = (ws: WebSocket): boolean => {
+  const att = attachmentOf(ws);
+  if (att?.waitingPermission) return true;
+  return (
+    Array.isArray(att?.caps) &&
+    hasCap({ caps: att.caps }, BUS_CAPS.waitingPermission)
+  );
+};
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
 const guestGated = (ws: WebSocket): boolean => {
@@ -2479,6 +2492,7 @@ function roster(
   withLinks = false,
   withReach = false,
   withWaiting = false,
+  withWaitingPermission = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2620,7 +2634,7 @@ function roster(
           : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
-        ...statusWire(r),
+        ...statusWire(r, withWaitingPermission),
         ...(former === undefined ? {} : { former_names: former }),
       };
     }),
@@ -6710,6 +6724,9 @@ export class BusHub extends DurableObject<Env> {
     server.serializeAttachment({
       machineId,
       ...(req.headers.get(AGY_CHECK_HEADER) === "1" ? { agyCheck: true } : {}),
+      ...(req.headers.get(WAITING_PERMISSION_HEADER) === "1"
+        ? { waitingPermission: true }
+        : {}),
       ...(req.headers.get(CODEX_VERDICT_HEADER) === "1"
         ? { codexVerdicts: true }
         : {}),
@@ -7075,7 +7092,9 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.guest) ||
           hasCap(f, BUS_CAPS.mailExpiry) ||
           hasCap(f, BUS_CAPS.sessionsGone) ||
-          hasCap(f, BUS_CAPS.codexCheck)
+          hasCap(f, BUS_CAPS.codexCheck) ||
+          hasCap(f, BUS_CAPS.waitingPermission) ||
+          attachmentOf(ws)?.waitingPermission
             ? // Everything the hub always listed, plus caps added after 16
               // only to a daemon that listed them: an older daemon decodes at
               // most 16 caps, and HUB_CAPS outgrew that (#2759).
@@ -7087,11 +7106,15 @@ export class BusHub extends DurableObject<Env> {
                       c !== BUS_CAPS.mailExpiry &&
                       c !== BUS_CAPS.sessionsGone &&
                       c !== BUS_CAPS.codexCheck &&
-                      c !== BUS_CAPS.agyCheck) ||
+                      c !== BUS_CAPS.agyCheck &&
+                      c !== BUS_CAPS.waitingPermission) ||
                     (c === BUS_CAPS.agyCheck
                       ? !!attachmentOf(ws)?.agyCheck &&
                         hasCap(f, BUS_CAPS.codexCheck)
-                      : hasCap(f, c)),
+                      : c === BUS_CAPS.waitingPermission
+                        ? !!attachmentOf(ws)?.waitingPermission ||
+                          hasCap(f, BUS_CAPS.waitingPermission)
+                        : hasCap(f, c)),
                 ),
               }
             : {}),
@@ -7284,6 +7307,7 @@ export class BusHub extends DurableObject<Env> {
               linksGated(ws),
               reachGated(ws),
               waitingGated(ws),
+              waitingPermissionGated(ws),
             ),
           );
         return;

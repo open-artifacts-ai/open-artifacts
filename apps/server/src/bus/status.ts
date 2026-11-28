@@ -190,13 +190,17 @@ export function statusFields(r: StatusCols): {
 }
 
 /** The same, as roster row (wire) fields. */
-export function statusWire(r: StatusCols): {
+export function statusWire(
+  r: StatusCols,
+  withWaitingPermission = true,
+): {
   status?: AgentStatus["state"];
   status_label?: string;
   status_at?: string;
 } {
   const f = statusFields(r);
   if (f.status === undefined || f.statusAt === undefined) return {};
+  if (f.status === "waiting_permission" && !withWaitingPermission) return {};
   return {
     status: f.status,
     ...(f.statusLabel === undefined ? {} : { status_label: f.statusLabel }),

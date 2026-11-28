@@ -3048,6 +3048,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       new AgentStatusRelay({
         send: (f, onUnsent) => sendOn(lane, f, onUnsent),
         open: () => lane.hub.open,
+        waitingPermission: () => lane.waitingPermission,
         log,
         after: deps.status?.timer,
         statusEveryMs: deps.status?.statusEveryMs,

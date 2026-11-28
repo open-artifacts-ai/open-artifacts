@@ -10,6 +10,7 @@ export const STATUS_STATES = [
   "idle",
   "blocked",
   "waiting_on_owner",
+  "waiting_permission",
 ] as const;
 export const StatusStateSchema = z.enum(STATUS_STATES);
 

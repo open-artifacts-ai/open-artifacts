@@ -122,6 +122,7 @@ describe("hello caps", () => {
       sessionsGone: "sessions_gone",
       codexCheck: "codex_check",
       agyCheck: "agy_check",
+      waitingPermission: "waiting_permission",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

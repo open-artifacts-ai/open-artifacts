@@ -17,6 +17,7 @@ const GATE = "0.106.0";
 async function helloOk(
   h: Awaited<ReturnType<typeof daemonHarness>>,
   server_version = GATE,
+  caps?: string[],
 ) {
   h.toDaemon({
     id: "w",
@@ -24,6 +25,7 @@ async function helloOk(
     machine_id: "1".repeat(16),
     machine_label: "laptop",
     server_version,
+    ...(caps ? { caps } : {}),
   });
   await vi.waitFor(async () =>
     expect(
@@ -229,5 +231,40 @@ describe("set_status before hello_ok", () => {
     expect(
       await a.request({ type: "set_status", state: "idle" }),
     ).toMatchObject(refused);
+  });
+
+  it("waiting_permission is sent only when hello_ok listed waiting_permission (#3363)", async () => {
+    const h = await daemonHarness({ version: GATE, statusRosterMs: 10 });
+    const a = await h.adapter("A", { client_version: GATE });
+    await helloOk(h); // older hub: no waiting_permission cap
+    expect(
+      await a.request({
+        type: "set_status",
+        state: "waiting_permission",
+        label: "run a command",
+      }),
+    ).toMatchObject({ type: "status_set" });
+    await h.quiet();
+    expect(h.of("status")).toHaveLength(0);
+
+    // Reconnect to a hub that lists waiting_permission.
+    const first = h.hubSock();
+    first?.terminate();
+    await vi.waitFor(() => expect(h.hubSock()).not.toBe(first));
+    await vi.waitFor(() => expect(h.daemon.hub.open).toBe(true));
+    await helloOk(h, GATE, ["waiting_permission"]);
+    expect(
+      await a.request({
+        type: "set_status",
+        state: "waiting_permission",
+        label: "run a command",
+      }),
+    ).toMatchObject({ type: "status_set" });
+    await vi.waitFor(() =>
+      expect(h.of("status").at(-1)).toMatchObject({
+        state: "waiting_permission",
+        label: "run a command",
+      }),
+    );
   });
 });

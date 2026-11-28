@@ -144,7 +144,11 @@ export function isUnnamedHidden(a: StatusAgent): boolean {
 type Group = "needs_you" | "working" | "idle_old";
 
 export function classifyAgent(a: StatusAgent, now: number): Group {
-  if (a.status === "waiting_on_owner" || a.status === "blocked")
+  if (
+    a.status === "waiting_permission" ||
+    a.status === "waiting_on_owner" ||
+    a.status === "blocked"
+  )
     return "needs_you";
   if (!a.status) return "idle_old";
   if (a.status === "idle") {
@@ -372,7 +376,12 @@ export function renderStatusScreen(
         : "";
       const label = a.status_label ? cleanText(a.status_label) : "";
       let statusStr = "";
-      if (label) {
+      if (a.status === "waiting_permission") {
+        const text = label
+          ? `Waiting for your OK (${label})`
+          : "Waiting for your OK";
+        statusStr = cutCols(text, statusW, more);
+      } else if (label) {
         const quoted = `"${label}"`;
         statusStr =
           cols(quoted) <= statusW

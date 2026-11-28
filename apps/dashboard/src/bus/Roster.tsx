@@ -364,11 +364,13 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
   const status = (a: BusAgent) => (
     <StatusBadge
       status={
-        busAgentStarting(a)
-          ? "Starting"
-          : a.state === "live"
-            ? "Live"
-            : "Queued"
+        a.state === "live" && a.status === "waiting_permission"
+          ? "Waiting for your OK"
+          : busAgentStarting(a)
+            ? "Starting"
+            : a.state === "live"
+              ? "Live"
+              : "Queued"
       }
     />
   );

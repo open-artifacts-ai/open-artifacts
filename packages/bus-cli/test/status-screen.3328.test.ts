@@ -400,4 +400,43 @@ describe("oa-bus status default screen (#3328 S1)", () => {
       }
     }
   });
+
+  it("shows waiting_permission in NEEDS YOU as Waiting for your OK (#3363)", async () => {
+    const now = Date.UTC(2026, 10, 28, 12, 0, 0);
+    const ctx = setup({
+      columns: 120,
+      st: {
+        namespaces: [
+          {
+            namespace: NS,
+            agents: [
+              {
+                name: "Builder",
+                kind: "claude-code",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "waiting_permission",
+                status_label: "run a command",
+                status_at: isoAgo(now, 2 * 60_000),
+              },
+              {
+                name: "Reviewer",
+                kind: "antigravity",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "waiting_permission",
+                status_at: isoAgo(now, 60_000),
+              },
+            ],
+          },
+        ],
+      },
+    });
+    ctx.clock.t = now;
+    expect(await statusCmd(ctx)).toBe(0);
+    const text = ctx.out().map(stripAnsi).join("\n");
+    expect(text).toContain("NEEDS YOU");
+    expect(text).toContain("Waiting for your OK (run a command)");
+    expect(text).toContain("Waiting for your OK");
+  });
 });

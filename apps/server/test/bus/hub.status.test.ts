@@ -21,6 +21,7 @@ import {
   applyStatus,
   cleanStatusLabel,
   clearStatus,
+  statusWire,
 } from "../../src/bus/status.js";
 import {
   type Daemon,
@@ -636,4 +637,18 @@ describe("status.ts", () => {
       clearStatus(sql, [a]);
       expect(read(sql, a)).toEqual(NONE);
     }));
+
+  it("statusWire omits waiting_permission for legacy daemons without the cap (#3363)", () => {
+    const row = {
+      status: "waiting_permission",
+      statusLabel: "run a command",
+      statusAt: 1000,
+    };
+    expect(statusWire(row, true)).toEqual({
+      status: "waiting_permission",
+      status_label: "run a command",
+      status_at: new Date(1000).toISOString(),
+    });
+    expect(statusWire(row, false)).toEqual({});
+  });
 });

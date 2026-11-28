@@ -10,6 +10,7 @@ import {
   PING,
   PONG,
   type ServerFrame,
+  WAITING_PERMISSION_HEADER,
 } from "@oa/bus-protocol";
 import WebSocket from "ws";
 import { FramePacer } from "./pacer.ts";
@@ -172,6 +173,7 @@ export class HubConnection {
         [AGY_CHECK_HEADER]: "1",
         authorization: `Bearer ${this.opts.token}`,
         [CODEX_VERDICT_HEADER]: "1",
+        [WAITING_PERMISSION_HEADER]: "1",
       },
       handshakeTimeout: this.opts.handshakeTimeoutMs ?? 15_000,
     });
