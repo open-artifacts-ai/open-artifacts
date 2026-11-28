@@ -1574,7 +1574,6 @@ export const SURFACES: readonly Surface[] = [
     "remove_ask_slot",
     "publish",
     tool("remove_ask_slot", (id) => ({ id, key: "probe-none" })),
-    "data",
   ),
   // Not artifact-scoped (the caller's publishable spaces).
   mcp(
