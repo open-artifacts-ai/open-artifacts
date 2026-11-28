@@ -1,6 +1,6 @@
 // #2770: the people an owner or editor may @mention on an artifact: members who
 // can read it, as faces (name and the roster's disambiguation, never an email).
-// A search by the start of a name or of any word in it (an email only when it is typed in full and exactly), 8 at most, rate limited.
+// A search by the start of a name or of any word in it (also the local-part prefix for a nameless pending invite, or an exact email), 8 at most, rate limited.
 import {
   type CommentAuthor,
   MENTION_CANDIDATES_MAX,
@@ -50,6 +50,9 @@ export async function mentionCandidates(
              or lower(display_name) like ?2 escape '\\'
              or lower(display_name) like '% ' || ?2 escape '\\'
              or handle like ?2 escape '\\'
+             or (invited_at is not null and last_seen_at is null and coalesce(display_name,'') = ''
+                 and (name = '' or lower(name) in (lower(email),lower(substr(email,1,instr(email,'@')-1))))
+                 and lower(substr(email,1,instr(email,'@')-1)) like ?2 escape '\\')
              or lower(email) = ?4)
       order by name, id limit ?3`,
   )

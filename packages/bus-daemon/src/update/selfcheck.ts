@@ -13,10 +13,9 @@ import {
   clearPending,
   editPolicy,
   markFailed,
-  markRefused,
+  markNotified,
   noteRun,
   readPolicy,
-  recordAttempt,
   releaseAttempt,
 } from "./state.ts";
 
@@ -47,7 +46,9 @@ export function completeUpdate(
   noteRun(home, p.to);
   editPolicy(home, (s) => {
     delete s.pending;
+    delete s.startFailures[p.to];
     if (s.staged?.version === p.to) delete s.staged;
+    if (!downgrade) delete s.lastAt;
   });
   prune(home, downgrade ? [p.to] : [p.to, p.from]);
   queueReport(home, {
@@ -69,12 +70,6 @@ export function abandonUpdate(
   p: PendingSwitch,
   now: number,
   reason: string,
-  /**
-   * "failed": the new daemon is broken, never tried again. "refused": the hub
-   * did not answer, which says nothing about the version; retried after a
-   * backoff, like a refused proof.
-   */
-  blame: "failed" | "refused" = "failed",
 ): boolean {
   let back = false;
   if (isSafeVersion(p.from) && existsSync(versionDir(home, p.from))) {
@@ -93,9 +88,7 @@ export function abandonUpdate(
       // bin stays where it is; the rescue shim tries again on the next start
     }
   }
-  if (blame === "failed") markFailed(home, p.to);
-  else markRefused(home, p.to, now);
-  recordAttempt(home, now);
+  markFailed(home, p.to, now);
   if (back) clearPending(home);
   queueReport(home, {
     event: "stepped_back",
@@ -104,6 +97,17 @@ export function abandonUpdate(
     reason,
     at: now,
   });
+  if (
+    (readPolicy(home).startFailures[p.to]?.count ?? 0) >= 3 &&
+    markNotified(home, p.to, "failed")
+  )
+    queueReport(home, {
+      event: "needs_you",
+      from: p.from,
+      to: p.to,
+      reason,
+      at: now,
+    });
   return back;
 }
 
@@ -170,14 +174,14 @@ export function startSelfCheck(d: SelfCheckDeps): SelfCheck {
   const t0 = now();
   const deadline = d.deadlineMs ?? SELF_CHECK_MS;
   const every = d.every ?? realEvery;
-  const fail = (reason: string, blame: "failed" | "refused") => {
+  const fail = (reason: string) => {
     stopTimer();
     state = "stepped_back";
     d.log(
       `the update to ${p.to} did not come up (${reason}): going back to ${p.from}`,
     );
     try {
-      abandonUpdate(d.home, p, now(), reason, blame);
+      abandonUpdate(d.home, p, now(), reason);
     } catch (e) {
       d.log(
         `could not record the step back: ${e instanceof Error ? e.message : String(e)}`,
@@ -215,8 +219,8 @@ export function startSelfCheck(d: SelfCheckDeps): SelfCheck {
       // No hub answer is the hub's or the network's doing: step back, but
       // do not ban a version that may be fine. A daemon that is not whole
       // is broken, whatever the hub does.
-      if (!localOk) fail("unhealthy", "failed");
-      else fail("hub_unreachable", "refused");
+      if (!localOk) fail("unhealthy");
+      else fail("hub_unreachable");
     }
   };
   stopTimer = every(poll, POLL_MS);

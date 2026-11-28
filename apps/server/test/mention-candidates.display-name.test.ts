@@ -5,7 +5,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { publish } from "../src/services/artifacts.js";
-import { getUser } from "../src/services/users.js";
+import { getUser, upsertOnLogin } from "../src/services/users.js";
+import { direct } from "./auth-helpers.js";
 import { api, login } from "./helpers.js";
 
 const app = createApp();
@@ -89,15 +90,61 @@ describe("person @mention candidates", () => {
     expect(await find(id, owner, "quinn")).toEqual([who.userId]);
   });
 
-  it("a never-signed-in invitee is found by display name", async () => {
-    const inv = await mk("ab4410", "Alex Brooks");
-    await E.DB.prepare(
-      "update users set last_seen_at = null, invited_at = ? where id = ?",
-    )
-      .bind(Date.now(), inv.userId)
-      .run();
-    const id = await page([inv]);
-    expect(await find(id, owner, "alex")).toEqual([inv.userId]);
+  it("finds real pending invites by supplied name or private local-part prefix", async () => {
+    const manager = await login(`inviter-${tag}@x.com`, "admin");
+    const install = direct({ AUTH_PROVIDERS: "google" });
+    async function invite(local: string, name?: string) {
+      const email = `${local}@x.com`;
+      const res = await api(
+        app,
+        R.members,
+        manager.cookie,
+        { method: "POST", body: { email, role: "member", name } },
+        install,
+      );
+      expect(res.status).toBe(201);
+      const user = (await res.json()) as Member;
+      expect(user.lastSeenAt).toBeNull();
+      return user;
+    }
+    const named = await invite(`ab4410-${tag}`, "Alex Brooks");
+    const local = `invite_${tag}+line2`;
+    const unnamed = await invite(local);
+    const id = await page([]);
+    const search = async (q: string) => {
+      const res = await api(
+        app,
+        R.artifactMentionCandidates(id),
+        owner.cookie,
+        { method: "POST", body: { q } },
+      );
+      expect(res.status).toBe(200);
+      return ((await res.json()) as MentionCandidates).items;
+    };
+    expect(await search("broo")).toEqual([]);
+    expect(await search(local)).toEqual([]);
+    await api(app, R.artifact(id), owner.cookie, {
+      method: "PATCH",
+      body: { visibility: "team" },
+    });
+    expect(await search("BROO")).toEqual([
+      expect.objectContaining({ id: named.id, name: "Alex Brooks" }),
+    ]);
+    const faces = await search(local.slice(0, -1).toUpperCase());
+    expect(faces).toEqual([
+      expect.objectContaining({
+        id: unnamed.id,
+        name: expect.stringMatching(/^Invited member · [a-f0-9]{6}$/),
+      }),
+    ]);
+    expect(JSON.stringify(faces)).not.toContain(local);
+    expect(await search(local.replace("_", "x"))).toEqual([]);
+    expect(await search(`${local}@x`)).toEqual([]);
+    expect(await search("invite%")).toEqual([]);
+    expect(await search(unnamed.email)).toEqual(faces);
+    const signedIn = await upsertOnLogin(E, named.email, "Alex Rivera");
+    expect(signedIn?.name).toBe("Alex Rivera");
+    expect(await search("broo")).toEqual([]);
   });
 
   it("a display name does not offer someone who cannot read the page", async () => {

@@ -66,3 +66,21 @@ export const CODEX_SPAWNED_SOURCES: ReadonlySet<string> = new Set([
   "guardian_review",
   "memory_consolidation",
 ]);
+
+/** The digest a native agy hook witnesses locally. No argument or OAuth credential leaves the hook. */
+export function agyCallDigest(
+  origin: string,
+  conversation: string,
+  call: string,
+  tool: string,
+  argsHash: string,
+) {
+  return canonicalArgsSha256([
+    "agy-native-v1",
+    origin,
+    conversation,
+    call,
+    tool,
+    argsHash,
+  ]);
+}

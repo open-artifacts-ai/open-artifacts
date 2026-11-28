@@ -323,15 +323,24 @@ describe("oa-bus upgrade: the same gates as update (#2543 review)", () => {
     expect(text(c)).toContain("Auto-update is off");
   });
 
-  it("a failed version refuses unless --allow-failed", async () => {
+  it("a failed version defers during backoff unless --allow-failed", async () => {
     const c = world(GOLDEN_VERSION);
-    markFailed(c.home, GOLDEN_VERSION);
+    markFailed(c.home, GOLDEN_VERSION, c.now());
     const { d, ran } = deps();
     expect(await upgrade(c, {}, d)).toBe(1);
     expect(ran).toEqual([]);
     expect(text(c)).toContain("failed on this machine before");
     expect(await upgrade(c, { allowFailed: true }, d)).toBe(0);
     expect(ran.length).toBe(1);
+  });
+
+  it("allows a manual upgrade when that release's retry deadline expires", async () => {
+    const c = world(GOLDEN_VERSION);
+    markFailed(c.home, GOLDEN_VERSION, c.now());
+    c.clock.t += 15 * 60_000;
+    const { d, ran } = deps();
+    expect(await upgrade(c, {}, d)).toBe(0);
+    expect(ran).toHaveLength(1);
   });
 
   it("no terminal: refuses and runs no installer", async () => {
@@ -483,7 +492,7 @@ describe("oa-bus upgrade: the same gates as update (#2543 review)", () => {
     expect(exits).toEqual([1]);
     const p = readPolicy(c.home);
     expect(p.current).toBe("0.185.0");
-    expect(p.failed).toContain(GOLDEN_VERSION);
+    expect(p.startFailures[GOLDEN_VERSION]).toEqual({ count: 1, at: t });
     expect(p.pending).toBeUndefined();
   });
 });

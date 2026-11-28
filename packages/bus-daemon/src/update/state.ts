@@ -92,17 +92,30 @@ export function readPolicy(home: string): PolicyState {
     s.failed = j.failed
       .filter((v): v is string => ver(v) !== undefined)
       .slice(-MAX_LIST);
-  const ref = j.refused;
-  if (ref && typeof ref === "object" && !Array.isArray(ref))
-    for (const [k, v] of Object.entries(ref).slice(-MAX_LIST)) {
-      const e = v as { at?: unknown; count?: unknown } | null;
-      const at = num(e?.at);
-      const count = num(e?.count);
-      if (ver(k) && at !== undefined && count !== undefined && count >= 1)
-        s.refused[k] = { at, count };
+  for (const key of ["refused", "startFailures"] as const) {
+    const rows = j[key];
+    if (!rows || typeof rows !== "object" || Array.isArray(rows)) continue;
+    for (const [version, value] of Object.entries(rows).slice(-MAX_LIST)) {
+      const entry = value as { at?: unknown; count?: unknown } | null;
+      const at = num(entry?.at),
+        count = num(entry?.count);
+      if (
+        ver(version) &&
+        at !== undefined &&
+        count !== undefined &&
+        Number.isInteger(count) &&
+        count >= 1
+      )
+        s[key][version] = { at, count };
     }
+  }
   const lastAt = num(j.lastAt);
   if (lastAt !== undefined) s.lastAt = lastAt;
+  // Older daemons and the installed rescue shim record only a version list.
+  // Use their attempt timestamp to recover a retry deadline across upgrades.
+  for (const v of s.failed)
+    s.startFailures[v] ??= { at: lastAt ?? 0, count: 1 };
+  if (s.failed.length) delete s.lastAt;
   const st = j.staged as {
     version?: unknown;
     readySince?: unknown;
@@ -162,6 +175,7 @@ const OWNED = [
   "newestRun",
   "failed",
   "refused",
+  "startFailures",
   "lastAt",
   "staged",
   "pending",
@@ -183,7 +197,8 @@ export function writePolicy(home: string, s: PolicyState): void {
   const next: Record<string, unknown> = r.kind === "ok" ? { ...r.j } : {};
   const capped: PolicyState = {
     ...s,
-    failed: s.failed.slice(-MAX_LIST),
+    failed: [],
+    startFailures: capKeys(s.startFailures),
     refused: capKeys(s.refused),
     notified: capKeys(s.notified),
   };
@@ -233,12 +248,16 @@ export const recordAttempt = (home: string, now: number) =>
     s.lastAt = Math.max(now, s.lastAt ?? 0);
   });
 
-/** Failed to start: remembered and never retried. */
-export const markFailed = (home: string, version: string) =>
+/** Record a failed start for this release only. */
+export const markFailed = (home: string, version: string, at = Date.now()) =>
   editPolicy(home, (s) => {
     if (!parseVersion(version)) return;
-    if (!s.failed.includes(version)) s.failed.push(version);
+    const count = (s.startFailures[version]?.count ?? 0) + 1;
+    delete s.startFailures[version];
+    s.startFailures[version] = { at, count };
+    if (count >= 3) s.needsYou = true;
     if (s.staged?.version === version) delete s.staged;
+    delete s.lastAt;
   });
 
 /** Proof refused: reported loudly, retried later with a growing backoff. */

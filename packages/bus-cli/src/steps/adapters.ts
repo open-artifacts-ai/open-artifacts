@@ -47,13 +47,18 @@ import {
 } from "@oa/bus-daemon";
 import { habitsOff } from "@oa/bus-ipc";
 import { hostSlug } from "@oa/shared/secrets";
+import { withAgyConfigLock } from "./agy-config-lock.ts";
 import {
   type AgyEntryIo,
   type AgyTarget,
   installAgyEntries,
   restoreAgyEntries,
 } from "./agy-proof.ts";
-import { installAgyRule, uninstallAgyRule } from "./agy-rule.ts";
+import {
+  agySettingsFile,
+  installAgyRule,
+  uninstallAgyRule,
+} from "./agy-rule.ts";
 import {
   agyPluginFiles,
   agyPluginState,
@@ -134,7 +139,6 @@ import {
   pendingEntry,
   restoreEntry,
 } from "./pi-proof.ts";
-import { readInstallFile } from "./step.ts";
 
 export { OMP_ORIGIN_FILE };
 
@@ -243,31 +247,8 @@ const HARNESSES: Harness[] = [
   "antigravity",
 ];
 
-/**
- * Antigravity (agy) is wired only with OA_BUS_EXPERIMENTAL_AGY=1 until its
- * agent kind is live on the instances (agy S1a) and it can join and get
- * messages (S2, S3). Install also writes the oa-bus agy plugin (S2,
- * steps/antigravity.ts). Uninstall does not wait for it: it removes only our
- * entry and our plugin folder.
- */
-export const AGY_FLAG = "OA_BUS_EXPERIMENTAL_AGY";
-/** An explicit shell setting wins over the opt-in saved for this bus home. */
-export function agyOn(
-  env: Record<string, string | undefined> | undefined,
-  busDir: string,
-): boolean {
-  if (env?.[AGY_FLAG] !== undefined) return env[AGY_FLAG] === "1";
-  const record = readInstallFile(join(busDir, "install.json"));
-  if (typeof record.agyEnabled === "boolean") return record.agyEnabled;
-  // Installs before the independent setting kept the opt-in in the service.
-  const service = record.service as
-    | { env?: Record<string, unknown> }
-    | undefined;
-  return service?.env?.[AGY_FLAG] === "1";
-}
-
 /** agy is on PATH, or its folders are under ~/.gemini. */
-const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
+export const hasAgy = (deps: Pick<AdapterDeps, "home" | "which">) =>
   deps.which("agy") ||
   present(join(deps.home, ".gemini", "antigravity-cli")) ||
   present(join(deps.home, ".gemini", "antigravity"));
@@ -635,6 +616,7 @@ export const agyEntryIo = (
   const p = paths(deps as AdapterDeps);
   return {
     file: p.agyMcp,
+    settings: agySettingsFile(deps.home),
     moved: p.agyPages,
     write: (text) => {
       target(p.agyMcp);
@@ -647,11 +629,14 @@ export const agyEntryIo = (
     ...(movedHome(deps as AdapterDeps)
       ? { busHome: movedHome(deps as AdapterDeps) as string }
       : {}),
+    // A host slug loses dots, hyphens, ports and the scheme. Never use it to
+    // choose a credential for an Antigravity proxy.
     patFile: (origin) =>
       join(
         deps.home,
         ".open-artifacts",
-        `${hostSlug(new URL(origin).host)}-pat-token`,
+        "pats",
+        encodeURIComponent(new URL(origin).origin),
       ),
     stopped: stoppedBus(deps, false),
     keptOf: (owner) =>
@@ -1201,29 +1186,34 @@ const install: Record<Harness, Step> = {
   // byte for byte. `agy mcp add` would rewrite the whole file.
   async antigravity(deps, notes) {
     const p = paths(deps);
-    if (!hasAgy(deps) || !agyOn(deps.env, p.busDir)) return "absent";
-    const text = readAgy(p.agyMcp);
-    const server = agyServer(deps.busBin);
-    // agy S2b: pinned like the hook, default home too, so the oa_bus tools
-    // read the conversation file the hook wrote, whatever agy's own env says.
-    const home = agyHookHome(deps);
-    const next = upsertAgyMcp(text, NAME, server, home);
-    target(p.agyMcp);
-    const record = readRecord(p.record);
-    const made = missing(text.replace(/^\uFEFF/, ""), [["mcpServers"]]);
-    if (made.length > 0 && record[p.agyMcp] === undefined)
-      writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
-    saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
-    // agy S2: the plugin whose SessionStart hook joins each conversation.
-    installAgyPlugin(deps.home, agyPluginFiles(deps.busBin, agyHookHome(deps)));
-    // agy S3: the one always-allow rule, for exactly the watcher's line.
-    installAgyRule(
-      deps.home,
-      p.busDir,
-      agyWatchCommand(deps.busBin, agyHookHome(deps)),
-    );
-    agyPagesStep(deps, notes);
-    return "done";
+    if (!hasAgy(deps)) return "absent";
+    return withAgyConfigLock(deps.home, () => {
+      const text = readAgy(p.agyMcp);
+      const server = agyServer(deps.busBin);
+      // agy S2b: pinned like the hook, default home too, so the oa_bus tools
+      // read the conversation file the hook wrote, whatever agy's own env says.
+      const home = agyHookHome(deps);
+      const next = upsertAgyMcp(text, NAME, server, home);
+      target(p.agyMcp);
+      const record = readRecord(p.record);
+      const made = missing(text.replace(/^\uFEFF/, ""), [["mcpServers"]]);
+      if (made.length > 0 && record[p.agyMcp] === undefined)
+        writeRecord(p.record, record, { ...record, [p.agyMcp]: made });
+      saveAgy(p.agyMcp, text, next, (d) => agyEntryIs(d, server, home));
+      // agy S2: the plugin whose SessionStart hook joins each conversation.
+      installAgyPlugin(
+        deps.home,
+        agyPluginFiles(deps.busBin, agyHookHome(deps)),
+      );
+      // agy S3: the one always-allow rule, for exactly the watcher's line.
+      installAgyRule(
+        deps.home,
+        p.busDir,
+        agyWatchCommand(deps.busBin, agyHookHome(deps)),
+      );
+      agyPagesStep(deps, notes);
+      return "done" as const;
+    });
   },
 };
 
@@ -1386,44 +1376,46 @@ const uninstall: Record<Harness, Step> = {
 
   async antigravity(deps, notes) {
     const p = paths(deps);
-    // Only our marked folder goes; a folder not ours stays as it is.
-    const folder = uninstallAgyPlugin(deps.home);
-    // agy S3: our rule, and only ours, leaves agy's settings.
-    const rule = uninstallAgyRule(
-      deps.home,
-      p.busDir,
-      agyWatchCommand(deps.busBin, agyHookHome(deps)),
-    );
-    const plugin = folder || rule;
-    if (!present(p.agyMcp)) return plugin ? "done" : "none";
-    // agy S5: the user's pages entries go back first, byte for byte.
-    let put = false;
-    try {
-      const r = restoreAgyEntries(agyEntryIo(deps));
-      put = r.restored.length > 0;
-      notes.push(...r.notes);
-    } catch (e) {
-      notes.push(
-        `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
+    return withAgyConfigLock(deps.home, (): "done" | "none" => {
+      // Only our marked folder goes; a folder not ours stays as it is.
+      const folder = uninstallAgyPlugin(deps.home);
+      // agy S5: the user's pages entries go back first, byte for byte.
+      let put = false;
+      try {
+        const r = restoreAgyEntries(agyEntryIo(deps));
+        put = r.restored.length > 0;
+        notes.push(...r.notes);
+      } catch (e) {
+        notes.push(
+          `could not put your Open Artifacts entry back in ${p.agyMcp}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      // agy S3: our rule, and only ours, leaves agy's settings.
+      const rule = uninstallAgyRule(
+        deps.home,
+        p.busDir,
+        agyWatchCommand(deps.busBin, agyHookHome(deps)),
       );
-    }
-    const before = readAgy(p.agyMcp);
-    const record = readRecord(p.record);
-    const next = (record[p.agyMcp] ?? []).reduce(
-      removeAgyIfEmpty,
-      removeAgyMcp(before, NAME),
-    );
-    const saved = saveAgy(
-      p.agyMcp,
-      before,
-      next,
-      (d) => (d.mcpServers as Doc | undefined)?.[NAME] === undefined,
-    );
-    if (record[p.agyMcp] !== undefined) {
-      const { [p.agyMcp]: _, ...left } = record;
-      writeRecord(p.record, record, left);
-    }
-    return saved || put || plugin ? "done" : "none";
+      const plugin = folder || rule;
+      if (!present(p.agyMcp)) return plugin || put ? "done" : "none";
+      const before = readAgy(p.agyMcp);
+      const record = readRecord(p.record);
+      const next = (record[p.agyMcp] ?? []).reduce(
+        removeAgyIfEmpty,
+        removeAgyMcp(before, NAME),
+      );
+      const saved = saveAgy(
+        p.agyMcp,
+        before,
+        next,
+        (d) => (d.mcpServers as Doc | undefined)?.[NAME] === undefined,
+      );
+      if (record[p.agyMcp] !== undefined) {
+        const { [p.agyMcp]: _, ...left } = record;
+        writeRecord(p.record, record, left);
+      }
+      return saved || put || plugin ? "done" : "none";
+    });
   },
 };
 
@@ -1568,7 +1560,7 @@ export function checkAdapters(
           ? // Plugin commands are off in Nix mode: nothing here to wire.
             deps.which(h) && !openclawNix(deps.env)
           : h === "antigravity"
-            ? hasAgy(deps) && agyOn(deps.env, p.busDir)
+            ? hasAgy(deps)
             : deps.which(h))
       ? "absent"
       : safely(ok)

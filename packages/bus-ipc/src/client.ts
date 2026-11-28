@@ -372,6 +372,8 @@ export function daemonLinkProof(opts: {
   instance?: string;
   /** agy S5: the Antigravity conversation; `pid` is then the agy process. */
   conversation?: string;
+  /** A one-use local agy witness. Older daemons reject its distinct frame type. */
+  agyCallSeen?: boolean;
   timeoutMs?: number;
 }): Promise<boolean> {
   return new Promise((resolve, reject) => {
@@ -392,7 +394,7 @@ export function daemonLinkProof(opts: {
     );
     sock.once("connect", () =>
       sock.write(
-        `${JSON.stringify({ v: 1, id: "link", type: "link_proof", pid: opts.pid, hash: opts.hash, ...(opts.instance === undefined ? {} : { instance: opts.instance }), ...(opts.conversation === undefined ? {} : { conversation: opts.conversation }) })}\n`,
+        `${JSON.stringify({ v: 1, id: "link", type: opts.agyCallSeen ? "agy_call_seen" : "link_proof", pid: opts.pid, hash: opts.hash, ...(opts.instance === undefined ? {} : { instance: opts.instance }), ...(opts.conversation === undefined ? {} : { conversation: opts.conversation }) })}\n`,
       ),
     );
     sock.on("data", (chunk) => {

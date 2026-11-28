@@ -75,7 +75,12 @@ import {
   SCRUBBED_VIA,
   shownName,
 } from "./agent-display.js";
-import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
+import {
+  type AgentAttr,
+  countVersionStmt,
+  lateVersion,
+  viaKey,
+} from "./agent-usage.js";
 import { noteMemberFirst } from "./analytics.js";
 import { libraryWaiting } from "./ask-waiting.js";
 import { audit, userActor } from "./audit.js";
@@ -638,6 +643,7 @@ export async function publish(
           );
     throw notFound();
   }
+  agent?.[lateVersion]?.settle({ artifactId: id, version });
   // Access changed: close first (gone "changed"), awaited, so a socket that
   // may have lost access never sees this version; reconnects get hello.
   if (accessChanged) await closeRuntimeSockets(env, [id], "access changed");
@@ -840,7 +846,12 @@ export function allocateVersion(
               name: a.agent.identity.name,
               kind: a.agent.identity.kind,
             })
-          : null,
+          : a.agent?.[lateVersion]
+            ? JSON.stringify({
+                reason: "timeout",
+                ticket: a.agent[lateVersion].ticket,
+              })
+            : null,
         a.userId,
         a.now,
         a.format,

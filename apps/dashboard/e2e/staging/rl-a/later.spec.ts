@@ -141,8 +141,8 @@ test("#766: Trash: delete, find it in Trash, Restore", async ({ browser }) => {
 
   await page.goto("/");
   const trash = page
-    .getByRole("navigation", { name: "Trash" })
-    .getByRole("link");
+    .getByRole("navigation", { name: "Workspace" })
+    .getByRole("link", { name: "Trash" });
   await expect(trash).toBeVisible();
   await trash.click();
   const list = page.getByRole("list", { name: "Deleted artifacts" });

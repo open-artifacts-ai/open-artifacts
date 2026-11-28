@@ -1,4 +1,4 @@
-// agy S1b: `oa-bus install` wires Antigravity (agy) behind OA_BUS_EXPERIMENTAL_AGY=1.
+// agy S1b: `oa-bus install` wires Antigravity (agy).
 // A fake agy on PATH (deps.which) and a scratch HOME only: no real agy runs.
 import {
   lstatSync,
@@ -29,7 +29,6 @@ import { leftoverTargets } from "../src/steps/leftovers.ts";
 import { type Fake, fakeCtx, HUB, LABEL, status, TOKEN } from "./fake.ts";
 
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 
 function setup(opts: { env?: Record<string, string>; onPath?: boolean } = {}): {
   h: string;
@@ -39,7 +38,7 @@ function setup(opts: { env?: Record<string, string>; onPath?: boolean } = {}): {
   const h = mkdtempSync(join(tmpdir(), "ob-agy-"));
   const deps: AdapterDeps = {
     home: h,
-    env: opts.env ?? ON,
+    env: opts.env ?? {},
     busBin: BIN,
     assets: { pi: "PI_ASSET", opencodePlugin: "PLUGIN_JS" },
     which: (cmd) => (opts.onPath ?? true) && cmd === "agy",
@@ -75,8 +74,8 @@ const THEIRS = `{
 `;
 
 describe("Antigravity wiring (agy S1b)", () => {
-  it("is off without OA_BUS_EXPERIMENTAL_AGY=1: nothing found, nothing written", async () => {
-    const { deps, file } = setup({ env: {} });
+  it("skips wiring when agy is absent", async () => {
+    const { deps, file } = setup({ onPath: false });
     const r = await installAdapters(deps);
     expect(r.installed).not.toContain("antigravity");
     expect(r.absent).toContain("antigravity");
@@ -221,7 +220,7 @@ describe("Antigravity wiring (agy S1b)", () => {
     expect(checkAdapters(deps).antigravity).toBe("missing");
   });
 
-  it("uninstall removes only our entry, even with the switch off", async () => {
+  it("uninstall removes only our entry, even when agy is absent", async () => {
     const { deps, file } = setup();
     put(file, THEIRS);
     await installAdapters(deps);
@@ -232,11 +231,11 @@ describe("Antigravity wiring (agy S1b)", () => {
   });
 });
 
-/** A ctx with agy on PATH and the switch on, approved on HUB. */
+/** A ctx with agy on PATH, approved on HUB. */
 function make(second = false, over: Partial<Ctx> = {}): Fake {
   const ctx = fakeCtx({
     which: (c) => c === "agy",
-    env: { ...ON },
+    env: {},
     service: {
       kind: "launchd" as const,
       ensure: vi.fn(async () => ({})),
@@ -299,8 +298,8 @@ describe("install, doctor and uninstall commands (agy S1b)", () => {
     );
   });
 
-  it("doctor says nothing about Antigravity with the switch off", async () => {
-    const ctx = make(false, { env: {} });
+  it("doctor says nothing about Antigravity when agy is absent", async () => {
+    const ctx = make(false, { which: () => false });
     await doctor(ctx);
     expect(ctx.all().join("\n")).not.toContain("Antigravity");
   });

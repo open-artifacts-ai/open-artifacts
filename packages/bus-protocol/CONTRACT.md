@@ -112,6 +112,7 @@ Hub to client (`SERVER_FRAMES`):
 - `acked {msg_id}`: reply to a mail `ack` from a socket whose hello listed `ack_confirm` (never to a notice ack). Sent after the receipt is settled, or for an id that can no longer settle (a repeat, unknown, or not this machine's) with the same frame, so it says nothing about the id. Only on the link the ack came in on.
 - `run_version {run_version}`, `install_now {}`, `update_ack {ok}` (`BUS_CAPS.runVersion`, see Updates).
 - `guest_up {agent_ref, kind, proposed_name}` and `guest_down {agent_ref}` (`BUS_CAPS.guest`, #2793 S3b): a Claude Code session of another instance's home registers on this one as a guest only after it used this instance's tools. The hub gets the name and the kind (`claude-code`) and nothing else: no address, folder, namespace, global flag or role. A guest is on no roster and is reached by no name; `guest_up` is answered by `agent_ok`.
+- `codex_call_verdict` carries the final link reason to the connected daemon of a uniquely registered live thread that advertised `codex_check` and opted in with `x-oa-codex-link-verdict: 1` on WebSocket upgrade. Delivery is best effort. The event carries no request metadata.
 - `codex_call_check {thread_id, tool, mode}` and `codex_call_checked {re, ok}` (`BUS_CAPS.codex_check`, #3108): a `/mcp` tools/call signed in as this member carried no link proof but named a Codex thread and call. The hub asks only this member's own daemons whose hello listed `codex_check`, whether that exact call is open in a live Codex thread they hold. `mode` is `direct` (`call_id`, `args_sha256`: a plain function call, bound by its tool name and the sha256 of its canonical arguments) or `code` (`call_id` `exec-<uuid>`, `item_id`: a call inside a code-mode exec, bound by the open exec and the literal tool name in its script). The daemon answers `ok` only when it attests the call; the identity comes from the hub's own record of that daemon's session for the thread, never from the request.
 - `proof_seen {hash}` (`BUS_CAPS.guest`): a `tools/call` carried a link proof this hub resolves to no session. Sent only to the daemons of the member whose credential made the call, and only to a socket whose hello listed `guest`. The daemon matches the hash against what it holds for this instance. A notice's `meta.guest` (`reply`, `mention` or `answer`) marks the only deliveries a guest gets.
 - `owner_away {until}` (`BUS_CAPS.ownerAway`, #2759): `until` is an ISO 8601 UTC time (`OwnerAwayUntilSchema`, at most 40 chars) when the owner's quiet hours end, or `null` when they are not in quiet hours. Sent at the start and end of quiet hours and when the setting changes. `hello_ok.owner_away_until` carries the same value at connect. The hub sends the field and the frame only to a socket whose hello listed `owner_away` and lists it in `hello_ok.caps`; a strict older decoder would refuse either. A `hello_ok` without the field means unknown: a client treats it as not away. A client treats a time already past by its own clock as not away.
@@ -139,13 +140,13 @@ never moves a machine). What a machine is told, per socket:
    instance-driven `switching` is refused.
 2. A version the owner named (`bus_run_version`): that version, whatever the
    machine runs (a named lower version is a deliberate step back).
-3. Else the default, the server's own built-in release, only when it is a
-   strict `x.y.z` (a `-dev` or pre-release build has none), only once this
-   instance has run it for 24 h (`bus_version_since`; a named version skips
-   the soak), and only when strictly newer than the machine's
-   `hello.client_version` (forward only: the default never moves a machine
-   back). Otherwise `null`. The hub re-tells connected machines when the soak
-   ends (its alarm) and at every hello.
+3. Else the default, the server's own built-in release, offered as soon as
+   the instance runs it, only when it is a strict `x.y.z` (a `-dev` or
+   pre-release build has none), and only when strictly newer than the
+   machine's `hello.client_version` (forward only: the default never moves a
+   machine back). Otherwise `null`. The hub tells machines at every hello (a
+   deploy restarts the hub, so every machine reconnects and hears the new
+   default).
 
 The default comes from nothing a client sends. A version that stepped back on
 a machine is on its failed or refused list and the daemon's own check refuses
@@ -163,8 +164,8 @@ else) and the machine swaps only after `ok: true`; with no answer it holds and
 tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
 that listed it, and a daemon sends `update_report` only to a hub that listed
 it. The hub answers `ok: false` to a `switching` report whose `to` is not the
-version the instance tells that machine now (the named version, or the soaked
-forward default, never while paused), read fresh from the settings (not the 30
+version the instance tells that machine now (the named version, or the forward
+default, never while paused), read fresh from the settings (not the 30
 s cache), unless the move is a step back (`to` lower than `from`) or the person asked for
 it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
 is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
