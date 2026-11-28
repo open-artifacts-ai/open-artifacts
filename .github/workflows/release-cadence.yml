@@ -7,8 +7,8 @@ name: release-cadence
 on:
   # Events only, no timer (cloud #264). Every change that can make the release
   # PR ready is an event here:
-  # - CI completing: the release PR's own checks (CI is the only workflow it
-  #   needs), so it is queued the moment it goes green. Any event (another
+  # - CI and pr-title completing: the release PR's required checks, so it is
+  #   queued the moment every required check goes green. Any event (another
   #   PR's CI too) reads the required checks on the release head's SHA
   #   (checks: read), so a release CI event replaced in the one-slot
   #   concurrency queue is recovered by the next event.
@@ -17,7 +17,7 @@ on:
   # (check_suite does not fire for Actions suites, so workflow_run stands in.)
   workflow_dispatch:
   workflow_run:
-    workflows: [release-please, CI]
+    workflows: [release-please, CI, pr-title]
     types: [completed]
 permissions: {}
 concurrency:

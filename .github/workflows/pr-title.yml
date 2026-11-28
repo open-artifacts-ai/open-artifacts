@@ -1,0 +1,42 @@
+name: pr-title
+# Every PR title must follow Conventional Commits with one of the allowed
+# types (amannn/action-semantic-pull-request). PRs that change shipped code
+# (apps/**, packages/**) are additionally held to fix:, feat: or breaking
+# (type!:) by release-title.yml so release-please opens a release.
+# Also listens to merge_group so the check reports green in the merge queue
+# once required on main.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  merge_group:
+    types: [checks_requested]
+permissions: {}
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - if: github.event_name == 'pull_request'
+        uses: amannn/action-semantic-pull-request@66e72920af32222769c386d81f89656ebcb6d6d5 # v6.1.4
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            chore
+            ci
+            test
+            refactor
+            perf
+            build
+            revert
+      - if: github.event_name == 'merge_group'
+        name: merge_group (checked on the pull request)
+        run: echo "PR title already checked on pull_request"

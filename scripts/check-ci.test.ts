@@ -1867,7 +1867,11 @@ describe("release cadence", () => {
     expect(triggers(w).sort()).toEqual(
       ["workflow_dispatch", "workflow_run"].sort(),
     );
-    expect(w.on.workflow_run.workflows).toEqual(["release-please", "CI"]);
+    expect(w.on.workflow_run.workflows).toEqual([
+      "release-please",
+      "CI",
+      "pr-title",
+    ]);
     expect(w.on.workflow_run.types).toEqual(["completed"]);
     expect(w.concurrency.group).toBe("release-cadence");
     expect(w.concurrency["cancel-in-progress"]).toBe(false);
@@ -1892,11 +1896,7 @@ describe("release cadence", () => {
     }
     expect(others).toEqual({
       "landing-preview.yml": ["apps/landing/**"],
-      "release-title.yml": [
-        "apps/server/src/mcp/**",
-        "apps/server/scripts/emit-skill.ts",
-        "apps/server/scripts/emit-upgrade.ts",
-      ],
+      "release-title.yml": ["apps/**", "packages/**"],
     });
   });
 
