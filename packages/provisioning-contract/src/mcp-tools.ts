@@ -248,7 +248,7 @@ export const ADMIN_TOOLS: readonly AdminToolDef[] = [
   write(
     "create_install",
     "R4",
-    "Create an install. ownerEmail's domain must be in auth.domains; admin tokens can set testHooks on staging only for t-* and bus test slugs (e.g. bus1299-b). sendWelcome requires an admin session.",
+    "Create an install. ownerEmail's domain must be in auth.domains; admin tokens can set testHooks on staging only for t-* slugs. sendWelcome requires an admin session.",
   ),
   write(
     "upgrade_install",
