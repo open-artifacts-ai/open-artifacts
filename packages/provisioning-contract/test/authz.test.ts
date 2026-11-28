@@ -614,7 +614,13 @@ describe("R4 field rules (3.3)", () => {
         "optional",
       );
       expect(createFieldRule("testHooks", principal, "prod")).toBe("forbidden");
-      for (const slug of ["t-smoke", "t-rehearsal", "bus1299-b", "bus-smoke"]) {
+      for (const slug of [
+        "t-proof",
+        "t-smoke",
+        "t-rehearsal",
+        "bus1299-b",
+        "bus-smoke",
+      ]) {
         expect(
           checkCreateFields(
             { ...full, slug, testHooks: true },
@@ -646,7 +652,15 @@ describe("R4 field rules (3.3)", () => {
     expect(
       checkCreateFields({ ...full, testHooks: true }, "token", "staging", D),
     ).toEqual({ field: "slug", code: "invalid_input" });
-    for (const slug of ["acme", "business", "bus", "busy", "rl-smoke", "t"])
+    for (const slug of [
+      "acme",
+      "business",
+      "bus",
+      "busy",
+      "rl-proof",
+      "rl-smoke",
+      "t",
+    ])
       expect(
         checkCreateFields(
           { ...full, slug, testHooks: true },
