@@ -577,6 +577,7 @@ export type RoleInterval = {
   namespace: string;
   role: string;
   holder: string | null;
+  privateHolder?: number | null;
   machine: string | null;
   holderMachine: string | null;
   holderKind: string | null;
@@ -597,12 +598,12 @@ export function roleIntervals(
 ) {
   return all<RoleInterval>(
     sql,
-    `select r.id as roleId, r.namespace as namespace, r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
+    `select r.id as roleId, r.namespace as namespace, r.name as role, null as holder, a.takeover_route = a.name as privateHolder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
        from roles r join agents a on a.id = r.agent_id
        left join machines machine on machine.id = a.machine_id
        where r.org_id = ? and a.identity_id = ?
      union all
-     select r.id, r.namespace, r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
+     select r.id, r.namespace, r.name, case when r.agent_id <> m.from_agent_id then h.name end, h.takeover_route = h.name, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
        from role_moves m indexed by role_moves_identity
        join roles r on r.id = m.role_id
        left join agents h on h.id = r.agent_id
@@ -644,7 +645,8 @@ export function roleFaces(
   }>(
     sql,
     `select r.id as roleId, r.namespace, r.name,
-            a.name as holder, a.identity_id as holderIdentityId,
+            case when a.takeover_route = a.name then null else a.name end as holder,
+            a.identity_id as holderIdentityId,
             a.kind as holderKind, m.label as holderMachine
        from roles r
        left join agents a on a.id = r.agent_id

@@ -514,6 +514,32 @@ describe("a role is one thread participant (#3335)", () => {
     );
     expect(extras).toHaveLength(0);
 
+    // Explicit @Manager in a reply on the same legacy two-row thread also delivers
+    // ONCE (excluding the role from threadReplyTake must not leak a second notice
+    // through the legacy session row).
+    const explicit = await api(
+      app,
+      R.commentReplies(s.id, thread.id),
+      s.m.cookie,
+      {
+        method: "POST",
+        body: {
+          body: `@${s.role} explicit ping`,
+          mentions: [{ key: s.rKey }],
+        },
+      },
+    );
+    expect(explicit.status).toBe(201);
+    const explicitBody = (await explicit.json()) as {
+      notified?: { key: string }[];
+    };
+    expect(explicitBody.notified ?? []).toHaveLength(0);
+    await nextCommentDeliver(s.dL);
+    const explicitExtras = (await barrier(s.dL, "refL")).filter(
+      (f) => f.type === "deliver" && !f.body?.startsWith("Your role "),
+    );
+    expect(explicitExtras).toHaveLength(0);
+
     // Removing the role removes the legacy shadow row too: later replies notify nobody.
     expect(
       (
@@ -624,5 +650,200 @@ describe("a role is one thread participant (#3335)", () => {
     expect(replyOther.isError, JSON.stringify(replyOther.content)).toBeFalsy();
     const afterOther = await s.readThread(plainThread.id);
     expect(afterOther.comments[2]?.askedBy).toBeUndefined();
+  });
+
+  it("hides private takeover routing suffixes from thread participants and strips participants for outsiders (#3252, #3335)", async () => {
+    const m = await member();
+    const user = (await getUser(e, m.userId)) as Member;
+    const editor = await member();
+    const restricted = await member();
+    await e.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(restricted.userId)
+      .run();
+    const guest = await member("guest");
+
+    const laptop = await machine("Laptop", m.userId);
+    const workstation = await machine("Workstation", m.userId);
+    const dL = await daemon(laptop.token);
+    const dW = await daemon(workstation.token);
+    dL.send({
+      ...hello(`hL-${++seq}`),
+      caps: [BUS_CAPS.link, BUS_CAPS.follow, BUS_CAPS.roles],
+    } as never);
+    await waitFor(dL, "hello_ok");
+    dW.send({
+      ...hello(`hW-${++seq}`),
+      caps: [BUS_CAPS.link, BUS_CAPS.follow, BUS_CAPS.roles],
+    } as never);
+    await waitFor(dW, "hello_ok");
+
+    const space = ns("private-suffix");
+    const role = uniq("Lead");
+    // First chosen name creates the role held by Laptop.
+    dL.send({
+      ...up(`uL-${++seq}`, "refL", role, space),
+      name_chosen: true,
+    } as never);
+    expect((await waitFor(dL, "agent_ok")).bus_name).toBe(role);
+    // Bind a proof so Laptop has a real identity for the legacy moved-row check.
+    dL.send({
+      v: 1,
+      id: `bL-${++seq}`,
+      type: "link_bind",
+      agent_ref: "refL",
+      hash: await sha256Hex(proofOf()),
+    } as never);
+    await waitFor(dL, "link_bound");
+
+    // Second session asking for the held name gets a private routing suffix ("Lead-2").
+    dW.send({
+      ...up(`uW-${++seq}`, "refW", role, space),
+      name_chosen: true,
+    } as never);
+    const privateName = (await waitFor(dW, "agent_ok")).bus_name;
+    expect(privateName).toBe(`${role}-2`);
+    dW.send({
+      v: 1,
+      id: `bW-${++seq}`,
+      type: "link_bind",
+      agent_ref: "refW",
+      hash: await sha256Hex(proofOf()),
+    } as never);
+    await waitFor(dW, "link_bound");
+
+    const id = (
+      await publish(
+        E(),
+        user,
+        {
+          title: "public-doc",
+          format: "html",
+          content: "<p>Public</p>",
+          visibility: "public",
+          comments: "everyone",
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+
+    // Seed a legacy agent:<hash> participant written while Laptop held the role.
+    const hub = await hubOf(m.userId);
+    const identityL = await hub.identityOf(space, role);
+    expect(identityL?.identityId).toBeTruthy();
+    const legacyKey = await agentKey(id, m.userId, {
+      namespace: space,
+      name: role,
+    });
+    const legacyThreadRes = await api(app, R.comments(id), m.cookie, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "Pre-move legacy thread" },
+    });
+    expect(legacyThreadRes.status).toBe(201);
+    const legacyThread = (await legacyThreadRes.json()) as CommentThread;
+    await runInDurableObject(
+      runtimeStub(E(), id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          `insert into comment_participants (thread_id, key, name, owner, namespace, page, identity, joined_at)
+           values (?, ?, ?, ?, ?, 0, ?, ?)`,
+          legacyThread.id,
+          legacyKey,
+          role,
+          m.userId,
+          space,
+          JSON.stringify(identityL),
+          new Date().toISOString(),
+        );
+      },
+    );
+
+    // Hand the role over to the contending session on Workstation (which keeps privateName).
+    const idW = (await hub.snapshot()).agents.find(
+      (a) => a.name === privateName,
+    )?.id;
+    expect(idW).toBeTruthy();
+    expect(
+      (
+        await api(app, R.busRoles, m.cookie, {
+          method: "PUT",
+          body: { namespace: space, name: role, agentId: idW },
+        })
+      ).status,
+    ).toBe(200);
+
+    const rosterRes = await api(app, R.artifactAgents(id), m.cookie);
+    expect(rosterRes.status).toBe(200);
+    const rosterBody = (await rosterRes.json()) as
+      | ArtifactAgent[]
+      | { agents: ArtifactAgent[] };
+    const roster = Array.isArray(rosterBody) ? rosterBody : rosterBody.agents;
+    const roleEntry = roster.find((a) => a.name === role);
+    expect(roleEntry?.key).toMatch(/^role:/);
+    const rKey = roleEntry!.key;
+
+    const started = await api(app, R.comments(id), m.cookie, {
+      method: "POST",
+      body: {
+        anchor: { kind: "note" },
+        body: `@${role} check routing privacy`,
+        mentions: [{ key: rKey }],
+      },
+    });
+    expect(started.status).toBe(201);
+    const roleThread = (await started.json()) as CommentThread;
+    await nextCommentDeliver(dW);
+
+    const listAs = async (cookie: string | null) => {
+      resetNameClashCache();
+      const res = await api(app, R.comments(id), cookie);
+      expect(res.status).toBe(200);
+      return (await res.json()) as CommentList;
+    };
+
+    // Owner sees role name + machine, NEVER the private "-2" routing suffix.
+    const ownerList = await listAs(m.cookie);
+    const ownerRole = ownerList.threads.find((t) => t.id === roleThread.id);
+    expect(ownerRole?.agents).toHaveLength(1);
+    expect(ownerRole?.agents?.[0]).toMatchObject({
+      key: rKey,
+      name: role,
+      linked: true,
+      machine: "Workstation",
+    });
+    expect(ownerRole?.agents?.[0]?.session).toBeUndefined();
+    expect(JSON.stringify(ownerRole?.agents)).not.toContain(privateName);
+
+    // Legacy moved session-keyed row also omits the private "-2" suffix.
+    const ownerLegacy = ownerList.threads.find((t) => t.id === legacyThread.id);
+    expect(ownerLegacy?.agents).toHaveLength(1);
+    expect(ownerLegacy?.agents?.[0]).toMatchObject({
+      key: legacyKey,
+      name: role,
+      machine: "Workstation",
+    });
+    expect(ownerLegacy?.agents?.[0]?.session).toBeUndefined();
+    expect(JSON.stringify(ownerLegacy?.agents)).not.toContain(privateName);
+
+    // Another member sees role name, NO private suffix, and NO machine.
+    const memberList = await listAs(editor.cookie);
+    const memberRole = memberList.threads.find((t) => t.id === roleThread.id);
+    expect(memberRole?.agents).toHaveLength(1);
+    expect(memberRole?.agents?.[0]).toMatchObject({
+      key: rKey,
+      name: role,
+      linked: true,
+    });
+    expect(memberRole?.agents?.[0]?.session).toBeUndefined();
+    expect(memberRole?.agents?.[0]?.machine).toBeUndefined();
+
+    // Outsiders (anonymous, guest, restricted/capped) see no thread participants at all.
+    for (const cookie of [null, guest.cookie, restricted.cookie]) {
+      const out = await listAs(cookie);
+      for (const t of out.threads) expect(t.agents).toBeUndefined();
+      expect(JSON.stringify(out)).not.toContain(privateName);
+      expect(JSON.stringify(out)).not.toContain("Workstation");
+    }
   });
 });

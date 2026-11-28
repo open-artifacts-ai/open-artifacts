@@ -838,7 +838,7 @@ const threadAgentView = (
   users: Ctx,
 ): ThreadAgent => {
   const isOwner = viewer.userId !== null && viewer.userId === p.owner;
-  const masked = faceViewer(viewer).guest && !isOwner;
+  const masked = faceViewer(viewer).outsider;
   const rf = roleFaceOf(p, users);
   const iv = !roleIdFromKey(p.key)
     ? intervalAt(p.identity?.identityId, p.joinedAt, users)
@@ -847,7 +847,9 @@ const threadAgentView = (
   const holder = rf
     ? rf.holder
     : iv
-      ? (iv.holder ?? currentName(p, users))
+      ? iv.privateHolder === 1
+        ? undefined
+        : (iv.holder ?? currentName(p, users))
       : undefined;
   const holderKind = rf
     ? rf.holderKind
@@ -866,7 +868,7 @@ const threadAgentView = (
       ? plainAgentName(holder, holderKind ? productOf(holderKind) : undefined)
       : undefined;
   const machine =
-    holderMachine && isOwner
+    holderMachine && isOwner && !masked
       ? (shortMachine(holderMachine) ?? undefined)
       : undefined;
   return {
@@ -2990,7 +2992,14 @@ async function threadReply(
       }),
     );
     if (due.length === 0) return c;
-    const lctx = await legacyRoleCtx(env, due);
+    // Include explicitly mentioned/held roles (excluded from `due` above) so a
+    // legacy session row for the same role does not send a duplicate reply notice.
+    const roleScope: StoredParticipant[] = [
+      ...due,
+      ...r.agents.map((x) => participantOf(x.agent)),
+      ...(r.held ?? []).map((h) => ({ kind: "agent" as const, ...h.agent })),
+    ];
+    const lctx = await legacyRoleCtx(env, roleScope);
     const reached: RosterAgent[] = [];
     const heldNow: { agent: HeldAgent; way: string }[] = [];
     const users = new Map<string, boolean>();
@@ -2999,7 +3008,7 @@ async function threadReply(
     let senderGate: MentionGate | undefined;
     let outside: boolean | undefined;
     for (const p of due) {
-      if (shadowedByRole(p, due, lctx)) continue;
+      if (shadowedByRole(p, roleScope, lctx)) continue;
       if (p.owner !== c.author.ref) {
         if (!typed) continue;
         // Another person's agent: not for an outside member, and under the mention limits.
