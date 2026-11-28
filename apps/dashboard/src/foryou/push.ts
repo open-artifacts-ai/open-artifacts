@@ -43,6 +43,20 @@ const OLD_SUB_KEY = "oa.push.subscription";
 
 type StoredSub = { userId: string; id: string };
 
+// Written before enrollment so a lost POST response can be retried with the same identity.
+function installationId(userId: string): string | undefined {
+  try {
+    const key = `oa.push.installation.${userId}`;
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+    return id;
+  } catch {
+    return undefined;
+  }
+}
+
 function storedSub(): StoredSub | null {
   try {
     localStorage.removeItem(OLD_SUB_KEY);
@@ -279,6 +293,7 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
     endpoint?: string;
     keys?: { p256dh?: string; auth?: string };
   };
+  const old = storedSub();
   const { id } = await api.send(
     "POST",
     R.mePushSubscriptions,
@@ -286,16 +301,11 @@ async function subscribeHere(publicKey: string, label: string, userId: string) {
       endpoint: j.endpoint ?? sub.endpoint,
       keys: { p256dh: j.keys?.p256dh ?? "", auth: j.keys?.auth ?? "" },
       label,
+      installationId: installationId(userId),
+      previousSubscriptionId: old?.userId === userId ? old.id : undefined,
     },
     z.object({ id: z.string() }),
   );
-  // A new endpoint got a new row; the earlier row (an old key's, even after a
-  // failed POST and a retry) would stay as a dead one.
-  const old = storedSub();
-  if (old && old.userId === userId && old.id !== id)
-    await api
-      .send("DELETE", R.mePushSubscription(old.id), undefined)
-      .catch(() => undefined);
   try {
     localStorage.setItem(SUB_KEY, JSON.stringify({ userId, id }));
   } catch {
@@ -309,8 +319,8 @@ export async function turnOff(): Promise<boolean> {
   const sub = await currentSubscription();
   await sub?.unsubscribe().catch(() => false);
   const id = storedSub()?.id ?? null;
-  clearStoredSub();
   if (id) await api.send("DELETE", R.mePushSubscription(id), undefined);
+  clearStoredSub();
   const left = await api.get(
     R.mePushSubscriptions,
     z.object({ items: z.array(z.object({ id: z.string() })) }),

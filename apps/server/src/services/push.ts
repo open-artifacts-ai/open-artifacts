@@ -51,7 +51,7 @@ export async function listSubscriptions(
 ): Promise<PushSubscriptions> {
   const { results } = await stmt(
     env.DB,
-    "select id, label, created_at, last_sent_at from push_subscriptions where user_id = ?1 order by created_at, id",
+    "select id, label, created_at, last_sent_at, last_provider_status, last_provider_reason from push_subscriptions where user_id = ?1 order by created_at, id",
   )
     .bind(userId)
     .all<{
@@ -59,11 +59,15 @@ export async function listSubscriptions(
       label: string | null;
       created_at: number;
       last_sent_at: number | null;
+      last_provider_status: number | null;
+      last_provider_reason: string | null;
     }>();
   return {
     items: results.map((r) => ({
       id: r.id,
       label: r.label,
+      lastProviderStatus: r.last_provider_status,
+      lastProviderReason: r.last_provider_reason,
       createdAt: new Date(r.created_at).toISOString(),
       lastSentAt: r.last_sent_at
         ? new Date(r.last_sent_at).toISOString()
@@ -103,18 +107,30 @@ export async function addSubscription(
   const id = newId();
   const now = Date.now();
   // Enrolling a device never touches the member's account choices.
-  const [, , row] = await env.DB.batch([
+  const [, , , row] = await env.DB.batch([
     // Axe 1: gone from anyone else.
     stmt(
       env.DB,
       "delete from push_subscriptions where endpoint = ?1 and user_id <> ?2",
     ).bind(body.endpoint, userId),
+    // Replace the previous endpoint atomically, including legacy rows remembered by this browser.
     stmt(
       env.DB,
-      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, created_at)
-       values (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+      `delete from push_subscriptions where user_id = ?1 and endpoint <> ?2
+      and (installation_id = ?3 or id = ?4)`,
+    ).bind(
+      userId,
+      body.endpoint,
+      body.installationId ?? null,
+      body.previousSubscriptionId ?? null,
+    ),
+    stmt(
+      env.DB,
+      `insert into push_subscriptions (id, user_id, endpoint, p256dh, auth, label, created_at, installation_id)
+       values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
        on conflict (endpoint) do update set
          p256dh = excluded.p256dh, auth = excluded.auth,
+         installation_id = coalesce(excluded.installation_id, installation_id),
          label = coalesce(excluded.label, label)`,
     ).bind(
       id,
@@ -124,6 +140,7 @@ export async function addSubscription(
       body.keys.auth,
       label,
       now,
+      body.installationId ?? null,
     ),
     stmt(env.DB, "select id from push_subscriptions where endpoint = ?1").bind(
       body.endpoint,
@@ -727,13 +744,13 @@ async function drainMember(
       logWarn("push_send_failed", e, { subscription: s.id });
       continue;
     }
-    if (r === "sent") {
+    if (typeof r === "object" && r.providerBody === null) {
       ok++;
       await stmt(
         env.DB,
-        "update push_subscriptions set last_sent_at = ?1 where id = ?2",
+        "update push_subscriptions set last_sent_at = ?1, last_provider_status = ?3, last_provider_reason = null where id = ?2",
       )
-        .bind(now, s.id)
+        .bind(now, s.id, r.status)
         .run();
       continue;
     }
@@ -743,7 +760,19 @@ async function drainMember(
         status: r.status,
         providerBody: r.providerBody,
       });
-      if (r.status !== 404 && r.status !== 410) continue;
+      if (r.status !== 404 && r.status !== 410) {
+        // Prefer the APNs reason code, retaining only the already sanitized preview for other providers.
+        const preview = r.providerBody ?? "";
+        const reason =
+          /"reason"\s*:\s*"([^"]*)"/u.exec(preview)?.[1] ?? preview;
+        await stmt(
+          env.DB,
+          "update push_subscriptions set last_provider_status = ?1, last_provider_reason = ?2 where id = ?3",
+        )
+          .bind(r.status, reason || null, s.id)
+          .run();
+        continue;
+      }
     } else if (r === "failed") {
       logWarn("push_send_failed", undefined, { subscription: s.id });
       continue;

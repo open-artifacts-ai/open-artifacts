@@ -279,17 +279,16 @@ async function signVapidHeader(
 }
 
 export type PushResult =
-  | "sent"
   | "failed"
   | "unusable"
-  | { status: number; providerBody: string };
+  | { status: number; providerBody: string | null };
 
 // Providers can echo opaque credentials, registration URLs and recipient data in arbitrary
 // fields or plain text. Retain public diagnostic words only, even for malformed/truncated JSON.
 const diagnosticWords = new Set(
   (
     "reason error code message status errno detail details " +
-    "BadAuthorizationHeader BadJwtToken BadVapidPublicKey BadTtl BadUrgency BadTopic BadPath " +
+    "VapidPkHashMismatch BadAuthorizationHeader BadJwtToken BadVapidPublicKey BadTtl BadUrgency BadTopic BadPath " +
     "BadRequest BadWebPushRequest BadWebPushTopic DeviceTokenNotForTopic Unregistered " +
     "BadDeviceToken ExpiredProviderToken InvalidProviderToken TooManyProviderTokenUpdates " +
     "TooManyRequests PayloadTooLarge MethodNotAllowed IdleTimeout InternalServerError ServiceUnavailable Shutdown " +
@@ -377,7 +376,7 @@ export async function sendPush(
       },
       body,
     });
-    if (r.ok) return "sent";
+    if (r.ok) return { status: r.status, providerBody: null };
     return { status: r.status, providerBody: await providerErrorPreview(r) };
   } catch {
     return "failed";

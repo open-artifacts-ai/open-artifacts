@@ -882,8 +882,17 @@ export const pushSubscriptions = sqliteTable(
     updates: integer("updates").notNull().default(0),
     createdAt: integer("created_at").notNull(),
     lastSentAt: integer("last_sent_at"),
+    installationId: text("installation_id"),
+    lastProviderStatus: integer("last_provider_status"),
+    lastProviderReason: text("last_provider_reason"),
   },
-  (t) => [index("push_subscriptions_user_idx").on(t.userId)],
+  (t) => [
+    index("push_subscriptions_user_idx").on(t.userId),
+    uniqueIndex("push_subscriptions_installation_idx").on(
+      t.userId,
+      t.installationId,
+    ),
+  ],
 );
 
 // #2512 S5: Needs-you items waiting to be pushed. One row per (member, key);
