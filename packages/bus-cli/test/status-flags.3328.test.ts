@@ -398,6 +398,7 @@ describe("oa-bus status detail views (#3328 S3)", () => {
       "status_at",
       "status_label",
       "unnamed",
+      "waiting",
     ]);
     expect(Object.keys(parsed.other_projects[0] ?? {}).sort()).toEqual([
       "count",
