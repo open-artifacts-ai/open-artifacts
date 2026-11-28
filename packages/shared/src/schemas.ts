@@ -1156,7 +1156,7 @@ export const BusAgentSchema = z.strictObject({
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
   statusAt: z.string().optional(),
-  /** #2311: still on a harness default name (never renamed); present only when true. */
+  /** #2311: no person-chosen name or role; present only when true. */
   unnamed: z.boolean().optional(),
   /** #3132: the role it holds in its own namespace: the address to @-mention it by. */
   role: z.string().optional(),

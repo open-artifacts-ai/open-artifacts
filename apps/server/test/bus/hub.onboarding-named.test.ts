@@ -103,13 +103,14 @@ describe("the hub records a named agent (#2478)", () => {
       type: "rename",
       agent_ref: "ref_a",
       proposed_name: "Atlas",
+      name_chosen: true,
     });
     await until(() => c.seen.includes("renamed"));
     await idle(o.userId); // the hub's write, if it made one, is done
     expect((await stored(o.userId))?.value).toBe(first?.value);
   });
 
-  it("a plain rename records it; a default re-mint does not", async () => {
+  it("a person-chosen rename records it; a default re-mint does not", async () => {
     const o = await login(`hub-own-${newId().slice(0, 6)}@x.com`, "owner");
     const c = await connect(o.userId);
     c.send({
@@ -140,6 +141,7 @@ describe("the hub records a named agent (#2478)", () => {
       type: "rename",
       agent_ref: "ref_a",
       proposed_name: "Atlas",
+      name_chosen: true,
     });
     await until(async () => (await stored(o.userId)) !== null);
     expect(await stored(o.userId)).not.toBeNull();

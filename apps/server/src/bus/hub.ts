@@ -2290,7 +2290,7 @@ function agentUp(
       now,
     );
   // #2311: the harness says a user or a peer named this session. Never undone here.
-  if (f.name_chosen === true)
+  if (f.name_chosen === true && f.name_kind !== "default")
     sql.exec("update agents set name_chosen = 1 where id = ?", id);
   if (existing && existing.live !== 1)
     sql.exec(
@@ -2775,7 +2775,6 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
   a.name_chosen as nameChosen, a.takeover_route = a.name as privateSessionName,
-  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
      and ro.namespace = a.namespace order by ro.set_at desc limit 1) as roleName,
@@ -7232,7 +7231,8 @@ export class BusHub extends DurableObject<Env> {
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         // #2478: the harness says a user or a peer named this session.
-        if (f.name_chosen === true) this.#noteNamed();
+        if (f.name_chosen === true && f.name_kind !== "default")
+          this.#noteNamed();
         const a = registeredAgent(sql, machineId, f.agent_ref);
         // #3132: it asked for a name another session holds.
         if (a && pending) this.#askTakeover(a, pending);
@@ -8298,6 +8298,7 @@ export class BusHub extends DurableObject<Env> {
       f.name_chosen === true,
     );
     const name = assigned.name;
+    const personNamed = f.name_chosen === true && f.name_kind !== "default";
     const reply = {
       v: 1,
       id: f.id,
@@ -8308,7 +8309,19 @@ export class BusHub extends DurableObject<Env> {
     // The exact no-op check (assignName writes nothing), then the rate
     // limit, then the commit: a no-op never counts, a refusal changes nothing.
     if (name === agent.name) {
-      if (!assigned.pending) this.#syncChosenRole(agent, agent, f);
+      if (personNamed && !assigned.pending) {
+        this.#syncChosenRole(agent, agent, f);
+        if (
+          one(
+            sql,
+            "update agents set name_chosen = 1 where id = ? and name_chosen = 0 returning id",
+            agent.id,
+          )
+        ) {
+          this.#noteNamed();
+          notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
+        }
+      }
       sendFrame(ws, reply);
       return undefined;
     }
@@ -8330,12 +8343,10 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-      "update agents set name = ?, updated_at = ?, name_chosen = case ? when 2 then name_chosen else ? end where id = ?",
+      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
       name,
       now,
-      // A re-derived title (name_chosen false) leaves the flag; a default resets it.
-      f.name_kind !== "default" && f.name_chosen === false ? 2 : 0,
-      f.name_kind === "default" ? 0 : 1,
+      personNamed ? 1 : 0,
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
@@ -8354,8 +8365,7 @@ export class BusHub extends DurableObject<Env> {
           );
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
-    // #2478: a rename that is not a default re-mint is a chosen name.
-    if (f.name_kind !== "default" && f.name_chosen !== false) this.#noteNamed();
+    if (personNamed) this.#noteNamed();
     if (moved.length > 0) {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);

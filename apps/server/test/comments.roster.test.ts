@@ -1100,7 +1100,7 @@ describe("comment notice text", () => {
 });
 
 describe("roster: unnamed agents (#2311, #2309)", () => {
-  it("hides an offline unnamed agent and (#3143) an offline plain renamed one, shows a live one and an offline role-holder; running first, then newest", async () => {
+  it("hides an offline unnamed agent and (#3143) an offline plain renamed one, hides a live unnamed session and shows an offline role-holder; running first, then newest", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
     const unnamed = (n: string, running: boolean) => ({
@@ -1119,6 +1119,6 @@ describe("roster: unnamed agents (#2311, #2309)", () => {
       ],
     });
     const own = await viewerRosterAgents(h.env, s.id, s.owner.userId);
-    expect(own.map((x) => x.name)).toEqual(["claude-2", "New", "Old"]);
+    expect(own.map((x) => x.name)).toEqual(["New", "Old"]);
   });
 });
