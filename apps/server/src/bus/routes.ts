@@ -16,6 +16,7 @@ import {
   newMachineToken,
   newUserCode,
   normalizeUserCode,
+  WAITING_PERMISSION_HEADER,
 } from "@oa/bus-protocol";
 import {
   AUTH,
@@ -765,6 +766,9 @@ async function connect(c: Context<AppEnv>): Promise<Response> {
         [AUTHZ_AT_HEADER]: String(authzAt),
         ...(c.req.header(CODEX_VERDICT_HEADER) === "1"
           ? { [CODEX_VERDICT_HEADER]: "1" }
+          : {}),
+        ...(c.req.header(WAITING_PERMISSION_HEADER) === "1"
+          ? { [WAITING_PERMISSION_HEADER]: "1" }
           : {}),
       },
     }),

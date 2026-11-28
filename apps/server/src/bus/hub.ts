@@ -48,6 +48,7 @@ import {
   semverGte,
   suffixName,
   utf8Bytes,
+  WAITING_PERMISSION_HEADER,
 } from "@oa/bus-protocol";
 import {
   type AwayRoleAction,
@@ -181,11 +182,13 @@ import { HUB_SCHEMA, migrateHub } from "./schema.js";
 import {
   applyDueStatus,
   applyStatus,
+  applyWaiting,
   clearStatus,
   nextStatusDue,
   STATUS_CLEAR,
   type StatusChange,
   statusWire,
+  waitingWire,
 } from "./status.js";
 import {
   firstReleaseObservation,
@@ -347,6 +350,7 @@ type ErrorCode = Extract<ServerFrame, { type: "error" }>["code"];
  */
 type Attachment = {
   agyCheck?: true;
+  waitingPermission?: true;
   machineId: string;
   codexVerdicts?: true;
   replaced?: true;
@@ -415,7 +419,18 @@ const HUB_CAPS = [
   BUS_CAPS.sessionsGone,
   BUS_CAPS.codexCheck,
   BUS_CAPS.agyCheck,
+  BUS_CAPS.waitingPermission,
 ];
+
+/** #3363: waiting_permission status goes to sockets that advertised the upgrade header or hello cap. */
+const waitingPermissionGated = (ws: WebSocket): boolean => {
+  const att = attachmentOf(ws);
+  if (att?.waitingPermission) return true;
+  return (
+    Array.isArray(att?.caps) &&
+    hasCap({ caps: att.caps }, BUS_CAPS.waitingPermission)
+  );
+};
 
 /** #2793 S3b: guest frames and deliveries go only to a socket whose hello listed BUS_CAPS.guest. */
 const guestGated = (ws: WebSocket): boolean => {
@@ -2479,6 +2494,7 @@ function roster(
   withLinks = false,
   withReach = false,
   withWaiting = false,
+  withWaitingPermission = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2621,6 +2637,7 @@ function roster(
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
+        ...waitingWire(r, withWaitingPermission),
         ...(former === undefined ? {} : { former_names: former }),
       };
     }),
@@ -2774,6 +2791,7 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
   a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
+  a.waiting_kind as waitingKind, a.waiting_label as waitingLabel, a.waiting_since as waitingSince,
   a.name_chosen as nameChosen, a.takeover_route = a.name as privateSessionName,
   exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder,
   (select ro.name from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id
@@ -6710,6 +6728,9 @@ export class BusHub extends DurableObject<Env> {
     server.serializeAttachment({
       machineId,
       ...(req.headers.get(AGY_CHECK_HEADER) === "1" ? { agyCheck: true } : {}),
+      ...(req.headers.get(WAITING_PERMISSION_HEADER) === "1"
+        ? { waitingPermission: true }
+        : {}),
       ...(req.headers.get(CODEX_VERDICT_HEADER) === "1"
         ? { codexVerdicts: true }
         : {}),
@@ -7075,7 +7096,9 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.guest) ||
           hasCap(f, BUS_CAPS.mailExpiry) ||
           hasCap(f, BUS_CAPS.sessionsGone) ||
-          hasCap(f, BUS_CAPS.codexCheck)
+          hasCap(f, BUS_CAPS.codexCheck) ||
+          hasCap(f, BUS_CAPS.waitingPermission) ||
+          attachmentOf(ws)?.waitingPermission
             ? // Everything the hub always listed, plus caps added after 16
               // only to a daemon that listed them: an older daemon decodes at
               // most 16 caps, and HUB_CAPS outgrew that (#2759).
@@ -7087,11 +7110,15 @@ export class BusHub extends DurableObject<Env> {
                       c !== BUS_CAPS.mailExpiry &&
                       c !== BUS_CAPS.sessionsGone &&
                       c !== BUS_CAPS.codexCheck &&
-                      c !== BUS_CAPS.agyCheck) ||
+                      c !== BUS_CAPS.agyCheck &&
+                      c !== BUS_CAPS.waitingPermission) ||
                     (c === BUS_CAPS.agyCheck
                       ? !!attachmentOf(ws)?.agyCheck &&
                         hasCap(f, BUS_CAPS.codexCheck)
-                      : hasCap(f, c)),
+                      : c === BUS_CAPS.waitingPermission
+                        ? !!attachmentOf(ws)?.waitingPermission ||
+                          hasCap(f, BUS_CAPS.waitingPermission)
+                        : hasCap(f, c)),
                 ),
               }
             : {}),
@@ -7284,6 +7311,7 @@ export class BusHub extends DurableObject<Env> {
               linksGated(ws),
               reachGated(ws),
               waitingGated(ws),
+              waitingPermissionGated(ws),
             ),
           );
         return;
@@ -7323,6 +7351,9 @@ export class BusHub extends DurableObject<Env> {
         return;
       case "status":
         if (sender) this.#status(ws, f, sender);
+        return;
+      case "agent_waiting":
+        if (sender) this.#waiting(ws, f, sender);
         return;
       case "follow":
       case "unfollow":
@@ -8403,6 +8434,16 @@ export class BusHub extends DurableObject<Env> {
     );
     if (r.applied) this.#statusChanged([sender], ws);
     else if (r.due !== null) this.#arm(r.due);
+  }
+
+  /** #3363: daemon-set waiting state, separate from self-reported status. */
+  #waiting(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "agent_waiting" }>,
+    sender: AgentRow,
+  ): void {
+    if (applyWaiting(this.ctx.storage.sql, sender.id, f.waiting, this.#now()))
+      this.#statusChanged([sender], ws);
   }
 
   /** Applied status changes: one roster_changed per namespace. */

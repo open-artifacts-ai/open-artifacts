@@ -32,6 +32,8 @@ export class Lane {
   /** #3108: this hub listed the codex check cap: codex_call_check frames come. */
   agyCheck = false;
   codexCheck = false;
+  /** #3363: this hub listed waiting_permission: daemon may send `agent_waiting` frames. */
+  waitingPermission = false;
   ever = false;
   droppedAt?: number;
   /** The hub refused this instance's token; its link stays closed. */
@@ -68,6 +70,7 @@ export class Lane {
     this.sessionsGone = has(BUS_CAPS.sessionsGone);
     this.agyCheck = has(BUS_CAPS.agyCheck);
     this.codexCheck = has(BUS_CAPS.codexCheck);
+    this.waitingPermission = has(BUS_CAPS.waitingPermission);
     this.helloed = true;
   }
 
@@ -91,6 +94,7 @@ export class Lane {
     this.sessionsGone = false;
     this.agyCheck = false;
     this.codexCheck = false;
+    this.waitingPermission = false;
   }
 }
 

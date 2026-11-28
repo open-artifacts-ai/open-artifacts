@@ -16,6 +16,7 @@ import {
   type Hello,
   LinkProofRequest,
   MAX_BODY_BYTES,
+  SetWaitingRequest,
   type StatusReply,
   StatusRequest,
 } from "./frames.ts";
@@ -66,6 +67,8 @@ export type ServeOptions = {
   oneRequest?: (hello: Hello) => boolean;
   /** Answers a `link_proof` request, which needs no hello; without it the frame is refused. */
   onLinkProof?: (req: LinkProofRequest) => { bound: boolean };
+  /** #3363: answers a `set_waiting` request from a local harness hook; needs no hello. */
+  onSetWaiting?: (req: SetWaitingRequest) => { applied: boolean };
   /** #3043: answers an un-helloed `habits` request (for the Codex SessionStart hook CLI). */
   onHabits?: () => string | null;
   /** Answers a `status` request; without it, status needs a hello like anything else. */
@@ -240,6 +243,39 @@ function handle(sock: Socket, opts: ServeOptions) {
           rules = opts.onHabits();
         } catch {}
         send({ type: "habits", id: habits.data.id, rules });
+        sock.end();
+        return;
+      }
+      if (
+        !hello &&
+        opts.onSetWaiting &&
+        typeof raw === "object" &&
+        raw !== null &&
+        (raw as { type?: unknown }).type === "set_waiting"
+      ) {
+        answered = true;
+        sock.pause();
+        const parsedWaiting = SetWaitingRequest.safeParse(raw);
+        if (!parsedWaiting.success) {
+          const id =
+            typeof (raw as { id?: unknown }).id === "string" &&
+            (raw as { id: string }).id
+              ? (raw as { id: string }).id.slice(0, 64)
+              : "0";
+          send({
+            type: "error",
+            id,
+            code: "bad_frame",
+            message: "invalid waiting state",
+          });
+          sock.end();
+          return;
+        }
+        let applied = false;
+        try {
+          applied = opts.onSetWaiting(parsedWaiting.data).applied;
+        } catch {}
+        send({ type: "waiting_set", id: parsedWaiting.data.id, applied });
         sock.end();
         return;
       }

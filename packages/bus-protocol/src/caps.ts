@@ -174,6 +174,13 @@ export const BUS_CAPS = {
    */
   codexCheck: "codex_check",
   agyCheck: "agy_check",
+  /**
+   * #3363: waiting_permission status state. Advertised via upgrade header
+   * (WAITING_PERMISSION_HEADER) so hello.caps stays <= 16 for older hubs.
+   * Hubs omit waiting_permission from roster rows for sockets without it, and
+   * daemons omit waiting_permission status frames when the hub did not list it.
+   */
+  waitingPermission: "waiting_permission",
 } as const;
 /** Opt-in on the socket upgrade: released hubs accept at most 16 hello caps. */
 export const CODEX_VERDICT_HEADER = "x-oa-codex-link-verdict";
@@ -206,3 +213,5 @@ export function hasCap(
 
 /** Native agy proof support on the upgrade; legacy hubs accept at most 16 hello caps. */
 export const AGY_CHECK_HEADER = "x-oa-bus-agy-check";
+/** #3363: waiting_permission status support on the upgrade; legacy hubs accept at most 16 hello caps. */
+export const WAITING_PERMISSION_HEADER = "x-oa-bus-waiting-permission";

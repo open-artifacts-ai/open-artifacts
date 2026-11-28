@@ -57,6 +57,9 @@ create table if not exists agents (
   status_at integer,
   status_next text,
   status_due integer,
+  waiting_kind text,
+  waiting_label text,
+  waiting_since integer,
   unique(machine_id, native_ref)
 );
 create unique index if not exists agents_live_name
@@ -503,6 +506,9 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     ["status_at", "integer"],
     ["status_next", "text"],
     ["status_due", "integer"],
+    ["waiting_kind", "text"],
+    ["waiting_label", "text"],
+    ["waiting_since", "integer"],
   ] as const)
     if (!agentCols.has(col))
       sql.exec(`alter table agents add column ${col} ${type}`);

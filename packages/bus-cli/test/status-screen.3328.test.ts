@@ -400,4 +400,62 @@ describe("oa-bus status default screen (#3328 S1)", () => {
       }
     }
   });
+
+  it("shows waiting permission in NEEDS YOU above waiting_on_owner (#3363)", async () => {
+    const now = Date.UTC(2026, 10, 28, 12, 0, 0);
+    const ctx = setup({
+      columns: 120,
+      st: {
+        namespaces: [
+          {
+            namespace: NS,
+            agents: [
+              {
+                name: "OwnerWaiter",
+                kind: "codex",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "waiting_on_owner",
+                status_label: "waiting on spec",
+                status_at: isoAgo(now, 30_000),
+              },
+              {
+                name: "Builder",
+                kind: "claude-code",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                status: "working",
+                status_label: "running tests",
+                status_at: isoAgo(now, 5 * 60_000),
+                waiting: {
+                  kind: "permission",
+                  label: "run a command",
+                  since: isoAgo(now, 2 * 60_000),
+                },
+              },
+              {
+                name: "Reviewer",
+                kind: "antigravity",
+                machine: "leonardos-macbook-pro",
+                state: "live",
+                waiting: {
+                  kind: "permission",
+                  since: isoAgo(now, 60_000),
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    ctx.clock.t = now;
+    expect(await statusCmd(ctx)).toBe(0);
+    const text = ctx.out().map(stripAnsi).join("\n");
+    expect(text).toContain("NEEDS YOU");
+    expect(text).toContain("Waiting for your OK (run a command)");
+    expect(text).toContain("Waiting for your OK");
+    // Permission waits rank above waiting_on_owner even when waiting_on_owner is newer.
+    expect(text.indexOf("Builder")).toBeLessThan(text.indexOf("OwnerWaiter"));
+    expect(text.indexOf("Reviewer")).toBeLessThan(text.indexOf("OwnerWaiter"));
+  });
 });

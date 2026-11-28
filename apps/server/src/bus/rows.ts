@@ -31,13 +31,17 @@ export type AgentRow = {
   status?: string | null;
   statusLabel?: string | null;
   statusAt?: number | null;
+  /** #3363 daemon-set waiting state (bus/status.ts); null when none. */
+  waitingKind?: string | null;
+  waitingLabel?: string | null;
+  waitingSince?: number | null;
 };
 
 /** Fixed column lists (no values): every value in a query stays a bound parameter. */
 export const MACHINE_COLS =
   "id, label, created_at as createdAt, revoked_at as revokedAt";
 export const AGENT_COLS =
-  "id, namespace, name, last_name as lastName, kind, machine_id as machineId, native_ref as nativeRef, global, live, updated_at as updatedAt, session_start_rowid as sessionStartRowid, status, status_label as statusLabel, status_at as statusAt";
+  "id, namespace, name, last_name as lastName, kind, machine_id as machineId, native_ref as nativeRef, global, live, updated_at as updatedAt, session_start_rowid as sessionStartRowid, status, status_label as statusLabel, status_at as statusAt, waiting_kind as waitingKind, waiting_label as waitingLabel, waiting_since as waitingSince";
 
 export type ReceiptRow = {
   id: string;

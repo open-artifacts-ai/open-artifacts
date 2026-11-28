@@ -1,4 +1,5 @@
 import { connect, type Socket } from "node:net";
+import type { AgentWaitingInput } from "@oa/bus-protocol";
 import {
   ADAPTER_CAPS,
   CLIENT_VERSION,
@@ -445,6 +446,52 @@ export function daemonHabits(opts: {
         for (const raw of decoder.push(chunk)) {
           const f = DaemonFrame.parse(raw);
           if (f.type === "habits") return done(() => resolve(f.rules));
+          if (f.type === "error")
+            return done(() => reject(new Error(f.message)));
+        }
+      } catch (e) {
+        done(() => reject(e instanceof Error ? e : new Error(String(e))));
+      }
+    });
+  });
+}
+
+/**
+ * #3363: tells the daemon a live agent is waiting on a permission prompt (or
+ * cleared it with `waiting: null`), without a hello. True when forwarded.
+ */
+export function daemonSetWaiting(opts: {
+  path: string;
+  agentRef: string;
+  waiting: AgentWaitingInput | null;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const sock = connect(opts.path);
+    const decoder = new LineDecoder();
+    const done = (f: () => void) => {
+      clearTimeout(timer);
+      sock.destroy();
+      f();
+    };
+    const timer = setTimeout(
+      () => done(() => reject(new Error("daemon did not answer set_waiting"))),
+      opts.timeoutMs ?? 2000,
+    );
+    sock.once("error", (e) => done(() => reject(e)));
+    sock.once("close", () =>
+      done(() => reject(new Error("daemon connection closed"))),
+    );
+    sock.once("connect", () =>
+      sock.write(
+        `${JSON.stringify({ v: 1, id: "waiting", type: "set_waiting", agent_ref: opts.agentRef, waiting: opts.waiting })}\n`,
+      ),
+    );
+    sock.on("data", (chunk) => {
+      try {
+        for (const raw of decoder.push(chunk)) {
+          const f = DaemonFrame.parse(raw);
+          if (f.type === "waiting_set") return done(() => resolve(f.applied));
           if (f.type === "error")
             return done(() => reject(new Error(f.message)));
         }
