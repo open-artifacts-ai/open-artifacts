@@ -325,12 +325,9 @@ function Loaded({
   useEffect(() => {
     if (placed.current || !editor || !editable || status !== "saved") return;
     placed.current = true;
-    // Already typing in the title or body: the cursor stays where the person put it.
+    // Already typing in the title: the cursor stays where the person put it.
     const input = titleInput.current;
-    if (
-      (input && (document.activeElement === input || input.value !== title)) ||
-      editor.view.hasFocus()
-    )
+    if (input && (document.activeElement === input || input.value !== title))
       return;
     if (fresh) {
       titleInput.current?.focus();
