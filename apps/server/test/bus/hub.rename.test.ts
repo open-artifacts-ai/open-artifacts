@@ -1702,11 +1702,18 @@ describe("OpenBus #451 nits", () => {
   it("a reopen de-collided from its own name counts nothing (N1)", async () => {
     const t0 = Date.now() + 65 * GRACE;
     await setClock(t0);
-    const d = await at();
+    const d = await at([BUS_CAPS.rename, BUS_CAPS.mailbox]);
     const n = ns("rn");
     const dup = uniq("Dup");
+    await reg(d, "observer", uniq("Observer"), n);
     await reg(d, "a", dup, n, { selfPicked: true });
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    // agent_down has no reply. Its close timestamp must be committed before
+    // the out-of-band test clock advances past the reservation.
+    expect(row(await list(d, "observer"), dup)).toMatchObject({
+      state: "away",
+      since: new Date(t0).toISOString(),
+    });
     // OpenBus #451: the close holds the name; past the away reservation (7 d,
     // #1295) another takes it (#3132: never before), and the old session
     // reopening finds it taken and is de-collided.
