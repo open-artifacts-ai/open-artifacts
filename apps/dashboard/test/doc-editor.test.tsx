@@ -839,6 +839,39 @@ describe("DocEditor", () => {
     expect(document.querySelector(".ProseMirror")).not.toHaveFocus();
   });
 
+  it("focusing the body before the room syncs keeps the cursor there (existing doc, #3329)", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    act(() => p.made.last?.connect(false));
+    await screen.findByRole("toolbar");
+    act(() => {
+      const para = new Y.XmlElement("paragraph");
+      const text = new Y.XmlText();
+      text.insert(0, "Hello world");
+      para.insert(0, [text]);
+      (p.made.last as NonNullable<typeof p.made.last>).doc
+        .getXmlFragment("default")
+        .insert(0, [para]);
+    });
+    const prose = document.querySelector<HTMLElement>(".ProseMirror");
+    expect(prose).not.toBeNull();
+    const textNode = prose?.querySelector("p")?.firstChild;
+    expect(textNode?.textContent).toBe("Hello world");
+    act(() => {
+      prose?.focus();
+      const range = document.createRange();
+      range.setStart(textNode as Node, 11);
+      range.collapse(true);
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+    });
+    act(() => p.made.last?.connect());
+    await settle(50);
+    expect(prose).toHaveFocus();
+    expect(window.getSelection()?.anchorOffset).toBe(11);
+  });
+
   it("typing in the title when the room syncs does not select it (new doc)", async () => {
     const p = fakeProviders();
     markFresh("A1");

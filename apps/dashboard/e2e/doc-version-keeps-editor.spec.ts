@@ -59,27 +59,17 @@ test("in the room: a newer version keeps the editor node and the caret", async (
   await expect(page.getByRole("toolbar")).toBeVisible();
   await expect(page.locator('.oa-docstate[data-state="saved"]')).toBeVisible();
   const prose = page.locator(".ProseMirror");
-  await page.getByText("We ship the new landing page").click();
-  await page.keyboard.press("Home");
-  for (let i = 0; i < 6; i++) await page.keyboard.press("ArrowRight");
-  // Wait for the final selectionchange so ProseMirror's listener (registered
-  // on mount, ahead of ours) has flushed view.state.selection before we freeze
-  // timers and read the caret (#3329).
-  const settled = page.evaluate(
-    () =>
-      new Promise<void>((resolve) =>
-        document.addEventListener("selectionchange", () => resolve(), {
-          once: true,
-        }),
-      ),
-  );
-  await page.keyboard.press("ArrowRight");
-  await settled;
+  const bold = page.getByRole("button", { name: "Bold" });
   const caret = () =>
     page.evaluate(() => {
       const s = getSelection();
       return `${s?.anchorNode?.textContent?.slice(0, 20)}@${s?.anchorOffset}`;
     });
+  // Click inside **Thursday** and wait until both ProseMirror's model selection
+  // (Bold toolbar state) and the DOM caret agree before freezing timers (#3329).
+  await page.getByText("Thursday", { exact: true }).click();
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(caret).toMatch(/^Thursday@[1-7]$/);
   const before = await caret();
   await prose.evaluate((n) => n.setAttribute("data-mark", "mine"));
   await page.clock.install();
@@ -92,6 +82,7 @@ test("in the room: a newer version keeps the editor node and the caret", async (
     "mine",
   );
   expect(await caret()).toBe(before);
+  await expect(bold).toHaveAttribute("aria-pressed", "true");
 });
 
 for (const hello of ["read:room_full", "read:access"]) {
