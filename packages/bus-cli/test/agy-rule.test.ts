@@ -47,7 +47,7 @@ function setup(): { h: string; deps: AdapterDeps; file: string } {
   const h = mkdtempSync(join(tmpdir(), "ob-agyr-"));
   const deps: AdapterDeps = {
     home: h,
-    env: { OA_BUS_EXPERIMENTAL_AGY: "1" },
+    env: {},
     busBin: BIN,
     assets: { pi: "PI_ASSET", opencodePlugin: "PLUGIN_JS" },
     which: (cmd) => cmd === "agy",

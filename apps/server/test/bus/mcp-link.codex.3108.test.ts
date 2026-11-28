@@ -4,14 +4,19 @@
 // daemon sockets; the daemon's answers are frames, the time cap is a fake timer.
 import { runInDurableObject } from "cloudflare:test";
 import {
+  AGY_CHECK_HEADER,
   BUS_CAPS,
   type ClientFrame,
   CODEX_VERDICT_HEADER,
   canonicalArgsSha256,
+  encodeFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub } from "../../src/bus/hub.js";
+import { lateVersion } from "../../src/services/agent-usage.js";
+import { publish } from "../../src/services/artifacts.js";
 import { linkRequest, PROOF_LOOKUP_MS } from "../../src/services/bus.js";
+import { getUser } from "../../src/services/users.js";
 import { MCP_URL } from "../mcp-helpers.js";
 import {
   type Daemon,
@@ -52,10 +57,14 @@ async function scene(
   caps: string[] = CAPS,
   thread = uuid(),
   headers: Record<string, string> = {},
+  kind = "codex",
 ) {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
-  const d = await daemon(mach.token, headers);
+  const d = await daemon(mach.token, {
+    ...headers,
+    ...(kind === "antigravity" ? { [AGY_CHECK_HEADER]: "1" } : {}),
+  });
   d.send({ ...hello(id("h")), caps } as ClientFrame);
   const ok = await waitFor(d, "hello_ok");
   d.send({
@@ -63,7 +72,7 @@ async function scene(
     id: id("u"),
     type: "agent_up",
     agent_ref: thread,
-    kind: "codex",
+    kind,
     proposed_name: `Cx${seq}`,
     namespace: ns("cx"),
     global: false,
@@ -139,6 +148,7 @@ describe("hello (#3108)", () => {
   it("lists codex_check only to a hello that listed it", async () => {
     const a = await scene();
     expect(a.ok.caps).toContain(BUS_CAPS.codexCheck);
+    expect(a.ok.caps).not.toContain(BUS_CAPS.agyCheck);
     const b = await scene([BUS_CAPS.link, BUS_CAPS.ids]);
     expect(b.ok.caps).not.toContain(BUS_CAPS.codexCheck);
   });
@@ -217,6 +227,7 @@ describe("a Codex call with no proof (#3108)", () => {
     const meta = codeMeta(thread, { "x-codex-turn-metadata": turn(uuid()) });
     const r = await run(m.userId, d, body("ping", meta), null);
     expect(r.identity).toBeUndefined();
+    expect(r.why).toBe("no_proof");
     expect(checksOf(d)).toEqual([]);
   });
 
@@ -282,6 +293,7 @@ describe("a Codex call with no proof (#3108)", () => {
     const { m, d, thread } = await scene();
     const r = await run(m.userId, d, body("ping", codeMeta(thread)), false);
     expect(r.identity).toBeUndefined();
+    expect(r.why).toBe("refused");
   });
 
   it("is unlinked when the daemon says yes but holds no live codex session for the thread", async () => {
@@ -310,6 +322,155 @@ describe("a Codex call with no proof (#3108)", () => {
     });
     expect(out).toEqual({ identity: null, reason: "lookup_timeout" });
     expect(checksOf(d)).toHaveLength(1);
+  });
+
+  it("passes only the exact saved version to a lookup that outlasts the worker deadline", async () => {
+    const { m, thread } = await scene();
+    const tasks: Promise<unknown>[] = [];
+    let finish!: () => void;
+    const lookup = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let announce!: (ticket: string) => void;
+    const started = new Promise<string>((resolve) => {
+      announce = resolve;
+    });
+    const bind = vi.fn(async () => {});
+    const stub = {
+      codexCallDecision(_check: unknown, ticket: string) {
+        announce(ticket);
+        return lookup.then(() => ({
+          identity: null,
+          reason: "lookup_timeout",
+        }));
+      },
+      codexVersionTarget: bind,
+      codexCallVerdict() {},
+    };
+    const env = {
+      ...e,
+      BUS_HUB: { idFromName: (name: string) => name, get: () => stub },
+    } as unknown as typeof e;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const read = linkRequest(
+        env,
+        m.userId,
+        req(body("publish_artifact", directMeta(thread))),
+        {
+          waitUntil(p) {
+            tasks.push(p);
+          },
+        },
+      );
+      const ticket = await started;
+      await vi.advanceTimersByTimeAsync(PROOF_LOOKUP_MS);
+      const result = await read;
+      expect(result.identity).toBeUndefined();
+      expect(result.why).toBe("timeout");
+      vi.useRealTimers();
+      const user = await getUser(e, m.userId);
+      if (!user || !result.late) throw new Error("missing pending version");
+      const saved = await publish(
+        e,
+        user,
+        { title: "deadline", format: "html", content: "<p>saved</p>" },
+        {
+          name: "Codex",
+          version: null,
+          unlinked: result.why,
+          [lateVersion]: result.late,
+        },
+      );
+      finish();
+      await Promise.all(tasks);
+      expect(bind.mock.calls).toEqual([
+        [ticket, { artifactId: saved.id, version: saved.version }],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late verified socket frame attributes only the committed version", async () => {
+    const { m, mach, d, thread } = await scene();
+    const hub = await hubOf(m.userId);
+    const user = await getUser(e, m.userId);
+    if (!user) throw new Error("missing member");
+    const ticket = uuid();
+    const decision = await runInDurableObject(hub, async (inst: BusHub) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const checking = inst.codexCallDecision(
+          {
+            thread_id: thread,
+            tool: "publish_artifact",
+            mode: { kind: "code", call_id: execCall(), item_id: itemId() },
+          },
+          ticket,
+        );
+        await vi.advanceTimersByTimeAsync(PROOF_LOOKUP_MS);
+        return await checking;
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    expect(decision).toEqual({ identity: null, reason: "lookup_timeout" });
+    const check = await waitFor(d, "codex_call_check");
+    const tasks: Promise<void>[] = [];
+    const saved = await publish(
+      e,
+      user,
+      { title: "late", format: "html", content: "<p>first</p>" },
+      {
+        name: "Codex",
+        version: null,
+        unlinked: "timeout",
+        [lateVersion]: {
+          ticket,
+          settle(target) {
+            tasks.push(hub.codexVersionTarget(ticket, target));
+          },
+        },
+      },
+    );
+    await Promise.all(tasks);
+    await publish(
+      e,
+      user,
+      { id: saved.id, format: "html", content: "<p>next</p>" },
+      null,
+    );
+    const rows = () =>
+      e.DB.prepare(
+        "select agent_identity from versions where artifact_id = ? order by version",
+      )
+        .bind(saved.id)
+        .raw<[string | null]>();
+    expect(await rows()).toEqual([
+      [JSON.stringify({ reason: "timeout", ticket })],
+      [null],
+    ]);
+    await runInDurableObject(hub, async (inst: BusHub, state) => {
+      const ws = state.getWebSockets(mach.id)[0];
+      if (!ws) throw new Error("missing original connection");
+      await inst.webSocketMessage(
+        ws,
+        encodeFrame({
+          v: 1,
+          id: id("late"),
+          type: "codex_call_checked",
+          re: check.id,
+          ok: true,
+        }),
+      );
+    });
+    const [first, second] = await rows();
+    expect(JSON.parse(first?.[0] ?? "null")).toMatchObject({
+      kind: "codex",
+      identityId: expect.any(String),
+    });
+    expect(second).toEqual([null]);
   });
 
   it("an answer from another socket never vouches: identity comes from the answering socket's own session", async () => {
@@ -559,4 +720,74 @@ describe("logging (#3108)", () => {
     ])
       expect(logged).not.toContain(v);
   });
+});
+
+it("checks a native agy hook ID once and logs metadata names and verdicts", async () => {
+  const { m, d, thread, ok } = await scene(CAPS, uuid(), {}, "antigravity");
+  expect(ok.caps).toContain(BUS_CAPS.agyCheck);
+  const log = vi.spyOn(console, "log");
+  const call = directCall();
+  const meta = {
+    "antigravity.google/conversation_id": thread,
+    "antigravity.google/tool_call_id": call,
+    progressToken: "private-progress",
+  };
+  const b = body("get_artifact", meta, { id: "private-page" });
+  expect((await run(m.userId, d, b, true)).identity?.kind).toBe("antigravity");
+  expect((await run(m.userId, null, b, null)).identity).toBeUndefined();
+  expect(
+    (
+      await run(
+        m.userId,
+        null,
+        body("get_artifact", {
+          "antigravity.google/conversation_id": thread,
+          progressToken: "p:2",
+        }),
+        null,
+      )
+    ).identity,
+  ).toBeUndefined();
+  const diagnostic = log.mock.calls
+    .map(([s]) => String(s))
+    .filter((s) => s.includes("bus_agy_call_check"))
+    .join("\n");
+  expect(diagnostic).toContain(
+    '"matched_key":"antigravity.google/tool_call_id"',
+  );
+  expect(diagnostic).toContain('"verdict":"no_hook_id"');
+  for (const value of [thread, call, "private-progress", "private-page"])
+    expect(diagnostic).not.toContain(value);
+  expect(
+    (
+      await run(
+        m.userId,
+        null,
+        body("get_artifact", { ...meta, callId: directCall() }),
+        null,
+      )
+    ).identity,
+  ).toBeUndefined();
+});
+
+it("never challenges an agy daemon for a hook ID under an unreportable key", async () => {
+  const { m, d, thread } = await scene(CAPS, uuid(), {}, "antigravity");
+  const log = vi.spyOn(console, "log");
+  const key = "private field";
+  const call = directCall();
+  const result = await run(
+    m.userId,
+    null,
+    body("get_artifact", {
+      "antigravity.google/conversation_id": thread,
+      [key]: call,
+    }),
+    null,
+  );
+  expect(result.identity).toBeUndefined();
+  expect(checksOf(d)).toHaveLength(0);
+  const diagnostic = JSON.stringify(log.mock.calls);
+  expect(diagnostic).toContain("unreportable_key");
+  expect(diagnostic).not.toContain(key);
+  expect(diagnostic).not.toContain(call);
 });

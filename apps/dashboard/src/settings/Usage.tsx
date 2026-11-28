@@ -14,16 +14,7 @@ import { ExtIcon } from "../layout/CpuBanner";
 import { COSTS_DOC, PRICING_URL } from "../layout/cpu";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import {
-  CARD,
-  Code,
-  GAP,
-  INSET,
-  MEASURE,
-  muted,
-  SettingsCard,
-  STACK,
-} from "./ui";
+import { CARD, Code, GAP, INSET, muted, SettingsCard, STACK } from "./ui";
 
 type Tone = "normal" | "warning" | "danger";
 type Metric = UsageData["metrics"][number];
@@ -392,12 +383,11 @@ export function Usage() {
   useDocumentTitle("Usage");
   const q = useUsage();
   return (
-    // The 880px measure of the other settings pages.
-    <div className={`${MEASURE} ${STACK}`}>
+    <div className={STACK}>
       <div className="flex items-center gap-[var(--oa-space-3)]">
-        <h1 className="flex-none text-[length:var(--oa-text-xl)] font-semibold">
+        <h2 className="flex-none text-[length:var(--oa-text-lg)] font-semibold">
           Usage
-        </h1>
+        </h2>
         <Button
           variant="ghost"
           size="sm"

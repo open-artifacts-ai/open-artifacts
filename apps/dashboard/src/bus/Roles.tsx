@@ -35,7 +35,7 @@ import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
 import { OptionSelect } from "../settings/OptionSelect";
 import { errorText, muted, SettingsCard, STACK } from "../settings/ui";
-import { shortDate } from "./format";
+import { roleHolderLabel, sessionLabel, shortDate } from "./format";
 import { shortName } from "./namespaces";
 import { RoleCard } from "./RoleCard";
 import { LIVE_DOWN, StatusBadge } from "./ui";
@@ -187,7 +187,7 @@ function RoleDialog({
             }
             options={holders.map((a) => ({
               value: a.id,
-              label: `${a.name} on ${a.machineLabel}`,
+              label: sessionLabel(a, true),
             }))}
             onChange={setHolder}
           />
@@ -226,9 +226,7 @@ export function RolesTab() {
     );
   if (!roles.data.live) return <Notice tone="warning">{LIVE_DOWN}</Notice>;
   const live = agents.data?.live ? agents.data.agents : [];
-  const liveIds = new Set(
-    live.filter((a) => a.state === "live").map((a) => a.id),
-  );
+  const holders = new Map(live.map((a) => [a.id, a]));
   const all = [
     ...new Set([
       ...live.map((a) => a.namespace),
@@ -307,7 +305,11 @@ export function RolesTab() {
                 className="grid gap-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
               >
                 <span>
-                  <RoleRowSentence r={r} all={all} />
+                  <RoleRowSentence
+                    r={r}
+                    all={all}
+                    holder={holders.get(r.agentId ?? "")}
+                  />
                 </span>
                 <span className={muted}>Set {shortDate(r.setAt)}</span>
                 {actions(r)}
@@ -340,7 +342,7 @@ export function RolesTab() {
                     <TableCell>
                       <HolderBadge
                         r={r}
-                        live={r.agentId !== null && liveIds.has(r.agentId)}
+                        holder={holders.get(r.agentId ?? "")}
                       />
                     </TableCell>
                     <TableCell
@@ -395,21 +397,33 @@ export function RolesTab() {
 /** "Held by" as #1453 draws it: a dot badge carrying the agent's name, the
     green Live tone only when that agent is open now, a neutral one when it
     isn't (or liveness can't be read); "Vacant" when nothing holds it. */
-function HolderBadge({ r, live }: { r: BusRole; live: boolean }) {
+function HolderBadge({ r, holder }: { r: BusRole; holder?: BusAgent }) {
   const held = !r.vacant && r.holderName !== null;
   return (
     <StatusBadge
-      status={held && live ? "Live" : "Offline"}
-      text={held ? (r.holderName ?? "") : "Vacant"}
+      status={held && holder?.state === "live" ? "Live" : "Offline"}
+      text={held ? roleHolderLabel(r, holder) : "Vacant"}
     />
   );
 }
 
-function RoleRowSentence({ r, all }: { r: BusRole; all: string[] }) {
+function RoleRowSentence({
+  r,
+  all,
+  holder,
+}: {
+  r: BusRole;
+  all: string[];
+  holder?: BusAgent;
+}) {
   return (
     <>
       <b className="font-mono">{r.name}</b> in {shortName(r.namespace, all)}:{" "}
-      {r.vacant || r.holderName === null ? "vacant" : <b>{r.holderName}</b>}
+      {r.vacant || r.holderName === null ? (
+        "vacant"
+      ) : (
+        <b>{roleHolderLabel(r, holder)}</b>
+      )}
     </>
   );
 }

@@ -852,6 +852,7 @@ export function askedByOf(
   requestId: string,
   actor: StoredActor,
   key: string,
+  sessionKey?: string,
 ): { commentId: string; userId: string } | undefined {
   const id = actor.agent?.identity?.identityId;
   if (!id) return undefined;
@@ -865,31 +866,39 @@ export function askedByOf(
   const by = src && (JSON.parse(src.author) as StoredActor);
   if (!by || by.kind !== "user" || by.typed !== true || by.agent)
     return undefined;
-  const rows = sql
-    .exec<{
-      kind: string;
-      state: string;
-      owner: string | null;
-      identity: string | null;
-    }>(
-      "select kind, state, owner, identity from comment_targets where comment_id = ? and key = ? and kind in ('mention', 'asker', 'reply', 'held', 'asked')",
-      requestId,
-      key,
-    )
-    .toArray();
-  const mine = (r: (typeof rows)[number]) =>
-    r.owner === actor.ref &&
-    (JSON.parse(r.identity ?? "{}") as { identityId?: string }).identityId ===
-      id;
-  const holds = rows.filter((r) => r.kind === "held");
-  const released =
-    holds.length > 0 && holds.every((h) => h.state === "allowed" && mine(h));
-  const delivered =
-    holds.length === 0 &&
-    rows.some(
-      (r) => mine(r) && (r.state === "delivered" || r.state === "seen"),
-    );
-  return released || delivered
+  const check = (targetKey: string, allowRole: boolean): boolean => {
+    const rows = sql
+      .exec<{
+        kind: string;
+        state: string;
+        owner: string | null;
+        identity: string | null;
+      }>(
+        "select kind, state, owner, identity from comment_targets where comment_id = ? and key = ? and kind in ('mention', 'asker', 'reply', 'held', 'asked')",
+        requestId,
+        targetKey,
+      )
+      .toArray();
+    const roleKey =
+      allowRole &&
+      /^role:[1-9A-HJ-NP-Za-km-z]{16}:[0-9a-f]{32}$/.test(targetKey);
+    const mine = (r: (typeof rows)[number]) =>
+      r.owner === actor.ref &&
+      (roleKey ||
+        (JSON.parse(r.identity ?? "{}") as { identityId?: string })
+          .identityId === id);
+    const holds = rows.filter((r) => r.kind === "held");
+    const released =
+      holds.length > 0 && holds.every((h) => h.state === "allowed" && mine(h));
+    const delivered =
+      holds.length === 0 &&
+      rows.some(
+        (r) => mine(r) && (r.state === "delivered" || r.state === "seen"),
+      );
+    return released || delivered;
+  };
+  return check(key, true) ||
+    (sessionKey !== undefined && sessionKey !== key && check(sessionKey, false))
     ? { commentId: requestId, userId: by.ref }
     : undefined;
 }
@@ -1268,6 +1277,7 @@ const participantOfRow = (r: ParticipantSql): ParticipantRow => ({
   namespace: r.namespace,
   ...(r.page === 1 ? { page: true as const } : {}),
   ...(r.identity ? { identity: JSON.parse(r.identity) as StoredIdentity } : {}),
+  ...(r.joinedAt ? { joinedAt: r.joinedAt } : {}),
   removed: r.removed === 1,
 });
 
@@ -1279,8 +1289,10 @@ export function participantsOf(
   const out = new Map<string, ParticipantRow[]>();
   if (threadIds.length === 0) return out;
   for (const r of sql.exec<ParticipantSql & { thread_id: string }>(
-    `select thread_id, key, name, owner, namespace, page, removed, identity from comment_participants
-     where thread_id in (select value from json_each(?)) order by key`,
+    `select p.thread_id, p.key, p.name, p.owner, p.namespace, p.page, p.removed, p.identity,
+       coalesce(p.joined_at, (select min(c.created_at) from comments c where c.thread_id = p.thread_id)) as joinedAt
+     from comment_participants p
+     where p.thread_id in (select value from json_each(?)) order by p.key`,
     JSON.stringify(threadIds),
   )) {
     const list = out.get(r.thread_id) ?? [];

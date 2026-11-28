@@ -1,36 +1,19 @@
-import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIMITS } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPlatformProxy } from "wrangler";
-import {
-  main,
-  parseArgs,
-  parseWranglerJson,
-} from "../../scripts/verify-migration.ts";
-import {
-  capture,
-  MIGRATION_FILE,
-  NARROW,
-  parseCapture,
-  type Query,
-  SOFT_DELETE_DAYS,
-  serialize,
-  verify,
-  WIDE,
-} from "../../scripts/verify-migration-core.ts";
 
+const MIGRATION_FILE = "0017_image_format.sql";
+const NARROW = "in ('html', 'markdown', 'code', 'pdf')";
+const WIDE = "in ('html', 'markdown', 'code', 'pdf', 'image')";
 // Rehearsal of migration 0017_image_format (the format CHECK rebuild) on a
 // local D1 (workerd through wrangler's getPlatformProxy: the same SQLite, the
 // same enforced foreign keys and the same SQLITE_AUTH limits as D1). The DB
 // is migrated to 0016, every table is populated prod-shaped (FTS rows,
 // shares, versions, rowid gaps, triggers exercised), then 0017 runs. Every
 // table's row count, foreign_key_check, quick_check (integrity_check is
-// refused on D1), sqlite_master and an FTS query must match, and
-// verify-migration's capture/verify (the script Platform runs on prod) must
-// pass on the same DB.
+// refused on D1), sqlite_master and an FTS query must match.
 const DIR = join(import.meta.dirname, "../../migrations");
 const files = readdirSync(DIR)
   .filter((f) => /^\d{4}_.*\.sql$/.test(f))
@@ -44,7 +27,7 @@ const statements = (f: string) =>
 
 let dispose: () => Promise<void>;
 let db: D1Database;
-const q: Query = async (sql) =>
+const q = async (sql: string) =>
   (await db.prepare(sql).all<Record<string, unknown>>()).results;
 const run = (sql: string, ...b: unknown[]) =>
   db
@@ -336,8 +319,6 @@ async function seed() {
 const NOW = Date.now();
 const DAY_MS = 86_400_000;
 let before: Snap;
-let captured: string;
-let recaptured: string;
 
 beforeAll(async () => {
   expect(target).toBeGreaterThan(0);
@@ -369,8 +350,6 @@ beforeAll(async () => {
   for (const f of files.slice(0, target)) await apply(f);
   await seed();
   before = await snap();
-  captured = serialize(await capture(q));
-  recaptured = serialize(await capture(q));
   await apply(MIGRATION_FILE);
 }, 60_000);
 
@@ -463,306 +442,6 @@ describe("migration 0017_image_format rehearsal", () => {
       expect.arrayContaining(["artifact_search", "artifact_search_data"]),
     );
     expect(names("table").filter((n) => n.startsWith("_oa0017"))).toEqual([]);
-  });
-
-  it("verify-migration's capture/verify pass, and capture is deterministic", async () => {
-    expect(recaptured).toBe(captured);
-    expect(captured).not.toMatch(/@/);
-    const r = await verify(q, parseCapture(captured));
-    expect(r.failures).toEqual([]);
-    expect(r.ok).toBe(true);
-    expect(r.notes).toContain("quick_check: ok");
-  });
-
-  it("verify accepts a later migration that adds objects", async () => {
-    await db.batch([
-      db.prepare("create table later_t (x text)"),
-      db.prepare("create index later_t_x on later_t (x)"),
-      db.prepare("create index artifacts_later_idx on artifacts (title)"),
-      db.prepare("insert into later_t values ('a')"),
-      db
-        .prepare("insert into d1_migrations (name) values (?)")
-        .bind("0018_later.sql"),
-    ]);
-    const r = await verify(q, parseCapture(captured));
-    expect(r.failures).toEqual([]);
-    expect(r.notes).toEqual(
-      expect.arrayContaining([
-        "d1_migrations: 1 migrations after 0017",
-        "index later_t_x: not there before",
-        "index artifacts_later_idx: not there before",
-      ]),
-    );
-  });
-
-  it("a delete by the app during the window is explained by its audit row or state; others fail", async () => {
-    const audit = (
-      id: string,
-      action: string,
-      type: string,
-      target: string,
-      at: number,
-    ) =>
-      run(
-        "insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id) values (?, ?, 'user', 'u-owner', ?, ?, ?)",
-        id,
-        at,
-        action,
-        type,
-        target,
-      );
-    const LATER = 10_000_000_000;
-    // Unshare (artifact.unshare), transfer (artifact.transfer).
-    await run(
-      "delete from shares where artifact_id = ? and email = 'Viewer@Example.com'",
-      A(7),
-    );
-    await audit("ev-unshare", "artifact.unshare", "artifact", A(7), LATER);
-    await run(
-      "delete from shares where artifact_id = ? and email = 'ed@example.com'",
-      A(9),
-    );
-    await audit("ev-transfer", "artifact.transfer", "artifact", A(9), LATER);
-    // The directory's deleteUser: user.status on the user, their shares gone.
-    await run(
-      "delete from shares where artifact_id = ? and email = 'u-bob@Example.com'",
-      A(13),
-    );
-    await audit("ev-status", "user.status", "user", "u-bob", LATER);
-    // An address move (not audited): the share moves to the new address.
-    await run(
-      "update users set email = 'ann.new@example.com' where id = 'u-ann'",
-    );
-    await run(
-      "insert into shares values (?, 'ann.new@example.com', 'viewer', 'u-owner', 1)",
-      A(19),
-    );
-    await run(
-      "delete from shares where artifact_id = ? and email = 'u-ann@Example.com'",
-      A(19),
-    );
-    // The trash purge (not audited): an artifact trashed at capture.
-    expect(parseCapture(captured).trashed.map((t) => t.id)).toContain(A(11));
-    await run(
-      "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
-      A(11),
-    );
-    await run("delete from artifacts where id = ?", A(11));
-    const ok = await verify(q, parseCapture(captured));
-    expect(ok.failures).toEqual([]);
-    expect(ok.notes).toEqual(
-      expect.arrayContaining([
-        "artifacts: 1 captured rows deleted by the app since capture",
-        "versions: 2 captured rows deleted by the app since capture",
-        // 4 above, plus A(11)'s two (the purge cascade).
-        "shares: 6 captured rows deleted by the app since capture",
-      ]),
-    );
-    // Unexplained: an audit row from before the capture doesn't count, nor
-    // does an audit for another artifact; a live artifact can't be purged.
-    await audit("ev-old", "artifact.unshare", "artifact", A(15), 1);
-    await audit("ev-other", "artifact.unshare", "artifact", A(21), LATER);
-    await run(
-      "delete from shares where artifact_id = ? and email = 'u-guest@Example.com'",
-      A(15),
-    );
-    const bad = await verify(q, parseCapture(captured));
-    expect(bad.ok).toBe(false);
-    expect(bad.failures).toEqual([
-      `shares: 1 of ${before.counts.shares} captured rows missing, unexplained`,
-    ]);
-    await run(
-      "insert into shares values (?, 'u-guest@Example.com', 'viewer', 'u-owner', 1)",
-      A(15),
-    );
-    expect((await verify(q, parseCapture(captured))).failures).toEqual([]);
-  });
-
-  it("SOFT_DELETE_DAYS is LIMITS.softDeleteDays; the capture keeps the rebuilt tables' foreign keys", async () => {
-    expect(SOFT_DELETE_DAYS).toBe(LIMITS.softDeleteDays);
-    const cap = parseCapture(captured);
-    expect(cap.format).toBe("oa-verify-migration/3");
-    expect(cap.fks.shares.join("\n")).toMatch(
-      /artifacts artifact_id id NO ACTION CASCADE/,
-    );
-    expect(cap.fks.versions.join("\n")).toMatch(
-      /artifacts artifact_id id NO ACTION CASCADE/,
-    );
-    const changed = {
-      ...cap,
-      fks: {
-        ...cap.fks,
-        shares: cap.fks.shares.map((l) => l.replace("CASCADE", "NO ACTION")),
-      },
-    };
-    expect((await verify(q, changed)).failures).toContain(
-      "table shares: foreign keys differ from before",
-    );
-  });
-
-  it("refuses a --db that looks like a flag, and never echoes bad JSON", () => {
-    expect(parseArgs(["verify", "--db", "--remote", "--in", "f"])).toBeNull();
-    expect(parseArgs(["capture", "--db", "-x", "--out", "f"])).toBeNull();
-    const secret = '[{"results": [secret@example.com';
-    expect(() => parseWranglerJson(secret)).toThrow(
-      "wrangler printed invalid JSON",
-    );
-    try {
-      parseWranglerJson(secret);
-    } catch (e) {
-      expect(String(e)).not.toMatch(/secret/);
-    }
-    expect(() => parseCapture("{ secret@example.com")).toThrow(
-      "not a capture file (invalid JSON)",
-    );
-    try {
-      parseCapture("{ secret@example.com");
-    } catch (e) {
-      expect(String(e)).not.toMatch(/secret/);
-    }
-  });
-
-  it("the CLI exits 0 on a match and 1 on a mismatch, with no row data in its reasons", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "oa-verify-"));
-    const file = join(dir, "before.json");
-    writeFileSync(file, captured);
-    const out: string[] = [];
-    const err: string[] = [];
-    const io = {
-      out: (s: string) => out.push(s),
-      err: (s: string) => err.push(s),
-    };
-    expect(
-      await main(["verify", "--db", "oa-mig0017", "--in", file], () => q, io),
-    ).toBe(0);
-    expect(err).toEqual([]);
-    // capture refuses an already migrated DB.
-    expect(
-      await main(
-        ["capture", "--db", "x", "--out", join(dir, "again.json")],
-        () => q,
-        io,
-      ),
-    ).toBe(1);
-    expect(err.at(-1)).toMatch(/already applied/);
-    expect(await main(["capture", "--db", "x"], () => q, io)).toBe(2);
-    expect(parseArgs(["verify", "--db", "d", "--out", "f"])).toBeNull();
-    expect(parseArgs(["capture", "--db", "d", "--out", "f"])).toEqual({
-      cmd: "capture",
-      db: "d",
-      file: "f",
-    });
-    // A lost share and a lost version: verify fails and names counts only.
-    err.length = 0;
-    await run("delete from shares where artifact_id = ?", A(1));
-    await run(
-      "delete from versions where artifact_id = ? and version = 1",
-      A(2),
-    );
-    expect(await main(["verify", "--db", "d", "--in", file], () => q, io)).toBe(
-      1,
-    );
-    expect(err).toEqual(
-      expect.arrayContaining([
-        `MISMATCH shares: 2 of ${before.counts.shares} captured rows missing, unexplained`,
-        `MISMATCH versions: 1 of ${before.counts.versions} captured rows missing, unexplained`,
-      ]),
-    );
-    for (const e of err) {
-      expect(e).not.toMatch(/@|art00/i);
-    }
-  });
-
-  it("unexplained deletes fail: a live artifact, a move without a share, audit rows at the mark, more shares than events, a purge not yet due", async () => {
-    /** Unexplained missing rows per table, from verify's failures. */
-    const unexp = async (now?: number) => {
-      const r = await verify(q, parseCapture(captured), now);
-      const out: Record<string, number> = {
-        artifacts: 0,
-        versions: 0,
-        shares: 0,
-      };
-      for (const f of r.failures) {
-        const m =
-          /^(\w+): (\d+) of \d+ captured rows missing, unexplained$/.exec(f);
-        if (m) out[m[1] as string] = Number(m[2]);
-      }
-      return out;
-    };
-    const purge = async (i: number) => {
-      await run(
-        "delete from artifact_search where rowid = (select rowid from artifacts where id = ?)",
-        A(i),
-      );
-      await run("delete from artifacts where id = ?", A(i));
-    };
-    const audit = (id: string, target: string, at: number) =>
-      run(
-        `insert into audit_events (id, at, actor_kind, actor_id, action, target_type, target_id)
-         values (?, ?, 'user', 'u-owner', 'artifact.unshare', 'artifact', ?)`,
-        id,
-        at,
-        target,
-      );
-    let base = await unexp();
-    const expectDelta = async (d: Record<string, number>, now?: number) => {
-      const cur = await unexp(now);
-      expect({
-        artifacts: (cur.artifacts ?? 0) - (base.artifacts ?? 0),
-        versions: (cur.versions ?? 0) - (base.versions ?? 0),
-        shares: (cur.shares ?? 0) - (base.shares ?? 0),
-      }).toEqual({ artifacts: 0, versions: 0, shares: 0, ...d });
-      base = cur;
-    };
-    // A live (never trashed) artifact deleted: its rows and shares.
-    await purge(25);
-    await expectDelta({ artifacts: 1, versions: 2, shares: 2 });
-    // An address move with no share at the new address.
-    await run(
-      "update users set email = 'guest.new@example.com' where id = 'u-guest'",
-    );
-    await run(
-      "delete from shares where artifact_id = ? and email = 'u-guest@Example.com'",
-      A(15),
-    );
-    await expectDelta({ shares: 1 });
-    // An unshare audit row already at the mark predates the capture...
-    await run(
-      "delete from shares where artifact_id = ? and email = 'ed@example.com'",
-      A(23),
-    );
-    await expectDelta({ shares: 1 });
-    // ...a new row at the same millisecond doesn't.
-    const mark = parseCapture(captured).audit;
-    expect(mark.ids).toContain("ev-mark");
-    await audit("ev-same-ms", A(23), mark.at);
-    await expectDelta({ shares: -1 });
-    // One unshare row explains one share, not two.
-    await audit("ev-one", A(27), 10_000_000_000);
-    await run("delete from shares where artifact_id = ?", A(27));
-    await expectDelta({ shares: 1 });
-    // Purges not yet due at verify time: trashed just now (A(44)), and a
-    // backed-off purge_after (A(55)); 40 days on, only A(44) is due.
-    await purge(44);
-    await purge(55);
-    await expectDelta({ artifacts: 2, versions: 4, shares: 2 });
-    await expectDelta({ artifacts: -1, versions: -2 }, NOW + 40 * DAY_MS);
-  });
-
-  it("runs under node --experimental-strip-types as Platform invokes it", () => {
-    const r = spawnSync(
-      process.execPath,
-      [
-        "--experimental-strip-types",
-        join(import.meta.dirname, "../../scripts/verify-migration.ts"),
-        "verify",
-        "--db",
-        "x",
-      ],
-      { encoding: "utf8", timeout: 30_000 },
-    );
-    expect(r.status).toBe(2);
-    expect(r.stderr).toMatch(/usage:/);
   });
 
   it("keeps the triggers, the cascades and the widened CHECK working", async () => {

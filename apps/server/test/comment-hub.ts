@@ -14,6 +14,8 @@ export type HubAgent = {
   owner: string;
   /** "away": closed, the bus still lists it. Default "live". */
   state?: "live" | "away";
+  /** #3143: the role the session holds; an away session stays listed only with one. */
+  role?: string;
 };
 
 export class FakeHubs {
@@ -47,6 +49,7 @@ export class FakeHubs {
             global: false,
             state: a.state ?? "live",
             running: true,
+            ...(a.role ? { role: a.role } : {}),
             since: null,
             updatedAt: new Date().toISOString(),
           })),

@@ -15,6 +15,14 @@ export const tidyToken = (kind: string): string =>
     .trim()
     .slice(0, 32);
 
+export const agentLocation = (machine?: string, product?: string) => {
+  if (machine)
+    return /^(laptop|workstation)$/i.test(machine)
+      ? `the ${machine.toLowerCase()}`
+      : machine;
+  return product || "an agent";
+};
+
 /** The app's name: the server's product, else the kind's own token. */
 export const appName = (a: { kind: string; product?: string }): string =>
   a.product ?? (tidyToken(a.kind) || "Agent");

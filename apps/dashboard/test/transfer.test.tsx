@@ -877,7 +877,7 @@ it("400 invalid_successor shows the copy", async () => {
 it("the Settings and Members dots show while someone still has artifacts", async () => {
   mountHosted("/settings/members");
   await departed();
-  const nav = screen.getByRole("navigation", { name: "Primary" });
+  const nav = screen.getByRole("navigation", { name: "Workspace" });
   await waitFor(() =>
     expect(
       within(nav).getByRole("link", { name: /^Settings/ }),
@@ -908,7 +908,7 @@ it("no dots when nobody departed has artifacts", async () => {
     ),
   ]);
   await screen.findByText("Bob Builder");
-  const nav = screen.getByRole("navigation", { name: "Primary" });
+  const nav = screen.getByRole("navigation", { name: "Workspace" });
   await waitFor(() =>
     expect(
       within(nav).getByRole("link", { name: /^Settings/ }),

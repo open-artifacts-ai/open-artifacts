@@ -632,11 +632,13 @@ describe("RPC surface", () => {
       .sort();
     // The port's RPC surface (#1291): the Worker-only methods.
     expect(own).toEqual([
+      "actOnAwayRole",
       "agentByProof",
       "closeAll",
       "codexCallCheck",
       "codexCallDecision",
       "codexCallVerdict",
+      "codexVersionTarget",
       "decideLinkProposal",
       "decideReachProposal",
       "decideRoleProposal",
@@ -655,6 +657,7 @@ describe("RPC surface", () => {
       "listRoleProposals",
       "listRoles",
       "namesOf",
+      "observeRelease",
       "ownerAwayChanged",
       "pendingProposalSources",
       "pendingRoleMoveAudits",
@@ -669,6 +672,7 @@ describe("RPC surface", () => {
       "putRole",
       "revokeMachine",
       "roleHolderFor",
+      "rolesOf",
       "runVersionChanged",
       "settleRoleMoveAudits",
       "snapshot",

@@ -31,10 +31,6 @@ export async function readRunVersion(
 
 /** settings row: present while the owner has paused every instance-driven update (#2552). */
 export const UPDATES_PAUSED_KEY = "bus_updates_paused";
-/** settings row: { version, since } - when this instance first ran its current release. */
-export const VERSION_SINCE_KEY = "bus_version_since";
-/** A release must have run on the instance this long before machines follow it. */
-export const SOAK_MS = 24 * 60 * 60_000;
 
 /** What the instance says about updates, as read from settings. */
 export type UpdateState = {
@@ -42,8 +38,6 @@ export type UpdateState = {
   named: string | null;
   /** Fails closed: any value in the row pauses. */
   paused: boolean;
-  /** The release this instance first ran, and when (ms); null: not recorded. */
-  since: { version: string; since: number } | null;
 };
 
 /**
@@ -55,61 +49,21 @@ export function releaseOf(serverVersion: string): string | null {
   return ok.success ? ok.data : null;
 }
 
-function parseSince(v: string | undefined): UpdateState["since"] {
-  if (v === undefined) return null;
-  try {
-    const j = JSON.parse(v) as { version?: unknown; since?: unknown } | null;
-    return typeof j?.version === "string" &&
-      typeof j.since === "number" &&
-      Number.isSafeInteger(j.since)
-      ? { version: j.version, since: j.since }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * One read of the three update settings. Also the "first seen" record: the
- * first time a genuine release VERSION is met that is not the stored one, its
- * `since` is written (idempotent, and the earliest writer wins: a concurrent
- * hub finds the row already there). A -dev build records nothing.
- */
+/** One read of the two update settings: the named version and the pause flag. */
 export async function readUpdateState(
   env: Pick<Env, "DB">,
-  serverVersion: string,
-  now: number,
 ): Promise<UpdateState> {
   const rows = await stmt(
     env.DB,
-    "select key, value from settings where key in (?, ?, ?)",
+    "select key, value from settings where key in (?, ?)",
   )
-    .bind(RUN_VERSION_KEY, UPDATES_PAUSED_KEY, VERSION_SINCE_KEY)
+    .bind(RUN_VERSION_KEY, UPDATES_PAUSED_KEY)
     .all<{ key: string; value: string }>();
   const by = new Map(rows.results.map((r) => [r.key, r.value]));
   const named = RunVersionSchema.safeParse(by.get(RUN_VERSION_KEY));
-  let since = parseSince(by.get(VERSION_SINCE_KEY));
-  const release = releaseOf(serverVersion);
-  if (release !== null && since?.version !== release) {
-    const value = JSON.stringify({ version: release, since: now });
-    await stmt(
-      env.DB,
-      `insert into settings (key, value) values (?1, ?2)
-       on conflict(key) do update set value = excluded.value
-        where not json_valid(settings.value)
-           or json_extract(settings.value, '$.version') is not ?3`,
-    )
-      .bind(VERSION_SINCE_KEY, value, release)
-      .run();
-    const row = await stmt(env.DB, "select value from settings where key = ?")
-      .bind(VERSION_SINCE_KEY)
-      .first<{ value: string }>();
-    since = parseSince(row?.value);
-  }
   return {
     named: named.success ? named.data : null,
     paused: by.has(UPDATES_PAUSED_KEY),
-    since,
   };
 }
 
@@ -121,32 +75,24 @@ export async function busUpdatesPaused(env: Pick<Env, "DB">): Promise<boolean> {
   return row !== null;
 }
 
-/** When the default release finishes its soak (ms), or null: no default is waiting on one. */
-export function soakEnds(s: UpdateState, serverVersion: string): number | null {
-  const release = releaseOf(serverVersion);
-  if (release === null || s.since?.version !== release) return null;
-  return s.since.since + SOAK_MS;
-}
-
 /**
  * The version a machine running `running` is told: null clears (nothing it
  * holds may swap in). Paused: null. A named version: that, whatever the
- * machine runs (a deliberate step back stays one). Else the default, the
- * server's own release, only once it soaked and only when newer than the
- * machine's version; otherwise null.
+ * machine runs (a deliberate step back stays one). Else the server's own
+ * release, offered as soon as the instance runs it (the hosted fleet's canary
+ * and smoke gate which instances get a release; nothing on the instance
+ * records a health probe), only when strictly newer than the machine's
+ * version; otherwise null.
  */
 export function targetFor(
   s: UpdateState,
   serverVersion: string,
   running: string | undefined,
-  now: number,
 ): string | null {
   if (s.paused) return null;
   if (s.named !== null) return s.named;
   const release = releaseOf(serverVersion);
-  const end = soakEnds(s, serverVersion);
-  if (release === null || end === null || now < end) return null;
-  if (running === undefined) return null;
+  if (release === null || running === undefined) return null;
   // Strictly newer: semverGte is false for a malformed `running`, and a
   // pre-release of `release` ranks below it.
   return semverGte(release, running) && !semverGte(running, release)
@@ -161,7 +107,7 @@ export async function recordReport(
   f: UpdateReportFrame,
   now: number,
 ): Promise<void> {
-  await stmt(
+  const report = stmt(
     env.DB,
     `insert into bus_machine_updates
        (machine_id, event, from_version, to_version, reason, detail, rescue_version, reported_at, switching_at, last_hello_at, stopped_at)
@@ -172,18 +118,188 @@ export async function recordReport(
        detail = excluded.detail, rescue_version = excluded.rescue_version,
        reported_at = excluded.reported_at, switching_at = excluded.switching_at,
        last_hello_at = excluded.last_hello_at, stopped_at = null`,
+  ).bind(
+    machineId,
+    f.event,
+    f.from,
+    f.to,
+    f.reason,
+    f.detail ?? null,
+    f.rescue_version,
+    now,
+    f.event === "switching" ? now : null,
+  );
+  const statements = [report];
+  if (
+    f.event === "needs_you" &&
+    ["unhealthy", "hub_unreachable"].includes(f.reason)
+  ) {
+    statements.push(
+      stmt(
+        env.DB,
+        `update bus_machines set failure_at = case when failure_version = ?1 then failure_at else ?2 end, failure_version = ?1 where id = ?3`,
+      ).bind(f.to, now, machineId),
+    );
+  } else if (f.event === "updated") {
+    statements.push(
+      stmt(
+        env.DB,
+        "update bus_machines set failure_at = null, failure_version = null where id = ?",
+      ).bind(machineId),
+    );
+  }
+  await env.DB.batch(statements);
+}
+
+export const LAG_NOTICE_MS = 60 * 60_000;
+
+export const RELEASE_LAG_HUB = "bus:~release-lag";
+export type ReleaseDeadline = {
+  version: string;
+  previous: string;
+  since: number;
+};
+
+/** Page only members with a machine that has connected. Offline machines also get the release on hello. */
+export async function releaseOfferOwners(
+  env: Pick<Env, "DB">,
+  after: string,
+  limit: number,
+) {
+  const { results } = await stmt(
+    env.DB,
+    "select distinct user_id from bus_machines where user_id > ? and revoked_at is null and last_used_at is not null order by user_id limit ?",
   )
-    .bind(
-      machineId,
-      f.event,
-      f.from,
-      f.to,
-      f.reason,
-      f.detail ?? null,
-      f.rescue_version,
-      now,
-      f.event === "switching" ? now : null,
+    .bind(after, limit)
+    .all<{ user_id: string }>();
+  return results.map((row) => row.user_id);
+}
+
+/** Keep the first observation, including timestamps written by pre-#3265 instances. */
+export async function firstReleaseObservation(
+  env: Pick<Env, "DB">,
+  version: string,
+  now: number,
+) {
+  const row = await stmt(
+    env.DB,
+    `insert into settings(key,value) values ('bus_version_since',?1)
+    on conflict(key) do update set value=case
+    when json_valid(settings.value) and json_extract(settings.value,'$.version')=?2
+      and json_type(settings.value,'$.since')='integer' then settings.value else excluded.value end
+    returning value`,
+  )
+    .bind(JSON.stringify({ version, since: now }), version)
+    .first<{ value: string }>();
+  if (!row) throw new Error("Release timestamp missing");
+  return (JSON.parse(row.value) as { since: number }).since;
+}
+
+/** One release deadline covers all members, including those with no connected machines. */
+export async function reconcileReleaseLag(
+  env: Pick<Env, "DB">,
+  deadline: ReleaseDeadline,
+  mode: "mark-overdue" | "clear-resolved",
+) {
+  let after = "";
+  for (;;) {
+    const { results } = await stmt(
+      env.DB,
+      `select distinct bus_version as version from bus_machines
+      where revoked_at is null and bus_version > ? order by bus_version limit 64`,
     )
+      .bind(after)
+      .all<{ version: string }>();
+    const changes = results.flatMap(({ version }) => {
+      const behind =
+        semverGte(deadline.previous, version) &&
+        !semverGte(version, deadline.previous);
+      if (mode === "clear-resolved") {
+        if (behind) return [];
+        return [
+          stmt(
+            env.DB,
+            `update bus_machines set lag_since=null where revoked_at is null and bus_version=? and lag_since is not null`,
+          ).bind(version),
+        ];
+      }
+      if (!behind) return [];
+      return [
+        stmt(
+          env.DB,
+          `update bus_machines set lag_since=?1 where revoked_at is null and bus_version=?2 and (lag_since is null or lag_since > ?1)`,
+        ).bind(deadline.since, version),
+      ];
+    });
+    if (changes.length) await env.DB.batch(changes);
+    if (results.length < 64) return;
+    after = results[results.length - 1].version;
+  }
+}
+
+/** Compare against the actual preceding release, preserving an ongoing lag episode. */
+export async function refreshMachineLag(
+  env: Pick<Env, "DB">,
+  userId: string,
+  previousRelease: string | null,
+  now: number,
+): Promise<void> {
+  if (!previousRelease) return;
+  const rows = await stmt(
+    env.DB,
+    "select id, bus_version as version, lag_since as since from bus_machines where user_id = ? and revoked_at is null and bus_version is not null",
+  )
+    .bind(userId)
+    .all<{ id: string; version: string; since: number | null }>();
+  const changes = rows.results.flatMap((row) => {
+    const behind =
+      semverGte(previousRelease, row.version) &&
+      !semverGte(row.version, previousRelease);
+    if (behind === (row.since !== null)) return [];
+    return [
+      stmt(
+        env.DB,
+        "update bus_machines set lag_since = ? where id = ? and bus_version = ? and lag_since is ?",
+      ).bind(behind ? now : null, row.id, row.version, row.since),
+    ];
+  });
+  if (changes.length) await env.DB.batch(changes);
+}
+
+export async function machineUpdateNotices(
+  env: Pick<Env, "DB">,
+  userId: string,
+  now: number,
+) {
+  const { results } = await stmt(
+    env.DB,
+    `select id,label,bus_version as version,lag_since as since,failure_at as failureAt,
+      coalesce(failure_version, case when u.event = 'stepped_back' and u.reason in ('unhealthy','hub_unreachable') then u.to_version end) as failed
+    from bus_machines left join bus_machine_updates u on u.machine_id=bus_machines.id where user_id = ? and revoked_at is null and (lag_since <= ? or failure_at is not null) order by id`,
+  )
+    .bind(userId, now - LAG_NOTICE_MS)
+    .all<{
+      id: string;
+      label: string;
+      version: string | null;
+      since: number | null;
+      failureAt: number | null;
+      failed: string | null;
+    }>();
+  return results;
+}
+
+export async function noteMachineVersion(
+  env: Pick<Env, "DB">,
+  machineId: string,
+  version?: string,
+): Promise<void> {
+  if (!version) return;
+  await stmt(
+    env.DB,
+    "update bus_machines set bus_version = ?1 where id = ?2 and bus_version is not ?1",
+  )
+    .bind(version, machineId)
     .run();
 }
 

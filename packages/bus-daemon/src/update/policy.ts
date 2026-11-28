@@ -4,7 +4,6 @@
  */
 
 export const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
-export const QUIET_MS = 30_000;
 export const READY_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /** What update.json holds for the policy, beside the layout's keys. */
@@ -21,14 +20,15 @@ export type PolicyState = {
   previous?: string;
   /** The version running now (the layout's `current`). */
   current?: string;
-  /** Versions that failed to start; never tried again (last MAX_LIST). */
+  /** Legacy rescue-shim records, migrated on the next policy write. */
   failed: string[];
+  startFailures: Record<string, { at: number; count: number }>;
   /** Versions whose proof was refused: retried later with a long backoff. */
   refused: Record<string, { at: number; count: number }>;
-  /** When the last attempt began (ms); a step-back counts. */
+  /** When the last attempt began (ms). Cleared by a successful forward update; stays after a failure, step-back, or unconfirmed switch for the 6 h backoff. */
   lastAt?: number;
   /**
-   * The one staged, proven version waiting for a quiet moment. `manifest` is
+   * The one staged, proven version waiting for an idle moment. `manifest` is
    * the sha256 of every file in its folder, taken at stage time and checked
    * again right before the swap.
    */
@@ -59,11 +59,20 @@ export const refusedBackoff = (count: number): number =>
     REFUSED_BACKOFF_MAX_MS,
   );
 
+/** The retry deadline belongs to a release, so a newer release can proceed. */
+export function startupRetryAt(s: PolicyState, version: string): number {
+  const failure = s.startFailures[version];
+  if (!failure) return 0;
+  const minutes = failure.count === 1 ? 15 : failure.count === 2 ? 60 : 240;
+  return failure.at + minutes * 60_000;
+}
+
 export const emptyPolicy = (): PolicyState => ({
   armed: false,
   unreadable: false,
   off: false,
   failed: [],
+  startFailures: {},
   refused: {},
   notified: {},
   introShown: false,
@@ -130,7 +139,11 @@ function floor(s: PolicyState, running?: string): string | undefined {
   );
 }
 
-/** The 6 h limit. max(now, lastAt) so a clock set back never frees it early. */
+/**
+ * The 6 h backoff after an attempt that did not succeed (failed, stepped back,
+ * or never confirmed); a successful forward update clears `lastAt`. Uses
+ * max(now, lastAt) so a clock set back never frees it early.
+ */
 export function rateLimited(s: PolicyState, now: number): boolean {
   if (s.lastAt === undefined) return false;
   return Math.max(now, s.lastAt) - s.lastAt < SIX_HOURS_MS;
@@ -144,9 +157,11 @@ export type Instruction = {
 
 /**
  * May the bus act on an instruction naming `version`? Forward only, except an
- * explicit step-back to the kept previous; never a failed version; never ahead
- * of the instance; one attempt per 6 h (a step-back is exempt, but counts for the next one). The instruction has no field that can
- * touch `off`.
+ * explicit step-back to the kept previous; never ahead
+ * of the instance; 6 h backoff after an attempt that did not succeed (failed,
+ * stepped back, or never confirmed; a successful forward update clears it; a
+ * step-back is exempt, and keeps the backoff for the next forward attempt).
+ * The instruction has no field that can touch `off`.
  */
 export function accept(
   s: PolicyState,
@@ -159,7 +174,7 @@ export function accept(
   if (s.unreadable) return no("unreadable");
   if (!s.armed) return no("not_armed");
   if (s.off) return no("off");
-  if (s.failed.includes(i.version)) return no("failed");
+  if (startupRetryAt(s, i.version) > now) return no("refused_backoff");
   const ref = s.refused[i.version];
   if (ref && Math.max(now, ref.at) - ref.at < refusedBackoff(ref.count))
     return no("refused_backoff");
@@ -181,38 +196,18 @@ export function accept(
   return yes;
 }
 
-/** What the daemon sees of itself for the quiet check. */
+/** What the daemon sees of itself for the idle check. */
 export type Busy = {
   pending: number;
   outbox: number;
   codexQueue: number;
+  unknownTurn?: boolean;
 };
 export const isBusy = (b: Busy): boolean =>
-  b.pending > 0 || b.outbox > 0 || b.codexQueue > 0;
+  b.pending > 0 || b.outbox > 0 || b.codexQueue > 0 || b.unknownTurn === true;
 
 /**
- * Quiet moments: idle for QUIET_MS continuous, and no login or approval in
- * progress. Feed it every poll; a busy poll restarts the wait.
- */
-export class QuietTracker {
-  private idleSince: number | undefined;
-  private login = false;
-  observe(now: number, busy: boolean, loginOrApproval: boolean): void {
-    this.login = loginOrApproval;
-    if (busy || loginOrApproval) this.idleSince = undefined;
-    else if (this.idleSince === undefined) this.idleSince = now;
-  }
-  quiet(now: number): boolean {
-    return (
-      !this.login &&
-      this.idleSince !== undefined &&
-      now - this.idleSince >= QUIET_MS
-    );
-  }
-}
-
-/**
- * True once per staged version when it has waited 24 h without a quiet moment
+ * True once per staged version when it has waited 24 h without an idle moment
  * ("Update ready to install"). The caller records the notice before sending.
  */
 export function readyDue(s: PolicyState, now: number): boolean {
@@ -223,8 +218,10 @@ export function readyDue(s: PolicyState, now: number): boolean {
 }
 
 /**
- * "Install now" from Settings. Skips only the quiet wait. Never during login
- * or approval; the 6 h limit, failed memory and off all still apply.
+ * "Install now" from Settings, and the same rule as the idle install (there is
+ * no quiet wait). Never during login or approval; the 6 h backoff (after an
+ * attempt that did not succeed; cleared by a successful forward update),
+ * per-version backoff and off still apply.
  */
 export function installNow(
   s: PolicyState,
@@ -236,7 +233,7 @@ export function installNow(
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
-  if (s.failed.includes(st.version)) return no("failed");
+  if (startupRetryAt(s, st.version) > now) return no("refused_backoff");
   if (loginOrApproval) return no("login_in_progress");
   if (rateLimited(s, now)) return no("rate_limited");
   return yes;
@@ -251,7 +248,7 @@ export function installNow(
  */
 export function updateCommand(
   s: PolicyState,
-  o: { stdinTTY: boolean; stdoutTTY: boolean },
+  o: { stdinTTY: boolean; stdoutTTY: boolean; now?: number },
 ): Decision {
   if (s.unreadable || !s.armed)
     return no(s.unreadable ? "unreadable" : "not_armed");
@@ -259,7 +256,9 @@ export function updateCommand(
   if (s.off) return no("off");
   const st = s.staged;
   if (!st) return no("nothing_staged");
-  if (s.failed.includes(st.version)) return no("failed");
+
+  if (startupRetryAt(s, st.version) > (o.now ?? Date.now()))
+    return no("refused_backoff");
   return yes;
 }
 

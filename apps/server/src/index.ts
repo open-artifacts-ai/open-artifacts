@@ -5,6 +5,7 @@ import { withBrokerProps } from "./auth/broker-transport.js";
 import { withCred } from "./auth/cred.js";
 import { verifyPat } from "./auth/pat.js";
 import { withPlanScope } from "./billing/features.js";
+import { RELEASE_LAG_HUB, releaseOf } from "./bus/updates.js";
 import { contentApp } from "./content/app.js";
 import { scheduled } from "./cron.js";
 import { withReadBudget, withRetries } from "./db/retry.js";
@@ -18,11 +19,12 @@ import {
   mcpHandler,
   mcpUnauthorized,
 } from "./mcp/server.js";
-import type { AgentAttr } from "./services/agent-usage.js";
-import { hubNoticeDelivery } from "./services/bus.js";
+import { type AgentAttr, lateVersion } from "./services/agent-usage.js";
+import { busOn, hubNoticeDelivery } from "./services/bus.js";
 import { installDelivery } from "./services/bus-delivery.js";
 import { emailEventsConsumer } from "./services/email-events.js";
 import { getUserWithEpoch } from "./services/users.js";
+import { PREVIOUS_RELEASE, VERSION } from "./version.gen.js";
 
 export { BusHub } from "./bus/hub.js";
 export { DirectorySync } from "./directory/sync-do.js";
@@ -90,6 +92,7 @@ async function mcpWithPatUnguarded(
     name: pat.label,
     version: null,
     via: { kind: "token", id: pat.tokenId },
+    ...(link.late ? { [lateVersion]: link.late } : {}),
     ...(link.identity ? { identity: link.identity } : {}),
     ...(!link.identity && link.why ? { unlinked: link.why } : {}),
   };
@@ -129,6 +132,30 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+// The deploy probe (or the first app request) observes a release even if every daemon is offline.
+const observedBindings = new WeakSet<NonNullable<Env["BUS_HUB"]>>();
+function observeRunningRelease(env: Env, ctx: ExecutionContext) {
+  const ns = env.BUS_HUB;
+  if (
+    !ns ||
+    !PREVIOUS_RELEASE ||
+    !releaseOf(VERSION) ||
+    !busOn(env) ||
+    observedBindings.has(ns)
+  )
+    return;
+  observedBindings.add(ns);
+  ctx.waitUntil(
+    ns
+      .get(ns.idFromName(RELEASE_LAG_HUB))
+      .observeRelease(VERSION, PREVIOUS_RELEASE)
+      .catch((error) => {
+        observedBindings.delete(ns);
+        throw error;
+      }),
+  );
+}
+
 async function serve(
   req: Request,
   env: Env,
@@ -142,6 +169,7 @@ async function serve(
   // auth, OAuth, the route policy or D1. Plain body, no other headers.
   if (isForeignHost(env, url.hostname))
     return new Response("Not found", { status: 404 });
+  observeRunningRelease(env, ctx);
   const pat =
     url.pathname === MCP_PATH
       ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")

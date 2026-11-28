@@ -31,8 +31,8 @@ test("#766: delete from the viewer, find it in Trash, Restore", {
 
   await page.goto("/");
   const trash = page
-    .getByRole("navigation", { name: "Trash" })
-    .getByRole("link");
+    .getByRole("navigation", { name: "Workspace" })
+    .getByRole("link", { name: "Trash" });
   await expect(trash).toBeVisible();
   await trash.click();
   const list = page.getByRole("list", { name: "Deleted artifacts" });
@@ -78,8 +78,8 @@ test("bulk Delete identifies public links and moves both selections to Trash", a
     page.getByText("2 artifacts moved to Trash.", { exact: true }),
   ).toBeVisible();
   await page
-    .getByRole("navigation", { name: "Trash" })
-    .getByRole("link")
+    .getByRole("navigation", { name: "Workspace" })
+    .getByRole("link", { name: "Trash" })
     .click();
   const trash = page.getByRole("list", { name: "Deleted artifacts" });
   for (const title of titles)

@@ -140,13 +140,13 @@ never moves a machine). What a machine is told, per socket:
    instance-driven `switching` is refused.
 2. A version the owner named (`bus_run_version`): that version, whatever the
    machine runs (a named lower version is a deliberate step back).
-3. Else the default, the server's own built-in release, only when it is a
-   strict `x.y.z` (a `-dev` or pre-release build has none), only once this
-   instance has run it for 24 h (`bus_version_since`; a named version skips
-   the soak), and only when strictly newer than the machine's
-   `hello.client_version` (forward only: the default never moves a machine
-   back). Otherwise `null`. The hub re-tells connected machines when the soak
-   ends (its alarm) and at every hello.
+3. Else the default, the server's own built-in release, offered as soon as
+   the instance runs it, only when it is a strict `x.y.z` (a `-dev` or
+   pre-release build has none), and only when strictly newer than the
+   machine's `hello.client_version` (forward only: the default never moves a
+   machine back). Otherwise `null`. The hub tells machines at every hello (a
+   deploy restarts the hub, so every machine reconnects and hears the new
+   default).
 
 The default comes from nothing a client sends. A version that stepped back on
 a machine is on its failed or refused list and the daemon's own check refuses
@@ -164,8 +164,8 @@ else) and the machine swaps only after `ok: true`; with no answer it holds and
 tries later. The hub lists `run_version` in `hello_ok.caps` only to a hello
 that listed it, and a daemon sends `update_report` only to a hub that listed
 it. The hub answers `ok: false` to a `switching` report whose `to` is not the
-version the instance tells that machine now (the named version, or the soaked
-forward default, never while paused), read fresh from the settings (not the 30
+version the instance tells that machine now (the named version, or the forward
+default, never while paused), read fresh from the settings (not the 30
 s cache), unless the move is a step back (`to` lower than `from`) or the person asked for
 it on the machine (`reason: "requested"`, `oa-bus update`). A read that fails
 is a no. `to`, `from` and `reason` are the daemon's own claims, so the veto
