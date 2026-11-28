@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.276.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.275.0...v0.276.0) (2026-11-28)
+
+
+### Features
+
+* **provisioning-contract:** allow staging admin tokens to request test hooks ([#3337](https://github.com/open-artifacts-ai/open-artifacts/issues/3337)) ([682a8a9](https://github.com/open-artifacts-ai/open-artifacts/commit/682a8a90fc410d4ac5de5a6c601fec1d32f35e52))
+
 ## [0.275.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.274.0...v0.275.0) (2026-11-28)
 
 
