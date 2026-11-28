@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.276.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.276.0...v0.276.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **docs:** eliminate caret races in DocEditor and doc-version-keeps-editor e2e ([#3329](https://github.com/open-artifacts-ai/open-artifacts/issues/3329)) ([#3361](https://github.com/open-artifacts-ai/open-artifacts/issues/3361)) ([ef4d793](https://github.com/open-artifacts-ai/open-artifacts/commit/ef4d7935c314b6facae7ae66abf486ba3acb2fbe))
+
 ## [0.276.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.275.0...v0.276.0) (2026-11-28)
 
 
