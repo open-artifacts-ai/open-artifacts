@@ -6,6 +6,7 @@ import type {
   TokenKind,
   TokenScope,
 } from "./enums.js";
+import { INSTALL_ID_RE } from "./id-patterns.js";
 import type { RouteId } from "./routes.js";
 
 // The authz table (design v7 4.2): one data table, one enforcement function.
@@ -212,15 +213,88 @@ export const TEST_MEMBER = {
 /** The test member's reach: exactly `rl-agents`, with test hooks. */
 export const testMemberOwns = (i: { slug: string; testHooks: boolean }) =>
   i.slug === TEST_MEMBER.slug && i.testHooks === true;
-/** A separate pinned staging workflow uses the same OIDC mechanism to manage
- * disposable test installs. Its jobs never have reach over rl-agents. */
+/**
+ * A separate pinned staging workflow (staging-test-install.yml) uses the same
+ * OIDC mechanism to manage disposable test installs. Its jobs never have reach
+ * over rl-agents. R4 creates one fixture; every later read, hook-key rotation
+ * (R26 with `hookKeyOnly: true` only), soft delete (R9) and purge (R11) binds
+ * to that exact install ID via `installIdHeader` and its actorKey suffix.
+ */
 export const TEST_INSTALL = {
   slugPrefix: "t-",
   actorSuffix: ":test-install",
-  routes: ["R2", "R3", "R4", "R9", "R11", "R15", "R26"] as readonly RouteId[],
+  installIdHeader: "x-oa-fixture-install-id",
+  routes: ["R3", "R4", "R9", "R11", "R15", "R26"] as readonly RouteId[],
 } as const;
-export const testInstallOwns = (i: { slug: string; testHooks: boolean }) =>
-  i.slug.startsWith(TEST_INSTALL.slugPrefix) && i.testHooks === true;
+export const testInstallActorKey = (
+  repositoryId: string,
+  installId?: string | null,
+): string =>
+  installId
+    ? `oidc:${repositoryId}${TEST_INSTALL.actorSuffix}:${installId}`
+    : `oidc:${repositoryId}${TEST_INSTALL.actorSuffix}`;
+export type TestInstallActorScope = {
+  creatorKey: string;
+  installId: string | null;
+};
+export function parseTestInstallActorKey(
+  actorKey: string,
+): TestInstallActorScope | null {
+  const prefix = "oidc:";
+  if (!actorKey.startsWith(prefix)) return null;
+  const rest = actorKey.slice(prefix.length);
+  const marker = TEST_INSTALL.actorSuffix;
+  const at = rest.indexOf(marker);
+  if (at <= 0) return null;
+  const repoId = rest.slice(0, at);
+  if (repoId.includes(":")) return null;
+  const tail = rest.slice(at + marker.length);
+  const creatorKey = `${prefix}${repoId}${marker}`;
+  if (tail === "") return { creatorKey, installId: null };
+  if (!tail.startsWith(":")) return null;
+  const installId = tail.slice(1);
+  if (!INSTALL_ID_RE.test(installId)) return null;
+  return { creatorKey, installId };
+}
+export const testInstallOwns = (
+  i: {
+    id: string;
+    slug: string;
+    testHooks: boolean;
+    createdBy?: string | null;
+  },
+  scope: TestInstallActorScope,
+): boolean =>
+  scope.installId !== null &&
+  INSTALL_ID_RE.test(scope.installId) &&
+  i.id === scope.installId &&
+  i.slug.startsWith(TEST_INSTALL.slugPrefix) &&
+  i.testHooks === true &&
+  i.createdBy === scope.creatorKey;
+
+export type RedlineCredsRefusal = {
+  field: "hookKeyOnly" | "revoke";
+  code: "forbidden";
+};
+/**
+ * R26 policy per OIDC workflow: disposable fixtures (`test-install`) may only
+ * rotate and seal TEST_HOOK_KEY (`hookKeyOnly: true`), never mint an admin PAT
+ * or run redline revoke. Other workflows cannot pass `hookKeyOnly: true`.
+ */
+export function checkRedlineCreds(
+  body: { revoke?: boolean; hookKeyOnly?: boolean },
+  workflow?: OidcWorkflow,
+): RedlineCredsRefusal | null {
+  if (workflow === "test-install") {
+    if (body.revoke === true) return { field: "revoke", code: "forbidden" };
+    if (body.hookKeyOnly !== true)
+      return { field: "hookKeyOnly", code: "forbidden" };
+    return null;
+  }
+  if (body.hookKeyOnly === true)
+    return { field: "hookKeyOnly", code: "forbidden" };
+  return null;
+}
 
 export type AuthzDecision =
   | { ok: true; reach: "all" | "own" }
@@ -456,15 +530,6 @@ export function checkCreateFields(
   workflow?: OidcWorkflow,
 ): CreateFieldRefusal | null {
   const fixture = principal === "oidc" && workflow === "test-install";
-  if (
-    fixture &&
-    (body.auth?.domainCodes !== true ||
-      body.auth.providers?.length !== 1 ||
-      body.auth.providers[0] !== "email" ||
-      body.auth.domains.length !== 1 ||
-      body.auth.domains[0] !== stagingTestDomain)
-  )
-    return { field: "auth", code: "forbidden" };
   const rules = CREATE_FIELDS.map(
     (f) => [f, createFieldRule(f, principal, env)] as const,
   );
@@ -475,6 +540,15 @@ export function checkCreateFields(
   for (const [f, r] of rules)
     if (r.startsWith("required") && !has(f) && f !== "turnstile")
       return { field: f, code: "invalid_input" };
+  if (
+    fixture &&
+    (body.auth?.domainCodes !== true ||
+      body.auth.providers?.length !== 1 ||
+      body.auth.providers[0] !== "email" ||
+      body.auth.domains.length !== 1 ||
+      body.auth.domains[0]?.toLowerCase() !== stagingTestDomain.toLowerCase())
+  )
+    return { field: "auth", code: "forbidden" };
   for (const [f, r] of rules) {
     const v = body[f];
     if (r === "required_true" && v !== true)

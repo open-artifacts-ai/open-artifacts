@@ -7,6 +7,7 @@ import {
   canTransition,
   checkCreateFields,
   checkPurgeFields,
+  checkRedlineCreds,
   createFieldRule,
   fieldRulesOf,
   InstallStateSchema,
@@ -16,6 +17,7 @@ import {
   oidcOwns,
   PROTOCOL_ROUTES,
   PURGE_FIELD_RULES,
+  parseTestInstallActorKey,
   ROUTE_IDS,
   ROUTES,
   TEST_INSTALL,
@@ -23,6 +25,7 @@ import {
   TOKEN_DELETING_PURGE,
   TokenScopeSchema,
   TRANSITIONS,
+  testInstallActorKey,
   testInstallOwns,
   testMemberOwns,
 } from "../src/index.js";
@@ -180,9 +183,9 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
     }
   });
 
-  it("isolates fixture operations from production and the rl-agents principal", () => {
+  it("isolates fixture operations from production, rl-agents, and other fixtures", () => {
     const principal = { kind: "oidc", oidcWorkflow: "test-install" } as const;
-    const allowed = ["R2", "R3", "R4", "R9", "R11", "R15", "R26"];
+    const allowed = ["R3", "R4", "R9", "R11", "R15", "R26"];
     expect(TEST_INSTALL.routes).toEqual(allowed);
     for (const route of ROUTE_IDS) {
       expect(authorize(route, principal, "staging").ok).toBe(
@@ -190,10 +193,62 @@ describe("OIDC principal (Q1: staging only, rl- test installs)", () => {
       );
       expect(authorize(route, principal, "prod").ok).toBe(false);
     }
-    expect(testInstallOwns({ slug: "t-alpha", testHooks: true })).toBe(true);
+    const creatorKey = testInstallActorKey("42");
+    expect(creatorKey).toBe("oidc:42:test-install");
+    expect(parseTestInstallActorKey(creatorKey)).toEqual({
+      creatorKey,
+      installId: null,
+    });
+    const boundKey = testInstallActorKey("42", "i0123456789a");
+    expect(boundKey).toBe("oidc:42:test-install:i0123456789a");
+    const parsed = parseTestInstallActorKey(boundKey);
+    expect(parsed).toEqual({ creatorKey, installId: "i0123456789a" });
+    if (!parsed) throw new Error("expected parsed scope");
+    const scope = parsed;
+    expect(parseTestInstallActorKey("oidc:42:test-member")).toBeNull();
+    expect(parseTestInstallActorKey("oidc:42:test-install:bad")).toBeNull();
+    const mine = {
+      id: "i0123456789a",
+      slug: "t-alpha",
+      testHooks: true,
+      createdBy: creatorKey,
+    };
+    expect(testInstallOwns(mine, scope)).toBe(true);
+    expect(testInstallOwns(mine, { creatorKey, installId: null })).toBe(false);
+    expect(testInstallOwns({ ...mine, id: "i0123456789b" }, scope)).toBe(false);
+    expect(testInstallOwns({ ...mine, createdBy: "token:1" }, scope)).toBe(
+      false,
+    );
+    expect(
+      testInstallOwns({ ...mine, createdBy: "oidc:99:test-install" }, scope),
+    ).toBe(false);
     for (const slug of ["rl-agents", "rl-a", "acme"])
-      expect(testInstallOwns({ slug, testHooks: true })).toBe(false);
-    expect(testInstallOwns({ slug: "t-alpha", testHooks: false })).toBe(false);
+      expect(testInstallOwns({ ...mine, slug }, scope)).toBe(false);
+    expect(testInstallOwns({ ...mine, testHooks: false }, scope)).toBe(false);
+  });
+
+  it("restricts test-install R26 to hookKeyOnly (no admin PAT mint or revoke)", () => {
+    expect(
+      checkRedlineCreds({ revoke: false, hookKeyOnly: true }, "test-install"),
+    ).toBeNull();
+    expect(checkRedlineCreds({ revoke: false }, "test-install")).toEqual({
+      field: "hookKeyOnly",
+      code: "forbidden",
+    });
+    expect(checkRedlineCreds({ revoke: true }, "test-install")).toEqual({
+      field: "revoke",
+      code: "forbidden",
+    });
+    for (const wf of ["redline", "test-member", undefined] as const) {
+      expect(checkRedlineCreds({ revoke: false }, wf)).toBeNull();
+      expect(checkRedlineCreds({ revoke: true }, wf)).toBeNull();
+      expect(
+        checkRedlineCreds({ revoke: false, hookKeyOnly: true }, wf),
+      ).toEqual({
+        field: "hookKeyOnly",
+        code: "forbidden",
+      });
+    }
   });
   it("the test member's reach is exactly rl-agents with test hooks", () => {
     expect(TEST_MEMBER.slug).toBe("rl-agents");
@@ -325,9 +380,16 @@ describe("R4 field rules (3.3)", () => {
       testHooks: true,
       auth: { providers: ["email"], domains: [D], domainCodes: true },
     };
-    const check = (body: typeof fixture) =>
+    const check = (body: Partial<typeof fixture> & { sendWelcome?: boolean }) =>
       checkCreateFields(body, "oidc", "staging", D, "test-install");
     expect(check(fixture)).toBeNull();
+    // Missing required fields still answer 400 invalid_input before fixture value checks.
+    const { auth: _omitAuth, ...noAuth } = fixture;
+    expect(check(noAuth)).toEqual({ field: "auth", code: "invalid_input" });
+    expect(check({ ...noAuth, sendWelcome: true })).toEqual({
+      field: "sendWelcome",
+      code: "forbidden",
+    });
     for (const body of [
       { ...fixture, slug: "rl-agents" },
       { ...fixture, slug: "customer" },
