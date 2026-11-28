@@ -223,6 +223,8 @@ export const PushSubscribeBodySchema = z.object({
     }, "endpoint must be an https URL"),
   keys: z.object({ p256dh: Base64Url, auth: Base64Url }),
   label: z.string().max(80).optional(),
+  installationId: z.uuid().optional(),
+  previousSubscriptionId: z.string().min(1).max(128).optional(),
 });
 export type PushSubscribeBody = z.infer<typeof PushSubscribeBodySchema>;
 
@@ -233,6 +235,8 @@ export const PushSubscriptionsSchema = z.object({
       label: z.string().nullable(),
       createdAt: Iso,
       lastSentAt: Iso.nullable(),
+      lastProviderStatus: z.number().int().nullable().optional(),
+      lastProviderReason: z.string().max(200).nullable().optional(),
       /** Existing clients read these as true and false for every enrolled device. */
       needsYou: z.boolean(),
       updates: z.boolean(),

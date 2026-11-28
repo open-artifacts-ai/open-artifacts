@@ -374,35 +374,34 @@ describe("the encrypted payload (RFC 8291) and the VAPID header (RFC 8292)", () 
     ).not.toBe(first);
   });
 
-  it("the VAPID JWT is ES256 for the push service's origin, under a day, signed by the instance key", async () => {
-    const { E, keys } = await world();
-    const h = await vapidHeader(
-      E,
-      "https://fcm.googleapis.com/fcm/send/abc",
-      T0,
-    );
-    const m = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(h);
-    expect(m).not.toBeNull();
-    const [, hd, cl, sg, k] = m as RegExpExecArray;
-    expect(k).toBe(keys.VAPID_PUBLIC_KEY);
-    expect(JSON.parse(dec.decode(unb64u(hd as string)))).toEqual({
-      typ: "JWT",
-      alg: "ES256",
-    });
-    const claims = JSON.parse(dec.decode(unb64u(cl as string)));
-    expect(claims.aud).toBe("https://fcm.googleapis.com");
-    expect(claims.sub).toBe("https://app.localhost");
-    expect(claims.exp - T0 / 1000).toBeGreaterThan(0);
-    expect(claims.exp - T0 / 1000).toBeLessThanOrEqual(24 * 3600);
-    expect(
-      await crypto.subtle.verify(
-        { name: "ECDSA", hash: "SHA-256" },
-        keys.publicKey,
-        unb64u(sg as string),
-        enc.encode(`${hd}.${cl}`),
-      ),
-    ).toBe(true);
-  });
+  it.each(["https://web.push.apple.com", "https://fcm.googleapis.com"])(
+    "the VAPID JWT is ES256 for %s, under a day, signed by the instance key",
+    async (audience) => {
+      const { E, keys } = await world();
+      const h = await vapidHeader(E, `${audience}/device`, T0);
+      const m = /^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/.exec(h);
+      expect(m).not.toBeNull();
+      const [, hd, cl, sg, k] = m as RegExpExecArray;
+      expect(k).toBe(keys.VAPID_PUBLIC_KEY);
+      expect(JSON.parse(dec.decode(unb64u(hd as string)))).toEqual({
+        typ: "JWT",
+        alg: "ES256",
+      });
+      const claims = JSON.parse(dec.decode(unb64u(cl as string)));
+      expect(claims.aud).toBe(audience);
+      expect(claims.sub).toBe("https://app.localhost");
+      expect(claims.exp - T0 / 1000).toBeGreaterThan(0);
+      expect(claims.exp - T0 / 1000).toBeLessThanOrEqual(24 * 3600);
+      expect(
+        await crypto.subtle.verify(
+          { name: "ECDSA", hash: "SHA-256" },
+          keys.publicKey,
+          unb64u(sg as string),
+          enc.encode(`${hd}.${cl}`),
+        ),
+      ).toBe(true);
+    },
+  );
 });
 
 describe("the derived VAPID key (#3024)", () => {
@@ -459,6 +458,62 @@ describe("the endpoint guard (SSRF)", () => {
 // ---------------------------------------------------------------- routes
 
 describe("the routes", () => {
+  it("re-enrollment with a rotated endpoint replaces only the same installation", async () => {
+    const { E } = await world();
+    const u = await mk("rotate");
+    const installationId = crypto.randomUUID();
+    const first = await browser();
+    const second = await browser();
+    const other = await browser();
+    const register = async (body: typeof first.body, device: string) => {
+      const r = await subscribe(E, u.cookie, {
+        ...body,
+        label: "Safari on this iPhone",
+        installationId: device,
+      });
+      expect(r.status).toBe(201);
+      return ((await r.json()) as { id: string }).id;
+    };
+    await register(first.body, installationId);
+    const distinct = await register(other.body, crypto.randomUUID());
+    const current = await register(second.body, installationId);
+    const list = (await (
+      await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+    ).json()) as { items: { id: string }[] };
+    expect(list.items.map((r) => r.id).sort()).toEqual(
+      [distinct, current].sort(),
+    );
+  });
+
+  it("replaces a remembered legacy row only for the caller", async () => {
+    const { E } = await world();
+    const owner = await mk("legacy1");
+    const other = await mk("legacy2");
+    const legacy = await browser();
+    const old = (await (
+      await subscribe(E, owner.cookie, legacy.body)
+    ).json()) as { id: string };
+    const fresh = await browser();
+    const registration = { ...fresh.body, previousSubscriptionId: old.id };
+    expect((await subscribe(E, other.cookie, registration)).status).toBe(201);
+    const list = async () =>
+      (
+        (await (
+          await api(app, R.mePushSubscriptions, owner.cookie, {}, E)
+        ).json()) as { items: { id: string }[] }
+      ).items.map((row) => row.id);
+    expect(await list()).toEqual([old.id]);
+    const replacement = (await (
+      await subscribe(E, owner.cookie, {
+        ...registration,
+        ...(
+          await browser()
+        ).body,
+      })
+    ).json()) as { id: string };
+    expect(await list()).toEqual([replacement.id]);
+  });
+
   it("with no SESSION_SECRET push is off and no key derives", async () => {
     for (const s of [undefined, ""]) {
       const off = { ...(env as Env), SESSION_SECRET: s } as unknown as Env;
@@ -504,6 +559,10 @@ describe("the routes", () => {
     };
     expect(l.items).toHaveLength(1);
     expect(l.items[0]).toMatchObject({ id, label: "Laptop", lastSentAt: null });
+    expect(l.items[0]).toMatchObject({
+      lastProviderStatus: null,
+      lastProviderReason: null,
+    });
     // The same browser again: one row, new keys.
     const again = (await (await subscribe(E, u.cookie, b.body)).json()) as {
       id: string;
@@ -747,7 +806,7 @@ describe("sending", () => {
       const { E } = await world();
       const { u } = await enroll(E);
       const body =
-        '{"reason":"BadJwtToken","token":"short-secret","url":"https://example.com/private","detail":"' +
+        '{"reason":"VapidPkHashMismatch","token":"short-secret","url":"https://example.com/private","detail":"' +
         "BadJwtToken ".repeat(30) +
         '"}';
       vi.spyOn(globalThis, "fetch").mockImplementation(
@@ -763,6 +822,16 @@ describe("sending", () => {
         status,
         providerBody: expect.stringContaining("BadJwtToken"),
       });
+      if (status === 403) {
+        const list = (await (
+          await api(app, R.mePushSubscriptions, u.cookie, {}, E)
+        ).json()) as { items: unknown[] };
+        expect(list.items[0]).toMatchObject({
+          lastProviderStatus: 403,
+          lastProviderReason: "VapidPkHashMismatch",
+        });
+        expect(JSON.stringify(list)).not.toContain("short-secret");
+      }
       expect(record.providerBody.length).toBeLessThanOrEqual(200);
       expect(JSON.stringify(record)).not.toMatch(
         /short-secret|example\.com|private/,
@@ -800,6 +869,10 @@ describe("sending", () => {
     ).json()) as {
       items: { lastSentAt: string | null }[];
     };
+    expect(l.items[0]).toMatchObject({
+      lastProviderStatus: 201,
+      lastProviderReason: null,
+    });
     expect(l.items[0]?.lastSentAt).toBe(new Date(T0).toISOString());
   });
 

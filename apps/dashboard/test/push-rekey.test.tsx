@@ -72,11 +72,10 @@ describe("turnOn with an existing browser subscription (#3024)", () => {
     const post = send.mock.calls.find((c) => c[0] === "POST");
     expect(post?.[2]).toMatchObject({
       endpoint: "https://push.example.com/new",
+      installationId: expect.any(String),
+      previousSubscriptionId: "sub_old",
     });
-    expect(send.mock.calls.map((c) => [c[0], c[1]])).toContainEqual([
-      "DELETE",
-      expect.stringContaining("sub_old"),
-    ]);
+    expect(send.mock.calls.some((c) => c[0] === "DELETE")).toBe(false);
   });
 
   it("a null key counts as another key", async () => {
@@ -112,12 +111,12 @@ describe("a failed POST then a retry (#3024)", () => {
       return { id: "sub_new" };
     });
     await expect(turnOn(KEY, "Chrome", "u1")).rejects.toThrow("offline");
+    const installation = send.mock.calls[0]?.[2].installationId;
+    expect(installation).toEqual(expect.any(String));
     // The browser now holds the new-key subscription.
     existing = fresh;
     expect(await turnOn(KEY, "Chrome", "u1")).toBe("sub_new");
-    expect(send.mock.calls.map((c) => [c[0], c[1]])).toContainEqual([
-      "DELETE",
-      expect.stringContaining("sub_old"),
-    ]);
+    expect(send.mock.calls[1]?.[2].installationId).toBe(installation);
+    expect(send.mock.calls.some((c) => c[0] === "DELETE")).toBe(false);
   });
 });
