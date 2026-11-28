@@ -710,13 +710,19 @@ export type CreateFieldRefusal = {
 
 /**
  * Slugs a staging admin token may create with `testHooks: true` (cloud #84):
- * disposable `t-*` test installs only. Red-line `rl-*` slugs stay reserved
- * for red-line callers (#297), and ordinary slugs stay refused.
+ * disposable `t-*` fixtures and bus test fixtures (`bus-*` or `bus<digits>*`,
+ * e.g. `bus1299-b`, never ordinary words like `business` or `bus`), plus any
+ * exact slug in an explicit staging allowlist. Red-line `rl-*` slugs stay
+ * reserved for OIDC.
  */
-export const TOKEN_TEST_HOOKS_SLUG_RE = /^t-/;
+export const TOKEN_TEST_HOOKS_SLUG_RE = /^(?:t-|bus(?:-|\d))/;
 
-export function isTokenTestHooksSlug(slug: string): boolean {
-  return TOKEN_TEST_HOOKS_SLUG_RE.test(slug);
+export function isTokenTestHooksSlug(
+  slug: string,
+  allowlist: readonly string[] = [],
+): boolean {
+  if (slug.startsWith(OIDC_LIMITS.slugPrefix)) return false;
+  return TOKEN_TEST_HOOKS_SLUG_RE.test(slug) || allowlist.includes(slug);
 }
 
 /**
@@ -740,7 +746,7 @@ export function checkCreateFields(
   env: ProvisioningEnv,
   stagingTestDomain: string,
   workflow?: OidcWorkflow,
-  _tokenTestHookSlugs?: readonly string[],
+  tokenTestHookSlugs?: readonly string[],
 ): CreateFieldRefusal | null {
   const fixture = principal === "oidc" && workflow === "test-install";
   const rules = CREATE_FIELDS.map(
@@ -793,7 +799,10 @@ export function checkCreateFields(
   if (principal === "token" && body.testHooks === true) {
     if (body.slug === undefined)
       return { field: "slug", code: "invalid_input" };
-    if (typeof body.slug !== "string" || !isTokenTestHooksSlug(body.slug))
+    if (
+      typeof body.slug !== "string" ||
+      !isTokenTestHooksSlug(body.slug, tokenTestHookSlugs)
+    )
       return { field: "slug", code: "forbidden" };
   }
   if (

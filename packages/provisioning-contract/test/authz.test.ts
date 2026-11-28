@@ -608,13 +608,13 @@ describe("R4 field rules (3.3)", () => {
     ).toBe("forbidden");
   });
 
-  it("admin and token can request test hooks only on staging; tokens require a t- slug", () => {
+  it("admin and token can request test hooks only on staging; tokens require a test-install slug", () => {
     for (const principal of ["admin", "token"] as const) {
       expect(createFieldRule("testHooks", principal, "staging")).toBe(
         "optional",
       );
       expect(createFieldRule("testHooks", principal, "prod")).toBe("forbidden");
-      for (const slug of ["t-proof", "t-smoke", "t-rehearsal"]) {
+      for (const slug of ["t-smoke", "t-rehearsal", "bus1299-b", "bus-smoke"]) {
         expect(
           checkCreateFields(
             { ...full, slug, testHooks: true },
@@ -646,29 +646,46 @@ describe("R4 field rules (3.3)", () => {
     expect(
       checkCreateFields({ ...full, testHooks: true }, "token", "staging", D),
     ).toEqual({ field: "slug", code: "invalid_input" });
-    for (const slug of [
-      "acme",
-      "bus1299-b",
-      "bus-smoke",
-      "m2-walk",
-      "business",
-      "bus",
-      "busy",
-      "rl-proof",
-      "rl-agents",
-      "t",
-    ])
+    for (const slug of ["acme", "business", "bus", "busy", "rl-smoke", "t"])
       expect(
         checkCreateFields(
           { ...full, slug, testHooks: true },
           "token",
           "staging",
           D,
-          undefined,
-          [slug],
         ),
         slug,
       ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields(
+        { ...full, slug: "m2-walk", testHooks: true },
+        "token",
+        "staging",
+        D,
+        undefined,
+        ["m2-walk"],
+      ),
+    ).toBeNull();
+    expect(
+      checkCreateFields(
+        { ...full, slug: "rl-agents", testHooks: true },
+        "token",
+        "staging",
+        D,
+        undefined,
+        ["rl-agents"],
+      ),
+    ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields(
+        { ...full, slug: "m2-walk", testHooks: true },
+        "token",
+        "prod",
+        D,
+        undefined,
+        ["m2-walk"],
+      ),
+    ).toEqual({ field: "testHooks", code: "forbidden" });
     expect(
       checkCreateFields({ ...full, slug: "acme" }, "token", "staging", D),
     ).toBeNull();
