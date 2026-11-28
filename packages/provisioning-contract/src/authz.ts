@@ -415,6 +415,23 @@ export type CreateFieldRefusal = {
 };
 
 /**
+ * Slugs a staging admin token may create with `testHooks: true` (cloud #84):
+ * disposable `t-*` fixtures and bus test fixtures (`bus-*` or `bus<digits>*`,
+ * e.g. `bus1299-b`, never ordinary words like `business` or `bus`), plus any
+ * exact slug in an explicit staging allowlist. Red-line `rl-*` slugs stay
+ * reserved for OIDC.
+ */
+export const TOKEN_TEST_HOOKS_SLUG_RE = /^(?:t-|bus(?:-|\d))/;
+
+export function isTokenTestHooksSlug(
+  slug: string,
+  allowlist: readonly string[] = [],
+): boolean {
+  if (slug.startsWith(OIDC_LIMITS.slugPrefix)) return false;
+  return TOKEN_TEST_HOOKS_SLUG_RE.test(slug) || allowlist.includes(slug);
+}
+
+/**
  * The 3.3 field rules on a parsed R4 body, in the 4.2 order: any present
  * forbidden or server-set field first (403), then missing required fields
  * (400), then value rules (403). U's turnstile is left to its own step. O
@@ -430,6 +447,7 @@ export function checkCreateFields(
   principal: CreatePrincipal,
   env: ProvisioningEnv,
   stagingTestDomain: string,
+  tokenTestHookSlugs?: readonly string[],
 ): CreateFieldRefusal | null {
   const rules = CREATE_FIELDS.map(
     (f) => [f, createFieldRule(f, principal, env)] as const,
@@ -469,7 +487,10 @@ export function checkCreateFields(
   if (principal === "token" && body.testHooks === true) {
     if (body.slug === undefined)
       return { field: "slug", code: "invalid_input" };
-    if (typeof body.slug !== "string" || !body.slug.startsWith("t-"))
+    if (
+      typeof body.slug !== "string" ||
+      !isTokenTestHooksSlug(body.slug, tokenTestHookSlugs)
+    )
       return { field: "slug", code: "forbidden" };
   }
   if (

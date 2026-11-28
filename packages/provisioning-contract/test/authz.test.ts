@@ -301,28 +301,32 @@ describe("R4 field rules (3.3)", () => {
   const auth = { providers: ["google"], domains: ["acme.com"] };
   const full = { ownerEmail: "o@acme.com", tier: "team", auth };
 
-  it("admin and token can request test hooks only on staging; tokens require a t-* fixture slug", () => {
+  it("admin and token can request test hooks only on staging; tokens require a test-install slug", () => {
     for (const principal of ["admin", "token"] as const) {
       expect(createFieldRule("testHooks", principal, "staging")).toBe(
         "optional",
       );
       expect(createFieldRule("testHooks", principal, "prod")).toBe("forbidden");
-      expect(
-        checkCreateFields(
-          { ...full, slug: "t-smoke", testHooks: true },
-          principal,
-          "staging",
-          D,
-        ),
-      ).toBeNull();
-      expect(
-        checkCreateFields(
-          { ...full, slug: "t-smoke", testHooks: true },
-          principal,
-          "prod",
-          D,
-        ),
-      ).toEqual({ field: "testHooks", code: "forbidden" });
+      for (const slug of ["t-smoke", "t-rehearsal", "bus1299-b", "bus-smoke"]) {
+        expect(
+          checkCreateFields(
+            { ...full, slug, testHooks: true },
+            principal,
+            "staging",
+            D,
+          ),
+          `${principal} staging ${slug}`,
+        ).toBeNull();
+        expect(
+          checkCreateFields(
+            { ...full, slug, testHooks: true },
+            principal,
+            "prod",
+            D,
+          ),
+          `${principal} prod ${slug}`,
+        ).toEqual({ field: "testHooks", code: "forbidden" });
+      }
     }
     expect(
       checkCreateFields(
@@ -335,7 +339,7 @@ describe("R4 field rules (3.3)", () => {
     expect(
       checkCreateFields({ ...full, testHooks: true }, "token", "staging", D),
     ).toEqual({ field: "slug", code: "invalid_input" });
-    for (const slug of ["acme", "business", "rl-smoke"])
+    for (const slug of ["acme", "business", "bus", "busy", "rl-smoke", "t"])
       expect(
         checkCreateFields(
           { ...full, slug, testHooks: true },
@@ -345,6 +349,33 @@ describe("R4 field rules (3.3)", () => {
         ),
         slug,
       ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields(
+        { ...full, slug: "m2-walk", testHooks: true },
+        "token",
+        "staging",
+        D,
+        ["m2-walk"],
+      ),
+    ).toBeNull();
+    expect(
+      checkCreateFields(
+        { ...full, slug: "rl-agents", testHooks: true },
+        "token",
+        "staging",
+        D,
+        ["rl-agents"],
+      ),
+    ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields(
+        { ...full, slug: "m2-walk", testHooks: true },
+        "token",
+        "prod",
+        D,
+        ["m2-walk"],
+      ),
+    ).toEqual({ field: "testHooks", code: "forbidden" });
     expect(
       checkCreateFields({ ...full, slug: "acme" }, "token", "staging", D),
     ).toBeNull();
