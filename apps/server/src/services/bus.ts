@@ -57,6 +57,7 @@ import type {
   HandOverResult,
   MoveAudit,
   PutRoleResult,
+  RoleFaceRow,
   RoleMove,
 } from "../bus/roles.js";
 import {
@@ -186,6 +187,8 @@ export type BusHubRpc = {
   ): Promise<{ identityId: string; kind: string } | null>;
   /** #1889: the current bus name of each agent identity in this member's own hub, with its role (#3132). */
   namesOf(identityIds: string[]): Promise<AgentNameRow[]>;
+  /** #3335: the current name and holder of each role id in this member's own hub. */
+  rolesOf(roleIds: string[]): Promise<RoleFaceRow[]>;
   /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
   roleHolderFor(
     identityId: string,
@@ -681,6 +684,41 @@ export async function agentFacesOf(
     for (const { identityId, ...face } of rows ?? []) out.set(identityId, face);
   } catch (e) {
     logError("bus_names_lookup_failed", e);
+  }
+  return out;
+}
+
+export type { RoleFaceRow };
+
+/**
+ * #3335: the current name and holder of `userId`'s own roles by role id, from
+ * that member's hub only. Same bounds and fail-soft rules as `agentFacesOf`.
+ */
+export async function roleFacesOf(
+  env: Env,
+  userId: string,
+  roleIds: string[],
+): Promise<Map<string, RoleFaceRow>> {
+  const out = new Map<string, RoleFaceRow>();
+  try {
+    if (!busOn(env) || roleIds.length === 0) return out;
+    const rows = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub || typeof hub.rolesOf !== "function") return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < roleIds.length; i += NAMES_OF_MAX)
+          chunks.push(roleIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.rolesOf(ids)))
+        ).flat();
+      })(),
+      LINK_LOOKUP_MS,
+    );
+    for (const r of rows ?? []) out.set(r.roleId, r);
+  } catch (e) {
+    logError("bus_roles_lookup_failed", e);
   }
   return out;
 }

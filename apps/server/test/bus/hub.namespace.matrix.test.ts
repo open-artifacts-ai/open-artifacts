@@ -672,6 +672,7 @@ describe("RPC surface", () => {
       "putRole",
       "revokeMachine",
       "roleHolderFor",
+      "rolesOf",
       "runVersionChanged",
       "settleRoleMoveAudits",
       "snapshot",

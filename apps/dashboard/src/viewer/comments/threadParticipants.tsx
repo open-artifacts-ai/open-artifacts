@@ -203,6 +203,9 @@ export function ThreadParticipants({
               </h4>
               {list.map((a) => {
                 const off = isOff(a);
+                const detail = [a.session, a.machine]
+                  .filter(Boolean)
+                  .join(" · ");
                 return (
                   <div
                     key={a.key}
@@ -211,10 +214,20 @@ export function ThreadParticipants({
                     className={`flex items-center gap-2 ${TXT}`}
                   >
                     <PartyFace p={a} />
-                    <span
-                      className={`min-w-0 truncate ${off ? `line-through ${MUTED}` : ""}`}
-                    >
-                      {a.name}
+                    <span className="flex min-w-0 flex-col">
+                      <span
+                        className={`min-w-0 truncate ${off ? `line-through ${MUTED}` : ""}`}
+                      >
+                        {a.name}
+                      </span>
+                      {detail && (
+                        <span
+                          data-participant-detail=""
+                          className={`min-w-0 truncate text-[length:var(--oa-text-xs)] ${MUTED}`}
+                        >
+                          {detail}
+                        </span>
+                      )}
                     </span>
                     <span className={`ml-auto whitespace-nowrap ${MUTED}`}>
                       {off ? "Not notified" : "Gets replies"}
