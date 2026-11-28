@@ -725,12 +725,6 @@ export const MemberRoleInputSchema = RoleSchema.exclude(["owner"]);
 /** The roles a role change may name: an invite's, but never guest. */
 export const MemberPatchRoleSchema = RoleSchema.exclude(["owner", "guest"]);
 
-export const MemberInviteSchema = z.strictObject({
-  email: z.string().email(),
-  role: MemberRoleInputSchema,
-});
-export type MemberInvite = z.infer<typeof MemberInviteSchema>;
-
 /**
  * MemberInviteResult.signIn: present only when the server can't tell whether
  * the invitee can sign in. outside_domains: the address is outside
@@ -989,6 +983,16 @@ export const DisplayNameSchema = z
   )
   .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
   .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
+
+export const MemberInviteSchema = z.strictObject({
+  email: z.string().email(),
+  role: MemberRoleInputSchema,
+  name: DisplayNameSchema.refine(
+    (s) => !s.normalize("NFKC").includes("@"),
+    "Enter a name, not an email address",
+  ).optional(),
+});
+export type MemberInvite = z.infer<typeof MemberInviteSchema>;
 
 export const MePatchSchema = z
   .strictObject({

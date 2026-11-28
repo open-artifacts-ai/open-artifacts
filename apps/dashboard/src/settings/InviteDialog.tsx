@@ -354,6 +354,7 @@ function InviteList({
     trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
   );
   const [list, setList] = useState<string[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState("");
   const [bad, setBad] = useState(false);
   const [role, setRole] = useState<JoinAs>("member");
@@ -415,6 +416,7 @@ function InviteList({
       try {
         const res: MemberInviteResult = await invite.mutateAsync({
           email,
+          ...(names[email]?.trim() ? { name: names[email].trim() } : {}),
           // PROVISIONAL: "guest" is new to POST members (#2520).
           role: role as MemberInvite["role"],
         });
@@ -532,6 +534,10 @@ function InviteList({
               <AddressRow
                 key={email}
                 email={email}
+                name={names[email] ?? ""}
+                onName={(name) =>
+                  setNames((previous) => ({ ...previous, [email]: name }))
+                }
                 reach={reaches.get(email)}
                 role={role}
                 error={failed[email]}
@@ -605,6 +611,8 @@ function InviteList({
 
 function AddressRow({
   email,
+  name,
+  onName,
   reach,
   cant,
   role,
@@ -614,6 +622,8 @@ function AddressRow({
   onRemove,
 }: {
   email: string;
+  name: string;
+  onName: (name: string) => void;
   /** Undefined while the server hasn't answered. */
   reach: InviteReach | undefined;
   /** No way in (the reach, or invite_unreachable on send). */
@@ -641,6 +651,19 @@ function AddressRow({
         <span className="text-[length:var(--oa-text-sm)] [overflow-wrap:anywhere]">
           {email}
         </span>
+        {!cant && !removed && (
+          <label htmlFor={`oa-invite-name-${email}`} className={muted}>
+            Name (optional)
+            <Input
+              id={`oa-invite-name-${email}`}
+              aria-label={`Name for ${email}`}
+              value={name}
+              maxLength={80}
+              disabled={disabled}
+              onChange={(e) => onName(e.target.value)}
+            />
+          </label>
+        )}
         {line && (
           <p
             className={`m-0 ${cant ? "text-[length:var(--oa-text-xs)] text-[var(--oa-warning)]" : muted}`}

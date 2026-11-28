@@ -8,14 +8,6 @@ on:
         description: Existing release tag whose landing site to (re)deploy
         required: true
         type: string
-      restore_on_failure:
-        description: >-
-          Prod, a release with a non-additive migration only: if the upgrade or
-          its verification fails, roll the Worker back and restore D1 to the
-          pre-migration bookmark (needs the user's yes for that release)
-        required: false
-        type: boolean
-        default: false
 # No workflow-wide grant: every job sets its own permissions (T3b).
 # No job has actions: write. cloud-pin-bump's App token can start workflows,
 # in the cloud repo only.
@@ -250,8 +242,8 @@ jobs:
       - if: steps.guard.outputs.deploy == 'true'
         run: pnpm install --frozen-lockfile
       # A release that adds a non-additive migration (first line
-      # `-- oa:non-additive`, e.g. a table rebuild) is held: only a manual run
-      # deploys it, guarded (record, upgrade, verify, restore on failure). Any
+      # `-- oa:non-additive` with a verification note) runs guarded:
+      # record, upgrade and verify. Restore requires an explicit pick. Any
       # doubt holds; every later step needs hold == 'false', so a guard that
       # didn't run deploys nothing.
       - id: migration
@@ -300,7 +292,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/ci/prod-setup.sh preflight
       - id: record
-        name: Record the Worker version and a D1 Time Travel bookmark; capture the database
+        name: Record the Worker version and a D1 Time Travel bookmark
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
@@ -319,32 +311,12 @@ jobs:
           OA_CHECK_NO_TEST_HOOKS: "1"
         run: bash scripts/ci/prod-setup.sh upgrade
       - id: verify
-        name: Verify the migrated database against the capture
+        name: Check the applied migration list against the release tag
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true' && steps.migration.outputs.guarded == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/ci/prod-migration-guard.sh verify
-      # The upgrade or its verification failed after the bookmark: roll the
-      # Worker back (new code can't run on the old schema), then restore D1,
-      # then compare it with the capture. Only when this run allows it (the
-      # user's yes for that release); otherwise page with what to restore.
-      - name: Roll the Worker back and restore D1 to the bookmark
-        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
-          BOOKMARK: ${{ steps.record.outputs.bookmark }}
-        run: bash scripts/ci/prod-migration-guard.sh restore
-      - name: Page (verification failed; no restore authorized for this run)
-        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true
-        env:
-          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
-          BOOKMARK: ${{ steps.record.outputs.bookmark }}
-        run: |
-          echo "::error title=Prod migration failed::not restored (not authorized for this run). Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
-          echo "**Not restored.** Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
       # #2257: the deploy is only done when the instance says so.
       - name: Check prod serves the released version
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed == 'true'
@@ -355,12 +327,20 @@ jobs:
           want="${TAG#v}"
           got=""
           for _ in 1 2 3 4 5 6 7 8 9 10; do
-            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -r '.version // empty')" || got=""
+            got="$(curl -fsS -m 15 "https://$HOST/healthz" | jq -er 'select(.ok == true) | .version')" || got=""
             [ "$got" = "$want" ] && { echo "$HOST serves $got"; exit 0; }
             sleep 10
           done
           echo "::error title=Deploy not live::$HOST serves '${got:-nothing}', expected $want"
           exit 1
+      - name: Page with the restore point after a guarded upgrade fails
+        if: failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success'
+        env:
+          WORKER_VERSION: ${{ steps.record.outputs.worker_version }}
+          BOOKMARK: ${{ steps.record.outputs.bookmark }}
+        run: |
+          echo "::error title=Prod migration failed::Restore requires a separate decision because it discards writes since the bookmark. Worker before: $WORKER_VERSION; D1 bookmark: $BOOKMARK"
+          echo "**Restore requires a separate decision.** It discards writes since the bookmark. Worker before: \`$WORKER_VERSION\`; D1 bookmark: \`$BOOKMARK\`." >> "$GITHUB_STEP_SUMMARY"
       - name: Revoke leaked setup-ci tokens
         if: always() && steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false' && steps.preflight.outputs.installed != 'false'
         timeout-minutes: 3

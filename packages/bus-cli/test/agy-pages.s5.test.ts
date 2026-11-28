@@ -1,4 +1,4 @@
-// agy S5: `oa-bus install` (behind OA_BUS_EXPERIMENTAL_AGY=1) points
+// agy S5: `oa-bus install` points
 // Antigravity's Open Artifacts entry at the local proxy, which adds each
 // conversation's link proof; added instances get the `--name` form; doctor
 // reports each entry; uninstall puts the user's entry back byte for byte.
@@ -43,13 +43,12 @@ const HUB = "https://artifacts.example.com";
 const MIT = "https://mit-ai.example.com";
 const PAT = `oa_pat_${"b".repeat(40)}`;
 const BIN = ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"];
-const ON = { OA_BUS_EXPERIMENTAL_AGY: "1" };
 
 function setup(opts: { env?: Record<string, string>; busHome?: string } = {}) {
   const h = mkdtempSync(join(tmpdir(), "ob-agy5-"));
   const deps: AdapterDeps = {
     home: h,
-    env: opts.env ?? ON,
+    env: opts.env ?? {},
     busBin: BIN,
     hub: HUB,
     ...(opts.busHome ? { busHome: opts.busHome } : {}),
@@ -122,6 +121,45 @@ const PROXY_ARGS = [
 ];
 
 describe("Antigravity pages entry (agy S5)", () => {
+  it("grants exactly the routine tools for generated aliases and preserves existing permissions", async () => {
+    const { h, deps, file } = setup();
+    const settings = join(h, ".gemini/antigravity-cli/settings.json");
+    const manual = "mcp(open-artifacts-2/get_artifact)";
+    put(
+      settings,
+      JSON.stringify({ permissions: { allow: [manual], ask: ["keep"] } }),
+    );
+    put(file, '{"mcpServers":{"open-artifacts":{"command":"foreign"}}}');
+    saveInstance(
+      {
+        name: "staging",
+        hub: "https://staging.example.org",
+        machine_id: "",
+        label: "s",
+        machine_token: TOKEN,
+      },
+      join(h, ".oa-bus"),
+    );
+    await installAdapters(deps);
+    await installAdapters(deps);
+    const permissions = () => JSON.parse(read(settings)).permissions;
+    const tools =
+      "publish_artifact add_comment get_artifact list_artifacts search_artifacts list_versions list_comments edit_comment resolve_comment withdraw_ask get_comment_picture create_upload artifact_data_get artifact_data_list artifact_data_query artifact_data_set artifact_data_update artifact_data_delete bus_role_propose list_spaces".split(
+        " ",
+      );
+    expect(
+      permissions()
+        .allow.filter((r: string) => r.startsWith("mcp(open-artifacts"))
+        .sort(),
+    ).toEqual(
+      ["open-artifacts-2", "open-artifacts-staging"]
+        .flatMap((name) => tools.map((tool) => `mcp(${name}/${tool})`))
+        .sort(),
+    );
+    await uninstallAdapters(deps);
+    expect(permissions()).toEqual({ allow: [manual], ask: ["keep"] });
+  });
+
   it("never binds a slug-only PAT to either colliding install target", async () => {
     const { deps, h, file } = setup();
     const other = "https://artifacts-example.com";
@@ -165,6 +203,24 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
   });
 
+  it("revokes shared grants when one home finds the alias repointed", async () => {
+    const { deps, h, file } = setup();
+    const settings = join(h, ".gemini/antigravity-cli/settings.json");
+    const manual = "mcp(open-artifacts/get_artifact)";
+    put(settings, JSON.stringify({ permissions: { allow: [manual] } }));
+    await installAdapters(deps);
+    await installAdapters({ ...deps, busHome: join(h, "second-bus") });
+    put(file, read(file).replace(HUB, "https://replacement.example.org"));
+    await installAdapters(deps);
+    const allow: string[] = JSON.parse(read(settings)).permissions.allow;
+    expect(allow.filter((r) => r.startsWith("mcp(open-artifacts/"))).toEqual([
+      manual,
+    ]);
+    expect(
+      allow.filter((r) => r.startsWith("mcp(open-artifacts-2/")),
+    ).toHaveLength(20);
+  });
+
   it.each([true, false])(
     "removes the shared native entry only on last uninstall (creator first: %s)",
     async (creatorFirst) => {
@@ -172,9 +228,13 @@ describe("Antigravity pages entry (agy S5)", () => {
       const other = { ...deps, busHome: join(h, "second-bus") };
       await installAdapters(deps);
       await installAdapters(other);
+      const settings = join(h, ".gemini/antigravity-cli/settings.json");
+      const grant = "mcp(open-artifacts/publish_artifact)";
       await uninstallAdapters(creatorFirst ? deps : other);
+      expect(read(settings)).toContain(grant);
       expect(entry(read(file))).toEqual({ serverUrl: `${HUB}/mcp` });
       await uninstallAdapters(creatorFirst ? other : deps);
+      expect(read(settings)).not.toContain(grant);
       // Last uninstall may remove the empty config file.
       expect(existsSync(file) ? entry(read(file)) : undefined).toBeUndefined();
     },
@@ -312,10 +372,10 @@ describe("Antigravity pages entry (agy S5)", () => {
     expect(entry(read(file))).toEqual(other);
   });
 
-  it("is left alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
+  it("is left alone when agy is absent", async () => {
     const { deps, file } = setup({ env: {} });
     put(file, THEIRS());
-    await installAdapters(deps);
+    await installAdapters({ ...deps, which: () => false });
     expect(read(file)).toBe(THEIRS());
   });
 
@@ -356,6 +416,9 @@ describe("Antigravity pages entry (agy S5)", () => {
     put(file, original);
     put(join(h, ".open-artifacts/pats", encodeURIComponent(HUB)), PAT);
     await installAdapters(deps);
+    expect(
+      read(join(h, ".gemini/antigravity-cli/settings.json")),
+    ).not.toContain("mcp(open-artifacts/");
     expect(entry(read(file))).toEqual(entry(original));
     await uninstallAdapters(deps);
     expect(read(file)).toBe(original);

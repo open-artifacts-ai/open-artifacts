@@ -215,6 +215,15 @@ create table if not exists roles (
 );
 create index if not exists roles_lname on roles(org_id, lname);
 
+-- A legacy ask may identify its author only by address. Keep the last Free
+-- for that address across role deletion, name reuse and hub restarts.
+create table if not exists freed_role_names (
+  namespace text not null,
+  lname text not null,
+  freed_at integer not null,
+  primary key (namespace, lname)
+);
+
 -- #3132 role moves: a role re-pointed from one session to another
 -- (putRole). The from-session's address and identity are kept as they were,
 -- since its agents row may be gone, so a notice still sent there (an ask's

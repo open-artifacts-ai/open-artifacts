@@ -50,6 +50,7 @@ import {
   utf8Bytes,
 } from "@oa/bus-protocol";
 import {
+  type AwayRoleAction,
   BUS_LINK_MAX,
   BUS_REACH_MAX,
   BUS_ROLE_MAX,
@@ -92,6 +93,7 @@ import {
 import { PREVIOUS_RELEASE, VERSION } from "../version.gen.js";
 import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import { PendingVersionLinks, type VersionTarget } from "./late-version.js";
 import {
   decideLinkProposal,
   expireLinkProposalsOfMachine,
@@ -141,6 +143,7 @@ import {
   type ProposeInput,
   type ProposeResult,
   propose,
+  refuseFreedRoleProposals,
   type ViewResult,
   viewProposal,
 } from "./role-proposals.js";
@@ -156,9 +159,11 @@ import {
   type PutRoleResult,
   pendingMoveAudits,
   putRole,
+  type RoleFaceRow,
   type RoleMove,
   resolveRoleAnywhere,
   resolveRoleIn,
+  roleFaces,
   roleForward,
   roleIntervals,
   roleTakenSql,
@@ -4879,6 +4884,73 @@ export class BusHub extends DurableObject<Env> {
     return out;
   }
 
+  async actOnAwayRole(
+    action: AwayRoleAction,
+  ): Promise<{ ok: boolean; moved: RoleMove | null }> {
+    const sql = this.ctx.storage.sql;
+    const role = one<{ name: string; namespace: string; lname: string }>(
+      sql,
+      `select r.name, r.namespace, r.lname from roles r left join agents a on a.id = r.agent_id
+       where r.org_id = ? and r.id = ? and r.agent_id = ? and (a.id is null or a.live = 0)`,
+      OWNER_ORG_ID,
+      action.roleId,
+      action.holderId,
+    );
+    if (!role) return { ok: false, moved: null };
+    if (action.targetId !== null) {
+      const target = one<{ machineId: string }>(
+        sql,
+        "select machine_id as machineId from agents where org_id = ? and id = ? and live = 1 and (namespace = ? or global = 1)",
+        OWNER_ORG_ID,
+        action.targetId,
+        role.namespace,
+      );
+      if (!target || !liveSocket(this.ctx, target.machineId))
+        return { ok: false, moved: null };
+      const result = await this.putRole(
+        role.namespace,
+        role.name,
+        action.targetId,
+      );
+      return { ok: result.ok, moved: result.ok ? result.moved : null };
+    }
+    this.#withReachNotice(() => {
+      sql.exec(
+        `delete from former_names where org_id = ? and lname = ? and (namespace = ? or global = 1)
+         and (agent_id = ? or agent_id in (
+           select from_agent_id from role_moves where org_id = ? and from_ns = ? and from_lname = ? and role_id = ?
+         ))`,
+        OWNER_ORG_ID,
+        role.lname,
+        role.namespace,
+        action.holderId,
+        OWNER_ORG_ID,
+        role.namespace,
+        role.lname,
+        action.roleId,
+      );
+      refuseFreedRoleProposals(sql, OWNER_ORG_ID, action.roleId, this.#now());
+      sql.exec(
+        "insert into freed_role_names (namespace, lname, freed_at) values (?, ?, ?) on conflict (namespace, lname) do update set freed_at = excluded.freed_at",
+        role.namespace,
+        role.lname,
+        this.#now(),
+      );
+      // Unbound notices already held for this address belong to its old
+      // occupant. Notices parked on the deleted role ID can never resolve.
+      for (const held of all<{ lname: string; ckey: string }>(
+        sql,
+        "select to_lname as lname, ckey from notices where to_ns = ? and (to_lname = ? or (to_lname = ? and to_identity is null))",
+        role.namespace,
+        roleNoticeName(action.roleId),
+        role.lname,
+      ))
+        this.#dropHeld(role.namespace, held.lname, held.ckey);
+      deleteRole(sql, OWNER_ORG_ID, action.roleId);
+    });
+    return { ok: true, moved: null };
+  }
+
   /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
   async deleteRole(id: string): Promise<boolean> {
     return this.#withReachNotice(() =>
@@ -5370,8 +5442,43 @@ export class BusHub extends DurableObject<Env> {
    */
   #codexPending = new Map<
     string,
-    { ws: WebSocket; done: (ok: boolean) => void }
+    {
+      ws: WebSocket;
+      ticket?: string;
+      done: (ok: boolean) => Promise<void> | undefined;
+    }
   >();
+  #versions = new PendingVersionLinks<WebSocket>(
+    async (ticket, target, identity) => {
+      const owner = this.#userId();
+      if (!owner) return;
+      await this.env.DB.prepare(
+        "update versions set agent_identity = ? where artifact_id = ? and version = ? and created_by = ? and agent_identity = ?",
+      )
+        .bind(
+          JSON.stringify(identity ?? { reason: "timeout" }),
+          target.artifactId,
+          target.version,
+          owner,
+          JSON.stringify({ reason: "timeout", ticket }),
+        )
+        .run();
+    },
+    (ws) => ws.readyState === OPEN && !isReplaced(ws) && !isRevokedSocket(ws),
+  );
+
+  async codexVersionTarget(
+    ticket: string,
+    target: VersionTarget | null,
+  ): Promise<void> {
+    if (target) await this.#versions.bind(ticket, target);
+    else {
+      for (const [id, frame] of this.#codexPending)
+        if (frame.ticket === ticket) this.#codexPending.delete(id);
+      await this.#versions.finish(ticket);
+    }
+  }
+
   #codexStarts: number[] = [];
   #codexMiss = new Map<string, number>();
   #codexFlight = new Set<string>();
@@ -5415,6 +5522,7 @@ export class BusHub extends DurableObject<Env> {
 
   async codexCallDecision(
     check: unknown,
+    ticket?: string,
   ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
     const miss = (reason: CodexLinkReason) => ({ identity: null, reason });
     const c = check as {
@@ -5458,6 +5566,7 @@ export class BusHub extends DurableObject<Env> {
     const key = `${once}\n${tool.data}\n${mode.kind === "code" ? mode.item_id : mode.args_sha256}`;
     const now = this.#now();
     if (this.#codexAdmitted.has(once)) return miss("already_used");
+    if (this.#versions.hasCall(once)) return miss("in_flight");
     if (
       mode.kind === "code" &&
       (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
@@ -5475,36 +5584,84 @@ export class BusHub extends DurableObject<Env> {
       return miss("hub_rate_limit");
     }
     this.#codexStarts.push(now);
-    const p = this.#codexAsk(thread.data, tool.data, mode, harness).then(
-      (decision) => {
-        if (decision.identity) {
-          // Another check for this (thread, call) linked first.
-          if (this.#codexAdmitted.has(once)) return miss("already_used");
-          this.#codexAdmitted.add(once);
-          if (this.#codexAdmitted.size > CODEX_MAP_MAX)
-            this.#codexAdmitted.delete(
-              this.#codexAdmitted.values().next().value as string,
-            );
-          if (mode.kind === "code") {
-            this.#codexItems.set(
-              mode.item_id,
-              (this.#codexItems.get(mode.item_id) ?? 0) + 1,
-            );
-            if (this.#codexItems.size > CODEX_MAP_MAX)
-              this.#codexItems.delete(
-                this.#codexItems.keys().next().value as string,
-              );
-          }
-        } else {
-          this.#codexMiss.set(key, this.#now() + CODEX_MISS_MS);
-          if (this.#codexMiss.size > CODEX_MAP_MAX)
-            this.#codexMiss.delete(
-              this.#codexMiss.keys().next().value as string,
+    const owner =
+      ticket && harness === "codex" && tool.data === "publish_artifact"
+        ? this.ctx.storage.sql
+            .exec<{ machine_id: string }>(
+              "select machine_id from agents where native_ref = ? and kind = 'codex' and live = 1 and org_id = ? limit 2",
+              thread.data,
+              OWNER_ORG_ID,
+            )
+            .toArray()
+        : [];
+    const socket =
+      owner.length === 1 && owner[0]
+        ? liveSocket(this.ctx, owner[0].machine_id)
+        : null;
+    const pending =
+      ticket &&
+      socket &&
+      codexCheckGated(socket) &&
+      this.#versions.start(ticket, socket, once)
+        ? { ticket, socket }
+        : undefined;
+    const admit = (decision: {
+      identity: AgentIdentity | null;
+      reason: CodexLinkReason;
+    }) => {
+      if (decision.identity) {
+        // Another check for this (thread, call) linked first.
+        if (this.#codexAdmitted.has(once)) return miss("already_used");
+        if (
+          mode.kind === "code" &&
+          (this.#codexItems.get(mode.item_id) ?? 0) >= CODEX_ITEM_LINKS
+        )
+          return miss("item_limit");
+        this.#codexAdmitted.add(once);
+        if (this.#codexAdmitted.size > CODEX_MAP_MAX)
+          this.#codexAdmitted.delete(
+            this.#codexAdmitted.values().next().value as string,
+          );
+        if (mode.kind === "code") {
+          this.#codexItems.set(
+            mode.item_id,
+            (this.#codexItems.get(mode.item_id) ?? 0) + 1,
+          );
+          if (this.#codexItems.size > CODEX_MAP_MAX)
+            this.#codexItems.delete(
+              this.#codexItems.keys().next().value as string,
             );
         }
-        return decision;
+      } else {
+        this.#codexMiss.set(key, this.#now() + CODEX_MISS_MS);
+        if (this.#codexMiss.size > CODEX_MAP_MAX)
+          this.#codexMiss.delete(this.#codexMiss.keys().next().value as string);
+      }
+      return decision;
+    };
+    const p = this.#codexAsk(
+      thread.data,
+      tool.data,
+      mode,
+      harness,
+      pending,
+      admit,
+    ).then(
+      async (raw) => {
+        const decision = admit(raw);
+        if (pending && decision.reason !== "lookup_timeout") {
+          if (decision.identity && raw.socket === pending.socket)
+            await this.#versions.prove(
+              pending.ticket,
+              pending.socket,
+              decision.identity,
+            );
+          else await this.#versions.finish(pending.ticket);
+        }
+        return { identity: decision.identity, reason: decision.reason };
       },
       (e) => {
+        if (pending) this.ctx.waitUntil(this.#versions.finish(pending.ticket));
         logError("bus_codex_check_failed", e);
         return miss("lookup_error");
       },
@@ -5521,7 +5678,17 @@ export class BusHub extends DurableObject<Env> {
       | { kind: "direct"; call_id: string; args_sha256: string }
       | { kind: "code"; call_id: string; item_id: string },
     harness: "codex" | "antigravity",
-  ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }> {
+    pending: { ticket: string; socket: WebSocket } | undefined,
+    admit: (decision: {
+      identity: AgentIdentity | null;
+      reason: CodexLinkReason;
+    }) => { identity: AgentIdentity | null; reason: CodexLinkReason },
+  ): Promise<{
+    identity: AgentIdentity | null;
+    reason: CodexLinkReason;
+    socket?: WebSocket;
+  }> {
+    let retained: string | undefined;
     const asked: WebSocket[] = [];
     const waits: Promise<WebSocket | null>[] = [];
     const frameIds: string[] = [];
@@ -5538,7 +5705,10 @@ export class BusHub extends DurableObject<Env> {
         const answered = new Promise<WebSocket | null>((resolve) => {
           this.#codexPending.set(id, {
             ws,
-            done: (ok) => resolve(ok ? ws : null),
+            done: (ok) => {
+              resolve(ok ? ws : null);
+              return undefined;
+            },
           });
         });
         if (
@@ -5580,6 +5750,26 @@ export class BusHub extends DurableObject<Env> {
             })
           : first;
       const ws = await Promise.race([response, late]);
+      if (ws === "timeout" && pending) {
+        const index = asked.indexOf(pending.socket);
+        const id = frameIds[index];
+        if (id && this.#codexPending.has(id)) {
+          retained = id;
+          this.#codexPending.set(id, {
+            ws: pending.socket,
+            ticket: pending.ticket,
+            done: (ok) => {
+              const identity = ok
+                ? admit(this.#codexIdentity(pending.socket, thread, harness))
+                    .identity
+                : null;
+              return identity
+                ? this.#versions.prove(pending.ticket, pending.socket, identity)
+                : this.#versions.finish(pending.ticket);
+            },
+          });
+        } else await this.#versions.finish(pending.ticket);
+      }
       if (!ws || ws === "timeout") {
         logInfo("bus_codex_check_none", { reason: "refused_or_timeout" });
         return {
@@ -5587,38 +5777,47 @@ export class BusHub extends DurableObject<Env> {
           reason: ws === "timeout" ? "lookup_timeout" : "daemon_refused",
         };
       }
-      const machineId = attachmentOf(ws)?.machineId;
-      if (!machineId || isReplaced(ws) || ws.readyState !== OPEN)
-        return { identity: null, reason: "no_daemon" };
-      // A Codex session that never bound a proof has no identity yet; mint it
-      // here, as bindProof does at a first bind (the hub's own row, one write).
-      this.ctx.storage.sql.exec(
-        `update agents set identity_id = ? where machine_id = ? and native_ref = ?
+      return { ...this.#codexIdentity(ws, thread, harness), socket: ws };
+    } finally {
+      clearTimeout(timer);
+      for (const id of frameIds)
+        if (id !== retained) this.#codexPending.delete(id);
+    }
+  }
+
+  #codexIdentity(
+    ws: WebSocket,
+    thread: string,
+    harness: "codex" | "antigravity",
+  ): { identity: AgentIdentity | null; reason: CodexLinkReason } {
+    const machineId = attachmentOf(ws)?.machineId;
+    if (!machineId || isReplaced(ws) || ws.readyState !== OPEN)
+      return { identity: null, reason: "no_daemon" };
+    // A Codex session that never bound a proof has no identity yet; mint it
+    // here, as bindProof does at a first bind (the hub's own row, one write).
+    this.ctx.storage.sql.exec(
+      `update agents set identity_id = ? where machine_id = ? and native_ref = ?
             and kind = ? and live = 1 and org_id = ? and identity_id is null`,
-        randomHex(32),
-        machineId,
-        thread,
-        harness,
-        OWNER_ORG_ID,
-      );
-      const id = one<AgentIdentity>(
-        this.ctx.storage.sql,
-        `select a.identity_id as identityId, a.namespace, a.name, a.kind
+      randomHex(32),
+      machineId,
+      thread,
+      harness,
+      OWNER_ORG_ID,
+    );
+    const id = one<AgentIdentity>(
+      this.ctx.storage.sql,
+      `select a.identity_id as identityId, a.namespace, a.name, a.kind
            from agents a
           where a.machine_id = ? and a.native_ref = ? and a.kind = ?
             and a.live = 1 and a.org_id = ? and a.identity_id is not null
             and not exists (select 1 from machines m where m.id = a.machine_id and m.revoked_at is not null)`,
-        machineId,
-        thread,
-        harness,
-        OWNER_ORG_ID,
-      );
-      if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
-      return { identity: id, reason: id ? "attested" : "no_agent" };
-    } finally {
-      clearTimeout(timer);
-      for (const id of frameIds) this.#codexPending.delete(id);
-    }
+      machineId,
+      thread,
+      harness,
+      OWNER_ORG_ID,
+    );
+    if (!id) logInfo("bus_codex_check_none", { reason: "no_agent" });
+    return { identity: id, reason: id ? "attested" : "no_agent" };
   }
 
   /**
@@ -5718,6 +5917,19 @@ export class BusHub extends DurableObject<Env> {
         });
     }
     return out;
+  }
+
+  /**
+   * #3335: the current name and holder of each role id in `roleIds`, from this
+   * member's own hub only. At most NAMES_OF_MAX ids are read. Worker only.
+   */
+  async rolesOf(roleIds: string[]): Promise<RoleFaceRow[]> {
+    if (!Array.isArray(roleIds)) return [];
+    const ids = [
+      ...new Set(roleIds.filter((x) => typeof x === "string" && x !== "")),
+    ].slice(0, NAMES_OF_MAX);
+    if (ids.length === 0) return [];
+    return roleFaces(this.ctx.storage.sql, OWNER_ORG_ID, ids);
   }
 
   /**
@@ -6488,6 +6700,7 @@ export class BusHub extends DurableObject<Env> {
       } catch {
         // Already closed.
       }
+      this.#closeCodexSocket(old);
       closeSocket(old, 1000, "replaced");
     }
 
@@ -7132,7 +7345,7 @@ export class BusHub extends DurableObject<Env> {
         const w = this.#codexPending.get(f.re);
         if (w && w.ws === ws) {
           this.#codexPending.delete(f.re);
-          w.done(f.ok);
+          return w.done(f.ok);
         }
         return;
       }
@@ -8250,7 +8463,18 @@ export class BusHub extends DurableObject<Env> {
    * The machine's open agents flip to queued. They stay open: their sessions
    * may still be running (sessions{closed} and agent_down end them).
    */
+  #closeCodexSocket(ws: WebSocket): void {
+    this.ctx.waitUntil(this.#versions.close(ws));
+    for (const [id, frame] of this.#codexPending) {
+      if (frame.ws !== ws) continue;
+      this.#codexPending.delete(id);
+      const closed = frame.done(false);
+      if (closed) this.ctx.waitUntil(closed);
+    }
+  }
+
   #socketGone(ws: WebSocket): void {
+    this.#closeCodexSocket(ws);
     const machineId = machineOf(ws);
     if (!machineId || isReplaced(ws)) return;
     if (machineOnline(this.ctx, machineId, ws)) return;
@@ -9879,6 +10103,21 @@ export class BusHub extends DurableObject<Env> {
     )
       return "dropped";
     if (!roleId && !forwarded) {
+      // An address-only answer cannot cross a Free. Older senders may omit
+      // the ask time, in which case the asker cannot be established either.
+      if (
+        n.toIdentity === undefined &&
+        (n.kind === "ask_answered" || n.kind === "ask_later") &&
+        one(
+          sql,
+          "select 1 from freed_role_names where namespace = ? and lname = ? and (? is null or freed_at >= ?)",
+          n.to.namespace,
+          n.to.name.toLowerCase(),
+          n.originAt ?? null,
+          n.originAt ?? null,
+        )
+      )
+        return "dropped";
       const holder = roleForward(
         sql,
         OWNER_ORG_ID,

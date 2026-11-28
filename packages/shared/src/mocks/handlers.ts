@@ -24,6 +24,7 @@
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import {
+  AwayRoleActionSchema,
   BUS_LINK_MAX,
   BUS_LINKS_PER_NAMESPACE,
   type BusAddress,
@@ -165,6 +166,7 @@ export type MockOptions = {
    * default: no machines, and GET R.busAgents answers `live: false`.
    */
   bus?: boolean;
+  awayName?: boolean;
   /** #3252: Agents after a confirmed handover, with another session waiting. */
   handoverAfter?: boolean;
   /**
@@ -193,6 +195,7 @@ export type MockOptions = {
         commentStep?: boolean;
         /** #2890: false is a chat-only person who never connected the bus: three steps. Default true. */
         bus?: boolean;
+        awayName?: boolean;
       };
   /** #2263: the caller's passkeys (default "none"; see ./passkeys.ts). */
   passkeys?: PasskeyMockState;
@@ -536,6 +539,29 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           : {}),
       }))
     : [];
+  if (opts.awayName && busRoles[0]) {
+    const role = busRoles[0];
+    busRoles[0] = {
+      ...role,
+      vacant: true,
+      awayHolder: true,
+      awayMachine: "laptop",
+      awaySince: new Date(Date.now() - 19 * 3600000).toISOString(),
+    };
+    const waiting = busRoleProposals.find((p) => p.roleId === role.id);
+    busAgents = busAgents
+      .filter((a) => a.id !== role.agentId)
+      .map((a) =>
+        a.id === waiting?.agentId
+          ? {
+              ...a,
+              name: `${role.name}-2`,
+              pendingRole: role.name,
+              privateSessionName: true,
+            }
+          : a,
+      );
+  }
 
   if (opts.handoverAfter && busRoleProposals[0]) {
     const proposal = busRoleProposals[0];
@@ -986,6 +1012,51 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
         live: opts.bus === true,
       }),
     ),
+    http.post(`*${R.busRoles}`, async ({ request }) => {
+      const parsed = await body(request, AwayRoleActionSchema);
+      if (parsed.error) return parsed.error;
+      const { roleId, holderId, targetId } = parsed.data;
+      const role = busRoles.find(
+        (r) => r.id === roleId && r.agentId === holderId && r.awayHolder,
+      );
+      if (!role) return err("conflict", "The holder has changed.");
+      if (targetId === null) {
+        busRoles = busRoles.filter((r) => r !== role);
+        busRoleProposals = busRoleProposals.filter((p) => p.roleId !== role.id);
+        busAgents = busAgents.map((a) =>
+          a.namespace === role.namespace && a.pendingRole === role.name
+            ? { ...a, pendingRole: undefined }
+            : a,
+        );
+      } else {
+        const target = busAgents.find(
+          (a) =>
+            a.id === targetId &&
+            a.state === "live" &&
+            (a.global || a.namespace === role.namespace),
+        );
+        if (!target) return err("conflict", "The destination has changed.");
+        busRoles = busRoles.map((r) =>
+          r === role
+            ? {
+                ...r,
+                agentId: target.id,
+                holderName: target.name,
+                vacant: false,
+                awayHolder: undefined,
+                awayMachine: undefined,
+                awaySince: undefined,
+              }
+            : r,
+        );
+        busAgents = busAgents.map((a) =>
+          a.id === target.id
+            ? { ...a, role: role.name, roleId: role.id, pendingRole: undefined }
+            : a,
+        );
+      }
+      return noContent();
+    }),
     // Set, re-point or vacate; the holder must be an open agent there (else 409 agent_not_open).
     http.put(`*${R.busRoles}`, async ({ request }) => {
       const r = await body(request, BusRolePutSchema);
@@ -1615,7 +1686,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       const m: Member = {
         id: newId(),
         email,
-        name: null,
+        name: r.data.name ?? null,
         role: r.data.role,
         lastSeenAt: null,
       };

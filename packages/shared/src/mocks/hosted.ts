@@ -1584,7 +1584,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       const m: Member = {
         id: newId(),
         email,
-        name: null,
+        name: r.data.name ?? null,
         role: r.data.role,
         lastSeenAt: null,
         status: "active",

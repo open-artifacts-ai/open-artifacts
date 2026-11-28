@@ -320,7 +320,7 @@ describe("oa-bus add (#2793 S1)", () => {
   });
 });
 
-// agy S5: with OA_BUS_EXPERIMENTAL_AGY=1, add gives Antigravity's entry at the
+// agy S5: add gives Antigravity's entry at the
 // new instance's address the --name form; without it the file stays as it is.
 // A scratch HOME and a hand-written agy config only: no real agy runs.
 describe("oa-bus add: Antigravity's entry (agy S5)", () => {
@@ -334,9 +334,13 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
   }
 }
 `;
-  const run = async (env: Record<string, string>, config = agyConfig) => {
+  const run = async (present: boolean, config = agyConfig) => {
     const ctx = fakeCtx(
-      { fetch: approvalServer("https://a.example.com"), stdinIsTTY: true, env },
+      {
+        fetch: approvalServer("https://a.example.com"),
+        stdinIsTTY: true,
+        which: (c) => present && c === "agy",
+      },
       true,
     );
     writeMain(ctx.home);
@@ -365,7 +369,7 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
       {
         fetch: approvalServer("https://a.example.com"),
         stdinIsTTY: true,
-        env: { OA_BUS_EXPERIMENTAL_AGY: "1" },
+        which: (c) => c === "agy",
       },
       true,
     );
@@ -390,7 +394,7 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
     expect(ctx.all().join("\n")).not.toContain(PAT);
   });
   it("creates a named pages proxy when add finds no agy config", async () => {
-    const config = JSON.parse(await run({ OA_BUS_EXPERIMENTAL_AGY: "1" }, ""));
+    const config = JSON.parse(await run(true, ""));
     const args = config.mcpServers["open-artifacts-work"].args;
     expect(args.slice(args.indexOf("mcp-proxy"))).toEqual([
       "mcp-proxy",
@@ -405,8 +409,7 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
     ]);
   });
   it("gives the new instance's entry the proxy with --name <instance>", async () => {
-    const e = JSON.parse(await run({ OA_BUS_EXPERIMENTAL_AGY: "1" }))
-      .mcpServers["oa-work"];
+    const e = JSON.parse(await run(true)).mcpServers["oa-work"];
     const args = e.args as string[];
     const i = args.indexOf("mcp-proxy");
     expect(args.slice(i)).toEqual([
@@ -424,7 +427,7 @@ describe("oa-bus add: Antigravity's entry (agy S5)", () => {
     expect(JSON.stringify(args)).not.toContain(PAT);
   });
 
-  it("leaves the entry alone without OA_BUS_EXPERIMENTAL_AGY=1", async () => {
-    expect(await run({})).toBe(agyConfig);
+  it("leaves the entry alone when agy is absent", async () => {
+    expect(await run(false)).toBe(agyConfig);
   });
 });

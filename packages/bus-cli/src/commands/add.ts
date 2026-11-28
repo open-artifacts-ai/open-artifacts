@@ -7,7 +7,7 @@ import {
 } from "@oa/bus-daemon";
 import { stripTerminalControls } from "@oa/bus-ipc";
 import { type Ctx, say, sayErr } from "../context.ts";
-import { agyEntryIo, agyOn, proofIo } from "../steps/adapters.ts";
+import { agyEntryIo, hasAgy, proofIo } from "../steps/adapters.ts";
 import { withAgyConfigLock } from "../steps/agy-config-lock.ts";
 import { installAgyEntries } from "../steps/agy-proof.ts";
 import {
@@ -143,12 +143,12 @@ export async function add(
 }
 
 /**
- * agy S5 (behind OA_BUS_EXPERIMENTAL_AGY=1): Antigravity's entries at the new
+ * agy S5: Antigravity's entries at the new
  * instance's address go through the proxy with `--name <instance>`, so its
  * pages show as the session there. Never fails the add.
  */
 async function agyEntries(name: string, hub: string, ctx: Ctx): Promise<void> {
-  if (!agyOn(ctx.env, ctx.home)) return;
+  if (!hasAgy({ home: ctx.userHome, which: ctx.which })) return;
   try {
     const io = agyEntryIo({
       home: ctx.userHome,

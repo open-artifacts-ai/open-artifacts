@@ -19,7 +19,7 @@ import {
   mcpHandler,
   mcpUnauthorized,
 } from "./mcp/server.js";
-import type { AgentAttr } from "./services/agent-usage.js";
+import { type AgentAttr, lateVersion } from "./services/agent-usage.js";
 import { busOn, hubNoticeDelivery } from "./services/bus.js";
 import { installDelivery } from "./services/bus-delivery.js";
 import { emailEventsConsumer } from "./services/email-events.js";
@@ -92,6 +92,7 @@ async function mcpWithPatUnguarded(
     name: pat.label,
     version: null,
     via: { kind: "token", id: pat.tokenId },
+    ...(link.late ? { [lateVersion]: link.late } : {}),
     ...(link.identity ? { identity: link.identity } : {}),
     ...(!link.identity && link.why ? { unlinked: link.why } : {}),
   };

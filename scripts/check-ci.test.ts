@@ -1633,7 +1633,6 @@ describe("prod and staging tokens never cross", () => {
       expect(guard.map((s) => s.run)).toEqual([
         "bash scripts/ci/prod-migration-guard.sh record",
         "bash scripts/ci/prod-migration-guard.sh verify",
-        "bash scripts/ci/prod-migration-guard.sh restore",
       ]);
       for (const s of guard) {
         expect(s.env?.CLOUDFLARE_API_TOKEN).toBe(tok);
@@ -1695,20 +1694,15 @@ describe("prod and staging tokens never cross", () => {
         expect(steps[i]?.if).toContain(
           "steps.migration.outputs.guarded == 'true'",
         );
-      const restore = steps[at("prod-migration-guard.sh restore")];
       const page = steps.find((s) => s.name?.startsWith("Page"));
-      expect(at("prod-migration-guard.sh restore")).toBeGreaterThan(ver);
-      expect(restore?.if).toBe(
-        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure == true",
-      );
+      expect(steps.indexOf(page!)).toBeGreaterThan(ver);
       expect(page?.if).toBe(
-        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success' && inputs.restore_on_failure != true",
+        "failure() && steps.migration.outputs.guarded == 'true' && steps.record.outcome == 'success'",
       );
       expect(JSON.stringify(page?.env ?? {})).not.toContain("secrets.");
-      expect(w.on.workflow_dispatch.inputs.restore_on_failure).toMatchObject({
-        type: "boolean",
-        default: false,
-      });
+      expect(w.on.workflow_dispatch.inputs).not.toHaveProperty(
+        "restore_on_failure",
+      );
     });
     it("passes ANALYTICS_TOKEN to the upgrade step only", () => {
       const withA = steps.filter((s) =>

@@ -18,6 +18,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarProvider,
+  SidebarSeparator,
   SidebarTrigger,
   useSidebar,
 } from "@oa/ui/shadcn";
@@ -80,10 +81,6 @@ const icon = (d: string) => (
 const I = {
   lib: icon("M2 2h5v5H2zM9 2h5v5H9zM2 9h5v5H2zM9 9h5v5H9z"),
   share: icon("M10.5 5.5 13 8l-2.5 2.5M13 8H5a3 3 0 0 0-3 3"),
-  team: icon(
-    "M6 3.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM1.5 13.5c.5-2.5 2.3-3.8 4.5-3.8s4 1.3 4.5 3.8",
-  ),
-  usage: icon("M2.5 11a5.5 5.5 0 1 1 11 0M8 11l2.5-3"),
   trash: icon("M2.5 4h11M6 4V2.5h4V4M4 4l.7 9.5h6.6L12 4M6.5 7v4M9.5 7v4"),
   // #1293: Lucide "radio", at the other icons' 16px and 1.5px stroke.
   agents: (
@@ -431,7 +428,6 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
   const update = instanceUpdate(me);
   // Departed people with artifacts to transfer (org admins, every install).
   const departed = useDeparted(me).people;
-  const usageOff = hasFeature(me, "usage_off");
   const sync = syncDot(me);
   return (
     <ShSidebar variant="inset">
@@ -465,51 +461,22 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
                     <Link
                       to="/"
                       // While a space is open, its Spaces link is current instead.
-                      active={path === "/" && !inSpace}
+                      active={
+                        (path === "/" ||
+                          path === "/mine" ||
+                          path === "/shared" ||
+                          path === "/team") &&
+                        !inSpace
+                      }
                       icon={I.lib}
                       label="Library"
                     />
-                    {me && (
-                      <Link
-                        to="/shared"
-                        active={on("/shared")}
-                        icon={I.share}
-                        label="Shared with me"
-                      />
-                    )}
-                    {me && (
-                      <Link
-                        to="/team"
-                        active={on("/team")}
-                        icon={I.team}
-                        label="Team"
-                      />
-                    )}
                     {canUseBus(me) && (
                       <Link
                         to="/agents"
                         active={on("/agents")}
                         icon={I.agents}
                         label="Agents"
-                      />
-                    )}
-                    {(role === "owner" || role === "admin") && !usageOff && (
-                      <Link
-                        to="/settings/usage"
-                        active={on("/settings/usage")}
-                        icon={I.usage}
-                        label="Usage"
-                      />
-                    )}
-                    {me && (
-                      <Link
-                        to="/settings/members"
-                        active={
-                          path.startsWith("/settings") && !on("/settings/usage")
-                        }
-                        icon={I.gear}
-                        label="Settings"
-                        attention={sync ?? departed.length > 0}
                       />
                     )}
                   </>
@@ -519,22 +486,31 @@ function Sidebar({ me, path }: { me: Me | null; path: string }) {
           </SidebarGroup>
         </nav>
         <SpaceSwitcher path={path} />
-        {/* Its own group under Spaces (Design's Trash A), on every install. */}
         {me && !guest && (
-          <nav aria-label="Trash">
-            <SidebarGroup>
-              <SidebarGroupContent>
-                <SidebarMenu>
-                  <Link
-                    to="/trash"
-                    active={on("/trash")}
-                    icon={I.trash}
-                    label="Trash"
-                  />
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
-          </nav>
+          <>
+            <SidebarSeparator className="mx-2 my-1" />
+            <nav aria-label="Workspace">
+              <SidebarGroup>
+                <SidebarGroupContent>
+                  <SidebarMenu>
+                    <Link
+                      to="/trash"
+                      active={on("/trash")}
+                      icon={I.trash}
+                      label="Trash"
+                    />
+                    <Link
+                      to="/settings/members"
+                      active={path.startsWith("/settings")}
+                      icon={I.gear}
+                      label="Settings"
+                      attention={sync ?? departed.length > 0}
+                    />
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            </nav>
+          </>
         )}
       </SidebarContent>
       {/* On phones the chip takes the nav rows' inset: 8px (content) + 8px (group). */}
@@ -565,11 +541,6 @@ function TopBar({ me }: { me: Me | null }) {
         }}
       >
         <PlanChip me={me} />
-        {/* Below 640px the avatar alone (it opens the account menu), so the
-            search and its space chip get the room. */}
-        <span data-header-email="" className="max-[640px]:hidden">
-          {me.user.email}
-        </span>
         <ForYouBell />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

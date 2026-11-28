@@ -28,7 +28,13 @@ export type AgentIdentity = {
 export const NAMES_OF_MAX = 100;
 
 /** An agent ref plus the grant or token behind it, and the bus session it proved (server-internal; never serialized). */
+export const lateVersion = Symbol("late version attribution");
+export type LateVersion = {
+  ticket: string;
+  settle(target: { artifactId: string; version: number } | null): void;
+};
 export type AgentAttr = AgentRef & {
+  [lateVersion]?: LateVersion;
   via?: Via;
   identity?: AgentIdentity;
   /** Why this call carried no link (#2688): a fixed word, never an id or a hash. Server-internal; only a tool result's note reads it. */
@@ -37,6 +43,8 @@ export type AgentAttr = AgentRef & {
 
 /** Why an MCP call is unlinked: the proof lookup's miss reasons (#2810, #2826), plus no_proof (none sent). */
 export type UnlinkedWhy =
+  | "refused"
+  | "rate_limited"
   | "no_proof"
   | "unbound"
   | "closed"

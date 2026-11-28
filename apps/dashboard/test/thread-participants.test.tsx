@@ -313,4 +313,60 @@ describe("ThreadParticipants", () => {
     fireEvent.focus(trigger());
     expect(list()?.textContent ?? "").not.toContain("won't get replies");
   });
+
+  it("shows a role's holding session and machine as detail, and removes the role key (#3335)", () => {
+    const roleAgent: ThreadAgent = {
+      key: "role:h15y3dZHsfLS8t3X:0123456789abcdef0123456789abcdef",
+      name: "Manager",
+      session: "OA Manager L",
+      machine: "laptop",
+      for: "Leo Urbina",
+      linked: true,
+      animal: { id: "fox", color: 1 },
+      canRemove: true,
+    };
+    const otherRole: ThreadAgent = {
+      key: "role:a23456789abcdef1:0123456789abcdef0123456789abcdef",
+      name: "Reviewer",
+      session: "OA Review W",
+      for: "Sam Rivera",
+      linked: true,
+      animal: { id: "owl", color: 2 },
+      canRemove: false,
+    };
+    render(
+      <ThreadParticipants
+        t={thread([roleAgent, otherRole, agent("Plain Bot", true)])}
+        api={api()}
+      />,
+    );
+    fireEvent.focus(trigger());
+    const roleRow = document.querySelector(
+      `[data-participant-agent="${roleAgent.key}"]`,
+    );
+    expect(
+      roleRow?.querySelector("[data-participant-detail]")?.textContent,
+    ).toBe("OA Manager L · laptop");
+    const otherRow = document.querySelector(
+      `[data-participant-agent="${otherRole.key}"]`,
+    );
+    expect(
+      otherRow?.querySelector("[data-participant-detail]")?.textContent,
+    ).toBe("OA Review W");
+    const plainRow = document.querySelector(
+      '[data-participant-agent="k-Plain Bot"]',
+    );
+    expect(plainRow?.querySelector("[data-participant-detail]")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Stop notifying Manager in this thread",
+      }),
+    );
+    expect(mutate.mock.calls[0]?.[0]).toEqual({
+      thread: "t1",
+      key: roleAgent.key,
+      removed: true,
+    });
+  });
 });

@@ -125,12 +125,16 @@ type StoredRole = {
   holderName: string | null;
   privateSessionName: number | null;
   held: number;
+  awayHolder: number;
+  awayMachine: string | null;
+  awaySince: number | null;
 };
 
 const ROLE_SELECT = `select r.id, r.namespace, r.name, r.agent_id as agentId, r.set_at as setAt,
-    h.name as holderName, h.takeover_route = h.name as privateSessionName,
+    h.name as holderName, h.takeover_route = h.name as privateSessionName, m.label as awayMachine, h.away_since as awaySince,
+    (r.agent_id is not null and (h.id is null or h.live = 0)) as awayHolder,
     (h.id is not null and h.live = 1 and (h.namespace = r.namespace or h.global = 1)) as held
-  from roles r left join agents h on h.id = r.agent_id`;
+  from roles r left join agents h on h.id = r.agent_id left join machines m on m.id = h.machine_id`;
 
 const roleDto = (r: StoredRole): BusRole => ({
   id: r.id,
@@ -140,6 +144,13 @@ const roleDto = (r: StoredRole): BusRole => ({
   holderName: r.holderName,
   ...(r.privateSessionName === 1 ? { privateSessionName: true as const } : {}),
   vacant: r.held !== 1,
+  ...(r.awayHolder === 1
+    ? {
+        awayHolder: true as const,
+        ...(r.awayMachine && { awayMachine: r.awayMachine }),
+        ...(r.awaySince != null && { awaySince: iso(r.awaySince) }),
+      }
+    : {}),
   setAt: iso(r.setAt),
 });
 
@@ -562,8 +573,11 @@ function recordMove(
 
 /** Holding intervals use the same half-open bounds as roleForward. */
 export type RoleInterval = {
+  roleId: string;
+  namespace: string;
   role: string;
   holder: string | null;
+  privateHolder?: number | null;
   machine: string | null;
   holderMachine: string | null;
   holderKind: string | null;
@@ -584,12 +598,12 @@ export function roleIntervals(
 ) {
   return all<RoleInterval>(
     sql,
-    `select r.name as role, null as holder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
+    `select r.id as roleId, r.namespace as namespace, r.name as role, null as holder, a.takeover_route = a.name as privateHolder, machine.label as machine, null as holderMachine, null as holderKind, coalesce(r.held_since, r.set_at) as since, null as until
        from roles r join agents a on a.id = r.agent_id
        left join machines machine on machine.id = a.machine_id
        where r.org_id = ? and a.identity_id = ?
      union all
-     select r.name, case when r.agent_id <> m.from_agent_id then h.name end, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
+     select r.id, r.namespace, r.name, case when r.agent_id <> m.from_agent_id then h.name end, h.takeover_route = h.name, m.from_machine_label, machine.label, h.kind, m.held_from, m.at
        from role_moves m indexed by role_moves_identity
        join roles r on r.id = m.role_id
        left join agents h on h.id = r.agent_id
@@ -601,6 +615,54 @@ export function roleIntervals(
     orgId,
     identityId,
   );
+}
+
+/** #3335: a role's current name and holder, for comment views keyed by role id. */
+export type RoleFaceRow = {
+  roleId: string;
+  namespace: string;
+  name: string;
+  holder?: string;
+  holderIdentityId?: string;
+  holderKind?: string;
+  holderMachine?: string;
+};
+
+export function roleFaces(
+  sql: SqlStorage,
+  orgId: string,
+  roleIds: string[],
+): RoleFaceRow[] {
+  if (roleIds.length === 0) return [];
+  return all<{
+    roleId: string;
+    namespace: string;
+    name: string;
+    holder: string | null;
+    holderIdentityId: string | null;
+    holderKind: string | null;
+    holderMachine: string | null;
+  }>(
+    sql,
+    `select r.id as roleId, r.namespace, r.name,
+            case when a.takeover_route = a.name then null else a.name end as holder,
+            a.identity_id as holderIdentityId,
+            a.kind as holderKind, m.label as holderMachine
+       from roles r
+       left join agents a on a.id = r.agent_id
+       left join machines m on m.id = a.machine_id
+      where r.org_id = ? and r.id in (${roleIds.map(() => "?").join(",")})`,
+    orgId,
+    ...roleIds,
+  ).map((r) => ({
+    roleId: r.roleId,
+    namespace: r.namespace,
+    name: r.name,
+    ...(r.holder ? { holder: r.holder } : {}),
+    ...(r.holderIdentityId ? { holderIdentityId: r.holderIdentityId } : {}),
+    ...(r.holderKind ? { holderKind: r.holderKind } : {}),
+    ...(r.holderMachine ? { holderMachine: r.holderMachine } : {}),
+  }));
 }
 
 /**

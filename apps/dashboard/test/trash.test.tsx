@@ -289,7 +289,7 @@ it("Load more: the next page is asked for with the cursor", async () => {
 
 it("hosted: the sidebar has Trash, current on /trash", async () => {
   const router = mountHosted("/", true, undefined, trashApi([]));
-  const nav = await screen.findByRole("navigation", { name: "Trash" });
+  const nav = await screen.findByRole("navigation", { name: "Workspace" });
   fireEvent.click(within(nav).getByRole("link", { name: "Trash" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/trash"));
   await waitFor(() =>
@@ -311,7 +311,7 @@ const bare = (r: TrashItem): TrashItem => ({
 it("self-hosted: the sidebar has Trash", async () => {
   server.use(...trashApi([]));
   const router = mount("/");
-  const nav = await screen.findByRole("navigation", { name: "Trash" });
+  const nav = await screen.findByRole("navigation", { name: "Workspace" });
   fireEvent.click(within(nav).getByRole("link", { name: "Trash" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/trash"));
   expect(await screen.findByText("Trash is empty")).toBeVisible();

@@ -19,7 +19,7 @@ import { revokeUserLive } from "../runtime/revoke.js";
 import { audit, inviteAcceptAudit, signInAudit, userActor } from "./audit.js";
 import { moveUserEmail } from "./email-move.js";
 import { outsiderLoginOff } from "./outside.js";
-import { googleLinkStmts, toMember } from "./users.js";
+import { googleLinkStmts, inviteLoginName, toMember } from "./users.js";
 
 // Admission and account linking for direct sign-in (P2). identities
 // (provider, subject) is the only link; email links an existing ACTIVE row at
@@ -87,11 +87,18 @@ async function touch(
     stmt(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
+         display_name = case when invited_at is not null and last_seen_at is null and ?5 is not null then null else display_name end,
          role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
                      else role end
        where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0),
+    ).bind(
+      now,
+      id.name,
+      row.id,
+      owner && row.email === owner ? 1 : 0,
+      inviteLoginName(id.name, row.email),
+    ),
     signInAudit(env, row.id, id.provider, id.tenant, {
       sql: "changes() > 0",
       args: [],

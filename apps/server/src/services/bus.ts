@@ -14,6 +14,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AuditCredKindSchema,
+  type AwayRoleAction,
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
@@ -56,6 +57,7 @@ import type {
   HandOverResult,
   MoveAudit,
   PutRoleResult,
+  RoleFaceRow,
   RoleMove,
 } from "../bus/roles.js";
 import {
@@ -72,6 +74,7 @@ import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { VERSION } from "../version.gen.js";
 import {
   type AgentIdentity,
+  type LateVersion,
   NAMES_OF_MAX,
   type UnlinkedWhy,
   type Via,
@@ -144,8 +147,13 @@ export type BusHubRpc = {
   ownerAwayChanged(): Promise<void>;
   /** #3108: the Codex session a proof-less tools/call came from, asked of this member's daemons; null when none vouches. */
   codexCallCheck(check: unknown): Promise<AgentIdentity | null>;
+  codexVersionTarget(
+    ticket: string,
+    target: { artifactId: string; version: number } | null,
+  ): Promise<void>;
   codexCallDecision(
     check: unknown,
+    ticket?: string,
   ): Promise<{ identity: AgentIdentity | null; reason: CodexLinkReason }>;
   codexCallVerdict(thread: string, reason: CodexLinkReason): Promise<void>;
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
@@ -179,6 +187,8 @@ export type BusHubRpc = {
   ): Promise<{ identityId: string; kind: string } | null>;
   /** #1889: the current bus name of each agent identity in this member's own hub, with its role (#3132). */
   namesOf(identityIds: string[]): Promise<AgentNameRow[]>;
+  /** #3335: the current name and holder of each role id in this member's own hub. */
+  rolesOf(roleIds: string[]): Promise<RoleFaceRow[]>;
   /** #3132: the live holder the session `identityId` handed its role to, for what it began at `originAt`. */
   roleHolderFor(
     identityId: string,
@@ -205,6 +215,9 @@ export type BusHubRpc = {
   wipe(): Promise<void>;
   /** #1296: the member's role addresses. */
   listRoles(): Promise<BusRole[]>;
+  actOnAwayRole(
+    action: AwayRoleAction,
+  ): Promise<{ ok: boolean; moved: RoleMove | null }>;
   /** #1296: sets, re-points or (null) vacates a role; see bus/roles.ts putRole. */
   putRole(
     namespace: string,
@@ -675,6 +688,41 @@ export async function agentFacesOf(
   return out;
 }
 
+export type { RoleFaceRow };
+
+/**
+ * #3335: the current name and holder of `userId`'s own roles by role id, from
+ * that member's hub only. Same bounds and fail-soft rules as `agentFacesOf`.
+ */
+export async function roleFacesOf(
+  env: Env,
+  userId: string,
+  roleIds: string[],
+): Promise<Map<string, RoleFaceRow>> {
+  const out = new Map<string, RoleFaceRow>();
+  try {
+    if (!busOn(env) || roleIds.length === 0) return out;
+    const rows = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub || typeof hub.rolesOf !== "function") return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < roleIds.length; i += NAMES_OF_MAX)
+          chunks.push(roleIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.rolesOf(ids)))
+        ).flat();
+      })(),
+      LINK_LOOKUP_MS,
+    );
+    for (const r of rows ?? []) out.set(r.roleId, r);
+  } catch (e) {
+    logError("bus_roles_lookup_failed", e);
+  }
+  return out;
+}
+
 /**
  * #3132: the live holder of the role the session `identityId` handed on, for
  * something it began at `originAt` while it held it (bus/roles.ts
@@ -764,7 +812,11 @@ async function lookupProof(
   /** #2793 S3b: whether the request is a tools/call (read lazily, only on a miss). */
   isToolsCall: () => boolean = () => false,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<{ identity?: AgentIdentity; why?: UnlinkedWhy }> {
+): Promise<{
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   const t0 = Date.now();
   // #2110: one line per lookup that gives no identity, so a flapping link is
   // visible. Reason and elapsed ms only: never the proof, its hash or a token.
@@ -1057,7 +1109,11 @@ async function nativeCallLink(
   bodyText: string | undefined,
   agy?: ReturnType<typeof agyWireCall>,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<AgentIdentity | undefined> {
+): Promise<{
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   let verdict = agy?.verdict ?? "miss";
   try {
     const e = agy?.evidence;
@@ -1072,21 +1128,40 @@ async function nativeCallLink(
           }
         : null
       : await codexCheckOf(bodyText);
-    if (!check) return undefined;
+    if (!check) return { why: "no_proof" };
     verdict = "miss";
     const hub = busHub(env, userId);
-    if (!hub) return undefined;
-    const decision = await within(
-      (async () => {
-        if (!(await hasConnectedMachine(env, userId)))
-          return { identity: null, reason: "no_daemon" as const };
-        return hub.codexCallDecision(check);
-      })().catch((e) => {
-        logError("bus_codex_link_failed", e);
-        return { identity: null, reason: "lookup_error" as const };
-      }),
-      PROOF_LOOKUP_MS,
-    );
+    if (!hub) return { why: agy ? "no_proof" : "no_hub" };
+    const ticket =
+      !agy && check.tool === "publish_artifact"
+        ? crypto.randomUUID()
+        : undefined;
+    const lookup = (async () => {
+      if (!(await hasConnectedMachine(env, userId)))
+        return { identity: null, reason: "no_daemon" as const };
+      return ticket
+        ? hub.codexCallDecision(check, ticket)
+        : hub.codexCallDecision(check);
+    })().catch((e) => {
+      logError("bus_codex_link_failed", e);
+      return { identity: null, reason: "lookup_error" as const };
+    });
+    const decision = await within(lookup, PROOF_LOOKUP_MS);
+    let settled = false;
+    const late = ticket
+      ? {
+          ticket,
+          settle(target: { artifactId: string; version: number } | null) {
+            if (settled) return;
+            settled = true;
+            const work = lookup
+              .then(() => hub.codexVersionTarget(ticket, target))
+              .catch((e) => logError("bus_codex_version_failed", e));
+            ctx?.waitUntil(work);
+          },
+        }
+      : undefined;
+    if (decision?.identity) late?.settle(null);
     if (decision?.identity) verdict = "matched";
     if (!agy && decision?.reason !== "no_daemon") {
       const report = Promise.resolve()
@@ -1099,11 +1174,26 @@ async function nativeCallLink(
         .catch((e) => logError("bus_codex_verdict_failed", e));
       ctx?.waitUntil(report);
     }
-    return decision?.identity ?? undefined;
+    if (decision?.identity) return { identity: decision.identity };
+    if (agy) return { why: "no_proof" };
+    switch (decision?.reason) {
+      case undefined:
+      case "lookup_timeout":
+        return { why: "timeout", ...(late ? { late } : {}) };
+      case "no_daemon":
+        return { why: "no_hub" };
+      case "lookup_error":
+        return { why: "error" };
+      case "hub_rate_limit":
+      case "item_limit":
+        return { why: "rate_limited" };
+      default:
+        return { why: "refused" };
+    }
   } catch (e) {
     verdict = "error";
     logError("bus_codex_link_failed", e);
-    return undefined;
+    return { why: agy ? "no_proof" : "error" };
   } finally {
     if (agy)
       logInfo("bus_agy_call_check", {
@@ -1126,7 +1216,12 @@ export async function linkRequest(
   userId: string,
   req: Request,
   ctx?: Pick<ExecutionContext, "waitUntil">,
-): Promise<{ req: Request; identity?: AgentIdentity; why?: UnlinkedWhy }> {
+): Promise<{
+  req: Request;
+  identity?: AgentIdentity;
+  why?: UnlinkedWhy;
+  late?: LateVersion;
+}> {
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;
@@ -1172,16 +1267,15 @@ export async function linkRequest(
   if (poisoned)
     return { req: out, ...(busOn(env) ? { why: "error" as const } : {}) };
   const proof = header !== null ? header : argProof;
-  // No proof at all: nothing was looked up, so nothing is logged; the note says so.
   if (proof === undefined) {
-    // #3108: Codex's OAuth entry sends no proof, only its own call ids.
-    const identity = busOn(env)
-      ? await nativeCallLink(env, userId, bodyText, agy, ctx)
-      : undefined;
-    if (agy && !busOn(env))
+    if (busOn(env))
+      return {
+        req: out,
+        ...(await nativeCallLink(env, userId, bodyText, agy, ctx)),
+      };
+    if (agy)
       logInfo("bus_agy_call_check", { ...agy.fields, verdict: "bus_off" });
-    if (identity) return { req: out, identity };
-    return { req: out, ...(busOn(env) ? { why: "no_proof" as const } : {}) };
+    return { req: out };
   }
   const r = await lookupProof(
     env,
@@ -1391,6 +1485,25 @@ export async function handOverBusRole(
   throw new ApiError("conflict", ROLE_REFUSALS[r.reason], {
     reason: r.reason,
   });
+}
+
+export async function actOnAwayBusRole(
+  env: Env,
+  userId: string,
+  action: AwayRoleAction,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId)))
+    throw new ApiError("conflict", ROLE_REFUSALS.no_bus);
+  const hub = busHub(env, userId);
+  if (!hub) throw new ApiError("storage_unavailable", "Bus unavailable");
+  const result = await roleCall(hub.actOnAwayRole(action));
+  if (!result.ok)
+    throw new ApiError(
+      "conflict",
+      "The holder or destination has changed. Choose again.",
+    );
+  if (result.moved) await auditRoleMoves(env, userId, hub, result.moved);
 }
 
 /** #1296: removes the member's role `id`. Idempotent: unknown is fine. */

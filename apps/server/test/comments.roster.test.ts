@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { LIMITS } from "@oa/bus-protocol";
 import {
   type BusNotice,
+  type BusRole,
   type Member,
   NOTICE_SENDER,
   newId,
@@ -20,6 +21,7 @@ import {
 import {
   agentRoster,
   commentNoticeText,
+  OWN_AGENTS_MAX,
   ROSTER_MAX,
   viewerRosterAgents,
 } from "../src/services/comment-agents.js";
@@ -104,14 +106,22 @@ const agentRow = (
 });
 
 /** An env whose BUS_HUB answers each member's snapshot from `byUser`; counts reads. */
-function hubs(byUser: Record<string, unknown[]>) {
+function hubs(
+  byUser: Record<string, unknown[]>,
+  roles: Record<string, BusRole[]> = {},
+) {
   const seen: string[] = [];
   const ns = {
     idFromName: (n: string) => n,
     get: (n: string) => ({
       snapshot: async () => {
         seen.push(n);
-        return { connected: [], agents: byUser[n.replace("bus:", "")] ?? [] };
+        const userId = n.replace("bus:", "");
+        return {
+          connected: [],
+          agents: byUser[userId] ?? [],
+          roles: roles[userId] ?? [],
+        };
       },
     }),
   };
@@ -539,6 +549,47 @@ describe("@ menu: per-session state, last active and machine", () => {
     expect(r.length).toBe(50);
     expect(r.filter((x) => x.online).length).toBe(5);
     expect(r.slice(0, 5).every((x) => x.online)).toBe(true);
+  });
+
+  it("lists a followed role holder beyond the own-session cap exactly once", async () => {
+    const { owner, id } = await setup();
+    await machineFor(owner.userId);
+    const holder = {
+      ...agentRow("ns-o", "Oldest"),
+      updatedAt: "2020-01-01T00:00:00.000Z",
+      role: "Lead",
+      roleId: newId(),
+    };
+    await follow(
+      E,
+      owner.userId,
+      { namespace: holder.namespace, name: holder.name },
+      id,
+    );
+    const recent = Array.from({ length: OWN_AGENTS_MAX }, (_, i) =>
+      agentRow("ns-o", `Recent${i}`),
+    );
+    const h = hubs(
+      { [owner.userId]: [...recent, holder] },
+      {
+        [owner.userId]: [
+          {
+            id: holder.roleId,
+            name: holder.role,
+            namespace: holder.namespace,
+            agentId: holder.id,
+            holderName: holder.name,
+            vacant: false,
+            setAt: holder.updatedAt,
+          },
+        ],
+      },
+    );
+    const rows = await agentRoster(h.env, id, owner.userId, true, true);
+    expect(rows.filter((row) => row.name === holder.role)).toMatchObject([
+      { session: holder.name, online: true },
+    ]);
+    expect(rows).toHaveLength(OWN_AGENTS_MAX + 1);
   });
 
   it("agents with no state sort after away ones", async () => {

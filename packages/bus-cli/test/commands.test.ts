@@ -1379,7 +1379,7 @@ describe("daemon command", () => {
   });
 
   it.each([true, false])(
-    "passes the selected home's saved agy discovery setting (%s) to the foreground daemon",
+    "uses default discovery regardless of the obsolete saved setting (%s)",
     async (enabled) => {
       const f = fake();
       const ctx = fakeCtx({ env: {} });
@@ -1392,8 +1392,8 @@ describe("daemon command", () => {
       const done = daemon(ctx, f.run as never, f.signals);
       f.signals.emit("SIGTERM");
       expect(await done).toBe(0);
-      expect(f.run).toHaveBeenCalledWith(
-        expect.objectContaining({ antigravity: { discover: enabled } }),
+      expect(f.run.mock.calls[0]?.[0]).not.toHaveProperty(
+        "antigravity.discover",
       );
     },
   );

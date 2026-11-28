@@ -6,7 +6,7 @@ const result = await uninstallAdapters({
   busHome,
   hub: "https://artifacts.example.com",
   busBin: ["/opt/node/bin/node", "/h/.oa-bus/bin/oa-bus.js"],
-  env: { OA_BUS_EXPERIMENTAL_AGY: "1" },
+  env: {},
   assets: { pi: "", opencodePlugin: "" },
   which: () => false,
   exec: async () => ({ code: 0, stdout: "", stderr: "" }),

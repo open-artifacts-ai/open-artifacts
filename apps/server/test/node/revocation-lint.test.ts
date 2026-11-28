@@ -127,8 +127,6 @@ const WIDENS: Readonly<Record<string, string>> = {
   // no owner exists. It never writes back an earlier read, so it can't undo
   // a racing demotion.
   "services/identity.ts:touch": "login promotion from the current role only",
-  // Access sign-in: .set(set) holds only lastSeenAt and name.
-  "services/users.ts:upsertOnLogin": "login touch: last_seen_at and name",
   // Removing a restricted group only lifts caps (restricted_sync recomputed
   // from the groups that remain).
   "services/spaces.ts:deleteRestrictedGroup": "lifts a restriction only",
@@ -154,6 +152,8 @@ const WIDENS: Readonly<Record<string, string>> = {
   "bus/role-proposals.ts:expireProposals":
     "a role proposal's status, not access",
   "bus/role-proposals.ts:decideStored": "a role proposal's status, not access",
+  "bus/role-proposals.ts:refuseFreedRoleProposals":
+    "settles pending name proposals for a freed bus role",
   "bus/roles.ts:putRole": "marks a completed handover proposal applied",
   // #682: a comment thread's own status column (open, resolved) in the
   // artifact's DO, never a member's status.

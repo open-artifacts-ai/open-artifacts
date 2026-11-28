@@ -9,7 +9,7 @@ test("phone: a 288px sheet that navigates, closes and returns focus", async ({
   const trigger = page.getByRole("button", { name: "Toggle navigation" });
   await trigger.click();
   const sheet = page.getByRole("dialog");
-  await expect(sheet.getByRole("link", { name: "Team" })).toBeVisible();
+  await expect(sheet.getByRole("link", { name: "Trash" })).toBeVisible();
   // The sheet slides in with a transform: measure once it has landed at the
   // left edge, not mid-slide (sub-pixel widths, Platform's #755 shard 3).
   await expect.poll(async () => (await sheet.boundingBox())?.x).toBe(0);
@@ -43,7 +43,7 @@ test("phone: a 288px sheet that navigates, closes and returns focus", async ({
   await expect(sheet).toHaveCount(0);
   await expect(trigger).toBeFocused();
   await trigger.click();
-  await page.getByRole("dialog").getByRole("link", { name: "Team" }).click();
-  await expect(page).toHaveURL(/\/team$/);
+  await page.getByRole("dialog").getByRole("link", { name: "Trash" }).click();
+  await expect(page).toHaveURL(/\/trash$/);
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });

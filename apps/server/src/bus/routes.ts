@@ -19,6 +19,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  AwayRoleActionSchema,
   BUS_MACHINES_PAUSED_HEADER,
   BUS_MACHINES_VERSIONS_HEADER,
   BusLinkProposeSchema,
@@ -59,6 +60,7 @@ import { ipKey } from "../runtime/routes.js";
 import { noteMemberFirst } from "../services/analytics.js";
 import { audit, auditText } from "../services/audit.js";
 import {
+  actOnAwayBusRole,
   busOn,
   busPing,
   decideBusRoleProposalById,
@@ -891,6 +893,17 @@ export function mountBus(app: AppType): void {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusRoles(c.env, user.id));
+  });
+  app.post(R.busRoles, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    await actOnAwayBusRole(
+      c.env,
+      user.id,
+      await jsonBody(c, AwayRoleActionSchema),
+    );
+    return c.body(null, 204);
   });
   app.put(R.busRoles, async (c) => {
     const user = roleWriter(c);
