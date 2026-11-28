@@ -26,11 +26,16 @@ import {
   parseStore,
   parseVitest,
   QUIET_DAYS,
+  RECONCILE_CALLS,
+  RECONCILE_LOGS,
+  RECONCILE_MS,
   RERUN_DAYS,
+  type Reconciled,
   type Recorded,
   type RunInfo,
   recentRuns,
   reconcile,
+  reconcileLines,
   repoDir,
   type Sighting,
   STORE_MAX_COMMENTS,
@@ -39,6 +44,7 @@ import {
   storeComments,
   summaryText,
   track,
+  UNREADABLE_TRIES,
 } from "./flaky-tracker.ts";
 
 const E = "\u001b";
@@ -332,6 +338,11 @@ describe("untrusted text", () => {
         seen: [S],
         sightings: [],
         passed: [],
+        pending: [],
+        tries: {},
+        fails: {},
+        unreadable: [],
+        failedAt: {},
       });
       for (const text of [store ?? "", body]) {
         // The only `<!--` and `-->` are the bot's trailing block.
@@ -494,13 +505,18 @@ function fakeGh(o: {
   failCreates?: number;
   /** When each run's failed test job completed, by run id. */
   jobAt?: Record<number, number>;
+  /** The repo's labels; by default both of the tracker's. */
+  labels?: string[];
 }) {
+  const labels = new Set(o.labels ?? ["flaky", "flaky-sightings"]);
   let failCreates = o.failCreates ?? 0;
   /** The fake clock: a comment written now is updated at clock.now. */
   const clock = { now: NOW };
   const calls: string[][] = [];
   const created: { title: string; body: string; label: string }[] = [];
   const comments: { n: string; body: string }[] = [];
+  /** The reconcile's pending lists, kept apart from the other comments. */
+  const pendings: { n: string; body: string }[] = [];
   const store = (o.storeComments ?? []).map((c) => ({
     issue: c.issue ?? 1,
     ...c,
@@ -605,10 +621,17 @@ function fakeGh(o: {
         return ok(JSON.stringify([{ author: { login: "dev1" } }]));
       if (path.includes("/assignees/")) return ok("");
     }
-    if (args[0] === "label" && args[1] === "list")
+    // As gh does: no match prints nothing, not `[]`.
+    if (args[0] === "label" && args[1] === "list") {
+      const hit = [...labels].filter((l) => l.includes(val(args, "--search")));
       return ok(
-        JSON.stringify([{ name: "flaky" }, { name: "flaky-sightings" }]),
+        hit.length ? JSON.stringify(hit.map((name) => ({ name }))) : "",
       );
+    }
+    if (args[0] === "label" && args[1] === "create") {
+      labels.add(args[2] ?? "");
+      return ok("");
+    }
     if (args[0] === "issue" && args[1] === "list") {
       const label = val(args, "--label");
       return ok(
@@ -624,6 +647,13 @@ function fakeGh(o: {
       );
     }
     if (args[0] === "issue" && args[1] === "create") {
+      // As GitHub does: an issue can't take a label the repo doesn't have.
+      if (!labels.has(val(args, "--label")))
+        return {
+          code: 1,
+          stdout: "",
+          stderr: `could not add label: '${val(args, "--label")}' not found`,
+        };
       if (val(args, "--label") === "flaky" && failCreates > 0) {
         failCreates--;
         return { code: 1, stdout: "", stderr: "HTTP 422: Validation Failed" };
@@ -644,7 +674,8 @@ function fakeGh(o: {
       return ok("");
     }
     if (args[0] === "issue" && args[1] === "comment") {
-      comments.push({ n: args[2] as string, body: val(args, "--body") });
+      const c = { n: args[2] as string, body: val(args, "--body") };
+      (parseMarks(c.body).pendingAt ? pendings : comments).push(c);
       store.push({
         issue: Number(args[2]),
         user: BOT,
@@ -666,7 +697,7 @@ function fakeGh(o: {
     }
     return { code: 1, stdout: "", stderr: `unexpected ${args.join(" ")}` };
   };
-  return { exec, calls, created, comments, issues, clock };
+  return { exec, calls, created, comments, pendings, issues, clock };
 }
 
 const ONE_FAIL = VITEST_LOG.split("\n").slice(0, 7).join("\n");
@@ -1057,8 +1088,13 @@ describe("reconcile", () => {
     const jq = list[0]?.[list[0].indexOf("--jq") + 1] ?? "";
     expect(jq).toContain("total_count");
     expect(jq).not.toContain("head_repository");
-    // Nothing to do: no store read, no write.
-    expect(g.calls.some((c) => c[0] === "issue")).toBe(false);
+    // Nothing to do: the store is read for its pending list, nothing written.
+    expect(
+      g.calls.some(
+        (c) => c[0] === "issue" && c[1] !== "list" && c[1] !== "view",
+      ),
+    ).toBe(false);
+    expect(g.comments).toEqual([]);
   });
 
   it("finds every run created in the range that passed on a rerun, however long ago it passed", () => {
@@ -1467,5 +1503,802 @@ describe("a late replay files like an immediate one", () => {
       [{ action: "record", id: ID }],
     ]);
     expect(filed(g)).toEqual([]);
+  });
+});
+
+describe("a backlog larger than one reconcile drains over the next events", () => {
+  // Twelve runs passed on a rerun and no event tracked any of them. Each run
+  // reads 2 job logs (test-shard and the `test` roll-up).
+  const ids = Array.from({ length: 12 }, (_, i) => 1000 + i);
+  const make = () =>
+    fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id, i) => rerun(id, { created: (20 - i) * HOUR })),
+    });
+  const marks = (g: ReturnType<typeof make>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+  const sightings = (g: ReturnType<typeof make>) =>
+    g.comments.flatMap((c) => parseStore(c.body).map((x) => x.run));
+  const at = (g: ReturnType<typeof make>, ms: number) => {
+    g.clock.now = ms;
+    return ms;
+  };
+
+  it("caps one reconcile well inside the job's limit", () => {
+    expect(RECONCILE_MS).toBeLessThanOrEqual(5 * 60 * 1000);
+    expect(RECONCILE_CALLS).toBeLessThanOrEqual(150);
+    expect(RECONCILE_LOGS).toBeLessThanOrEqual(25);
+  });
+
+  it("stops on its time budget, on a fake clock: each gh call takes 2 s", () => {
+    const g = make();
+    let t = 0;
+    const slow: Exec = (cmd, args) => {
+      t += 2000;
+      return g.exec(cmd, args);
+    };
+    const r = reconcile({
+      exec: slow,
+      repo: REPO,
+      nowMs: NOW,
+      ms: 60_000,
+      clock: () => t,
+    });
+    const worked = r.filter((x) => x.result === "tracked").length;
+    expect(worked).toBeGreaterThan(0);
+    expect(worked).toBeLessThan(ids.length);
+    // No run starts after the minute: the last one began before it.
+    expect(t).toBeLessThan(60_000 + 30 * 2000);
+    expect(r.filter((x) => x.result === "left")).toHaveLength(
+      ids.length - worked,
+    );
+  });
+
+  it("stops starting runs once its log budget is spent, oldest first, and says how many are left", () => {
+    const g = make();
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, logs: 6 });
+    // 2 logs a run: runs 1000-1002 spend the 6, so 1003 on are left.
+    expect(r.map((x) => [x.runId, x.result])).toEqual(
+      ids.map((id) => [id, id <= 1002 ? "tracked" : "left"]),
+    );
+    expect(marks(g)).toEqual(["1000/2", "1001/2", "1002/2"]);
+    expect(reconcileLines(r).at(-1)).toBe(
+      "backlog: 9 new, 0 to retry (the next CI completion's reconcile carries on)",
+    );
+  });
+
+  it("stops on its call budget too, but always starts one run", () => {
+    const g = make();
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, calls: 1 });
+    // The listing and the store read spend it: the first run still starts.
+    expect(r.filter((x) => x.result === "tracked")).toHaveLength(1);
+    expect(r.filter((x) => x.result === "left")).toHaveLength(11);
+  });
+
+  it("drains over successive events with every run marked once, and no sighting twice", () => {
+    const g = make();
+    const left: number[] = [];
+    for (let e = 0; e < 10; e++) {
+      const r = reconcile({
+        exec: g.exec,
+        repo: REPO,
+        nowMs: at(g, NOW + e * HOUR),
+        logs: 6,
+      });
+      left.push(r.filter((x) => x.result === "left").length);
+    }
+    expect(left).toEqual([9, 6, 3, 0, 0, 0, 0, 0, 0, 0]);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(sightings(g).sort()).toEqual(ids);
+    // Once drained, a reconcile only reads.
+    const before = g.comments.length + g.created.length;
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: at(g, NOW + DAY) });
+    expect(r.every((x) => x.result === "recorded already")).toBe(true);
+    expect(reconcileLines(r).at(-1)).toBe("backlog: 0 new, 0 to retry");
+    expect(g.comments.length + g.created.length).toBe(before);
+  });
+
+  it("a reconcile cut off mid-run keeps what it saved, and the next one finishes without a duplicate", () => {
+    const g = make();
+    // The job is killed after 60 gh calls: every later call fails.
+    let calls = 0;
+    const dying: Exec = (cmd, args) =>
+      ++calls > 60
+        ? { code: 1, stdout: "", stderr: "killed" }
+        : g.exec(cmd, args);
+    // Its last write (the pending list) fails too, so the step fails.
+    expect(() =>
+      reconcile({ exec: dying, repo: REPO, nowMs: at(g, NOW) }),
+    ).toThrow("killed");
+    const saved = marks(g);
+    expect(saved.length).toBeGreaterThan(0);
+    expect(saved.length).toBeLessThan(ids.length);
+    for (let e = 1; e <= 4; e++)
+      reconcile({
+        exec: g.exec,
+        repo: REPO,
+        nowMs: at(g, NOW + e * HOUR),
+        logs: 6,
+      });
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(sightings(g).sort()).toEqual(ids);
+  });
+
+  it("shows each run as it is worked on, before the reconcile ends", () => {
+    const g = make();
+    const seen: number[] = [];
+    reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: NOW,
+      logs: 4,
+      onRun: (r) => seen.push(r.runId),
+    });
+    expect(seen).toEqual([1000, 1001]);
+  });
+});
+
+describe("a repo with no tracker labels yet", () => {
+  it("creates both labels and the store, and saves the run (gh lists no match as nothing)", () => {
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)], labels: ["bug"] });
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: NOW });
+    expect(r.map((x) => x.result)).toEqual(["tracked"]);
+    expect(
+      g.calls
+        .filter((c) => c[0] === "label" && c[1] === "create")
+        .map((c) => c[2]),
+    ).toEqual(["flaky-sightings", "flaky"]);
+    expect(parseMarks(g.comments[0]?.body ?? "").passed).toEqual(["900/2"]);
+  });
+});
+
+describe("a backlog run that leaves the listing's range while it waits", () => {
+  // The Prover's case: 32 runs created 60 days ago and rerun 30 days ago. The
+  // first completion tracks 10 and leaves 22; the next comes 27 hours later,
+  // when the listing no longer reaches them.
+  const ids = Array.from({ length: 32 }, (_, i) => 2000 + i);
+  const created = (RERUN_DAYS + QUIET_DAYS) * DAY;
+  const make = () =>
+    fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id) => rerun(id, { created, updated: RERUN_DAYS * DAY })),
+    });
+  const marks = (g: ReturnType<typeof make>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+
+  it("is kept in the store's pending list and still tracked, every one, once", () => {
+    const g = make();
+    // 2 logs a run: a budget of 20 logs tracks 10.
+    const first = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: NOW,
+      logs: 20,
+      calls: 10_000,
+    });
+    expect(first.filter((x) => x.result === "tracked")).toHaveLength(10);
+    expect(reconcileLines(first).at(-1)).toBe(
+      "backlog: 22 new, 0 to retry (the next CI completion's reconcile carries on)",
+    );
+    const list = g.pendings.at(-1)?.body ?? "";
+    expect(parseMarks(list).pending).toEqual(
+      ids.slice(10).map((id) => `${id}/2`),
+    );
+    // 27 hours on, the listing finds none of them.
+    const later = NOW + 27 * HOUR;
+    g.clock.now = later;
+    expect(recentRuns(g.exec, REPO, later)).toEqual([]);
+    const next = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: later,
+      logs: 50,
+      calls: 1000,
+    });
+    expect(
+      next.filter((x) => x.result === "tracked").map((x) => x.runId),
+    ).toEqual(ids.slice(10));
+    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 new, 0 to retry");
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    // The list is emptied once all are marked, and then nothing more is written.
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "")).toMatchObject({
+      pending: [],
+    });
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pendingAt).toBeDefined();
+    const before = g.comments.length;
+    const r = reconcile({ exec: g.exec, repo: REPO, nowMs: later + HOUR });
+    expect(r).toEqual([]);
+    expect(g.comments).toHaveLength(before);
+  });
+
+  it("drains on the default budgets over later completions, all past the listing's range", () => {
+    const g = make();
+    reconcile({ exec: g.exec, repo: REPO, nowMs: NOW, logs: 20 });
+    const left: number[] = [];
+    for (let e = 1; e <= 4; e++) {
+      const t = NOW + 27 * HOUR + e * HOUR;
+      g.clock.now = t;
+      left.push(
+        reconcile({ exec: g.exec, repo: REPO, nowMs: t }).filter(
+          (x) => x.result === "left",
+        ).length,
+      );
+    }
+    expect(left.at(-1)).toBe(0);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+  });
+
+  it("a runner killed right after its first mark loses none: the next completion, 27 h later, does the other 31, each once", () => {
+    const g = make();
+    // The job dies as soon as the first run is marked: every later call fails.
+    let dead = false;
+    const dying: Exec = (cmd, args) => {
+      if (dead) return { code: 1, stdout: "", stderr: "killed" };
+      const r = g.exec(cmd, args);
+      if (g.comments.some((c) => parseMarks(c.body).passed.length)) dead = true;
+      return r;
+    };
+    expect(() => reconcile({ exec: dying, repo: REPO, nowMs: NOW })).toThrow(
+      "killed",
+    );
+    expect(marks(g)).toEqual(["2000/2"]);
+    // The whole list was saved before the first run started.
+    expect(parseMarks(g.pendings[0]?.body ?? "").pending).toEqual(
+      ids.map((id) => `${id}/2`),
+    );
+    const later = NOW + 27 * HOUR;
+    g.clock.now = later;
+    expect(recentRuns(g.exec, REPO, later)).toEqual([]);
+    const next = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: later,
+      logs: 100,
+      calls: 10_000,
+    });
+    expect(
+      next.filter((x) => x.result === "tracked").map((x) => x.runId),
+    ).toEqual(ids.slice(1));
+    expect(reconcileLines(next).at(-1)).toBe("backlog: 0 new, 0 to retry");
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(
+      g.comments.flatMap((c) => parseStore(c.body).map((x) => x.run)).sort(),
+    ).toEqual(ids);
+  });
+
+  it("keeps a failed run on the list until it is marked", () => {
+    const g = make();
+    let fail = true;
+    const flaky: Exec = (cmd, args) =>
+      fail && args.some((a) => a.endsWith("/runs/2000/attempts/2"))
+        ? { code: 1, stdout: "", stderr: "HTTP 404: Not Found" }
+        : g.exec(cmd, args);
+    const r = reconcile({
+      exec: flaky,
+      repo: REPO,
+      nowMs: NOW,
+      logs: 200,
+      calls: 1000,
+    });
+    expect(r.find((x) => x.runId === 2000)?.result).toBe("error");
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([
+      "2000/2",
+    ]);
+    fail = false;
+    const later = NOW + 27 * HOUR;
+    g.clock.now = later;
+    const again = reconcile({ exec: g.exec, repo: REPO, nowMs: later });
+    expect(again.map((x) => [x.runId, x.result])).toEqual([[2000, "tracked"]]);
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+  });
+});
+
+describe("a pending list while daily events go on", () => {
+  // 32 runs created 2 days before day 0. Fake clock: one CI completion a day.
+  const ids = Array.from({ length: 32 }, (_, i) => 3000 + i);
+  const make = () =>
+    fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id) => rerun(id, { created: 2 * DAY, updated: DAY })),
+    });
+  const marks = (g: ReturnType<typeof make>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+  const day = (g: ReturnType<typeof make>, d: number) => {
+    g.clock.now = NOW + d * DAY;
+    return g.clock.now;
+  };
+
+  it("survives 40 days of daily events that each finish only part of it", () => {
+    const g = make();
+    const left: number[] = [];
+    for (let d = 0; d < 40; d++)
+      left.push(
+        reconcile({
+          exec: g.exec,
+          repo: REPO,
+          nowMs: day(g, d),
+          logs: 2,
+        }).filter((x) => x.result === "left").length,
+      );
+    // One run a day (2 logs a run; the log budget is 2).
+    expect(left.slice(0, 3)).toEqual([31, 30, 29]);
+    expect(left.at(-1)).toBe(0);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+  });
+
+  it("is still worked on day 63 after every run failed daily since day 0 and left the listing", () => {
+    const g = make();
+    // Each run fails daily, but not as unreadable (the read works and its
+    // answer is garbage), so none is dropped.
+    let broken = true;
+    const exec: Exec = (cmd, args) =>
+      broken && args.some((a) => /\/runs\/\d+\/attempts\/2$/.test(a))
+        ? { code: 0, stdout: "<html>", stderr: "" }
+        : g.exec(cmd, args);
+    let last: ReturnType<typeof reconcile> = [];
+    for (let d = 0; d < 63; d++)
+      last = reconcile({ exec, repo: REPO, nowMs: day(g, d), calls: 10_000 });
+    expect(marks(g)).toEqual([]);
+    // All 32 failed and are saved to retry: the backlog says so.
+    expect(reconcileLines(last).at(-1)).toBe(
+      "backlog: 0 new, 32 to retry (the next CI completion's reconcile carries on)",
+    );
+    broken = false;
+    const t = day(g, 63);
+    expect(recentRuns(g.exec, REPO, t)).toEqual([]);
+    const r = reconcile({
+      exec: g.exec,
+      repo: REPO,
+      nowMs: t,
+      logs: 1000,
+      calls: 10_000,
+    });
+    expect(r.filter((x) => x.result === "tracked")).toHaveLength(32);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+  });
+});
+
+describe("runs whose logs can't be read", () => {
+  // The Prover's case: 32 runs, the oldest 25 with a job log that fails, the
+  // newest 7 readable. Default budgets (25 logs).
+  const ids = Array.from({ length: 32 }, (_, i) => 4000 + i);
+  const bad = new Set(ids.slice(0, 25));
+  const setup = (error = "HTTP 404: Not Found") => {
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id, i) => rerun(id, { created: (40 - i) * HOUR })),
+    });
+    // Which run's jobs were listed last: its job log is read next.
+    let current = 0;
+    const state = { broken: true, logs: 0 };
+    const exec: Exec = (cmd, args) => {
+      const m = args
+        .map((a) => /\/runs\/(\d+)\/attempts\/1\/jobs/.exec(a))
+        .find(Boolean);
+      if (m) current = Number(m[1]);
+      const log = args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a));
+      if (log) state.logs++;
+      if (state.broken && bad.has(current) && log)
+        return { code: 1, stdout: "", stderr: error };
+      return g.exec(cmd, args);
+    };
+    /** One completion an hour; the logs it read. */
+    const completion = (e: number) => {
+      g.clock.now = NOW + e * HOUR;
+      state.logs = 0;
+      const r = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      return { r, logs: state.logs };
+    };
+    return { g, exec, state, completion };
+  };
+  const marks = (g: ReturnType<typeof fakeGh>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).passed);
+  const dropped = (g: ReturnType<typeof fakeGh>) =>
+    g.comments.flatMap((c) => parseMarks(c.body).unreadable);
+
+  it("never starve the readable ones, and no completion reads more than 25 logs", () => {
+    const { g, completion } = setup();
+    const logs: number[] = [];
+    const tracked: number[][] = [];
+    for (let e = 0; e < 3; e++) {
+      const { r, logs: n } = completion(e);
+      logs.push(n);
+      tracked.push(r.filter((x) => x.result === "tracked").map((x) => x.runId));
+    }
+    expect(Math.max(...logs)).toBeLessThanOrEqual(RECONCILE_LOGS);
+    // The first spends its 25 logs on the 25 oldest; the next tracks all 7
+    // before any retry.
+    expect(tracked[0]).toEqual([]);
+    expect(tracked[1]).toEqual(ids.slice(25));
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
+  });
+
+  it("are tried after the runs not yet tried", () => {
+    const { g, exec } = setup();
+    // First completion: only the 25 unreadable ones exist yet.
+    const first = reconcile({ exec, repo: REPO, nowMs: NOW - 16 * HOUR });
+    expect(first.every((x) => x.result === "error")).toBe(true);
+    // Next: the 7 readable ones are new, so they go first.
+    g.clock.now = NOW;
+    const order: number[] = [];
+    reconcile({
+      exec,
+      repo: REPO,
+      nowMs: NOW,
+      onRun: (x) => order.push(x.runId),
+    });
+    expect(order.slice(0, 7)).toEqual(ids.slice(25));
+  });
+
+  it(`a run found gone (404) is dropped on its ${UNREADABLE_TRIES}rd strike, visibly, and then skipped`, () => {
+    const { g, completion } = setup();
+    const strikes = new Map<number, number>();
+    const droppedAt = new Map<number, number>();
+    let last: Reconciled[] = [];
+    for (let e = 0; e < 20 && droppedAt.size < bad.size; e++) {
+      const { r, logs } = completion(e);
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      for (const x of r.filter((y) => bad.has(y.runId))) {
+        if (x.result === "error")
+          strikes.set(x.runId, (strikes.get(x.runId) ?? 0) + 1);
+        if (x.result === "unreadable") droppedAt.set(x.runId, e);
+      }
+      if (r.some((x) => x.result === "unreadable")) last = r;
+    }
+    // Every one of the 25 is dropped, each after exactly 2 earlier strikes.
+    expect([...droppedAt.keys()].sort()).toEqual([...bad]);
+    expect([...strikes.values()].every((n) => n === UNREADABLE_TRIES - 1)).toBe(
+      true,
+    );
+    expect(dropped(g).sort()).toEqual([...bad].map((id) => `${id}/2`));
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
+    // The summary names each one it drops.
+    const lines = reconcileLines(last);
+    expect(lines.join("\n")).toContain(
+      `found gone (404 or 410) on ${UNREADABLE_TRIES} reconciles: dropped, and marked unreadable in the store`,
+    );
+    expect(parseMarks(g.pendings.at(-1)?.body ?? "").pending).toEqual([]);
+    // Later, they are skipped like marked runs: no read of them at all.
+    const reads = g.calls.length;
+    const { r } = completion(30);
+    expect(r.every((x) => x.result === "recorded already")).toBe(true);
+    expect(
+      g.calls.slice(reads).some((c) => c.some((a) => a.includes("/attempts/"))),
+    ).toBe(false);
+  });
+
+  it("a 503 is never a strike: the runs wait, and are tracked once GitHub answers again", () => {
+    const { g, state, completion } = setup("HTTP 503: Service Unavailable");
+    for (let e = 0; e < 10; e++) {
+      const { r, logs } = completion(e);
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      expect(r.some((x) => x.result === "unreadable")).toBe(false);
+    }
+    expect(dropped(g)).toEqual([]);
+    expect(marks(g).sort()).toEqual(ids.slice(25).map((id) => `${id}/2`));
+    expect(
+      Object.values(parseMarks(g.pendings.at(-1)?.body ?? "").tries),
+    ).toEqual(Array(25).fill(0));
+    state.broken = false;
+    for (let e = 10; e < 20; e++) completion(e);
+    expect(marks(g).sort()).toEqual(ids.map((id) => `${id}/2`));
+  });
+
+  it("a failure that is not a read of the run never drops it", () => {
+    // Run 900 files (the store holds run 800), and every issue create fails.
+    const prior = { user: BOT, body: priorStore(800, "2026-11-24T09:00:00Z") };
+    const h = fakeGh({
+      log: ONE_FAIL,
+      runs: [rerun(900)],
+      failCreates: 99,
+      issues: [STORE],
+      storeComments: [prior],
+    });
+    for (let e = 0; e < UNREADABLE_TRIES + 1; e++) {
+      h.clock.now = NOW + e * HOUR;
+      const [r] = reconcile({ exec: h.exec, repo: REPO, nowMs: h.clock.now });
+      expect(r?.result).toBe("error");
+    }
+    expect(h.comments.flatMap((c) => parseMarks(c.body).unreadable)).toEqual(
+      [],
+    );
+    expect(parseMarks(h.pendings.at(-1)?.body ?? "").pending).toEqual([
+      "900/2",
+    ]);
+  });
+});
+
+describe("a few runs that keep failing can't hide the rest", () => {
+  it("the Prover's case: 4 runs keep answering 503, and the 20 that recover drain in the events that follow", () => {
+    const ids = Array.from({ length: 24 }, (_, i) => 5000 + i);
+    const g = fakeGh({
+      log: ONE_FAIL,
+      runs: ids.map((id, i) => rerun(id, { created: (30 - i) * HOUR })),
+    });
+    const broken = new Set(ids);
+    let current = 0;
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      const m = args
+        .map((a) => /\/runs\/(\d+)\/attempts\/1\/jobs/.exec(a))
+        .find(Boolean);
+      if (m) current = Number(m[1]);
+      const log = args.some((a) => /\/actions\/jobs\/\d+\/logs$/.test(a));
+      if (log) logs++;
+      if (log && broken.has(current))
+        return { code: 1, stdout: "", stderr: "HTTP 503: Service Unavailable" };
+      return g.exec(cmd, args);
+    };
+    const completion = (e: number) => {
+      g.clock.now = NOW + e * HOUR;
+      logs = 0;
+      const r = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      return r;
+    };
+    // An outage: every run answers 503 until each has failed at least once.
+    let e = 0;
+    const failed = new Set<number>();
+    for (; failed.size < ids.length && e < 20; e++)
+      for (const x of completion(e))
+        if (x.result === "error") failed.add(x.runId);
+    expect(failed.size).toBe(ids.length);
+    // The newest 20 recover; the oldest 4 keep answering 503.
+    for (const id of ids.slice(4)) broken.delete(id);
+    const marks = () => g.comments.flatMap((c) => parseMarks(c.body).passed);
+    const want = ids.slice(4).map((id) => `${id}/2`);
+    let events = 0;
+    while (want.some((k) => !marks().includes(k)) && events < 6) {
+      completion(e++);
+      events++;
+    }
+    expect(want.filter((k) => !marks().includes(k))).toEqual([]);
+    expect(events).toBeLessThanOrEqual(4);
+    // The 4 still wait, with no strike.
+    const last = parseMarks(g.pendings.at(-1)?.body ?? "");
+    expect(last.pending).toEqual(ids.slice(0, 4).map((id) => `${id}/2`));
+    expect(Object.values(last.tries)).toEqual([0, 0, 0, 0]);
+  });
+});
+
+describe("a run with more job logs than one reconcile may read", () => {
+  // Run 900's attempt 1 has 32 failed jobs, each failing its own test.
+  const JOBS = 32;
+  const logOf = (n: number) =>
+    [
+      "2026-11-25T16:10:09.0000000Z  RUN  v4.1.12 /home/runner/work/open-artifacts/open-artifacts/apps/server",
+      `2026-11-25T16:27:12.0000000Z  FAIL  test/big.test.ts > case ${n}`,
+    ].join("\n");
+  const setup = () => {
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      if (args.some((a) => /\/runs\/900\/attempts\/1\/jobs/.test(a)))
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            jobs: Array.from({ length: JOBS }, (_, i) => ({
+              id: 100 + i,
+              name: `test-shard (${i})`,
+              conclusion: "failure",
+              completed_at: "2026-11-26T10:00:00Z",
+            })),
+          }),
+          stderr: "",
+        };
+      const m = args
+        .map((a) => /\/actions\/jobs\/(\d+)\/logs$/.exec(a))
+        .find(Boolean);
+      if (m) {
+        logs++;
+        return { code: 0, stdout: logOf(Number(m[1]) - 100), stderr: "" };
+      }
+      return g.exec(cmd, args);
+    };
+    return { g, exec, logs: () => logs, reset: () => (logs = 0) };
+  };
+
+  it("takes 2 reconciles, never reads more than 25 logs in one, and loses no sighting", () => {
+    const { g, exec, logs, reset } = setup();
+    const first = reconcile({ exec, repo: REPO, nowMs: NOW });
+    expect(logs()).toBe(RECONCILE_LOGS);
+    expect(first.map((x) => x.result)).toEqual(["left"]);
+    expect(first[0]?.notes).toEqual([
+      `read ${RECONCILE_LOGS} job logs so far; the next reconcile reads the rest`,
+    ]);
+    // The 25 read are recorded at once; the run is not marked yet.
+    expect(g.comments.flatMap((c) => parseStore(c.body))).toHaveLength(
+      RECONCILE_LOGS,
+    );
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([]);
+    reset();
+    g.clock.now = NOW + HOUR;
+    const second = reconcile({ exec, repo: REPO, nowMs: NOW + HOUR });
+    expect(logs()).toBe(JOBS - RECONCILE_LOGS);
+    expect(second.map((x) => x.result)).toEqual(["tracked"]);
+    const seen = g.comments.flatMap((c) => parseStore(c.body));
+    expect(seen).toHaveLength(JOBS);
+    expect(new Set(seen.map((x) => x.key)).size).toBe(JOBS);
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
+      "900/2",
+    ]);
+    // Done: a later reconcile reads none of its logs.
+    reset();
+    g.clock.now = NOW + 2 * HOUR;
+    reconcile({ exec, repo: REPO, nowMs: NOW + 2 * HOUR });
+    expect(logs()).toBe(0);
+  });
+});
+
+describe("a run whose logs fail part way, or whose jobs span pages", () => {
+  const logOf = (n: number) =>
+    [
+      "2026-11-25T16:10:09.0000000Z  RUN  v4.1.12 /home/runner/work/open-artifacts/open-artifacts/apps/server",
+      `2026-11-25T16:27:12.0000000Z  FAIL  test/big.test.ts > case ${n}`,
+    ].join("\n");
+  const job = (id: number, conclusion = "failure") => ({
+    id,
+    name: `test-shard (${id})`,
+    conclusion,
+    completed_at: "2026-11-26T10:00:00Z",
+  });
+  /** The jobs API as GitHub pages it: 100 a page, with the full total_count. */
+  const page = (jobs: ReturnType<typeof job>[], path: string) => {
+    const q = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+    const per = Number(q.get("per_page") ?? 30);
+    const p = Number(q.get("page") ?? 1);
+    return JSON.stringify({
+      total_count: jobs.length,
+      jobs: jobs.slice((p - 1) * per, p * per),
+    });
+  };
+
+  it("a 503 on the 25th log keeps the 24 before it, lets the next run go, and resumes at the 25th", () => {
+    // Run 900 has 30 failed jobs; the 25th (job 124) answers 503 for now.
+    // Run 901, behind it, is healthy.
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900), rerun(901)] });
+    const jobs = Array.from({ length: 30 }, (_, i) => job(100 + i));
+    let broken = true;
+    const reads = new Map<number, number>();
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path))
+        return { code: 0, stdout: page(jobs, path), stderr: "" };
+      const m = /\/actions\/jobs\/(\d+)\/logs$/.exec(path);
+      if (m) logs++;
+      if (m && Number(m[1]) >= 100) {
+        const id = Number(m[1]);
+        reads.set(id, (reads.get(id) ?? 0) + 1);
+        if (broken && id === 124)
+          return {
+            code: 1,
+            stdout: "",
+            stderr: "HTTP 503: Service Unavailable",
+          };
+        return { code: 0, stdout: logOf(id - 100), stderr: "" };
+      }
+      return g.exec(cmd, args);
+    };
+    const completion = (e: number) => {
+      g.clock.now = NOW + e * HOUR;
+      logs = 0;
+      const r = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      return r;
+    };
+    const marks = () => g.comments.flatMap((c) => parseMarks(c.body).passed);
+    completion(0);
+    // The 24 logs before the 503 are kept.
+    const saved = g.comments
+      .map((c) => parseMarks(c.body).progress)
+      .filter(Boolean)
+      .at(-1);
+    expect(saved?.key).toBe("900/2");
+    expect(saved?.p.jobs.sort()).toEqual(jobs.slice(0, 24).map((j) => j.id));
+    // The next completion retries the 25th, then the healthy run gets its turn.
+    completion(1);
+    expect(marks()).toContain("901/2");
+    // Once the log answers, run 900 finishes: each log read once, but the 25th.
+    broken = false;
+    for (let e = 2; e < 6 && !marks().includes("900/2"); e++) completion(e);
+    expect(marks()).toContain("900/2");
+    for (const j of jobs.slice(0, 24)) expect(reads.get(j.id)).toBe(1);
+    const sightings = g.comments.flatMap((c) =>
+      parseStore(c.body).filter((x) => x.run === 900),
+    );
+    expect(sightings).toHaveLength(30);
+  });
+
+  it("reads a failed job on the second page of the jobs listing before it marks the run", () => {
+    // 101 jobs: the first 100 passed, the 101st failed.
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
+    const jobs = [
+      ...Array.from({ length: 100 }, (_, i) => job(100 + i, "success")),
+      job(999),
+    ];
+    const pages: string[] = [];
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path)) {
+        pages.push(new URLSearchParams(path.split("?")[1]).get("page") ?? "");
+        return { code: 0, stdout: page(jobs, path), stderr: "" };
+      }
+      if (path.endsWith("/actions/jobs/999/logs"))
+        return { code: 0, stdout: logOf(1), stderr: "" };
+      return g.exec(cmd, args);
+    };
+    const r = reconcile({ exec, repo: REPO, nowMs: NOW });
+    expect(pages).toEqual(["1", "2"]);
+    expect(r.map((x) => x.result)).toEqual(["tracked"]);
+    const seen = g.comments.flatMap((c) => parseStore(c.body));
+    expect(seen).toHaveLength(1);
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
+      "900/2",
+    ]);
+  });
+});
+
+describe("a big run with many failures per log", () => {
+  it("the Prover's case: 32 jobs with 10 failures each records every sighting across reconciles, and its progress stays tiny", () => {
+    const JOBS = 32;
+    const PER = 10;
+    const logOf = (n: number) =>
+      [
+        "2026-11-25T16:10:09.0000000Z  RUN  v4.1.12 /home/runner/work/open-artifacts/open-artifacts/apps/server",
+        ...Array.from(
+          { length: PER },
+          (_, i) =>
+            `2026-11-25T16:27:12.0000000Z  FAIL  test/big.test.ts > job ${n} > case ${i}`,
+        ),
+      ].join("\n");
+    const g = fakeGh({ log: ONE_FAIL, runs: [rerun(900)] });
+    let logs = 0;
+    const exec: Exec = (cmd, args) => {
+      const path = args.find((a) => a.startsWith("repos/")) ?? "";
+      if (/\/runs\/900\/attempts\/1\/jobs\?/.test(path))
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            total_count: JOBS,
+            jobs: Array.from({ length: JOBS }, (_, i) => ({
+              id: 100 + i,
+              name: `test-shard (${i})`,
+              conclusion: "failure",
+              completed_at: "2026-11-26T10:00:00Z",
+            })),
+          }),
+          stderr: "",
+        };
+      const m = /\/actions\/jobs\/(\d+)\/logs$/.exec(path);
+      if (m) {
+        logs++;
+        return { code: 0, stdout: logOf(Number(m[1]) - 100), stderr: "" };
+      }
+      return g.exec(cmd, args);
+    };
+    const results: string[] = [];
+    for (let e = 0; e < 3; e++) {
+      g.clock.now = NOW + e * HOUR;
+      logs = 0;
+      const [r] = reconcile({ exec, repo: REPO, nowMs: g.clock.now });
+      expect(logs).toBeLessThanOrEqual(RECONCILE_LOGS);
+      results.push(r?.result ?? "");
+    }
+    expect(results).toEqual(["left", "tracked", "recorded already"]);
+    const seen = g.comments.flatMap((c) => parseStore(c.body));
+    expect(seen).toHaveLength(JOBS * PER);
+    expect(new Set(seen.map((x) => x.key)).size).toBe(JOBS * PER);
+    expect(g.comments.flatMap((c) => parseMarks(c.body).passed)).toEqual([
+      "900/2",
+    ]);
+    // The progress is job ids only: far under any limit.
+    const progress = g.comments.filter((c) => parseMarks(c.body).progress);
+    expect(progress.length).toBeGreaterThan(0);
+    for (const c of progress) expect(c.body.length).toBeLessThan(2000);
+    // And no comment passes GitHub's limit.
+    for (const c of [...g.comments, ...g.pendings])
+      expect(c.body.length).toBeLessThan(65536);
   });
 });
