@@ -315,6 +315,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // #2426 B, #2536: the asks a viewer may see in a page's slots. Read access to
   // the page is the floor; the handler filters by access to each ask's home.
   [`GET ${ARTS}/ask-slots`]: art("comments.read"),
+  // #2536: placing or removing an ask slot on a page: editor or owner only;
+  // placing also checks comments.read on the ask's home artifact.
+  [`PUT ${ARTS}/ask-slots/:key`]: art("publish", signedIn),
+  [`DELETE ${ARTS}/ask-slots/:key`]: art("publish", signedIn),
   // #682 comments: the floor is read access; the handler applies comments_off,
   // the embed refusal and who may edit or delete (the author, or an editor).
   [`GET ${ARTS}/comments`]: art("comments.read"),
@@ -646,6 +650,8 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   resolve_comment: art("comments.write"),
   withdraw_ask: art("comments.write"),
   edit_comment: art("comments.write"),
+  place_ask: art("publish"),
+  remove_ask_slot: art("publish"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

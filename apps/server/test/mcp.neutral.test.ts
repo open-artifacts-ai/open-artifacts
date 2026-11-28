@@ -55,8 +55,8 @@ describe("MCP surface is vendor-neutral", () => {
 
   it.each([
     // The bus's tool too: the test pool binds BUS_HUB (#1372).
-    ["spaces off", "", 25],
-    ["spaces on", "spaces", 26],
+    ["spaces off", "", 27],
+    ["spaces on", "spaces", 28],
   ] as const)(
     "everything the server sends (%s): tools, schemas, instructions, resources",
     async (_, features, n) => {

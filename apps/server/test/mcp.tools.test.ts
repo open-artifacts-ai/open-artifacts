@@ -61,6 +61,8 @@ const TOOLS = [
   "resolve_comment",
   "withdraw_ask",
   "edit_comment",
+  "place_ask",
+  "remove_ask_slot",
 ];
 /** With the spaces feature on, list_spaces is offered too (parity 1, B12). */
 const SPACES_TOOLS = [...TOOLS, "list_spaces"];
@@ -822,7 +824,7 @@ describe("MCP artifact data tools", () => {
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(25);
+    expect((await c.listTools()).tools).toHaveLength(27);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),
