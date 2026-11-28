@@ -466,6 +466,12 @@ export function checkCreateFields(
     )
       return { field: f, code: "forbidden" };
   }
+  if (principal === "token" && body.testHooks === true) {
+    if (body.slug === undefined)
+      return { field: "slug", code: "invalid_input" };
+    if (typeof body.slug !== "string" || !body.slug.startsWith("t-"))
+      return { field: "slug", code: "forbidden" };
+  }
   if (
     body.auth?.domainCodes === true &&
     !body.auth.domains

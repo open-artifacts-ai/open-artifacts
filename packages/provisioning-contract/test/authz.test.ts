@@ -301,26 +301,54 @@ describe("R4 field rules (3.3)", () => {
   const auth = { providers: ["google"], domains: ["acme.com"] };
   const full = { ownerEmail: "o@acme.com", tier: "team", auth };
 
-  it.each(["admin", "token"] as const)(
-    "%s can request test hooks only on staging",
-    (principal) => {
+  it("admin and token can request test hooks only on staging; tokens require a t-* fixture slug", () => {
+    for (const principal of ["admin", "token"] as const) {
       expect(createFieldRule("testHooks", principal, "staging")).toBe(
         "optional",
       );
       expect(createFieldRule("testHooks", principal, "prod")).toBe("forbidden");
       expect(
         checkCreateFields(
-          { ...full, testHooks: true },
+          { ...full, slug: "t-smoke", testHooks: true },
           principal,
           "staging",
           D,
         ),
       ).toBeNull();
       expect(
-        checkCreateFields({ ...full, testHooks: true }, principal, "prod", D),
+        checkCreateFields(
+          { ...full, slug: "t-smoke", testHooks: true },
+          principal,
+          "prod",
+          D,
+        ),
       ).toEqual({ field: "testHooks", code: "forbidden" });
-    },
-  );
+    }
+    expect(
+      checkCreateFields(
+        { ...full, slug: "acme", testHooks: true },
+        "admin",
+        "staging",
+        D,
+      ),
+    ).toBeNull();
+    expect(
+      checkCreateFields({ ...full, testHooks: true }, "token", "staging", D),
+    ).toEqual({ field: "slug", code: "invalid_input" });
+    for (const slug of ["acme", "business", "rl-smoke"])
+      expect(
+        checkCreateFields(
+          { ...full, slug, testHooks: true },
+          "token",
+          "staging",
+          D,
+        ),
+        slug,
+      ).toEqual({ field: "slug", code: "forbidden" });
+    expect(
+      checkCreateFields({ ...full, slug: "acme" }, "token", "staging", D),
+    ).toBeNull();
+  });
 
   describe("auth.domains empty: owner and invites only", () => {
     const body = (domains: string[], ownerEmail: string) => ({
