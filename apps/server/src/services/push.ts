@@ -735,12 +735,23 @@ async function drainMember(
       )
         .bind(now, s.id)
         .run();
-    } else if (r === "gone" || r === "unusable") {
-      await stmt(env.DB, "delete from push_subscriptions where id = ?1")
-        .bind(s.id)
-        .run();
-      removed++;
-    } else logWarn("push_send_failed", undefined, { subscription: s.id });
+      continue;
+    }
+    if (typeof r === "object") {
+      logWarn("push_send_failed", undefined, {
+        subscription: s.id,
+        status: r.status,
+        providerBody: r.providerBody,
+      });
+      if (r.status !== 404 && r.status !== 410) continue;
+    } else if (r === "failed") {
+      logWarn("push_send_failed", undefined, { subscription: s.id });
+      continue;
+    }
+    await stmt(env.DB, "delete from push_subscriptions where id = ?1")
+      .bind(s.id)
+      .run();
+    removed++;
   }
   // No device took it: the notification is gone, so say so in the same line.
   if (ok === 0) {

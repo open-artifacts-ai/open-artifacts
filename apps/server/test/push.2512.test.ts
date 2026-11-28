@@ -349,6 +349,31 @@ describe("the encrypted payload (RFC 8291) and the VAPID header (RFC 8292)", () 
     ).rejects.toThrow();
   });
 
+  it("reuses a VAPID JWT for one hour across devices of one audience", async () => {
+    const { E } = await world();
+    const url = "https://web.push.apple.com/device";
+    const header = (e: Env, endpoint: string, at: number) =>
+      vapidHeader(e, endpoint, at);
+    const [first, concurrent] = await Promise.all([
+      header(E, url, T0),
+      header(E, `${url}-other`, T0),
+    ]);
+    expect(concurrent).toBe(first);
+    expect(await header(E, "https://fcm.googleapis.com/x", T0)).not.toBe(first);
+    expect(await header(E, url, T0 + 3_599_999)).toBe(first);
+    expect(await header(E, url, T0 + 3_600_000)).not.toBe(first);
+    expect(
+      await header({ ...E, APP_HOST: "other.example" }, url, T0 + 3_600_000),
+    ).not.toBe(await header(E, url, T0 + 3_600_000));
+    expect(
+      await header(
+        { ...E, SESSION_SECRET: "different-rotation-secret" },
+        url,
+        T0,
+      ),
+    ).not.toBe(first);
+  });
+
   it("the VAPID JWT is ES256 for the push service's origin, under a day, signed by the instance key", async () => {
     const { E, keys } = await world();
     const h = await vapidHeader(
@@ -716,6 +741,35 @@ describe("sending", () => {
     ).toBeNull();
   });
 
+  it.each([403, 410])(
+    "logs the provider's HTTP %i and a bounded, redacted error preview",
+    async (status) => {
+      const { E } = await world();
+      const { u } = await enroll(E);
+      const body =
+        '{"reason":"BadJwtToken","token":"short-secret","url":"https://example.com/private","detail":"' +
+        "BadJwtToken ".repeat(30) +
+        '"}';
+      vi.spyOn(globalThis, "fetch").mockImplementation(
+        async () => new Response(body, { status }),
+      );
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await queuePush(E, [u.userId], item("ask:provider-log"), T0);
+      await drainPush(E, T0);
+      const record = warn.mock.calls
+        .map(([line]) => JSON.parse(String(line)))
+        .find((line) => line.evt === "push_send_failed");
+      expect(record).toMatchObject({
+        status,
+        providerBody: expect.stringContaining("BadJwtToken"),
+      });
+      expect(record.providerBody.length).toBeLessThanOrEqual(200);
+      expect(JSON.stringify(record)).not.toMatch(
+        /short-secret|example\.com|private/,
+      );
+    },
+  );
+
   it("the default text hides the question: one fixed line, a link to the ask, no actions", async () => {
     const { E } = await world();
     const { u, b } = await enroll(E);
@@ -725,6 +779,7 @@ describe("sending", () => {
     expect(sent).toHaveLength(1);
     const s = sent[0] as Sent;
     expect(s.url).toBe(b.body.endpoint);
+    expect(s.headers.get("urgency")).toBe("high");
     expect(s.headers.get("content-encoding")).toBe("aes128gcm");
     expect(s.headers.get("authorization")).toMatch(/^vapid t=.+, k=.+$/);
     expect(Number(s.headers.get("ttl"))).toBeGreaterThan(0);
