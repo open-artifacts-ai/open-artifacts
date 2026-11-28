@@ -457,6 +457,7 @@ describe("late deliveries (C17 part 2)", () => {
         msgId: ID2,
         meta: { ...meta, from_ref: "s2", from_name: "s2", excerpt: "hi" },
         at: 30 * 60_000,
+        delay_ms: 30 * 60_000,
       },
     ]);
     expect(store.lateFor("s2").map((l) => l.msgId)).toEqual([ID2]);

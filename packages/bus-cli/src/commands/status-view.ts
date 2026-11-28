@@ -33,11 +33,18 @@ export type OtherProject = {
   count: number;
 };
 
+export type AttentionItem = {
+  problem: string;
+  fix: string;
+};
+
 export type StatusScreen = {
   version: string;
   verdict: Verdict;
   machine?: string | undefined;
   instances: InstanceView[];
+  /** Printed between instances and Agents only when non-empty (#3328 S2). */
+  attention?: AttentionItem[];
   /** Omitted when the daemon or all instances are down. */
   project?: {
     agents: StatusAgent[];
@@ -159,6 +166,40 @@ const byRecent = (a: StatusAgent, b: StatusAgent): number => {
   return a.name.localeCompare(b.name);
 };
 
+const wrapWithPrefix = (
+  firstPrefix: string,
+  firstPrefixCols: number,
+  contPrefix: string,
+  contPrefixCols: number,
+  text: string,
+  width: number,
+  more: string,
+): string[] => {
+  const cleaned = cleanText(text);
+  const firstRoom = Math.max(8, width - firstPrefixCols);
+  if (cols(cleaned) <= firstRoom) return [`${firstPrefix}${cleaned}`];
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  let cur = "";
+  let room = firstRoom;
+  let prefix = firstPrefix;
+  for (const w of words) {
+    const piece = cols(w) > room ? cutCols(w, room, more) : w;
+    if (!cur) {
+      cur = piece;
+    } else if (cols(cur) + 1 + cols(piece) <= room) {
+      cur = `${cur} ${piece}`;
+    } else {
+      out.push(`${prefix}${cur}`);
+      prefix = contPrefix;
+      room = Math.max(8, width - contPrefixCols);
+      cur = cols(w) > room ? cutCols(w, room, more) : w;
+    }
+  }
+  if (cur) out.push(`${prefix}${cur}`);
+  return out;
+};
+
 /** Renders the default `oa-bus status` screen within `screen.width` columns. */
 export function renderStatusScreen(
   style: Style,
@@ -236,6 +277,37 @@ export function renderStatusScreen(
       for (const inst of screen.instances) {
         lines.push(`  ${renderOne(inst, width - 2)}`);
       }
+    }
+  }
+
+  // 2b. Needs attention (#3328 S2) — only when something is wrong
+  const attention = screen.attention ?? [];
+  if (attention.length > 0) {
+    lines.push("");
+    lines.push(p("warning", `Needs attention (${attention.length})`));
+    for (const item of attention) {
+      lines.push(
+        ...wrapWithPrefix(
+          `  ${p("warning", "!")} `,
+          4,
+          "    ",
+          4,
+          item.problem,
+          width,
+          more,
+        ),
+      );
+      lines.push(
+        ...wrapWithPrefix(
+          `    ${p("muted", "Fix:")} `,
+          9,
+          "    ",
+          4,
+          item.fix,
+          width,
+          more,
+        ),
+      );
     }
   }
 

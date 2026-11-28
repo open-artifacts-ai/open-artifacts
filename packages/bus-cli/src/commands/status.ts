@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   canonicalAddress,
   listInstances,
@@ -7,6 +7,7 @@ import {
 } from "@oa/bus-daemon";
 import { type StatusReply, stripTerminalControls } from "@oa/bus-ipc";
 import { semverGte } from "@oa/bus-protocol";
+import { hostSlug } from "@oa/shared/secrets";
 import {
   type Ctx,
   probeDaemon,
@@ -15,8 +16,13 @@ import {
   socketFolderLines,
   tilde,
 } from "../context.ts";
+import { HARNESS_LABEL } from "../copy.ts";
 import { originOf, readMachine } from "../machine.ts";
+import type { Harness } from "../steps/adapters.ts";
+import { savedSkill, skillVersion } from "../steps/skill.ts";
 import {
+  type AttentionItem,
+  cleanText,
   type InstanceView,
   type OtherProject,
   renderStatusScreen,
@@ -265,9 +271,102 @@ function partitionNamespaces(
   return { agents, others };
 }
 
+const SKILL_HARNESSES: readonly Harness[] = [
+  "claude",
+  "codex",
+  "opencode",
+  "pi",
+  "omp",
+  "hermes",
+  "openclaw",
+  "antigravity",
+];
+
+function outdatedSkills(
+  ctx: Ctx,
+  hubHost: string,
+  hubVersion: string | undefined,
+): AttentionItem[] {
+  const hubCore = hubVersion ? core(hubVersion) : undefined;
+  if (!hubCore) return [];
+  const folder = `open-artifacts-${hostSlug(hubHost)}`;
+  const seenFiles = new Set<string>();
+  const items: AttentionItem[] = [];
+  for (const h of SKILL_HARNESSES) {
+    const file = savedSkill({ home: ctx.userHome, env: ctx.env }, h, folder);
+    if (!file || seenFiles.has(file)) continue;
+    seenFiles.add(file);
+    let savedVer: string | undefined;
+    try {
+      savedVer = skillVersion(readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+    const savedCore = savedVer ? core(savedVer) : undefined;
+    if (!savedCore || semverGte(savedCore, hubCore)) continue;
+    items.push({
+      problem: `The ${HARNESS_LABEL[h]} skill is out of date (${savedVer}).`,
+      fix: `run ${ctx.busCmd} skill`,
+    });
+  }
+  return items;
+}
+
+function collectAttention(
+  ctx: Ctx,
+  opts: {
+    mainHub: string;
+    instances: InstanceView[];
+    st: StatusReply;
+    health: Healthz;
+  },
+): AttentionItem[] {
+  const items: AttentionItem[] = [];
+  for (const inst of opts.instances) {
+    if (inst.ok) continue;
+    if (inst.reason === "revoked") {
+      items.push({
+        problem: `${inst.host} revoked this machine.`,
+        fix: `run ${ctx.busCmd} install to approve it again`,
+      });
+    } else {
+      items.push({
+        problem: `${inst.host} doesn't answer. Agents there won't get messages.`,
+        fix: `check your network, then ${ctx.busCmd} doctor`,
+      });
+    }
+  }
+  if (opts.health.problem !== undefined) {
+    items.push({
+      problem: `${hostOf(opts.mainHub)} reports a problem: ${cleanText(opts.health.problem)}.`,
+      fix: "ask the instance's admin to check it",
+    });
+  }
+  const unlinked = (opts.st.claude_sessions ?? []).filter(
+    (s) => s.state === "unlinked",
+  );
+  if (unlinked.length > 0) {
+    items.push({
+      problem:
+        unlinked.length === 1
+          ? `1 session here isn't linked: its page edits show "not linked".`
+          : `${unlinked.length} sessions here aren't linked: their page edits show "not linked".`,
+      fix: `run /mcp in that session.  Details: ${ctx.busCmd} status --links`,
+    });
+  }
+  items.push(
+    ...outdatedSkills(
+      ctx,
+      hostOf(opts.mainHub),
+      opts.st.hub_version ?? opts.health.version,
+    ),
+  );
+  return items;
+}
+
 /**
- * Default `oa-bus status` screen (#3328 S1). Read-only; never prints the token.
- * Exit 0 only when working (daemon up, all instances connected, no hub problem).
+ * Default `oa-bus status` screen (#3328 S1/S2). Read-only; never prints the token.
+ * Exit 0 only when working (daemon up, all instances connected, no attention items).
  */
 export async function status(ctx: Ctx): Promise<number> {
   const c = ctx.copy;
@@ -289,13 +388,20 @@ export async function status(ctx: Ctx): Promise<number> {
     return 1;
   }
   if (m.revoked) {
+    const instances = buildInstances(ctx, m.hub, true);
     say(
       ctx,
       renderStatusScreen(ctx.style, {
         version: ctx.version,
         verdict: "down",
         machine: m.label,
-        instances: buildInstances(ctx, m.hub, true),
+        instances,
+        attention: [
+          {
+            problem: `${hostOf(m.hub)} revoked this machine.`,
+            fix: `run ${ctx.busCmd} install to approve it again`,
+          },
+        ],
         busCmd: ctx.busCmd,
         now: ctx.now(),
         width,
@@ -308,6 +414,20 @@ export async function status(ctx: Ctx): Promise<number> {
   const health = probeHealthz(ctx, m.hub);
   const probe = await probeDaemon(ctx, { timeoutMs: 3000 });
   if (probe.state !== "up") {
+    const startCmd = ctx.service.kind
+      ? `${ctx.busCmd} install`
+      : `${ctx.busCmd} daemon`;
+    const attention: AttentionItem[] = [
+      probe.state === "stalled"
+        ? {
+            problem: "The bus daemon isn't responding.",
+            fix: `try again, or run ${ctx.busCmd} doctor`,
+          }
+        : {
+            problem: "The bus daemon isn't running.",
+            fix: `run ${startCmd}`,
+          },
+    ];
     say(
       ctx,
       renderStatusScreen(ctx.style, {
@@ -315,6 +435,7 @@ export async function status(ctx: Ctx): Promise<number> {
         verdict: "down",
         machine: m.label,
         instances: buildInstances(ctx, m.hub, false),
+        attention,
         busCmd: ctx.busCmd,
         now: ctx.now(),
         width,
@@ -329,13 +450,18 @@ export async function status(ctx: Ctx): Promise<number> {
     return 1;
   }
   const st = probe.st;
-  const { problem } = await health;
+  const hz = await health;
   const instances = buildInstances(ctx, m.hub, false, st);
+  const attention = collectAttention(ctx, {
+    mainHub: m.hub,
+    instances,
+    st,
+    health: hz,
+  });
   const anyUp = instances.some((i) => i.ok);
-  const allUp = instances.length > 0 && instances.every((i) => i.ok);
   const verdict: Verdict = !anyUp
     ? "down"
-    : !allUp || problem !== undefined
+    : attention.length > 0
       ? "degraded"
       : "working";
   const agentsPageUrl = `${originOf(m.hub)}/settings/agents`;
@@ -347,6 +473,7 @@ export async function status(ctx: Ctx): Promise<number> {
       verdict,
       machine: m.label || st.label,
       instances,
+      attention,
       ...(anyUp ? { project: partitionNamespaces(ctx, st) } : {}),
       agentsPageUrl,
       busCmd: ctx.busCmd,

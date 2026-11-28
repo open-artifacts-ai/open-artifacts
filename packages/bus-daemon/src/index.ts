@@ -3526,7 +3526,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // Read-only: status never marks a late delivery shown.
         late: sent
           .lateSince(Date.now() - LATE_WINDOW_MS)
-          .flatMap(({ meta, at }) => {
+          .flatMap(({ meta, at, delay_ms }) => {
             const from = meta.from_name ?? agents.byRef(meta.from_ref)?.busName;
             return from
               ? [
@@ -3537,6 +3537,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                       ? { excerpt: stripTerminalControls(meta.excerpt) }
                       : {}),
                     at,
+                    ...(delay_ms !== undefined ? { delay_ms } : {}),
                   },
                 ]
               : [];
