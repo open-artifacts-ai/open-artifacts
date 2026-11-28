@@ -88,6 +88,7 @@ async function agentSocket(token: string, namespace: string) {
       agent_ref: "r1",
       kind: "opencode",
       proposed_name: "e2e-agent",
+      name_chosen: true,
       namespace,
       global: false,
     }),
