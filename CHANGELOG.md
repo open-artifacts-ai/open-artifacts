@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.275.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.274.0...v0.275.0) (2026-11-28)
+
+
+### Features
+
+* show person-named sessions and roles in mentions ([#3344](https://github.com/open-artifacts-ai/open-artifacts/issues/3344)) ([5693e52](https://github.com/open-artifacts-ai/open-artifacts/commit/5693e52fd958319a28180a230356df3d2b8f1189))
+
 ## [0.274.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.273.0...v0.274.0) (2026-11-28)
 
 
