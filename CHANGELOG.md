@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.272.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.272.0...v0.272.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **comments:** key role thread participants, faces and handover by role ([#3335](https://github.com/open-artifacts-ai/open-artifacts/issues/3335)) ([#3352](https://github.com/open-artifacts-ai/open-artifacts/issues/3352)) ([89b0eda](https://github.com/open-artifacts-ai/open-artifacts/commit/89b0eda198e1b0d3143b6c94ce0640d2947d6a57))
+
 ## [0.272.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.271.2...v0.272.0) (2026-11-28)
 
 
